@@ -6,6 +6,10 @@ data (an OFDM-style design derived from Focus, Hermans et al., MobiSys 2016), in
 are protected by a soft-decision LDPC code and a CRC, and a file goes as chunks of a fountain code, each verified by
 BLAKE3 against the file's root.
 
+- **Demo:** [fosslabs.dev](https://fosslabs.dev)
+- **How it works:** [an example on video](https://www.youtube.com/watch?v=F-Mie4m9gBQ)
+- **Android app:** [0.1 (alpha)](https://github.com/FNWTalon/lizard/releases/tag/v0.1)
+
 Design choices:
 - **Luminance only.** Grey levels, never colour, so any screen and any camera read it the same way.
 - **Degrades instead of failing.** Each frame carries many independently checked blocks. Blur, glare or distance cost
