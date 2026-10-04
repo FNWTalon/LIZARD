@@ -1,0 +1,111 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "linux",
+      "displayName": "Linux (the host)",
+      "binaryDir": "${sourceDir}/build-native/linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "linux-asan",
+      "displayName": "Linux, ASan and UBSan",
+      "binaryDir": "${sourceDir}/build-native/linux-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "LIZ_SAN": "address,undefined",
+        "LIZ_GPU": "OFF"
+      }
+    },
+    {
+      "name": "wasm",
+      "displayName": "WebAssembly (emsdk sourced first: source <emsdk>/emsdk_env.sh)",
+      "binaryDir": "${sourceDir}/build-native/wasm",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LIZ_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "jvm",
+      "displayName": "Linux with the Kotlin binding's JNI (JAVA_HOME a JDK)",
+      "binaryDir": "${sourceDir}/build-native/jvm",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LIZ_JNI": "ON",
+        "LIZ_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "windows",
+      "displayName": "Windows x86-64 from Linux (MinGW-w64, posix threads)",
+      "binaryDir": "${sourceDir}/build-native/windows",
+      "toolchainFile": "${sourceDir}/cmake/mingw-w64.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "android-arm64",
+      "displayName": "Android arm64 (the NDK at ANDROID_NDK_HOME, else $ANDROID_HOME/ndk/27.1.12297006, else ~/Android/Sdk/ndk/27.1.12297006)",
+      "binaryDir": "${sourceDir}/build-native/android-arm64",
+      "toolchainFile": "${sourceDir}/cmake/android-ndk.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ANDROID_ABI": "arm64-v8a",
+        "ANDROID_PLATFORM": "android-29",
+        "ANDROID_STL": "c++_static",
+        "ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "linux",
+      "configurePreset": "linux"
+    },
+    {
+      "name": "linux-asan",
+      "configurePreset": "linux-asan"
+    },
+    {
+      "name": "wasm",
+      "configurePreset": "wasm"
+    },
+    {
+      "name": "jvm",
+      "configurePreset": "jvm"
+    },
+    {
+      "name": "windows",
+      "configurePreset": "windows"
+    },
+    {
+      "name": "android-arm64",
+      "configurePreset": "android-arm64"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "linux",
+      "configurePreset": "linux",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-asan",
+      "configurePreset": "linux-asan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "environment": {
+        "LIZ_TEST_MB": "5",
+        "ASAN_OPTIONS": "detect_leaks=1"
+      }
+    }
+  ]
+}

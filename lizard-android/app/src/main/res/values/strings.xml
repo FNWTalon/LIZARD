@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ai: Only what a resource must name (the launcher shortcut's label); the app's words are in Kotlin (Readout.kt). -->
+<resources>
+    <string name="receive">Receive</string>
+    <string name="send">Send</string>
+</resources>

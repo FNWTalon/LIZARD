@@ -1,0 +1,176 @@
+/* ai: The look every Lizard page shares: light, black and white, flat (no gradients, no shadows). Since 2026-10-01: */
+/* ai: one solid black button a screen, the others on a soft grey fill, minor actions text alone, every button a pill; */
+/* ai: a top app bar with a back arrow; lists */
+/* ai: of rows for files and settings; cards on a soft fill. Colour is for two things only: an error (--bad) and a */
+/* ai: finished transfer (--good). A page keeps its own layout inline; this file holds the tokens and the parts. The */
+/* ai: Android app draws the same tokens and parts (lizard-android/app/src/main/java/dev/lizard/receiver/Parts.kt). */
+:root{--fg:#111;--bg:#fff;--muted:#666;--line:#e4e4e4;--soft:#f1f1f1;--soft-2:#e6e6e6;--card:#f6f6f6;--bad:#b00020;
+  --good:#0a7a2f;color-scheme:light}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+/* ai: the hidden attribute always wins, so a .btn's display never shows a button a page has hidden */
+[hidden]{display:none !important}
+a{color:var(--fg)}
+/* ai: the icons (ui.mjs icon, and inline in the pages): a 24 grid, 2 px strokes in the text's colour */
+svg.i{width:24px;height:24px;flex:none;display:block;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+
+/* ai: Buttons: a soft grey fill by default; .primary solid black (one a screen); .text, minor, no fill; .danger red text;
+   .icon, a round 48 px target round a 24 px icon. 48 px tall for a thumb, 40 px under a mouse. */
+button,.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:48px;margin:0;padding:0 20px;
+  font:inherit;font-size:15px;font-weight:600;line-height:1.2;color:var(--fg);background:var(--soft);border:0;
+  border-radius:999px;cursor:pointer;text-decoration:none;text-align:center;user-select:none;-webkit-tap-highlight-color:transparent}
+/* ai: hover only where the pointer hovers: on a touch screen :hover sticks after a tap, and a button let go stays grey */
+@media (hover:hover){button:hover,.btn:hover{background:var(--soft-2)}}
+button:active,.btn:active{background:var(--soft-2)}
+.primary,.primary:hover,.primary:active{background:var(--fg);color:var(--bg)}
+@media (hover:hover){.primary:hover{background:#333}}
+.text,.icon{background:transparent}
+.text{padding:0 12px}
+.danger{color:var(--bad)}
+.icon{width:48px;min-width:48px;padding:0;border-radius:50%}
+button:disabled,button:disabled:hover{background:var(--soft);color:rgba(17,17,17,.38);cursor:default}
+.text:disabled,.icon:disabled{background:transparent}
+@media (pointer:fine){button,.btn{min-height:40px}.icon{width:40px;min-width:40px}}
+:focus-visible{outline:2px solid var(--fg);outline-offset:2px}
+
+/* ai: Fields on the soft fill, 8 px corners; a select's own arrow replaced by a chevron. 16 px text: iOS zooms the page
+   in on focus of anything smaller. */
+select,input{font:inherit;font-size:16px;color:var(--fg);background-color:var(--soft);border:1px solid transparent;
+  border-radius:8px;min-height:48px;padding:0 12px;min-width:0;max-width:100%}
+select{appearance:none;-webkit-appearance:none;padding-right:40px;background-repeat:no-repeat;background-position:right 14px center;
+  background-size:14px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")}
+select:focus-visible,input:focus-visible{outline:none;border-color:var(--fg)}
+/* ai: sliders the full width of their box (2026-10-02): none of the fields' padding, fill or 48 px height */
+input[type=range]{width:100%;min-height:24px;padding:0;margin:0;background:transparent;border:0;accent-color:var(--fg)}
+select:disabled,input:disabled{color:rgba(17,17,17,.38)}
+@media (pointer:fine){select,input{min-height:40px}}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+
+/* ai: Status: .status is the state line, .nums the user's figures under it (progress, size, speed, time left: their
+   figures of one width so they do not jitter), .lab the lab line in Advanced (a code block, as the readouts), .why the
+   hints when there are any. */
+.status{font-size:18px;font-weight:600;line-height:1.35;margin:4px 0}
+.nums{font-size:14px;font-variant-numeric:tabular-nums;color:var(--muted);margin:2px 0}
+.lab,pre.readout{font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted);background:var(--card);
+  border-radius:8px;padding:8px 12px;margin:8px 0;white-space:pre-wrap;word-break:break-word}
+pre.readout{font-size:12px;color:var(--fg)}
+.lab:empty,pre.readout:empty{display:none}
+.why{font-weight:600;margin:4px 0}
+.good{color:var(--good)}
+.bad{color:var(--bad)}
+.hint{color:var(--muted);font-size:14px}
+.meter{height:6px;background:var(--soft);border-radius:3px;overflow:hidden;margin:8px 0}
+.meter>span{display:block;height:100%;width:0;background:var(--fg);border-radius:3px}
+
+/* ai: The top app bar every page carries: Home's mark and name, or on the other pages a back arrow (home) and the page's
+   title; the other tool (#swap, a text button) and Settings (an icon button) on the right. Its height is fixed, so
+   nothing below it moves when a page's state changes. */
+.bar{display:flex;align-items:center;gap:4px;min-height:56px;border-bottom:1px solid var(--line);flex:none}
+.bar .brand{display:inline-flex;align-items:center;gap:10px;min-height:48px;font-size:20px;font-weight:700;color:var(--fg);text-decoration:none}
+.bar .brand img{width:28px;height:28px;display:block}
+.bar .back{margin-left:-12px}
+.bar h1{margin:0 0 0 4px;font-size:20px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.bar .grow{flex:1 1 auto}
+.bar>.icon:last-child{margin-right:-12px}
+@media (pointer:fine){.bar .back{margin-left:-8px}.bar>.icon:last-child{margin-right:-8px}}
+/* ai: The tool pages' sidebar collapser (2026-10-02): an icon at the bar's end in landscape, where the controls are a
+   column beside the code or the camera;
+   collapsed (body.collapsed, ui.mjs collapser), the column is a 56 px rail holding it alone, its chevrons turned, and
+   the page's own room the rest (each page sizes its column by --side). Portrait stacks the controls: no button. */
+:root{--side:20rem}
+.bar .collapse{display:none}
+@media (orientation:landscape){
+  .bar .collapse{display:flex}
+  body.collapsed{--side:56px}
+  body.collapsed .bar{padding:0;justify-content:center}
+  body.collapsed .bar>:not(.collapse){display:none}
+  body.collapsed .bar>.collapse{margin:0}
+  body.collapsed .collapse svg{transform:rotate(180deg)}
+  body.collapsed .rail{display:flex;flex:1 1 auto}
+}
+/* ai: The collapsed rail's squares (2026-10-02): 56 px each under
+   the bar's button; a pause that turns to play (.off), a figure over its unit (.rate), the receiver's green tick (.done). */
+.rail{display:none;flex-direction:column;align-items:center}
+.rail>*{width:56px;height:56px;flex:none;display:flex;flex-direction:column;align-items:center;justify-content:center;margin:0;padding:0}
+.rail>[hidden]{display:none}
+.rail .rate{font-size:13px;line-height:1.2;font-weight:600;color:var(--fg);font-variant-numeric:tabular-nums}
+.rail .rate small{font-size:11px;font-weight:400;color:var(--muted)}
+.rail .done{color:var(--good)}
+.rail .play,.rail .off .pause{display:none}.rail .off .play{display:block}
+/* ai: A square at the rail's foot (the sender's "?", 2026-10-03), and the card it opens: a popover beside the rail, at
+   the foot of the window, on the card fill. */
+.rail .help{margin-top:auto}
+/* ai: A dialog in the middle (the sender's brightness tip before its first send, 2026-10-04), the page's colours */
+.dialog{border:0;border-radius:12px;padding:20px 20px 16px;max-width:22rem;background:var(--bg);color:var(--fg);box-shadow:0 8px 32px rgba(0,0,0,.25);font-size:15px;line-height:1.45}
+.dialog::backdrop{background:rgba(0,0,0,.35)}
+.dialog p{margin:0 0 16px}
+.row.end{justify-content:flex-end}
+.pop{position:fixed;inset:auto auto 8px 64px;margin:0;max-width:18rem;border:0;border-radius:12px;padding:12px 16px;background:var(--card);color:var(--fg);box-shadow:0 4px 16px rgba(0,0,0,.18);font-size:14px;line-height:1.4}
+
+/* ai: A first-run tip (ui.mjs tips): a card on the soft fill, an info icon, a text "Got it". */
+.tip{display:flex;gap:12px;align-items:flex-start;background:var(--card);border-radius:12px;padding:14px 16px 6px;margin:12px 0}
+.tip>svg{color:var(--muted)}
+.tip>div{flex:1 1 auto;min-width:0}
+.tip p,.tip ol{margin:0 0 6px}
+.tip ol{padding-left:20px}
+.tip [data-got]{margin-left:-12px}
+
+/* ai: Sections and rows: a section's heading a small grey label; a row (.item) 56 px tall at least, its text (.body: .t
+   the title, .s the line under it) beside a leading icon (.lead) and a trailing control, a hairline between rows. */
+.settings>h2,section>h2{font-size:14px;font-weight:600;color:var(--muted);margin:24px 0 4px}
+.settings label{display:grid;gap:4px;font-size:14px;color:var(--muted);margin:8px 0}
+.settings label select{color:var(--fg);width:100%}
+.list{list-style:none;margin:0;padding:0}
+.item{display:flex;align-items:center;gap:12px;min-height:56px;padding:8px 0;border-bottom:1px solid var(--line)}
+.item:last-child{border-bottom:0}
+button.item{width:100%;justify-content:flex-start;padding:8px 0;font-weight:400;font-size:16px;text-align:left;background:transparent;border-radius:0}
+@media (hover:hover){button.item:hover{background:transparent}}
+.item .body{display:flex;flex-direction:column;flex:1 1 auto;min-width:0}
+.item .t{font-weight:500}
+.item .s{font-size:14px;color:var(--muted)}
+.lead{display:grid;place-items:center;width:40px;height:40px;border-radius:10px;background:var(--soft);flex:none}
+/* ai: The received files (home.mjs): the row opens its file; the more icon's menu holds Open, Save, Share, Delete. */
+.files .name{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;font-weight:500;text-decoration:none}
+.files .meta{display:block;font-weight:400;font-size:14px;color:var(--muted)}
+.menu{position:relative;flex:none}
+.menu>summary{list-style:none}
+.menu>summary::-webkit-details-marker{display:none}
+.menu .acts{position:absolute;right:0;top:calc(100% + 4px);z-index:5;display:flex;flex-direction:column;min-width:11rem;
+  padding:6px 0;background:var(--bg);border:1px solid var(--line);border-radius:12px}
+.menu .acts>*{justify-content:flex-start;min-height:44px;padding:0 16px;border-radius:0;background:transparent;font-weight:400}
+@media (hover:hover){.menu .acts>*:hover{background:var(--soft)}}
+.empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:24px 0;color:var(--muted);font-size:14px;text-align:center}
+
+/* ai: Advanced (details.dev, the Developer panel until 2026-10-01): the lab's switches and readouts, closed unless opened
+   (ui.mjs remember keeps it); its summary a row with a chevron that turns. */
+details.dev{border-top:1px solid var(--line);margin-top:8px}
+details.dev>summary{list-style:none;display:flex;align-items:center;min-height:56px;cursor:pointer;font-weight:500;user-select:none}
+details.dev>summary::-webkit-details-marker{display:none}
+details.dev>summary::after{content:"";margin:0 6px 0 auto;width:8px;height:8px;border-right:2px solid var(--muted);
+  border-bottom:2px solid var(--muted);transform:translateY(-2px) rotate(45deg);transition:transform .15s}
+details.dev[open]>summary::after{transform:translateY(2px) rotate(225deg)}
+/* ai: Advanced's first line straight under its row (2026-10-02) */
+details.dev>summary+*,details.dev>summary+.grid>label:first-child{margin-top:0}
+/* ai: Settings' fields, one rhythm (2026-10-02): a label 4 px over its control,
+   16 px between fields whatever the control (a menu, a slider, the auto box), a group's header 16 px above it and 8 px
+   over its first field */
+details.dev .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,14rem),1fr));gap:16px;margin:4px 0 16px}
+details.dev label{display:grid;gap:4px;font-size:14px;color:var(--muted);margin:0}
+/* ai: the sender's blocks a frame (2026-10-01): a slider beside its auto box, the count and what it holds above */
+.blocks{display:flex;flex-direction:column;gap:4px;margin:0}.blocks .row{display:flex;align-items:center;gap:12px;justify-content:space-between}
+/* ai: a slider's title and value in the fields' label style (2026-10-02) */
+.blocks .row>span{font-size:14px;color:var(--muted)}
+.blocks label.inline{display:flex;align-items:center;gap:8px;white-space:nowrap;align-self:flex-start;color:var(--fg);font-size:15px;margin:0 0 8px}
+/* ai: the Code group's auto box right under its heading */
+#f-focus>.grid{margin-top:0}#f-focus>.grid>.blocks:first-child{margin-top:0}
+.item .s:empty{display:none}
+/* ai: the auto box (2026-10-02, on its own row above blocks a frame): a plain 18 px checkbox, not the fields' 48 px fill */
+.blocks input[type=checkbox]{width:18px;height:18px;min-height:0;padding:0;margin:0;accent-color:var(--fg)}
+#blocksOut,#fpsOut{color:var(--muted);font-variant-numeric:tabular-nums}
+details.dev fieldset{border:0;margin:16px 0 0;padding:0;min-width:0}
+/* ai: About, a tool page's last row, under Advanced (2026-10-02) */
+.settings .about{border-top:1px solid var(--line);margin-top:8px}
+details.dev legend{font-size:14px;font-weight:600;color:var(--fg);padding:0;margin-bottom:8px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);
+  white-space:nowrap;border:0}

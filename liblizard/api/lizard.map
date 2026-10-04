@@ -1,0 +1,6 @@
+/* ai: the shared library exports the C API alone, and JNI_OnLoad where the Kotlin binding's JNI is in it (GNU ld and
+   lld; CMakeLists.txt) */
+{
+  global: liz_*; JNI_OnLoad;
+  local: *;
+};

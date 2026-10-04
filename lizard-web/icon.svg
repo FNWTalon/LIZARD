@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- ai: Lizard's mark (2026-10-01): the symbol's four corner marks, its dark ring between them and a grey picture inside,
+       on white. The mark keeps inside the central 80% circle, so the one file serves as the favicon and the app's
+       maskable icon (lizard-web/pwa/manifest.webmanifest); lizard-android/app/src/main/res/drawable/ic_launcher_foreground.xml is
+       the same drawing. -->
+  <rect width="64" height="64" fill="#fff"/>
+  <path fill="#111" d="M14 14h9v9h-9zM41 14h9v9h-9zM14 41h9v9h-9zM41 41h9v9h-9zM25 16h14v3H25zM25 45h14v3H25zM16 25h3v14h-3zM45 25h3v14h-3z"/>
+  <path fill="#777" d="M25 25h7v7h-7zM32 32h7v7h-7z"/>
+  <path fill="#bbb" d="M32 25h7v7h-7zM25 32h7v7h-7z"/>
+</svg>

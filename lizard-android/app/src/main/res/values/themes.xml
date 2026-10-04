@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ai: light only, as the rig's pages (ui.css color-scheme:light); Compose draws the rest -->
+    <style name="Theme.Lizard" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>

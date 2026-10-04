@@ -1,0 +1,134 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lizard sender</title><link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="ui.css">
+<style>
+  /* ai: Layout only; the look is ui.css. <main> is the paint area: send.mjs measures its client box to pick the */
+  /* ai: version (room()), sizes #c (the wasm path's, 2D) or #cg (the GPU encoder's, WebGPU: a canvas holds one kind of */
+  /* ai: context) in it (layout()) and fills it with the surround (paintSurround()). So nothing the */
+  /* ai: controls do may move that box while a symbol is painted: a resize re-picks the version mid-stream. */
+  /* ai: Portrait (a phone sending): the bar and the controls on top, <main> the rest of one screen. svh, so a phone's */
+  /* ai: address bar coming and going moves nothing (vh where there is no svh). Settings (Advanced in it) hang below */
+  /* ai: that screen, reached by scrolling or the bar's Settings, so opening them never shrinks <main>. */
+  #stage{position:relative;display:flex;flex-direction:column;height:100vh;height:100svh}
+  #col,#pane{display:contents}
+  .bar{padding:0 16px}
+  #side{flex:none;padding:12px 16px 8px;border-bottom:1px solid var(--line)}
+  #side .row>button,#side .row>.btn{flex:1 1 0}
+  /* ai: One line each, so a long name or a figure never grows the controls and shrinks <main> under a painted symbol. */
+  /* ai: An error wraps: nothing is painted then. */
+  #state,#nums{margin:.5rem 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #nums{min-height:1.4em}
+  #state.bad{white-space:normal}
+  #settings{position:absolute;top:100%;left:0;right:0;margin:0;padding:0 16px 1rem}
+  #settings label select{width:100%}
+  details.dev select,details.dev input{width:100%}
+  main{flex:1 1 0;min-height:0;display:grid;place-items:center;overflow:hidden;background:var(--bg);position:relative}
+  /* The surround sits behind the symbol and fills <main>; the symbol's canvas keeps its own painted margin. */
+  #bgc{position:absolute;inset:0;width:100%;height:100%;image-rendering:auto}
+  #c,#cg{position:relative;z-index:1}
+  canvas{image-rendering:pixelated}
+  /* ai: centred by inset and auto margins, so its width is the text's up to 26rem (centred by a translate from 50% it */
+  /* ai: could take at most half of <main>, and wrapped there) */
+  #hint{position:absolute;inset:0;margin:auto;width:fit-content;height:fit-content;z-index:2;padding:.5rem .8rem;
+    max-width:min(26rem,calc(100% - 32px));background:var(--bg);text-align:center;pointer-events:none}
+  /* ai: while the hint shows, the middle of the page is the file picker (send.mjs): there is no other button for it */
+  main:has(#hint:not([hidden])){cursor:pointer}
+  /* ai: a file dragged over the page: the whole of <main> takes the drop, and the outline says so */
+  main.drop{outline:3px dashed var(--fg);outline-offset:-12px}
+  /* ai: Landscape and desktop: a 20rem column beside <main>, the bar fixed at its top and the controls over Settings in */
+  /* ai: a pane under it that scrolls on its own (#pane, 2026-10-02, its scrollbar below the top bar, */
+  /* ai: as the receiver's), so Advanced opens inside it. The figures' reserved line is portrait's alone (it keeps <main> */
+  /* ai: still there); here an empty state or figures line takes no room. */
+  @media (orientation:landscape){
+    #stage{display:grid;grid-template-columns:var(--side) minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
+    body.collapsed #pane{display:none}
+    #col{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line)}
+    #pane{display:block;flex:1 1 0;min-height:0;overflow-y:auto}
+    #side{padding:16px 16px 0;border-bottom:0}
+    #state,#nums{white-space:normal}
+    #nums{min-height:0}
+    #state:empty,#nums:empty{display:none}
+    #settings{position:static}
+  }
+  /* ai: Fullscreen shows the code and nothing else; a tap on it or Escape brings the controls back (send.mjs). */
+  body.full #col{display:none}
+  body.full #stage{grid-template-columns:minmax(0,1fr)}
+</style>
+<div id="stage">
+  <div id="col">
+    <header class="bar"><a class="btn icon back" href="index.html" title="Home"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg><span class="sr-only">Home</span></a><h1>Send</h1><span class="grow"></span><a id="swap" class="btn text" href="recv.html" title="Switch to the receiver page"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3 4 7l4 4M4 7h16M16 21l4-4-4-4M20 17H4"/></svg>Receiver</a><button id="collapse" class="btn icon collapse" type="button" title="Hide sidebar" aria-expanded="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg><span class="sr-only">Sidebar</span></button></header>
+    <!-- ai: the collapsed rail (ui.css .rail, send.mjs showRail): pause or resume, and the code's capacity; at its foot a
+         "?" opening the display tip (2026-10-03, after the S26 broke 2.90 MB/s in 2:1 once the monitor's contrast was at
+         its maximum, STATUS "The oscillation in 2:1"): a popover (ui.css .pop), dismissed by a click elsewhere or Escape -->
+    <div id="rail" class="rail"><button id="railSend" class="btn icon off" type="button" title="Start"><svg class="i pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg><svg class="i play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3l14 9-14 9z"/></svg></button><span id="railRate" class="rate" aria-live="off"></span><button id="railHelp" class="btn icon help" type="button" title="Tip" popovertarget="tipDisplay"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/></svg><span class="sr-only">Tip</span></button></div>
+    <div id="tipDisplay" class="pop" popover>To maximize efficiency, increase the contrast and brightness of your display.</div>
+    <!-- ai: the same tip before the first send on this browser (send.mjs go, 2026-10-04) -->
+    <dialog id="first" class="dialog"><p>To maximize efficiency, increase the contrast and brightness of your display.</p><div class="row end"><button id="firstCancel" type="button">Cancel</button><button id="firstStart" class="primary" type="button">Start</button></div></dialog>
+    <div id="pane">
+    <div id="side">
+      <div class="row"><button id="go" class="primary" disabled>Start</button><button id="stop" hidden>Stop</button><button id="fs">Fullscreen</button></div>
+      <p id="state" class="status" role="status"></p>
+      <p id="nums" class="nums"></p>
+    </div>
+    <section id="settings" class="settings">
+      <!-- ai: Settings and Advanced, two rows that open (2026-10-02): Settings (#dev, its open state and every control in
+           it kept) holds the encoder and the code (blocks a frame, the rate its word states, its size, the gap, the ring,
+           the codes); Developer Tools (#logs) what is sent (2026-10-03: the test stream is for developers and testers)
+           and the readout; About the last row. Options and labels bare. -->
+    <details id="dev" class="dev"><summary>Settings</summary>
+      <div class="grid">
+        <label>Encoder <select id="enc"><option value="auto" selected>Auto</option><option value="gpu">GPU</option><option value="wasm">CPU</option></select></label>
+      </div>
+      <fieldset id="f-focus"><legend>Code</legend>
+        <div class="grid">
+          <!-- ai: blocks a frame, a slider of whole blocks 1 to 128 (8 sub-channels a step), its auto box above it; #subch the value the page reads ("auto" or the sub-channels), the slider and the box views over it (send.mjs) -->
+          <div class="blocks"><label class="inline"><input id="subchAuto" type="checkbox" data-view> Auto</label><span class="row"><span>Blocks a frame</span><span id="blocksOut">60 blocks, 28.1 KB</span></span><input id="blocks" type="range" min="1" max="128" step="1" value="60" data-view aria-label="blocks a frame"><input id="subch" type="hidden" value="480"></div>
+          <!-- ai: the display rate, 1 to 60, which the word states -->
+          <div class="blocks"><span class="row"><span>Pictures a second</span><span id="fpsOut">60 a second</span></span><input id="fps" type="range" min="1" max="60" step="1" value="60" aria-label="pictures a second"></div>
+          <!-- ai: the code's size, a share of <main>'s room, 25 to 100% (send.mjs sizeOf), so the code can be kept off a monitor's edges -->
+          <div class="blocks"><span class="row"><span>Size</span><span id="sizeOut">100%</span></span><input id="size" type="range" min="25" max="100" step="1" value="100" aria-label="size"></div>
+          <!-- ai: the space between two codes, 0 to 64 modules (send.mjs gapOf), shown with two codes only -->
+          <div class="blocks" id="gapRow" hidden><span class="row"><span>Gap</span><span id="gapOut">12 modules</span></span><input id="gap" type="range" min="0" max="64" step="1" value="12" aria-label="gap"></div>
+          <label>Ring <select id="ring"><option value="auto" selected>Auto</option><option value="0">32</option><option value="1">64</option><option value="2">96</option><option value="3">128</option></select></label>
+          <!-- ai: two codes side by side for the app's 2:1 crop, the option saying browsers cannot decode 2 codes (2026-09-28) -->
+          <label>Codes <select id="codes"><option value="1" selected>One</option><option value="2">Two (browsers cannot decode 2 codes)</option></select></label>
+        </div>
+      </fieldset>
+    </details>
+    <details id="logs" class="dev"><summary>Developer Tools</summary>
+      <div class="grid">
+        <label>Payload <select id="payload"><option value="file" selected>File</option><option value="test">Test stream</option></select></label>
+      </div>
+      <pre id="tx" class="readout"></pre>
+    </details>
+      <div class="item about"><span class="body"><span class="t">About</span><span id="about" class="s"></span></span></div>
+    </section>
+    <script>
+    // ai: Saved state before the first paint (2026-10-02): the modules run after the page is
+    // ai: drawn (send.mjs awaits the codec first), so Settings and Advanced opened, and the kept values moved, a moment
+    // ai: after the page showed, the chevrons turning as they did. ui.mjs remember and persist's rules, the same keys; the
+    // ai: blocks slider, its auto box and the two labels drawn from the values as send.mjs showBlocks and showFps draw
+    // ai: them. The modules run them again later and change nothing.
+    (() => { try {
+      const ls = localStorage, $ = (id) => document.getElementById(id);
+      for (const id of ["dev", "logs"]) { const v = ls.getItem("send:" + id); if (v !== null) $(id).open = v === "1"; }
+      if (ls.getItem("send:collapsed") === "1") document.body.classList.add("collapsed");
+      for (const el of document.querySelectorAll("#dev select, #dev input, #logs select")) {
+        if (el.type === "file" || "view" in el.dataset) continue;
+        const v = ls.getItem("send:" + el.id);
+        if (v !== null && (el.tagName !== "SELECT" || [...el.options].some((o) => o.value === v))) el.value = v;
+      }
+      const s = +$("subch").value, b = s >= 8 && s <= 1024 && s % 8 === 0 ? s / 8 : 0;
+      $("subchAuto").checked = !b;
+      if (b) $("blocks").value = String(b);
+      $("blocksOut").textContent = b ? `${b} block${b === 1 ? "" : "s"}, ${(b * 469 / 1000).toFixed(1)} KB` : "";
+      $("fpsOut").textContent = `${+$("fps").value} a second`;
+      $("sizeOut").textContent = `${+$("size").value}%`;
+      $("gapOut").textContent = `${+$("gap").value} modules`;
+      $("gapRow").hidden = $("codes").value !== "2";
+    } catch {} })();
+    </script>
+    </div>
+  </div>
+  <main><canvas id="bgc"></canvas><canvas id="c"></canvas><canvas id="cg" hidden></canvas><p id="hint" class="hint">Choose a file</p><input id="file" type="file" class="sr-only" aria-label="Choose a file"></main>
+</div>
+<script type="module" src="send.mjs"></script>

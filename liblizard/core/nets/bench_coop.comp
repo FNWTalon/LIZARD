@@ -1,0 +1,22 @@
+// ai: The matrix units' ceiling on a device: each subgroup multiplies an int8 64 x 32 A by
+// ai: a 32 x N B into an int32 accumulator R times in registers, no memory in the loop; the result stored once so the
+// ai: work is kept. MACs a dispatch = groups x subgroups x R x 64 x N x 32.
+#version 450
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
+layout(local_size_x = 64) in;
+layout(constant_id = 0) const uint N = 32;
+layout(constant_id = 1) const uint R = 256;
+layout(set = 0, binding = 0) buffer Src { int8_t s[]; };
+layout(set = 0, binding = 1) buffer Dst { int32_t d[]; };
+void main() {
+  coopmat<int8_t, gl_ScopeSubgroup, 64, 32, gl_MatrixUseA> a;
+  coopmat<int8_t, gl_ScopeSubgroup, 32, N, gl_MatrixUseB> b;
+  coopmat<int32_t, gl_ScopeSubgroup, 64, N, gl_MatrixUseAccumulator> c = coopmat<int32_t, gl_ScopeSubgroup, 64, N, gl_MatrixUseAccumulator>(0);
+  coopMatLoad(a, s, 0, 32, gl_CooperativeMatrixLayoutRowMajor);
+  coopMatLoad(b, s, 2048, N, gl_CooperativeMatrixLayoutRowMajor);
+  for (uint r = 0; r < R; r++) c = coopMatMulAdd(a, b, c);
+  coopMatStore(c, d, gl_WorkGroupID.x * 64 * N, N, gl_CooperativeMatrixLayoutRowMajor);
+}

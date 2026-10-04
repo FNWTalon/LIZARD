@@ -1,0 +1,41 @@
+# What is published: liblizard/, lizard-web/, lizard-android/, lizard-desktop/ and research/SPEC.md. The lab's own
+# folders (measurements, training, recordings, the running log, retired arms) and the per-folder notes stay local.
+/archive/
+/scripts/
+/research/*
+!/research/SPEC.md
+/.vscode/
+CLAUDE.md
+
+# Build outputs: each part's build makes them again (README.md, Building); every folder named build is one
+build/
+.cxx/
+/liblizard/build-native/
+/liblizard/out/
+/liblizard/.tools/
+/liblizard/gen/wgsl2spv/target/
+/liblizard/bindings/wasm/dist/
+/lizard-web/app/
+/lizard-android/.stash/
+.gradle/
+.kotlin/
+local.properties
+node_modules/
+__pycache__/
+*.pyc
+
+# The rig's self-signed certificate and key (lizard-web/server.mjs makes them)
+/lizard-web/.cert/
+
+# Lab tools for one phone and one desk: they need the lab's recordings, scripts/ or a rig unit
+/server.sh
+/lizard-web/rig.sh
+/lizard-web/check_gpu_worker.mjs
+/lizard-web/check_gpu_worker.html
+/lizard-android/tools/phone/
+/liblizard/test/neon_check.sh
+/liblizard/test/neon_frames.mjs
+
+# Leftovers of patch
+*.orig
+*.rej

@@ -1,0 +1,18 @@
+// ai: The packed int8 dot product's ceiling (today's int8 kernels, dot4I8Packed): each lane 8 independent chains of R
+// ai: dot products of 4 int8 pairs. MACs a dispatch = invocations x 8 x R x 4.
+#version 450
+#extension GL_EXT_integer_dot_product : require
+layout(local_size_x = 64) in;
+layout(constant_id = 1) const uint R = 256;
+layout(set = 0, binding = 0) buffer Src { int s[]; };
+layout(set = 0, binding = 1) buffer Dst { int d[]; };
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  int x = s[i & 255u], y = s[(i + 7u) & 255u];
+  int a0 = 0, a1 = 1, a2 = 2, a3 = 3, a4 = 4, a5 = 5, a6 = 6, a7 = 7;
+  for (uint r = 0; r < R; r++) {
+    a0 = dotPacked4x8AccSatEXT(x, y, a0); a1 = dotPacked4x8AccSatEXT(x ^ 1, y, a1); a2 = dotPacked4x8AccSatEXT(x ^ 2, y, a2); a3 = dotPacked4x8AccSatEXT(x ^ 3, y, a3);
+    a4 = dotPacked4x8AccSatEXT(x, y ^ 1, a4); a5 = dotPacked4x8AccSatEXT(x, y ^ 2, a5); a6 = dotPacked4x8AccSatEXT(x, y ^ 3, a6); a7 = dotPacked4x8AccSatEXT(x ^ 5, y, a7);
+  }
+  d[i] = a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7;
+}
