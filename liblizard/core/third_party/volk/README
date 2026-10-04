@@ -1,0 +1,3 @@
+volk (https://github.com/zeux/volk), tag vulkan-sdk-1.3.275.0, the headers' version (VK_HEADER_VERSION 275): Vulkan loaded
+at run time (wg/wg.h), so the library loads where there is no Vulkan and Windows and macOS need no import library.
+MIT, LICENSE.md. Not edited.

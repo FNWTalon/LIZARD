@@ -1,0 +1,20 @@
+// ai: The f16 matrix units' ceiling: as bench_coop.comp with f16 A and B into an f16 accumulator (the Adreno 840
+// ai: offers no f32 accumulator for f16), K 16.
+#version 450
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+layout(local_size_x = 64) in;
+layout(constant_id = 0) const uint N = 32;
+layout(constant_id = 1) const uint R = 256;
+layout(set = 0, binding = 0) buffer Src { float16_t s[]; };
+layout(set = 0, binding = 1) buffer Dst { float16_t d[]; };
+void main() {
+  coopmat<float16_t, gl_ScopeSubgroup, 64, 16, gl_MatrixUseA> a;
+  coopmat<float16_t, gl_ScopeSubgroup, 16, N, gl_MatrixUseB> b;
+  coopmat<float16_t, gl_ScopeSubgroup, 64, N, gl_MatrixUseAccumulator> c = coopmat<float16_t, gl_ScopeSubgroup, 64, N, gl_MatrixUseAccumulator>(0.0);
+  coopMatLoad(a, s, 0, 16, gl_CooperativeMatrixLayoutRowMajor);
+  coopMatLoad(b, s, 1024, N, gl_CooperativeMatrixLayoutRowMajor);
+  for (uint r = 0; r < R; r++) c = coopMatMulAdd(a, b, c);
+  coopMatStore(c, d, gl_WorkGroupID.x * 64 * N, N, gl_CooperativeMatrixLayoutRowMajor);
+}

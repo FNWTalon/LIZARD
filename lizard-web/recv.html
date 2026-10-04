@@ -1,0 +1,105 @@
+<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Lizard receiver</title>
+<!-- ai: the page's own icon, so the browser asks no server for /favicon.ico (a 404 and a console error on a static host) -->
+<link rel="icon" href="icon.svg" type="image/svg+xml"><link rel="stylesheet" href="ui.css">
+<style>
+  body{padding:0 16px 16px}
+  .bar{margin-bottom:12px}
+  /* What is looked at is #shot, the canvas whose pixels go to the decoder, not the camera element (recv.mjs, blit).
+     The video stays underneath at full size, occluded but composited: requestVideoFrameCallback fires on
+     presentation, and display: none, visibility: hidden or a 1 px box stop the frame loop on some engine.
+     recv.mjs sets #view's aspect ratio and width from the crop. Under F0 (#view.f0, recv.mjs preview) the canvas is
+     hidden and the video, cropped by the box's ratio, is what is looked at: the decoder takes that crop on the GPU. */
+  /* ai: svh where the browser has it, so a phone's address bar showing does not push the button below the fold. */
+  #view{position:relative;width:min(100%,calc(55vh * var(--ratio,1)));width:min(100%,calc(55svh * var(--ratio,1)));aspect-ratio:var(--ratio,1);margin:0 auto;overflow:hidden;background:var(--soft)}
+  /* ai: square corners (2026-10-02; 12 px rounded before) */
+  #view video,#view canvas{position:absolute;inset:0;display:block;width:100%;height:100%}
+  #view video{object-fit:cover}
+  #view.f0 canvas{visibility:hidden}
+  /* contain: a bitmap of another shape than the box (the instant after the crop is switched) is letterboxed, never stretched. The background still covers the video. */
+  #view canvas{background:var(--soft);object-fit:contain}
+  /* ai: over every canvas, the GL grab's too (recv.mjs appends it after this) */
+  #idle{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;margin:0}
+  /* ai: over the camera until a decoder answers its first frame (recv.mjs showState): opaque, so the camera is not shown
+     while nothing reads it; the video keeps playing beneath (the frame loop needs it composited) */
+  #loading{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;gap:.75rem;align-items:center;justify-content:center;margin:0;background:var(--soft);color:var(--muted)}
+  #loading .spin{width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--fg);border-radius:50%;animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){#loading .spin{animation:none}}
+  #side{max-width:40rem;margin:0 auto;padding-top:8px}
+  /* ai: The actions under the state, as the app's (2026-10-01): Start or Stop camera, and once a file is in, Open (the
+     solid one), Save, Share and Receive again beside it in the same row (#deliver's buttons flow into it). */
+  #top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 4px}
+  #go{flex:1 1 12rem}
+  #deliver{display:contents}
+  /* ai: a long file name wraps inside its button rather than widening the page */
+  #deliver>*{max-width:100%;overflow-wrap:anywhere}
+  /* ai: the verdict and each flag on a line of its own (recv.mjs joins them with newlines) */
+  #why{white-space:pre-line}
+  #why:empty,#nums:empty{margin:0}
+  #state:empty{display:none}
+  /* ai: one menu a row: an option's text is its menu's label, and two to a row cut it off */
+  details.dev .grid{grid-template-columns:1fr}
+  details.dev select{width:100%}
+  /* ai: Landscape and desktop (2026-10-02): the sender's layout, a 20rem column on the left (the bar, then the state, the
+     actions and Settings, scrolling on its own under the bar), a hairline on its right, and the camera on the right, as
+     big as the rest of the screen allows and centred there. dvh where the browser has it, so a phone's collapsing address
+     bar does not push the square off the bottom. */
+  @media (orientation:landscape){
+    body{display:grid;grid-template-columns:var(--side) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);height:100vh;height:100dvh;overflow:hidden;padding:0}
+    .bar{grid-column:1;grid-row:1;margin:0;padding:0 16px;border-right:1px solid var(--line)}
+    #side{grid-column:1;grid-row:2;overflow-y:auto;min-height:0;max-width:none;margin:0;padding:8px 16px 16px;border-right:1px solid var(--line)}
+    #view{grid-column:2;grid-row:1 / span 2;align-self:center;justify-self:center;margin:16px;
+      width:min(calc((100vh - 32px) * var(--ratio,1)),calc(100vw - var(--side) - 32px));width:min(calc((100dvh - 32px) * var(--ratio,1)),calc(100vw - var(--side) - 32px))}
+    body.collapsed #side{display:none}
+    /* ai: the collapsed rail (ui.css .rail; recv.mjs showState fills it) in the column's place, the hairline on its right */
+    body.collapsed #rail{grid-column:1;grid-row:2;border-right:1px solid var(--line)}
+  }
+</style>
+<header class="bar"><a class="btn icon back" href="index.html" title="Home"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg><span class="sr-only">Home</span></a><h1>Receive</h1><span class="grow"></span><a id="swap" class="btn text" href="send.html" title="Switch to the sender page"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3 4 7l4 4M4 7h16M16 21l4-4-4-4M20 17H4"/></svg>Sender</a><button id="collapse" class="btn icon collapse" type="button" title="Hide sidebar" aria-expanded="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg><span class="sr-only">Sidebar</span></button></header>
+<div id="view"><video id="v" playsinline muted></video><canvas id="shot" width="0" height="0"></canvas><p id="idle" class="hint"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M1 1l22 22M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34m-7.72-2.06a4 4 0 1 1-5.56-5.56"/></svg>Camera off</p><div id="loading" class="hint" aria-hidden="true" hidden><span class="spin"></span><span>Getting ready</span></div></div>
+<div id="rail" class="rail"><button id="railCam" class="btn icon" type="button" title="Start camera"><svg class="i pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg><svg class="i play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3l14 9-14 9z"/></svg></button><span id="railRate" class="rate" aria-live="off"></span><button id="railDone" class="btn icon done" type="button" title="Open" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14M22 4 12 14.01l-3-3"/></svg></button></div>
+<div id="side">
+  <p id="state" class="status" role="status" aria-live="polite"></p>
+  <div id="meter" class="meter" role="progressbar" aria-label="File received" aria-valuemin="0" aria-valuemax="100" hidden><span></span></div>
+  <p id="nums" class="nums"></p>
+  <p id="why" class="why"></p>
+  <!-- ai: Start or Stop camera, and the received file (2026-10-01): Open the one solid button, Share where the browser shares files, and Receive again (Clear until then): the file stays in the received files -->
+  <div id="top"><button id="go" class="primary">Start camera</button><div id="deliver" hidden><button id="open" class="primary">Open</button><a id="save" class="btn" download>Save</a><button id="share" hidden>Share</button><button id="clear" class="text">Receive again</button></div></div>
+  <section id="settings" class="settings">
+    <!-- ai: Settings and Advanced, two rows that open (2026-10-02): Settings (#dev, its open state and every menu in it
+         kept) holds the decoder, the camera and the GPU decoder's crop; Advanced (#logs) the lab line and the readouts;
+         About the last row. -->
+  <details class="dev" id="dev"><summary>Settings</summary>
+    <!-- ai: the decoder, the user's to switch (2026-10-01): auto takes the GPU where WebGPU runs on a real adapter, else the CPU pool (recv.mjs decoderChoice) -->
+    <!-- ai: every control a labelled field, its options bare (2026-10-02; the Camera and GPU decoder groups and their
+         prefixed options, "camera: auto (rear)", "rate: 60 first", before) -->
+    <div class="grid">
+      <label>Decoder <select id="dec"><option value="auto" selected>Auto</option><option value="gpu">GPU</option><option value="cpu">CPU</option></select></label>
+      <label>Camera <select id="cam"><option value="auto" selected>Auto</option></select></label>
+      <label>Resolution <select id="res"><option value="1280x720">1280 x 720</option><option value="1920x1080" selected>1920 x 1080</option><option value="2560x1440">2560 x 1440</option><option value="3840x2160">3840 x 2160</option></select></label>
+      <label>Frame rate <select id="fps"><option value="auto" selected>Auto</option><option value="30">30</option><option value="60">60</option></select></label>
+      <label>GPU crop <select id="gcrop"><option value="full" selected>Full square</option><option value="tracked">Tracked</option></select></label>
+    </div>
+  </details>
+  <!-- ai: Developer Tools ("Advanced" until 2026-10-03): Record 300 frames (recv.mjs startRec, the tar of raw luma a
+       replay reads; a URL's ?rec alone since 2026-10-01), then the lab line and the readouts -->
+  <details class="dev" id="logs"><summary>Developer Tools</summary>
+    <button id="rec" type="button" disabled>Record 300 frames</button>
+    <p id="lab" class="lab"></p>
+    <pre id="cfg" class="readout">light: no format word read yet</pre><pre id="out" class="readout"></pre><pre id="file" class="readout"></pre><pre id="run" class="readout"></pre>
+  </details>
+    <div class="item about"><span class="body"><span class="t">About</span><span id="about" class="s"></span></span></div>
+  </section>
+  <script>
+  // ai: Saved state before the first paint (2026-10-02): Settings and Advanced open and the kept
+  // ai: menus set as ui.mjs remember and persist set them, with the same keys, before the module runs and the page is
+  // ai: drawn (the chevrons turned on load otherwise). A camera kept by id waits for its option (recv.mjs restoreSaved).
+  (() => { try {
+    const ls = localStorage, $ = (id) => document.getElementById(id);
+    for (const id of ["dev", "logs"]) { const v = ls.getItem("recv:" + id); if (v !== null) $(id).open = v === "1"; }
+    if (ls.getItem("recv:collapsed") === "1") document.body.classList.add("collapsed");
+    for (const el of $("dev").querySelectorAll("select")) { const v = ls.getItem("recv:" + el.id); if (v !== null && [...el.options].some((o) => o.value === v)) el.value = v; }
+  } catch {} })();
+  </script>
+</div>
+<script type="module" src="recv.mjs"></script>

@@ -1,0 +1,12 @@
+# ai: gen.mjs's WGSL to SPIR-V: naga as a library, with the writer options naga-cli does not expose (main.rs).
+[package]
+name = "wgsl2spv"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+naga = { version = "=30.0.1", features = ["wgsl-in", "spv-out"] }
+
+[profile.release]
+opt-level = 3

@@ -1,0 +1,5 @@
+// ai: cnn-v3, the cascade's small net (front.twins.small): the compile unit of cls.glsl (liblizard/gen/nets_cls.mjs
+// ai: builds it with the packed weights' offsets as -D defines).
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "cls.glsl"

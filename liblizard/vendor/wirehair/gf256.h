@@ -1,0 +1,441 @@
+/** \file
+    \brief GF(256) Main C API Header
+    \copyright Copyright (c) 2017 Christopher A. Taylor.  All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice,
+      this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright notice,
+      this list of conditions and the following disclaimer in the documentation
+      and/or other materials provided with the distribution.
+    * Neither the name of GF256 nor the names of its contributors may be
+      used to endorse or promote products derived from this software without
+      specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+    AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+    ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+    LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+    CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+    SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+    INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+    CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+    ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+*/
+
+#ifndef CAT_GF256_H
+#define CAT_GF256_H
+
+/** \page GF256 GF(256) Math Module
+
+    This module provides efficient implementations of bulk
+    GF(2^^8) math operations over memory buffers.
+
+    Addition is done over the base field in GF(2) meaning
+    that addition is XOR between memory buffers.
+
+    Multiplication is performed using table lookups via
+    SIMD instructions.  This is somewhat slower than XOR,
+    but fast enough to not become a major bottleneck when
+    used sparingly.
+*/
+
+#include <stdint.h> // uint32_t etc
+#include <cstring> // memcpy, memset
+
+/// Library header version
+#define GF256_VERSION 2
+
+//------------------------------------------------------------------------------
+// Platform/Architecture
+
+// The optimized non-ARM implementation requires SSE2.  Treat every other
+// target (including baseline i686 and less common RISC architectures) as a
+// portable scalar target instead of assuming that "not ARM" means x86/SSE2.
+#if defined(ANDROID) || defined(IOS)
+    #define GF256_TARGET_MOBILE
+#elif defined(__x86_64__) || defined(_M_X64) || defined(_M_AMD64) || \
+    (defined(__i386__) && defined(__SSE2__)) || \
+    (defined(_M_IX86) && defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+    #define GF256_TARGET_X86_SIMD
+#else
+    #define GF256_TARGET_MOBILE
+#endif
+
+// Linux ARM runtime feature probing uses ELF auxiliary vectors.  Do not infer
+// Linux merely from the ARM ISA: Apple arm64 has NEON but no Linux headers.
+#if defined(__linux__) && \
+    (defined(__arm__) || defined(__aarch64__) || defined(__ARM_ARCH) || \
+     defined(__ARM_NEON) || defined(__ARM_NEON__))
+    #define LINUX_ARM
+#endif
+
+#if defined(__AVX2__) && (!defined (_MSC_VER) || _MSC_VER >= 1900)
+    #define GF256_TRY_AVX2 /* 256-bit */
+    #include <immintrin.h>
+    #define GF256_ALIGN_BYTES 32
+# if (defined(__GNUC__) || defined(__clang__)) && \
+     (defined(__i386__) || defined(__x86_64__)) && \
+     defined(GF256_TARGET_X86_SIMD)
+    // Native AVX2 builds still need runtime-gated AVX-512 helpers.  Without
+    // this definition -march=native bypasses the WH2 wide-XOR path and can be
+    // substantially slower than the portable runtime-dispatch build.
+    #define GF256_TRY_TARGET_AVX512
+    #define GF256_AVX512_TARGET __attribute__((target("avx512f")))
+# endif
+#else // __AVX2__
+    #define GF256_ALIGN_BYTES 16
+# if (defined(__GNUC__) || defined(__clang__)) && \
+     (defined(__i386__) || defined(__x86_64__)) && \
+     defined(GF256_TARGET_X86_SIMD)
+    // Keep gf256_ctx at its portable layout while allowing individually
+    // target-qualified AVX2/AVX-512 helpers to reuse the canonical 128-bit
+    // tables.
+    #define GF256_TRY_TARGET_AVX2
+    #define GF256_AVX2_TARGET __attribute__((target("avx2")))
+    #define GF256_TRY_TARGET_AVX512
+    #define GF256_AVX512_TARGET __attribute__((target("avx512f")))
+    #include <immintrin.h>
+# endif
+#endif // __AVX2__
+
+#if !defined(GF256_AVX2_TARGET)
+    #define GF256_AVX2_TARGET
+#endif
+#if !defined(GF256_AVX512_TARGET)
+    #define GF256_AVX512_TARGET
+#endif
+
+#if defined(GF256_TRY_TARGET_AVX2) || \
+    (defined(GF256_TRY_AVX2) && defined(GF256_TRY_TARGET_AVX512))
+    #define GF256_TRY_WIDE_XOR
+#endif
+
+// Ablation S1 (wirehair-cqu): GFNI gf2p8affineqb constant-multiply for poly 0x14D.
+// Enabled when built with -DWH_GFNI=1 on a target that exposes GFNI+AVX512F/BW.
+#if defined(WH_GFNI) && (WH_GFNI+0) && defined(__GFNI__) && defined(__AVX512F__) && defined(__AVX512BW__)
+    #define GF256_TRY_GFNI /* 512-bit single-instruction GF(256) multiply */
+    #include <immintrin.h>
+#endif
+
+// Ablation S2 (wirehair-1sa): AVX-512 (ZMM) widening of the bulk XOR kernels.
+// Enabled when built with -DWH_AVX512=1 on a target that exposes AVX512F.
+#if defined(WH_AVX512) && (WH_AVX512+0) && defined(__AVX512F__)
+    #define GF256_TRY_AVX512 /* 512-bit XOR */
+    #include <immintrin.h>
+#endif
+
+#if !defined(GF256_TARGET_MOBILE)
+    #include <emmintrin.h> // SSE2
+# if defined(__SSSE3__)
+    #define GF256_TRY_SSSE3
+    #include <tmmintrin.h> // SSSE3: _mm_shuffle_epi8
+# elif (defined(__GNUC__) || defined(__clang__)) && \
+       (defined(__i386__) || defined(__x86_64__))
+    // GCC and Clang can safely emit an SSSE3-only helper inside an otherwise
+    // portable SSE2 translation unit.  Runtime CPUID dispatch in gf256.cpp
+    // guarantees that these helpers are never entered on unsupported CPUs.
+    #define GF256_TRY_TARGET_SSSE3
+    #define GF256_SSSE3_TARGET __attribute__((target("ssse3")))
+    #include <tmmintrin.h> // SSSE3: _mm_shuffle_epi8
+# endif
+#endif // GF256_TARGET_MOBILE
+
+#if !defined(GF256_SSSE3_TARGET)
+    #define GF256_SSSE3_TARGET
+#endif
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+    #include <arm_neon.h>
+    #define GF256_TRY_NEON
+#endif
+
+// Compiler-specific 128-bit SIMD register keyword
+#if defined(GF256_TARGET_MOBILE)
+#if defined(GF256_TRY_NEON)
+    #define GF256_M128 uint8x16_t
+#else
+    #define GF256_M128 uint64_t
+#endif // GF256_TRY_NEON
+#else // GF256_TARGET_MOBILE
+    #define GF256_M128 __m128i
+#endif // GF256_TARGET_MOBILE
+
+// Compiler-specific 256-bit SIMD register keyword
+#ifdef GF256_TRY_AVX2
+    #define GF256_M256 __m256i
+#endif
+
+// Compiler-specific C++11 restrict keyword
+#define GF256_RESTRICT __restrict
+
+// Compiler-specific branch prediction hints
+#if defined(__GNUC__) || defined(__clang__)
+    #define GF256_LIKELY(x)   __builtin_expect(!!(x), 1)
+    #define GF256_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+    #define GF256_LIKELY(x)   (x)
+    #define GF256_UNLIKELY(x) (x)
+#endif
+
+// Compiler-specific force inline keyword
+#ifdef _MSC_VER
+    #define GF256_FORCE_INLINE inline __forceinline
+#else
+    #define GF256_FORCE_INLINE inline __attribute__((always_inline))
+#endif
+
+// Compiler-specific alignment keyword
+// Note: Alignment only matters for ARM NEON where it should be 16
+#ifdef _MSC_VER
+    #define GF256_ALIGNED __declspec(align(GF256_ALIGN_BYTES))
+#else // _MSC_VER
+    #define GF256_ALIGNED __attribute__((aligned(GF256_ALIGN_BYTES)))
+#endif // _MSC_VER
+
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
+
+
+//------------------------------------------------------------------------------
+// Instrumentation (Task 6a, wirehair-6ch.1): per-op-type byte/call counters.
+// Thread-local; WH_COUNT-gated so normal builds pay nothing. Index:
+// 0=add 1=add2 2=addset 3=mul 4=muladd 5=memswap.
+#ifdef WH_COUNT
+extern uint64_t gf256_count_bytes(int op);
+extern uint64_t gf256_count_calls(int op);
+extern void     gf256_count_reset(void);
+#endif
+
+
+//------------------------------------------------------------------------------
+// Portability
+
+/// Swap two memory buffers in-place
+extern void gf256_memswap(void * GF256_RESTRICT vx, void * GF256_RESTRICT vy, int bytes);
+
+
+//------------------------------------------------------------------------------
+// GF(256) Context
+
+#ifdef _MSC_VER
+    #pragma warning(push)
+    #pragma warning(disable: 4324) // warning C4324: 'gf256_ctx' : structure was padded due to __declspec(align())
+#endif // _MSC_VER
+
+/// The context object stores tables required to perform library calculations
+struct gf256_ctx
+{
+    /// We require memory to be aligned since the SIMD instructions benefit from
+    /// or require aligned accesses to the table data.
+    struct
+    {
+        GF256_ALIGNED GF256_M128 TABLE_LO_Y[256];
+        GF256_ALIGNED GF256_M128 TABLE_HI_Y[256];
+    } MM128;
+#ifdef GF256_TRY_AVX2
+    struct
+    {
+        GF256_ALIGNED GF256_M256 TABLE_LO_Y[256];
+        GF256_ALIGNED GF256_M256 TABLE_HI_Y[256];
+    } MM256;
+#endif // GF256_TRY_AVX2
+
+#ifdef GF256_TRY_GFNI
+    /// 8x8 GF(2)-affine matrix (one qword) per constant multiplier, for vgf2p8affineqb.
+    /// GFNI_MUL_MATRIX[c] applied to byte x yields gf256_mul(x, c) under poly 0x14D.
+    GF256_ALIGNED uint64_t GFNI_MUL_MATRIX[256];
+#endif // GF256_TRY_GFNI
+
+    /// Mul/Div/Inv/Sqr tables
+    uint8_t GF256_MUL_TABLE[256 * 256];
+    uint8_t GF256_DIV_TABLE[256 * 256];
+    uint8_t GF256_INV_TABLE[256];
+    uint8_t GF256_SQR_TABLE[256];
+
+    /// Log/Exp tables
+    uint16_t GF256_LOG_TABLE[256];
+    uint8_t GF256_EXP_TABLE[512 * 2 + 1];
+
+    /// Polynomial used
+    unsigned Polynomial;
+};
+
+#ifdef _MSC_VER
+    #pragma warning(pop)
+#endif // _MSC_VER
+
+extern gf256_ctx GF256Ctx;
+
+
+//------------------------------------------------------------------------------
+// Initialization
+
+/// Injectable x86 capability snapshot used by runtime dispatch tests.
+typedef struct gf256_x86_cpu_snapshot_t
+{
+    uint32_t MaxBasicLeaf;
+    uint32_t Leaf1ECX;
+    uint32_t Leaf7EBX;
+    uint32_t Leaf7ECX;
+    uint64_t XCR0;
+} gf256_x86_cpu_snapshot;
+
+/// Legal x86 dispatch choices after applying OSXSAVE/XCR0 requirements.
+typedef struct gf256_x86_cpu_features_t
+{
+    int SSSE3;
+    int AVX2;
+    int GFNI;
+    int AVX512;
+} gf256_x86_cpu_features;
+
+/// Pure capability selector.  It never executes CPUID or XGETBV.
+extern void gf256_select_x86_cpu_features(
+    const gf256_x86_cpu_snapshot* snapshot,
+    gf256_x86_cpu_features* features);
+
+/// Report the kernels selected for the current process build and host.
+extern void gf256_get_active_x86_cpu_features(
+    gf256_x86_cpu_features* features);
+
+/**
+    Initialize a context, filling in the tables.
+    
+    Thread-safety / Usage Notes:
+    
+    It is safe to call gf256_init() concurrently.  Initialization runs once and
+    publishes a cached success or permanent platform/self-test failure.  A
+    version mismatch affects only that caller and does not poison a later call
+    with the correct version.
+    
+    The gf256_ctx object must be aligned to 16 byte boundary.
+    Simply tag the object with GF256_ALIGNED to achieve this.
+    
+    Example:
+       static GF256_ALIGNED gf256_ctx TheGF256Context;
+       gf256_init(&TheGF256Context, 0);
+    
+    Returns 0 on success and other values on failure.
+*/
+extern int gf256_init_(int version);
+#define gf256_init() gf256_init_(GF256_VERSION)
+
+
+//------------------------------------------------------------------------------
+// Math Operations
+
+/// return x + y
+static GF256_FORCE_INLINE uint8_t gf256_add(uint8_t x, uint8_t y)
+{
+    return (uint8_t)(x ^ y);
+}
+
+/// return x * y
+/// For repeated multiplication by a constant, it is faster to put the constant in y.
+static GF256_FORCE_INLINE uint8_t gf256_mul(uint8_t x, uint8_t y)
+{
+    return GF256Ctx.GF256_MUL_TABLE[((unsigned)y << 8) + x];
+}
+
+/// return x / y
+/// Memory-access optimized for constant divisors in y.
+static GF256_FORCE_INLINE uint8_t gf256_div(uint8_t x, uint8_t y)
+{
+    return GF256Ctx.GF256_DIV_TABLE[((unsigned)y << 8) + x];
+}
+
+/// return 1 / x
+static GF256_FORCE_INLINE uint8_t gf256_inv(uint8_t x)
+{
+    return GF256Ctx.GF256_INV_TABLE[x];
+}
+
+/// return x * x
+static GF256_FORCE_INLINE uint8_t gf256_sqr(uint8_t x)
+{
+    return GF256Ctx.GF256_SQR_TABLE[x];
+}
+
+
+//------------------------------------------------------------------------------
+// Bulk Memory Math Operations
+
+/// Performs "x[] += y[]" bulk memory XOR operation
+extern void gf256_add_mem(void * GF256_RESTRICT vx,
+                          const void * GF256_RESTRICT vy, int bytes);
+
+/// Performs "z[] += x[] + y[]" bulk memory operation
+extern void gf256_add2_mem(void * GF256_RESTRICT vz, const void * GF256_RESTRICT vx,
+                           const void * GF256_RESTRICT vy, int bytes);
+
+/// Performs "z[] += srcs[0][] + ... + srcs[src_count-1][]" bulk operation
+extern void gf256_add_multi_mem(void * GF256_RESTRICT vz,
+                                const void * const * GF256_RESTRICT vsrcs,
+                                int src_count, int bytes);
+
+/**
+    Select the runtime-wide fixed-source XOR kernel for the current thread.
+    Returns the previous selection so scoped internal callers can restore it.
+    Unsupported builds accept the call and always return zero.
+*/
+extern int gf256_set_thread_wide_xor(int enable);
+
+/// Performs "z[] = srcs[0][] + ... + srcs[src_count-1][]" bulk operation.
+/// Destination and source ranges must not overlap.  Non-positive source
+/// counts and byte lengths are no-ops.
+extern void gf256_addset_multi_mem(void * GF256_RESTRICT vz,
+                                   const void * const * GF256_RESTRICT vsrcs,
+                                   int src_count, int bytes);
+
+/// Performs "z[] = x[] + y[]" bulk memory operation
+extern void gf256_addset_mem(void * GF256_RESTRICT vz, const void * GF256_RESTRICT vx,
+                             const void * GF256_RESTRICT vy, int bytes);
+
+/// Performs "z[] = x[] * y" bulk memory operation.
+/// Unlike the other bulk operations, vz == vx (in-place) is supported, so
+/// these parameters must not be restrict-qualified.
+extern void gf256_mul_mem(void * vz,
+                          const void * vx, uint8_t y, int bytes);
+
+/// Performs "z[] += x[] * y" bulk memory operation
+extern void gf256_muladd_mem(void * GF256_RESTRICT vz, uint8_t y,
+                             const void * GF256_RESTRICT vx, int bytes);
+
+/**
+    Update several independent destinations from the same source block:
+    `destinations[j][] += source[] * scales[j]`.
+
+    The destination ranges must not overlap each other or the source range.
+    Fusing these updates reuses each source load and nibble split across the
+    constant multipliers.  Non-positive counts and byte lengths are no-ops.
+*/
+extern void gf256_muladd_multi_mem(
+    void * const * GF256_RESTRICT destinations,
+    const uint8_t * GF256_RESTRICT scales,
+    int destination_count,
+    const void * GF256_RESTRICT source,
+    int bytes);
+
+/// Performs "x[] /= y" bulk memory operation.  vz == vx is supported.
+static GF256_FORCE_INLINE void gf256_div_mem(void * vz,
+                                             const void * vx, uint8_t y, int bytes)
+{
+    // Multiply by inverse
+    gf256_mul_mem(vz, vx, y == 1 ? (uint8_t)1 : GF256Ctx.GF256_INV_TABLE[y], bytes);
+}
+
+
+//------------------------------------------------------------------------------
+// Misc Operations
+
+#ifdef __cplusplus
+}
+#endif // __cplusplus
+
+#endif // CAT_GF256_H

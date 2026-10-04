@@ -1,0 +1,16 @@
+// ai: The camera's frame into a ring layer: its Y at each pixel of the crop, read
+// ai: through the YCbCr sampler the host builds for the camera's format (RGB_IDENTITY: no model or range conversion,
+// ai: so G is the stored Y), nearest at the texel's centre, which is the byte itself, and stored into the ring's r8
+// ai: layer, which rounds it back to that byte. The web's F0 (liblizard/gpu/wgsl/ingest.mjs) converts RGB to luma; the
+// ai: camera's own Y is what the web's CPU path reads (plane 0 as is).
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 0) uniform sampler2D cam;
+layout(set = 0, binding = 1, r8) uniform writeonly image2DArray ring;
+layout(push_constant) uniform P { ivec2 origin; ivec2 size; vec2 inv; int layer; int pad; } p;
+void main() {
+  ivec2 q = ivec2(gl_GlobalInvocationID.xy);
+  if (q.x >= p.size.x || q.y >= p.size.y) return;
+  vec2 uv = (vec2(p.origin + q) + 0.5) * p.inv;
+  imageStore(ring, ivec3(q, p.layer), vec4(textureLod(cam, uv, 0.0).g));
+}

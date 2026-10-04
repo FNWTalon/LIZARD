@@ -1,0 +1,19 @@
+{
+  "name": "lizard",
+  "version": "0.1.0",
+  "description": "The Lizard code: a luminance-only animated barcode that carries a file from a screen to a camera",
+  "type": "module",
+  "main": "./index.mjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": { "types": "./index.d.ts", "default": "./index.mjs" },
+    "./package.json": "./package.json"
+  },
+  "files": ["index.mjs", "index.d.ts", "dist/lizard.mjs", "dist/lizard.wasm"],
+  "sideEffects": false,
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "cd ../.. && cmake --preset wasm && cmake --build --preset wasm",
+    "test": "node --test test/*.test.mjs"
+  }
+}

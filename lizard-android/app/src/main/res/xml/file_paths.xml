@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ai: What the FileProvider hands out (AndroidManifest.xml): the received files alone (Library.kt, filesDir/library). -->
+<paths>
+    <files-path name="library" path="library/" />
+</paths>

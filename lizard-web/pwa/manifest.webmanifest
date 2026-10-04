@@ -1,0 +1,24 @@
+{
+  "name": "Lizard",
+  "short_name": "Lizard",
+  "id": "./",
+  "lang": "en",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "description": "Send a file from one screen to another device's camera.",
+  "icons": [
+    {
+      "src": "./assets/lizard-web/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    { "name": "Receive", "url": "./recv.html?auto" },
+    { "name": "Send", "url": "./send.html" }
+  ]
+}

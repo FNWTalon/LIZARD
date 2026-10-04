@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ai: debug: cleartext allowed, for the rig's dev log over plain http on the LAN (lizard-web/server.mjs, port 8080) -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

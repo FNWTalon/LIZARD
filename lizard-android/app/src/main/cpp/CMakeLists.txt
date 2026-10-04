@@ -1,0 +1,32 @@
+# ai: libliz.so, the app's native side: jni.cpp over liblizard/core/rx/receiver.h. The receiver is the
+# ai: stub (receiver_stub.cpp, frames counted and released) while LIZ_STUB_RECEIVER is ON, else core's lizard_rx.
+cmake_minimum_required(VERSION 3.22)
+project(liz C CXX)
+option(LIZ_STUB_RECEIVER "link receiver_stub.cpp in place of core's lizard_rx" ON)
+set(CORE ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../liblizard/core)
+# ai: EXCLUDE_FROM_ALL: only what libliz links is built (not core's check tools)
+add_subdirectory(${CORE} core EXCLUDE_FROM_ALL)
+
+add_library(liz SHARED jni.cpp)
+target_compile_features(liz PRIVATE cxx_std_17)
+target_compile_options(liz PRIVATE -Wall -Wextra -Wno-unused-parameter)
+# ai: optimised in Gradle's debug variant too, as core is (liblizard/core/CMakeLists.txt, LIZ_O0)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT LIZ_O0)
+  target_compile_options(liz PRIVATE -O2)
+endif()
+target_include_directories(liz PRIVATE ${CORE}/rx)
+if(LIZ_STUB_RECEIVER)
+  target_sources(liz PRIVATE receiver_stub.cpp)
+else()
+  if(NOT TARGET lizard_rx)
+    message(FATAL_ERROR "LIZ_STUB_RECEIVER=OFF needs core's lizard_rx target (liblizard/core/CMakeLists.txt)")
+  endif()
+  target_link_libraries(liz PRIVATE lizard_rx)
+endif()
+# ai: android: AHardwareBuffer_fromHardwareBuffer; 16 KB pages (Android 15's devices load nothing aligned below them)
+# ai: the sender (liblizard/core/tx, 2026-10-01): the C on the CPU and the transfer's sending end, with either receiver
+target_link_libraries(liz PRIVATE lizard_tx)
+# ai: Save replays (liblizard/core/rx/replay.h, 2026-10-03), with either receiver
+target_link_libraries(liz PRIVATE lizard_replay)
+target_link_libraries(liz PRIVATE android log)
+target_link_options(liz PRIVATE -Wl,-z,max-page-size=16384)
