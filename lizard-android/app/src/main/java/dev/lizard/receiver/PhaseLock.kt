@@ -40,6 +40,17 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
     enum class Mode { Off, Hold, Scan, Track }
     // ai: r, rSd: the pilots' reading over the even blocks and its standard error; r2, r2Sd: over the odd (NaN: none)
     class Frame(val ts: Long, val blocks: Int, val found: Boolean, val r: Double = Double.NaN, val rSd: Double = Double.NaN, val r2: Double = Double.NaN, val r2Sd: Double = Double.NaN)
+    // ai: The lock's state for the stats row and a replay's meta (Engine.phaseState, MainActivity's poll; 2026-10-04): a
+    // ai: snapshot made on the engine's thread at each decision, read from any. `arm`: pilots or blocks; `what`: the
+    // ai: word line() uses (holds, placing, searching, resting, no frames yet); the newest estimate of the leaks (a
+    // ai: and b the shares of the pictures before and after in a capture, k what a capture of one picture reads, se
+    // ai: the error of a - b, n its frames; NaN with none); the gain (ms a unit of a - b) and the pace (us a second);
+    // ai: whether the hold stands; the edge of a flat top it stepped in from (1 early, -1 late, 0 none) and the top's
+    // ai: width (ms); the delays asked since the mode was set.
+    class State(val arm: String, val what: String, val a: Double, val b: Double, val k: Double, val se: Double, val n: Int,
+                val gain: Double, val pace: Double, val stood: Boolean, val edge: Int, val flatMs: Double, val delays: Int)
+    @Volatile var state: State? = null
+        private set
 
     private class Tally { var frames = 0; var short = 0; var blocks = 0L }
 
@@ -47,6 +58,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         private set
     private var waiting = false     // ai: a delay asked and not yet seen in a result
     private var delays = 0
+    private var delaysAll = 0       // ai: delays asked since the mode was set (State)
     private var now = 0L            // ai: the newest capture's timestamp
     private var seen = 0L           // ai: the newest frame of the series already counted, ns
     private var plain = 0L          // ai: the camera's own frame: the last interval between two frames not delayed
@@ -107,6 +119,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
     private val fitS = DoubleArray(5)
     private var pairs = 0           // ai: the pairs of readings in that fit
     private var balanced = false    // ai: this hold has said it stands (a line for the log, once a hold)
+    private var lastLeak: Leak? = null   // ai: the newest estimate of the leaks (State, line)
     // ai: a top that is flat (a capture there holds neither neighbour): the edge the hold last stepped in from
     // ai: (1: the early edge, so the step was later; -1: the late; 0: none), how far in it stepped (ns) and the
     // ai: frame it did so at; half the top's width where a step in from one edge met the other (0: not known)
@@ -134,6 +147,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         window.clear(); since = 0; level = 0.0; wide = 0; sure = Double.MAX_VALUE; anchor = 0.0; proven = false; lastAt = 0
         flashing = false; plainly = false; lately.clear()
         byLeaks = false; gain = GAIN_MS; prevT = 0; fitS.fill(0.0); pairs = 0; edgeDir = 0; flatHalf = 0; stood = false; looked = 0; foundT = 0
+        lastLeak = null; state = null; delaysAll = 0
         say(when (m) {
             Mode.Off -> "phase: off"
             Mode.Hold -> "phase: held at %.3f ms of %.3f".format(base / 1e6, gridNs / 1e6)
@@ -151,6 +165,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         out = 0; searching = false; sought.clear(); fails = 0; line = -1; line0 = 0; move = false; moving = false; window.clear(); since = 0; level = 0.0
         flashing = false; plainly = false; lately.clear()
         byLeaks = false; prevT = 0; edgeDir = 0; stood = false; looked = 0; foundT = 0
+        lastLeak = null; state = null
         if (mode == Mode.Scan) { tally.clear(); point = -1; start = -1; base = -1 }
     }
 
@@ -184,7 +199,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
             val err = wrap(tsNs % gridNs - (if (point >= 0) point else base))
             us = if (err < -bandNs) -err / 1000 else if (err > 2 * bandNs) (gridNs - err) / 1000 else 0L
         }
-        if (us > 0) { waiting = true; delays++ }
+        if (us > 0) { waiting = true; delays++; delaysAll++ }
         return us
     }
 
@@ -308,7 +323,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
             }
         }
         if (ns <= 0) return 0
-        out++; outAge = 0; delays++; askedT = ts
+        out++; outAge = 0; delays++; delaysAll++; askedT = ts
         return maxOf(1, ns / 1000)
     }
 
@@ -337,7 +352,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         if (plain == 0L) return
         if (ref == 0L) ref = plain
         searching = false; sought.clear()
-        byLeaks = true; prevT = 0; wide = 0; edgeDir = 0; flatHalf = 0; balanced = false; stood = false
+        byLeaks = true; prevT = 0; wide = 0; edgeDir = 0; flatHalf = 0; balanced = false; stood = false; lastLeak = null
         line = now; line0 = 0; slots = 0; move = false; moving = false; window.clear(); since = Long.MAX_VALUE; level = 0.0
     }
 
@@ -362,7 +377,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
     // ai: shares of the pictures before and after. Least squares over both readings of every frame, each by its
     // ai: own error, for K, K a and K b. Null: too few frames, or frames that do not tell the three apart (a
     // ai: sender that does not flash: no bit ever differs).
-    private class Leak(val a: Double, val b: Double, val sa: Double, val sb: Double, val n: Int, val t: Long)   // ai: t: the frames' mean time
+    private class Leak(val a: Double, val b: Double, val sa: Double, val sb: Double, val n: Int, val t: Long, val k: Double)   // ai: t: the frames' mean time; k: what a capture of one picture reads
     private fun leaks(from: Long, to: Long = Long.MAX_VALUE): Leak? {
         val fs = window.filter { !it.r.isNaN() && !it.r2.isNaN() }
         val t = period
@@ -387,7 +402,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         if (n < L_NEED || !solve3(m)) return null
         val k = m[0][3] / m[0][0]
         if (k < R_FLASH) return null
-        return Leak(m[1][3] / m[1][1] / k, m[2][3] / m[2][2] / k, Math.sqrt(maxOf(0.0, m[1][5] / m[1][1])) / k, Math.sqrt(maxOf(0.0, m[2][6] / m[2][2])) / k, n, from + Math.round(ts / n))
+        return Leak(m[1][3] / m[1][1] / k, m[2][3] / m[2][2] / k, Math.sqrt(maxOf(0.0, m[1][5] / m[1][1])) / k, Math.sqrt(maxOf(0.0, m[2][6] / m[2][2])) / k, n, from + Math.round(ts / n), k)
     }
 
     // ai: The receiver's new registered frames (track), in capture order, their blocks as read.
@@ -671,8 +686,11 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
     // ai: What the hold's frames say, once a batch of them is in.
     private fun decide() {
         if (since == Long.MAX_VALUE || move || moving || window.isEmpty()) return
+        if (byLeaks) held() else decideByBlocks()
+        snap()
+    }
+    private fun decideByBlocks() {
         val newest = window.last().ts
-        if (byLeaks) { held(); return }
         if (window.count { it.ts > settle } < NEED) return
         val slide = fit(newest - SHORT_NS)
         // ai: a slope: the better phase is that way. In the newest frames it is a slide the pace misses, and the
@@ -752,6 +770,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         // ai: the newest second's frames where they are enough (what the hold holds now, not a mean over a long
         // ai: stand), else all since the last move
         val est = leaks(maxOf(settle, fs.last().ts - RECENT_NS)) ?: leaks(settle)
+        if (est != null) lastLeak = est
         if (est == null) {
             // ai: no frame tells its neighbours apart. Deep in a mix (half the frames' r under DEEP: no capture is
             // ai: mostly one picture) nothing has a side: a quarter of a refresh later, and look again. Only where
@@ -848,14 +867,23 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         say("phase: %d of %d points read (from %.3f ms, the best %.0f%% short); held at %.3f".format(best, pts.size, from / 1e6, 100 * least, base / 1e6))
     }
 
-    // ai: for the log, every few seconds: what is held or owed, the delays since the last call
+    // ai: track's standing, for the log's line and the snapshot
+    private val standing get() = if (now < rest) "resting" else if (searching) "searching" else if (line < 0) "no frames yet" else if (since == Long.MAX_VALUE) "placing" else "holds"
+    private fun snap() {
+        val e = lastLeak
+        state = State(if (byLeaks) "pilots" else "blocks", standing, e?.a ?: Double.NaN, e?.b ?: Double.NaN, e?.k ?: Double.NaN,
+            if (e == null) Double.NaN else Math.hypot(e.sa, e.sb), e?.n ?: 0, gain, pace * 1e6, stood, edgeDir, 2 * flatHalf / 1e6, delaysAll)
+    }
+
+    // ai: for the log, every few seconds: what is held or owed, the delays since the last call, and a pilots hold's
+    // ai: newest leaks (the prefix stays as tools/phone's readers match it)
     fun line(tsNs: Long): String? {
         val d = delays; delays = 0
         return when (mode) {
             Mode.Off -> null
-            Mode.Track -> "phase: track%s, %s, the pace %.0f us a second (to %s), %.1f blocks a frame, %d delays".format(if (flashing) " by the pilots" else "",
-                if (now < rest) "resting" else if (searching) "searching" else if (line < 0) "no frames yet" else if (since == Long.MAX_VALUE) "placing" else "holds",
-                pace * 1e6, if (sure == Double.MAX_VALUE) "?" else "%.0f".format(sure * 1e6), level, d)
+            Mode.Track -> "phase: track%s, %s, the pace %.0f us a second (to %s), %.1f blocks a frame, %d delays%s".format(if (flashing) " by the pilots" else "",
+                standing, pace * 1e6, if (sure == Double.MAX_VALUE) "?" else "%.0f".format(sure * 1e6), level, d,
+                lastLeak?.let { if (byLeaks && standing == "holds") ", %.0f%% of the picture before and %.0f%% of the one after in a capture".format(100 * it.a, 100 * it.b) else "" } ?: "")
             else -> if (base < 0 && point < 0) null else "phase: %.3f ms, %s %.3f, %d delays".format(tsNs % gridNs / 1e6, if (point >= 0) "scanning at" else "held at", (if (point >= 0) point else base) / 1e6, d)
         }
     }

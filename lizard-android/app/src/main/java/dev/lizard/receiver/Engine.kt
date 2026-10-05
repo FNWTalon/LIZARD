@@ -11,6 +11,7 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.ImageReader
@@ -82,6 +83,16 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     // ai: was next set, and a pace learned to its bound (5 ms a second) in 2:1 was given back to every run after it
     // ai: (STATUS "The lock's saved pace").
     @Volatile private var last: android.hardware.camera2.TotalCaptureResult? = null   // ai: the newest result of a frame that was not a delayed one (delay)
+    // ai: The newest capture's exposure, sensitivity, frame, readout and focus (the `capture:` line's keys) and the
+    // ai: phase lock's snapshot: for the stats row and a replay's meta (MainActivity, 2026-10-04), read from any thread
+    data class CameraNow(val exposureMs: Double, val iso: Int, val frameMs: Double, val readoutMs: Double, val focusD: Float)
+    fun cameraNow(): CameraNow? {
+        val r = last ?: return null
+        return CameraNow((r.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L) / 1e6, r.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0,
+            (r.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L) / 1e6, (r.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1e6,
+            r.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: 0f)
+    }
+    fun phaseState(): PhaseLock.State? = phase.state
 
     // ai: the preview is a TextureView (a view like any other, so the page can clip it to the crop the decoder reads;
     // ai: a SurfaceView's layer is not clipped by its parents)
@@ -164,7 +175,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     }.also { Log.i(TAG, "back cameras: ${it.joinToString("; ") { l -> l.label }}") }
 
     fun caps(s: Settings): Caps {
-        val id = rearId(s) ?: return Caps(null, emptySet(), emptyList())
+        val id = rearId(s.camera) ?: return Caps(null, emptySet(), emptyList())
         val ch = cm.getCameraCharacteristics(id)
         val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
         val all = (sizes(map, ImageFormat.PRIVATE) + sizes(map, ImageFormat.YUV_420_888))
@@ -179,13 +190,14 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     private fun backIds() = cm.cameraIdList.filter {
         cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
     }
-    // ai: The camera Developer names; else (auto, or one no longer listed) the back camera that focuses closest (the
-    // ai: largest LENS_INFO_MINIMUM_FOCUS_DISTANCE, in dioptres), the first listed among equals: a receiver is held near
-    // ai: a screen. On the S26 that is the 2.2 mm camera (5 cm), where the first listed, the main lens (10 cm, a logical
-    // ai: multi-camera), read 38 KB/s of a stream the 2.2 mm read 363 of (2026-09-30).
-    private fun rearId(s: Settings): String? {
+    // ai: The camera Settings names (Settings.camera); else (auto, or one no longer listed) the back camera that focuses
+    // ai: closest (the largest LENS_INFO_MINIMUM_FOCUS_DISTANCE, in dioptres), the first listed among equals: a receiver
+    // ai: is held near a screen. On the S26 that is the 2.2 mm camera (5 cm), where the first listed, the main lens (10
+    // ai: cm, a logical multi-camera), read 38 KB/s of a stream the 2.2 mm read 363 of (2026-09-30). Public since
+    // ai: 2026-10-04: the lens's own settings are kept under this id (Settings.forCamera).
+    fun rearId(camera: String): String? {
         val ids = backIds()
-        ids.firstOrNull { it == s.camera }?.let { return it }
+        ids.firstOrNull { it == camera }?.let { return it }
         return ids.maxByOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f }
     }
 
@@ -286,7 +298,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         opening = true
         ensureReceiver(s)
         phase(Phase.Starting)
-        val id = rearId(s) ?: return fail("This phone has no rear camera.")
+        val id = rearId(s.camera) ?: return fail("This phone has no rear camera.")
         val ch = cm.getCameraCharacteristics(id)
         val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
         val (ww, wh) = s.resolution.split("x").map { it.toInt() }

@@ -1,9 +1,12 @@
 #!/bin/bash
 # ai: PhaseLock.kt compiled with Sim.kt by the Kotlin compiler Gradle already fetched for the app (its cache), and run:
 # ai: the lock's logic against a model and against the phone's recorded searches (searches.txt), no device and no new
-# ai: dependency. Exit 1 when a case fails: 6 do by design since the signed pilots (2026-10-01), the blocks arm at the
-# ai: box's 2.2 ms window and five pilots rows on the box model, none on the measured one. About a minute.
-# ai: `run.sh replay`: the recorded searches only, 5 s.
+# ai: dependency. Exit 1 when a case fails: 8 do as found (6 since the signed pilots, 2026-10-01; 8 since the rate-switch
+# ai: cases, 2026-10-04): the blocks arm at the box's 2.2 ms window, six pilots rows on the box model, and the blocks arm
+# ai: on the measured model's rate switch (it searches again after the switch); none of the pilots' measured rows.
+# ai: About four minutes.
+# ai: `run.sh replay`: the recorded searches only, 5 s. `run.sh series <file>`: a replay's recorded series (the text
+# ai: scripts/exp/replay_phase.py --series writes) through the lock itself, open loop, its lines as they come (2026-10-04).
 set -u
 H=$(cd "$(dirname "$0")" && pwd); DATA=${PHASESIM_DIR:-$H}; C=${GRADLE_USER_HOME:-$HOME/.gradle}/caches/modules-2/files-2.1; K=org.jetbrains.kotlin
 jar() { find "$C/$1" -name "$2" 2>/dev/null | grep -v sources | head -1; }
