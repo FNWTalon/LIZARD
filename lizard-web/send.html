@@ -59,7 +59,7 @@
     <!-- ai: the collapsed rail (ui.css .rail, send.mjs showRail): pause or resume, and the code's capacity; at its foot a
          "?" opening the display tip (2026-10-03, after the S26 broke 2.90 MB/s in 2:1 once the monitor's contrast was at
          its maximum, STATUS "The oscillation in 2:1"): a popover (ui.css .pop), dismissed by a click elsewhere or Escape -->
-    <div id="rail" class="rail"><button id="railSend" class="btn icon off" type="button" title="Start"><svg class="i pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg><svg class="i play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3l14 9-14 9z"/></svg></button><span id="railRate" class="rate" aria-live="off"></span><button id="railHelp" class="btn icon help" type="button" title="Tip" popovertarget="tipDisplay"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/></svg><span class="sr-only">Tip</span></button></div>
+    <div id="rail" class="rail"><button id="railSend" class="btn icon off" type="button" title="Start"><svg class="i pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg><svg class="i play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3l14 9-14 9z"/></svg></button><span id="railRate" class="rate" aria-live="off"></span><button id="railHelp" class="btn icon help" type="button" title="Tip" popovertarget="tipDisplay"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/></svg><span class="sr-only">Tip</span></button><a id="railHome" class="btn icon home" href="index.html" title="Home"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg><span class="sr-only">Home</span></a></div>
     <div id="tipDisplay" class="pop" popover>To maximize efficiency, increase the contrast and brightness of your display.</div>
     <!-- ai: the same tip before the first send on this browser (send.mjs go, 2026-10-04) -->
     <dialog id="first" class="dialog"><p>To maximize efficiency, increase the contrast and brightness of your display.</p><div class="row end"><button id="firstCancel" type="button">Cancel</button><button id="firstStart" class="primary" type="button">Start</button></div></dialog>
@@ -94,8 +94,9 @@
           <div class="blocks" id="gapRow" hidden><span class="row"><span>Gap</span><span id="gapOut">12 modules</span></span><input id="gap" type="range" min="0" max="64" step="1" value="12" aria-label="gap"></div>
           <!-- ai: the ring, the 128 by default (sim/lizard_pick.mjs RING_DEFAULT; an Auto option, the same ring, until 2026-10-05) -->
           <label>Ring <select id="ring"><option value="0">32</option><option value="1">64</option><option value="2">96</option><option value="3" selected>128</option></select></label>
-          <!-- ai: two codes side by side for the app's 2:1 crop, the option saying browsers cannot decode 2 codes (2026-09-28) -->
-          <label>Codes <select id="codes"><option value="1" selected>One</option><option value="2">Two (browsers cannot decode 2 codes)</option></select></label>
+          <!-- ai: two codes side by side for the app's 2:1 crop (2026-09-28); "(browsers cannot decode 2 codes)" after Two until
+               2026-10-05, when it went for being wider than the menu -->
+          <label>Codes <select id="codes"><option value="1" selected>One</option><option value="2">Two</option></select></label>
         </div>
       </fieldset>
     </details>

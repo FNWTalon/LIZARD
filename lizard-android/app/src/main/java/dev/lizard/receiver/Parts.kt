@@ -140,13 +140,16 @@ fun CollapseBtn(collapsed: Boolean, left: Boolean = true, onClick: () -> Unit) {
 }
 
 // ai: The collapsed panel (the web's 56 px rail): the button at its top, a hairline under its row as the bar's, then
-// ai: the caller's squares (Receive's: the camera, the rate, the file in; 2026-10-02).
+// ai: the caller's squares (Receive's: the camera, the rate, the file in; 2026-10-02), and `foot`, squares at the
+// ai: bottom (Receive's Home, 2026-10-05, out of the bar so expanding the panel puts no back arrow under the finger).
 @Composable
-fun Rail(left: Boolean = true, onClick: () -> Unit, squares: @Composable () -> Unit = {}) {
+fun Rail(left: Boolean = true, onClick: () -> Unit, foot: @Composable () -> Unit = {}, squares: @Composable () -> Unit = {}) {
     Column(Modifier.width(56.dp).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) { CollapseBtn(true, left, onClick) }
         HorizontalDivider(color = Line)
         squares()
+        Spacer(Modifier.weight(1f))
+        foot()
     }
 }
 

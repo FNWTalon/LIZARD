@@ -120,7 +120,7 @@ const SIZES = [
     const $ = (id) => document.getElementById(id), box = (el) => { const b = el.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, w: b.width, h: b.height }; };
     return { iw: innerWidth, ih: innerHeight, sw: document.documentElement.scrollWidth, main: box(document.querySelector("main")), c: box($("c")),
       state: $("state").textContent, nums: $("nums").textContent, lab: $("tx").textContent.split("\\n")[0], go: $("go").disabled, full: document.body.classList.contains("full"), dev: $("dev").open, hint: !$("hint").hidden,
-      buttons: [...document.querySelectorAll("#side button:not([hidden]), #side .btn")].map((b) => b.textContent), bar: [...document.querySelectorAll(".bar .brand, .bar h1, .bar > .btn, .bar > button")].map((b) => b.textContent).join(",") };
+      buttons: [...document.querySelectorAll("#side button:not([hidden]), #side .btn")].map((b) => b.textContent), bar: [...document.querySelectorAll(".bar .brand, .bar h1, .bar > .btn, .bar > button")].filter((b) => b.checkVisibility()).map((b) => b.textContent).join(","), railHome: document.getElementById("railHome")?.getAttribute("href") ?? "" };
   })()`;
   const same = (a, b) => ["top", "left", "w", "h"].every((k) => Math.abs(a[k] - b[k]) < 0.5);
   for (const [k, z] of SIZES.entries()) {
@@ -130,7 +130,8 @@ const SIZES = [
     const idle = await evaluate(s, MEASURE_SEND);
     if (k === 0) check(!idle.dev, `send ${z.name}: the Developer panel is closed on a fresh profile`);
     check(idle.state === "" && idle.hint && idle.go && idle.buttons.join() === "Start,Fullscreen", `send ${z.name}: idle, no state line, the hint shown, buttons ${idle.buttons.join(" and ")}, Start ${idle.go ? "disabled" : "ENABLED"}`);
-    check(idle.bar === "Home,Send,Receiver,Sidebar", `send ${z.name}: the bar "${idle.bar}"`);
+    // ai: Home in the bar in portrait, in the rail's last square in landscape, where the bar has the collapser (2026-10-05)
+    check(idle.bar === (z.w > z.h ? "Send,Receiver,Sidebar" : "Home,Send,Receiver") && idle.railHome === "index.html", `send ${z.name}: the bar "${idle.bar}", the rail's Home "${idle.railHome}"`);
     // ai: The middle of the page is the only file picker (2026-09-26: the Choose file button deleted): a tap on
     // ai: it must open the chooser, which the DevTools protocol intercepts here instead of showing.
     if (k === 0) {

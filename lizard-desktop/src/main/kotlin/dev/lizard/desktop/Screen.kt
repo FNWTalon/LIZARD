@@ -141,12 +141,12 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
                         for (i in Pick.RINGS.indices) Chip("${Pick.RINGS[i]}", s.ring == i || (s.ring == -1 && i == Pick.RING_DEFAULT)) { s.chooseRing(i) }
                     }
                 }
-                // ai: two codes side by side for the app's 2:1 crop, the option saying browsers cannot decode them
-                // ai: (2026-09-28; send.html #codes)
+                // ai: two codes side by side for the app's 2:1 crop (2026-09-28; send.html #codes); "Two" alone since 2026-10-05,
+                // ai: its "(browsers cannot decode 2 codes)" wider than the row
                 Field("Codes") {
                     Chips {
                         Chip("One", s.codes == 1) { s.chooseCodes(1) }
-                        Chip("Two (browsers cannot decode 2 codes)", s.codes == 2) { s.chooseCodes(2) }
+                        Chip("Two", s.codes == 2) { s.chooseCodes(2) }
                     }
                 }
             }
