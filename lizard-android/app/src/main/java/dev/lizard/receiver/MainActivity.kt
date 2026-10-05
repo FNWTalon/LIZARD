@@ -118,6 +118,7 @@ class MainActivity : ComponentActivity() {
     internal data class Replay(val run: String, val dir: File, val handle: Long, val state: ReplayState, val frames: Long = 0, val bytes: Long = 0,
                                val why: String = "", val owner: Any? = null)
     private val statsRows = ArrayDeque<String>()
+    private fun nz(x: Double): Any = if (x.isNaN() || x.isInfinite()) JSONObject.NULL else x   // ai: a JSON number, or null where there is none
     private val main = Handler(Looper.getMainLooper())   // ai: a Download's end, which may come after this activity's
 
     private val ask = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
@@ -143,8 +144,7 @@ class MainActivity : ComponentActivity() {
         // ai: a debuggable build shows over the lock screen and wakes it, so a run driven over adb reaches the camera
         // ai: on a locked phone; a release build does neither
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) { setShowWhenLocked(true); setTurnScreenOn(true) }
-        prefs = getSharedPreferences("lizard", MODE_PRIVATE)
-        settings = Settings.load(this)
+        prefs = getSharedPreferences(Settings.PREFS, MODE_PRIVATE)
         tipsSeen = prefs.getBoolean("tipsSeen", false)
         for (k in FOLDS) folds[k] = prefs.getBoolean(k, false)
         library = Library(File(filesDir, "library"))
@@ -156,6 +156,7 @@ class MainActivity : ComponentActivity() {
             if (p == Engine.Phase.On) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else if (p !is Engine.Phase.Starting && p !is Engine.Phase.Loading) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }, { cam = it })
+        settings = Settings.load(this) { camId(it) }   // ai: after the engine: a lens's own settings are under the id it resolves
         granted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         // ai: a restored activity (a configuration change, the process gone and back) keeps the screen it was on; only a
         // ai: fresh one takes its launch intent's (2026-10-01: restored, it went back to the intent's Receive)
@@ -242,10 +243,16 @@ class MainActivity : ComponentActivity() {
         try { startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))) } catch (_: ActivityNotFoundException) {}
     }
 
-    // ai: A Developer (Advanced) switch: kept, and the camera started again where the switch needs it
-    internal fun change(s: Settings, restart: Boolean) {
+    // ai: the back camera the camera switch opens (Engine.rearId), the id the lens's own settings are kept under
+    // ai: (Settings.forCamera, 2026-10-04); null where the phone has none or the camera service fails
+    private fun camId(camera: String): String? = runCatching { engine.rearId(camera) }.getOrNull()
+    // ai: A Developer (Advanced) switch: kept, and the camera started again where the switch needs it. Another lens
+    // ai: chosen brings its own resolution, zoom and focus (as last kept for it, else the defaults).
+    internal fun change(s0: Settings, restart: Boolean) {
+        val cam = camId(s0.camera)
+        val s = if (s0.camera != settings.camera) s0.forCamera(this, cam) else s0
         settings = s
-        s.save(this)
+        s.save(this, cam)
         engine.phaseLock(s.phase)
         engine.batch(s.frames)
         if (restart && screen == Screen.Receive && phase != Engine.Phase.Idle && granted) startCamera()
@@ -255,7 +262,7 @@ class MainActivity : ComponentActivity() {
         if (settings.zoom.toFloatOrNull() == z) return
         settings = settings.copy(zoom = "%.1f".format(java.util.Locale.ROOT, z))
         engine.zoom(z)
-        settings.save(this)
+        settings.save(this, camId(settings.camera))
     }
     // ai: Receive's Focus: null autofocus, else the lens held at that many dioptres; the camera moved live (Engine.focus),
     // ai: the setting kept at every step
@@ -264,7 +271,7 @@ class MainActivity : ComponentActivity() {
         if (settings.focus == v) return
         settings = settings.copy(focus = v)
         engine.focus(d)
-        settings.save(this)
+        settings.save(this, camId(settings.camera))
     }
     internal fun tipsDone() { tipsSeen = true; prefs.edit().putBoolean("tipsSeen", true).apply() }
     internal fun tipsAgain() { tipsSeen = false; prefs.edit().putBoolean("tipsSeen", false).apply() }
@@ -381,9 +388,11 @@ class MainActivity : ComponentActivity() {
         busyRuns.add(r.run)
         putRun(r.copy(state = ReplayState.Ending, owner = null))
         val c = cam
+        val cn = engine.cameraNow()
         val more = JSONObject().apply {
             if (c != null) put("camera", JSONObject().put("id", c.id).put("format", c.format).put("size", "${c.size.width}x${c.size.height}")
-                .put("fps", "[${c.fps.lower},${c.fps.upper}]").put("minFrameMs", c.minFrameMs).put("sensorOrientation", c.sensorOrientation).put("note", c.note))
+                .put("fps", "[${c.fps.lower},${c.fps.upper}]").put("minFrameMs", c.minFrameMs).put("sensorOrientation", c.sensorOrientation).put("note", c.note)
+                .apply { if (cn != null) put("exposureMs", cn.exposureMs).put("iso", cn.iso).put("readoutMs", cn.readoutMs) })
             put("zoom", settings.zoom); put("focus", settings.focus); put("phase", settings.phase); put("batch", settings.batch); put("thermal", heat); put("app", aboutLine())
         }.toString()
         engine.replayEnd(r.handle, raw, statsRows.joinToString("\n"), more) { res ->
@@ -489,10 +498,17 @@ class MainActivity : ComponentActivity() {
                 // ai: the rig's log once a second (4 polls), the transfer's average since its first decode added to it
                 if ((tick++ % 4 == 0 || last) && s.isNotEmpty() && (phase == Engine.Phase.On || last)) {
                     // ai: and the phone's thermal status (`thermal`, 2026-10-01), so a slower camera can be told from a hot one;
-                    // ai: the GPU's clock ceiling (`gpuMaxMHz`, 2026-10-03)
+                    // ai: the GPU's clock ceiling (`gpuMaxMHz`, 2026-10-03); the camera's exposure, sensitivity, readout and
+                    // ai: frame, and the phase lock's snapshot (`phase`: its arm and
+                    // ai: standing, the leaks it holds at, its gain and pace; 2026-10-04, so a replay says what the
+                    // ai: capture's window was and what the lock made of it)
                     val c = clocks
+                    val cn = engine.cameraNow(); val ph = engine.phaseState()
                     val body = runCatching { JSONObject(s).put("thermal", heat).apply {
                         if (c != null) put("gpuMaxMHz", c.mhz)
+                        if (cn != null) { put("exposureMs", cn.exposureMs); put("iso", cn.iso); put("readoutMs", cn.readoutMs); put("frameMs", cn.frameMs) }
+                        if (ph != null) put("phase", JSONObject().put("arm", ph.arm).put("state", ph.what).put("a", nz(ph.a)).put("b", nz(ph.b)).put("k", nz(ph.k))
+                            .put("se", nz(ph.se)).put("n", ph.n).put("gain", ph.gain).put("pace", ph.pace).put("stood", ph.stood).put("edge", ph.edge).put("flatMs", ph.flatMs).put("delays", ph.delays))
                         if (j != null && r.hasFile && !r.verified && secs >= 1) put("avgKBs", r.received / secs / 1000) }.toString() }.getOrDefault(s)
                     devlog.post(settings.devlog, "/api/stats", body)
                     statsRows.addLast(body)

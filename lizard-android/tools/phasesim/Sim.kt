@@ -43,7 +43,7 @@ import dev.lizard.receiver.PhaseLock
 // ai: `startNs`: where in the display's refresh the camera starts; `out` (when given) takes the run's share of short
 // ai: captures in its first 10 s, from 10 to 30 s and in its last third, its blocks a capture from 10 to 30 s and in
 // ai: the last third, and the pace the lock's line names at 10 s and at the end (us a second).
-fun run(name: String, mode: PhaseLock.Mode, every: Int, tcNs: Long, tdNs: Double, winNs: Long, secs: Int, quiet: Boolean = false, rough: Boolean = false, measured: Boolean = false, startNs: Long = 0, out: DoubleArray? = null, pilots: Boolean = false, settle: Boolean = false): Double {
+fun run(name: String, mode: PhaseLock.Mode, every: Int, tcNs: Long, tdNs: Double, winNs: Long, secs: Int, quiet: Boolean = false, rough: Boolean = false, measured: Boolean = false, startNs: Long = 0, out: DoubleArray? = null, pilots: Boolean = false, settle: Boolean = false, switchAt: Int = 0, every2: Int = 0): Double {
     val rnd = java.util.Random(7 + startNs)
     val prnd = java.util.Random(13 + startNs)   // ai: the pilots' noise, apart so it moves nothing else
     val lines = ArrayList<String>()
@@ -60,6 +60,10 @@ fun run(name: String, mode: PhaseLock.Mode, every: Int, tcNs: Long, tdNs: Double
     val off = (delta - expo) / 2 + winNs / 2.0
     val NR = 16
     var ts = 1_234_567_890_123L + startNs
+    // ai: `switchAt`, `every2`: the painted rate changes at that second of the run to one picture every `every2`
+    // ai: refreshes (0: no change), as a sender's rate slider moved mid-run does (2026-10-04)
+    val k0 = Math.floor(ts / tdNs).toLong()
+    fun everyAt(k: Long) = if (switchAt > 0 && (k - k0) * tdNs >= switchAt * 1e9) every2 else every
     var short10 = 0; var short30 = 0; var blocks30 = 0L; var pace10 = Double.NaN
     val paceOf = { l: String? -> Regex("the pace (-?\\d+) us").find(l ?: "")?.groupValues?.get(1)?.toDouble() ?: Double.NaN }
     val depth = 6
@@ -79,11 +83,10 @@ fun run(name: String, mode: PhaseLock.Mode, every: Int, tcNs: Long, tdNs: Double
     val due = ArrayDeque<Pair<Long, List<Cap>>>()
     var shortLate = 0; var framesLate = 0; var blocksLate = 0L
     val frames = secs * 60
-    val per = tdNs * every
     // ai: measured: whether the painted frame changes at a refresh (three in four), drawn once a refresh
     val changes = HashMap<Long, Boolean>()
-    fun changesAt(k: Long) = k % every == 0L && changes.getOrPut(k) { java.util.Random(k * 1_000_003L + 11 + startNs).nextInt(4) != 0 }
-    fun changed(k: Long) = if (measured) changesAt(k) else k % every == 0L
+    fun changesAt(k: Long) = k % everyAt(k) == 0L && changes.getOrPut(k) { java.util.Random(k * 1_000_003L + 11 + startNs).nextInt(4) != 0 }
+    fun changed(k: Long) = if (measured) changesAt(k) else k % everyAt(k) == 0L
     // ai: the pilots: the refresh last counted and the count of the picture it shows; the count of any refresh from
     // ai: it; the sign a count's bit paints
     var pk = Math.floor(ts / tdNs).toLong()
@@ -99,7 +102,7 @@ fun run(name: String, mode: PhaseLock.Mode, every: Int, tcNs: Long, tdNs: Double
         var short = false
         var k = Math.ceil((ts - 1_000_000L) / tdNs).toLong()
         while (k * tdNs < ts + winNs + 1_000_000L) {
-            if (k % every == 0L) {
+            if (k % everyAt(k) == 0L) {
                 val inside = k * tdNs >= ts && k * tdNs < ts + winNs
                 if (inside && (!rough || (k * tdNs >= ts + 1_000_000L && k * tdNs < ts + winNs - 1_000_000L) || rnd.nextBoolean())) short = true
                 if (!inside && rough && rnd.nextBoolean()) short = true
@@ -116,7 +119,7 @@ fun run(name: String, mode: PhaseLock.Mode, every: Int, tcNs: Long, tdNs: Double
             while (!changesAt(c)) c++
             var b = Math.ceil(ts / tdNs).toLong() - 1
             while (!changesAt(b)) b--
-            val wide = per - winNs
+            val wide = tdNs * everyAt(b) - winNs
             val since = ts - b * tdNs
             var mean = if (since > wide + tdNs / 2) 54.0 else 50 - 9 * Math.pow(((since - wide / 2) / (wide / 2)).coerceIn(-1.0, 1.0), 2.0)
             if (c * tdNs < ts + winNs) {
@@ -210,7 +213,7 @@ fun run(name: String, mode: PhaseLock.Mode, every: Int, tcNs: Long, tdNs: Double
 fun trial(mode: PhaseLock.Mode, only: String): Int {
     val tc = 16_650_000L
     val hz = { f: Double -> 1e9 / f }
-    data class C(val name: String, val every: Int, val tc: Long, val td: Double, val win: Long, val secs: Int, val rough: Boolean = false, val settle: Boolean = false)
+    data class C(val name: String, val every: Int, val tc: Long, val td: Double, val win: Long, val secs: Int, val rough: Boolean = false, val settle: Boolean = false, val switchAt: Int = 0, val every2: Int = 0)
     val cases = listOf(
         C("60.00 Hz, 60 painted, window 9 ms", 1, tc, hz(60.0), 9_000_000L, 300),
         C("60.00 Hz, 60 painted, window 11 ms", 1, tc, hz(60.0), 11_000_000L, 300),
@@ -229,14 +232,18 @@ fun trial(mode: PhaseLock.Mode, only: String): Int {
         C("a focus that hunts for 4 s, 60.00 Hz, window 9 ms", 1, tc, hz(60.0), 9_000_000L, 300, settle = true),
         C("a focus that hunts for 4 s, 60.03 Hz, window 9 ms", 1, tc, hz(60.03), 9_000_000L, 300, settle = true),
         C("75 Hz painting 25, window 9 ms", 3, tc, hz(75.0), 9_000_000L, 300),
-        C("60.00 Hz, window 17 ms (no phase reads)", 1, tc, hz(60.0), 17_000_000L, 120))
+        C("60.00 Hz, window 17 ms (no phase reads)", 1, tc, hz(60.0), 17_000_000L, 120),
+        // ai: the sender's rate slider moved from 30 to 60 mid-run (the 22:02 replay of 2026-10-04): the equal-leak
+        // ai: point at 30 painted is the 60-painted optimum, so the hold should stand through the switch
+        C("60.00 Hz, 30 painted then 60 at 30 s, window 13 ms (3.7 ms read)", 2, tc, hz(60.0), 13_000_000L, 60, switchAt = 30, every2 = 1),
+        C("60.00 Hz, 30 painted then 60 at 30 s, window 17 ms (no phase reads)", 2, tc, hz(60.0), 17_000_000L, 60, switchAt = 30, every2 = 1))
     var fail = 0
     println("%-68s | short, first 10 s: mean, worst | 10 to 30 s: mean, worst | last third: mean, worst | blocks a capture, 10 to 30 s, last third | pace at 10 s: mean, furthest from the end's".format(mode.toString()))
     for (measured in listOf(false, true)) for (c in cases) for (pilots in listOf(false, true)) {
         val name = "${if (pilots) "pilots, " else ""}${if (measured) "measured, " else ""}${c.name}"
         if (only.isNotEmpty() && !name.contains(only)) continue
-        if (only.isNotEmpty()) { for (k in 0 until 8) run("$mode, $name, start $k", mode, c.every, c.tc, c.td, c.win, c.secs, false, c.rough, measured, k * c.tc / 8, null, pilots, c.settle); continue }
-        val r = (0 until 16).map { k -> DoubleArray(7).also { run(name, mode, c.every, c.tc, c.td, c.win, c.secs, true, c.rough, measured, k * c.tc / 16, it, pilots, c.settle) } }
+        if (only.isNotEmpty()) { for (k in 0 until 8) run("$mode, $name, start $k", mode, c.every, c.tc, c.td, c.win, c.secs, false, c.rough, measured, k * c.tc / 8, null, pilots, c.settle, c.switchAt, c.every2); continue }
+        val r = (0 until 16).map { k -> DoubleArray(7).also { run(name, mode, c.every, c.tc, c.td, c.win, c.secs, true, c.rough, measured, k * c.tc / 16, it, pilots, c.settle, c.switchAt, c.every2) } }
         fun mean(i: Int) = r.map { it[i] }.filter { !it.isNaN() }.average()
         fun worst(i: Int) = r.maxOf { it[i] }
         println("%-68s | %5.1f%% %5.1f%% | %5.1f%% %5.1f%% | %5.1f%% %5.1f%% | %4.1f %4.1f | %5.0f %5.0f".format(name, 100 * mean(0), 100 * worst(0), 100 * mean(1), 100 * worst(1), 100 * mean(2), 100 * worst(2),
@@ -288,12 +295,57 @@ fun replay(file: String): Int {
     return fail
 }
 
+// ai: A recorded series through the lock itself (scripts/exp/replay_phase.py --series: a line `V <version>`, then a
+// ai: row a half-frame, ts_ns verified found r rsd r2 r2sd), open loop: the captures in order, each one's rows handed
+// ai: over as the receiver's batches hand them (the rule above: 32 captures a batch, 8 while the lock asks for them
+// ai: soon, read at the first capture after the batch's close plus a frame, 15 ms and 3.2 ms a frame), then onCapture
+// ai: with the capture's own timestamp (delayed where its interval is over 16.8 ms; the lock's delays move nothing
+// ai: here). The lock's lines as they come (its leaks and moves too under -Dphase.debug=1), each at the capture's
+// ai: second from the first, then what it asked over the run.
+fun series(file: String) {
+    var version = 64
+    val rows = ArrayList<PhaseLock.Frame>()
+    for (l in java.io.File(file).readLines()) {
+        if (l.isBlank() || l.startsWith("#")) continue
+        if (l.startsWith("V ")) { version = l.substring(2).trim().toInt(); continue }
+        val f = l.trim().split(Regex("\\s+"))
+        rows.add(PhaseLock.Frame(f[0].toLong(), f[1].toInt(), f[2] == "1", f[3].toDouble(), f[4].toDouble(), f[5].toDouble(), f[6].toDouble()))
+    }
+    if (rows.isEmpty()) { println("no rows in $file"); return }
+    val t0 = rows.first().ts
+    var tNow = t0
+    var stands = 0; var searches = 0
+    val p = PhaseLock({ println("%7.2f s  %s".format((tNow - t0) / 1e9, it)); if (it.contains("the hold stands")) stands++; if (it.contains("search")) searches++ })
+    p.set(PhaseLock.Mode.Track)
+    val open = ArrayList<PhaseLock.Frame>()
+    val due = ArrayDeque<Pair<Long, List<PhaseLock.Frame>>>()
+    val asks = ArrayList<Long>()
+    var i = 0; var prevTs = 0L; var captures = 0; var inBatch = 0
+    while (i < rows.size) {
+        val ts = rows[i].ts
+        while (i < rows.size && rows[i].ts == ts) { open.add(rows[i]); i++ }
+        captures++; inBatch++
+        tNow = ts
+        while (due.isNotEmpty() && due.first().first <= ts) p.onWindow(due.removeFirst().second, version)
+        if (inBatch >= (if (p.soon) 8 else 32)) { due.addLast(Pair(ts + 16_650_000L + 15_000_000L + 3_200_000L * open.size, open.toList())); open.clear(); inBatch = 0 }
+        val delayed = prevTs != 0L && ts - prevTs > 16_800_000L
+        val us = p.onCapture(ts, delayed)
+        if (us > 0) asks.add(us)
+        prevTs = ts
+    }
+    println("%7.2f s  %s".format((tNow - t0) / 1e9, p.line(tNow) ?: "off"))
+    println("%d captures over %.1f s: %d delays asked, %.2f ms in all (the largest %.3f), %d stands, %d search lines".format(
+        captures, (tNow - t0) / 1e9, asks.size, asks.sum() / 1e3, (asks.maxOrNull() ?: 0L) / 1e3, stands, searches))
+}
+
 fun main(args: Array<String>) {
     // ai:   run.sh                      the first model's checks, the recorded searches, then track's table, judged
     // ai:   run.sh Track[,Scan] [text]  a mode's table, or the lock's lines for the cases named
     // ai:   run.sh replay               the recorded searches only
+    // ai:   run.sh series <file>        a recorded series (replay_phase.py --series) through the lock, open loop
     val data = System.getProperty("phasesim.dir", ".") + "/searches.txt"
     if (args.isNotEmpty() && args[0] == "replay") { System.exit(if (replay(data) == 0) 0 else 1) }
+    if (args.isNotEmpty() && args[0] == "series") { series(args.getOrElse(1) { "" }); return }
     if (args.isNotEmpty()) { for (m in args[0].split(",")) trial(PhaseLock.Mode.valueOf(m), args.getOrElse(1) { "" }); return }
     val tc = 16_650_000L                    // the S26's frame at "60 a second"
     val hz = { f: Double -> 1e9 / f }        // a display's refresh, ns

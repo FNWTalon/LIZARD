@@ -25,8 +25,16 @@ import android.content.Context
 // ai:               painted; a sender that paints slower loses nothing to it; a stored "auto", the arm deleted that
 // ai:               day, loads as track). `debug.lizard.phase`, when set, overrides it (the tools set it).
 // ai:   replays     off | on: Save replays (Developer Tools, 2026-10-03; MainActivity's replay): the newest frames the
-// ai:               decoder is handed kept while the camera runs; off by default, to spare storage
+// ai:               decoder is handed kept while the camera runs; off by default, to spare storage. Since 2026-10-05 the
+// ai:               switch is the session's alone, never saved (a recording left on costs every later run its lag):
+// ai:               every start begins off, and a stored "on" from before is removed at the next save
 // ai: The camera's rate is no switch since 2026-10-01: [60,60], else the highest fixed range (Engine.pickFps).
+// ai: Resolution, zoom and focus are a lens's (2026-10-04): each is kept as "<key>@<camera id>" for the back camera the
+// ai: camera switch resolves to (Engine.rearId: auto is the closest-focusing lens, so auto and that lens share one set),
+// ai: and choosing another lens brings that lens's own three back (MainActivity.change). A lens with none saved reads
+// ai: the plain key (the one value every lens shared before), else the default; a save writes the lens's keys and drops
+// ai: the plain ones, so tools/phone/ab.sh, which cannot name the lens, writes the plain zoom and removes the "zoom@"
+// ai: entries, and the app adopts it for the lens it opens. The other switches are the app's, under their plain keys.
 data class Settings(
     val decoder: String = "auto",
     val precision: String = "auto",
@@ -42,26 +50,45 @@ data class Settings(
 ) {
     val frames get() = batch.toIntOrNull()?.coerceIn(1, 32) ?: 32
 
-    fun save(ctx: Context) {
-        ctx.getSharedPreferences("lizard", Context.MODE_PRIVATE).edit()
-            .putString("decoder", decoder).putString("precision", precision).putString("layout", layout).putString("camera", camera).putString("resolution", resolution)
-            .remove("fps").putString("zoom", zoom).putString("devlog", devlog).putString("phase", phase).putString("batch", batch).putString("replays", replays).putString("focus", focus).apply()
+    // ai: cam: the id the camera switch resolves to (Engine.rearId), null where the phone has no back camera (the
+    // ai: lens's values then stay under the plain keys)
+    fun save(ctx: Context, cam: String?) {
+        val e = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putString("decoder", decoder).putString("precision", precision).putString("layout", layout).putString("camera", camera)
+            .remove("fps").putString("devlog", devlog).putString("phase", phase).putString("batch", batch).remove("replays")
+        for ((k, v) in lens()) { e.putString(key(k, cam), v); if (cam != null) e.remove(k) }
+        e.apply()
     }
 
+    // ai: this, with the lens's three as saved for cam (else the plain key's, else the defaults)
+    fun forCamera(ctx: Context, cam: String?): Settings {
+        val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val d = Settings()
+        fun g(k: String, dflt: String) = p.getString(key(k, cam), null) ?: p.getString(k, null) ?: dflt
+        return copy(resolution = g("resolution", d.resolution), zoom = g("zoom", d.zoom), focus = g("focus", d.focus))
+    }
+
+    private fun lens() = listOf("resolution" to resolution, "zoom" to zoom, "focus" to focus)
+
     companion object {
+        const val PREFS = "lizard"
         val DECODERS = listOf("auto", "gpu", "cpu")
         val PRECISIONS = listOf("auto", "int8", "f16", "f32")
         val LAYOUTS = listOf("1:1", "2:1")
         val RESOLUTIONS = listOf("1280x720", "1920x1080", "2560x1440", "3840x2160")
         val PHASES = listOf("off", "track")
 
-        fun load(ctx: Context): Settings {
-            val p = ctx.getSharedPreferences("lizard", Context.MODE_PRIVATE)
+        private fun key(k: String, cam: String?) = if (cam == null) k else "$k@$cam"
+
+        // ai: rearId: the camera switch's value to the back camera it opens (Engine.rearId)
+        fun load(ctx: Context, rearId: (String) -> String?): Settings {
+            val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val d = Settings()
-            return Settings(p.getString("decoder", d.decoder)!!, p.getString("precision", d.precision)!!,
-                p.getString("layout", d.layout)!!, p.getString("camera", d.camera)!!, p.getString("resolution", d.resolution)!!, p.getString("zoom", d.zoom)!!, p.getString("devlog", d.devlog)!!,
-                p.getString("phase", d.phase)!!.let { if (it == "auto") "track" else it }, p.getString("batch", d.batch)!!, p.getString("replays", d.replays)!!,
-                p.getString("focus", d.focus)!!)
+            val s = Settings(p.getString("decoder", d.decoder)!!, p.getString("precision", d.precision)!!,
+                p.getString("layout", d.layout)!!, p.getString("camera", d.camera)!!, d.resolution, d.zoom, p.getString("devlog", d.devlog)!!,
+                p.getString("phase", d.phase)!!.let { if (it == "auto") "track" else it }, p.getString("batch", d.batch)!!, d.replays,
+                d.focus)
+            return s.forCamera(ctx, rearId(s.camera))
         }
     }
 }
