@@ -1,6 +1,19 @@
 package dev.lizard.receiver
 
 import android.content.Context
+import android.content.res.Configuration
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Icon
+import androidx.compose.material3.VerticalDivider
+import androidx.compose.runtime.movableContentOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.style.TextAlign
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
@@ -86,6 +99,12 @@ class SendState(private val a: MainActivity) {
     // ai: where it builds and its first frames are the C's, else the CPU), the GPU (liblizard/core/tx/gpu_painter.h) or the CPU's
     // ai: painters; kept.
     var painter by mutableStateOf(prefs.getString("sendPainter", "auto") ?: "auto")
+    // ai: Codes (2026-10-05, the web's #codes and #gap): one, or two side by side for a receiver's 2:1 crop, `gap` modules
+    // ai: apart (0 to 64, 12 unless set); kept. The format is picked for one code's share of the box (roomOf).
+    var codes by mutableStateOf(prefs.getInt("sendCodes", 1).coerceIn(1, 2))
+    var gap by mutableStateOf(prefs.getInt("sendGap", 12).coerceIn(0, 64))
+    // ai: the code box's width over its height: the codes and the gaps between them, each code as tall as the box
+    val aspect get() = codes + (codes - 1) * Pick.gapShare(gap)
     var phase by mutableStateOf<Phase>(Phase.Idle)
     // ai: Paused (2026-10-02): nothing presented, the run
     // ai: kept, the last picture left on screen (a receiver holds what it has); a resume presents at once (tick)
@@ -119,8 +138,12 @@ class SendState(private val a: MainActivity) {
     fun chooseBrightness(b: Int) { brightness = b.coerceIn(1, 100) }
     fun pause(p: Boolean) { if (phase == Phase.On) paused = p }
     // ai: what the code offers at most, KB/s: blocks a frame x 469 B x pictures a second; null before the first configure
-    val capacityKBs get() = if (picked > 0) picked / 8 * 469.0 * rate / 1000 else null
+    val capacityKBs get() = if (picked > 0) codes * (picked / 8) * 469.0 * rate / 1000 else null
     fun choosePainter(p: String) { painter = p; prefs.edit().putString("sendPainter", p).apply(); if (phase == Phase.On) reconfigure() }
+    fun chooseCodes(c: Int) { codes = c.coerceIn(1, 2); prefs.edit().putInt("sendCodes", codes).apply(); if (phase == Phase.On) reconfigure() }
+    fun chooseGap(g: Int) { gap = g.coerceIn(0, 64); prefs.edit().putInt("sendGap", gap).apply(); if (phase == Phase.On) reconfigure() }
+    // ai: one code's room in the view, px: the box's height, or its width's share where that is less
+    private fun roomOf() = min((vw / aspect).toInt(), vh)
 
     // ai: the file into the cache (a document is a stream; the sender maps a file), then the sender and its format
     fun start() {
@@ -169,10 +192,11 @@ class SendState(private val a: MainActivity) {
 
     // ai: the format the code's square holds now (a turn of the phone re-picks it; the transfer goes on)
     private fun reconfigure() {
+        room = roomOf()
         if (h == 0L || room <= 0) return
         val subch = if (blocks > 0) 8 * blocks else Pick.pick(room.toDouble())
         val threads = min(4, maxOf(1, Runtime.getRuntime().availableProcessors() - 2))
-        val err = Native.txConfigure(h, Pick.nFor(subch), subch, Pick.span(), fps, threads, when (painter) { "cpu" -> 0; "gpu" -> 1; else -> 2 }, assets)
+        val err = Native.txConfigure(h, Pick.nFor(subch), subch, Pick.span(), fps, threads, when (painter) { "cpu" -> 0; "gpu" -> 1; else -> 2 }, assets, codes, gap)
         if (err.isNotEmpty()) { phase = Phase.Error(err); stop(); return }
         configured = room
         picked = subch
@@ -183,7 +207,7 @@ class SendState(private val a: MainActivity) {
             else if (Build.VERSION.SDK_INT >= 30) surface?.setFrameRate(fps.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
         }
         val st = runCatching { JSONObject(Native.txStats(h)) }.getOrNull()
-        Log.i(Engine.TAG, "send: LIZARD-$subch${if (blocks > 0) " set by hand" else ""} in a $room px square at $fps a second, painting on the " +
+        Log.i(Engine.TAG, "send: LIZARD-$subch${if (codes > 1) " x $codes, $gap modules apart" else ""}${if (blocks > 0) " set by hand" else ""} in a $room px square at $fps a second, painting on the " +
             (if (st?.optString("painter") == "gpu") "GPU (${st.optString("device")})" else "CPU, $threads painters") +
             (st?.optString("gpuWhy").orEmpty().let { if (it.isNotEmpty()) ", not the GPU: $it" else "" }))
     }
@@ -191,8 +215,8 @@ class SendState(private val a: MainActivity) {
     internal val holder = object : SurfaceHolder.Callback {
         override fun surfaceCreated(hd: SurfaceHolder) { surface = hd.surface }
         override fun surfaceChanged(hd: SurfaceHolder, format: Int, w: Int, hh: Int) {
-            surface = hd.surface; room = min(w, hh); vw = w; vh = hh
-            if (phase == Phase.On && room != configured) reconfigure()
+            surface = hd.surface; vw = w; vh = hh
+            if (phase == Phase.On && roomOf() != configured) reconfigure()
         }
         override fun surfaceDestroyed(hd: SurfaceHolder) { surface = null }
     }
@@ -252,24 +276,19 @@ class SendState(private val a: MainActivity) {
     }
 }
 
-// ai: Send, as the web sender since 2026-10-02: the file, Start, then Settings (the encoder, the brightness and the
-// ai: code: blocks a frame, pictures a second), Developer Tools (the payload, since 2026-10-03; the lab line of the
-// ai: last send, shown on the sending screen while it is open)
-// ai: and About; the bar fixed over them.
+// ai: Send, laid out as Receive since 2026-10-05 (a setup page, then a separate sending screen, until then): the code's
+// ai: box where Receive has the camera, the code painted in it while sending and, idle, the file to send (a tap chooses
+// ai: one, as the web sender's page); under it the state, the figures, the buttons and the rate, then Settings,
+// ai: Developer Tools and About. Landscape: the column on the left and the code on the right, as large as the rest allows;
+// ai: the column folds to a rail (play, pause or resume, the code's capacity, Home at its foot), as Receive's.
 @Composable
 internal fun MainActivity.SendScreen() {
     val s = send
-    if (s.phase == SendState.Phase.On || s.phase == SendState.Phase.Preparing) { Sending(); return }
-    Page("Send", onBack = { go(MainActivity.Screen.Home) }) {
-        SectionLabel("File")
-        if (s.test) ListRow("Test stream", lead = R.drawable.ic_file, divider = false)
-        else if (s.uri == null) ListRow("Choose a file", lead = R.drawable.ic_file, divider = false, onClick = { pickFile() })
-        else ListRow(s.name, listOf(if (s.size > 0) Readout.bytes(s.size) else "", s.type).filter { it.isNotEmpty() }.joinToString(" · "),
-            lead = R.drawable.ic_file, divider = false, onClick = { pickFile() }) { Btn("Change", Kind.Text) { pickFile() } }
-        (s.phase as? SendState.Phase.Error)?.let { Text(it.why, style = MaterialTheme.typography.bodyMedium, color = Bad, modifier = Modifier.padding(top = 12.dp)) }
-        Spacer(Modifier.height(16.dp))
-        Btn("Start", Kind.Primary, enabled = s.test || s.uri != null, modifier = Modifier.fillMaxWidth()) { s.start() }
-        Spacer(Modifier.height(16.dp))
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    // ai: one code view for both layouts: a turn of the phone moves the surface rather than making another
+    val code = remember { movableContentOf<Modifier> { m -> CodeBox(m) } }
+    val side: @Composable () -> Unit = {
+        SendPanel()
         Fold("Settings", isOpen("sendSettings"), { toggle("sendSettings") }) {
             Fields {
                 Field("Encoder") {
@@ -286,6 +305,14 @@ internal fun MainActivity.SendScreen() {
                 Group("Code") {
                     AutoSlider("Blocks a frame", s.blocks, s.picked / 8, 1..128, { n -> "$n block${if (n == 1) "" else "s"}, ${"%.1f".format(Locale.ROOT, n * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
                     RateSlider(s)
+                    // ai: one code, or two side by side for a receiver's 2:1 crop, and their gap (the web's #codes and #gap)
+                    Field("Codes") {
+                        Chips {
+                            Chip("One", s.codes == 1) { s.chooseCodes(1) }
+                            Chip("Two", s.codes == 2) { s.chooseCodes(2) }
+                        }
+                    }
+                    if (s.codes == 2) Field("Gap", "${s.gap} modules") { Bar(s.gap.toFloat(), 0f..64f, 63) { v -> val g = v.roundToInt(); if (g != s.gap) s.chooseGap(g) } }
                 }
             }
         }
@@ -293,23 +320,117 @@ internal fun MainActivity.SendScreen() {
             Fields {
                 Field("Payload") {
                     Chips {
-                        Chip("File", !s.test) { s.test = false }
-                        Chip("Test stream", s.test) { s.test = true }
+                        val idle = s.phase != SendState.Phase.On && s.phase != SendState.Phase.Preparing
+                        Chip("File", !s.test, enabled = idle) { s.test = false }
+                        Chip("Test stream", s.test, enabled = idle) { s.test = true }
                     }
                 }
             }
             sendLab(s).let { if (it.isNotEmpty()) CodeBlock(it) }
         }
         About()
+        Spacer(Modifier.height(24.dp))
+    }
+    if (!landscape) Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding().padding(horizontal = 16.dp)) {
+        TopBar("Send", onBack = { go(MainActivity.Screen.Home) })
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            Spacer(Modifier.height(8.dp))
+            code(Modifier.fillMaxWidth().aspectRatio(s.aspect.toFloat()))
+            side()
+        }
+    } else BoxWithConstraints(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
+        val sideW = minOf(320.dp, maxWidth * 0.45f)
+        Row(Modifier.fillMaxSize()) {
+            if (isOpen("sendCollapsed")) Rail(onClick = { toggle("sendCollapsed") },
+                foot = { Square { IconBtn(R.drawable.ic_back, "Home") { go(MainActivity.Screen.Home) } } }) { SendRail() }
+            else Column(Modifier.width(sideW).fillMaxHeight().padding(horizontal = 16.dp)) {
+                TopBar("Send", onBack = null) { CollapseBtn(false) { toggle("sendCollapsed") } }
+                Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { side() }
+            }
+            VerticalDivider(color = Line)
+            BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().padding(16.dp), contentAlignment = Alignment.Center) {
+                val a = s.aspect.toFloat()
+                val w = minOf(maxWidth, maxHeight * a)
+                code(Modifier.size(w, w / a))   // ai: square for one code, about 2:1 for two
+            }
+        }
     }
 }
 
+// ai: The code's box: while sending the code itself, painted into a SurfaceView the box's size (SendState.holder); idle,
+// ai: on the soft fill as Receive's camera-off cover, the file to send or "Choose a file", a tap choosing one.
+@Composable
+private fun MainActivity.CodeBox(modifier: Modifier) {
+    val s = send
+    val sending = s.phase == SendState.Phase.On || s.phase == SendState.Phase.Preparing
+    Box(modifier.clipToBounds().background(if (sending) Bg else Soft), contentAlignment = Alignment.Center) {
+        if (sending) AndroidView({ ctx -> SurfaceView(ctx).apply { holder.addCallback(s.holder) } }, Modifier.fillMaxSize())
+        else Column(Modifier.fillMaxSize().clickable(enabled = !s.test) { pickFile() }, verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+            horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(painterResource(R.drawable.ic_file), contentDescription = null, Modifier.size(24.dp), tint = Muted)
+            Text(if (s.test) "Test stream" else if (s.uri == null) "Choose a file" else s.name, style = MaterialTheme.typography.bodyMedium, color = Muted,
+                textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 16.dp))
+        }
+    }
+}
+
+// ai: The state, the buttons and the rate, as Receive's transfer panel: the state line (the file and its size,
+// ai: "Preparing", "Sending" with the bytes that go, "Paused", or what went wrong), then Start, or Stop (Resume beside it
+// ai: while paused), then the rate the code carries.
+@Composable
+private fun MainActivity.SendPanel() {
+    val s = send
+    val on = s.phase == SendState.Phase.On
+    val busy = on || s.phase == SendState.Phase.Preparing
+    val st = s.stats
+    val what = if (s.test) "the test stream" else s.name
+    // ai: the bytes that go, what compression left of the file once the sender says (its own size before); the file's
+    // ai: own size and the pass are Developer Tools' (sendLab, 2026-10-05)
+    val sized = if (s.test || s.size <= 0) what else "$what, ${Readout.bytes(if (st.sentBytes > 0) st.sentBytes else s.size)}"
+    val err = (s.phase as? SendState.Phase.Error)?.why
+    val line = when {
+        err != null -> err
+        s.phase == SendState.Phase.Preparing -> "Preparing $what"
+        on && s.paused -> "Paused"
+        on -> "Sending $sized"
+        s.test -> "The test stream"
+        s.uri != null -> sized
+        else -> ""
+    }
+    if (line.isNotEmpty()) Text(line, style = MaterialTheme.typography.titleMedium, color = if (err != null) Bad else Fg, modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
+    HeatWarning(heat, clocks, Modifier.padding(top = 8.dp))
+    Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (!busy) Btn("Start", Kind.Primary, enabled = s.test || s.uri != null, modifier = Modifier.fillMaxWidth()) { s.start() }
+        else if (s.paused) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Btn("Resume", Kind.Primary, modifier = Modifier.weight(1f)) { s.pause(false) }
+            Btn("Stop", modifier = Modifier.weight(1f)) { s.stop() }
+        }
+        else Btn("Stop", modifier = Modifier.fillMaxWidth()) { s.stop() }
+    }
+    if (on && st.offeredKBs > 0) Text(Readout.rate(st.offeredKBs), style = MaterialTheme.typography.titleMedium, color = Fg, modifier = Modifier.padding(bottom = 8.dp))
+}
+
+// ai: The rail's squares: play to start (or to resume), pause while sending, and the code's capacity while it is shown
+@Composable
+private fun MainActivity.SendRail() {
+    val s = send
+    val on = s.phase == SendState.Phase.On
+    Square {
+        IconBtn(if (on && !s.paused) R.drawable.ic_pause else R.drawable.ic_play, if (!on) "Start" else if (s.paused) "Resume" else "Pause",
+            enabled = if (on) true else s.phase != SendState.Phase.Preparing && (s.test || s.uri != null)) { if (on) s.pause(!s.paused) else s.start() }
+    }
+    RateSquare(if (on) s.capacityKBs else null)
+}
+
 // ai: The lab line (the web's #tx, its first lines): the format, where it is painted, the rate shown and a frame's paint,
-// ai: and why not the GPU where auto fell back; empty before a first send.
+// ai: and why not the GPU where auto fell back; for a file its own size and the bytes that go, and which pass shows
+// ai: (2026-10-05, the sending line's until then); empty before a first send.
 private fun sendLab(s: SendState): String {
     val st = s.stats
     if (st.label.isEmpty()) return ""
-    return "${st.label} on the ${if (st.painter == "gpu") "GPU" else "CPU"}, %.1f frames/s, paint %.1f ms a frame".format(st.shownFps, st.paintMs) +
+    return "${st.label} on the ${if (st.painter == "gpu") "GPU" else "CPU"}, %.1f frames/s, paint %.1f ms a frame".format(Locale.ROOT, st.shownFps, st.paintMs) +
+        (if (!s.test && s.size > 0) "\nfile ${s.size} B" + (if (st.sentBytes in 1 until s.size) ", ${st.sentBytes} B as sent (zstd)" else "") +
+            (if (st.pass > 0) ", pass ${floor(st.pass).toInt()}" else "") else "") +
         if (st.painter == "cpu" && s.painter != "cpu" && st.gpuWhy.isNotEmpty()) "\nnot the GPU: ${st.gpuWhy}" else ""
 }
 
@@ -330,50 +451,4 @@ private fun AutoSlider(title: String, value: Int, shown: Int, range: IntRange, t
 @Composable
 private fun RateSlider(s: SendState) {
     Field("Pictures a second", "${s.rate} a second") { Bar(s.rate.toFloat(), 1f..60f, 58) { s.chooseRate(it.roundToInt()) } }
-}
-
-// ai: The code as large as the screen allows on white, and under it (beside it, turned) the state, the rate and Stop.
-@Composable
-private fun MainActivity.Sending() {
-    val s = send
-    BoxWithConstraints(Modifier.fillMaxSize().background(Bg).safeDrawingPadding().padding(12.dp)) {
-        val land = maxWidth > maxHeight
-        // ai: the panel beside the code in landscape, or its collapser alone (sendCollapsed, 2026-10-02): the code the
-        // ai: larger where the width bounds it
-        val folded = land && isOpen("sendCollapsed")
-        val side = if (land) min(maxHeight.value, maxWidth.value - (if (folded) 72f else 280f)) else min(maxWidth.value, maxHeight.value - 150f)
-        val code: @Composable () -> Unit = {
-            AndroidView({ ctx -> SurfaceView(ctx).apply { holder.addCallback(s.holder) } }, Modifier.size(side.dp))
-        }
-        val panel: @Composable () -> Unit = {
-            Column(Modifier.padding(horizontal = 4.dp)) {
-                val what = if (s.test) "the test stream" else s.name
-                // ai: the file's size and, where compression shrank it, the bytes that actually go (the web's sending line; 2026-10-05)
-                val st0 = s.stats
-                val sized = if (s.test || s.size <= 0) what else "$what, ${Readout.bytes(s.size)}" + (if (st0.sentBytes in 1 until s.size) " compressed to ${Readout.bytes(st0.sentBytes)}" else "")
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (s.phase == SendState.Phase.Preparing) "Preparing $what" else if (s.paused) "Paused" else "Sending $sized", style = MaterialTheme.typography.titleMedium, color = Fg,
-                        modifier = Modifier.weight(1f).padding(top = 8.dp))
-                    if (land) CollapseBtn(false, left = false) { toggle("sendCollapsed") }
-                }
-                val st = s.stats
-                if (st.offeredKBs > 0) Text(Readout.rate(st.offeredKBs) + if (!s.test && st.pass > 0) ", pass ${floor(st.pass).toInt()}" else "",
-                    style = MaterialTheme.typography.bodyMedium, color = Muted)
-                HeatWarning(heat, clocks, Modifier.padding(top = 8.dp))
-                if (isOpen("sendAdvanced")) sendLab(s).let { if (it.isNotEmpty()) CodeBlock(it) }
-                Spacer(Modifier.height(8.dp))
-                if (s.paused) { Btn("Resume", Kind.Primary, modifier = Modifier.fillMaxWidth()) { s.pause(false) }; Spacer(Modifier.height(8.dp)) }
-                Btn("Stop", modifier = Modifier.fillMaxWidth()) { s.stop() }
-            }
-        }
-        if (land) Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
-            code()
-            // ai: the rail (as Receive's): pause or resume, and the code's capacity
-            if (folded) Rail(left = false, onClick = { toggle("sendCollapsed") }) {
-                Square { IconBtn(if (s.paused) R.drawable.ic_play else R.drawable.ic_pause, if (s.paused) "Resume" else "Pause", enabled = s.phase == SendState.Phase.On) { s.pause(!s.paused) } }
-                RateSquare(s.capacityKBs)
-            }
-            else Box(Modifier.width(260.dp)) { panel() }
-        } else Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) { code(); panel() }
-    }
 }
