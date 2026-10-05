@@ -30,7 +30,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
@@ -53,13 +52,12 @@ internal fun MainActivity.HomeScreen() {
         Spacer(Modifier.height(8.dp))
         if (!tipsSeen) TipCard(onGot = { tipsDone() }) {
             Text("Send a file from one screen to another device's camera.", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, color = Fg)
-            // ai: the demo's address a link in the first step: a computer sends from the web app there
-            Steps(buildAnnotatedString {
-                append("On the sending device, open Lizard or ")
-                withLink(LinkAnnotation.Url(DEMO_URL, TextLinkStyles(SpanStyle(textDecoration = TextDecoration.Underline)))) { append("fosslabs.dev") }
-                append(", choose Send and pick a file.")
-            }, AnnotatedString("On the receiving phone, open Lizard and choose Receive."),
-                AnnotatedString("Point it at the code until the file arrives. It is kept here."))
+            Steps("On the sending device, open Lizard, choose Send and pick a file.", "On the receiving phone, open Lizard and choose Receive.",
+                "Point it at the code until the file arrives. It is kept here.")
+            // ai: the example on video (the README's), a link the system opens
+            Text(buildAnnotatedString {
+                withLink(LinkAnnotation.Url(EXAMPLE_URL, TextLinkStyles(SpanStyle(textDecoration = TextDecoration.Underline)))) { append("An example on video") }
+            }, style = MaterialTheme.typography.bodyLarge, color = Fg, modifier = Modifier.padding(top = 4.dp))
         }
         // ai: Send and Receive side by side, as the web Home's tiles; Receive the solid one, as the web's on a touch screen
         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -95,7 +93,7 @@ private fun Tile(icon: Int, title: String, sub: String, solid: Boolean, modifier
 
 // ai: The tip's numbered steps (the web's ol)
 @Composable
-internal fun Steps(vararg steps: AnnotatedString) {
+internal fun Steps(vararg steps: String) {
     steps.forEachIndexed { i, s ->
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("${i + 1}.", style = MaterialTheme.typography.bodyLarge, color = Fg)
@@ -104,8 +102,8 @@ internal fun Steps(vararg steps: AnnotatedString) {
     }
 }
 
-// ai: the web app, where a computer without the desktop sender sends from
-private const val DEMO_URL = "https://fosslabs.dev"
+// ai: the example on video, the README's
+private const val EXAMPLE_URL = "https://www.youtube.com/watch?v=F-Mie4m9gBQ"
 
 private fun whenOf(at: Long) = if (at > 0) DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(at)) else ""
 
