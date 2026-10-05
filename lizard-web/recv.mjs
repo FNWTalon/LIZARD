@@ -154,7 +154,9 @@ function showCfg() {
 // ai: frame last showed the test stream; bandAt: when a frame last read a format word; stoppedAt: when the camera last
 // ai: stopped (the pause is taken off a resumed transfer's clock, tFirst); lab: the stats tick's lab line (#lab, in
 // ai: Advanced: the numbers line's until 2026-10-01); why: its hints in plain words.
-const ui = { err: "", starting: false, received: null, testAt: -Infinity, bandAt: -Infinity, stoppedAt: 0, lab: "", why: "" };
+// ai: fileAt: when a frame last brought blocks that were not the test stream's (2026-10-05: the test stream owns the
+// ai: display only while it is the newer of the two)
+const ui = { err: "", starting: false, received: null, testAt: -Infinity, fileAt: -Infinity, bandAt: -Infinity, stoppedAt: 0, lab: "", why: "" };
 const LIVE_MS = 3000;   // ai: the test stream, or a code's word, is still "being read" this long after its last frame
 const recent = (at) => performance.now() - at < LIVE_MS;
 // ai: One state at a time, the first that holds: error, starting, loading (the camera on and no decoder answer yet since
@@ -186,9 +188,13 @@ function showState() {
   const on = !!track, h = xferNow?.header, go = $("go"), offered = !!h && xferNow.done && h.root === ui.received?.root;
   let line, tone = null, frac = null, nums = "";
   const loading = on && !ui.err && !ui.starting && !answered;
+  // ai: the test stream first while the camera reads it, the newer of it and a file's frames (2026-10-05): it takes over
+  // ai: from a file received or in progress, whose line, buttons and rail squares come back once the camera is on its frames
+  const testing = on && recent(ui.testAt) && ui.testAt >= ui.fileAt;
   if (ui.err) { line = ui.err; tone = "bad"; }
   else if (ui.starting) line = "Starting the camera";
   else if (loading) line = "Getting ready";
+  else if (testing) { line = "Reading the test stream"; const now = recentKBs(); if (now != null) nums = rate(now); }
   else if (on && h && !offered) {
     frac = fractionDone(xferNow);
     line = `Receiving ${h.name || "a file"}`;
@@ -204,7 +210,6 @@ function showState() {
     const r = ui.received;
     line = `Received ${r.name}, ${nb(bytes(r.n))} in ${nb(`${r.secs.toFixed(1)} s`)}${r.sent && r.sent < r.n ? `, ${nb(bytes(r.sent))} sent` : ""}`; tone = "good"; frac = 1;
   } else if (!on) line = "";   // ai: idle says nothing (2026-10-02: an instruction that obvious only takes space)
-  else if (recent(ui.testAt)) { line = "Reading the test stream"; const now = recentKBs(); if (now != null) nums = rate(now); }
   else line = "Looking for a code";   // ai: a word read with no file yet says this too (2026-10-05; "Found the code, waiting for the file" before)
   // ai: rewritten only when it changes: #state is a live region, and a screen reader reads out every rewrite
   if (`${tone} ${line}` !== stateShown) { stateShown = `${tone} ${line}`; say($("state"), line, tone); }
@@ -212,7 +217,7 @@ function showState() {
   $("nums").textContent = nums;
   $("lab").textContent = on ? ui.lab : "";
   $("why").textContent = on && !ui.err && !loading ? ui.why : "";
-  $("deliver").hidden = !ui.received;
+  $("deliver").hidden = !ui.received || testing;
   $("idle").hidden = on;
   $("loading").hidden = !loading;
   // ai: one solid button on the page at a time: Start while nothing waits, else Open
@@ -226,13 +231,15 @@ function showState() {
   const busy = !!(recording || recHeld.size);
   $("rec").disabled = !on || busy; $("rec").textContent = busy ? `Recording, ${recording} to go` : `Record ${REC_FRAMES} frames`;
   // ai: the collapsed rail (recv.html #rail): the camera's pause or play, the last second's rate while a file or the
-  // ai: test stream is read (its figure over its unit), and once the file is in Open (green, Feather's external-link) and
-  // ai: Save (its download), the deliver row's own actions (2026-10-05; a green tick that opened it until then)
+  // ai: test stream is read (its figure over its unit), and once the file is in a green check in the rate's square (a
+  // ai: mark, no action), then Open (Feather's external-link) and Save (its download), the deliver row's own actions, in
+  // ai: black (2026-10-05; the green tick opened the file until then)
   const cam = $("railCam");
   cam.classList.toggle("off", !on); cam.title = on ? "Stop camera" : "Start camera"; cam.disabled = ui.starting;
-  const now = (on && h && !offered) || (on && recent(ui.testAt)) ? recentKBs() : null, [v, u] = now != null ? rate(now).split(/\s/) : ["", ""];   // ai: \s takes rate()'s no-break space
+  const now = (on && h && !offered) || testing ? recentKBs() : null, [v, u] = now != null ? rate(now).split(/\s/) : ["", ""];   // ai: \s takes rate()'s no-break space
   $("railRate").innerHTML = v ? `${v}<small>${u}</small>` : "";
-  $("railOpen").hidden = $("railSave").hidden = !ui.received;
+  $("railRate").hidden = !!ui.received && !testing;   // ai: the check takes its square, except while the test stream is read
+  $("railDone").hidden = $("railOpen").hidden = $("railSave").hidden = !ui.received || testing;
 }
 const nb = (s) => s.replace(/ /g, "\u00a0");   // ai: a figure and its unit kept on one line
 // ai: "3.1 of 7.4 MB": the part in the unit ui.mjs bytes() gives the whole, at its precision.
@@ -717,7 +724,7 @@ const previewNow = () => (!vfWhyNot() ? "video" : "shot");
 // A finished file, as bytes or as a Blob (a chunked transfer's comes from OPFS as a File, on disk).
 // ai: Offered, never downloaded unasked (2026-10-01): Open (#open, in a tab of its own), Save (#save, a link to a File of
 // ai: it under its name), Share (#share, the system's share sheet, where the browser shares such a file; it went for
-// ai: Clear on 2026-09-29 and came back with the received files), until Receive again (clearFile) or the next file. It
+// ai: Clear on 2026-09-29 and came back with the received files), until the next file. It
 // ai: stays through a stop and a newer transfer. On disk the file is also kept in the received files (lizard-web/library.mjs),
 // ai: listed on Home. `file`, the readout's line, is what lizard-web/check_rates.mjs reads.
 let fileUrl = "", fileOut = null;
@@ -743,22 +750,6 @@ function showFile(name, data, how = "checksum ok", type = "", sent = 0) {
 }
 $("open").onclick = () => { if (fileUrl) window.open(fileUrl, "_blank"); };
 $("share").onclick = () => { if (fileOut) navigator.share({ files: [fileOut], title: fileOut.name }).catch(() => {}); };
-// ai: Receive again (Clear until 2026-10-01): the file let go from this page (its link; the fountain worker's clear empties
-// ai: its scratch folder) and the transfer in hand with it, so the page goes back to reading, and the same file still in
-// ai: the light is received again. A file kept in the received files stays there. The camera started again where it is
-// ai: off (it stops itself once a file is in, showFile), since receiving again is what was asked.
-function clearFile() {
-  if (fileUrl) URL.revokeObjectURL(fileUrl);
-  fileUrl = ""; fileOut = null;
-  const save = $("save");
-  save.removeAttribute("href"); save.textContent = "Save";
-  $("share").hidden = true;
-  ui.received = null;
-  forgetTransfer("clear");
-  showState();
-  if (!track) start();
-}
-$("clear").onclick = clearFile;
 // A chunked transfer as it goes (lizard-web/fountain-worker.mjs): where the header came from, each chunk's share of its blocks,
 // and what the worker holds. xferStats rides in the stats, per chunk left out.
 // ai: xferNow: the last such message whole, per included, for the state line and its meter (showState).
@@ -829,6 +820,7 @@ function take(m) {
   if (camAt && firstDecodeMs == null && (m.tag ?? camAt) >= camAt - 100) firstDecodeMs = Math.round(performance.now() - camAt);
   let news = 0;
   if (m.test) ui.testAt = performance.now();
+  else if (m.ids?.length) ui.fileAt = performance.now();
   // ai: A Lizard frame's blocks new to the page go to the fountain, but not a test frame's (m.test): the light says they
   // ai: are the test stream's, so no transfer is theirs.
   if (m.ids) {
@@ -895,11 +887,10 @@ let cfgVersion = 0;
 const lizardConfig = () => ({ version: ++cfgVersion, spec: { phy: "focus", blind: 1, nmax: PICTURE_SIZES.at(-1) }, usefulBytes: PAYLOAD });
 // ai: New decoder settings: every worker told, the window's counters restarted. newTransfer: what is held goes (the ids
 // ai: seen, the file line, the fountain's transfer: sim/xfer.mjs, its header from the light).
-// ai: The transfer in hand let go: its ids, file line and clocks, and the fountain's receiver (type "config" a new one,
-// ai: "clear" that and the finished files on disk).
-function forgetTransfer(type = "config") {
+// ai: The transfer in hand let go: its ids, file line and clocks, and the fountain's receiver (a new one).
+function forgetTransfer() {
   file = ""; tFirst = 0; avgAt = 0; seenIds = new Set(); seenOld = new Set(); xferStats = null; xferNow = null; xferRoot = ""; $("file").textContent = "";
-  fountain.postMessage({ type, config: { store: STORE } });
+  fountain.postMessage({ type: "config", config: { store: STORE } });
 }
 function setConfig(c, newTransfer) {
   config = c;

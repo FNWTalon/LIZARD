@@ -14,8 +14,7 @@
 // ai:   3. LIZARD-96 through a 1920 x 1080 clip as the fake camera: the test stream read (its state, speed and lab line),
 // ai:      then a 300,000 B file: receiving (the meter, progress, size, speed and time left), received (Save holds the
 // ai:      file's bytes) with the camera stopped by itself, Save kept, the file named again after a restart with the
-// ai:      camera left on; Receive again (the buttons gone, the camera started by it, the transfer's scratch folder
-// ai:      emptied, the file still kept), then received anew into the same entry, the camera off again.
+// ai:      camera left on (Receive again, which received it anew, went 2026-10-05).
 // ai:   4. Home in the same profile at the four sizes: the received file listed, Save holding its bytes, Open, the tips
 // ai:      card shown on a fresh profile and remembered once dismissed, Settings, Delete emptying the received files.
 // ai: All pages: no horizontal scroll, Advanced closed on a fresh profile and remembered over a reload, a menu's setting
@@ -90,6 +89,8 @@ const MEASURE = `(async () => {
 
 // ai: A Developer menu's setting kept over a reload (localStorage, ui.mjs persist, 2026-09-29), and a URL preset of it
 // ai: winning for its own load without overwriting what was kept; then set back so the rest runs on the defaults.
+// ai: the entries in an OPFS folder (the received files' lizard-files), -1 where it is missing
+const opfsFiles = (dir) => `(async () => { try { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle("${dir}"); let n = 0; for await (const k of d.keys()) n++; return n; } catch { return -1; } })()`;
 async function remembered(s, page, id, value, other, tag) {
   await evaluate(s, `(() => { const el = document.getElementById("${id}"); el.value = "${value}"; el.dispatchEvent(new Event("change")); })()`);
   await navigate(s, page);
@@ -321,7 +322,7 @@ const SIZES = [
   const s = await chrome("file", [`--use-file-for-fake-video-capture=${path}`]);
   await size(s, SIZES[0]);
   await navigate(s, `${BASE}?auto`);
-  const STATE = `(() => { const $ = (id) => document.getElementById(id), m = $("meter"); return { state: $("state").textContent, good: $("state").classList.contains("good"), nums: $("nums").textContent, why: $("why").textContent, meter: m.hidden ? null : m.firstElementChild?.style.width, deliver: !$("deliver").hidden, clear: !$("clear").hidden, open: !$("open").hidden && $("open").classList.contains("primary"), go: $("go").textContent, goSolid: $("go").classList.contains("primary"), save: $("save").textContent, href: $("save").href, download: $("save").download, again: $("clear").textContent, railRate: $("railRate").textContent, railDone: !$("railOpen").hidden && !$("railSave").hidden, railOff: $("railCam").classList.contains("off") }; })()`;
+  const STATE = `(() => { const $ = (id) => document.getElementById(id), m = $("meter"); return { state: $("state").textContent, good: $("state").classList.contains("good"), nums: $("nums").textContent, why: $("why").textContent, meter: m.hidden ? null : m.firstElementChild?.style.width, deliver: !$("deliver").hidden, clear: !!$("clear"), open: !$("open").hidden && $("open").classList.contains("primary"), go: $("go").textContent, goSolid: $("go").classList.contains("primary"), save: $("save").textContent, href: $("save").href, download: $("save").download,  railRate: $("railRate").textContent, railDone: !$("railDone").hidden && !$("railOpen").hidden && !$("railSave").hidden, railOff: $("railCam").classList.contains("off") }; })()`;
   await until(s, `/^Receiving/.test(document.getElementById("state").textContent) && parseFloat(document.getElementById("meter").firstElementChild?.style.width) > 40`, 60000, "Receiving, two fifths of the way");
   const a = await evaluate(s, STATE);
   await screenshot(s, `${OUT}/recv-phone-portrait-receiving.png`);
@@ -330,15 +331,15 @@ const SIZES = [
   check(a.state === `Receiving ${NAME}` && /^\d+%, [\d.]+ of 300\sKB(, [\d.]+\s(KB|MB)\/s(, \d+\s(s|min) left)?)?$/.test(a.nums) && a.meter && !a.deliver, `receiving: the state, the meter at ${a.meter} and "${a.nums}"`);
   // ai: the collapsed rail's squares follow the page whether or not it is shown (2026-10-02): the pause square, the
   // ai: last second's rate where the line has one, no tick yet
-  check(!a.railOff && !a.railDone && (/, [\d.]+\s(KB|MB)\/s/.test(a.nums) ? /^[\d.]+(KB|MB)\/s$/.test(a.railRate) : a.railRate === ""), `receiving: the rail's camera on, its rate "${a.railRate}", no Open or Save`);
+  check(!a.railOff && !a.railDone && (/, [\d.]+\s(KB|MB)\/s/.test(a.nums) ? /^[\d.]+(KB|MB)\/s$/.test(a.railRate) : a.railRate === ""), `receiving: the rail's camera on, its rate "${a.railRate}", no check, Open or Save`);
   await until(s, `/^Received/.test(document.getElementById("state").textContent)`, 60000, "Received");
   const b = await evaluate(s, STATE);
-  check(b.railOff && b.railDone && b.railRate === "", `received: the rail's play square, Open and Save, no rate`);
+  check(b.railOff && b.railDone && b.railRate === "", `received: the rail's play square, the green check, Open and Save, no rate`);
   await screenshot(s, `${OUT}/recv-phone-portrait-received.png`);
   const got = await evaluate(s, `fetch(document.getElementById("save").href).then((r) => r.arrayBuffer()).then((x) => { const u = new Uint8Array(x); let v = 7, same = u.length === ${LEN}; for (let i = 0; same && i < u.length; i++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; same = u[i] === ((v >>> 16) & 255); } return { n: u.length, same }; })`);
-  console.log(`     received: "${b.state}" / "${b.nums}", meter ${b.meter}, "${b.save}" ${b.href.slice(0, 5)}... as ${b.download}, "${b.again}" ${b.clear ? "shown" : "hidden"}`);
+  console.log(`     received: "${b.state}" / "${b.nums}", meter ${b.meter}, "${b.save}" ${b.href.slice(0, 5)}... as ${b.download}`);
   check(new RegExp(`^Received ${NAME.replace(".", "\\.")}, 300\\sKB in [\\d.]+\\ss$`).test(b.state) && b.good && b.meter === "100%" && b.deliver && b.download === NAME && b.href.startsWith("blob:"), `received: green, the meter full, Save offered as ${b.download}`);
-  check(b.open && !b.goSolid && b.again === "Receive again", `received: Open the one solid button, "${b.go}" outlined, "${b.again}" offered`);
+  check(b.open && !b.goSolid && !b.clear, `received: Open the one solid button, "${b.go}" outlined, no Receive again`);
   // ai: the camera off by itself once the file is in (2026-10-01, to save heat)
   check(b.go === "Start camera" && b.nums === "" && b.why === "", `received: the camera stopped by itself ("${b.go}")`);
   check(got.n === LEN && got.same, `Save's file is the ${LEN} bytes sent (${got.n}, ${got.same ? "the same" : "NOT the same"})`);
@@ -355,29 +356,6 @@ const SIZES = [
   const d2 = await evaluate(s, STATE);
   check(d.state === b.state && d.deliver && d.href === b.href && d2.go === "Stop camera", `started again: "${d.state}", the same Save, the camera still on 1.5 s later ("${d2.go}")`);
   await evaluate(s, `document.getElementById("go").click()`);
-  // ai: Receive again (Clear from 2026-09-29, in place of Share; renamed 2026-10-01): the file let go from the page, its
-  // ai: buttons gone, the camera started again by it (2026-10-01), the transfer's scratch folder in OPFS empty, and the
-  // ai: file still kept in the received files; the file received anew on the same clip with a new Save, into the same
-  // ai: entry, and the camera off by itself again. Until the
-  // ai: decode workers stopped keeping the ids they had reported (sim/phy.mjs blockJudge, 2026-09-29), the clip's ids
-  // ai: never came back after Clear and this stalled at 0 to 49%.
-  await sleep(300);
-  const opfsFiles = (dir) => `(async () => { try { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle("${dir}"); let n = 0; for await (const k of d.keys()) n++; return n; } catch { return -1; } })()`;
-  const kept = await evaluate(s, opfsFiles("lizard-files"));
-  await evaluate(s, `document.getElementById("clear").click()`);
-  // ai: the scratch folder caught empty: the camera starts again at once and the looping clip refills it (with the same
-  // ai: chunk names), but the fountain worker takes the clear before any block of the new transfer, so it is empty for a while
-  let xferLeft = -2;
-  for (const t = Date.now(); Date.now() - t < 3000 && xferLeft !== 0; ) xferLeft = await evaluate(s, opfsFiles("lizard-xfer"));
-  await sleep(500);
-  const e = await evaluate(s, STATE), keptAfter = await evaluate(s, opfsFiles("lizard-files"));
-  check(!e.deliver && !/^Received/.test(e.state) && e.go === "Stop camera" && xferLeft === 0 && kept === 1 && keptAfter === 1, `Receive again: the buttons gone, "${e.state}", the camera on ("${e.go}"), the scratch folder ${xferLeft === 0 ? "seen empty" : `never seen empty (${xferLeft} files)`}, the received files ${kept} to ${keptAfter}`);
-  await until(s, `/^Received/.test(document.getElementById("state").textContent)`, 60000, "Received anew after Receive again");
-  const f = await evaluate(s, STATE);
-  const got2 = await evaluate(s, `fetch(document.getElementById("save").href).then((r) => r.arrayBuffer()).then((x) => x.byteLength)`);
-  await sleep(300);
-  const keptAgain = await evaluate(s, opfsFiles("lizard-files"));
-  check(f.deliver && f.clear && f.href.startsWith("blob:") && f.href !== b.href && got2 === LEN && keptAgain === 1 && f.go === "Start camera", `after Receive again: "${f.state}", a new Save of ${got2} B, the received files ${keptAgain} (the same entry), the camera off by itself ("${f.go}")`);
   await size(s, SIZES[2]);
   await sleep(300);
   await screenshot(s, `${OUT}/recv-laptop-received-stopped.png`);

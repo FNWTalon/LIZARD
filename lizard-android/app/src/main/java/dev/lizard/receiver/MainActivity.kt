@@ -103,8 +103,8 @@ class MainActivity : ComponentActivity() {
     internal var secs by mutableStateOf(0.0)
     private var t0 = 0L
     private var filing = ""      // ai: the root whose keep is under way (Engine.keep), until its answer
-    private var unfiled = ""     // ai: a root whose keep failed: not tried again until Receive again
-    private var ended = ""       // ai: the root whose arrival stopped the camera (once a root, until Receive again)
+    private var unfiled = ""     // ai: a root whose keep failed: not tried again in this run of the app
+    private var ended = ""       // ai: the root whose arrival stopped the camera (once a root)
     private var saving: Library.Entry? = null
     private var asked = false
     private val devlog = DevLog()
@@ -269,14 +269,7 @@ class MainActivity : ComponentActivity() {
     internal fun isOpen(k: String) = folds[k] == true
     internal fun toggle(k: String) { val v = !isOpen(k); folds[k] = v; prefs.edit().putBoolean(k, v).apply() }
 
-    // ai: Receive again (Clear until 2026-10-01): the transfer let go, so the same file still in the light is received
-    // ai: anew; a file kept in the received files stays there. The native clear runs on the engine's thread after a keep
-    // ai: already asked for (Engine.clear), and a keep under way is left to finish: only a failed one is forgotten. The
-    // ai: camera started again where it is off (it stops itself once a file is in), since receiving again is what was asked.
-    internal fun receiveAgain() {
-        engine.clear(); note = ""; t0 = 0; secs = 0.0; unfiled = ""; ended = ""
-        if (granted && (phase == Engine.Phase.Idle || phase is Engine.Phase.Error)) { stopped = false; startCamera() }
-    }
+    // ai: Receive again (Clear until 2026-10-01) went 2026-10-05: a second Start camera; a receiver tests with the test stream.
 
     // ai: The received file's actions, through the FileProvider (AndroidManifest.xml), as the header's media type.
     private fun uriOf(e: Library.Entry): Uri = FileProvider.getUriForFile(this, "$packageName.files", e.file)
@@ -290,12 +283,12 @@ class MainActivity : ComponentActivity() {
         i.clipData = ClipData.newRawUri(e.name, uri)
         try { startActivity(Intent.createChooser(i, null)) } catch (_: ActivityNotFoundException) {}
     }
-    internal fun saveCopy(e: Library.Entry) { saving = e; note = ""; save.launch(e.name) }
+    internal fun saveCopy(e: Library.Entry) { saving = e; note = ""; save.launch(e.name) }   // ai: the Save buttons (a copy where the user picks)
     private fun saveTo(uri: Uri, e: Library.Entry) {
         Thread {
             val n = try {
                 contentResolver.openOutputStream(uri)!!.use { o -> e.file.inputStream().use { it.copyTo(o, 1 shl 16) } }
-                "Saved a copy of ${e.name}"
+                "Saved ${e.name}"
             } catch (x: Exception) { "The copy could not be saved: ${x.message}" }
             runOnUiThread { note = n }
         }.start()
@@ -308,9 +301,9 @@ class MainActivity : ComponentActivity() {
     internal fun version(): String = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "" } catch (_: Exception) { "" }
 
     // ai: A verified file into the received files, once a root: moved off the native store by the engine (Engine.keep), so
-    // ai: a receiver's rebuild or Receive again no longer takes it. A root already kept is not moved again, and none is
-    // ai: begun while one is under way: Library.dest empties the root's folder, which a second keep of the same root
-    // ai: (a poll seeing it still verified after Receive again) would have done under the first's file.
+    // ai: a receiver's rebuild no longer takes it. A root already kept is not moved again, and none is begun while one
+    // ai: is under way: Library.dest empties the root's folder, which a second keep of the same root (a poll seeing it
+    // ai: still verified) would have done under the first's file.
     private fun keep(r: Readout.Rx, root: String, type: String) {
         if (filing.isNotEmpty() || root == unfiled || files.any { it.root == root }) return
         filing = root

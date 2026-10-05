@@ -147,9 +147,6 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
             end()
         }) end()
     }
-    // ai: on this thread, after any keep() asked before it (2026-10-01: from the main thread the native
-    // ai: clear could empty the store before a keep already asked for had moved the verified file out of it)
-    fun clear() = h.post { synchronized(lock) { if (handle != 0L) Native.clear(handle) } }
     // ai: The verified file moved into the received files (Library.dest, 2026-10-01): on this thread, so it never races
     // ai: a receiver's rebuild (which empties the store it lies in); a rename, the two in one filesystem. done(true) on
     // ai: the main thread once it is there. Native.file's path is stale after it: nothing reads the store's copy again.
