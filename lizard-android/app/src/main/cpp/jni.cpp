@@ -281,10 +281,10 @@ struct Tx {
   size_t mapLen = 0;
   ANativeWindow* win = nullptr;
   jobject surface = nullptr;   // ai: the global ref win was made from
-  int geom = 0;                // ai: the side the window's buffers were set to
+  int geom = 0, geomW = 0;     // ai: the frame size the window's buffers were set to (height, width)
   int fps = 0;                 // ai: the rate configured, voted on the ring's surface
   std::shared_ptr<Ring> ring;  // ai: the vsync-locked present's surface and buffers (none on the window path)
-  int ringSide = 0, ringFps = 0, dstW = 0, dstH = 0;
+  int ringSide = 0, ringW = 0, ringFps = 0, dstW = 0, dstH = 0;
   bool ringFailed = false;     // ai: no child surface or buffers here: the window path for this sender
   std::string error;
 };
@@ -302,23 +302,24 @@ void dropWindow(JNIEnv* e, Tx* t) {
   dropRing(t);
   if (t->win) ANativeWindow_release(t->win);
   if (t->surface) e->DeleteGlobalRef(t->surface);
-  t->win = nullptr; t->surface = nullptr; t->geom = 0;
+  t->win = nullptr; t->surface = nullptr; t->geom = 0; t->geomW = 0;
 }
-// ai: The next painted frame for vsync `vsync`, scaled into the view's w x h: true when one was posted. False when none
-// ai: is painted yet, or every buffer is still the compositor's (the frame waits for the next vsync).
-bool presentVsynced(Tx* t, int side, int64_t vsync, int w, int h) {
-  if (!t->ring || t->ringSide != side) {
+// ai: The next painted frame (width x side: two codes side by side are wider than tall, 2026-10-05) for vsync `vsync`,
+// ai: scaled into the view's w x h keeping its shape, centred: true when one was posted. False when none is painted yet,
+// ai: or every buffer is still the compositor's (the frame waits for the next vsync).
+bool presentVsynced(Tx* t, int side, int width, int64_t vsync, int w, int h) {
+  if (!t->ring || t->ringSide != side || t->ringW != width) {
     dropRing(t);
     auto r = std::make_shared<Ring>();
     r->sc = ASurfaceControl_createFromWindow(t->win, "lizard-send");
     if (!r->sc) { t->ringFailed = true; return false; }
     AHardwareBuffer_Desc d{};
-    d.width = static_cast<uint32_t>(side); d.height = static_cast<uint32_t>(side); d.layers = 1;
+    d.width = static_cast<uint32_t>(width); d.height = static_cast<uint32_t>(side); d.layers = 1;
     d.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
     d.usage = AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
     r->slots.resize(4);
     for (auto& x : r->slots) if (AHardwareBuffer_allocate(&d, &x.b)) { x.b = nullptr; t->ringFailed = true; return false; }
-    t->ring = r; t->ringSide = side;
+    t->ring = r; t->ringSide = side; t->ringW = width; t->dstW = t->dstH = 0;
   }
   if (!t->s->ready()) return false;
   Ring& r = *t->ring;
@@ -348,7 +349,10 @@ bool presentVsynced(Tx* t, int side, int64_t vsync, int w, int h) {
   ASurfaceTransaction* tr = ASurfaceTransaction_create();
   ASurfaceTransaction_setBuffer(tr, r.sc, b, fence);   // ai: the transaction owns the acquire fence
   if (t->dstW != w || t->dstH != h) {
-    const ARect src{0, 0, side, side}, dst{0, 0, w, h};
+    // ai: the frame's shape kept: the view is laid out at about the frame's shape (Send.kt CodeBox), not to the pixel
+    const double sc = std::min(static_cast<double>(w) / width, static_cast<double>(h) / side);
+    const int dw = static_cast<int>(width * sc + 0.5), dh = static_cast<int>(side * sc + 0.5), x0 = (w - dw) / 2, y0 = (h - dh) / 2;
+    const ARect src{0, 0, width, side}, dst{x0, y0, x0 + dw, y0 + dh};
     ASurfaceTransaction_setGeometry(tr, r.sc, src, dst, 0);
     ASurfaceTransaction_setBufferTransparency(tr, r.sc, ASURFACE_TRANSACTION_TRANSPARENCY_OPAQUE);
     ASurfaceTransaction_setVisibility(tr, r.sc, ASURFACE_TRANSACTION_VISIBILITY_SHOW);
@@ -405,9 +409,10 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txError(JNI
 
 // ai: The format to paint (n, sub-channels, span, the rate the word states, painters) and where (painter: 0 the CPU, 1
 // ai: the GPU, 2 auto; assets: the app's generated tree, the GPU's kernels and tables): "" or the codec's refusal.
-extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txConfigure(JNIEnv* e, jclass, jlong h, jint n, jint subch, jint span, jint fps, jint threads, jint painter, jstring assets) {
+// ai: codes: 1, or 2 side by side for a receiver's 2:1 crop, gap modules apart (2026-10-05; the app sent one before)
+extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txConfigure(JNIEnv* e, jclass, jlong h, jint n, jint subch, jint span, jint fps, jint threads, jint painter, jstring assets, jint codes, jint gap) {
   lizard::TxFormat f;
-  f.n = n; f.subch = subch; f.span = span; f.fps = fps; f.threads = threads; f.painter = painter; f.assets = str(e, assets);
+  f.n = n; f.subch = subch; f.span = span; f.fps = fps; f.threads = threads; f.painter = painter; f.assets = str(e, assets); f.codes = codes; f.gap = gap;
   tx(h)->fps = fps;
   return e->NewStringUTF(tx(h)->s->configure(f).c_str());
 }
@@ -425,24 +430,25 @@ extern "C" JNIEXPORT jint JNICALL Java_dev_lizard_receiver_Native_txSide(JNIEnv*
 // ai: window's own queue as before.
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_txPresent(JNIEnv* e, jclass, jlong h, jobject surface, jlong vsync, jint w, jint hh) {
   Tx* t = tx(h);
-  const int side = t->s->side();
-  if (!surface || !side) return JNI_FALSE;
+  const int side = t->s->side(), width = t->s->width();
+  if (!surface || !side || !width) return JNI_FALSE;
   if (!t->surface || !e->IsSameObject(t->surface, surface)) {
     dropWindow(e, t);
     t->win = ANativeWindow_fromSurface(e, surface);
     if (!t->win) return JNI_FALSE;
     t->surface = e->NewGlobalRef(surface);
   }
-  if (vsync > 0 && !t->ringFailed && w > 0 && hh > 0) return presentVsynced(t, side, vsync, w, hh) ? JNI_TRUE : JNI_FALSE;
-  if (t->geom != side) {
-    if (ANativeWindow_setBuffersGeometry(t->win, side, side, WINDOW_FORMAT_RGBA_8888)) return JNI_FALSE;
-    t->geom = side;
+  if (vsync > 0 && !t->ringFailed && w > 0 && hh > 0) return presentVsynced(t, side, width, vsync, w, hh) ? JNI_TRUE : JNI_FALSE;
+  // ai: the window's own queue: its buffers the frame's size, stretched to the view, which is laid out at about its shape
+  if (t->geom != side || t->geomW != width) {
+    if (ANativeWindow_setBuffersGeometry(t->win, width, side, WINDOW_FORMAT_RGBA_8888)) return JNI_FALSE;
+    t->geom = side; t->geomW = width;
   }
   // ai: a buffer is locked only for a frame in hand: one posted unfilled would show an older frame of the window's queue
   if (!t->s->ready()) return JNI_FALSE;
   ANativeWindow_Buffer b;
   if (ANativeWindow_lock(t->win, &b, nullptr)) return JNI_FALSE;
-  const bool ok = b.width == side && b.height == side && t->s->take(static_cast<uint8_t*>(b.bits), b.stride * 4);
+  const bool ok = b.width == width && b.height == side && t->s->take(static_cast<uint8_t*>(b.bits), b.stride * 4);
   ANativeWindow_unlockAndPost(t->win);
   return ok ? JNI_TRUE : JNI_FALSE;
 }

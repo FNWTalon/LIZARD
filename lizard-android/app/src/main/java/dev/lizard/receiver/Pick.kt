@@ -20,6 +20,8 @@ object Pick {
     private fun rRing(subch: Int) = sqrt(2 * 320.0 * subch / PI)
     fun nFor(subch: Int) = PICTURES.firstOrNull { it >= 3 * rRing(subch) } ?: PICTURES.last()
     fun span(ring: Int = RING_DEFAULT) = 2 * RINGS[ring]
+    // ai: a gap of `gap` modules between two codes as a share of one code's side, its margin in (the web's gapFrac)
+    fun gapShare(gap: Int, ring: Int = RING_DEFAULT) = gap / (modules(ring) + 2.0 * QUIET)
     private fun modules(ring: Int) = span(ring) + 2 * OB_MARGIN
     fun roomFor(subch: Int, ring: Int = RING_DEFAULT) = (modules(ring) + 2.0 * QUIET) / span(ring) * T_DISPLAY_CYCLE * rRing(subch)
     fun pick(roomPx: Double, ring: Int = RING_DEFAULT): Int {

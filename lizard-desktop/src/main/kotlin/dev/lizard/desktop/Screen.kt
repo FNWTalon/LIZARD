@@ -104,8 +104,9 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
     val f = s.file
     if (s.test) ListRow("Test stream", lead = Icons.file)
     else if (f == null) ListRow("Choose a file", lead = Icons.file, onClick = if (idle) choose else null)
-    // ai: and, while sending, the bytes that actually go where compression shrank the file (2026-10-05)
-    else ListRow(f.name, Fmt.bytes(s.fileSize) + (s.sentBytes.let { if (it in 1 until s.fileSize) ", compressed to ${Fmt.bytes(it)}" else "" }), lead = Icons.file, onClick = if (idle) choose else null) { Btn("Change", Kind.Text, enabled = idle) { choose() } }
+    // ai: the bytes that go, what compression left of the file once the sender says (its own size before; the own size is
+    // ai: the readout's since 2026-10-05)
+    else ListRow(f.name, Fmt.bytes(if (s.sentBytes > 0) s.sentBytes else s.fileSize), lead = Icons.file, onClick = if (idle) choose else null) { Btn("Change", Kind.Text, enabled = idle) { choose() } }
     Spacer(Modifier.height(8.dp))
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (idle) Btn("Start", Kind.Primary, enabled = s.canStart, modifier = Modifier.weight(1f)) { s.requestStart() }

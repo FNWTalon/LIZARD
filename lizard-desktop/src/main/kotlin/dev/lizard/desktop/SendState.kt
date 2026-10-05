@@ -335,21 +335,13 @@ class SendState {
     }
 
     // ai: The figures (the web's #nums): the rate the pictures actually presented carry (the presenter's fresh pictures a
-    // ai: second x codes x blocks a frame x 469 B, so a limit outside the sender shows in the figure; 2026-10-04), and for
-    // ai: a file which pass of it is showing and how long a pass takes at this second's data blocks.
+    // ai: second x codes x blocks a frame x 469 B, so a limit outside the sender shows in the figure; 2026-10-04); the
+    // ai: pass, beside it until 2026-10-05, is the readout's.
     val figures: String get() {
         if (phase != Phase.On || paused) return ""
         val f = fmt ?: return ""
         val pr = present ?: return ""
-        var t = Fmt.rate(pr.num("shownFps") * f.codes * (f.subch / 8) * 469 / 1000.0)
-        val sd = sender
-        if (!runTest && sd != null) {
-            val pass = sd.num("pass")
-            val dataPerSec = sd.num("offeredKBs") * 1000 / 469
-            if (pass >= 1) t += ", pass${Fmt.NB}${floor(pass).toInt()}"
-            if (sd.num("lap") > 0 && dataPerSec > 0) t += ", ${Fmt.f1(sd.num("lap") / dataPerSec)}${Fmt.NB}s a${Fmt.NB}pass"
-        }
-        return t
+        return Fmt.rate(pr.num("shownFps") * f.codes * (f.subch / 8) * 469 / 1000.0)
     }
 
     // ai: The readout (the web's #tx, Developer Tools): the format and why, the file, the frame on the surface, a frame's
@@ -363,7 +355,8 @@ class SendState {
         l += "LIZARD-${f.subch} ($b blocks), picture ${f.n} samples in the ${f.span / 2}-cell ring" +
             if (blocks > 0) ", set by hand" else ", chosen from a ${room.roundToInt()} px room and nothing else"
         if (!runTest) l += "file $fileSize B${sd.num("sentBytes").toLong().let { if (it in 1 until fileSize) ", $it B as sent (zstd)" else "" }}: ${sd.num("chunks").toInt()} chunk${if (sd.num("chunks").toInt() == 1) "" else "s"}, " +
-            "${sd.num("lap").toInt()} data blocks a pass, BLAKE3 ${sd.str("root").take(16)}..., header in the light"
+            "${sd.num("lap").toInt()} data blocks a pass, BLAKE3 ${sd.str("root").take(16)}..., header in the light" +
+            (sd.num("pass").let { p -> if (p >= 1) "\npass ${floor(p).toInt()}" + (sd.num("offeredKBs").let { k -> if (k > 0 && sd.num("lap") > 0) ", ${Fmt.f1(sd.num("lap") / (k * 1000 / 469))} s a pass" else "" }) else "" })
         l += "frame ${sd.num("width").toInt()} x ${sd.num("side").toInt()} px" + (if (f.codes > 1) ", ${f.codes} side by side ${f.gap} modules apart" else "") +
             (pr?.let { " on a ${it.str("surface").replace("x", " x ")} px surface" } ?: "")
         l += "${if (f.codes > 1) "${f.codes} x " else ""}$b x 469 B = ${f.codes * b * 469} B per frame"

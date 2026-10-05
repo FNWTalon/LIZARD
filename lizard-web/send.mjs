@@ -16,9 +16,10 @@ import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, coll
 await initOb();
 let offeredKBs = 0;
 let fileBytes = 0, sentBytes = 0;   // ai: the file's bytes and its bytes as sent (every chunk's zstd frame or its own; 2026-10-05), for the sending line
-// ai: ", 1.2 MB compressed to 420 KB" (the size alone where nothing shrank), at module scope: start() names its file's
-// ai: bytes `bytes`, which there shadows ui.mjs's formatter (a TypeError on the first frame left the line at "Preparing")
-const sizeLine = () => (fileBytes ? `, ${bytes(fileBytes)}${sentBytes < fileBytes ? ` compressed to ${bytes(sentBytes)}` : ""}` : "");
+// ai: ", 420 KB": the bytes that go, what compression left of the file (2026-10-05; the file's own size, and "compressed
+// ai: to" beside it, are #tx's since), at module scope: start() names its file's bytes `bytes`, which there shadows
+// ai: ui.mjs's formatter (a TypeError on the first frame left the line at "Preparing")
+const sizeLine = () => (fileBytes ? `, ${bytes(sentBytes || fileBytes)}` : "");
 const $ = (id) => document.getElementById(id), canvas = $("c"), ctx = canvas.getContext("2d"), tmp = document.createElement("canvas"), tctx = tmp.getContext("2d"), gcanvas = $("cg");
 // nextId is the block id space and seq only counts painted frames. They are separate because
 // blocksPerFrame changes when repick() swaps the layout mid-stream: seq * blocksPerFrame would
@@ -542,17 +543,18 @@ async function start() {
       const encLine = (gcfg ? `encoder: WebGPU, ${genc.adapterName}` : `encoder: wasm in the worker${gpuOff && $("enc").value !== "wasm" ? ` (WebGPU off: ${gpuOff})` : ""}`) + (st ? `\nGPU stages, ms a frame: ${Object.entries(st).map(([k, v]) => `${k} ${v.toFixed(2)}`).join(", ")}` : "");
       const dt = (now - lastReport) / 1000, afps = rafRate();
       if (rafGaps.length >= 10) drawFps = afps;
-      const line = `${auto().slice(1)}\n${cfg.label}${xferLine}\n${samples} x ${samples} samples with the quiet zone${cfg.codes > 1 ? `, ${cfg.codes} side by side` : ""}, ${$("tx").dataset.scale} device px per cell\n${cfg.codes > 1 ? `${cfg.codes} x ` : ""}${cfg.blocksPerFrame} x ${cfg.usefulBytes} B = ${cfg.codes * cfg.blocksPerFrame * cfg.usefulBytes} B per frame\npainted ${(painted / dt).toFixed(1)}/s of ${$("fps").value} asked (${how})` +
+      // ai: which pass of the file shows and how long a pass takes (a lap, at this second's rate of data blocks): #tx's
+      // ai: since 2026-10-05 (#nums' until then)
+      const passSecs = lap && dataWin ? lap / (dataWin / dt) : 0;
+      const passLine = lap ? `\npass ${Math.floor(dataSent / lap) + 1}${passSecs ? `, ${passSecs.toFixed(1)} s a pass` : ""}` : "";
+      const line = `${auto().slice(1)}\n${cfg.label}${xferLine}${passLine}\n${samples} x ${samples} samples with the quiet zone${cfg.codes > 1 ? `, ${cfg.codes} side by side` : ""}, ${$("tx").dataset.scale} device px per cell\n${cfg.codes > 1 ? `${cfg.codes} x ` : ""}${cfg.blocksPerFrame} x ${cfg.usefulBytes} B = ${cfg.codes * cfg.blocksPerFrame * cfg.usefulBytes} B per frame\npainted ${(painted / dt).toFixed(1)}/s of ${$("fps").value} asked (${how})` +
         `\nworker ${ahead.size} ready ahead, ${behind} animation frames found nothing ready\nanimation frames ${afps.toFixed(1)} a second, the screen ${(1000 / tickMs).toFixed(1)} Hz by their intervals; pictures held 1, 2, 3, 4+ refreshes: ${held.join(", ")}\n${encLine}`;
       $("tx").textContent = line;
       offeredKBs = (painted / dt) * cfg.codes * cfg.blocksPerFrame * cfg.usefulBytes / 1000;
       // ai: #tx's first line names the format (auto(): "LIZARD-480 (60 blocks), picture ..."; the lab line #lab did until
-      // ai: 2026-10-02, repeating #nums' rate and pass: deleted). The user's figures (#nums): the offered rate and, for a
-      // ai: file, which pass of it is showing and how long a pass
-      // ai: takes (a lap, at this second's rate of data blocks). No-break spaces inside each figure, so a narrow column
-      // ai: wraps the line only at its commas.
-      const passSecs = lap && dataWin ? lap / (dataWin / dt) : 0;
-      $("nums").textContent = `${rate(offeredKBs)}${lap ? `, pass\u00a0${Math.floor(dataSent / lap) + 1}${passSecs ? `, ${passSecs.toFixed(1)}\u00a0s a\u00a0pass` : ""}` : ""}`;
+      // ai: 2026-10-02, repeating #nums' rate and pass: deleted). The user's figure (#nums): the offered rate alone (the
+      // ai: pass went to #tx on 2026-10-05).
+      $("nums").textContent = rate(offeredKBs);
       dataWin = 0;
       // nextId and seq go with it: a stalled paint loop stops posting at all, so staleness is the
       // signal, and these separate "painting nothing new" from "not painting".

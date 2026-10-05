@@ -21,6 +21,8 @@ import android.provider.MediaStore
 import android.provider.Settings as AndroidSettings
 import android.util.Log
 import android.view.WindowManager
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
@@ -155,6 +157,11 @@ class MainActivity : ComponentActivity() {
             // ai: the screen stays on while the camera runs
             if (p == Engine.Phase.On) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else if (p !is Engine.Phase.Starting && p !is Engine.Phase.Loading) window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            // ai: and full screen, the system bars hidden, from the camera's start until it stops (2026-10-05, as Send does
+            // ai: while sending: SendState.screenFor); leaving Receive stops the camera, which brings them back
+            val bars = WindowCompat.getInsetsController(window, window.decorView)
+            if (p == Engine.Phase.On || p is Engine.Phase.Starting || p is Engine.Phase.Loading) bars.hide(WindowInsetsCompat.Type.systemBars())
+            else bars.show(WindowInsetsCompat.Type.systemBars())
         }, { cam = it })
         settings = Settings.load(this) { camId(it) }   // ai: after the engine: a lens's own settings are under the id it resolves
         granted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED

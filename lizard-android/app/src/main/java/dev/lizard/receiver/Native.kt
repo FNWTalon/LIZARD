@@ -52,7 +52,7 @@ object Native {
     // ai: the stats JSON; the handle let go.
     @JvmStatic external fun txCreate(path: String, name: String, type: String): Long
     @JvmStatic external fun txError(): String
-    @JvmStatic external fun txConfigure(h: Long, n: Int, subch: Int, span: Int, fps: Int, threads: Int, painter: Int, assets: String): String
+    @JvmStatic external fun txConfigure(h: Long, n: Int, subch: Int, span: Int, fps: Int, threads: Int, painter: Int, assets: String, codes: Int, gap: Int): String
     @JvmStatic external fun txPrepare(h: Long, assets: String): String
     @JvmStatic external fun txSide(h: Long): Int
     @JvmStatic external fun txPresent(h: Long, surface: android.view.Surface, vsync: Long, w: Int, h2: Int): Boolean
