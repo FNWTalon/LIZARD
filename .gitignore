@@ -27,6 +27,9 @@ __pycache__/
 # The rig's self-signed certificate and key (lizard-web/server.mjs makes them)
 /lizard-web/.cert/
 
+# wrangler's local state from a manual upload of the web app to Cloudflare Pages
+/.wrangler/
+
 # Lab tools for one phone and one desk: they need the lab's recordings, scripts/ or a rig unit
 /server.sh
 /lizard-web/rig.sh
