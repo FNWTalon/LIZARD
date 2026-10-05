@@ -29,8 +29,9 @@ import org.json.JSONObject
 // ai: Home and Receive, went with them. Options bare, no descriptions.
 
 // ai: The decoder (2026-10-01: auto by default, the user free to switch; auto takes the GPU where the phone runs it,
-// ai: else the C, Receiver::create), its Auto chip naming what auto
-// ai: last ran on ("Auto (GPU)", the web's #dec; "Decoding on the GPU." under the chips until 2026-10-02); the lab's
+// ai: else the C, Receiver::create): chips GPU and CPU alone since 2026-10-05 (an Auto chip naming what auto last ran
+// ai: on, "Auto (GPU)", until then; "Decoding on the GPU." under the chips until 2026-10-02): with nothing chosen the
+// ai: setting stays auto and the chip of what auto runs on is marked; a tap chooses that decoder outright. The lab's
 // ai: switches (their chips save and restart as they did, MainActivity.change; their keys unchanged, tools/phone/ab.sh
 // ai: rewrites them).
 @Composable
@@ -40,8 +41,8 @@ internal fun MainActivity.ReceiveSettings() {
     Fields {
         Field("Decoder") {
             Chips {
-                for ((d, label) in listOf("auto" to "Auto", "gpu" to "GPU", "cpu" to "CPU"))
-                    Chip(if (d == "auto" && autoRan.isNotEmpty()) "Auto ($autoRan)" else label, s.decoder == d) { change(s.copy(decoder = d), true) }
+                for ((d, label) in listOf("gpu" to "GPU", "cpu" to "CPU"))
+                    Chip(label, s.decoder == d || (s.decoder == "auto" && autoRan == label)) { change(s.copy(decoder = d), true) }
             }
         }
         // ai: the most frames a GPU batch waits for (Settings.batch): 1 hands each capture's reading to the phase lock
@@ -50,17 +51,15 @@ internal fun MainActivity.ReceiveSettings() {
         if (s.decoder != "cpu") Field("Batch size", "${s.frames}") {
             Bar(s.frames.toFloat(), 1f..32f, 30) { v -> val n = v.roundToInt().coerceIn(1, 32); if (n != s.frames) change(s.copy(batch = n.toString()), false) }
         }
+        // ai: the back cameras by lens, one chosen (2026-10-05; an Auto chip, the closest-focusing lens, until then: the
+        // ai: setting now holds that lens's id itself, Settings.load)
         Field("Camera") {
-            Chips {
-                Chip("Auto", s.camera == "auto") { change(s.copy(camera = "auto"), true) }
-                for (l in caps?.lenses.orEmpty()) Chip(l.label, s.camera == l.id) { change(s.copy(camera = l.id), true) }
-            }
+            Chips { for (l in caps?.lenses.orEmpty()) Chip(l.label, s.camera == l.id) { change(s.copy(camera = l.id), true) } }
         }
         Field("Resolution") {
             Chips { for (r in Settings.RESOLUTIONS) Chip(r, s.resolution == r, enabled = caps == null || r in caps.sizes) { change(s.copy(resolution = r), true) } }
         }
         ZoomField(caps?.zoom)
-        FocusField(caps)
         Field("Crop") {
             Chips { for (d in Settings.LAYOUTS) Chip(if (d == "2:1") "2:1 (experimental)" else d, s.layout == d) { change(s.copy(layout = d), true) } }
         }
@@ -127,28 +126,6 @@ private fun MainActivity.ZoomField(range: Range<Float>?) {
 
 // ai: Home's settings rows (the web Home's #settings): the tips again, the received files' count and size with Delete
 // ai: all (asked first), About.
-// ai: Focus (2026-10-04): Auto (the camera's continuous video autofocus) by default, its chip at the title row's end.
-// ai: Turned off, the lens is held where autofocus last had it (Engine.focusNow), so it is a focus lock, and a slider
-// ai: moves it: 0.1 dioptre steps from infinity (left) to the lens's closest focus (right), live on the running camera
-// ai: (Engine.focus), the distance beside the title (centimetres where the camera's dioptres are calibrated, else the
-// ai: dioptres). Not shown where the camera's lens cannot be held.
-@Composable
-private fun MainActivity.FocusField(caps: Engine.Caps?) {
-    if (caps == null || !caps.manualFocus) return
-    val mf = caps.minFocus
-    val d = settings.focus.toFloatOrNull()?.coerceIn(0f, mf)
-    val auto = d == null
-    val text = when {
-        d == null -> ""
-        caps.focusCal == 0 -> "%.1f D".format(Locale.ROOT, d)
-        d < 0.05f -> "\u221e"
-        else -> "${(100f / d).roundToInt()} cm"
-    }
-    Field("Focus", text, end = { Chip("Auto", auto) { if (auto) focusTo(((engine.focusNow() ?: mf / 2).coerceIn(0f, mf) * 10).roundToInt() / 10f) else focusTo(null) } }) {
-        if (d != null) Bar(d, 0f..mf, maxOf(0, (mf * 10).roundToInt() - 1)) { focusTo((it * 10).roundToInt() / 10f) }
-    }
-}
-
 @Composable
 internal fun MainActivity.HomeSettings() {
     var asking by remember { mutableStateOf(false) }

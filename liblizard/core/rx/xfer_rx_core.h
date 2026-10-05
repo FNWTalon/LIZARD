@@ -7,7 +7,8 @@
 // ai:               SHAKE256, and its other data blocks are then bad) and lizard-web/recv.mjs take (the dedupe: two rotating id
 // ai:               sets of 65,536, control ids always passed on, a test frame's blocks never, the sets cleared when the
 // ai:               core reads a header of another root)
-// ai: The layouts are src/xfer.h's, with Wirehair (liblizard/vendor/wirehair, liblizard/wirehair/shim.cpp) and BLAKE3 (liblizard/vendor/blake3).
+// ai: The layouts are src/xfer.h's, with Wirehair (liblizard/vendor/wirehair, liblizard/wirehair/shim.cpp), BLAKE3 (liblizard/vendor/blake3)
+// ai: and zstd (liblizard/vendor/zstd, liblizard/zstd/shim.c; 2026-10-05: a chunk sent as a frame is decompressed on recovery, before its hash).
 // ai: A solve (Wirehair and BLAKE3 over a 4 MiB chunk) is tens of ms, run inside the block() that completes the chunk.
 #pragma once
 #include <array>
@@ -39,9 +40,12 @@ struct XferProgress {
   std::string name, type, root;   // ai: the header's name and media type; root, BLAKE3 of the file as hex (b3sum's)
   uint64_t length = 0;        // ai: the file's bytes
   uint32_t chunks = 0, verified = 0, manifest = 0, manifestHave = 0;
-  std::vector<uint8_t> per;   // ai: each chunk's share in hand, 0 to 99, 254 decoded and waiting on the manifest, 255 verified
-  double fraction = 0;        // ai: sim/xfer.mjs fractionDone: the share of the file in, 0 to 1
+  std::vector<uint8_t> per;   // ai: each chunk's share in hand, 0 to 99 (a floor until the manifest says its blocks), 255 verified
+  double fraction = 0;        // ai: sim/xfer.mjs fractionDone: the share of the file in, 0 to 1 (by the bytes as sent once known)
   uint64_t bytesIn = 0;       // ai: fraction x length
+  // ai: the file's bytes as they go, every chunk's zstd frame or its own (0 until the manifest has said them), and how
+  // ai: many are in: a verified chunk's all, another's blocks in hand (2026-10-05, what a time left should count)
+  uint64_t sent = 0, sentIn = 0;
   bool done = false;
   std::string path;           // ai: the verified file, once done (a file store's; "" for memory)
   std::string error;          // ai: the store's failure in this transfer (store.h), "" none

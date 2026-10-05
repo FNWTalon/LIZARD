@@ -32,10 +32,11 @@ const PAGES = ["lizard-web/index.html", "lizard-web/send.html", "lizard-web/recv
 const SHIP = new Set([".html", ".css", ".mjs", ".js", ".svg", ".wasm", ".safetensors", ".json"]);
 const SCAN = new Set([".html", ".css", ".mjs", ".js", ".svg"]);
 // ai: emscripten's output (-O3): no comments, and its own string literals are the bare names it loads
-const GLUE = new Set(["liblizard/build/ob.mjs", "liblizard/build/wirehair.mjs"]);
+const GLUE = new Set(["liblizard/build/ob.mjs", "liblizard/build/wirehair.mjs", "liblizard/build/zstd.mjs"]);
 // ai: liblizard/build.sh's output, built and not in git: the crawl drops a name whose file is not there, so before
 // ai: 2026-10-04 an app was built without the codec and the fountain where they were not built. Each must ship.
-const BUILT = { "liblizard/build/ob.mjs": "liblizard/build.sh", "liblizard/build/ob.wasm": "liblizard/build.sh", "liblizard/build/wirehair.mjs": "liblizard/build.sh wirehair" };
+const BUILT = { "liblizard/build/ob.mjs": "liblizard/build.sh", "liblizard/build/ob.wasm": "liblizard/build.sh", "liblizard/build/wirehair.mjs": "liblizard/build.sh wirehair",
+  "liblizard/build/zstd.mjs": "liblizard/build.sh zstd" };
 const fail = (msg) => { console.error(`build: ${msg}`); process.exit(1); };
 const isFile = (p) => { try { return statSync(p).isFile(); } catch { return false; } };
 

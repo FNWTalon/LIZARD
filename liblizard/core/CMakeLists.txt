@@ -72,11 +72,13 @@ target_link_libraries(lizard_gpu_check PRIVATE dec lizard_rx)
 endif()
 
 # ai: The transfer (rx/xfer_rx.h): src's xfer and shake, BLAKE3 portable with the defines build.sh gives it,
-# ai: Wirehair and the web's own shim over it (wirehair/shim.cpp), compiled natively; vendor code without our warnings.
+# ai: Wirehair and the web's own shim over it (wirehair/shim.cpp), zstd as one file under the project's shim
+# ai: (zstd/shim.c, the parameters pinned; 2026-10-05), compiled natively; vendor code without our warnings.
 # ai: LZ is liblizard/, the folder above this one.
 set(LZ ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(WH ${LZ}/vendor/wirehair)
 set(XFER_VENDOR ${LZ}/vendor/blake3/blake3.c ${LZ}/vendor/blake3/blake3_dispatch.c ${LZ}/vendor/blake3/blake3_portable.c
+  ${LZ}/vendor/zstd/zstd.c ${LZ}/zstd/shim.c
   ${WH}/wirehair.cpp ${WH}/gf256.cpp ${WH}/WirehairCodec.cpp ${WH}/WirehairTools.cpp ${WH}/codec/WirehairV2Codec.cpp
   ${WH}/codec/WirehairV2GF16.cpp ${WH}/codec/WirehairV2Peel.cpp ${WH}/codec/WirehairV2Plan.cpp ${WH}/codec/WirehairV2Policy.cpp
   ${WH}/codec/WirehairV2Precode.cpp ${WH}/codec/WirehairV2PrecodeDecode.cpp ${WH}/codec/WirehairV2PrecodeEncode.cpp
@@ -85,7 +87,7 @@ set(XFER_VENDOR ${LZ}/vendor/blake3/blake3.c ${LZ}/vendor/blake3/blake3_dispatch
 # ai: stores, tx/xfer_tx.h), what the library and a wasm build take; lizard_xfer adds the app's threaded receiving end.
 add_library(lizard_xfer_core STATIC rx/xfer_rx_core.cpp rx/store.cpp tx/xfer_tx.cpp ${LZ}/src/xfer.c ${LZ}/src/shake.c ${XFER_VENDOR})
 set_source_files_properties(${XFER_VENDOR} PROPERTIES COMPILE_OPTIONS "${LIZ_NOWARN}")
-target_include_directories(lizard_xfer_core PUBLIC rx tx ${LZ}/src PRIVATE ${LZ}/vendor/blake3 ${WH}/include ${WH})
+target_include_directories(lizard_xfer_core PUBLIC rx tx ${LZ}/src ${LZ}/zstd PRIVATE ${LZ}/vendor/blake3 ${LZ}/vendor/zstd ${WH}/include ${WH})
 target_compile_definitions(lizard_xfer_core PRIVATE BLAKE3_NO_SSE2 BLAKE3_NO_SSE41 BLAKE3_NO_AVX2 BLAKE3_NO_AVX512 BLAKE3_USE_NEON=0 WIREHAIR_BUILDING=1)
 if(NOT EMSCRIPTEN)
 find_package(Threads REQUIRED)

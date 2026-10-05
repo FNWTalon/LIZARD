@@ -124,8 +124,8 @@ These bind every encoder and decoder of the format. This document records the fo
 6. **The channel.** The symbol and its margin are undisturbed. Noise is incidental and lies outside them: a busy page,
    a noisy surround, clutter up to the margin. Nothing adversarial, nothing painted over the symbol. A noisy
    background is a standard test condition for any decoder, not a special case.
-7. **Scope.** This specification is the 2D code. The Wirehair fountain and LZMA compression above it are fixed and
-   not under test.
+7. **Scope.** This specification is the 2D code. The Wirehair fountain and the zstd compression of each chunk (7.6)
+   are fixed codecs, not under test; the layouts that carry them (7.5 to 7.9) are the format's.
 
 **Conformance** (2026-09-24; revised 2026-09-29). The reference build is exact: `liblizard/src/` as `liblizard/build.sh` builds it
 paints the same bytes on every machine, and its test vectors (5.2, 6.12, 7.4, 9.3) are its own regression check.
@@ -1743,49 +1743,62 @@ are 0 to 2^18 - 1, the ids the one-fountain file mode sent before.
   may be shorter.
 - chunks = ceil(length / 2^k), at most 16,383 (`XFER_MAX_CHUNKS`), and 0 for an empty file. A file may therefore be
   up to 16,383 x 2^k bytes: 274,861,129,728 at k = 24.
-- Chunk c has K = ceil(len / 469) source blocks, len its bytes (`xfer_chunk_blocks`). With K >= 2 it is its own
-  Wirehair fountain (9.4), its blocks carrying chunk c and their Wirehair block id. A chunk with K = 1 (469 bytes or
-  less: the last chunk, or the whole of a small file) is not fountained, since Wirehair refuses a one-block message:
-  its bytes go zero padded to 469 as symbol 0, repeated, and a receiver takes the first len of them.
+- **Compression** (2026-10-05). Each chunk is compressed on its own before it is fountained: one zstd frame
+  (`liblizard/zstd/shim.c` pins the parameters: level 9, the row match finder on, no checksum, the content size in the
+  frame; `liblizard/vendor/zstd/`, Zstandard 1.5.7) where that is shorter than the chunk's bytes, else the bytes as
+  they are. What a chunk's fountain carries is its bytes **as sent**, 1 to len; sent < len means a frame. A receiver
+  decompresses such a chunk the moment it is recovered, before its hash (7.9), with the chunk's memory alone (the
+  frame's window is at most the chunk). The file's length, root and chaining values are the file's own bytes, so
+  b3sum of the received file is the root whatever was compressed. Under codec 0 (7.7) every chunk is sent as it is;
+  under codec 1 a sender MAY send any chunk as it is (one that does not shrink) and MUST send a frame only where it is
+  shorter. A receiver MUST accept a stored chunk under either codec and MUST refuse a frame under codec 0.
+- Chunk c has K = ceil(sent / 469) source blocks (`xfer_blocks`). With K >= 2 it is its own Wirehair fountain (9.4),
+  its blocks carrying chunk c and their Wirehair block id. A chunk with K = 1 (sent 469 bytes or less) is not
+  fountained, since Wirehair refuses a one-block message: its sent bytes go zero padded to 469 as symbol 0, repeated,
+  and a receiver takes the first sent of them.
 - **Seed attempts.** Wirehair picks a message's seed attempt (0 to 255) from its block count alone, and its decoder is
-  built from the message length, the block size and that attempt (9.4). Every chunk but the last has the same count,
-  so two attempts cover any file: `seed_full` for every chunk but the last and `seed_last` for the last (7.7). A file
-  whose full chunks took different attempts is one the header cannot describe, and a sender MUST NOT send it
-  (`liblizard/sim/xfer.mjs:XferSender` refuses). Three contents at each of seven sizes took the same attempt (STATUS.md,
-  2026-09-24).
-- Header version 1 fixes the fountain: Wirehair V2, profile `WIREHAIR_V2_PROFILE_CERTIFIED_2026_07`, 469-byte blocks. A
-  change to any of them is a new version.
+  built from the message length, the block size and that attempt (9.4). Compressed, every chunk has its own count, so
+  every chunk's attempt travels: in the manifest (7.8), or for a one-chunk file in the header (7.7). A receiver
+  therefore builds no chunk's decoder before the manifest is in; the control cycle (9.1) puts the manifest within an
+  eighth of a lap, and under the interleaved schedule no chunk completes sooner. (Until 2026-10-05 the header carried
+  two attempts, one for every chunk but the last, and refused a file whose full chunks seeded apart.)
+- Header version 2 fixes the fountain, Wirehair V2, profile `WIREHAIR_V2_PROFILE_CERTIFIED_2026_07`, 469-byte blocks,
+  and the codec, zstd frames. A change to any of them is a new version.
 - k is the sender's choice inside the range. The reference sender uses 22 (4 MiB) unless `send.html?chunk=` says
   otherwise (9.1).
 
 ### 7.7 The header block
 
 Id 0xFFFC0000. Its 469 payload bytes, integers little-endian (`liblizard/src/xfer.h`, `liblizard/src/xfer.c` `xfer_header_write`,
-`xfer_header_parse`):
+`xfer_header_parse`); version 2 since 2026-10-05 (version 1 carried two seed attempts at bytes 3 and 4, a type to 162
+bytes, no codec and no sent):
 
 | offset | bytes | field | value |
 |---|---|---|---|
-| 0 | 1 | version | 1 (`XFER_VERSION`) |
+| 0 | 1 | version | 2 (`XFER_VERSION`) |
 | 1 | 1 | hash | 1, BLAKE3 (`XFER_HASH_BLAKE3`); 0 and 2 to 255 are refused, the room for another hash |
 | 2 | 1 | chunk_log2 | k, 10 to 24 |
-| 3 | 1 | seed_full | the Wirehair seed attempt of every chunk but the last; 0 when there is one chunk or none |
-| 4 | 1 | seed_last | the last chunk's; 0 when it is one block or there is no chunk |
+| 3 | 1 | codec | 0, none (`XFER_CODEC_NONE`): every chunk sent as its bytes; 1, zstd (`XFER_CODEC_ZSTD`): a chunk sent shorter than its bytes is one zstd frame of them (7.6); 2 to 255 refused |
+| 4 | 1 | seed | the Wirehair seed attempt of the one chunk of a one-chunk file of 2 blocks or more; 0 otherwise |
 | 5 | 1 | name_len | bytes of name, 0 to 255 |
-| 6 | 1 | type_len | bytes of media type, 0 to 162 |
+| 6 | 1 | type_len | bytes of media type, 0 to 158 |
 | 7 | 1 | reserved | 0 |
 | 8 | 8 | length | the file's bytes, u64 |
 | 16 | 4 | chunks | ceil(length / 2^k), u32 |
 | 20 | 32 | root | BLAKE3 of the whole file, what `b3sum` prints (7.9) |
 | 52 | 255 | name | the file name, UTF-8, zero padded; empty for none |
-| 307 | 162 | type | the media type, ASCII, zero padded; empty for none |
+| 307 | 158 | type | the media type, ASCII, zero padded; empty for none |
+| 465 | 4 | sent | the one chunk's bytes as sent (its frame, or its own), u32, 1 to its length; 0 when the file is not one chunk |
 
 The fields fill the 469 bytes exactly, and every byte a field does not use is zero. A receiver MUST refuse a header
 block that breaks this table. The reference parse (`xfer_header_parse`) returns:
 
-- -2 (`XFER_ERR_VERSION`) for a version other than 1, and -3 (`XFER_ERR_HASH`) for a hash other than 1;
+- -2 (`XFER_ERR_VERSION`) for a version other than 2, -3 (`XFER_ERR_HASH`) for a hash other than 1, and -4
+  (`XFER_ERR_CODEC`) for a codec other than 0 or 1;
 - -1 for chunk_log2 outside 10 to 24; chunks other than ceil(length / 2^k), past 16,383, or 0 for a file that is not
-  empty; type_len over 162; a nonzero byte 7, or a nonzero byte past name_len in the name or past type_len in the
-  type; a nonzero seed_full with fewer than 2 chunks; a nonzero seed_last with no chunk or a last chunk of one block.
+  empty; type_len over 158; a nonzero byte 7, or a nonzero byte past name_len in the name or past type_len in the
+  type; with one chunk, a sent of 0 or past the chunk's length, a sent under it with codec 0, or a nonzero seed with a
+  sent of 469 bytes or less (`xfer_sent_ok`); with any other number of chunks, a nonzero sent or seed.
 
 So a block that is not a header rarely passes for one. The parse does not check that the name is UTF-8 or the type
 ASCII: the reference sender cuts a name to 255 bytes on a character boundary and drops a type that is not printable
@@ -1793,19 +1806,22 @@ ASCII (`liblizard/sim/xfer.mjs`).
 
 ### 7.8 The manifest blocks
 
-A file of 2 chunks or more has ceil(chunks / 14) manifest blocks (`xfer_manifest_blocks`, 1 to 1,171). A file of one
-chunk or none has none: its root is the one chunk's own hash and is checked from the chunk. Manifest block m, id
-0xFFFC0001 + m, 469 bytes:
+A file of 2 chunks or more has ceil(chunks / 12) manifest blocks (`xfer_manifest_blocks`, 1 to 1,366; 14 a block and
+1,171 until 2026-10-05). A file of one chunk or none has none: its root is the one chunk's own hash and is checked
+from the chunk, and its sent and seed are in the header. Manifest block m, id 0xFFFC0001 + m, 469 bytes:
 
 | offset | bytes | field |
 |---|---|---|
 | 0 | 8 | tag: the root's first 8 bytes |
-| 8 | 448 | the chaining values of chunks 14 m to 14 m + 13, 32 bytes each, in order (7.9); zero past the last chunk |
-| 456 | 13 | reserved, 0 |
+| 8 | 444 | the entries of chunks 12 m to 12 m + 11, 37 bytes each, in order; zero past the last chunk |
+| 452 | 17 | reserved, 0 |
 
-A receiver MUST refuse a manifest block whose tag is not the first 8 bytes of the root in the header it holds, whose m
-is past the file's last manifest block, or with a nonzero byte after its last chaining value
-(`xfer_manifest_parse`). The tag keeps another transfer's block out before it is used.
+An entry: the chunk's chaining value (32 bytes, 7.9), its bytes as sent (u32, little-endian, 7.6) and its Wirehair
+seed attempt (1 byte, 0 where it is one block). A receiver MUST refuse a manifest block whose tag is not the first 8
+bytes of the root in the header it holds, whose m is past the file's last manifest block, with an entry no chunk of
+that file could have (a sent of 0 or past the chunk's length, a sent under it with codec 0, a nonzero seed on a chunk
+of one block: `xfer_sent_ok`), or with a nonzero byte after its last entry (`xfer_manifest_parse`). The tag keeps
+another transfer's block out before it is used.
 
 ### 7.9 The chunk tree, and when a file is accepted
 
@@ -1825,9 +1841,11 @@ chaining values are nodes of its tree of the whole file.
   always falls on a chunk boundary. The root of the list is therefore BLAKE3 of the file. With one chunk the root is
   BLAKE3 of the chunk, and with none BLAKE3 of the empty input.
 
-**Acceptance.** A chunk is verified when its length is what the header gives and, with one chunk, its BLAKE3 is the
-root, or, with two or more, its chaining value is entry c of a list that combines to the root (`xfer_chunk_check`,
-`xfer_manifest_check`). A receiver MUST NOT hand over a file until every chunk is verified, and an empty file until
+**Acceptance.** A chunk sent shorter than its length (7.6) is first decompressed as one zstd frame; a frame that does
+not say it holds the chunk's length, is damaged, or yields anything but that many bytes is a wrong chunk, refused as
+a wrong hash is (its symbols banned, the chunk collected again). A chunk is verified when its length is what the
+header gives and, with one chunk, its BLAKE3 is the root, or, with two or more, its chaining value is entry c of a
+list that combines to the root (`xfer_chunk_check`, `xfer_manifest_check`). A receiver MUST NOT hand over a file until every chunk is verified, and an empty file until
 the root is BLAKE3 of the empty input. The block CRC (7.1) still gates every block, control blocks included. A header
 or manifest block that passes its CRC-32 wrongly (1 in 2^32) is caught only when the root fails.
 
@@ -1842,21 +1860,27 @@ or manifest block that passes its CRC-32 wrongly (1 in 2^32) is caught only when
 | 16382 | 262143 | 0xFFFBFFFF | `ff ff fb ff` | data, the last |
 | 16383 | 0 | 0xFFFC0000 | `00 00 fc ff` | header |
 | 16383 | 1 | 0xFFFC0001 | `01 00 fc ff` | manifest block 0 |
-| 16383 | 1171 | 0xFFFC0493 | `93 04 fc ff` | manifest block 1170, the last |
-| 16383 | 1172 | 0xFFFC0494 | `94 04 fc ff` | reserved |
+| 16383 | 1366 | 0xFFFC0556 | `56 05 fc ff` | manifest block 1365, the last |
+| 16383 | 1367 | 0xFFFC0557 | `57 05 fc ff` | reserved |
 
 **Files.** Each is BLAKE3's official test input, byte i = i mod 251, so each root is the official vector for its length
-(`liblizard/vendor/blake3/test_vectors/test_vectors.json`).
+(`liblizard/vendor/blake3/test_vectors/test_vectors.json`). That input repeats every 251 bytes, so under codec 1 every
+1 KiB chunk compresses to a 271-byte frame, one block, unfountained (the one chunk of 1,025 bytes at k = 11 the
+same); the two rows under codec 0 send the same files as they are, three blocks a chunk with Wirehair's seed attempt
+2, so the fountained path and the seeds have vectors too. Header version 2 (2026-10-05); version 1's bytes are not
+kept. Per chunk: its bytes, its bytes as sent, K and its seed attempt.
 
-| length | k | chunks | K, first and last chunk | seed_full, seed_last | manifest blocks | header bytes 0 to 19 |
-|---|---|---|---|---|---|---|
-| 0 | 22 | 0 | | 0, 0 | 0 | `01011600 00000000 00000000 00000000 00000000` |
-| 1025 | 11 | 1 | 3 | 0, 2 | 0 | `01010b00 02000000 01040000 00000000 01000000` |
-| 8193 | 10 | 9 | 3, 1 (not fountained) | 2, 0 | 1 | `01010a02 00000000 01200000 00000000 09000000` |
-| 31744 | 10 | 31 | 3, 3 | 2, 2 | 3 | `01010a02 020a1800 007c0000 00000000 1f000000` |
-| 102400 | 10 | 100 | 3, 3 | 2, 2 | 8 | `01010a02 02000000 00900100 00000000 64000000` |
+| length | k | codec | chunks | first chunk | last chunk | manifest blocks | header bytes 0 to 19 |
+|---|---|---|---|---|---|---|---|
+| 0 | 22 | 1 | 0 | | | 0 | `02011601 00000000 00000000 00000000 00000000` |
+| 1025 | 11 | 1 | 1 | 1025, 271, 1, 0 | | 0 | `02010b01 00000000 01040000 00000000 01000000` |
+| 8193 | 10 | 1 | 9 | 1024, 271, 1, 0 | 1, 1, 1, 0 | 1 | `02010a01 00000000 01200000 00000000 09000000` |
+| 31744 | 10 | 1 | 31 | 1024, 271, 1, 0 | 1024, 271, 1, 0 | 3 | `02010a01 000a1800 007c0000 00000000 1f000000` |
+| 102400 | 10 | 1 | 100 | 1024, 271, 1, 0 | 1024, 271, 1, 0 | 9 | `02010a01 00000000 00900100 00000000 64000000` |
+| 1025 | 11 | 0 | 1 | 1025, 1025, 3, 2 | | 0 | `02010b00 02000000 01040000 00000000 01000000` |
+| 31744 | 10 | 0 | 31 | 1024, 1024, 3, 2 | 1024, 1024, 3, 2 | 3 | `02010a00 000a1800 007c0000 00000000 1f000000` |
 
-Roots, bytes 20 to 51 of each header:
+Roots, bytes 20 to 51 of each header (the file's own bytes, the same under either codec):
 
 ```
 0        af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262
@@ -1867,18 +1891,21 @@ Roots, bytes 20 to 51 of each header:
 ```
 
 The 31,744-byte file is named `vector.bin` (10 bytes at 52, `766563746f722e62696e`, then 245 zero bytes) with type
-`application/octet-stream` (24 bytes at 307, then 138 zero bytes); the others have neither. SHA-256 of each whole
-469-byte header:
+`application/octet-stream` (24 bytes at 307, then 134 zero bytes); the others have neither. Bytes 465 to 468, the one
+chunk's sent: `0f010000` (271) for 1,025 bytes under codec 1, `01040000` (1,025) under codec 0, zero in every other
+row. SHA-256 of each whole 469-byte header:
 
 ```
-0        4ae79e425df5c44702063e35eccfe27c445153e9a88b785493ccef8938e552fa
-1025     76ac952eacbaac0484cda5e903bbdc33ba91fef90f0542ecb9384c13300143b5
-8193     f4024b1da4ea9db3b479a6c476d259ddf834d48ac05fdee4a89106fbfa9d8770
-31744    b71b7b9697cdb56ac745111f9b8b3d2bdb90c32916a574676fd4a0bb57eed553
-102400   9f10cc1b6282d90b463b917dcbea6be31c4d4f6fd280fda83e52be013e9c6dec
+0               3cf38facead9e13b3b9818eee2069c3c14cfd0a55a2a82344133ae4fb9a81db4
+1025            8a57f03e55fd710bd493d5a6f1fa9d3458a911d8194f340be1e12452b190a941
+8193            81e4e71bc4e6034e59be3896e6ead03d2202e5aef6b9ffc385deb25c2df69ff0
+31744           546b119153a74764939a22ab5b0e35d2a77cae3426c90e9d25e2c075606e4dd5
+102400          ca763d22a3ebf289b461062e28a1d4593dabe6e05e842a4da9e4996f3f80ee09
+1025, codec 0   e7bd57580853ea8b6207d33468e526ffc635fb8dc6014e5bb6f631305d291e27
+31744, codec 0  eefee20ecfafc72f8c154ecd12e2c0a1505d64f05cb122de11ee19a6c5018a97
 ```
 
-Chaining values of 1 KiB chunks of this input:
+Chaining values of 1 KiB chunks of this input (the file's own bytes, unchanged from version 1):
 
 ```
 chunk 0, bytes 0 to 1023 (the same in every file above)   5c9e654411e393d1f4bec710ccd5bc5669ab177d610a0eb691fcfee92fb4e8b1
@@ -1886,26 +1913,37 @@ chunk 30 of the 31,744-byte file                          a6b76fabdd73c356e0a57c
 chunk 8 of the 8,193-byte file, its one byte a0           0c89b23aaf0f396fe25995d42f7d6f3c7b1e18b59d9c778b06688325f44016de
 ```
 
-Manifest blocks, SHA-256 of each 469 bytes. Block 0 of the 31,744-byte file begins with the tag `62b6960e1a44bcc1`
-and then chunk 0's chaining value; its three blocks hold 14, 14 and 3 values.
+Manifest blocks, SHA-256 of each 469 bytes (7.8). Block 0 of the 31,744-byte file begins with the tag `62b6960e1a44bcc1`,
+then chunk 0's entry: its chaining value, sent `0f010000` and seed 0 under codec 1, sent `00040000` and seed 2 under
+codec 0; its three blocks hold 12, 12 and 7 entries, the 102,400-byte file's nine 12 each but the last's 4.
 
 ```
-31744 m 0   9d9bf70770f2ae4249c087062dbee677482d33254156bc00ea51bd0670d20d72
-31744 m 1   c7a0a8aadacdd8115604acef771f013dc97514608787564a1e577e408af57b85
-31744 m 2   d801bdbd71a7c74f86ec3511583c0c2a3576abb813f4beadfecf907e0d3c7264
-8193  m 0   8695a172254b6b3987ae12803308f01e3b39ad374a4c90bce3703fc157622046
+31744 m 0            62ce9f91d4b9cb6763c9540c37c0e2bcd33bb09a6427731acf80d20b391c0da6
+31744 m 1            68d121c3b60340ece781152965535bd1d557feb1a93fd22cac243128691dc616
+31744 m 2            1228754ba7562b9cd46d3d06374554bf300f4526dcd93b894e092f2c173be0de
+8193  m 0            d89af098949dbe13d1b6e7b16834100adf3fe4fe4e9ad565ad1ed56314230826
+102400 m 0           b269362930980a83cfe4148c36fc4acb625d17f603954a6fb269018288480e8e
+102400 m 8           523ae573a05805e8aa7ebe518e605f5a1cbb819e4367576cfbd8e64e665c8a21
+31744 m 0, codec 0   622b1095da8f8059b146706ebc17d6cc74bdd3742c5c8c24072145594d69989d
+31744 m 1, codec 0   db34b752b781674f1639b2279853127614420f4287dc62961d3a5e8ee2352c7e
+31744 m 2, codec 0   48fb5759408c0276086d0893b2a6a61c3fac33d8af542b9a8d66ebac9fcbb20a
 ```
 
-**Refusals.** The 31,744-byte header with one field changed: version 2 gives -2; hash 0 or 2 gives -3; chunk_log2 9
-or 25, byte 7 set, a byte of the name's or the type's padding set, chunks one more, or type_len 163 gives -1. Its last
-manifest block with a padding byte set, or with its tag changed, is refused.
+**Refusals.** The 31,744-byte header with one field changed: version 1 gives -2; hash 0 or 2 gives -3; codec 2 gives
+-4; chunk_log2 9 or 25, byte 7 set, a byte of the name's or the type's padding set, chunks one more, type_len 159, or
+a nonzero sent (the file is not one chunk) gives -1. The 1,025-byte header under codec 0 with sent 300 (shorter than
+the chunk under codec 0), or with sent 0, gives -1. Its last manifest block with a padding byte set, with its tag
+changed, with an entry's sent past its chunk's bytes, or with a seed on a chunk of one block, is refused.
 
-How they were made: `liblizard/build/ob.wasm` (sha256 8340ad9e...) through its `xfer_*` exports, the seed attempts from Wirehair
-itself (`liblizard/build/wirehair.mjs` through `liblizard/sim/fountain.mjs`). Every header was packed again in Python from the table in 7.7
-and came out byte-identical. Every chaining value and root above was recomputed by a separate BLAKE3 written in Python
-from its compression function, chunk and parent rules, and matched; every root is also the official vector and what
-the Rust crate's Python binding (blake3 1.0.9) gives. `liblizard/test/xfer_test.c` (native) and `liblizard/test/xfer_wasm.mjs` hold the C
-and the wasm to all 35 official vectors, whole and split into chunks of 2^10 to 2^17 bytes (STATUS.md, 2026-09-24).
+How they were made: `liblizard/build/ob.wasm` (sha256 409299a866c8...) through its `xfer_*` exports, the frames from
+zstd itself (`liblizard/build/zstd.mjs` through `liblizard/sim/zstd.mjs`) and the seed attempts from Wirehair itself
+(`liblizard/build/wirehair.mjs` through `liblizard/sim/fountain.mjs`). Three of the headers (1,025 bytes under both
+codecs, 31,744 under codec 1) were packed again in Python from the table in 7.7 and came out byte-identical. Every
+chaining value and root above is as in version 1's vectors, where a separate BLAKE3 written in Python from its
+compression function, chunk and parent rules recomputed and matched them, and every root is also the official
+vector. `liblizard/test/xfer_test.c` (native) and `liblizard/test/xfer_wasm.mjs` hold the C and the wasm to all 35
+official vectors, whole and split into chunks of 2^10 to 2^17 bytes, and the wasm test to the compressed path on
+prose files (STATUS.md, 2026-10-05).
 
 ## 8. The LDPC code
 
@@ -2216,7 +2254,8 @@ s ^= s << 13, s ^= s >> 17, s ^= s << 5 (32-bit, logical shifts) and the byte is
   not fountained (7.6), so a Lizard file of any length up to 16,383 chunks goes, an empty one as a header alone.
 - **Seed.** The encoder chooses a `seed_attempt` of 0 to 255 (`liblizard/wirehair/shim.cpp:lizard_wh_encoder_create`). A
   decoder is built from the message length, the block size and that seed alone
-  (`liblizard/wirehair/shim.cpp:lizard_wh_decoder_create`). The header carries two (7.6, 7.7).
+  (`liblizard/wirehair/shim.cpp:lizard_wh_decoder_create`). Every chunk's travels in the manifest, a one-chunk file's
+  in the header (7.6 to 7.8); the message is the chunk's bytes as sent.
 - **Symbols.** In a chunk of K blocks, symbols 0 to K - 1 are its blocks verbatim; the last is zero-padded to 469 bytes
   on the wire and trimmed back to its true length before the decoder takes it (`liblizard/sim/fountain.mjs:Decoder.add`).
   Symbols from K up are repair blocks. A duplicate is idempotent.
@@ -2226,16 +2265,18 @@ s ^= s << 13, s ^= s >> 17, s ^= s << 5 (32-bit, logical shifts) and the byte is
 - **The receiver** (`liblizard/sim/xfer.mjs:XferReceiver`, in `lizard-web/fountain-worker.mjs`). It takes blocks in any order, control
   blocks included. It keeps each chunk's blocks in the origin private file system (sync access handles in the
   fountain worker) where the browser has one, otherwise in memory (`recv.html?store=memory` forces memory), since
-  interleaving means no chunk completes before the first lap does. A chunk is solved once K distinct symbols are in,
-  fed more as they come if Wirehair wants them, and checked the moment it decodes (7.9), held unverified only until
-  the manifest is in. A chunk that fails is refused, every symbol that went into it banned, and it is collected again
+  interleaving means no chunk completes before the first lap does. A chunk is solved once the manifest has said its
+  block count and K distinct symbols are in, fed more as they come if Wirehair wants them, decompressed where it was
+  sent as a frame, and checked the moment it decodes (7.9). A chunk that fails is refused, every symbol that went into it banned, and it is collected again
   from later laps. The file is offered only when every chunk verified.
 - **The header** comes from the light only (2026-09-26: the receiver is told nothing, and no server is assumed). A
   header with other bytes is a new transfer, everything held dropped; a receiver lets go of the ids it has seen when a
   header's root changes, since a new transfer's ids repeat the last one's.
 - The binary grid code's file path, whose header went over the rig's network, was removed with its receiver path on
   2026-09-26, and the Aztec and QR paths with the baselines' archive the same day (12).
-- Compression, which the wider project fixes as LZMA with Wirehair, is not applied by the rig.
+- Compression: zstd, a chunk at a time (7.6), applied by every reference sender since 2026-10-05 (`liblizard/sim/xfer.mjs`
+  through `liblizard/sim/zstd.mjs`, the native `XferTx` through `liblizard/zstd/shim.c`). Until then the project fixed
+  LZMA on paper and no sender applied it.
 
 ## 10. Reference receivers (non-normative)
 
@@ -2421,7 +2462,7 @@ Each of these was built and measured, or decided. The reason given is the one on
 | Lizard over the binary grid code | not throughput (the binary code is ahead above its cliff): Lizard degrades where the binary code stops dead; no further work on the binary code, which `scripts/exp/` still reaches through `liblizard/sim/phy.mjs`; the rig has no path for it since 2026-09-26 (its receiver was told by the server) | 2026-09-20 and 2026-09-26 |
 | The receiver is blind and the sender stands alone: a page talks to a server only to send it development logs, and nothing comes back into decoding or painting | Lizard's format, geometry and file header come from the light, the test stream's bad blocks are judged from the light (9.3), and Aztec and QR describe themselves | 2026-09-26; STATUS "The whole receiver blind" |
 | QR and Aztec are archived, not baselines: Lizard is compared against other apps | the research had settled that a beefier QR is not the option; the baselines dated from when a new format was in doubt, and FOCUS showed that OFDM, in luma only, does better and accelerates well on a GPU | 2026-09-26; `archive/qr-aztec/README.md` |
-| Wirehair and LZMA are fixed and out of scope | the scope is the 2D code | project rules |
+| Wirehair and zstd are fixed and out of scope (LZMA on paper until 2026-10-05, never applied; zstd chosen over it and GDeflate: ratio within 5 to 10% of xz at level 19 at compressors a phone keeps ahead of the channel with, where GDeflate keeps DEFLATE's ratio for a GPU decode speed the channel cannot use) | the scope is the 2D code | project rules; STATUS "zstd, a chunk at a time" |
 | No SharedArrayBuffer, so no wasm threads | workers cannot share a heap, and per-worker memory is the number that matters on a phone | project rules |
 
 **Rejected**

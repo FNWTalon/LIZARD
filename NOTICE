@@ -12,6 +12,8 @@ This product includes third-party software, each under its own license, kept bes
 - BLAKE3 (liblizard/vendor/blake3), Copyright the BLAKE3 authors: Apache License 2.0 or CC0 1.0, at the user's option
   (LICENSE_A2, LICENSE_CC0, LICENSE_A2LLVM).
 - Wirehair (liblizard/vendor/wirehair), Copyright (c) 2018 Christopher A. Taylor: BSD 3-Clause (LICENSE).
+- Zstandard (liblizard/vendor/zstd, version 1.5.7 as one source file), Copyright (c) Meta Platforms, Inc. and
+  affiliates: BSD 3-Clause (LICENSE), or GPLv2 (COPYING), at the user's option; taken under BSD.
 - volk (liblizard/core/third_party/volk), Copyright (c) 2018-2023 Arseny Kapoulkine: MIT (LICENSE.md).
 - JSON for Modern C++ (liblizard/core/third_party/json.hpp), Copyright (c) 2013-2025 Niels Lohmann: MIT
   (json.LICENSE.MIT).

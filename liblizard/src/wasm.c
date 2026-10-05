@@ -322,53 +322,54 @@ int ob_test_crc_gate_out(const float *est, float *blk_est, float *bar, uint8_t *
 // int32, so JS reads it with >>> 0. Lengths past 2^32 cross as doubles, exact to 2^53.
 
 // The layout's numbers, so the JS keeps no copy: id bytes, payload bytes, symbol bits, chunk bits, the header's id,
-// manifest block 0's id, chaining values a manifest block, name bytes at most, media type bytes at most, chunk_log2
-// least and most, chunks at most, layout version, BLAKE3's hash byte.
+// manifest block 0's id, entries a manifest block, name bytes at most, media type bytes at most, chunk_log2 least and
+// most, chunks at most, layout version, BLAKE3's hash byte.
 void xfer_layout(int32_t *out) {
   const int32_t v[] = { XFER_ID_BYTES, XFER_PAYLOAD, XFER_SYMBOL_BITS, XFER_CHUNK_BITS, (int32_t)XFER_ID_HEADER, (int32_t)XFER_ID_MANIFEST,
-                        XFER_CVS_PER_BLOCK, XFER_NAME_MAX, XFER_TYPE_MAX, XFER_LOG2_MIN, XFER_LOG2_MAX, XFER_MAX_CHUNKS, XFER_VERSION, XFER_HASH_BLAKE3 };
+                        XFER_PER_BLOCK, XFER_NAME_MAX, XFER_TYPE_MAX, XFER_LOG2_MIN, XFER_LOG2_MAX, XFER_MAX_CHUNKS, XFER_VERSION, XFER_HASH_BLAKE3 };
   for (unsigned i = 0; i < sizeof v / sizeof *v; i++) out[i] = v[i];
 }
 uint32_t xfer_id_of(uint32_t chunk, uint32_t symbol) { return xfer_id(chunk, symbol); }
 int xfer_kind_of(uint32_t id) { return xfer_id_kind(id); }
 
-// The header's 469 bytes from its fields: length in bytes, the chunk size's log2, the two seed attempts, the root's
-// 32 bytes, and name and media type as bytes with their lengths (0 for none). 0, or -1 for fields the layout refuses.
-int xfer_hdr_write(uint8_t *payload, double length, int chunk_log2, int seed_full, int seed_last, const uint8_t *root,
+// The header's 469 bytes from its fields: length in bytes, the chunk size's log2, the codec, the one chunk's seed
+// attempt and bytes as sent (0 and 0 unless the file is one chunk), the root's 32 bytes, and name and media type as
+// bytes with their lengths (0 for none). 0, or -1 for fields the layout refuses.
+int xfer_hdr_write(uint8_t *payload, double length, int chunk_log2, int codec, int seed, double sent, const uint8_t *root,
                    const uint8_t *name, int name_len, const uint8_t *type, int type_len) {
   xfer_header_t h;
   if (!(length >= 0 && length <= 9007199254740992.0) || (double)(uint64_t)length != length) return -1;
-  if (seed_full < 0 || seed_full > 255 || seed_last < 0 || seed_last > 255 || name_len < 0 || name_len > XFER_NAME_MAX || type_len < 0 || type_len > XFER_TYPE_MAX) return -1;
+  if (!(sent >= 0 && sent <= 4294967295.0) || (double)(uint32_t)sent != sent) return -1;
+  if (codec < 0 || codec > 255 || seed < 0 || seed > 255 || name_len < 0 || name_len > XFER_NAME_MAX || type_len < 0 || type_len > XFER_TYPE_MAX) return -1;
   if (xfer_header_init(&h, (uint64_t)length, chunk_log2)) return -1;
-  h.seed_full = (uint8_t)seed_full; h.seed_last = (uint8_t)seed_last;
+  h.codec = (uint8_t)codec; h.seed = (uint8_t)seed; h.sent = (uint32_t)sent;
   memcpy(h.root, root, XFER_CV);
   h.name_len = (uint8_t)name_len; if (name_len) memcpy(h.name, name, (size_t)name_len);
   h.type_len = (uint8_t)type_len; if (type_len) memcpy(h.type, type, (size_t)type_len);
   return xfer_header_write(&h, payload);
 }
-// A header block's payload read back. scalars, 12 int32: version, hash, chunk_log2, seed_full, seed_last, name_len,
-// type_len, length's low 32 bits, its high 32 bits, chunks, manifest blocks, the chunk size in bytes. root (32), name
-// (255) and type (162) take the bytes, or may be 0. 0, or XFER_ERR (-1), XFER_ERR_VERSION (-2), XFER_ERR_HASH (-3),
-// and nothing is written then.
+// A header block's payload read back. scalars, 13 int32: version, hash, chunk_log2, codec, the one chunk's seed,
+// name_len, type_len, length's low 32 bits, its high 32 bits, chunks, manifest blocks, the chunk size in bytes, the one
+// chunk's bytes as sent. root (32), name (255) and type (158) take the bytes, or may be 0. 0, or XFER_ERR (-1),
+// XFER_ERR_VERSION (-2), XFER_ERR_HASH (-3), XFER_ERR_CODEC (-4), and nothing is written then.
 int xfer_hdr_parse(const uint8_t *payload, int32_t *scalars, uint8_t *root, uint8_t *name, uint8_t *type) {
   xfer_header_t h;
   const int rc = xfer_header_parse(payload, &h);
   if (rc) return rc;
-  const int32_t v[] = { h.version, h.hash, h.chunk_log2, h.seed_full, h.seed_last, h.name_len, h.type_len, (int32_t)(uint32_t)h.length,
-                        (int32_t)(uint32_t)(h.length >> 32), (int32_t)h.chunks, xfer_manifest_blocks(h.chunks), 1 << h.chunk_log2 };
+  const int32_t v[] = { h.version, h.hash, h.chunk_log2, h.codec, h.seed, h.name_len, h.type_len, (int32_t)(uint32_t)h.length,
+                        (int32_t)(uint32_t)(h.length >> 32), (int32_t)h.chunks, xfer_manifest_blocks(h.chunks), 1 << h.chunk_log2, (int32_t)h.sent };
   for (unsigned i = 0; i < sizeof v / sizeof *v; i++) scalars[i] = v[i];
   if (root) memcpy(root, h.root, XFER_CV);
   if (name) memcpy(name, h.name, XFER_NAME_MAX);
   if (type) memcpy(type, h.type, XFER_TYPE_MAX);
   return 0;
 }
-// Chunk `index` of the file a header payload describes: out[0] its bytes, out[1] its Wirehair source blocks (1: sent
-// unfountained as symbol 0), out[2] its seed attempt. -1 past the last chunk or for a header that does not parse.
-int xfer_hdr_chunk(const uint8_t *payload, uint32_t index, int32_t *out) {
+// Manifest block m's payload read under the header payload `hdr` (xfer_manifest_parse): its entries into cvs (32 a
+// chunk), sent (uint32 a chunk) and seeds (a byte a chunk) at 12 m. -1 for a block that is not this transfer's
+// manifest block m, or a header that does not parse.
+int xfer_mf_parse(const uint8_t *payload, const uint8_t *hdr, uint32_t m, uint8_t *cvs, uint32_t *sent, uint8_t *seeds) {
   xfer_header_t h;
-  if (xfer_header_parse(payload, &h) || index >= h.chunks) return -1;
-  out[0] = (int32_t)xfer_chunk_len(&h, index); out[1] = (int32_t)xfer_chunk_blocks(&h, index); out[2] = xfer_chunk_seed(&h, index);
-  return 0;
+  return xfer_header_parse(hdr, &h) ? -1 : xfer_manifest_parse(payload, &h, m, cvs, sent, seeds);
 }
 // 0 where chunk `index`'s bytes are right for the file the header payload describes (xfer_chunk_check): cvs is the
 // chaining-value list once xfer_manifest_check has passed it, or 0 for a file of one chunk.

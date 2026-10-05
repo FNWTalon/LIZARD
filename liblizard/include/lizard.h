@@ -180,6 +180,7 @@ typedef struct {
   uint32_t chunks;       /* ai: its 4 MiB chunks */
   uint32_t lap;          /* ai: data blocks a lap of the schedule */
   uint8_t root[32];      /* ai: BLAKE3 of the file (b3sum's) */
+  uint64_t sent;         /* ai: the file's bytes as they go: every chunk's zstd frame, or its own bytes (2026-10-05) */
 } liz_tx_info;
 LIZ_API int liz_tx_info_get(const liz_tx *t, liz_tx_info *out);
 
@@ -214,9 +215,11 @@ typedef struct {
   double fraction;       /* ai: bytes_in over length */
   uint32_t chunks, verified, rejected;
   double solve_ms;       /* ai: the fountain's and the hash's time so far */
+  uint64_t sent;         /* ai: the file's bytes as they go (every chunk's zstd frame or its own); 0 until the manifest has said them */
+  uint64_t sent_in;      /* ai: how many of them are in: what a rate and a time left should count */
 } liz_progress;
 LIZ_API int liz_rx_progress(liz_rx *r, liz_progress *out);
-/* ai: each chunk's state into per (at most cap): 0 to 99 the share in, 254 decoded and waiting on the manifest, 255
+/* ai: each chunk's state into per (at most cap): 0 to 99 the share in (a floor until the manifest is in), 255
  * ai: verified; returns the chunks */
 LIZ_API int liz_rx_chunks(liz_rx *r, uint8_t *per, int cap);
 enum { LIZ_META_NAME = 0, LIZ_META_TYPE = 1, LIZ_META_ROOT = 2, LIZ_META_PATH = 3, LIZ_META_ERROR = 4 };

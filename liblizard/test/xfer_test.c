@@ -1,6 +1,8 @@
 // The transfer's C side (src/xfer.h): BLAKE3 and the chunk-aligned subtree hash against the official test vectors,
 // the block id, and files of 3 chunks and of 1 written as header and manifest blocks, read back and verified chunk by
-// chunk, with a corrupted chunk and a corrupted manifest caught. From liblizard/, about 3 s (one line):
+// chunk, with a corrupted chunk, a corrupted manifest and a manifest entry no chunk could have caught. The chunks'
+// bytes as sent and seed attempts are made up here (no zstd and no Wirehair in this test: the layouts carry them, the
+// wasm test exercises the codecs). From liblizard/, about 3 s (one line):
 //   gcc -O2 -g -Wall -Wextra -fsanitize=address,undefined -Isrc -Ivendor/blake3 -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41
 //   -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512 -o build/xfer_test test/xfer_test.c src/xfer.c vendor/blake3/blake3.c
 //   vendor/blake3/blake3_dispatch.c vendor/blake3/blake3_portable.c && build/xfer_test
@@ -103,7 +105,7 @@ static void ids(void) {
   CHECK(xfer_id(16382, (1u << 18) - 1) == 0xfffbffffu, "last data id");
   CHECK(XFER_ID_HEADER == 0xfffc0000u && XFER_ID_MANIFEST == 0xfffc0001u, "control ids");
   CHECK(xfer_id_kind(0xfffbffffu) == XFER_KIND_DATA && xfer_id_kind(XFER_ID_HEADER) == XFER_KIND_HEADER, "kinds");
-  CHECK(xfer_id_kind(XFER_ID_MANIFEST + 1170) == XFER_KIND_MANIFEST && xfer_id_kind(XFER_ID_MANIFEST + 1171) == XFER_KIND_RESERVED &&
+  CHECK(xfer_id_kind(XFER_ID_MANIFEST + 1365) == XFER_KIND_MANIFEST && xfer_id_kind(XFER_ID_MANIFEST + 1366) == XFER_KIND_RESERVED &&
         xfer_id_kind(0xffffffffu) == XFER_KIND_RESERVED, "manifest and reserved kinds");
   CHECK(xfer_id_chunk(xfer_id(123, 4567)) == 123 && xfer_id_symbol(xfer_id(123, 4567)) == 4567, "fields");
   uint8_t b[4];
@@ -113,13 +115,16 @@ static void ids(void) {
   CHECK(!xfer_chunk_count(1, 9) && !xfer_chunk_count(1, 25), "chunk size range");
   xfer_header_t h;
   CHECK(xfer_header_init(&h, (16383ull << 24) + 1, 24) && !xfer_header_init(&h, 0, 10) && h.chunks == 0, "init limits");
-  CHECK(xfer_manifest_blocks(0) == 0 && xfer_manifest_blocks(1) == 0 && xfer_manifest_blocks(2) == 1 && xfer_manifest_blocks(14) == 1 &&
-        xfer_manifest_blocks(15) == 2 && xfer_manifest_blocks(16383) == 1171, "manifest block counts");
+  CHECK(xfer_manifest_blocks(0) == 0 && xfer_manifest_blocks(1) == 0 && xfer_manifest_blocks(2) == 1 && xfer_manifest_blocks(12) == 1 &&
+        xfer_manifest_blocks(13) == 2 && xfer_manifest_blocks(16383) == 1366, "manifest block counts");
+  CHECK(xfer_blocks(0) == 0 && xfer_blocks(1) == 1 && xfer_blocks(469) == 1 && xfer_blocks(470) == 2, "blocks of the bytes sent");
 }
 
 // A file through the whole C side: chaining values, root, header and manifest blocks written as 473-byte blocks and
-// read back into a receiver's state, every chunk verified, then corruption. Returns the file's manifest block count.
-static int transfer(const char *label, uint64_t len, int log2, int seed_full, int seed_last, const char *name, const char *type) {
+// read back into a receiver's state, every chunk verified, then corruption. codec: XFER_CODEC_ZSTD makes up each chunk's
+// bytes as sent (three quarters of its own past 1,000 bytes, as a frame would be) and a seed attempt (its index mod 3
+// where it is fountained); XFER_CODEC_NONE sends every chunk as it is. Returns the file's manifest block count.
+static int transfer(const char *label, uint64_t len, int log2, int codec, const char *name, const char *type) {
   uint8_t *file = malloc(len ? (size_t)len : 1), b3sum[XFER_CV];
   fill(file, (size_t)len);
   xfer_b3_hash(file, (size_t)len, b3sum);
@@ -133,7 +138,20 @@ static int transfer(const char *label, uint64_t len, int log2, int seed_full, in
   if (chunks >= 2) CHECK(!xfer_root(cvs, chunks, tx.root), "%s: root", label);
   else memcpy(tx.root, b3sum, XFER_CV);
   CHECK(!memcmp(tx.root, b3sum, XFER_CV), "%s: the root through the chunks is the file's b3sum", label);
-  tx.seed_full = (uint8_t)seed_full; tx.seed_last = (uint8_t)seed_last;
+  uint32_t *sent = calloc(chunks ? chunks : 1, sizeof *sent);
+  uint8_t *seeds = calloc(chunks ? chunks : 1, 1);
+  tx.codec = (uint8_t)codec;
+  for (uint32_t i = 0; i < chunks; i++) {
+    const size_t n = xfer_chunk_len(&tx, i);
+    sent[i] = codec == XFER_CODEC_ZSTD && n > 1000 ? (uint32_t)(n * 3 / 4) : (uint32_t)n;
+    seeds[i] = xfer_blocks(sent[i]) >= 2 ? (uint8_t)(i % 3) : 0;
+    CHECK(!xfer_sent_ok(&tx, i, sent[i], seeds[i]), "%s: chunk %u sent %u with seed %d refused", label, i, sent[i], seeds[i]);
+    xfer_header_t none = tx;
+    none.codec = XFER_CODEC_NONE;
+    CHECK(!xfer_sent_ok(&none, i, sent[i], seeds[i]) == (sent[i] == n), "%s: chunk %u sent shorter under codec none", label, i);
+    CHECK(xfer_sent_ok(&tx, i, (uint32_t)n + 1, 0) && xfer_sent_ok(&tx, i, 0, 0), "%s: chunk %u sent past its bytes, or as none, passed", label, i);
+  }
+  if (chunks == 1) { tx.sent = sent[0]; tx.seed = seeds[0]; }
   tx.name_len = (uint8_t)strlen(name); memcpy(tx.name, name, tx.name_len);
   tx.type_len = (uint8_t)strlen(type); memcpy(tx.type, type, tx.type_len);
   const int mblocks = xfer_manifest_blocks(chunks);
@@ -142,7 +160,7 @@ static int transfer(const char *label, uint64_t len, int log2, int seed_full, in
   CHECK(!xfer_header_write(&tx, hblock + XFER_ID_BYTES), "%s: header write", label);
   for (int m = 0; m < mblocks; m++) {
     xfer_id_put(mf + (size_t)m * XFER_BLOCK, XFER_ID_MANIFEST + (uint32_t)m);
-    CHECK(!xfer_manifest_write(cvs, chunks, tx.root, (uint32_t)m, mf + (size_t)m * XFER_BLOCK + XFER_ID_BYTES), "%s: manifest %d write", label, m);
+    CHECK(!xfer_manifest_write(cvs, sent, seeds, chunks, tx.root, (uint32_t)m, mf + (size_t)m * XFER_BLOCK + XFER_ID_BYTES), "%s: manifest %d write", label, m);
   }
 
   // Receiver: the blocks by id, in reverse order to show nothing hangs on order.
@@ -150,15 +168,18 @@ static int transfer(const char *label, uint64_t len, int log2, int seed_full, in
   CHECK(xfer_id_kind(xfer_id_get(hblock)) == XFER_KIND_HEADER, "%s: header id", label);
   CHECK(!xfer_header_parse(hblock + XFER_ID_BYTES, &rx), "%s: header parse", label);
   CHECK(!memcmp(&rx, &tx, sizeof rx) || (rx.version == tx.version && rx.hash == tx.hash && rx.chunk_log2 == tx.chunk_log2 && rx.length == tx.length &&
-        rx.chunks == tx.chunks && rx.seed_full == tx.seed_full && rx.seed_last == tx.seed_last && !memcmp(rx.root, tx.root, XFER_CV) &&
+        rx.chunks == tx.chunks && rx.codec == tx.codec && rx.seed == tx.seed && rx.sent == tx.sent && !memcmp(rx.root, tx.root, XFER_CV) &&
         rx.name_len == tx.name_len && !memcmp(rx.name, tx.name, XFER_NAME_MAX) && rx.type_len == tx.type_len && !memcmp(rx.type, tx.type, XFER_TYPE_MAX)),
         "%s: header read back differs", label);
   uint8_t *got = calloc(rx.chunks ? rx.chunks : 1, XFER_CV);
+  uint32_t *gsent = calloc(rx.chunks ? rx.chunks : 1, sizeof *gsent);
+  uint8_t *gseeds = calloc(rx.chunks ? rx.chunks : 1, 1);
+  if (rx.chunks == 1) { gsent[0] = rx.sent; gseeds[0] = rx.seed; }
   for (int m = mblocks - 1; m >= 0; m--) {
     const uint8_t *blk = mf + (size_t)m * XFER_BLOCK;
     const uint32_t id = xfer_id_get(blk);
     CHECK(xfer_id_kind(id) == XFER_KIND_MANIFEST && id - XFER_ID_MANIFEST == (uint32_t)m, "%s: manifest id", label);
-    CHECK(!xfer_manifest_parse(blk + XFER_ID_BYTES, rx.chunks, rx.root, id - XFER_ID_MANIFEST, got), "%s: manifest %d parse", label, m);
+    CHECK(!xfer_manifest_parse(blk + XFER_ID_BYTES, &rx, id - XFER_ID_MANIFEST, got, gsent, gseeds), "%s: manifest %d parse", label, m);
   }
   if (rx.chunks >= 2) {
     CHECK(!memcmp(got, cvs, (size_t)chunks * XFER_CV), "%s: list read back differs", label);
@@ -167,7 +188,8 @@ static int transfer(const char *label, uint64_t len, int log2, int seed_full, in
   for (uint32_t i = 0; i < rx.chunks; i++) {
     const size_t n = xfer_chunk_len(&rx, i);
     CHECK(!xfer_chunk_check(&rx, i, file + ((uint64_t)i << log2), n, got), "%s: chunk %u", label, i);
-    CHECK(xfer_chunk_seed(&rx, i) == (i + 1 == rx.chunks ? seed_last : seed_full), "%s: chunk %u seed", label, i);
+    CHECK(gsent[i] == sent[i] && gseeds[i] == seeds[i], "%s: chunk %u sent %u and seed %d read back as %u and %d", label, i, sent[i], seeds[i], gsent[i], gseeds[i]);
+    CHECK((gsent[i] < n) == (codec == XFER_CODEC_ZSTD && n > 1000), "%s: chunk %u compressed where it should be", label, i);
   }
 
   // A corrupted chunk: one bit of the middle one, caught there and nowhere else.
@@ -183,27 +205,39 @@ static int transfer(const char *label, uint64_t len, int log2, int seed_full, in
   // A corrupted manifest: a bit of the last chaining value carried. The block parses (it is only data), the list
   // fails against the root, and so does the chunk it names.
   if (mblocks) {
-    uint8_t *blk = mf + (size_t)(mblocks - 1) * XFER_BLOCK + XFER_ID_BYTES, keep = blk[XFER_M_CVS];
-    const uint32_t hit = (uint32_t)(mblocks - 1) * XFER_CVS_PER_BLOCK;
-    blk[XFER_M_CVS] ^= 1;
-    CHECK(!xfer_manifest_parse(blk, rx.chunks, rx.root, (uint32_t)mblocks - 1, got), "%s: flipped manifest parse", label);
+    uint8_t *blk = mf + (size_t)(mblocks - 1) * XFER_BLOCK + XFER_ID_BYTES, keep = blk[XFER_M_ENTRIES];
+    const uint32_t hit = (uint32_t)(mblocks - 1) * XFER_PER_BLOCK;
+    blk[XFER_M_ENTRIES] ^= 1;
+    CHECK(!xfer_manifest_parse(blk, &rx, (uint32_t)mblocks - 1, got, gsent, gseeds), "%s: flipped manifest parse", label);
     CHECK(xfer_manifest_check(got, rx.chunks, rx.root), "%s: a corrupted list passed against the root", label);
     CHECK(xfer_chunk_check(&rx, hit, file + ((uint64_t)hit << log2), xfer_chunk_len(&rx, hit), got), "%s: a chunk passed against a corrupted list", label);
-    blk[XFER_M_CVS] = keep;
-    CHECK(!xfer_manifest_parse(blk, rx.chunks, rx.root, (uint32_t)mblocks - 1, got) && !xfer_manifest_check(got, rx.chunks, rx.root), "%s: repaired", label);
-    uint8_t other[XFER_CV];
-    memcpy(other, rx.root, XFER_CV); other[3] ^= 0x80;
-    CHECK(xfer_manifest_parse(blk, rx.chunks, other, (uint32_t)mblocks - 1, got), "%s: a block of another transfer parsed", label);
-    CHECK(xfer_manifest_parse(blk, rx.chunks, rx.root, (uint32_t)mblocks, got), "%s: a manifest index past the list parsed", label);
+    blk[XFER_M_ENTRIES] = keep;
+    CHECK(!xfer_manifest_parse(blk, &rx, (uint32_t)mblocks - 1, got, gsent, gseeds) && !xfer_manifest_check(got, rx.chunks, rx.root), "%s: repaired", label);
+    xfer_header_t other = rx;
+    other.root[3] ^= 0x80;
+    CHECK(xfer_manifest_parse(blk, &other, (uint32_t)mblocks - 1, got, gsent, gseeds), "%s: a block of another transfer parsed", label);
+    CHECK(xfer_manifest_parse(blk, &rx, (uint32_t)mblocks, got, gsent, gseeds), "%s: a manifest index past the list parsed", label);
     blk[XFER_PAYLOAD - 1] = 1;
-    CHECK(xfer_manifest_parse(blk, rx.chunks, rx.root, (uint32_t)mblocks - 1, got), "%s: nonzero padding parsed", label);
+    CHECK(xfer_manifest_parse(blk, &rx, (uint32_t)mblocks - 1, got, gsent, gseeds), "%s: nonzero padding parsed", label);
     blk[XFER_PAYLOAD - 1] = 0;
+    // An entry no chunk could have: sent past the chunk's bytes, then a seed on a chunk of one block.
+    uint8_t *e = blk + XFER_M_ENTRIES + XFER_CV, save4[XFER_SENT_BYTES + 1];
+    memcpy(save4, e, sizeof save4);
+    e[0] = e[1] = e[2] = 0xff; e[3] = 0x7f;
+    CHECK(xfer_manifest_parse(blk, &rx, (uint32_t)mblocks - 1, got, gsent, gseeds), "%s: a manifest entry past the chunk's bytes parsed", label);
+    e[0] = 1; e[1] = e[2] = e[3] = 0; e[4] = 1;
+    CHECK(xfer_manifest_parse(blk, &rx, (uint32_t)mblocks - 1, got, gsent, gseeds), "%s: a seed on a chunk of one block parsed", label);
+    memcpy(e, save4, sizeof save4);
+    CHECK(!xfer_manifest_parse(blk, &rx, (uint32_t)mblocks - 1, got, gsent, gseeds), "%s: repaired again", label);
   }
   // A header that is not one.
   uint8_t *hp = hblock + XFER_ID_BYTES, save[XFER_PAYLOAD];
   memcpy(save, hp, XFER_PAYLOAD);
-  hp[XFER_H_VERSION] = 2; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR_VERSION, "%s: version 2", label); memcpy(hp, save, XFER_PAYLOAD);
+  hp[XFER_H_VERSION] = 1; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR_VERSION, "%s: version 1", label); memcpy(hp, save, XFER_PAYLOAD);
   hp[XFER_H_HASH] = 2; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR_HASH, "%s: hash 2", label); memcpy(hp, save, XFER_PAYLOAD);
+  hp[XFER_H_CODEC] = 2; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR_CODEC, "%s: codec 2", label); memcpy(hp, save, XFER_PAYLOAD);
+  if (chunks != 1) { hp[XFER_H_SENT] = 1; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR, "%s: sent for a file of %u chunks", label, chunks); memcpy(hp, save, XFER_PAYLOAD); }
+  else { hp[XFER_H_SENT] = 0; hp[XFER_H_SENT + 1] = 0; hp[XFER_H_SENT + 2] = 0; hp[XFER_H_SENT + 3] = 0; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR, "%s: one chunk sent as nothing", label); memcpy(hp, save, XFER_PAYLOAD); }
   hp[XFER_H_CHUNKS]++; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR, "%s: chunk count off", label); memcpy(hp, save, XFER_PAYLOAD);
   hp[XFER_H_LOG2] = 25; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR, "%s: 32 MiB chunks", label); memcpy(hp, save, XFER_PAYLOAD);
   hp[7] = 1; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR, "%s: reserved byte", label); memcpy(hp, save, XFER_PAYLOAD);
@@ -213,7 +247,7 @@ static int transfer(const char *label, uint64_t len, int log2, int seed_full, in
 
   printf("%-9s %10llu B, chunks of 2^%d: %u chunk%s, %d manifest block%s, root %02x%02x%02x%02x... = b3sum\n", label, (unsigned long long)len, log2,
          chunks, chunks == 1 ? "" : "s", mblocks, mblocks == 1 ? "" : "s", b3sum[0], b3sum[1], b3sum[2], b3sum[3]);
-  free(file); free(cvs); free(mf); free(got);
+  free(file); free(cvs); free(mf); free(got); free(sent); free(seeds); free(gsent); free(gseeds);
   return mblocks;
 }
 
@@ -221,20 +255,25 @@ int main(int argc, char **argv) {
   vectors(argc > 1 ? argv[1] : "vendor/blake3/test_vectors/test_vectors.json");
   boundaries();
   ids();
-  // Two transfers: three chunks (the last short) and one.
-  CHECK(transfer("3 chunks", (2u << 20) + 304000, 20, 0, 1, "IMG_2041.jpg", "image/jpeg") == 1, "3 chunks: one manifest block");
-  CHECK(transfer("1 chunk", 700001, 20, 0, 3, "notes.txt", "text/plain; charset=utf-8") == 0, "1 chunk: no manifest");
-  // Three manifest blocks (14, 14, 13) and a last chunk of one block, which is not fountained; a power of two of
-  // chunks with the last one full; a file of one block; an empty file.
-  CHECK(transfer("41 chunks", 40 * 1024 + 100, 10, 2, 0, "", "") == 3, "41 chunks: three manifest blocks");
-  CHECK(transfer("16 chunks", 16u << 16, 16, 0, 0, "a", "application/octet-stream") == 2, "16 chunks: two manifest blocks");
-  CHECK(transfer("1 block", 469, 10, 0, 0, "tiny", "") == 0, "one block");
-  CHECK(transfer("empty", 0, 10, 0, 0, "empty", "") == 0, "empty");
+  // Two transfers: three chunks (the last short) and one, compressed.
+  CHECK(transfer("3 chunks", (2u << 20) + 304000, 20, XFER_CODEC_ZSTD, "IMG_2041.jpg", "image/jpeg") == 1, "3 chunks: one manifest block");
+  CHECK(transfer("1 chunk", 700001, 20, XFER_CODEC_ZSTD, "notes.txt", "text/plain; charset=utf-8") == 0, "1 chunk: no manifest");
+  // Four manifest blocks (12, 12, 12, 5) and a last chunk of one block, which is not fountained, sent as it is; a
+  // power of two of chunks with the last one full, compressed; a file of one block; an empty file.
+  CHECK(transfer("41 chunks", 40 * 1024 + 100, 10, XFER_CODEC_NONE, "", "") == 4, "41 chunks: four manifest blocks");
+  CHECK(transfer("16 chunks", 16u << 16, 16, XFER_CODEC_ZSTD, "a", "application/octet-stream") == 2, "16 chunks: two manifest blocks");
+  CHECK(transfer("1 block", 469, 10, XFER_CODEC_ZSTD, "tiny", "") == 0, "one block");
+  CHECK(transfer("empty", 0, 10, XFER_CODEC_NONE, "empty", "") == 0, "empty");
   xfer_header_t h;
-  xfer_header_init(&h, 40 * 1024 + 100, 10);
-  h.seed_last = 1;
   uint8_t p[XFER_PAYLOAD];
-  CHECK(xfer_header_write(&h, p) == XFER_ERR, "a seed for an unfountained last chunk was written");
+  xfer_header_init(&h, 469, 10); h.sent = 469; h.seed = 1;
+  CHECK(xfer_header_write(&h, p) == XFER_ERR, "a seed for an unfountained chunk was written");
+  xfer_header_init(&h, 470, 10); h.sent = 470; h.seed = 1;
+  CHECK(!xfer_header_write(&h, p), "a seed for a chunk of two blocks refused");
+  h.sent = 300; CHECK(xfer_header_write(&h, p) == XFER_ERR, "a one-chunk file sent shorter under codec none was written");
+  h.codec = XFER_CODEC_ZSTD; h.seed = 0; CHECK(!xfer_header_write(&h, p), "a one-chunk file sent shorter under zstd refused");
+  xfer_header_init(&h, 40 * 1024 + 100, 10); h.sent = 1;
+  CHECK(xfer_header_write(&h, p) == XFER_ERR, "a sent for a file of many chunks was written");
   printf("%d checks, %d failed\n", checks, fails);
   return fails != 0;
 }

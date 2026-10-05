@@ -15,20 +15,21 @@ const LIB = new URL("../", import.meta.url);
 const imp = (p) => import(new URL(p, LIB).href);
 const { XferSender, XferReceiver, MemoryStore, PAYLOAD, ID_HEADER, isControlId, hex, fractionDone } = await imp("sim/xfer.mjs");
 const { init: initWh, Encoder, Decoder } = await imp("sim/fountain.mjs");
+const { init: initZstd, Z } = await imp("sim/zstd.mjs");
 const { init: initOb, streamBlock } = await imp("sim/ob.mjs");
 const { blockJudge } = await imp("sim/phy.mjs");
 
 const OUT = process.argv[2] ?? new URL("../build/xfer/", import.meta.url).pathname;
 const LENGTH = Number(process.argv[3] ?? 9_000_000), B = 40, REC = 4 + PAYLOAD;
 mkdirSync(OUT, { recursive: true });
-const [M] = await Promise.all([initOb(), initWh()]);
+const [M] = await Promise.all([initOb(), initWh(), initZstd()]);
 
 let s = 0x2545f491;
 const rnd = () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 2 ** 32; };
 const file = new Uint8Array(LENGTH);
 for (let i = 0; i < LENGTH; i++) file[i] = (rnd() * 256) | 0;
 
-const tx = new XferSender(file, { name: "check-9MB.bin", type: "application/octet-stream", M, Encoder });
+const tx = new XferSender(file, { name: "check-9MB.bin", type: "application/octet-stream", M, Encoder, Z });
 const lap = tx.info().lap, frames = Math.ceil((1.8 * lap) / (B - 1)), join = Math.floor((0.3 * lap) / (B - 1));
 const sent = [];
 for (let f = 0; f < frames; f++) {
@@ -64,7 +65,7 @@ writeFileSync(`${OUT}/test.bin`, test);
 
 // ai: The web's chain, in the order its pages run it.
 async function receive(bytes) {
-  const judge = blockJudge(PAYLOAD), rx = new XferReceiver({ M, Decoder, store: new MemoryStore() });
+  const judge = blockJudge(PAYLOAD), rx = new XferReceiver({ M, Decoder, store: new MemoryStore(), Z });
   let seenIds = new Set(), seenOld = new Set(), root = "";
   const seenHas = (id) => seenIds.has(id) || seenOld.has(id);
   const seenAdd = (id) => { seenIds.add(id); if (seenIds.size >= 1 << 16) { seenOld = seenIds; seenIds = new Set(); } };
