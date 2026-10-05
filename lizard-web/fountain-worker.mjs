@@ -59,12 +59,6 @@ class OpfsStore {
   async writeOut(off, bytes) { this.out.h.write(bytes, { at: off }); }
   async readOut(off, len) { const b = new Uint8Array(len); this.out.h.read(b, { at: off }); return b; }
   async finish() { this.out.h.flush(); this.out.h.close(); this.out.done = true; return { opfs: [DIR, this.out.name] }; }
-  // ai: Everything this store holds: the receiver's "Receive again" (Clear from 2026-09-29). A finished file is no longer
-  // ai: here (offer files it away, 2026-10-01), unless filing it failed.
-  async removeAll() {
-    await this.clear();
-    for await (const name of this.dir.keys()) await this.dir.removeEntry(name).catch(() => {});
-  }
   held() { return 0; }
 }
 
@@ -150,14 +144,12 @@ async function blocks({ ids, bytes }) {
   return offer();
 }
 
-// ai: A config starts a new transfer: what was held goes. { type: "config", config: { store } }. A clear does the same and
-// ai: empties the scratch folder (the receiver's "Receive again", its Clear from 2026-09-29), so the same file still in
-// ai: the light is received and offered again. A finished file was
-// ai: filed in the received files (fileAway) and stays there; the pages delete those (lizard-web/library.mjs).
+// ai: A config starts a new transfer: what was held goes. { type: "config", config: { store } }. A finished file was
+// ai: filed in the received files (fileAway) and stays there; the pages delete those (lizard-web/library.mjs). The
+// ai: "clear" message, the receiver's Receive again, went with that button on 2026-10-05.
 async function handle(m) {
-  if (m.type !== "config" && m.type !== "clear") return blocks(m);
+  if (m.type !== "config") return blocks(m);
   await chunked(m.config);
-  if (m.type === "clear") { await store.removeAll?.(); posted = null; return; }
   await offer();
 }
 onmessage = ({ data: m }) => {

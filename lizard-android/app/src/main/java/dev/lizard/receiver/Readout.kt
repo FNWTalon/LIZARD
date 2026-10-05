@@ -66,6 +66,9 @@ object Readout {
         starting -> Line("Starting the camera")
         gettingReady(on, false, loading, rx) -> Line("Getting ready")
         rx.state == "error" -> Line("Reading stopped. Start the camera again to go on.", Tone.Bad)
+        // ai: the test stream first while the camera reads it (2026-10-05): it takes over from a file received or in
+        // ai: progress, which shows again once the camera is back on its frames (receiver.cpp's state the same)
+        on && rx.state == "test" -> Line("Reading the test stream")
         rx.hasFile && !rx.verified && on -> {
             // ai: the bytes as sent where the manifest has said them, the file's own until then (recv.mjs the same)
             val total = if (rx.sent > 0) rx.sent else rx.size
@@ -79,7 +82,6 @@ object Readout {
         rx.hasFile && rx.verified -> Line("Received ${rx.name}, ${bytes(rx.size)} in ${String.format(Locale.ROOT, "%.1f", secs)}${NB}s${if (rx.sent in 1 until rx.size) ", ${bytes(rx.sent)} sent" else ""}", Tone.Good, frac = 1.0)
         // ai: nothing while the camera is off (2026-10-02); the screen draws no empty line
         !on -> Line("")
-        rx.state == "test" -> Line("Reading the test stream")
         // ai: nothing while looking (2026-10-05: "Looking for a code" until then; the rate under the buttons says it)
         else -> Line("")
     }

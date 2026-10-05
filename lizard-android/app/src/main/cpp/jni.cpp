@@ -182,10 +182,6 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_file(JNIEnv
 // ai: The camera's reader closed (Engine.closeReader, every frame of it handed back): Receiver::cameraClosed.
 extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_cameraClosed(JNIEnv*, jclass, jlong h) { if (h) rx(h)->cameraClosed(); }
 
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_clear(JNIEnv*, jclass, jlong h) {
-  if (h) rx(h)->clear();
-}
-
 // ai: The receiver's destructor releases every frame it still holds (on this thread or its own) before it returns.
 extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_destroy(JNIEnv*, jclass, jlong h) {
   delete rx(h);

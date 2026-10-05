@@ -30,7 +30,6 @@ object Native {
     // ai: the most frames a GPU batch waits for, 1 to 32 (receiver.h batchCap; Settings.batch)
     @JvmStatic external fun batchCap(h: Long, n: Int)
     @JvmStatic external fun file(h: Long): String
-    @JvmStatic external fun clear(h: Long)
     // ai: the camera's reader closed, every frame of it handed back: the GPU decoder drops its imports of its buffers
     @JvmStatic external fun cameraClosed(h: Long)
     @JvmStatic external fun destroy(h: Long)

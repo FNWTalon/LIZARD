@@ -8,8 +8,7 @@ import java.io.File
 // ai: own name and .meta.json ({ name, type, size, root, at }),
 // ai: the id the first 16 hex digits of its BLAKE3 root, so a file received again replaces its entry. A verified file is
 // ai: moved here from the native store (Engine.keep: the same filesystem, so a rename) and every later Open, Share,
-// ai: Save a copy and Delete reads it here; the store's own copy is gone, and a receiver's rebuild or Receive again
-// ai: (Native.clear) leaves this alone. Open and Share hand it out through a FileProvider (AndroidManifest.xml,
+// ai: Save and Delete reads it here; the store's own copy is gone, and a receiver's rebuild leaves this alone. Open and Share hand it out through a FileProvider (AndroidManifest.xml,
 // ai: res/xml/file_paths.xml). The web keeps the same list in its origin's OPFS (lizard-web/library.mjs).
 class Library(private val dir: File) {
     data class Entry(val id: String, val name: String, val type: String, val size: Long, val root: String, val at: Long, val file: File) {

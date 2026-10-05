@@ -97,8 +97,9 @@ internal fun MainActivity.ReceiveScreen() {
 
 // ai: The collapsed rail's squares (2026-10-02): the
 // ai: camera's pause or play (toggleCamera, as Start and Stop camera), the last second's rate while a file or the test
-// ai: stream is read (its figure over its unit, Readout.rate), and once the file is kept Open (green) and Save a copy
-// ai: (2026-10-05; a green tick that opened it until then), the panel's own actions.
+// ai: stream is read (its figure over its unit, Readout.rate), and once the file is kept a green check in the rate's
+// ai: square (a mark, no action), then Open and Save, the panel's own actions, in the foreground's colour (2026-10-05;
+// ai: the green tick opened the file until then).
 @Composable
 private fun MainActivity.RailSquares() {
     val running = phase == Engine.Phase.On || phase == Engine.Phase.Starting || phase == Engine.Phase.Loading
@@ -106,19 +107,22 @@ private fun MainActivity.RailSquares() {
         IconBtn(if (running) R.drawable.ic_pause else R.drawable.ic_play, if (running) "Stop camera" else "Start camera",
             enabled = granted && phase != Engine.Phase.Starting) { toggleCamera() }
     }
-    val reading = phase == Engine.Phase.On && ((rx.hasFile && !rx.verified) || rx.state == "test")
-    RateSquare(if (reading) rx.goodputKBs else null)
-    val kept = if (rx.verified) files.firstOrNull { it.root == root } else null
-    if (kept != null) {
-        Square { IconBtn(R.drawable.ic_open, "Open ${kept.name}", tint = Good) { open(kept) } }
-        Square { IconBtn(R.drawable.ic_save, "Save a copy of ${kept.name}") { saveCopy(kept) } }
+    val testing = phase == Engine.Phase.On && rx.state == "test"
+    val reading = phase == Engine.Phase.On && ((rx.hasFile && !rx.verified) || testing)
+    // ai: the received file's squares give way to the test stream's rate while the camera reads it (2026-10-05)
+    val kept = if (rx.verified && !testing) files.firstOrNull { it.root == root } else null
+    if (kept == null) RateSquare(if (reading) rx.goodputKBs else null)
+    else {
+        Square { Icon(painterResource(R.drawable.ic_check), contentDescription = "Received ${kept.name}", Modifier.size(24.dp), tint = Good) }
+        Square { IconBtn(R.drawable.ic_open, "Open ${kept.name}") { open(kept) } }
+        Square { IconBtn(R.drawable.ic_save, "Save ${kept.name}") { saveCopy(kept) } }
     }
 }
 
-// ai: The transfer: the state, the meter, the figures (progress, size, time left), then the actions as the web's:
-// ai: once the file is kept Open (the solid one), Share, Save a copy and Receive again lead, and Start or Stop camera
-// ai: comes last (alone, it fills the row), then the rate (RateLine). Without the camera's permission, why and the one
-// ai: button that gets it. Its first-run tip went 2026-10-02, as the web receiver's.
+// ai: The transfer: the state, the meter, the figures (progress, size, time left), then the actions: once the file is
+// ai: kept Open (the solid one), Share and Save on one row, and Start or Stop camera alone on the next, the full width
+// ai: (2026-10-05: "Save a copy" renamed, and Receive again deleted, a second Start camera), then the rate. Without the
+// ai: camera's permission, why and the one button that gets it. Its first-run tip went 2026-10-02, as the web receiver's.
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun MainActivity.TransferPanel() {
@@ -130,19 +134,19 @@ internal fun MainActivity.TransferPanel() {
     Meter(ln.frac)
     if (ln.nums.isNotEmpty()) Text(ln.nums, style = MaterialTheme.typography.bodyMedium, color = Muted)
     HeatWarning(heat, clocks, Modifier.padding(top = 8.dp))
-    val kept = if (rx.verified) files.firstOrNull { it.root == root } else null
-    FlowRow(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    // ai: the file's buttons give way while the camera reads the test stream (2026-10-05), as the state line does
+    val kept = if (rx.verified && !(on && rx.state == "test")) files.firstOrNull { it.root == root } else null
+    Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (!granted) Btn(if (denied) "Open settings" else "Allow camera", Kind.Primary, modifier = Modifier.fillMaxWidth()) { if (denied) openAppSettings() else askCamera() }
         else {
-            if (kept != null) {
-                Btn("Open", Kind.Primary) { open(kept) }
-                Btn("Share") { share(kept) }
-                Btn("Save a copy") { saveCopy(kept) }
+            if (kept != null) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Btn("Open", Kind.Primary, modifier = Modifier.weight(1f)) { open(kept) }
+                Btn("Share", modifier = Modifier.weight(1f)) { share(kept) }
+                Btn("Save", modifier = Modifier.weight(1f)) { saveCopy(kept) }
             }
-            if (rx.verified) Btn("Receive again", Kind.Text) { receiveAgain() }
             // ai: one solid button at a time: Start while nothing waits, else Open
             Btn(if (running) "Stop camera" else "Start camera", if (!running && kept == null) Kind.Primary else Kind.Tonal, enabled = phase != Engine.Phase.Starting,
-                modifier = if (!rx.verified) Modifier.fillMaxWidth() else Modifier) { toggleCamera() }
+                modifier = Modifier.fillMaxWidth()) { toggleCamera() }
         }
     }
     // ai: the rate it is receiving at, the last second's new bytes, under the buttons and over Settings while the camera

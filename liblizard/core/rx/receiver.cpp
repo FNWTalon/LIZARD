@@ -487,7 +487,9 @@ std::string GpuReceiver::stats() {
   std::lock_guard<std::mutex> l(mu);
   const double n = std::max(1, lastFrames);
   json j = {
-    {"state", !error.empty() ? "error" : !planned ? "starting" : p.done ? "received" : p.live ? "receiving" : last.test ? "test" : lastWord.is_null() ? "looking" : "found"},
+    // ai: the test stream in the last window's frames comes first (2026-10-05): what the camera reads now is the state, over
+    // ai: a file received or in progress, which comes back once the camera is on its frames again
+    {"state", !error.empty() ? "error" : !planned ? "starting" : last.test ? "test" : p.done ? "received" : p.live ? "receiving" : lastWord.is_null() ? "looking" : "found"},
     {"error", error}, {"decoder", "gpu " + variant}, {"zeroCopy", !!ci}, {"layout", cfg.layout},
     {"capturedFps", last.arrived}, {"processedFps", last.processed}, {"dropped", last.dropped},
     {"foundShare", last.found / n}, {"side", last.found ? last.side / last.found : 0},
@@ -661,7 +663,7 @@ std::string CpuReceiver::stats() {
   std::lock_guard<std::mutex> l(mu);
   const double n = std::max(1, lastMsFrames);
   json j = {
-    {"state", !error.empty() ? "error" : p.done ? "received" : p.live ? "receiving" : last.test ? "test" : lastWord.is_null() ? "looking" : "found"},
+    {"state", !error.empty() ? "error" : last.test ? "test" : p.done ? "received" : p.live ? "receiving" : lastWord.is_null() ? "looking" : "found"},
     {"error", error}, {"decoder", "cpu"}, {"zeroCopy", false}, {"layout", cfg.layout},
     {"threads", pool->size()}, {"threadsReady", pool->ready()}, {"threadsMax", pool->ceiling()}, {"simd", cpu_simd() != 0}, {"gpuWhy", gpuWhy},
     {"capturedFps", last.arrived}, {"processedFps", last.processed}, {"dropped", last.dropped},
