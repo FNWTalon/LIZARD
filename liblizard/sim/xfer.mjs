@@ -1,8 +1,14 @@
 // The transfer in the light for the rig (src/xfer.h holds the layouts and their reasons): the sender's schedule, and a
 // receiver that puts a file back together from blocks alone, each chunk checked against the file's BLAKE3 root.
 //
-// Pure JS. The codec's wasm (sim/ob.mjs init(), for BLAKE3 and the header) and Wirehair (sim/fountain.mjs) are handed
-// in, so sim/phy.mjs and the receiver page take the id test from here without loading either.
+// Pure JS. The codec's wasm (sim/ob.mjs init(), for BLAKE3 and the header), Wirehair (sim/fountain.mjs) and zstd
+// (sim/zstd.mjs, as Z) are handed in, so sim/phy.mjs and the receiver page take the id test from here without loading
+// any of them.
+//
+// COMPRESSION (2026-10-05, src/xfer.h): every chunk is compressed on its own, one zstd frame where that is shorter than
+// its bytes, else sent as it is; its fountain carries the sent bytes. The manifest names each chunk's sent bytes and
+// seed attempt (one chunk: the header), so a receiver solves no chunk before the manifest is in; the control cycle puts
+// it within an eighth of a lap. The file's length, root and chaining values are the file's own bytes.
 //
 // THE SCHEDULE: every chunk interleaved with every other, in proportion to its blocks, over the whole file (a lap),
 // and laps repeated for as long as the sender runs, each with fresh repair ids. Not chunks in turn, because a camera's
@@ -32,8 +38,10 @@
 
 // src/xfer.h, held against the codec's xfer_layout whenever a wasm is handed in. The receiver page has no codec and
 // needs the id test anyway.
-export const PAYLOAD = 469, ID_BYTES = 4, SYMBOL_BITS = 18, CONTROL = 0x3fff, CVS_PER_BLOCK = 14, MAX_CHUNKS = 0x3fff;
-export const ID_HEADER = 0xfffc0000, SYMBOL_MASK = (1 << SYMBOL_BITS) - 1, MAX_MANIFEST = Math.ceil(MAX_CHUNKS / CVS_PER_BLOCK);
+export const PAYLOAD = 469, ID_BYTES = 4, SYMBOL_BITS = 18, CONTROL = 0x3fff, PER_BLOCK = 12, MAX_CHUNKS = 0x3fff;
+export const ID_HEADER = 0xfffc0000, SYMBOL_MASK = (1 << SYMBOL_BITS) - 1, MAX_MANIFEST = Math.ceil(MAX_CHUNKS / PER_BLOCK);
+export const CODEC_NONE = 0, CODEC_ZSTD = 1;
+const blocksOf = (sent) => Math.ceil(sent / PAYLOAD);
 export const isControlId = (id) => id >>> SYMBOL_BITS === CONTROL;
 export const idOf = (chunk, symbol) => ((chunk << SYMBOL_BITS) | symbol) >>> 0;
 
@@ -57,7 +65,7 @@ function wasm(M) {
   M._xfer_layout(p);
   const L = new Int32Array(M.HEAPU8.buffer, p, 14).slice();
   M._free(p);
-  if (L[0] !== ID_BYTES || L[1] !== PAYLOAD || L[2] !== SYMBOL_BITS || L[3] !== 14 || L[4] >>> 0 !== ID_HEADER || L[6] !== CVS_PER_BLOCK || L[11] !== MAX_CHUNKS)
+  if (L[0] !== ID_BYTES || L[1] !== PAYLOAD || L[2] !== SYMBOL_BITS || L[3] !== 14 || L[4] >>> 0 !== ID_HEADER || L[6] !== PER_BLOCK || L[11] !== MAX_CHUNKS || L[12] !== 2)
     throw new Error(`src/xfer.h moved (layout ${L.join(",")}): sim/xfer.mjs is out of date`);
   const b3 = (bytes) => { const a = put(bytes), o = M._malloc(32); M._xfer_b3_hash(a, bytes.length, o); const h = take(o, 32); M._free(a); M._free(o); return h; };
   return { put, take, b3, logMin: L[9], logMax: L[10] };
@@ -77,26 +85,28 @@ function nameBytes(name) {
 }
 const typeBytes = (t) => (/^[\x20-\x7e]{0,162}$/.test(t ?? "") ? new TextEncoder().encode(t ?? "") : new Uint8Array(0));
 
-// Which chunk the next data block is for, and its symbol. A round visits every full-size chunk once; the last chunk,
-// when shorter, is visited in proportion to its blocks by an accumulator, plus 2 sqrt(K) visits a lap and at least 64:
-// a small chunk's count of blocks received wanders more than a big one's, and the file waits on whichever chunk is
-// last. Counted (10 MB, 8.5 MB, 4.2 MB, 64 MB; 0, 15 and 30% lost), that costs a receiver that loses nothing at most
-// 0.55% and is level with or ahead of plain proportion everywhere else (4.2 MB at 30% lost: 1.431 laps against 1.472,
-// the least being 1.429); 4 sqrt(K) + 64 cost 1.4% at 10 MB, which the rig measured.
+// Which chunk the next data block is for, and its symbol. A round visits every chunk of the most blocks once; a chunk
+// of fewer is visited in proportion to its blocks by an accumulator, plus 2 sqrt(K) visits a lap and at least 64: a
+// small chunk's count of blocks received wanders more than a big one's, and the file waits on whichever chunk is
+// last. Counted (10 MB, 8.5 MB, 4.2 MB, 64 MB; 0, 15 and 30% lost) when only a last chunk could be short, that costs a
+// receiver that loses nothing at most 0.55% and is level with or ahead of plain proportion everywhere else (4.2 MB at
+// 30% lost: 1.431 laps against 1.472, the least being 1.429); 4 sqrt(K) + 64 cost 1.4% at 10 MB, which the rig
+// measured. Compressed, chunks differ in blocks by their content and each short one takes the margin, 2 / sqrt(K) of
+// its airtime at most (2.6% at 6,000 blocks), nothing where the file does not compress.
 class Schedule {
   constructor(K) {
     const C = K.length;
-    this.K = K; this.C = C; this.sym = new Uint32Array(C); this.i = 0; this.acc = 0;
-    this.full = C && K[C - 1] < K[0] ? C - 1 : C;
-    this.w = this.full < C ? Math.min(K[0], Math.max(64, K[C - 1] + Math.ceil(2 * Math.sqrt(K[C - 1])))) : 0;
-    this.lap = C ? this.full * K[0] + this.w : 0;
+    this.K = K; this.C = C; this.sym = new Uint32Array(C); this.i = 0; this.acc = new Uint32Array(C);
+    this.max = C ? K.reduce((a, b) => Math.max(a, b), 0) : 0;
+    this.w = Uint32Array.from(K, (k) => (k >= this.max ? this.max : Math.min(this.max, Math.max(64, k + Math.ceil(2 * Math.sqrt(k))))));
+    this.lap = this.w.reduce((a, b) => a + b, 0);
   }
   next() {
     let c;
     for (;;) {
-      if (this.i < this.full) { c = this.i++; break; }
-      this.i = 0;
-      if (this.w && (this.acc += this.w) >= this.K[0]) { this.acc -= this.K[0]; c = this.C - 1; break; }
+      if (this.i >= this.C) this.i = 0;
+      c = this.i++;
+      if ((this.acc[c] += this.w[c]) >= this.max) { this.acc[c] -= this.max; break; }
     }
     if (this.K[c] === 1) return idOf(c, 0);   // unfountained: the one block, again
     const s = this.sym[c];
@@ -106,20 +116,26 @@ class Schedule {
 }
 
 export class XferSender {
-  // bytes: the file. M: the codec's wasm module. Encoder: sim/fountain.mjs's, its init() already awaited.
-  constructor(bytes, { name = "", type = "", chunkLog2 = DEFAULT_LOG2, M, Encoder }) {
+  // bytes: the file. M: the codec's wasm module. Encoder: sim/fountain.mjs's, its init() already awaited. Z: sim/zstd.mjs's
+  // Z, its init() awaited, or null to send every chunk as it is (codec none).
+  constructor(bytes, { name = "", type = "", chunkLog2 = DEFAULT_LOG2, M, Encoder, Z = null }) {
     const W = wasm(M), size = 2 ** chunkLog2, length = bytes.length;
     if (!(chunkLog2 >= W.logMin && chunkLog2 <= W.logMax)) throw new Error(`chunk size 2^${chunkLog2} is outside 2^${W.logMin} to 2^${W.logMax}`);
     const C = Math.ceil(length / size);
     if (C > MAX_CHUNKS) throw new Error(`${length} B is ${C} chunks of 2^${chunkLog2}; the id carries ${MAX_CHUNKS}`);
-    this.bytes = bytes; this.chunks = C; this.chunkLog2 = chunkLog2; this.size = size; this.length = length;
+    this.chunks = C; this.chunkLog2 = chunkLog2; this.size = size; this.length = length; this.codec = Z ? CODEC_ZSTD : CODEC_NONE;
     this.len = Array.from({ length: C }, (_, c) => Math.min(size, length - c * size));
-    this.K = this.len.map((n) => Math.ceil(n / PAYLOAD));
-    this.enc = this.K.map((k, c) => (k > 1 ? new Encoder(bytes.subarray(c * size, c * size + this.len[c]), PAYLOAD) : null));
-    const seedFull = C >= 2 ? this.enc[0].seed : 0, seedLast = C && this.enc[C - 1] ? this.enc[C - 1].seed : 0;
-    // The header carries one attempt for every chunk but the last (src/xfer.h, the seed attempt rule), so a full chunk
-    // that Wirehair seeded differently is a file this header cannot describe: refuse it rather than send it.
-    for (let c = 0; c < C - 1; c++) if (this.enc[c].seed !== seedFull) throw new Error(`chunk ${c} took seed attempt ${this.enc[c].seed}, chunk 0 ${seedFull}`);
+    // Each chunk compressed on its own and sent as its frame where that is shorter, else as it is; a fountain over the
+    // sent bytes where they are 2 blocks or more, else the one block kept here (one).
+    this.sent = new Uint32Array(C); this.seed = new Uint8Array(C); this.K = new Uint32Array(C); this.enc = []; this.one = new Map();
+    for (let c = 0; c < C; c++) {
+      const plain = bytes.subarray(c * size, c * size + this.len[c]);
+      let out = plain;
+      if (Z) { const f = Z.compress(plain); if (f && f.length < plain.length) out = f; }
+      this.sent[c] = out.length; this.K[c] = blocksOf(out.length);
+      if (this.K[c] > 1) { const e = new Encoder(out, PAYLOAD); this.enc.push(e); this.seed[c] = e.seed; } else { this.enc.push(null); this.one.set(c, out.slice()); }
+    }
+    this.sentBytes = this.sent.reduce((a, b) => a + b, 0);
     // The chaining values, their root (b3sum's answer), the header and the manifest.
     let root;
     const o = M._malloc(32);
@@ -139,22 +155,23 @@ export class XferSender {
     M._free(o);
     this.root = root;
     const nm = nameBytes(name), ty = typeBytes(type), pr = W.put(root), pn = W.put(nm), pt = W.put(ty), ph = M._malloc(PAYLOAD);
-    if (M._xfer_hdr_write(ph, length, chunkLog2, seedFull, seedLast, pr, pn, nm.length, pt, ty.length)) throw new Error("header refused");
+    if (M._xfer_hdr_write(ph, length, chunkLog2, this.codec, C === 1 ? this.seed[0] : 0, C === 1 ? this.sent[0] : 0, pr, pn, nm.length, pt, ty.length)) throw new Error("header refused");
     this.header = W.take(ph, PAYLOAD);
-    const pc = W.put(this.cvs ?? new Uint8Array(0));
+    const pc = W.put(this.cvs ?? new Uint8Array(0)), ps = W.put(new Uint8Array(this.sent.buffer)), pz = W.put(this.seed);
     this.manifest = [];
     for (let m = 0; m < M._xfer_manifest_blocks(C); m++) {
-      if (M._xfer_manifest_write(pc, C, pr, m, ph)) throw new Error(`manifest block ${m}`);
+      if (M._xfer_manifest_write(pc, ps, pz, C, pr, m, ph)) throw new Error(`manifest block ${m}`);
       this.manifest.push(W.take(ph, PAYLOAD));
     }
-    [pr, pn, pt, ph, pc].forEach((p) => M._free(p));
+    [pr, pn, pt, ph, pc, ps, pz].forEach((p) => M._free(p));
     this.sched = new Schedule(this.K);
     // The whole control cycle (the header every other block, the manifest between) within an eighth of a lap, so a file
     // of many small chunks does not wait on its manifest.
     this.every = Math.max(1, Math.min(CONTROL_EVERY, Math.floor(this.sched.lap / (8 * Math.max(1, this.manifest.length)))));
     this.since = Infinity; this.ctl = 0; this.frame = 0;
   }
-  info() { return { header: b64(this.header), chunks: this.chunks, chunkLog2: this.chunkLog2, manifest: this.manifest.length, root: hex(this.root), lap: this.sched.lap }; }
+  // sent: the file's bytes as they go, every chunk's frame or its own bytes (the file's length where nothing shrank).
+  info() { return { header: b64(this.header), chunks: this.chunks, chunkLog2: this.chunkLog2, manifest: this.manifest.length, root: hex(this.root), lap: this.sched.lap, codec: this.codec, sent: this.sentBytes }; }
 
   // The ids of the next frame of B blocks. Advances the schedule, so a frame asked for twice is two frames.
   frameIds(B, out = new Uint32Array(B)) {
@@ -183,10 +200,10 @@ export class XferSender {
     const c = id >>> SYMBOL_BITS, s = id & SYMBOL_MASK;
     if (c === CONTROL) { out.set(s === 0 ? this.header : this.manifest[s - 1]); return out; }
     if (this.enc[c]) return this.enc[c].block(s, out);
-    out.fill(0); out.set(this.bytes.subarray(c * this.size, c * this.size + this.len[c]));   // a chunk of one block, zero padded
+    out.fill(0); out.set(this.one.get(c));   // a chunk of one block, zero padded
     return out;
   }
-  free() { for (const e of this.enc) e?.free(); this.enc = []; }
+  free() { for (const e of this.enc) e?.free(); this.enc = []; this.one.clear(); }
 }
 
 // A set of symbols, as bits, grown to the highest one seen: ids are dense from 0 up, a lap at a time.
@@ -222,15 +239,16 @@ export class MemoryStore {
   held() { let t = this.out?.length ?? 0; for (const r of this.recs.values()) t += r.buf.length; return t; }
 }
 
-const COLLECTING = 0, HOT = 1, RECOVERED = 2, VERIFIED = 3;
+const COLLECTING = 0, HOT = 1, VERIFIED = 3;   // 2 was a chunk decoded before the manifest, which no longer happens: a chunk's block count waits on it
 const eq = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 
 // A file from blocks alone. add() every block a decoder hands over, control blocks included and in any order, then
 // read progress() and, once done is set, result.
 export class XferReceiver {
-  // M: the codec's wasm. Decoder: sim/fountain.mjs's. store: a MemoryStore, or the fountain worker's OPFS store.
-  constructor({ M, Decoder, store }) {
-    this.M = M; this.W = wasm(M); this.Decoder = Decoder; this.store = store;
+  // M: the codec's wasm. Decoder: sim/fountain.mjs's. store: a MemoryStore, or the fountain worker's OPFS store. Z:
+  // sim/zstd.mjs's Z (null: a compressed chunk is rejected).
+  constructor({ M, Decoder, store, Z = null }) {
+    this.M = M; this.W = wasm(M); this.Decoder = Decoder; this.store = store; this.Z = Z;
     this.hdr = null; this.source = ""; this.lightSeen = false;
     this.ch = new Map(); this.raw = new Map();
     this.verified = 0; this.rejected = 0; this.manifestRejected = 0; this.refused = 0; this.over = 0; this.ms = 0; this.done = false; this.result = null;
@@ -239,7 +257,7 @@ export class XferReceiver {
   async reset() {
     const M = this.M;
     for (const s of this.ch.values()) s.dec?.free();
-    if (this.hdr) [this.hdr.p, this.hdr.root, this.hdr.list].forEach((p) => M._free(p));
+    if (this.hdr) [this.hdr.p, this.hdr.root, this.hdr.list, this.hdr.psent, this.hdr.pseed].forEach((p) => M._free(p));
     this.hdr = null; this.source = ""; this.lightSeen = false; this.ch.clear(); this.raw.clear();
     this.verified = 0; this.rejected = 0; this.manifestRejected = 0; this.over = 0; this.ms = 0; this.done = false; this.result = null;
     await this.store.clear();
@@ -261,11 +279,11 @@ export class XferReceiver {
     const h = this.hdr;
     if (this.done || (h && c >= h.chunks)) return;
     const s = this.state(c);
-    if (s.state >= RECOVERED || s.have.has(sym) || s.ban.has(sym)) return;
+    if (s.state === VERIFIED || s.have.has(sym) || s.ban.has(sym)) return;
     s.have.add(sym);
     if (s.dec) { if (s.dec.add(sym, bytes)) await this.recovered(c, s.dec); return; }
     await this.store.append(c, sym, bytes);
-    if (h && s.have.n >= h.K[c]) await this.solve(c);
+    if (h && h.K && s.have.n >= h.K[c]) await this.solve(c);   // K: known once the manifest is in (one chunk: from the header)
   }
 
   // A header block, from the light or, as the fallback, the network (the sender page's copy of the same 469 bytes).
@@ -277,21 +295,20 @@ export class XferReceiver {
       if (eq(bytes, this.hdr.bytes)) { if (light) this.source = "light"; return; }
       if (!light) return;
     }
-    const M = this.M, W = this.W, ph = W.put(bytes), sc = M._malloc(48), root = M._malloc(32), nm = M._malloc(255), ty = M._malloc(162);
+    const M = this.M, W = this.W, ph = W.put(bytes), sc = M._malloc(52), root = M._malloc(32), nm = M._malloc(255), ty = M._malloc(158);
     const rc = M._xfer_hdr_parse(ph, sc, root, nm, ty);
     // ai: a failed parse writes nothing: name and type lengths read then were heap leftovers, megabytes decoded for nothing.
     if (rc) { this.refused++; [ph, sc, root, nm, ty].forEach((p) => M._free(p)); return; }   // not a header this receiver reads
-    const f = new Int32Array(M.HEAPU8.buffer, sc, 12).slice(), name = new TextDecoder().decode(W.take(nm, f[5])), type = new TextDecoder().decode(W.take(ty, f[6]));
+    const f = new Int32Array(M.HEAPU8.buffer, sc, 13).slice(), name = new TextDecoder().decode(W.take(nm, f[5])), type = new TextDecoder().decode(W.take(ty, f[6]));
     [sc, nm, ty].forEach((p) => M._free(p));
     if (this.hdr) await this.reset();
-    const chunks = f[9], info = M._malloc(12), h = { bytes: bytes.slice(), p: ph, root, list: M._malloc(Math.max(1, 32 * chunks)), name, type, log2: f[2], size: f[11],
-      length: (f[7] >>> 0) + (f[8] >>> 0) * 2 ** 32, chunks, mcount: f[10], K: new Uint32Array(chunks), len: new Uint32Array(chunks), seed: new Uint8Array(chunks), mgot: new Uint8Array(f[10]), mhave: 0, listOk: false };
-    for (let c = 0; c < chunks; c++) {
-      M._xfer_hdr_chunk(ph, c, info);
-      const v = new Int32Array(M.HEAPU8.buffer, info, 3);
-      h.len[c] = v[0]; h.K[c] = v[1]; h.seed[c] = v[2];
-    }
-    M._free(info);
+    // sent, seed and K: each chunk's bytes as sent, its seed attempt and its blocks, from the header for one chunk and
+    // from the manifest (psent, pseed, read back once the list checks) for more; null until then.
+    const chunks = f[9], size = f[11], length = (f[7] >>> 0) + (f[8] >>> 0) * 2 ** 32;
+    const h = { bytes: bytes.slice(), p: ph, root, list: M._malloc(Math.max(1, 32 * chunks)), psent: M._malloc(Math.max(4, 4 * chunks)), pseed: M._malloc(Math.max(1, chunks)),
+      name, type, log2: f[2], size, length, chunks, codec: f[3], mcount: f[10], len: Uint32Array.from({ length: chunks }, (_, c) => Math.min(size, length - c * size)),
+      sent: null, seed: null, K: null, mgot: new Uint8Array(f[10]), mhave: 0, listOk: false };
+    if (chunks === 1) { h.sent = Uint32Array.of(f[12]); h.seed = Uint8Array.of(f[4]); h.K = Uint32Array.of(blocksOf(f[12])); }
     this.hdr = h; this.source = source; this.lightSeen ||= light;
     for (const c of [...this.ch.keys()]) if (c >= chunks) { this.ch.delete(c); await this.store.drop(c); }   // blocks of another transfer
     await this.store.begin(h.length);
@@ -301,16 +318,21 @@ export class XferReceiver {
     }
     for (const [m, b] of this.raw) await this.manifestBlock(m, b);
     this.raw.clear();
-    for (const [c, s] of this.ch) if (s.state === COLLECTING && s.have.n >= h.K[c]) await this.solve(c);
+    if (h.K) await this.solveReady();
+  }
+  // Every chunk with its blocks in hand, now that their counts are known.
+  async solveReady() {
+    const h = this.hdr;
+    for (const [c, s] of [...this.ch]) if (!this.done && s.state === COLLECTING && s.have.n >= h.K[c]) await this.solve(c);
   }
 
   async manifestBlock(m, bytes) {
     const h = this.hdr, M = this.M;
     if (!h) { if (this.raw.size < 4096) this.raw.set(m, bytes.slice()); return; }   // kept until there is a root to check it by
     if (h.listOk || m >= h.mcount || h.mgot[m]) return;
-    const p = this.W.put(bytes), ok = M._xfer_manifest_parse(p, h.chunks, h.root, m, h.list) === 0;
+    const p = this.W.put(bytes), ok = M._xfer_mf_parse(p, h.p, m, h.list, h.psent, h.pseed) === 0;
     M._free(p);
-    if (!ok) return;   // another transfer's (its tag), or not a manifest block
+    if (!ok) return;   // another transfer's (its tag), not a manifest block, or entries no chunk could have
     h.mgot[m] = 1;
     if (++h.mhave < h.mcount) return;
     if (M._xfer_manifest_check(h.list, h.chunks, h.root)) {
@@ -320,10 +342,8 @@ export class XferReceiver {
       return;
     }
     h.listOk = true;
-    for (const [c, s] of this.ch) if (s.state === RECOVERED) {
-      const out = await this.store.readOut(c * h.size, h.len[c]);
-      if (this.verify(c, out)) await this.accept(c, s); else this.reject(c, s);
-    }
+    h.sent = new Uint32Array(M.HEAPU8.buffer, h.psent, h.chunks).slice(); h.seed = M.HEAPU8.slice(h.pseed, h.pseed + h.chunks); h.K = h.sent.map(blocksOf);
+    await this.solveReady();
   }
 
   async solve(c) {
@@ -333,8 +353,8 @@ export class XferReceiver {
   }
   async solveOnce(c) {
     const h = this.hdr, s = this.ch.get(c), recs = await this.store.read(c);
-    if (h.K[c] === 1) { const out = recs.slice(ID_BYTES, ID_BYTES + h.len[c]); await this.store.drop(c); return this.check(c, out); }
-    const d = new this.Decoder(h.len[c], PAYLOAD, h.seed[c]);
+    if (h.K[c] === 1) { const out = recs.slice(ID_BYTES, ID_BYTES + h.sent[c]); await this.store.drop(c); return this.unpack(c, out); }
+    const d = new this.Decoder(h.sent[c], PAYLOAD, h.seed[c]);
     let done = false;
     for (let o = 0; o < recs.length && !done; o += REC) done = d.add((recs[o] | (recs[o + 1] << 8) | (recs[o + 2] << 16) | (recs[o + 3] << 24)) >>> 0, recs.subarray(o + ID_BYTES, o + REC));
     await this.store.drop(c);   // the decoder holds them now
@@ -344,11 +364,18 @@ export class XferReceiver {
   async recovered(c, d) {
     const s = this.ch.get(c), out = d.recover();
     d.free(); s.dec = null;
+    await this.unpack(c, out);
+  }
+  // The chunk's bytes from what was sent: its zstd frame decompressed where it was sent shorter than it is (a frame
+  // that does not give exactly the chunk's bytes is a wrong chunk, rejected as a wrong hash is), else as they came.
+  async unpack(c, raw) {
+    const h = this.hdr, s = this.ch.get(c);
+    let out = raw;
+    if (h.sent[c] < h.len[c]) { out = this.Z ? this.Z.decompress(raw, h.len[c]) : null; if (!out) return this.reject(c, s); }
     await this.check(c, out);
   }
   async check(c, out) {
     const h = this.hdr, s = this.ch.get(c);
-    if (h.chunks >= 2 && !h.listOk) { await this.store.writeOut(c * h.size, out); s.state = RECOVERED; return; }   // verified once the manifest is in
     if (this.verify(c, out)) { await this.store.writeOut(c * h.size, out); await this.accept(c, s); } else this.reject(c, s);
   }
   // xfer_chunk_check: the chunk's chaining value against the list (already checked against the root), or, for a file
@@ -371,31 +398,43 @@ export class XferReceiver {
   async finish() {
     this.done = true;
     const h = this.hdr;
-    this.result = { ...(await this.store.finish(h)), name: h.name, mediaType: h.type, length: h.length, root: hex(this.W.take(h.root, 32)), source: this.source };
+    this.result = { ...(await this.store.finish(h)), name: h.name, mediaType: h.type, length: h.length, sent: this.sentTotal(), root: hex(this.W.take(h.root, 32)), source: this.source };
+  }
+  // The file's bytes as they go, every chunk's frame or its own (null until the manifest says), and how many of them
+  // are in: a verified chunk's all, another's blocks in hand (2026-10-05, so a page's time left counts the bytes the
+  // light carries, not the file's).
+  sentTotal() { const h = this.hdr; return h?.sent ? h.sent.reduce((a, b) => a + b, 0) : null; }
+  sentIn() {
+    const h = this.hdr;
+    if (!h?.sent) return 0;
+    let got = 0;
+    for (let c = 0; c < h.chunks; c++) { const s = this.ch.get(c); if (s) got += s.state === VERIFIED ? h.sent[c] : Math.min(h.sent[c], s.have.n * PAYLOAD); }
+    return got;
   }
 
-  // For the page: what is known, and each chunk's share of its blocks in hand (0 to 100, 255 verified, 254 decoded and
-  // waiting for the manifest).
+  // For the page: what is known, and each chunk's share of its blocks in hand (0 to 99, 255 verified; until the
+  // manifest says how many blocks a chunk has, the share is over the blocks its bytes would take uncompressed, a floor).
   progress() {
     const h = this.hdr;
     if (!h) return { header: null, lightSeen: this.lightSeen, held: this.ch.size, refused: this.refused };
     const per = new Uint8Array(h.chunks);
     for (let c = 0; c < h.chunks; c++) {
       const s = this.ch.get(c);
-      per[c] = !s ? 0 : s.state === VERIFIED ? 255 : s.state === RECOVERED ? 254 : Math.min(99, Math.floor((100 * s.have.n) / h.K[c]));
+      per[c] = !s ? 0 : s.state === VERIFIED ? 255 : Math.min(99, Math.floor((100 * s.have.n) / (h.K ? h.K[c] : blocksOf(h.len[c]))));
     }
-    return { header: { name: h.name, type: h.type, length: h.length, chunks: h.chunks, log2: h.log2, root: hex(this.W.take(h.root, 32)) }, source: this.source, lightSeen: this.lightSeen,
+    return { header: { name: h.name, type: h.type, length: h.length, chunks: h.chunks, log2: h.log2, root: hex(this.W.take(h.root, 32)), sent: this.sentTotal() }, sentIn: this.sentIn(), source: this.source, lightSeen: this.lightSeen,
       manifest: h.mcount, manifestHave: h.mhave, listOk: h.listOk, verified: this.verified, rejected: this.rejected, manifestRejected: this.manifestRejected, refused: this.refused, over: this.over, solveMs: this.ms, per, done: this.done };
   }
 }
 
 // ai: fractionDone(p): how much of the file is in, 0 to 1, from progress()'s answer (or the fountain worker's xfer
-// ai: message, which carries it): a chunk decoded (254) or verified (255) counts whole, any other its per / 100, each
+// ai: message, which carries it): a chunk verified (255; 254, decoded before the manifest, until 2026-10-05) counts whole, any other its per / 100, each
 // ai: weighted by its length (2^log2 bytes, the last chunk the rest). 0 with no header; 1 once done, an empty file too.
 export function fractionDone(p) {
   const h = p?.header;
   if (p?.done) return 1;
   if (!h?.length) return 0;
+  if (h.sent) return Math.min(1, p.sentIn / h.sent);   // ai: the bytes the light carries, once the manifest has said them (2026-10-05)
   const size = 2 ** h.log2;
   let got = 0;
   for (let c = 0; c < h.chunks; c++) {

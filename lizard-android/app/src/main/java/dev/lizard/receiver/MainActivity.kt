@@ -247,7 +247,7 @@ class MainActivity : ComponentActivity() {
     // ai: (Settings.forCamera, 2026-10-04); null where the phone has none or the camera service fails
     private fun camId(camera: String): String? = runCatching { engine.rearId(camera) }.getOrNull()
     // ai: A Developer (Advanced) switch: kept, and the camera started again where the switch needs it. Another lens
-    // ai: chosen brings its own resolution, zoom and focus (as last kept for it, else the defaults).
+    // ai: chosen brings its own resolution and zoom (as last kept for it, else the defaults).
     internal fun change(s0: Settings, restart: Boolean) {
         val cam = camId(s0.camera)
         val s = if (s0.camera != settings.camera) s0.forCamera(this, cam) else s0
@@ -262,15 +262,6 @@ class MainActivity : ComponentActivity() {
         if (settings.zoom.toFloatOrNull() == z) return
         settings = settings.copy(zoom = "%.1f".format(java.util.Locale.ROOT, z))
         engine.zoom(z)
-        settings.save(this, camId(settings.camera))
-    }
-    // ai: Receive's Focus: null autofocus, else the lens held at that many dioptres; the camera moved live (Engine.focus),
-    // ai: the setting kept at every step
-    internal fun focusTo(d: Float?) {
-        val v = d?.let { "%.2f".format(java.util.Locale.ROOT, it) } ?: "auto"
-        if (settings.focus == v) return
-        settings = settings.copy(focus = v)
-        engine.focus(d)
         settings.save(this, camId(settings.camera))
     }
     internal fun tipsDone() { tipsSeen = true; prefs.edit().putBoolean("tipsSeen", true).apply() }
@@ -393,7 +384,7 @@ class MainActivity : ComponentActivity() {
             if (c != null) put("camera", JSONObject().put("id", c.id).put("format", c.format).put("size", "${c.size.width}x${c.size.height}")
                 .put("fps", "[${c.fps.lower},${c.fps.upper}]").put("minFrameMs", c.minFrameMs).put("sensorOrientation", c.sensorOrientation).put("note", c.note)
                 .apply { if (cn != null) put("exposureMs", cn.exposureMs).put("iso", cn.iso).put("readoutMs", cn.readoutMs) })
-            put("zoom", settings.zoom); put("focus", settings.focus); put("phase", settings.phase); put("batch", settings.batch); put("thermal", heat); put("app", aboutLine())
+            put("zoom", settings.zoom); put("phase", settings.phase); put("batch", settings.batch); put("thermal", heat); put("app", aboutLine())
         }.toString()
         engine.replayEnd(r.handle, raw, statsRows.joinToString("\n"), more) { res ->
             busyRuns.remove(r.run)
@@ -545,5 +536,6 @@ internal fun rxOf(j: JSONObject?): Readout.Rx {
         foundShare = j.optDouble("foundShare", 0.0), bandVersion = j.optInt("bandVersion", 0), fps = j.optJSONObject("word")?.optInt("fps", 0) ?: 0,
         hasFile = f != null, name = f?.optString("name").orEmpty().ifEmpty { "a file" }, size = f?.optLong("size", 0) ?: 0,
         received = f?.optLong("received", 0) ?: 0, verified = f?.optBoolean("verified", false) ?: false,
+        sent = f?.optLong("sent", 0) ?: 0, sentIn = f?.optLong("sentIn", 0) ?: 0,
     )
 }

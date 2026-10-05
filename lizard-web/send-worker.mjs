@@ -20,6 +20,7 @@
 import { makePhy } from "../liblizard/sim/phy.mjs";
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { init as initFountain, Encoder } from "../liblizard/sim/fountain.mjs";
+import { init as initZstd, Z } from "../liblizard/sim/zstd.mjs";
 import { XferSender, isControlId } from "../liblizard/sim/xfer.mjs";
 
 let phy = null, xs = null, fps = 0, codes = 1, chain = Promise.resolve();
@@ -35,8 +36,9 @@ async function handle(m) {
     phy?.free(); xs?.free(); phy = null; xs = null;
     phy = await makePhy(m.spec);
     if (m.bytes) {
-      await initFountain();
-      xs = new XferSender(new Uint8Array(m.bytes), { ...m.xfer, M: await initOb(), Encoder });
+      await Promise.all([initFountain(), initZstd()]);
+      // ai: every chunk zstd-compressed where that is shorter (sim/xfer.mjs, 2026-10-05), before the first frame
+      xs = new XferSender(new Uint8Array(m.bytes), { ...m.xfer, M: await initOb(), Encoder, Z });
       phy.setSource(source());
     }
     fps = m.fps; phy.setFps?.(fps); codes = m.codes ?? 1; gapModules = m.gap ?? GAP_MODULES;

@@ -1,13 +1,16 @@
 // ai: The transfer's sending end (2026-10-01): liblizard/sim/xfer.mjs XferSender ported name for name, over
 // ai: liblizard/src/xfer.c (the chunks' chaining values, their root, the header and the manifest) and Wirehair
 // ai: through the web's shim (liblizard/wirehair/shim.cpp), as the receiving end (rx/xfer_rx.h) takes them. A file
-// ai: goes in 2^chunk_log2 chunks (4 MiB), a fountain each; the header every other control slot and the manifest
-// ai: between, the control cycle within an eighth of a lap; data blocks by the schedule, shuffled in a frame by a
-// ai: generator seeded by the frame count. The same ids and bytes as the JS sender for the same file
+// ai: goes in 2^chunk_log2 chunks (4 MiB), each zstd-compressed on its own where that is shorter (2026-10-05,
+// ai: liblizard/zstd/shim.c, the parameters pinned so the frame is the JS sender's), a fountain over each chunk's sent
+// ai: bytes; the header every other control slot and the manifest (each chunk's chaining value, bytes as sent and seed
+// ai: attempt) between, the control cycle within an eighth of a lap; data blocks by the schedule, shuffled in a frame
+// ai: by a generator seeded by the frame count. The same ids and bytes as the JS sender for the same file
 // ai: (tools/tx_check.cpp holds it to one).
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -30,6 +33,7 @@ class XferTx {
 
   uint32_t chunks() const { return chunks_; }
   uint32_t lap() const { return lap_; }           // ai: data blocks a lap of the schedule
+  uint64_t sentBytes() const { return sentBytes_; }   // ai: the file's bytes as they go (every chunk's frame, or its own)
   const uint8_t* root() const { return root_; }   // ai: 32 bytes, b3sum's answer for the file
   std::string rootHex() const;
 
@@ -39,14 +43,18 @@ class XferTx {
   const uint8_t* data_;
   size_t size_;
   uint32_t chunks_ = 0;
-  std::vector<size_t> len_;
-  std::vector<uint32_t> K_;      // ai: Wirehair source blocks a chunk (1: sent unfountained)
+  uint64_t sentBytes_ = 0;
+  std::vector<size_t> len_;      // ai: a chunk's own bytes
+  std::vector<uint32_t> sent_;   // ai: its bytes as sent: its zstd frame, or its own
+  std::vector<uint8_t> seed_;    // ai: its Wirehair seed attempt (0 where K is 1)
+  std::vector<uint32_t> K_;      // ai: Wirehair source blocks a chunk, of the sent bytes (1: sent unfountained)
   std::vector<void*> enc_;       // ai: a chunk's encoder, null where K is 1
+  std::map<uint32_t, std::vector<uint8_t>> one_;   // ai: the sent bytes of a chunk of one block
   uint8_t root_[32]{}, header_[469]{};
   std::vector<std::vector<uint8_t>> manifest_;
-  // ai: the schedule (Schedule): symbols a chunk sent, the round's place, the last chunk's accumulator
-  std::vector<uint32_t> sym_;
-  uint32_t i_ = 0, acc_ = 0, full_ = 0, w_ = 0, lap_ = 0;
+  // ai: the schedule (Schedule): symbols a chunk sent, the round's place, each chunk's weight a round and accumulator
+  std::vector<uint32_t> sym_, w_, acc_;
+  uint32_t i_ = 0, max_ = 0, lap_ = 0;
   // ai: the control cycle: how many data blocks between control slots, since the last, which control is next
   uint32_t every_ = 1, since_ = UINT32_MAX, ctl_ = 0, frame_ = 0;
 };

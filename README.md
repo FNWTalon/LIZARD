@@ -3,8 +3,8 @@
 Lizard is an animated 2D code for moving files from a screen to a phone camera: a sender shows a stream of grey
 pictures, and a receiver films them and rebuilds the file. Each frame is a grey picture whose spectrum carries the
 data (an OFDM-style design derived from Focus, Hermans et al., MobiSys 2016), inside a self-describing border. Blocks
-are protected by a soft-decision LDPC code and a CRC, and a file goes as chunks of a fountain code, each verified by
-BLAKE3 against the file's root.
+are protected by a soft-decision LDPC code and a CRC, and a file goes as chunks of a fountain code, each chunk
+compressed with zstd where that makes it smaller and each verified by BLAKE3 against the file's root.
 
 - **Demo:** [fosslabs.dev](https://fosslabs.dev)
 - **How it works:** [an example on video](https://www.youtube.com/watch?v=F-Mie4m9gBQ)
@@ -65,6 +65,7 @@ CMake 3.28 and emsdk 6.0.9.
 source <emsdk>/emsdk_env.sh
 liblizard/build.sh             # liblizard/build/ob.mjs and ob.wasm
 liblizard/build.sh wirehair    # liblizard/build/wirehair.mjs, the fountain code
+liblizard/build.sh zstd        # liblizard/build/zstd.mjs, the transfer's compression
 ```
 
 **The web app.** Serve the repository's root over HTTP and open `lizard-web/index.html`; a camera needs HTTPS or

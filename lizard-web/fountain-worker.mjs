@@ -12,6 +12,7 @@
 // ai: header is read, and once it has gone quiet, the newest HOLD_BLOCKS wait here (0.5 MB) and go to whichever
 // ai: transfer's header comes next; a transfer with no header in sight stores nothing.
 import { init as initWh, Decoder } from "../liblizard/sim/fountain.mjs";
+import { init as initZstd, Z } from "../liblizard/sim/zstd.mjs";
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { XferReceiver, MemoryStore, PAYLOAD, ID_BYTES, ID_HEADER, isControlId } from "../liblizard/sim/xfer.mjs";
 
@@ -68,10 +69,10 @@ class OpfsStore {
 }
 
 async function chunked(c) {
-  const [M] = await Promise.all([initOb(), initWh()]);
+  const [M] = await Promise.all([initOb(), initWh(), initZstd()]);
   if (c.store === "memory" && store?.kind !== "memory") { store = new MemoryStore(); store.why = "asked for (?store=memory)"; rx = null; }
   if (!store) try { store = await OpfsStore.open(); } catch (e) { store = new MemoryStore(); store.why = String(e?.message ?? e); }
-  rx ??= new XferReceiver({ M, Decoder, store });
+  rx ??= new XferReceiver({ M, Decoder, store, Z });   // ai: Z decompresses a chunk sent as a zstd frame (2026-10-05)
   await rx.reset();
   sinceHeader = Infinity; held = []; heldAt = 0;
 }

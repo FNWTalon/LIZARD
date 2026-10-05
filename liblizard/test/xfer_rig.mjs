@@ -1,27 +1,31 @@
 // The rig's chunked transfer (sim/xfer.mjs) without a camera: the sender's schedule, its blocks dropped the ways a
 // camera drops them, and the receiver putting the file back from what is left, held to the file and to its BLAKE3
-// (the vendored C through the wasm). Files of no bytes, one block, one chunk, several, 41 small chunks and 10 MB;
-// loss at random, by ring, in bursts, a late join, a corrupted block that passes its CRC, a stale header from the
-// network. Laps is the airtime from the join over one lap of the file's source blocks. About 5 s.
+// (the vendored C through the wasm). Files of no bytes, one block, one chunk, several, 41 small chunks and 10 MB,
+// random (sent as they are) and prose (each chunk sent as its zstd frame, so the chunks differ in blocks); loss at
+// random, by ring, in bursts, a late join, a corrupted block that passes its CRC, a stale header from the network.
+// Laps is the airtime from the join over one lap of the file's blocks as sent. About 8 s.
 //   node test/xfer_rig.mjs
 import { init as initOb } from "../sim/ob.mjs";
 import { init as initWh, Encoder, Decoder } from "../sim/fountain.mjs";
+import { init as initZstd, Z } from "../sim/zstd.mjs";
 import { XferSender, XferReceiver, MemoryStore, blake3, hex, isControlId, PAYLOAD } from "../sim/xfer.mjs";
 
 const M = await initOb();
-await initWh();
+await initWh(); await initZstd();
 let fails = 0, over = 0;
 const rand = (n, seed) => { const a = new Uint8Array(n); let s = seed >>> 0 || 1; for (let i = 0; i < n; i++) { s = (Math.imul(s, 1103515245) + 12345) >>> 0; a[i] = s >>> 16; } return a; };
+// Text-like bytes from a small vocabulary: zstd shrinks them by about half, each chunk by a different amount.
+const prose = (n, seed) => { const w = ["lizard ", "frame ", "block ", "ring ", "pilot ", "camera ", "screen ", "the ", "a ", "of ", "and ", "reads ", "paints ", "\n"]; const a = new Uint8Array(n); let s = seed >>> 0 || 1, k = 0; while (k < n) { s = (Math.imul(s, 1103515245) + 12345) >>> 0; const t = w[(s >>> 16) % w.length]; for (let i = 0; i < t.length && k < n; i++) a[k++] = t.charCodeAt(i); } return a; };
 
 // ring: the outer share of a frame's slots never read. burst: frames lost, 48 of every 240 (2 s of 10 at 24 fps).
 // corrupt: chunk whose symbol 3 is sent with a flipped bit (in the first lap only, as symbols do not repeat).
 // stale: a header of another file handed over first, as the network's. net: this file's header, as the network's.
 // dark: every control block lost, so only the network's header can start the file.
-async function run(label, { length, log2 = 22, B = 12, loss = 0, ring = 0, burst = 0, join = 0, corrupt = -1, stale = false, net = false, dark = false, maxLaps = 6, wantRejected = 0, wantSource = "light" }) {
-  const file = rand(length, length + 7), xs = new XferSender(file, { name: "f.bin", type: "application/octet-stream", chunkLog2: log2, M, Encoder });
-  const rx = new XferReceiver({ M, Decoder, store: new MemoryStore() });
+async function run(label, { length, log2 = 22, B = 12, loss = 0, ring = 0, burst = 0, join = 0, corrupt = -1, stale = false, net = false, dark = false, text = false, maxLaps = 6, wantRejected = 0, wantSource = "light" }) {
+  const file = text ? prose(length, length + 7) : rand(length, length + 7), xs = new XferSender(file, { name: "f.bin", type: "application/octet-stream", chunkLog2: log2, M, Encoder, Z });
+  const rx = new XferReceiver({ M, Decoder, store: new MemoryStore(), Z });
   if (net) await rx.header(xs.header, "network");
-  if (stale) { const other = new XferSender(rand(length + 1000, 3), { name: "old.bin", chunkLog2: log2, M, Encoder }); await rx.header(other.header, "network"); other.free(); }
+  if (stale) { const other = new XferSender(rand(length + 1000, 3), { name: "old.bin", chunkLog2: log2, M, Encoder, Z }); await rx.header(other.header, "network"); other.free(); }
   let s = 12345;
   const rnd = () => { s = (Math.imul(s, 1103515245) + 12345) >>> 0; return (s >>> 8) / 16777216; };
   const buf = new Uint8Array(PAYLOAD), lap = Math.max(1, xs.K.reduce((a, b) => a + b, 0)), limit = join + Math.ceil((maxLaps * lap) / B) + 50;
@@ -62,6 +66,14 @@ await run("41 chunks of 1 KiB, 3 manifest blocks", { length: 40 * 1024 + 100, lo
 await run("12 chunks, as many as a frame's blocks, outer 25% lost", { length: 12 * 2 ** 16 - 5, log2: 16, ring: 0.25 });
 await run("10 MB", { length: 10e6 });
 await run("10 MB, 40% lost", { length: 10e6, loss: 0.4 });
+// Prose: every chunk sent as its zstd frame, each a different number of blocks, so the schedule weighs them apart.
+await run("small, prose", { length: 50000, text: true });
+await run("one block of prose, unfountained once compressed", { length: 1200, text: true });
+await run("3 chunks, prose", { length: 3 * 2 ** 20 - 12345, log2: 20, text: true });
+await run("3 chunks, prose, 30% lost", { length: 3 * 2 ** 20 - 12345, log2: 20, loss: 0.3, text: true });
+await run("3 chunks, prose, chunk 1 sent wrong in lap 1", { length: 3 * 2 ** 20 - 12345, log2: 20, corrupt: 1, wantRejected: 1, text: true });
+await run("10 MB, prose, 40% lost", { length: 10e6, loss: 0.4, text: true });
+await run("41 chunks of 1 KiB, prose, repair blocks only", { length: 40 * 1024 + 100, log2: 10, join: 100, text: true });
 for (let k = 0; k < 20; k++) await run(`200 KB, 20% lost, seed ${k}`, { length: 200000 + k, log2: 16, loss: 0.2 });
 // Joined after the first lap, so repair blocks only: Wirehair then wants a block past K now and again, and the chunk
 // takes the rest as they come.

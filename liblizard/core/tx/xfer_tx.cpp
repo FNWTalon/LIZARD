@@ -9,6 +9,7 @@
 
 extern "C" {
 #include "xfer.h"
+#include "shim.h"   // ai: liblizard/zstd/shim.h, the pinned zstd every build compresses with
 int lizard_wh_init(void);
 int lizard_wh_encoder_create(const void* message, uint32_t message_bytes, uint32_t block_bytes, void** codec_out);
 int lizard_wh_encode(void* codec, uint32_t block_id, void* out, uint32_t capacity);
@@ -28,7 +29,7 @@ std::string nameBytes(const std::string& name) {
   while (n < name.size() && n > 0 && (static_cast<uint8_t>(name[n]) & 0xc0) == 0x80) n--;
   return name.substr(0, n);
 }
-// ai: typeBytes: printable ASCII of at most 162, else none
+// ai: typeBytes: printable ASCII of at most 158, else none
 std::string typeBytes(const std::string& t) {
   if (t.size() > XFER_TYPE_MAX) return "";
   for (char c : t) if (c < 0x20 || c > 0x7e) return "";
@@ -44,22 +45,29 @@ XferTx::XferTx(const uint8_t* data, size_t length, const std::string& name, cons
   if (xfer_header_init(&h, length, chunkLog2)) throw std::runtime_error("the file is too large for 2^" + std::to_string(chunkLog2) + " chunks");
   const uint32_t C = static_cast<uint32_t>((length + size_ - 1) / size_);
   chunks_ = C;
+  h.codec = XFER_CODEC_ZSTD;
+  // ai: each chunk compressed on its own (2026-10-05) and sent as its frame where that is shorter, else as it is; a
+  // ai: fountain over the sent bytes where they are 2 blocks or more, else the one block kept (one_)
+  std::vector<uint8_t> frame;
   for (uint32_t c = 0; c < C; c++) {
     len_.push_back(std::min(size_, length - c * size_));
-    K_.push_back(static_cast<uint32_t>((len_[c] + PAYLOAD - 1) / PAYLOAD));
+    const uint8_t* plain = data + c * size_;
+    const uint8_t* out = plain;
+    uint32_t n = static_cast<uint32_t>(len_[c]);
+    frame.resize(lizard_zstd_bound(n));
+    const int32_t z = lizard_zstd_compress(plain, n, frame.data(), static_cast<uint32_t>(frame.size()));
+    if (z > 0 && static_cast<uint32_t>(z) < n) { out = frame.data(); n = static_cast<uint32_t>(z); }
+    sent_.push_back(n);
+    K_.push_back(xfer_blocks(n));
     void* e = nullptr;
     int seed = 0;
     if (K_[c] > 1) {
-      seed = lizard_wh_encoder_create(data + c * size_, static_cast<uint32_t>(len_[c]), PAYLOAD, &e);
+      seed = lizard_wh_encoder_create(out, n, PAYLOAD, &e);
       if (seed < 0) throw std::runtime_error("wirehair encoder: " + std::to_string(seed));
-    }
+    } else one_[c].assign(out, out + n);
     enc_.push_back(e);
-    if (c == 0) h.seed_full = C >= 2 ? static_cast<uint8_t>(seed) : 0;
-    if (c == C - 1) h.seed_last = static_cast<uint8_t>(e ? seed : 0);
-    // ai: the header carries one attempt for every chunk but the last (src/xfer.h): a full chunk seeded apart is a
-    // ai: file it cannot describe
-    if (C >= 2 && c > 0 && c < C - 1 && seed != h.seed_full)
-      throw std::runtime_error("chunk " + std::to_string(c) + " took seed attempt " + std::to_string(seed));
+    seed_.push_back(static_cast<uint8_t>(seed));
+    sentBytes_ += n;
   }
   std::vector<uint8_t> cvs;
   if (C >= 2) {
@@ -69,21 +77,26 @@ XferTx::XferTx(const uint8_t* data, size_t length, const std::string& name, cons
     if (xfer_root(cvs.data(), C, root_)) throw std::runtime_error("root");
   } else xfer_b3_hash(data, length, root_);
   std::memcpy(h.root, root_, 32);
+  if (C == 1) { h.sent = sent_[0]; h.seed = seed_[0]; }
   const std::string nm = nameBytes(name), ty = typeBytes(type);
   h.name_len = static_cast<uint8_t>(nm.size()); std::memcpy(h.name, nm.data(), nm.size());
   h.type_len = static_cast<uint8_t>(ty.size()); std::memcpy(h.type, ty.data(), ty.size());
   if (xfer_header_write(&h, header_)) throw std::runtime_error("header refused");
   for (int m = 0; m < xfer_manifest_blocks(C); m++) {
     std::vector<uint8_t> p(PAYLOAD);
-    if (xfer_manifest_write(cvs.data(), C, root_, static_cast<uint32_t>(m), p.data())) throw std::runtime_error("manifest block " + std::to_string(m));
+    if (xfer_manifest_write(cvs.data(), sent_.data(), seed_.data(), C, root_, static_cast<uint32_t>(m), p.data())) throw std::runtime_error("manifest block " + std::to_string(m));
     manifest_.push_back(std::move(p));
   }
-  // ai: the schedule (Schedule's constructor): a round visits every full-size chunk once; a shorter last chunk in
+  // ai: the schedule (Schedule's constructor): a round visits every chunk of the most blocks once; a chunk of fewer in
   // ai: proportion to its blocks, plus 2 sqrt(K) visits a lap and at least 64
   sym_.assign(C, 0);
-  full_ = C && K_[C - 1] < K_[0] ? C - 1 : C;
-  w_ = full_ < C ? std::min(K_[0], std::max<uint32_t>(64, K_[C - 1] + static_cast<uint32_t>(std::ceil(2 * std::sqrt(static_cast<double>(K_[C - 1])))))) : 0;
-  lap_ = C ? full_ * K_[0] + w_ : 0;
+  acc_.assign(C, 0);
+  max_ = C ? *std::max_element(K_.begin(), K_.end()) : 0;
+  for (uint32_t c = 0; c < C; c++) {
+    const uint32_t k = K_[c];
+    w_.push_back(k >= max_ ? max_ : std::min(max_, std::max<uint32_t>(64, k + static_cast<uint32_t>(std::ceil(2 * std::sqrt(static_cast<double>(k)))))));
+    lap_ += w_[c];
+  }
   // ai: the whole control cycle (the header every other block, the manifest between) within an eighth of a lap
   every_ = std::max<uint32_t>(1, std::min<uint32_t>(CONTROL_EVERY, lap_ / (8 * std::max<uint32_t>(1, static_cast<uint32_t>(manifest_.size())))));
 }
@@ -93,9 +106,9 @@ XferTx::~XferTx() { for (void* e : enc_) if (e) lizard_wh_free(e); }
 uint32_t XferTx::next() {
   uint32_t c;
   for (;;) {
-    if (i_ < full_) { c = i_++; break; }
-    i_ = 0;
-    if (w_ && (acc_ += w_) >= K_[0]) { acc_ -= K_[0]; c = chunks_ - 1; break; }
+    if (i_ >= chunks_) i_ = 0;
+    c = i_++;
+    if ((acc_[c] += w_[c]) >= max_) { acc_[c] -= max_; break; }
   }
   if (K_[c] == 1) return idOf(c, 0);   // ai: unfountained: the one block, again
   const uint32_t s = sym_[c];
@@ -139,7 +152,8 @@ void XferTx::block(uint32_t id, uint8_t* out) const {
     if (n > 0) std::memcpy(out, buf, static_cast<size_t>(n));
     return;
   }
-  std::memcpy(out, data_ + c * size_, len_[c]);   // ai: a chunk of one block, zero padded
+  const auto& one = one_.at(c);
+  std::memcpy(out, one.data(), one.size());   // ai: a chunk of one block, zero padded
 }
 
 std::string XferTx::rootHex() const {

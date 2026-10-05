@@ -32,6 +32,7 @@ import { tabs, open, evaluate, navigate, screenshot } from "./phone.mjs";
 import { makePhy } from "../liblizard/sim/phy.mjs";
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { init as initWh, Encoder } from "../liblizard/sim/fountain.mjs";
+import { init as initZstd, Z } from "../liblizard/sim/zstd.mjs";
 import { XferSender, DEFAULT_LOG2 } from "../liblizard/sim/xfer.mjs";
 import { N_FOR } from "../liblizard/sim/lizard_pick.mjs";
 
@@ -249,7 +250,7 @@ const SIZES = [
 // ai: sample, as check_rates.mjs builds them. First the test stream (2.5 s, looped), then a file (a lap and 8%).
 {
   const CW = 1920, CH = 1080, FD = 24, FC = 30, SUBCH = 96, LEN = 300000, NAME = "holiday-photo.jpg";
-  await initWh();
+  await initWh(); await initZstd();
   const M = await initOb(), bytes = new Uint8Array(LEN);
   for (let i = 0, v = 7; i < LEN; i++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; bytes[i] = v >>> 16; }
   const phy = await makePhy({ phy: "focus", stream: "shake256", n: N_FOR(SUBCH), subch: SUBCH, mode: 1, fps: FD, variants: [{ name: "rx" }] }), B = phy.blocksPerFrame;
@@ -271,7 +272,7 @@ const SIZES = [
   }
   const testPath = join(scratch, "test.y4m");
   await clip(testPath, (seq) => phy.frame(seq), 75);
-  const xs = new XferSender(bytes, { name: NAME, type: "image/jpeg", chunkLog2: DEFAULT_LOG2, M, Encoder });
+  const xs = new XferSender(bytes, { name: NAME, type: "image/jpeg", chunkLog2: DEFAULT_LOG2, M, Encoder, Z });
   phy.setSource((id, out) => xs.block(id, out));
   const frames = Math.ceil((xs.sched.lap * 1.08) / (B - 1)) + 24, clipFrames = Math.ceil((frames * FC) / FD), path = join(scratch, "file.y4m");
   await clip(path, (seq) => phy.frame(seq, xs.frameIds(B)), clipFrames);

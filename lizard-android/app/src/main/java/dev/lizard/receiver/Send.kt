@@ -59,7 +59,7 @@ import java.util.Locale
 class SendState(private val a: MainActivity) {
     sealed interface Phase { data object Idle : Phase; data object Preparing : Phase; data object On : Phase; data class Error(val why: String) : Phase }
     data class Stats(val label: String = "", val shownFps: Double = 0.0, val offeredKBs: Double = 0.0, val paintMs: Double = 0.0, val pass: Double = 0.0,
-                     val painter: String = "", val gpuWhy: String = "")
+                     val painter: String = "", val gpuWhy: String = "", val sentBytes: Long = 0)   // ai: sentBytes: the file's bytes as they go (2026-10-05)
 
     private val prefs = a.getSharedPreferences("lizard", Context.MODE_PRIVATE)
     var uri by mutableStateOf<Uri?>(null)
@@ -212,7 +212,7 @@ class SendState(private val a: MainActivity) {
             runCatching {
                 val j = JSONObject(Native.txStats(h))
                 stats = Stats(j.optString("label"), j.optDouble("shownFps"), j.optDouble("offeredKBs"), j.optDouble("paintMs"), j.optDouble("pass", 0.0),
-                    j.optString("painter"), j.optString("gpuWhy"))
+                    j.optString("painter"), j.optString("gpuWhy"), j.optLong("sentBytes", 0))
                 if (j.optString("error").isNotEmpty()) phase = Phase.Error(j.optString("error"))
             }
         }
@@ -274,16 +274,17 @@ internal fun MainActivity.SendScreen() {
             Fields {
                 Field("Encoder") {
                     Chips {
-                        Chip("Auto", s.painter == "auto") { s.choosePainter("auto") }
-                        Chip("GPU", s.painter == "gpu") { s.choosePainter("gpu") }
-                        Chip("CPU", s.painter == "cpu") { s.choosePainter("cpu") }
+                        // ai: GPU and CPU alone (2026-10-05; an Auto chip until then): with nothing chosen the setting stays
+                        // ai: auto and the chip of the painter running is marked; a tap chooses that painter outright
+                        Chip("GPU", s.painter == "gpu" || (s.painter == "auto" && s.stats.painter == "gpu")) { s.choosePainter("gpu") }
+                        Chip("CPU", s.painter == "cpu" || (s.painter == "auto" && s.stats.painter == "cpu")) { s.choosePainter("cpu") }
                     }
                 }
                 Field("Brightness", "${s.brightness}%") {
                     Bar(s.brightness.toFloat(), 1f..100f, 98) { v -> val n = v.roundToInt(); if (n != s.brightness) s.chooseBrightness(n) }
                 }
                 Group("Code") {
-                    AutoSlider("Blocks a frame", s.blocks, s.picked / 8, 60, 1..128, { n -> "$n block${if (n == 1) "" else "s"}, ${"%.1f".format(Locale.ROOT, n * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
+                    AutoSlider("Blocks a frame", s.blocks, s.picked / 8, 1..128, { n -> "$n block${if (n == 1) "" else "s"}, ${"%.1f".format(Locale.ROOT, n * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
                     RateSlider(s)
                 }
             }
@@ -312,17 +313,16 @@ private fun sendLab(s: SendState): String {
         if (st.painter == "cpu" && s.painter != "cpu" && st.gpuWhy.isNotEmpty()) "\nnot the GPU: ${st.gpuWhy}" else ""
 }
 
-// ai: Blocks a frame (send.html #blocks and #subchAuto), 0 for auto: its title, the count and what it holds, and the Auto
-// ai: chip at the end of the title row, the slider under them the full width (2026-10-02; the chip sat beside the
-// ai: slider before). value the setting, shown what auto takes
-// ai: now (0 while unknown: no count), dflt the slider's place before either is known; moving the slider sets it by
-// ai: hand, the chip goes back to auto (or leaves it at what auto showed).
+// ai: Blocks a frame (send.html #blocks and #subchAuto), 0 for auto: the slider's leftmost step is auto (2026-10-05; an
+// ai: Auto chip at the title row's end until then), its title "Auto, 60 blocks, 28.1 KB" while what auto takes is known
+// ai: ("Auto" before the first configure), every step right of it a count by hand. value the setting, shown what auto
+// ai: takes now (0 while unknown), range the counts.
 @Composable
-private fun AutoSlider(title: String, value: Int, shown: Int, dflt: Int, range: IntRange, text: (Int) -> String, choose: (Int) -> Unit) {
+private fun AutoSlider(title: String, value: Int, shown: Int, range: IntRange, text: (Int) -> String, choose: (Int) -> Unit) {
     val auto = value == 0
     val b = if (auto) shown else value
-    Field(title, if (b > 0) text(b) else "", end = { Chip("Auto", auto) { choose(if (auto) (if (b > 0) b else dflt) else 0) } }) {
-        Bar((if (b > 0) b else dflt).toFloat(), range.first.toFloat()..range.last.toFloat(), range.last - range.first - 1) { choose(it.roundToInt()) }
+    Field(title, if (auto) (if (b > 0) "Auto, ${text(b)}" else "Auto") else text(b)) {
+        Bar(value.toFloat(), 0f..range.last.toFloat(), range.last - 1) { choose(it.roundToInt()) }
     }
 }
 
@@ -348,8 +348,11 @@ private fun MainActivity.Sending() {
         val panel: @Composable () -> Unit = {
             Column(Modifier.padding(horizontal = 4.dp)) {
                 val what = if (s.test) "the test stream" else s.name
+                // ai: the file's size and, where compression shrank it, the bytes that actually go (the web's sending line; 2026-10-05)
+                val st0 = s.stats
+                val sized = if (s.test || s.size <= 0) what else "$what, ${Readout.bytes(s.size)}" + (if (st0.sentBytes in 1 until s.size) " compressed to ${Readout.bytes(st0.sentBytes)}" else "")
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (s.phase == SendState.Phase.Preparing) "Preparing $what" else if (s.paused) "Paused" else "Sending $what", style = MaterialTheme.typography.titleMedium, color = Fg,
+                    Text(if (s.phase == SendState.Phase.Preparing) "Preparing $what" else if (s.paused) "Paused" else "Sending $sized", style = MaterialTheme.typography.titleMedium, color = Fg,
                         modifier = Modifier.weight(1f).padding(top = 8.dp))
                     if (land) CollapseBtn(false, left = false) { toggle("sendCollapsed") }
                 }

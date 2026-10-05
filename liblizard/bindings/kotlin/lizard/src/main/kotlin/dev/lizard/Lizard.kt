@@ -113,7 +113,8 @@ class Decoder(nmax: Int = 0) : Handle(Native.decoderNew(nmax), Native::decoderFr
   )
 }
 
-data class TxInfo(val test: Boolean, val length: Long, val chunks: Int, val lap: Int, val root: String)
+// ai: sent: the file's bytes as they go, every chunk's zstd frame or its own (2026-10-05)
+data class TxInfo(val test: Boolean, val length: Long, val chunks: Int, val lap: Int, val root: String, val sent: Long)
 
 class Tx private constructor(h: Long) : Handle(h, Native::txFree) {
   companion object {
@@ -126,16 +127,17 @@ class Tx private constructor(h: Long) : Handle(h, Native::txFree) {
   // ai: the next frame's n blocks (n x 473 bytes)
   fun next(n: Int, out: ByteArray = ByteArray(n * Lizard.BLOCK)): ByteArray { Native.txNext(live(), n, out); return out }
   val info: TxInfo get() {
-    val l = LongArray(4)
+    val l = LongArray(5)
     val root = ByteArray(32)
     Native.txInfo(live(), l, root)
-    return TxInfo(l[0] != 0L, l[1], l[2].toInt(), l[3].toInt(), root.joinToString("") { "%02x".format(it) })
+    return TxInfo(l[0] != 0L, l[1], l[2].toInt(), l[3].toInt(), root.joinToString("") { "%02x".format(it) }, l[4])
   }
 }
 
 data class Verdict(val seen: Int, val bad: Int, val judged: Int, val fresh: Int, val test: Boolean)
+// ai: sent, sentIn: the file's bytes as they go (0 until the manifest has said them) and how many are in (2026-10-05)
 data class Progress(val header: Boolean, val done: Boolean, val chunks: Int, val verified: Int, val rejected: Int,
-                    val length: Long, val bytesIn: Long, val fraction: Double, val solveMs: Double)
+                    val length: Long, val bytesIn: Long, val fraction: Double, val solveMs: Double, val sent: Long, val sentIn: Long)
 
 // ai: dir null: in memory, at most maxBytes (0: no cap); else files under dir/lizard-xfer (that folder emptied first)
 class Rx(dir: String? = null, maxBytes: Long = 0) : Handle(Native.rxNew(dir, maxBytes), Native::rxFree) {
@@ -145,11 +147,11 @@ class Rx(dir: String? = null, maxBytes: Long = 0) : Handle(Native.rxNew(dir, max
     return Verdict(v[0], v[1], v[2], v[3], v[4] != 0)
   }
   val progress: Progress get() {
-    val i = IntArray(5); val l = LongArray(2); val d = DoubleArray(2)
+    val i = IntArray(5); val l = LongArray(4); val d = DoubleArray(2)
     Native.rxProgress(live(), i, l, d)
-    return Progress(i[0] != 0, i[1] != 0, i[2], i[3], i[4], l[0], l[1], d[0], d[1])
+    return Progress(i[0] != 0, i[1] != 0, i[2], i[3], i[4], l[0], l[1], d[0], d[1], l[2], l[3])
   }
-  // ai: each chunk: 0 to 99 the share in, 254 decoded and waiting on the manifest, 255 verified
+  // ai: each chunk: 0 to 99 the share in (a floor until the manifest is in), 255 verified
   val chunks: ByteArray get() = Native.rxChunks(live())
   val name: String get() = Native.rxMeta(live(), 0)
   val type: String get() = Native.rxMeta(live(), 1)

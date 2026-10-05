@@ -15,6 +15,7 @@ import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, coll
 // The room a format needs holds the codec's margin (src/focus.h FOCUS_QUIET), and only the codec knows it.
 await initOb();
 let offeredKBs = 0;
+let fileBytes = 0, sentBytes = 0;   // ai: the file's bytes and its bytes as sent (every chunk's zstd frame or its own; 2026-10-05), for the sending line
 const $ = (id) => document.getElementById(id), canvas = $("c"), ctx = canvas.getContext("2d"), tmp = document.createElement("canvas"), tctx = tmp.getContext("2d"), gcanvas = $("cg");
 // nextId is the block id space and seq only counts painted frames. They are separate because
 // blocksPerFrame changes when repick() swaps the layout mid-stream: seq * blocksPerFrame would
@@ -462,9 +463,10 @@ async function start() {
   // ai: What is painted, for the development log only: nothing reads it to decode. transfer tells one start from the
   // ai: next in research/rig/stats.jsonl; a re-pick keeps it.
   cfg = { spec: s, label: made.label, mode: bytes ? "file" : "test", usefulBytes: made.usefulBytes, blocksPerFrame: made.blocksPerFrame, codes, gap, fps: +$("fps").value, encoder: gcfg ? "gpu" : "wasm", transfer: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, ...(bytes ? { fileBytes: bytes.length, name: file.name } : {}) };
-  shown = s; lap = made.xfer?.lap ?? 0; dataSent = 0; dataWin = 0;
+  shown = s; lap = made.xfer?.lap ?? 0; dataSent = 0; dataWin = 0; fileBytes = bytes?.length ?? 0; sentBytes = made.xfer?.sent ?? 0;
   showBlocks();
-  const xferLine = xfer ? `\nfile ${bytes.length} B: ${made.xfer.chunks} chunk${made.xfer.chunks === 1 ? "" : "s"} of 2^${made.xfer.chunkLog2}, ${made.xfer.manifest} manifest block${made.xfer.manifest === 1 ? "" : "s"}, BLAKE3 ${made.xfer.root.slice(0, 16)}..., header in the light` : "";
+  // ai: sent: the file's bytes as they go, each chunk zstd-compressed where that is shorter (sim/xfer.mjs, 2026-10-05)
+  const xferLine = xfer ? `\nfile ${bytes.length} B${made.xfer.sent !== bytes.length ? `, ${made.xfer.sent} B as sent (zstd)` : ""}: ${made.xfer.chunks} chunk${made.xfer.chunks === 1 ? "" : "s"} of 2^${made.xfer.chunkLog2}, ${made.xfer.manifest} manifest block${made.xfer.manifest === 1 ? "" : "s"}, BLAKE3 ${made.xfer.root.slice(0, 16)}..., header in the light` : "";
   // What the window chose, so the guess is visible rather than implied. The capture is an assumption, not a measurement.
   const auto = () => {
     const r = room(), squeezed = SAMPLES(shown.n, ringOf(shown)) > r;
@@ -522,7 +524,8 @@ async function start() {
     if (!pump()) return;
     samples = fr.w;
     // ai: the first frame painted: a sender has seen what the tips say (ui.mjs), so they go on every page of this origin
-    if (!live) { live = true; $("hint").hidden = true; sendingLine = `Sending ${what}`; say($("state"), sendingLine); tipsDone(); }
+    // ai: the file's size and, where compression shrank it, the bytes that actually go (2026-10-05)
+    if (!live) { live = true; $("hint").hidden = true; sendingLine = `Sending ${what}${fileBytes ? `, ${bytes(fileBytes)}${sentBytes < fileBytes ? ` compressed to ${bytes(sentBytes)}` : ""}` : ""}`; say($("state"), sendingLine); tipsDone(); }
     if (now - lastReport > 1000 && painted) {
       const g = gcfg ? genc.takeGpuMs() : null;
       gpuMs = gcfg ? g ?? gpuMs : null;

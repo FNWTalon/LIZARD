@@ -11,6 +11,7 @@
 
 extern "C" {
 #include "shake.h"
+#include "shim.h"   // ai: liblizard/zstd/shim.h: a chunk sent as a zstd frame decompressed (2026-10-05)
 #include "xfer.h"
 // ai: liblizard/wirehair/shim.cpp, the web's own ABI to Wirehair (the profile pinned there), compiled natively
 int lizard_wh_init(void);
@@ -27,7 +28,7 @@ static constexpr uint32_t PAYLOAD = XFER_PAYLOAD, REC = XFER_BLOCK;
 // ai: lizard-web/fountain-worker.mjs LIVE_BLOCKS, HOLD_BLOCKS; lizard-web/recv.mjs SEEN_KEEP
 static constexpr int64_t LIVE_BLOCKS = 4096, NEVER = INT64_MAX / 2;
 static constexpr size_t HOLD_BLOCKS = 1024, SEEN_KEEP = 1 << 16;
-enum { COLLECTING = 0, HOT = 1, RECOVERED = 2, VERIFIED = 3 };
+enum { COLLECTING = 0, HOT = 1, VERIFIED = 3 };   // ai: 2 was a chunk decoded before the manifest, which no longer happens (a chunk's block count waits on it)
 
 static std::string hexOf(const uint8_t* p, size_t n) {
   static const char* d = "0123456789abcdef";
@@ -78,9 +79,11 @@ struct XferRxCore::Rx {
     std::string name, type, root;
     uint64_t size = 0;
     uint32_t mcount = 0, mhave = 0;
-    std::vector<uint32_t> K, len;
+    // ai: len: each chunk's own bytes (the header's); sent, seed and K: its bytes as sent, its seed attempt and its
+    // ai: blocks, from the header for one chunk and from the manifest for more (known once the list checks)
+    std::vector<uint32_t> K, len, sent;
     std::vector<uint8_t> seed, mgot, list;
-    bool listOk = false;
+    bool listOk = false, known = false;
   };
   std::unique_ptr<Store> store;
   std::function<void(const std::string&)> log;
@@ -166,7 +169,7 @@ struct XferRxCore::Rx {
     }
     if (done || failed || (hdr && c >= hdr->h.chunks)) return;
     Ch& s = state(c);
-    if (s.state >= RECOVERED || s.have.has(sym) || s.ban.has(sym)) return;
+    if (s.state == VERIFIED || s.have.has(sym) || s.ban.has(sym)) return;
     s.have.add(sym);
     if (s.dec) {
       const int rc = s.dec->add(sym, p);
@@ -175,7 +178,7 @@ struct XferRxCore::Rx {
       return;
     }
     if (!store->append(c, sym, p)) return stop();
-    if (hdr && s.have.n >= hdr->K[c]) solve(c);
+    if (hdr && hdr->known && s.have.n >= hdr->K[c]) solve(c);   // ai: K known once the manifest is in (one chunk: from the header)
   }
 
   // ai: XferReceiver.header, the light's only: a different header is a new transfer, and everything held is let go
@@ -193,12 +196,9 @@ struct XferRxCore::Rx {
     h->mcount = uint32_t(xfer_manifest_blocks(chunks));
     h->mgot.assign(h->mcount, 0);
     h->list.assign(std::max<size_t>(1, size_t(XFER_CV) * chunks), 0);
-    h->K.resize(chunks); h->len.resize(chunks); h->seed.resize(chunks);
-    for (uint32_t c = 0; c < chunks; c++) {
-      h->len[c] = uint32_t(xfer_chunk_len(&h->h, c));
-      h->K[c] = xfer_chunk_blocks(&h->h, c);
-      h->seed[c] = uint8_t(xfer_chunk_seed(&h->h, c));
-    }
+    h->K.assign(chunks, 0); h->len.resize(chunks); h->sent.assign(chunks, 0); h->seed.assign(chunks, 0);
+    for (uint32_t c = 0; c < chunks; c++) h->len[c] = uint32_t(xfer_chunk_len(&h->h, c));
+    if (chunks == 1) { h->sent[0] = h->h.sent; h->seed[0] = h->h.seed; h->K[0] = xfer_blocks(h->h.sent); h->known = true; }
     // ai: lizard-web/recv.mjs: a header of another root clears the page's dedupe (the producer's, told by the generation)
     if (!lastRoot.empty() && lastRoot != h->root) gen.fetch_add(1);
     lastRoot = h->root;
@@ -217,9 +217,13 @@ struct XferRxCore::Rx {
     auto pending = std::move(raw);
     raw.clear();
     for (auto& [m, b] : pending) manifestBlock(m, b.data());
+    if (hdr && hdr->known) solveReady();
+  }
+  // ai: XferReceiver.solveReady: every chunk with its blocks in hand, now that their counts are known
+  void solveReady() {
     std::vector<uint32_t> ready;
     for (auto& [c, s] : ch) if (s.state == COLLECTING && s.have.n >= hdr->K[c]) ready.push_back(c);
-    for (uint32_t c : ready) if (hdr && !failed && ch[c].state == COLLECTING) solve(c);
+    for (uint32_t c : ready) if (hdr && !failed && !done && ch[c].state == COLLECTING) solve(c);
   }
 
   // ai: XferReceiver.manifestBlock
@@ -227,7 +231,7 @@ struct XferRxCore::Rx {
     if (!hdr) { if (raw.size() < 4096) memcpy(raw[m].data(), p, PAYLOAD); return; }   // ai: kept until there is a root to check it by
     Hdr& h = *hdr;
     if (failed || h.listOk || m >= h.mcount || h.mgot[m]) return;
-    if (xfer_manifest_parse(p, h.h.chunks, h.h.root, m, h.list.data())) return;   // ai: another transfer's (its tag), or not a manifest block
+    if (xfer_manifest_parse(p, &h.h, m, h.list.data(), h.sent.data(), h.seed.data())) return;   // ai: another transfer's (its tag), not a manifest block, or entries no chunk could have
     h.mgot[m] = 1;
     if (++h.mhave < h.mcount) return;
     if (xfer_manifest_check(h.list.data(), h.h.chunks, h.h.root)) {
@@ -238,11 +242,9 @@ struct XferRxCore::Rx {
       return;
     }
     h.listOk = true;
-    for (auto& [c, s] : ch) if (s.state == RECOVERED) {
-      auto out = store->readOut(uint64_t(c) * h.size, h.len[c]);
-      if (verify(c, out)) accept(c, s); else reject(c, s);
-      if (done || failed) break;
-    }
+    for (uint32_t c = 0; c < h.h.chunks; c++) h.K[c] = xfer_blocks(h.sent[c]);
+    h.known = true;
+    solveReady();
   }
 
   // ai: XferReceiver.solve and solveOnce
@@ -257,12 +259,12 @@ struct XferRxCore::Rx {
     auto recs = store->read(c);
     if (h.K[c] == 1) {
       std::vector<uint8_t> out;
-      if (recs.size() >= REC) out.assign(recs.begin() + XFER_ID_BYTES, recs.begin() + XFER_ID_BYTES + h.len[c]);
+      if (recs.size() >= REC) out.assign(recs.begin() + XFER_ID_BYTES, recs.begin() + XFER_ID_BYTES + h.sent[c]);
       store->drop(c);
-      return check(c, out);
+      return unpack(c, out);
     }
     auto d = std::make_unique<Wh>();
-    if (int rc = d->create(h.len[c], h.seed[c]); rc < 0) {
+    if (int rc = d->create(h.sent[c], h.seed[c]); rc < 0) {
       // ai: the JS throws here; a header that passed its CRC wrongly is the only way, and its chunk is collected afresh
       say("xfer: wirehair decoder " + std::to_string(rc) + " for chunk " + std::to_string(c));
       store->drop(c);
@@ -283,16 +285,21 @@ struct XferRxCore::Rx {
     Ch& s = ch[c];
     auto out = s.dec->recover();
     s.dec.reset();
+    unpack(c, out);
+  }
+  // ai: XferReceiver.unpack: the chunk's bytes from what was sent, its zstd frame decompressed where it was sent
+  // ai: shorter than it is (a frame that does not give exactly the chunk's bytes is a wrong chunk, rejected as a
+  // ai: wrong hash is), else as they came
+  void unpack(uint32_t c, const std::vector<uint8_t>& raw) {
+    Hdr& h = *hdr;
+    if (h.sent[c] >= h.len[c]) return check(c, raw);
+    std::vector<uint8_t> out(h.len[c]);
+    if (lizard_zstd_decompress(raw.data(), uint32_t(raw.size()), out.data(), h.len[c])) return reject(c, ch[c]);
     check(c, out);
   }
   void check(uint32_t c, const std::vector<uint8_t>& out) {
     Hdr& h = *hdr;
     Ch& s = ch[c];
-    if (h.h.chunks >= 2 && !h.listOk) {   // ai: verified once the manifest is in
-      if (!store->writeOut(uint64_t(c) * h.size, out.data(), out.size())) return stop();
-      s.state = RECOVERED;
-      return;
-    }
     if (!verify(c, out)) return reject(c, s);
     if (!store->writeOut(uint64_t(c) * h.size, out.data(), out.size())) return stop();
     accept(c, s);
@@ -337,11 +344,15 @@ struct XferRxCore::Rx {
     for (uint32_t c = 0; c < h.h.chunks; c++) {
       auto it = ch.find(c);
       const Ch* s = it == ch.end() ? nullptr : &it->second;
-      const uint8_t v = !s ? 0 : s->state == VERIFIED ? 255 : s->state == RECOVERED ? 254 : uint8_t(std::min<uint64_t>(99, 100ull * s->have.n / h.K[c]));
+      // ai: until the manifest says a chunk's blocks, its share is over the blocks its bytes would take as they are, a floor
+      const uint32_t k = h.known ? h.K[c] : xfer_blocks(h.len[c]);
+      const uint8_t v = !s ? 0 : s->state == VERIFIED ? 255 : uint8_t(std::min<uint64_t>(99, 100ull * s->have.n / std::max<uint32_t>(1, k)));
       p.per[c] = v;
       got += h.len[c] * (v >= 254 ? 1.0 : v / 100.0);
+      if (h.known) { p.sent += h.sent[c]; if (s) p.sentIn += s->state == VERIFIED ? h.sent[c] : std::min<uint64_t>(h.sent[c], uint64_t(s->have.n) * PAYLOAD); }
     }
-    p.fraction = done ? 1 : h.h.length ? got / double(h.h.length) : 0;
+    // ai: XferReceiver.progress and fractionDone: by the bytes as sent once the manifest has said them, the file's own until then
+    p.fraction = done ? 1 : p.sent ? double(p.sentIn) / double(p.sent) : h.h.length ? got / double(h.h.length) : 0;
     p.bytesIn = uint64_t(p.fraction * double(h.h.length));
   }
 };

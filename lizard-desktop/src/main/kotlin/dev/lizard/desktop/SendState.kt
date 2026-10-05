@@ -82,6 +82,8 @@ class SendState {
 
     var file by mutableStateOf<File?>(null)
     var fileSize by mutableStateOf(0L)
+    // ai: the file's bytes as they go, every chunk's zstd frame or its own (the sender's stats, 2026-10-05); 0 before a send
+    val sentBytes: Long get() = sender?.num("sentBytes")?.toLong() ?: 0L
     var test by mutableStateOf(Prefs.payload == "test")
     var enc by mutableStateOf(Prefs.enc.let { if (it == "gpu" || it == "cpu") it else "auto" })
     var blocks by mutableStateOf(Prefs.blocks.coerceIn(0, 128))
@@ -358,7 +360,7 @@ class SendState {
         val l = mutableListOf<String>()
         l += "LIZARD-${f.subch} ($b blocks), picture ${f.n} samples in the ${f.span / 2}-cell ring" +
             if (blocks > 0) ", set by hand" else ", chosen from a ${room.roundToInt()} px room and nothing else"
-        if (!runTest) l += "file $fileSize B: ${sd.num("chunks").toInt()} chunk${if (sd.num("chunks").toInt() == 1) "" else "s"}, " +
+        if (!runTest) l += "file $fileSize B${sd.num("sentBytes").toLong().let { if (it in 1 until fileSize) ", $it B as sent (zstd)" else "" }}: ${sd.num("chunks").toInt()} chunk${if (sd.num("chunks").toInt() == 1) "" else "s"}, " +
             "${sd.num("lap").toInt()} data blocks a pass, BLAKE3 ${sd.str("root").take(16)}..., header in the light"
         l += "frame ${sd.num("width").toInt()} x ${sd.num("side").toInt()} px" + (if (f.codes > 1) ", ${f.codes} side by side ${f.gap} modules apart" else "") +
             (pr?.let { " on a ${it.str("surface").replace("x", " x ")} px surface" } ?: "")

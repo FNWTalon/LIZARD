@@ -24,6 +24,8 @@ import { fileURLToPath } from "node:url";
 import { makePhy, sourceFor } from "../liblizard/sim/phy.mjs";
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { init, Encoder } from "../liblizard/sim/fountain.mjs";
+import { init as initZstd, Z } from "../liblizard/sim/zstd.mjs";
+const zstd = async () => { await initZstd(); return Z; };   // ai: the sender compresses each chunk (sim/xfer.mjs, 2026-10-05)
 import { XferSender, blake3, hex, DEFAULT_LOG2, PAYLOAD } from "../liblizard/sim/xfer.mjs";
 import { N_FOR } from "../liblizard/sim/lizard_pick.mjs";
 
@@ -322,7 +324,7 @@ if (!ONLY_TEST) {
     const bytes = new Uint8Array(c.length), fname = `check-${name}.bin`;
     for (let i = 0, v = c.length + 1; i < bytes.length; i++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; bytes[i] = v >>> 16; }
     const phy = await makePhy(spec), B = phy.blocksPerFrame;
-    const xs = new XferSender(bytes, { name: fname, type: "application/octet-stream", chunkLog2: c.log2 ?? DEFAULT_LOG2, M, Encoder });
+    const xs = new XferSender(bytes, { name: fname, type: "application/octet-stream", chunkLog2: c.log2 ?? DEFAULT_LOG2, M, Encoder, Z: await zstd() });
     const src = (id, out) => xs.block(id, out);
     phy.setSource(c.corrupt === undefined ? src : (id, out) => { src(id, out); if (id >>> 18 === c.corrupt && (id & 0x3ffff) < xs.K[c.corrupt] && (id & 63) === 3) out[5] ^= 1; return out; });
     const least = Math.ceil(xs.K.reduce((a, b) => a + b, 0) / B);

@@ -20,38 +20,40 @@ size_t xfer_chunk_len(const xfer_header_t *h, uint32_t index) {
   return (size_t)(h->length - at < size ? h->length - at : size);
 }
 
-uint32_t xfer_chunk_blocks(const xfer_header_t *h, uint32_t index) {
-  const size_t len = xfer_chunk_len(h, index);
-  return (uint32_t)((len + XFER_PAYLOAD - 1) / XFER_PAYLOAD);
-}
+uint32_t xfer_blocks(uint32_t sent) { return (sent + XFER_PAYLOAD - 1) / XFER_PAYLOAD; }
 
-int xfer_chunk_seed(const xfer_header_t *h, uint32_t index) {
-  return index >= h->chunks ? -1 : index + 1 == h->chunks ? h->seed_last : h->seed_full;
+int xfer_sent_ok(const xfer_header_t *h, uint32_t index, uint32_t sent, int seed) {
+  const size_t len = xfer_chunk_len(h, index);
+  if (!len || !sent || sent > len) return XFER_ERR;
+  if (sent < len && h->codec == XFER_CODEC_NONE) return XFER_ERR;
+  if (seed < 0 || seed > 255 || (seed && xfer_blocks(sent) < 2)) return XFER_ERR;
+  return 0;
 }
 
 int xfer_manifest_blocks(uint32_t chunks) {
-  return chunks < 2 || chunks > XFER_MAX_CHUNKS ? 0 : (int)((chunks + XFER_CVS_PER_BLOCK - 1) / XFER_CVS_PER_BLOCK);
+  return chunks < 2 || chunks > XFER_MAX_CHUNKS ? 0 : (int)((chunks + XFER_PER_BLOCK - 1) / XFER_PER_BLOCK);
 }
 
 int xfer_header_init(xfer_header_t *h, uint64_t length, int chunk_log2) {
   memset(h, 0, sizeof *h);
   const uint32_t chunks = xfer_chunk_count(length, chunk_log2);
   if (chunk_log2 < XFER_LOG2_MIN || chunk_log2 > XFER_LOG2_MAX || (length && !chunks)) return -1;
-  h->version = XFER_VERSION; h->hash = XFER_HASH_BLAKE3; h->chunk_log2 = (uint8_t)chunk_log2;
+  h->version = XFER_VERSION; h->hash = XFER_HASH_BLAKE3; h->chunk_log2 = (uint8_t)chunk_log2; h->codec = XFER_CODEC_NONE;
   h->length = length; h->chunks = chunks;
   return 0;
 }
 
-// What write and parse both hold a header to, the seeds included: a seed that could not be the one Wirehair picked
-// (a chunk that is not fountained, or a full chunk that does not exist) says the block is not what it claims.
+// What write and parse both hold a header to, the one chunk's sent and seed included: a sent or a seed no chunk could
+// have (xfer_sent_ok), or either for a file that is not one chunk, says the block is not what it claims.
 static int consistent(const xfer_header_t *h) {
   if (h->version != XFER_VERSION) return XFER_ERR_VERSION;
   if (h->hash != XFER_HASH_BLAKE3) return XFER_ERR_HASH;
+  if (h->codec != XFER_CODEC_NONE && h->codec != XFER_CODEC_ZSTD) return XFER_ERR_CODEC;
   if (h->chunk_log2 < XFER_LOG2_MIN || h->chunk_log2 > XFER_LOG2_MAX) return XFER_ERR;
   if (h->chunks != xfer_chunk_count(h->length, h->chunk_log2) || (h->length && !h->chunks)) return XFER_ERR;
   if (h->type_len > XFER_TYPE_MAX || !zero(h->name + h->name_len, XFER_NAME_MAX - h->name_len) || !zero(h->type + h->type_len, XFER_TYPE_MAX - h->type_len)) return XFER_ERR;
-  if (h->chunks < 2 && h->seed_full) return XFER_ERR;
-  if ((!h->chunks || xfer_chunk_blocks(h, h->chunks - 1) < 2) && h->seed_last) return XFER_ERR;
+  if (h->chunks == 1) { if (xfer_sent_ok(h, 0, h->sent, h->seed)) return XFER_ERR; }
+  else if (h->sent || h->seed) return XFER_ERR;
   return 0;
 }
 
@@ -59,13 +61,14 @@ int xfer_header_write(const xfer_header_t *h, uint8_t *payload) {
   if (consistent(h)) return XFER_ERR;
   memset(payload, 0, XFER_PAYLOAD);
   payload[XFER_H_VERSION] = h->version; payload[XFER_H_HASH] = h->hash; payload[XFER_H_LOG2] = h->chunk_log2;
-  payload[XFER_H_SEED_FULL] = h->seed_full; payload[XFER_H_SEED_LAST] = h->seed_last;
+  payload[XFER_H_CODEC] = h->codec; payload[XFER_H_SEED] = h->seed;
   payload[XFER_H_NAME_LEN] = h->name_len; payload[XFER_H_TYPE_LEN] = h->type_len;
   put_le(payload + XFER_H_LENGTH, h->length, 8);
   put_le(payload + XFER_H_CHUNKS, h->chunks, 4);
   memcpy(payload + XFER_H_ROOT, h->root, XFER_CV);
   memcpy(payload + XFER_H_NAME, h->name, h->name_len);
   memcpy(payload + XFER_H_TYPE, h->type, h->type_len);
+  put_le(payload + XFER_H_SENT, h->sent, 4);
   return 0;
 }
 
@@ -74,7 +77,7 @@ int xfer_header_parse(const uint8_t *payload, xfer_header_t *h) {
   h->version = payload[XFER_H_VERSION];
   if (h->version != XFER_VERSION) return XFER_ERR_VERSION;
   h->hash = payload[XFER_H_HASH]; h->chunk_log2 = payload[XFER_H_LOG2];
-  h->seed_full = payload[XFER_H_SEED_FULL]; h->seed_last = payload[XFER_H_SEED_LAST];
+  h->codec = payload[XFER_H_CODEC]; h->seed = payload[XFER_H_SEED];
   h->name_len = payload[XFER_H_NAME_LEN]; h->type_len = payload[XFER_H_TYPE_LEN];
   if (payload[7] || h->type_len > XFER_TYPE_MAX) return XFER_ERR;
   h->length = get_le(payload + XFER_H_LENGTH, 8);
@@ -82,24 +85,47 @@ int xfer_header_parse(const uint8_t *payload, xfer_header_t *h) {
   memcpy(h->root, payload + XFER_H_ROOT, XFER_CV);
   memcpy(h->name, payload + XFER_H_NAME, XFER_NAME_MAX);
   memcpy(h->type, payload + XFER_H_TYPE, XFER_TYPE_MAX);
+  h->sent = (uint32_t)get_le(payload + XFER_H_SENT, 4);
   return consistent(h);
 }
 
-int xfer_manifest_write(const uint8_t *cvs, uint32_t chunks, const uint8_t root[XFER_CV], uint32_t m, uint8_t *payload) {
+// The entries of manifest block m: chunks 12 m .. 12 m + n - 1.
+static uint32_t entries(uint32_t chunks, uint32_t m) {
+  const uint32_t first = m * XFER_PER_BLOCK;
+  return chunks - first < XFER_PER_BLOCK ? chunks - first : XFER_PER_BLOCK;
+}
+
+int xfer_manifest_write(const uint8_t *cvs, const uint32_t *sent, const uint8_t *seeds, uint32_t chunks, const uint8_t root[XFER_CV],
+                        uint32_t m, uint8_t *payload) {
   if (m >= (uint32_t)xfer_manifest_blocks(chunks)) return -1;
-  const uint32_t first = m * XFER_CVS_PER_BLOCK, n = chunks - first < XFER_CVS_PER_BLOCK ? chunks - first : XFER_CVS_PER_BLOCK;
+  const uint32_t first = m * XFER_PER_BLOCK, n = entries(chunks, m);
   memset(payload, 0, XFER_PAYLOAD);
   memcpy(payload + XFER_M_TAG, root, XFER_M_TAG_BYTES);
-  memcpy(payload + XFER_M_CVS, cvs + (size_t)first * XFER_CV, (size_t)n * XFER_CV);
+  for (uint32_t i = 0; i < n; i++) {
+    uint8_t *e = payload + XFER_M_ENTRIES + (size_t)i * XFER_ENTRY;
+    memcpy(e, cvs + (size_t)(first + i) * XFER_CV, XFER_CV);
+    put_le(e + XFER_CV, sent[first + i], XFER_SENT_BYTES);
+    e[XFER_CV + XFER_SENT_BYTES] = seeds[first + i];
+  }
   return 0;
 }
 
-int xfer_manifest_parse(const uint8_t *payload, uint32_t chunks, const uint8_t root[XFER_CV], uint32_t m, uint8_t *cvs) {
-  if (m >= (uint32_t)xfer_manifest_blocks(chunks) || memcmp(payload + XFER_M_TAG, root, XFER_M_TAG_BYTES)) return -1;
-  const uint32_t first = m * XFER_CVS_PER_BLOCK, n = chunks - first < XFER_CVS_PER_BLOCK ? chunks - first : XFER_CVS_PER_BLOCK;
-  const size_t used = XFER_M_CVS + (size_t)n * XFER_CV;
+int xfer_manifest_parse(const uint8_t *payload, const xfer_header_t *h, uint32_t m, uint8_t *cvs, uint32_t *sent, uint8_t *seeds) {
+  const uint32_t chunks = h->chunks;
+  if (m >= (uint32_t)xfer_manifest_blocks(chunks) || memcmp(payload + XFER_M_TAG, h->root, XFER_M_TAG_BYTES)) return -1;
+  const uint32_t first = m * XFER_PER_BLOCK, n = entries(chunks, m);
+  const size_t used = XFER_M_ENTRIES + (size_t)n * XFER_ENTRY;
   if (!zero(payload + used, XFER_PAYLOAD - used)) return -1;
-  memcpy(cvs + (size_t)first * XFER_CV, payload + XFER_M_CVS, (size_t)n * XFER_CV);
+  for (uint32_t i = 0; i < n; i++) {
+    const uint8_t *e = payload + XFER_M_ENTRIES + (size_t)i * XFER_ENTRY;
+    if (xfer_sent_ok(h, first + i, (uint32_t)get_le(e + XFER_CV, XFER_SENT_BYTES), e[XFER_CV + XFER_SENT_BYTES])) return -1;
+  }
+  for (uint32_t i = 0; i < n; i++) {
+    const uint8_t *e = payload + XFER_M_ENTRIES + (size_t)i * XFER_ENTRY;
+    memcpy(cvs + (size_t)(first + i) * XFER_CV, e, XFER_CV);
+    sent[first + i] = (uint32_t)get_le(e + XFER_CV, XFER_SENT_BYTES);
+    seeds[first + i] = e[XFER_CV + XFER_SENT_BYTES];
+  }
   return 0;
 }
 

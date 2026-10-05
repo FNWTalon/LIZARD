@@ -52,12 +52,9 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                        val offered: List<Range<Int>>, val minFrameMs: Double, val sensorOrientation: Int, val note: String)
 
     // ai: what the rear camera offers, read once at start-up for Advanced's choices
-    // ai: zoom: the camera's CONTROL_ZOOM_RATIO_RANGE (Android 11 and up), null where it has none; minFocus its
-    // ai: LENS_INFO_MINIMUM_FOCUS_DISTANCE in dioptres (0: fixed focus), manualFocus whether its lens can be held at a
-    // ai: distance (autofocus off listed and a lens that moves), focusCal LENS_INFO_FOCUS_DISTANCE_CALIBRATION (0: the
-    // ai: dioptres are no true distance)
-    data class Caps(val id: String?, val sizes: Set<String>, val lenses: List<Lens>, val zoom: Range<Float>? = null,
-                    val minFocus: Float = 0f, val manualFocus: Boolean = false, val focusCal: Int = 0)
+    // ai: zoom: the camera's CONTROL_ZOOM_RATIO_RANGE (Android 11 and up), null where it has none (the lens's focus
+    // ai: range and calibration, for the Focus slider of 2026-10-04, went with it 2026-10-05)
+    data class Caps(val id: String?, val sizes: Set<String>, val lenses: List<Lens>, val zoom: Range<Float>? = null)
     // ai: a back camera an app can open: its id, and a label from its lens (focal length, horizontal field of view,
     // ai: whether it is a logical camera that switches between lenses)
     data class Lens(val id: String, val label: String)
@@ -83,14 +80,13 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     // ai: was next set, and a pace learned to its bound (5 ms a second) in 2:1 was given back to every run after it
     // ai: (STATUS "The lock's saved pace").
     @Volatile private var last: android.hardware.camera2.TotalCaptureResult? = null   // ai: the newest result of a frame that was not a delayed one (delay)
-    // ai: The newest capture's exposure, sensitivity, frame, readout and focus (the `capture:` line's keys) and the
+    // ai: The newest capture's exposure, sensitivity, frame and readout (the `capture:` line's keys) and the
     // ai: phase lock's snapshot: for the stats row and a replay's meta (MainActivity, 2026-10-04), read from any thread
-    data class CameraNow(val exposureMs: Double, val iso: Int, val frameMs: Double, val readoutMs: Double, val focusD: Float)
+    data class CameraNow(val exposureMs: Double, val iso: Int, val frameMs: Double, val readoutMs: Double)
     fun cameraNow(): CameraNow? {
         val r = last ?: return null
         return CameraNow((r.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L) / 1e6, r.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0,
-            (r.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L) / 1e6, (r.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1e6,
-            r.get(CaptureResult.LENS_FOCUS_DISTANCE) ?: 0f)
+            (r.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L) / 1e6, (r.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1e6)
     }
     fun phaseState(): PhaseLock.State? = phase.state
 
@@ -181,16 +177,13 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         val all = (sizes(map, ImageFormat.PRIVATE) + sizes(map, ImageFormat.YUV_420_888))
             .map { "${it.width}x${it.height}" }.toSet()
         val zr = if (Build.VERSION.SDK_INT >= 30) ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) else null
-        val mf = ch.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
-        val manual = mf > 0f && CameraMetadata.CONTROL_AF_MODE_OFF in ch.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.toList().orEmpty()
-        return Caps(id, Settings.RESOLUTIONS.filter { it in all }.toSet(), lenses(), zr, mf, manual,
-            ch.get(CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION) ?: 0)
+        return Caps(id, Settings.RESOLUTIONS.filter { it in all }.toSet(), lenses(), zr)
     }
 
     private fun backIds() = cm.cameraIdList.filter {
         cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
     }
-    // ai: The camera Settings names (Settings.camera); else (auto, or one no longer listed) the back camera that focuses
+    // ai: The camera Settings names (Settings.camera); else (none chosen, or one no longer listed) the back camera that focuses
     // ai: closest (the largest LENS_INFO_MINIMUM_FOCUS_DISTANCE, in dioptres), the first listed among equals: a receiver
     // ai: is held near a screen. On the S26 that is the 2.2 mm camera (5 cm), where the first listed, the main lens (10
     // ai: cm, a logical multi-camera), read 38 KB/s of a stream the 2.2 mm read 363 of (2026-09-30). Public since
@@ -257,43 +250,16 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         }
     }
 
-    // ai: The focus (Settings.focus, 2026-10-04): null the camera's continuous video autofocus, else the lens held at
-    // ai: that many dioptres (autofocus off, LENS_FOCUS_DISTANCE, within the lens's range), where the camera lists
-    // ai: autofocus off and its lens moves; set live as the zoom is (refocus, the repeating request issued again), a
-    // ai: drag's newest value taken once. focusNow: where the lens is, the newest capture's own reading (autofocus's too).
-    private var focusD: Float? = null
-    private var refocus: (() -> Unit)? = null
-    @Volatile private var focusAsked = -1f   // ai: -1 autofocus
-    private val focusPosted = java.util.concurrent.atomic.AtomicBoolean(false)
-    fun focus(d: Float?) {
-        focusAsked = d ?: -1f
-        if (focusPosted.compareAndSet(false, true)) h.post {
-            focusPosted.set(false)
-            val v = focusAsked.takeIf { it >= 0f }
-            if (v != focusD) Log.i(TAG, "focus: ${if (v == null) "auto" else "%.2f D".format(java.util.Locale.ROOT, v)}")
-            focusD = v
-            wanted = wanted?.copy(focus = v?.let { "%.2f".format(java.util.Locale.ROOT, it) } ?: "auto")   // ai: a camera opened again keeps it
-            refocus?.invoke()
-        }
-    }
-    fun focusNow(): Float? = last?.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE)
+    // ai: Autofocus: the camera's continuous video mode where it lists one (a lens held in dioptres, Receive's Focus of
+    // ai: 2026-10-04, went 2026-10-05)
     private fun applyFocus(b: CaptureRequest.Builder, ch: CameraCharacteristics) {
         val af = ch.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.toList().orEmpty()
-        val mf = ch.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
-        val d = focusD
-        if (d != null && mf > 0f && CameraMetadata.CONTROL_AF_MODE_OFF in af) {
-            b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
-            b.set(CaptureRequest.LENS_FOCUS_DISTANCE, d.coerceIn(0f, mf))
-        } else {
-            b.set(CaptureRequest.LENS_FOCUS_DISTANCE, null)
-            if (CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO in af) b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-        }
+        if (CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO in af) b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
     }
 
     @SuppressLint("MissingPermission")   // ai: MainActivity starts the engine only once the permission is granted
     private fun open(s: Settings) {
         zoom = s.zoom.toFloatOrNull() ?: 1f
-        focusD = s.focus.toFloatOrNull()?.takeIf { it >= 0f }
         closeCamera()
         opening = true
         ensureReceiver(s)
@@ -473,12 +439,6 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                             try { cs.setRepeatingRequest(b.build(), told, h) } catch (e: Exception) { Log.w(TAG, "zoom: ${e.message}") }
                         }
                     }
-                    refocus = {
-                        if (g == gen) {
-                            applyFocus(b, ch)
-                            try { cs.setRepeatingRequest(b.build(), told, h) } catch (e: Exception) { Log.w(TAG, "focus: ${e.message}") }
-                        }
-                    }
                     ok(fmt)
                     phase(Phase.On)
                 }
@@ -634,7 +594,6 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     private fun closeCamera() {
         gen++
         rezoom = null
-        refocus = null
         opening = false
         if (device != null) Log.i(TAG, "close camera")
         try { session?.close() } catch (_: Exception) {}

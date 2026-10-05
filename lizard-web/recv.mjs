@@ -196,14 +196,16 @@ function showState() {
     // ai: stood beside it as "(M KB/s average)" from 2026-09-29 to 2026-09-30 and is the stats row's alone since (avgKBs:
     // ai: after a wait it often read wrong); the time left is what is missing at that rate
     const now = recentKBs();
-    nums = `${Math.floor(100 * frac)}%, ${partOf(frac * h.length, h.length)}${now != null ? `, ${rate(now)}${now > 0 ? `, ${left(((1 - frac) * h.length) / (now * 1000))}` : ""}` : ""}`;
+    // ai: the bytes as sent where the manifest has said them (2026-10-05): what the light carries, which the rate and
+    // ai: the time left are of; the file's own bytes until then, and in the received line
+    const total = h.sent ?? h.length, got = h.sent ? xferNow.sentIn : frac * h.length;
+    nums = `${Math.floor(100 * frac)}%, ${partOf(got, total)}${now != null ? `, ${rate(now)}${now > 0 ? `, ${left((total - got) / (now * 1000))}` : ""}` : ""}`;
   } else if (ui.received && (!on || offered)) {
     const r = ui.received;
-    line = `Received ${r.name}, ${nb(bytes(r.n))} in ${nb(`${r.secs.toFixed(1)} s`)}`; tone = "good"; frac = 1;
+    line = `Received ${r.name}, ${nb(bytes(r.n))} in ${nb(`${r.secs.toFixed(1)} s`)}${r.sent && r.sent < r.n ? `, ${nb(bytes(r.sent))} sent` : ""}`; tone = "good"; frac = 1;
   } else if (!on) line = "";   // ai: idle says nothing (2026-10-02: an instruction that obvious only takes space)
   else if (recent(ui.testAt)) { line = "Reading the test stream"; const now = recentKBs(); if (now != null) nums = rate(now); }
-  else if (band && recent(ui.bandAt)) line = "Found the code, waiting for the file";
-  else line = "Looking for a code";
+  else line = "Looking for a code";   // ai: a word read with no file yet says this too (2026-10-05; "Found the code, waiting for the file" before)
   // ai: rewritten only when it changes: #state is a live region, and a screen reader reads out every rewrite
   if (`${tone} ${line}` !== stateShown) { stateShown = `${tone} ${line}`; say($("state"), line, tone); }
   meter($("meter"), frac);
@@ -706,7 +708,7 @@ const previewNow = () => (!vfWhyNot() ? "video" : "shot");
 // ai: stays through a stop and a newer transfer. On disk the file is also kept in the received files (lizard-web/library.mjs),
 // ai: listed on Home. `file`, the readout's line, is what lizard-web/check_rates.mjs reads.
 let fileUrl = "", fileOut = null;
-function showFile(name, data, how = "checksum ok", type = "") {
+function showFile(name, data, how = "checksum ok", type = "", sent = 0) {
   const seconds = (performance.now() - tFirst) / 1000, blob = data instanceof Blob ? data : new Blob([data]), n = blob.size;
   file = `${name}: ${n} B in ${seconds.toFixed(2)} s (${(n / seconds / 1000).toFixed(1)} KB/s), complete, ${how}`;
   $("file").textContent = file;
@@ -717,7 +719,7 @@ function showFile(name, data, how = "checksum ok", type = "") {
   let shares = false;
   try { shares = !!navigator.canShare?.({ files: [fileOut] }); } catch {}
   $("share").hidden = !shares;
-  ui.received = { name, n, secs: seconds, root: xferRoot };
+  ui.received = { name, n, secs: seconds, root: xferRoot, sent };   // ai: sent: the bytes the light carried, the file's where nothing shrank
   ui.err = "";   // ai: a fountain error is not fatal (fountain-worker.mjs goes on), so a file can still finish after one
   // ai: The camera off once the file is in (2026-10-01):
   // ai: nothing is left to read, and the phone cools. Once a file (the fountain offers it once), so Start camera after
@@ -771,7 +773,7 @@ async function offerXfer(m) {
   // ai: lib: kept in the received files (fountain-worker.mjs fileAway); opfs: left in the scratch folder (no keeping)
   if (m.lib) data = await openKept(m.lib);
   else if (m.opfs) { let d = await navigator.storage.getDirectory(); for (const p of m.opfs.slice(0, -1)) d = await d.getDirectoryHandle(p); data = await (await d.getFileHandle(m.opfs.at(-1))).getFile(); }
-  showFile(m.name || "received.bin", data, `every chunk verified, BLAKE3 ${m.root}`, m.mediaType);
+  showFile(m.name || "received.bin", data, `every chunk verified, BLAKE3 ${m.root}`, m.mediaType, m.sent ?? 0);
 }
 // ai: A header with another root is another transfer, whose ids repeat the last one's (chunk and symbol count from 0):
 // ai: the page's set of ids goes, and the file line and its clock with it. The first header keeps what came before it.

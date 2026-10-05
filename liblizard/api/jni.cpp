@@ -245,8 +245,8 @@ jint txNext(JNIEnv* e, jclass, jlong v, jint n, jbyteArray out) {
 void txInfo(JNIEnv* e, jclass, jlong v, jlongArray out, jbyteArray root) {
   liz_tx_info i{};
   if (ok(e, liz_tx_info_get(h<liz_tx>(v), &i)) < 0) return;
-  const jlong l[4] = {i.test, jlong(i.length), jlong(i.chunks), jlong(i.lap)};
-  e->SetLongArrayRegion(out, 0, 4, l);
+  const jlong l[5] = {i.test, jlong(i.length), jlong(i.chunks), jlong(i.lap), jlong(i.sent)};
+  e->SetLongArrayRegion(out, 0, 5, l);
   e->SetByteArrayRegion(root, 0, 32, reinterpret_cast<const jbyte*>(i.root));
 }
 
@@ -271,10 +271,10 @@ void rxProgress(JNIEnv* e, jclass, jlong v, jintArray ints, jlongArray longs, jd
   liz_progress p{};
   if (ok(e, liz_rx_progress(h<liz_rx>(v), &p)) < 0) return;
   const jint i[5] = {p.header, p.done, jint(p.chunks), jint(p.verified), jint(p.rejected)};
-  const jlong l[2] = {jlong(p.length), jlong(p.bytes_in)};
+  const jlong l[4] = {jlong(p.length), jlong(p.bytes_in), jlong(p.sent), jlong(p.sent_in)};
   const jdouble d[2] = {p.fraction, p.solve_ms};
   e->SetIntArrayRegion(ints, 0, 5, i);
-  e->SetLongArrayRegion(longs, 0, 2, l);
+  e->SetLongArrayRegion(longs, 0, 4, l);
   e->SetDoubleArrayRegion(doubles, 0, 2, d);
 }
 jbyteArray rxChunks(JNIEnv* e, jclass, jlong v) {

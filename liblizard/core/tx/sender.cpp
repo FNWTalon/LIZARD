@@ -270,7 +270,8 @@ bool Sender::take(uint8_t* dst, int stride) {
 // ai: and paint on one painter; on the GPU its ms a frame, an encode's timestamps over its frames), painters (the
 // ai: GPU's: frames an encode), painter ("gpu" or "cpu"), device (the GPU's), gpuWhy (why not the GPU where it was
 // ai: asked for), ahead (painted, not shown), side, test, and for a file chunks, lap (data blocks a lap), pass (laps
-// ai: shown, 1 the first), root; error, the last failure.
+// ai: shown, 1 the first), root, sentBytes (the file's bytes as they go, every chunk's zstd frame or its own;
+// ai: 2026-10-05); error, the last failure.
 std::string Sender::stats() {
   const double now = nowMs(), secs = std::max(1e-3, (now - winStart_) / 1000);
   if (secs >= 0.5) {
@@ -295,7 +296,7 @@ std::string Sender::stats() {
     const uint32_t lap = xfer_->lap();
     o.precision(2);
     o << ",\"chunks\":" << xfer_->chunks() << ",\"lap\":" << lap << ",\"pass\":" << (lap ? 1.0 + static_cast<double>(dataAll_) / lap : 1.0)
-      << ",\"root\":\"" << xfer_->rootHex() << "\"";
+      << ",\"root\":\"" << xfer_->rootHex() << "\",\"sentBytes\":" << xfer_->sentBytes();
   }
   o << ",\"error\":\"" << error_ << "\"}";
   return o.str();
