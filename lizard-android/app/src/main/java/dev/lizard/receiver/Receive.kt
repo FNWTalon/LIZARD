@@ -80,9 +80,13 @@ internal fun MainActivity.ReceiveScreen() {
         // ai: recvCollapsed, 2026-10-02), a 56 dp rail and the camera the rest
         val sideW = minOf(320.dp, maxWidth * 0.45f)
         Row(Modifier.fillMaxSize()) {
-            if (isOpen("recvCollapsed")) Rail(onClick = { toggle("recvCollapsed") }) { RailSquares() }
+            // ai: Home is the rail's last square in landscape, not the column's bar (2026-10-05): expanding the panel put
+            // ai: the bar's back arrow where the expand button had been, and a second tap left the receiver. Portrait
+            // ai: has no rail and keeps it in its bar.
+            if (isOpen("recvCollapsed")) Rail(onClick = { toggle("recvCollapsed") },
+                foot = { Square { IconBtn(R.drawable.ic_back, "Home") { go(MainActivity.Screen.Home) } } }) { RailSquares() }
             else Column(Modifier.width(sideW).fillMaxHeight().padding(horizontal = 16.dp)) {
-                TopBar("Receive", onBack = { go(MainActivity.Screen.Home) }) { CollapseBtn(false) { toggle("recvCollapsed") } }
+                TopBar("Receive", onBack = null) { CollapseBtn(false) { toggle("recvCollapsed") } }
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { side() }
             }
             VerticalDivider(color = Line)
