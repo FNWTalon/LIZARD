@@ -133,7 +133,7 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
             }
             Group("Code") {
                 BlocksField(s)
-                Field("Pictures a second", "${s.fps} a second") { Bar(s.fps.toFloat(), 1f..60f, 58, done = { s.commitFps() }) { s.chooseFps(it.roundToInt()) } }
+                Field("FPS", "${s.fps}") { Bar(s.fps.toFloat(), 1f..60f, 58, done = { s.commitFps() }) { s.chooseFps(it.roundToInt()) } }
                 Field("Size", "${s.size}%") { Bar(s.size.toFloat(), 25f..100f, 74, done = { s.commitSize() }) { s.chooseSize(it.roundToInt()) } }
                 if (s.codes == 2) Field("Gap", "${s.gap} modules") { Bar(s.gap.toFloat(), 0f..64f, 63, done = { s.repick() }) { s.chooseGap(it.roundToInt()) } }
                 // ai: the rings alone (2026-10-05; an Auto chip, the default ring, until then): none chosen marks the default
@@ -176,7 +176,7 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
 private fun BlocksField(s: SendState) {
     val auto = s.blocks == 0
     val b = if (auto) s.autoBlocks else s.blocks
-    Field("Blocks a frame", if (auto) (if (b > 0) "Auto, ${Fmt.blocks(b)}" else "Auto") else Fmt.blocks(b)) {
+    Field("Blocks", if (auto) (if (b > 0) "Auto, ${Fmt.blocks(b)}" else "Auto") else Fmt.blocks(b)) {
         Bar(s.blocks.toFloat(), 0f..128f, 127, done = { s.repick() }) { s.chooseBlocks(it.roundToInt()) }
     }
 }

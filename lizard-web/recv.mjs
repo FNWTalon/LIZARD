@@ -30,7 +30,7 @@ import { tarBlob } from "./tar.mjs";
 import { logPost } from "./devlog.mjs";
 import { R_RING, SPAN, MODULES, N_FOR, NAME, FOCUS_BITMAP, PICTURE_SIZES } from "../liblizard/sim/lizard_pick.mjs";
 import { isControlId, PAYLOAD, fractionDone } from "../liblizard/sim/xfer.mjs";
-import { remember, persist, restoreSaved, say, meter, bytes, rate, left, about, registerApp, collapser } from "./ui.mjs";
+import { remember, persist, restoreSaved, say, meter, bytes, rate, left, about, registerApp, collapser, sideResizer } from "./ui.mjs";
 import { open as openKept } from "./library.mjs";
 const $ = (id) => document.getElementById(id), video = $("v"), shot = $("shot"), sctx = shot.getContext("2d", { willReadFrequently: true });
 // ai: The Developer panel, Advanced since 2026-10-01 (the lab's menus and readouts), opens as it was left, a phone session
@@ -39,6 +39,7 @@ const $ = (id) => document.getElementById(id), video = $("v"), shot = $("shot"),
 remember($("dev"), "recv:dev");
 remember($("logs"), "recv:logs");
 collapser($("collapse"), "recv:collapsed");   // ai: the sidebar collapser (ui.mjs); the camera box takes the width
+sideResizer("recv:side");   // ai: the column's edge dragged to resize it (2026-10-05)
 // ai: The app's shell (2026-10-01): the bar's Settings, the first-run tip, About and the installed app's worker.
 about($("about"));
 registerApp(() => about($("about"), true));
@@ -194,7 +195,7 @@ function showState() {
   if (ui.err) { line = ui.err; tone = "bad"; }
   else if (ui.starting) line = "Starting the camera";
   else if (loading) line = "Getting ready";
-  else if (testing) { line = "Reading the test stream"; const now = recentKBs(); if (now != null) nums = rate(now); }
+  else if (testing) line = "Reading the test stream";   // ai: its rate the rail's and Developer Tools' (#lab) since 2026-10-05
   else if (on && h && !offered) {
     frac = fractionDone(xferNow);
     line = `Receiving ${h.name || "a file"}`;
@@ -205,7 +206,8 @@ function showState() {
     // ai: the bytes as sent where the manifest has said them (2026-10-05): what the light carries, which the rate and
     // ai: the time left are of; the file's own bytes until then, and in the received line
     const total = h.sent ?? h.length, got = h.sent ? xferNow.sentIn : frac * h.length;
-    nums = `${Math.floor(100 * frac)}%, ${partOf(got, total)}${now != null ? `, ${rate(now)}${now > 0 ? `, ${left((total - got) / (now * 1000))}` : ""}` : ""}`;
+    // ai: progress, size and time left; the rate itself is the collapsed rail's and Developer Tools' (#lab) since 2026-10-05
+    nums = `${Math.floor(100 * frac)}%, ${partOf(got, total)}${now > 0 ? `, ${left((total - got) / (now * 1000))}` : ""}`;
   } else if (ui.received && (!on || offered)) {
     const r = ui.received;
     line = `Received ${r.name}, ${nb(bytes(r.n))} in ${nb(`${r.secs.toFixed(1)} s`)}${r.sent && r.sent < r.n ? `, ${nb(bytes(r.sent))} sent` : ""}`; tone = "good"; frac = 1;

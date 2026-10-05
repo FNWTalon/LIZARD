@@ -59,6 +59,17 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.ui.unit.sp
 
 // ai: The web's tokens and parts (lizard-web/ui.css; 2026-10-01): light, black and white, flat; one solid black button
@@ -155,6 +166,36 @@ fun Rail(left: Boolean = true, onClick: () -> Unit, foot: @Composable () -> Unit
 
 @Composable
 fun Square(content: @Composable () -> Unit) = Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) { content() }
+
+// ai: The landscape column's width (Receive and Send, 2026-10-05): 240 dp or a third of the screen's width where that is
+// ai: less (320 and 0.45 until then, a fourth wider), or what its edge was dragged to (`chosen`, dp; 0 none), within
+// ai: 180 dp and three fifths of the screen.
+fun SideWidth(screen: Dp, chosen: Float): Dp {
+    val lo = 180.dp
+    val hi = maxOf(lo, screen * 0.6f)
+    return (if (chosen > 0f) chosen.dp else minOf(240.dp, screen * 0.34f)).coerceIn(lo, hi)
+}
+
+// ai: The column's edge (2026-10-05): the hairline between the column and the camera or the code, in a strip wide enough
+// ai: for a finger. Dragged sideways it sets the column's width: onDrag with the new width, from `width` at the drag's
+// ai: start; onDone on release (the caller keeps it).
+@Composable
+fun SideEdge(width: Dp, screen: Dp, onStart: () -> Unit, onDrag: (Dp) -> Unit, onDone: () -> Unit) {
+    val density = LocalDensity.current
+    val w by rememberUpdatedState(width)
+    val start by rememberUpdatedState(onStart)
+    val drag by rememberUpdatedState(onDrag)
+    val done by rememberUpdatedState(onDone)
+    var at by remember { mutableStateOf(0.dp) }
+    val state = rememberDraggableState { dx ->
+        at += with(density) { dx.toDp() }
+        drag(at.coerceIn(180.dp, maxOf(180.dp, screen * 0.6f)))
+    }
+    Box(Modifier.width(16.dp).fillMaxHeight().draggable(state, Orientation.Horizontal,
+        onDragStarted = { at = w; start() }, onDragStopped = { done() }), contentAlignment = Alignment.Center) {
+        VerticalDivider(color = Line)
+    }
+}
 
 // ai: A rate in a rail's square: its figure over its unit (Readout.rate's no-break space the cut); empty for null
 @Composable

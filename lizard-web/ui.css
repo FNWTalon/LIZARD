@@ -79,6 +79,7 @@ pre.readout{font-size:12px;color:var(--fg)}
    collapsed (body.collapsed, ui.mjs collapser), the column is a 56 px rail holding it alone, its chevrons turned, and
    the page's own room the rest (each page sizes its column by --side). Portrait stacks the controls: no button. */
 :root{--side:20rem}
+.side-edge{display:none}
 .bar .collapse{display:none}
 @media (orientation:landscape){
   .bar .collapse{display:flex}
@@ -90,6 +91,10 @@ pre.readout{font-size:12px;color:var(--fg)}
   body.collapsed .bar>:not(.collapse){display:none}
   body.collapsed .bar>.collapse{margin:0}
   body.collapsed .collapse svg{transform:rotate(180deg)}
+  /* ai: the column's edge, dragged to resize it (ui.mjs sideResizer, 2026-10-05): a 12 px strip over the hairline */
+  .side-edge{display:block;position:fixed;top:0;bottom:0;left:var(--side);width:12px;margin-left:-6px;cursor:col-resize;z-index:5;touch-action:none}
+  body.collapsed .side-edge,body.full .side-edge{display:none}
+  body.resizing{cursor:col-resize;user-select:none}
   body.collapsed .rail{display:flex;flex:1 1 auto}
 }
 /* ai: The collapsed rail's squares (2026-10-02): 56 px each under

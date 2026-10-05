@@ -96,6 +96,11 @@ class MainActivity : ComponentActivity() {
     internal var note by mutableStateOf("")                // ai: what came of a Save a copy or an Open
     internal var files by mutableStateOf(listOf<Library.Entry>())
     internal var tipsSeen by mutableStateOf(false)
+    // ai: The landscape column's width on Receive and Send, dp (2026-10-05): 0 the default (SideWidth), else what its edge
+    // ai: was dragged to (SideEdge), kept as `sideDp`; sideDragging while a finger is on the edge (Send re-picks after).
+    internal var sideDp by mutableStateOf(0f)
+    internal var sideDragging by mutableStateOf(false)
+    internal fun saveSide() { prefs.edit().putFloat("sideDp", sideDp).apply() }
     // ai: the rows that open, open or not, kept by key (the web's send:dev, send:logs, recv:dev, recv:logs)
     internal val folds = mutableStateMapOf<String, Boolean>()
     internal var autoRan by mutableStateOf("")             // ai: what auto last decoded on, GPU or CPU (the decoder's Auto chip)
@@ -147,6 +152,7 @@ class MainActivity : ComponentActivity() {
         // ai: on a locked phone; a release build does neither
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) { setShowWhenLocked(true); setTurnScreenOn(true) }
         prefs = getSharedPreferences(Settings.PREFS, MODE_PRIVATE)
+        sideDp = prefs.getFloat("sideDp", 0f)
         tipsSeen = prefs.getBoolean("tipsSeen", false)
         for (k in FOLDS) folds[k] = prefs.getBoolean(k, false)
         library = Library(File(filesDir, "library"))

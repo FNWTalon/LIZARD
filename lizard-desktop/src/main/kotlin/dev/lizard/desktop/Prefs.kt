@@ -46,6 +46,6 @@ object Fmt {
         }
     }
     fun rate(kbs: Double) = if (kbs < 999.5) "${kbs.roundToInt()}${NB}KB/s" else "${String.format(Locale.ROOT, "%.2f", kbs / 1000)}${NB}MB/s"
-    fun blocks(b: Int) = "$b block${if (b == 1) "" else "s"}, ${String.format(Locale.ROOT, "%.1f", b * 469 / 1000.0)}${NB}KB"
+    fun blocks(b: Int) = "$b, ${String.format(Locale.ROOT, "%.1f", b * 469 / 1000.0)}${NB}KB"   // ai: under the title "Blocks" (2026-10-05)
     fun f1(v: Double) = String.format(Locale.ROOT, "%.1f", v)
 }

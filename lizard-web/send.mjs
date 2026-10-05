@@ -10,7 +10,7 @@ import { DEFAULT_LOG2 } from "../liblizard/sim/xfer.mjs";
 import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, versionOf } from "../liblizard/sim/lizard_pick.mjs";
 import { GAP_MODULES } from "../liblizard/gpu/encoder.mjs";
 import { logPost } from "./devlog.mjs";
-import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, collapser } from "./ui.mjs";
+import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, collapser, sideResizer } from "./ui.mjs";
 
 // The room a format needs holds the codec's margin (src/focus.h FOCUS_QUIET), and only the codec knows it.
 await initOb();
@@ -206,7 +206,8 @@ function showBlocks() {
   $("blocksOut").textContent = auto ? (b ? `Auto, ${blocksText(b)}` : "Auto") : blocksText(b);
 }
 // ai: the title says "Blocks a frame", so the value is the count and its bytes alone, which fit beside it in the 20rem column
-const blocksText = (b) => `${b} block${b === 1 ? "" : "s"}, ${((b * 469) / 1000).toFixed(1)} KB`;
+// ai: "60, 28.1 KB": the count and what a frame holds, under the title "Blocks" (2026-10-05; "60 blocks, ..." before)
+const blocksText = (b) => `${b}, ${((b * 469) / 1000).toFixed(1)} KB`;
 $("blocks").addEventListener("input", () => { const v = +$("blocks").value; $("blocksOut").textContent = v ? blocksText(v) : "Auto"; });
 $("blocks").addEventListener("change", () => { const v = +$("blocks").value; $("subch").value = v ? String(8 * v) : "auto"; $("subch").dispatchEvent(new Event("change")); });
 $("subch").addEventListener("change", showBlocks);
@@ -704,6 +705,7 @@ for (const ev of ["fullscreenchange", "webkitfullscreenchange"]) document.addEve
 $("fs").onclick = enterFull;
 // ai: the sidebar collapser (ui.mjs): <main> grows, and the ResizeObserver re-picks as for Fullscreen
 collapser($("collapse"), "send:collapsed");
+sideResizer("send:side");   // ai: the column's edge dragged to resize it (2026-10-05); <main> re-picks as for a resized window
 // ai: A tap on the middle leaves fullscreen, or, while its hint asks for a file, opens the picker (the page's only one).
 main.addEventListener("click", () => { if (document.body.classList.contains("full")) leaveFull(); else if (!$("hint").hidden) $("file").click(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("full")) leaveFull(); });
@@ -715,7 +717,7 @@ $("codes").onchange = () => { image = null; showGap(); roomChanged(); };
 $("subch").onchange = $("ring").onchange = () => roomChanged();
 // ai: the display fps slider's label (2026-10-02, a slider 1 to 60 in place of the number box): live while it is dragged,
 // ai: and the page's pace and the word's rate follow it as they followed the box (both read #fps as they go)
-const showFps = () => { $("fpsOut").textContent = `${+$("fps").value} a second`; };
+const showFps = () => { $("fpsOut").textContent = `${+$("fps").value}`; };   // ai: "FPS" over the bare count (2026-10-05; "Pictures a second", "60 a second" before)
 for (const ev of ["input", "change"]) $("fps").addEventListener(ev, showFps);
 // ai: the size slider (sizeOf): its label live while dragged, the room changed on release
 const showSize = () => { $("sizeOut").textContent = `${Math.round(sizeOf() * 100)}%`; };

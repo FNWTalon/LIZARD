@@ -144,6 +144,8 @@ class SendState(private val a: MainActivity) {
     fun chooseGap(g: Int) { gap = g.coerceIn(0, 64); prefs.edit().putInt("sendGap", gap).apply(); if (phase == Phase.On) reconfigure() }
     // ai: one code's room in the view, px: the box's height, or its width's share where that is less
     private fun roomOf() = min((vw / aspect).toInt(), vh)
+    // ai: the column's edge let go (2026-10-05): the format re-picked for the box it left
+    fun resized() { if (phase == Phase.On && roomOf() != configured) reconfigure() }
 
     // ai: the file into the cache (a document is a stream; the sender maps a file), then the sender and its format
     fun start() {
@@ -216,7 +218,8 @@ class SendState(private val a: MainActivity) {
         override fun surfaceCreated(hd: SurfaceHolder) { surface = hd.surface }
         override fun surfaceChanged(hd: SurfaceHolder, format: Int, w: Int, hh: Int) {
             surface = hd.surface; vw = w; vh = hh
-            if (phase == Phase.On && roomOf() != configured) reconfigure()
+            // ai: not while the column's edge is being dragged: the code's box changes every frame of it (resized after)
+            if (phase == Phase.On && roomOf() != configured && !a.sideDragging) reconfigure()
         }
         override fun surfaceDestroyed(hd: SurfaceHolder) { surface = null }
     }
@@ -303,7 +306,7 @@ internal fun MainActivity.SendScreen() {
                     Bar(s.brightness.toFloat(), 1f..100f, 98) { v -> val n = v.roundToInt(); if (n != s.brightness) s.chooseBrightness(n) }
                 }
                 Group("Code") {
-                    AutoSlider("Blocks a frame", s.blocks, s.picked / 8, 1..128, { n -> "$n block${if (n == 1) "" else "s"}, ${"%.1f".format(Locale.ROOT, n * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
+                    AutoSlider("Blocks", s.blocks, s.picked / 8, 1..128, { n -> "$n, ${"%.1f".format(Locale.ROOT, n * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
                     RateSlider(s)
                     // ai: one code, or two side by side for a receiver's 2:1 crop, and their gap (the web's #codes and #gap)
                     Field("Codes") {
@@ -339,7 +342,8 @@ internal fun MainActivity.SendScreen() {
             side()
         }
     } else BoxWithConstraints(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
-        val sideW = minOf(320.dp, maxWidth * 0.45f)
+        val sideW = SideWidth(maxWidth, sideDp)
+        val screenW = maxWidth
         Row(Modifier.fillMaxSize()) {
             if (isOpen("sendCollapsed")) Rail(onClick = { toggle("sendCollapsed") },
                 foot = { Square { IconBtn(R.drawable.ic_back, "Home") { go(MainActivity.Screen.Home) } } }) { SendRail() }
@@ -347,7 +351,9 @@ internal fun MainActivity.SendScreen() {
                 TopBar("Send", onBack = null) { CollapseBtn(false) { toggle("sendCollapsed") } }
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { side() }
             }
-            VerticalDivider(color = Line)
+            // ai: the column's edge, dragged to resize it (2026-10-05); the code re-picked once the finger is off it
+            if (isOpen("sendCollapsed")) VerticalDivider(color = Line)
+            else SideEdge(sideW, screenW, onStart = { sideDragging = true }, onDrag = { sideDp = it.value }, onDone = { sideDragging = false; saveSide(); s.resized() })
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().padding(16.dp), contentAlignment = Alignment.Center) {
                 val a = s.aspect.toFloat()
                 val w = minOf(maxWidth, maxHeight * a)
@@ -450,5 +456,5 @@ private fun AutoSlider(title: String, value: Int, shown: Int, range: IntRange, t
 // ai: Pictures a second: a plain slider, 1 to 60, its value beside its title (the web's #fps and #fpsOut)
 @Composable
 private fun RateSlider(s: SendState) {
-    Field("Pictures a second", "${s.rate} a second") { Bar(s.rate.toFloat(), 1f..60f, 58) { s.chooseRate(it.roundToInt()) } }
+    Field("FPS", "${s.rate}") { Bar(s.rate.toFloat(), 1f..60f, 58) { s.chooseRate(it.roundToInt()) } }
 }

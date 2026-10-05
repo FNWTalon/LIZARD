@@ -100,7 +100,7 @@
   (() => { try {
     const ls = localStorage, $ = (id) => document.getElementById(id);
     for (const id of ["dev", "logs"]) { const v = ls.getItem("recv:" + id); if (v !== null) $(id).open = v === "1"; }
-    if (ls.getItem("recv:collapsed") === "1") document.body.classList.add("collapsed");
+    if (ls.getItem("recv:collapsed") === "1") document.body.classList.add("collapsed"); { const w = +ls.getItem("recv:side"); if (w > 0) document.documentElement.style.setProperty("--side", Math.max(180, Math.min(w, innerWidth * 0.6)) + "px"); }
     for (const el of $("dev").querySelectorAll("select")) { const v = ls.getItem("recv:" + el.id); if (v !== null && [...el.options].some((o) => o.value === v)) el.value = v; }
   } catch {} })();
   </script>

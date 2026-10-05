@@ -283,12 +283,14 @@ const SIZES = [
   const t = await chrome("test", [`--use-file-for-fake-video-capture=${testPath}`]);
   await size(t, SIZES[0]);
   await navigate(t, `${BASE}?auto`);
-  await until(t, `document.getElementById("state").textContent === "Reading the test stream" && /LIZARD/.test(document.getElementById("lab").textContent) && document.getElementById("nums").textContent !== ""`, 30000, "the test stream read");
+  await until(t, `document.getElementById("state").textContent === "Reading the test stream" && document.getElementById("lab").textContent.includes("% registered, LIZARD")`, 30000, "the test stream read");
   await sleep(1200);
   const ts = await evaluate(t, `(() => { const $ = (id) => document.getElementById(id); return { state: $("state").textContent, nums: $("nums").textContent, lab: $("lab").textContent, why: $("why").textContent, meter: !$("meter").hidden }; })()`);
   await screenshot(t, `${OUT}/recv-phone-portrait-test.png`);
-  // ai: the user's figure the speed alone; the lab line the rate, the registered share and the format (Advanced)
-  check(ts.state === "Reading the test stream" && /^[\d.]+\s(KB|MB)\/s$/.test(ts.nums) && /^\d+\sKB\/s, \d+% registered, LIZARD-96 at 24\sfps$/.test(ts.lab) && !ts.meter, `test stream: "${ts.state}" / "${ts.nums}" / "${ts.lab}" / "${ts.why}"`);
+  // ai: no figure for the test stream (its rate the rail's and the lab line's since 2026-10-05); the lab line the rate,
+  // ai: the registered share and the format (Developer Tools)
+  // ai: the rate in Developer Tools' lab line and the collapsed rail, not the figures (2026-10-05)
+  check(ts.state === "Reading the test stream" && ts.nums === "" && /^\d+\sKB\/s, \d+% registered, LIZARD-96 at 24\sfps$/.test(ts.lab) && !ts.meter, `test stream: "${ts.state}" / "${ts.nums}" / "${ts.lab}" / "${ts.why}"`);
   // ai: The native app is recommended only to a sender painting faster than 24 (2026-10-01): not here, and
   // ai: on a clip of the same stream whose word says 30 (a picture a camera frame).
   check(!/Lizard app/.test(ts.why), `at 24 fps no word of the Lizard app: "${ts.why}"`);
@@ -329,10 +331,10 @@ const SIZES = [
   await screenshot(s, `${OUT}/recv-phone-portrait-receiving.png`);
   console.log(`     receiving: "${a.state}" / "${a.nums}", meter ${a.meter}`);
   // ai: progress, size, speed and time left (2026-10-01); the speed and the time left once a second has closed
-  check(a.state === `Receiving ${NAME}` && /^\d+%, [\d.]+ of 300\sKB(, [\d.]+\s(KB|MB)\/s(, \d+\s(s|min) left)?)?$/.test(a.nums) && a.meter && !a.deliver, `receiving: the state, the meter at ${a.meter} and "${a.nums}"`);
+  check(a.state === `Receiving ${NAME}` && /^\d+%, [\d.]+ of 300\sKB(, \d+\s(s|min) left)?$/.test(a.nums) && a.meter && !a.deliver, `receiving: the state, the meter at ${a.meter} and "${a.nums}"`);
   // ai: the collapsed rail's squares follow the page whether or not it is shown (2026-10-02): the pause square, the
   // ai: last second's rate where the line has one, no tick yet
-  check(!a.railOff && !a.railDone && (/, [\d.]+\s(KB|MB)\/s/.test(a.nums) ? /^[\d.]+(KB|MB)\/s$/.test(a.railRate) : a.railRate === ""), `receiving: the rail's camera on, its rate "${a.railRate}", no check, Open or Save`);
+  check(!a.railOff && !a.railDone && (/ left$/.test(a.nums) ? /^[\d.]+(KB|MB)\/s$/.test(a.railRate) : true), `receiving: the rail's camera on, its rate "${a.railRate}", no check, Open or Save`);
   await until(s, `/^Received/.test(document.getElementById("state").textContent)`, 60000, "Received");
   const b = await evaluate(s, STATE);
   check(b.railOff && b.railDone && b.railRate === "", `received: the rail's play square, the green check, Open and Save, no rate`);
