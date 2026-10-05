@@ -86,6 +86,8 @@ class SendState {
     val sentBytes: Long get() = sender?.num("sentBytes")?.toLong() ?: 0L
     var test by mutableStateOf(Prefs.payload == "test")
     var enc by mutableStateOf(Prefs.enc.let { if (it == "gpu" || it == "cpu") it else "auto" })
+    // ai: the painter the sender runs on now, "gpu" or "cpu" ("" before a send): the Encoder chip auto marks (2026-10-05)
+    val painterNow: String get() = sender?.str("painter") ?: ""
     var blocks by mutableStateOf(Prefs.blocks.coerceIn(0, 128))
     var fps by mutableStateOf(Prefs.fps.coerceIn(1, 60))
     var size by mutableStateOf(Prefs.size.coerceIn(25, 100))

@@ -97,7 +97,8 @@ internal fun MainActivity.ReceiveScreen() {
 
 // ai: The collapsed rail's squares (2026-10-02): the
 // ai: camera's pause or play (toggleCamera, as Start and Stop camera), the last second's rate while a file or the test
-// ai: stream is read (its figure over its unit, Readout.rate), and a green tick once the file is kept, which opens it.
+// ai: stream is read (its figure over its unit, Readout.rate), and once the file is kept Open (green) and Save a copy
+// ai: (2026-10-05; a green tick that opened it until then), the panel's own actions.
 @Composable
 private fun MainActivity.RailSquares() {
     val running = phase == Engine.Phase.On || phase == Engine.Phase.Starting || phase == Engine.Phase.Loading
@@ -108,13 +109,16 @@ private fun MainActivity.RailSquares() {
     val reading = phase == Engine.Phase.On && ((rx.hasFile && !rx.verified) || rx.state == "test")
     RateSquare(if (reading) rx.goodputKBs else null)
     val kept = if (rx.verified) files.firstOrNull { it.root == root } else null
-    if (kept != null) Square { IconBtn(R.drawable.ic_check, "Open ${kept.name}", tint = Good) { open(kept) } }
+    if (kept != null) {
+        Square { IconBtn(R.drawable.ic_open, "Open ${kept.name}", tint = Good) { open(kept) } }
+        Square { IconBtn(R.drawable.ic_save, "Save a copy of ${kept.name}") { saveCopy(kept) } }
+    }
 }
 
-// ai: The transfer: the state, the meter, the figures (progress, size, speed, time left), then the actions as the web's:
+// ai: The transfer: the state, the meter, the figures (progress, size, time left), then the actions as the web's:
 // ai: once the file is kept Open (the solid one), Share, Save a copy and Receive again lead, and Start or Stop camera
-// ai: comes last (alone, it fills the row). Without the camera's permission, why and the one button that gets it. Its
-// ai: first-run tip went 2026-10-02, as the web receiver's.
+// ai: comes last (alone, it fills the row), then the rate (RateLine). Without the camera's permission, why and the one
+// ai: button that gets it. Its first-run tip went 2026-10-02, as the web receiver's.
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun MainActivity.TransferPanel() {
@@ -141,6 +145,9 @@ internal fun MainActivity.TransferPanel() {
                 modifier = if (!rx.verified) Modifier.fillMaxWidth() else Modifier) { toggleCamera() }
         }
     }
+    // ai: the rate it is receiving at, the last second's new bytes, under the buttons and over Settings while the camera
+    // ai: reads (2026-10-05, in place of the state line's "Looking for a code" and the figures' speed)
+    if (on) Text(Readout.rate(rx.goodputKBs), style = MaterialTheme.typography.titleMedium, color = Fg, modifier = Modifier.padding(bottom = 8.dp))
     if (note.isNotEmpty()) Text(note, style = MaterialTheme.typography.bodyMedium, color = if (note.startsWith("Saved")) Muted else Bad)
 }
 
