@@ -78,7 +78,8 @@ internal fun MainActivity.ReceiveScreen() {
     } else BoxWithConstraints(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
         // ai: the web's 20rem column, less where the screen is narrow; collapsed (its button at the bar's end, kept:
         // ai: recvCollapsed, 2026-10-02), a 56 dp rail and the camera the rest
-        val sideW = minOf(320.dp, maxWidth * 0.45f)
+        val sideW = SideWidth(maxWidth, sideDp)
+        val screenW = maxWidth
         Row(Modifier.fillMaxSize()) {
             // ai: Home is the rail's last square in landscape, not the column's bar (2026-10-05): expanding the panel put
             // ai: the bar's back arrow where the expand button had been, and a second tap left the receiver. Portrait
@@ -89,7 +90,9 @@ internal fun MainActivity.ReceiveScreen() {
                 TopBar("Receive", onBack = null) { CollapseBtn(false) { toggle("recvCollapsed") } }
                 Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) { side() }
             }
-            VerticalDivider(color = Line)
+            // ai: the column's edge, dragged to resize it (2026-10-05); the rail's a plain hairline
+            if (isOpen("recvCollapsed")) VerticalDivider(color = Line)
+            else SideEdge(sideW, screenW, onStart = { sideDragging = true }, onDrag = { sideDp = it.value }, onDone = { sideDragging = false; saveSide() })
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().padding(16.dp), contentAlignment = Alignment.Center) {
                 val ratio = crop().ratio
                 val viewW = minOf(maxHeight * ratio, maxWidth)
@@ -125,7 +128,7 @@ private fun MainActivity.RailSquares() {
 
 // ai: The transfer: the state, the meter, the figures (progress, size, time left), then the actions: once the file is
 // ai: kept Open (the solid one), Share and Save on one row, and Start or Stop camera alone on the next, the full width
-// ai: (2026-10-05: "Save a copy" renamed, and Receive again deleted, a second Start camera), then the rate. Without the
+// ai: (2026-10-05: "Save a copy" renamed, and Receive again deleted, a second Start camera). Without the
 // ai: camera's permission, why and the one button that gets it. Its first-run tip went 2026-10-02, as the web receiver's.
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -153,9 +156,8 @@ internal fun MainActivity.TransferPanel() {
                 modifier = Modifier.fillMaxWidth()) { toggleCamera() }
         }
     }
-    // ai: the rate it is receiving at, the last second's new bytes, under the buttons and over Settings while the camera
-    // ai: reads (2026-10-05, in place of the state line's "Looking for a code" and the figures' speed)
-    if (on) Text(Readout.rate(rx.goodputKBs), style = MaterialTheme.typography.titleMedium, color = Fg, modifier = Modifier.padding(bottom = 8.dp))
+    // ai: the rate itself is the collapsed rail's and Developer Tools' lab line's (2026-10-05; a line under the buttons
+    // ai: from earlier that day)
     if (note.isNotEmpty()) Text(note, style = MaterialTheme.typography.bodyMedium, color = if (note.startsWith("Saved")) Muted else Bad)
 }
 

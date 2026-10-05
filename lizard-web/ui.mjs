@@ -18,6 +18,31 @@ export function collapser(button, key) {
   });
 }
 
+// ai: sideResizer(key): the landscape column's width set by dragging its edge (2026-10-05, as the Android app's): a strip
+// ai: on the column's right edge (.side-edge, ui.css), dragged sideways, sets --side, within 180 px and three fifths of
+// ai: the window; kept under `key` on release (each page's inline script restores it before the first paint). The sender
+// ai: re-picks as it does for a resized window.
+export const SIDE_MIN = 180, sideClamp = (px) => Math.max(SIDE_MIN, Math.min(px, innerWidth * 0.6));
+export function sideResizer(key) {
+  const root = document.documentElement, edge = document.createElement("div");
+  edge.className = "side-edge";
+  edge.setAttribute("role", "separator"); edge.setAttribute("aria-orientation", "vertical"); edge.setAttribute("aria-label", "Sidebar width");
+  document.body.append(edge);
+  try { const v = +localStorage.getItem(key); if (v > 0) root.style.setProperty("--side", `${sideClamp(v)}px`); } catch {}
+  edge.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    edge.setPointerCapture(e.pointerId);
+    document.body.classList.add("resizing");
+    const move = (m) => root.style.setProperty("--side", `${sideClamp(m.clientX)}px`);
+    const up = () => {
+      for (const [t, f] of [["pointermove", move], ["pointerup", up], ["pointercancel", up]]) edge.removeEventListener(t, f);
+      document.body.classList.remove("resizing");
+      try { localStorage.setItem(key, String(parseFloat(root.style.getPropertyValue("--side")) || "")); } catch {}
+    };
+    for (const [t, f] of [["pointermove", move], ["pointerup", up], ["pointercancel", up]]) edge.addEventListener(t, f);
+  });
+}
+
 export function remember(details, key) {
   try { const v = localStorage.getItem(key); if (v !== null) details.open = v === "1"; } catch {}
   details.addEventListener("toggle", () => { try { localStorage.setItem(key, details.open ? "1" : "0"); } catch {} });

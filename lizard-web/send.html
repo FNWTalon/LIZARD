@@ -85,9 +85,9 @@
           <!-- ai: blocks a frame, a slider of whole blocks, its first step auto (the largest that fits the room) and 1 to 128 by
                hand (8 sub-channels a step; an Auto box above it until 2026-10-05); #subch the value the page reads ("auto" or
                the sub-channels), the slider a view over it (send.mjs) -->
-          <div class="blocks"><span class="row"><span>Blocks a frame</span><span id="blocksOut">60 blocks, 28.1 KB</span></span><input id="blocks" type="range" min="0" max="128" step="1" value="60" data-view aria-label="blocks a frame"><input id="subch" type="hidden" value="480"></div>
+          <div class="blocks"><span class="row"><span>Blocks</span><span id="blocksOut">60, 28.1 KB</span></span><input id="blocks" type="range" min="0" max="128" step="1" value="60" data-view aria-label="blocks"><input id="subch" type="hidden" value="480"></div>
           <!-- ai: the display rate, 1 to 60, which the word states -->
-          <div class="blocks"><span class="row"><span>Pictures a second</span><span id="fpsOut">60 a second</span></span><input id="fps" type="range" min="1" max="60" step="1" value="60" aria-label="pictures a second"></div>
+          <div class="blocks"><span class="row"><span>FPS</span><span id="fpsOut">60</span></span><input id="fps" type="range" min="1" max="60" step="1" value="60" aria-label="FPS"></div>
           <!-- ai: the code's size, a share of <main>'s room, 25 to 100% (send.mjs sizeOf), so the code can be kept off a monitor's edges -->
           <div class="blocks"><span class="row"><span>Size</span><span id="sizeOut">100%</span></span><input id="size" type="range" min="25" max="100" step="1" value="100" aria-label="size"></div>
           <!-- ai: the space between two codes, 0 to 64 modules (send.mjs gapOf), shown with two codes only -->
@@ -117,7 +117,7 @@
     (() => { try {
       const ls = localStorage, $ = (id) => document.getElementById(id);
       for (const id of ["dev", "logs"]) { const v = ls.getItem("send:" + id); if (v !== null) $(id).open = v === "1"; }
-      if (ls.getItem("send:collapsed") === "1") document.body.classList.add("collapsed");
+      if (ls.getItem("send:collapsed") === "1") document.body.classList.add("collapsed"); { const w = +ls.getItem("send:side"); if (w > 0) document.documentElement.style.setProperty("--side", Math.max(180, Math.min(w, innerWidth * 0.6)) + "px"); }
       for (const el of document.querySelectorAll("#dev select, #dev input, #logs select")) {
         if (el.type === "file" || "view" in el.dataset) continue;
         const v = ls.getItem("send:" + el.id);
@@ -125,8 +125,8 @@
       }
       const s = +$("subch").value, b = s >= 8 && s <= 1024 && s % 8 === 0 ? s / 8 : 0;
       $("blocks").value = String(b);
-      $("blocksOut").textContent = b ? `${b} block${b === 1 ? "" : "s"}, ${(b * 469 / 1000).toFixed(1)} KB` : "Auto";
-      $("fpsOut").textContent = `${+$("fps").value} a second`;
+      $("blocksOut").textContent = b ? `${b}, ${(b * 469 / 1000).toFixed(1)} KB` : "Auto";
+      $("fpsOut").textContent = `${+$("fps").value}`;
       $("sizeOut").textContent = `${+$("size").value}%`;
       $("gapOut").textContent = `${+$("gap").value} modules`;
       $("gapRow").hidden = $("codes").value !== "2";
