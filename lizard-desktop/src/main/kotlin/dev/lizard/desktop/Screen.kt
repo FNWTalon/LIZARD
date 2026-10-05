@@ -122,11 +122,12 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
     Spacer(Modifier.height(16.dp))
     Fold("Settings", s.settingsOpen, { s.toggleSettings() }) {
         Fields {
+            // ai: GPU and CPU alone (2026-10-05; an Auto chip until then): with neither chosen the encoder is auto's and
+            // ai: the chip of the painter running is marked; a click chooses that one outright
             Field("Encoder") {
                 Chips {
-                    Chip("Auto", s.enc == "auto") { s.chooseEnc("auto") }
-                    Chip("GPU", s.enc == "gpu") { s.chooseEnc("gpu") }
-                    Chip("CPU", s.enc == "cpu") { s.chooseEnc("cpu") }
+                    Chip("GPU", s.enc == "gpu" || (s.enc == "auto" && s.painterNow == "gpu")) { s.chooseEnc("gpu") }
+                    Chip("CPU", s.enc == "cpu" || (s.enc == "auto" && s.painterNow == "cpu")) { s.chooseEnc("cpu") }
                 }
             }
             Group("Code") {
@@ -134,10 +135,10 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
                 Field("Pictures a second", "${s.fps} a second") { Bar(s.fps.toFloat(), 1f..60f, 58, done = { s.commitFps() }) { s.chooseFps(it.roundToInt()) } }
                 Field("Size", "${s.size}%") { Bar(s.size.toFloat(), 25f..100f, 74, done = { s.commitSize() }) { s.chooseSize(it.roundToInt()) } }
                 if (s.codes == 2) Field("Gap", "${s.gap} modules") { Bar(s.gap.toFloat(), 0f..64f, 63, done = { s.repick() }) { s.chooseGap(it.roundToInt()) } }
+                // ai: the rings alone (2026-10-05; an Auto chip, the default ring, until then): none chosen marks the default
                 Field("Ring") {
                     Chips {
-                        Chip("Auto", s.ring == -1) { s.chooseRing(-1) }
-                        for (i in Pick.RINGS.indices) Chip("${Pick.RINGS[i]}", s.ring == i) { s.chooseRing(i) }
+                        for (i in Pick.RINGS.indices) Chip("${Pick.RINGS[i]}", s.ring == i || (s.ring == -1 && i == Pick.RING_DEFAULT)) { s.chooseRing(i) }
                     }
                 }
                 // ai: two codes side by side for the app's 2:1 crop, the option saying browsers cannot decode them
@@ -167,21 +168,15 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
     Spacer(Modifier.height(24.dp))
 }
 
-// ai: Blocks a frame (send.html #blocks and #subchAuto), 0 for auto: the Auto chip on its own row over the title, the
-// ai: count and what it holds beside the title, the slider under them (the web's .blocks: its column is this one's
-// ai: width, where the app's title row, which holds the chip too, does not fit); auto shows what it takes in the area
-// ai: now. Moving the slider sets it by hand (committed on release); the chip goes back to auto, or leaves it at what
-// ai: auto showed (60, the page's default, before the area is known).
+// ai: Blocks a frame (send.html #blocks), 0 for auto: the slider's first step is auto (2026-10-05; an Auto chip over the
+// ai: title until then), its title "Auto, 60 blocks, 28.1 KB" once auto's pick in the area is known, every step right of
+// ai: it a count by hand, committed on release.
 @Composable
 private fun BlocksField(s: SendState) {
     val auto = s.blocks == 0
     val b = if (auto) s.autoBlocks else s.blocks
-    Column(Modifier.fillMaxWidth()) {
-        Chips { Chip("Auto", auto) { s.chooseBlocks(if (auto) (if (b > 0) b else 60) else 0); s.repick() } }
-        Spacer(Modifier.height(8.dp))
-        Field("Blocks a frame", if (b > 0) Fmt.blocks(b) else "") {
-            Bar((if (b > 0) b else 60).toFloat(), 1f..128f, 126, done = { s.repick() }) { s.chooseBlocks(it.roundToInt()) }
-        }
+    Field("Blocks a frame", if (auto) (if (b > 0) "Auto, ${Fmt.blocks(b)}" else "Auto") else Fmt.blocks(b)) {
+        Bar(s.blocks.toFloat(), 0f..128f, 127, done = { s.repick() }) { s.chooseBlocks(it.roundToInt()) }
     }
 }
 

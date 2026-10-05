@@ -16,6 +16,9 @@ import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, coll
 await initOb();
 let offeredKBs = 0;
 let fileBytes = 0, sentBytes = 0;   // ai: the file's bytes and its bytes as sent (every chunk's zstd frame or its own; 2026-10-05), for the sending line
+// ai: ", 1.2 MB compressed to 420 KB" (the size alone where nothing shrank), at module scope: start() names its file's
+// ai: bytes `bytes`, which there shadows ui.mjs's formatter (a TypeError on the first frame left the line at "Preparing")
+const sizeLine = () => (fileBytes ? `, ${bytes(fileBytes)}${sentBytes < fileBytes ? ` compressed to ${bytes(sentBytes)}` : ""}` : "");
 const $ = (id) => document.getElementById(id), canvas = $("c"), ctx = canvas.getContext("2d"), tmp = document.createElement("canvas"), tctx = tmp.getContext("2d"), gcanvas = $("cg");
 // nextId is the block id space and seq only counts painted frames. They are separate because
 // blocksPerFrame changes when repick() swaps the layout mid-stream: seq * blocksPerFrame would
@@ -133,6 +136,12 @@ function pump() {
   return true;
 }
 const wantGpu = () => $("enc").value === "gpu" || ($("enc").value === "auto" && !gpuOff);
+// ai: The encoder's menu lists GPU and CPU alone (2026-10-05): with neither chosen, its hidden auto option names the one
+// ai: auto runs on (the run's, else the one it would try: the GPU where the browser has WebGPU and it has not failed here).
+function showEnc() {
+  const gpuNow = cfg ? !!gcfg : !gpuOff && "gpu" in navigator;
+  $("enc").querySelector('option[value="auto"]').textContent = gpuNow ? "GPU" : "CPU";
+}
 // ai: The encoder, one a page, made once however many ask at a time (a start and a re-pick), and made again in place of
 // ai: one whose device was lost while nothing ran on it; lost under a running configuration, the caller gives up.
 let gencMaking = null;
@@ -180,28 +189,25 @@ function gpuGiveUp(e) {
   genc = gctx = gcfg = null; batchOf.clear(); encodeQueue.length = 0;
   if ($("enc").value === "gpu") { fail("The GPU encoder stopped", e); return; }
   gpuOff = String(e?.message ?? e);
+  showEnc();
   if (running) go();
 }
 
 // ai: Blocks a frame, a slider (2026-10-01): any whole number of blocks from 1 to 128, a block 8 sub-channels
 // ai: (src/focus.h FOCUS_GROUP), which is what the format word names, so every step is a symbol every receiver reads; the
 // ai: menu of 64 versions before stepped by two blocks. #subch holds what the page reads, "auto" or the sub-channels; the
-// ai: slider (#blocks) and the box (#subchAuto) are views over it, kept out of the saved settings. The slider commits on
-// ai: release (a re-pick for every step dragged would rebuild the encoder each time); under auto it shows the pick.
+// ai: slider (#blocks) is a view over it, kept out of the saved settings, its first step (0) auto (2026-10-05; an Auto box
+// ai: beside it before). The slider commits on release (a re-pick for every step dragged would rebuild the encoder each
+// ai: time); under auto its label says what auto took, once known ("Auto, 60 blocks, 28.1 KB").
 function showBlocks() {
   const auto = $("subch").value === "auto", b = auto ? (shown ? shown.subch / 8 : 0) : +$("subch").value / 8;
-  $("subchAuto").checked = auto;
-  if (b) $("blocks").value = String(b);
-  $("blocksOut").textContent = b ? blocksText(b) : "";   // ai: the Auto box says auto; the value is what it took, once known
+  $("blocks").value = auto ? "0" : String(b);
+  $("blocksOut").textContent = auto ? (b ? `Auto, ${blocksText(b)}` : "Auto") : blocksText(b);
 }
 // ai: the title says "Blocks a frame", so the value is the count and its bytes alone, which fit beside it in the 20rem column
 const blocksText = (b) => `${b} block${b === 1 ? "" : "s"}, ${((b * 469) / 1000).toFixed(1)} KB`;
-$("blocks").addEventListener("input", () => { $("subchAuto").checked = false; $("blocksOut").textContent = blocksText(+$("blocks").value); });
-$("blocks").addEventListener("change", () => { $("subch").value = String(8 * +$("blocks").value); $("subch").dispatchEvent(new Event("change")); });
-$("subchAuto").addEventListener("change", () => {
-  $("subch").value = $("subchAuto").checked ? "auto" : String(8 * +$("blocks").value);
-  $("subch").dispatchEvent(new Event("change"));
-});
+$("blocks").addEventListener("input", () => { const v = +$("blocks").value; $("blocksOut").textContent = v ? blocksText(v) : "Auto"; });
+$("blocks").addEventListener("change", () => { const v = +$("blocks").value; $("subch").value = v ? String(8 * v) : "auto"; $("subch").dispatchEvent(new Event("change")); });
 $("subch").addEventListener("change", showBlocks);
 // ai: The page's defaults are LIZARD-480 at 60 painted a second (2026-10-01, the night the Android app, its camera's
 // ai: phase held, read 93 to 95% of it; auto and 24 a second before), in send.html
@@ -291,8 +297,9 @@ const codesOf = () => (+$("codes").value === 2 ? 2 : 1);
 // ai: The library's pick over the whole ladder, at the first pick and every re-pick (capped at LIZARD-560, APP_TOP, until
 // ai: 2026-09-29).
 function pick(roomPx) { return pickVersion(roomPx, undefined, ringChosen()); }
-// ai: The Developer panel's ring (an index into RINGS), or null for the default ring (RING_DEFAULT).
-function ringChosen() { return $("ring").value === "auto" ? null : +$("ring").value; }
+// ai: The Developer panel's ring (an index into RINGS), or null for the default ring (RING_DEFAULT): the menu has no auto
+// ai: since 2026-10-05 (the 128 selected), so null only where it holds no ring at all.
+function ringChosen() { const v = $("ring").value; return v === "" || v === "auto" ? null : +v; }
 const ringOf = (s) => RINGS.indexOf(s.span / 2);
 
 // The canvas laid out for a symbol of n samples a side, quiet zone included, whenever that or the room changed.
@@ -464,6 +471,7 @@ async function start() {
   // ai: next in research/rig/stats.jsonl; a re-pick keeps it.
   cfg = { spec: s, label: made.label, mode: bytes ? "file" : "test", usefulBytes: made.usefulBytes, blocksPerFrame: made.blocksPerFrame, codes, gap, fps: +$("fps").value, encoder: gcfg ? "gpu" : "wasm", transfer: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, ...(bytes ? { fileBytes: bytes.length, name: file.name } : {}) };
   shown = s; lap = made.xfer?.lap ?? 0; dataSent = 0; dataWin = 0; fileBytes = bytes?.length ?? 0; sentBytes = made.xfer?.sent ?? 0;
+  showEnc();
   showBlocks();
   // ai: sent: the file's bytes as they go, each chunk zstd-compressed where that is shorter (sim/xfer.mjs, 2026-10-05)
   const xferLine = xfer ? `\nfile ${bytes.length} B${made.xfer.sent !== bytes.length ? `, ${made.xfer.sent} B as sent (zstd)` : ""}: ${made.xfer.chunks} chunk${made.xfer.chunks === 1 ? "" : "s"} of 2^${made.xfer.chunkLog2}, ${made.xfer.manifest} manifest block${made.xfer.manifest === 1 ? "" : "s"}, BLAKE3 ${made.xfer.root.slice(0, 16)}..., header in the light` : "";
@@ -525,7 +533,7 @@ async function start() {
     samples = fr.w;
     // ai: the first frame painted: a sender has seen what the tips say (ui.mjs), so they go on every page of this origin
     // ai: the file's size and, where compression shrank it, the bytes that actually go (2026-10-05)
-    if (!live) { live = true; $("hint").hidden = true; sendingLine = `Sending ${what}${fileBytes ? `, ${bytes(fileBytes)}${sentBytes < fileBytes ? ` compressed to ${bytes(sentBytes)}` : ""}` : ""}`; say($("state"), sendingLine); tipsDone(); }
+    if (!live) { live = true; $("hint").hidden = true; sendingLine = `Sending ${what}${sizeLine()}`; say($("state"), sendingLine); tipsDone(); }
     if (now - lastReport > 1000 && painted) {
       const g = gcfg ? genc.takeGpuMs() : null;
       gpuMs = gcfg ? g ?? gpuMs : null;
@@ -560,6 +568,7 @@ async function start() {
 // ai: Halts the stream and clears the canvas; the caller shows the state that follows.
 function stop() {
   offeredKBs = 0; drawFps = 0; cancelAnimationFrame(timer); cfg = shown = null; bandFps = 0; running = live = paused = hiddenPause = false; $("go").textContent = "Start";
+  showEnc();
   // The worker's frames from this run are dropped by generation; a reply still awaited is refused, not left hanging.
   sw?.postMessage({ type: "stop", gen });
   gen++; if (pending) { pending.rej(STOPPED); pending = null; }
@@ -697,7 +706,7 @@ collapser($("collapse"), "send:collapsed");
 main.addEventListener("click", () => { if (document.body.classList.contains("full")) leaveFull(); else if (!$("hint").hidden) $("file").click(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("full")) leaveFull(); });
 // ai: Another encoder asked for: the run starts again under it, and auto tries the GPU again.
-$("enc").onchange = () => { gpuOff = null; if (running) go(); };
+$("enc").onchange = () => { gpuOff = null; showEnc(); if (running) go(); };
 // ai: One code or two changes the room a symbol has, so it re-picks as a resize does; so does another version or ring
 // ai: (2026-10-01: until then they waited for the next start or resize).
 $("codes").onchange = () => { image = null; showGap(); roomChanged(); };
@@ -770,11 +779,13 @@ new ResizeObserver(paintSurround).observe(bgc.parentElement);
 // ai: the URL's presets over them for this load.
 // ai: and Developer Tools' payload (there since 2026-10-03), under the same keys
 for (const el of document.querySelectorAll("#dev select, #dev input, #logs select")) if (el.type !== "file" && !("view" in el.dataset)) persist(el, `send:${el.id}`);
-for (const [k, v] of URLP) { const el = $(k); if (el && "value" in el && el.type !== "file") el.value = v; }
+// ai: a menu takes a preset only where it is one of its options (?ring=auto, from before the menu lost its auto, keeps the default)
+for (const [k, v] of URLP) { const el = $(k); if (el && "value" in el && el.type !== "file" && (el.tagName !== "SELECT" || [...el.options].some((o) => o.value === v))) el.value = v; }
 // ai: A preset or a kept value that is no whole number of blocks from 1 to 128 (?subch=20) is no symbol: back to auto,
 // ai: and say so, rather than paint it.
 if ($("subch").value !== "auto" && !VERSIONS.includes(+$("subch").value)) { $("tx").textContent = `${$("subch").value} sub-channels is no whole number of blocks (8 each, 8 to 1024): showing auto`; $("subch").value = "auto"; }
 showBlocks();
+showEnc();
 showFps();
 showSize();
 showGap();

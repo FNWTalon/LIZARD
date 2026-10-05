@@ -72,14 +72,16 @@ object Readout {
             val got = if (rx.sent > 0) rx.sentIn else rx.received
             val frac = if (total > 0) (got.toDouble() / total).coerceIn(0.0, 1.0) else 0.0
             val now = rx.goodputKBs
-            val speed = if (now > 0) ", ${rate(now)}, ${left((total - got) / (now * 1000))}" else ", ${rate(0.0)}"
-            Line("Receiving ${rx.name}", nums = "${floor(100 * frac).toInt()}%, ${partOf(got.toDouble(), total)}$speed", frac = frac)
+            // ai: the rate itself is its own line under the buttons since 2026-10-05 (Receive.kt RateLine), so not here
+            val leftNow = if (now > 0) ", ${left((total - got) / (now * 1000))}" else ""
+            Line("Receiving ${rx.name}", nums = "${floor(100 * frac).toInt()}%, ${partOf(got.toDouble(), total)}$leftNow", frac = frac)
         }
         rx.hasFile && rx.verified -> Line("Received ${rx.name}, ${bytes(rx.size)} in ${String.format(Locale.ROOT, "%.1f", secs)}${NB}s${if (rx.sent in 1 until rx.size) ", ${bytes(rx.sent)} sent" else ""}", Tone.Good, frac = 1.0)
         // ai: nothing while the camera is off (2026-10-02); the screen draws no empty line
         !on -> Line("")
-        rx.state == "test" -> Line("Reading the test stream", nums = rate(rx.goodputKBs))
-        else -> Line("Looking for a code")
+        rx.state == "test" -> Line("Reading the test stream")
+        // ai: nothing while looking (2026-10-05: "Looking for a code" until then; the rate under the buttons says it)
+        else -> Line("")
     }
 
     // ai: The lab line (Advanced): the last second's rate, the registered share and, while a word is read, the format,

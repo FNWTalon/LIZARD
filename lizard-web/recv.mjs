@@ -226,12 +226,13 @@ function showState() {
   const busy = !!(recording || recHeld.size);
   $("rec").disabled = !on || busy; $("rec").textContent = busy ? `Recording, ${recording} to go` : `Record ${REC_FRAMES} frames`;
   // ai: the collapsed rail (recv.html #rail): the camera's pause or play, the last second's rate while a file or the
-  // ai: test stream is read (its figure over its unit), and the green tick once the file is in
+  // ai: test stream is read (its figure over its unit), and once the file is in Open (green, Feather's external-link) and
+  // ai: Save (its download), the deliver row's own actions (2026-10-05; a green tick that opened it until then)
   const cam = $("railCam");
   cam.classList.toggle("off", !on); cam.title = on ? "Stop camera" : "Start camera"; cam.disabled = ui.starting;
   const now = (on && h && !offered) || (on && recent(ui.testAt)) ? recentKBs() : null, [v, u] = now != null ? rate(now).split(/\s/) : ["", ""];   // ai: \s takes rate()'s no-break space
   $("railRate").innerHTML = v ? `${v}<small>${u}</small>` : "";
-  $("railDone").hidden = !ui.received;
+  $("railOpen").hidden = $("railSave").hidden = !ui.received;
 }
 const nb = (s) => s.replace(/ /g, "\u00a0");   // ai: a figure and its unit kept on one line
 // ai: "3.1 of 7.4 MB": the part in the unit ui.mjs bytes() gives the whole, at its precision.
@@ -456,10 +457,22 @@ async function askGpu() {
   if (why) console.info(`decoder: auto on the CPU: ${why}`);
   showDecoder();
 }
-// ai: What auto took, in its own option: "Auto (GPU)" or "Auto (CPU)" (2026-10-02; the line #decwhy under the menu
-// ai: before, with why); the why goes to the console.
+// ai: What auto takes, named by its hidden option (2026-10-05: the menu lists GPU and CPU alone; "Auto (GPU)" from
+// ai: 2026-10-02, the line #decwhy under the menu before): until the adapter has answered, the GPU where the browser
+// ai: has WebGPU; the why goes to the console.
 function showDecoder() {
-  $("dec").querySelector('option[value="auto"]').textContent = `Auto${autoGpu === null ? "" : autoGpu ? " (GPU)" : " (CPU)"}`;
+  const gpuNow = autoGpu === null ? "gpu" in navigator : autoGpu;
+  $("dec").querySelector('option[value="auto"]').textContent = gpuNow ? "GPU" : "CPU";
+}
+// ai: The camera and its rate as the page's default opened them (2026-10-05: the menus list the cameras, and 30 and
+// ai: 60, alone; their hidden auto options named after what opened: the track's label, its rate, 60 before one has).
+// ai: The camera's field shows once there is a camera to name: one opened on this page, or one chosen here before.
+let camLabel = "", camRate = 0;
+function showCamera() {
+  const a = $("cam").querySelector('option[value="auto"]');
+  if (a) a.textContent = camLabel || "Camera";
+  $("camRow").hidden = $("cam").value === "auto" && !camLabel;
+  $("fps").querySelector('option[value="auto"]').textContent = String(camRate || 60);
 }
 // ai: A worker sent frames that decodes none of them for GPU_WAIT is stuck: replaced once, then given up on if the
 // ai: replacement is stuck before it decodes anything. Its first batch after a config plans the lanes and runs at the
@@ -1497,6 +1510,7 @@ async function startCamera() {
   video.srcObject = stream; await video.play();
   await squareOrBack(track);
   try { wake = await navigator.wakeLock?.request("screen"); } catch {}
+  camLabel = track.label || "Camera"; camRate = Math.round(track.getSettings().frameRate || 0);
   listCameras();   // labels are blank until a camera has been granted, so the menu is worth filling only now
   cur = fresh(); buckets = []; lastPresented = 0; prevArrive = 0; lastStamp = undefined;
   poolVfOff = ""; vfFormat = ""; tapNone = 0;   // ai: a new stream may carry another pixel format, so the pool tries VideoFrames again
@@ -1575,7 +1589,8 @@ function showRates() {
 $("go").onclick = () => (track ? stopCamera() : start());
 $("railCam").onclick = () => $("go").onclick();
 $("rec").onclick = () => startRec();
-$("railDone").onclick = () => $("open").onclick();
+$("railOpen").onclick = () => $("open").onclick();
+$("railSave").onclick = () => $("save").click();
 // A new resolution, rate or camera needs a new stream.
 // ai: Not in the middle of a start, which would be stopped under itself: the choice then takes effect at the next start.
 $("res").onchange = $("cam").onchange = $("fps").onchange = () => { showRates(); if (track && !ui.starting) { stopCamera(); start(); } };
@@ -1585,11 +1600,14 @@ $("res").onchange = $("cam").onchange = $("fps").onchange = () => { showRates();
 async function listCameras() {
   const sel = $("cam"), want = sel.value;
   const devs = (await navigator.mediaDevices?.enumerateDevices?.().catch(() => []) ?? []).filter((d) => d.kind === "videoinput" && d.deviceId);
-  sel.replaceChildren(new Option("Auto", "auto"), ...devs.map((d, i) => new Option(d.label || `Camera ${i + 1}`, d.deviceId)));
+  const auto = new Option(camLabel || "Camera", "auto");
+  auto.hidden = auto.disabled = true;
+  sel.replaceChildren(auto, ...devs.map((d, i) => new Option(d.label || `Camera ${i + 1}`, d.deviceId)));
   sel.value = [...sel.options].some((o) => o.value === want) ? want : "auto";
   // ai: the camera last chosen here, once the list has it (a list read at load, before any start, where the browser gives
   // ai: ids; never under a running camera, which would then not be the one the menu names)
   if (!track && sel.value === "auto" && !new URLSearchParams(location.search).has("cam")) restoreSaved(sel, "recv:cam");
+  showCamera();
 }
 navigator.mediaDevices?.addEventListener?.("devicechange", listCameras);
 // The browser drops the wake lock whenever the page is hidden; take it back on return.
@@ -1618,6 +1636,7 @@ setConfig(lizardConfig(), true);
 if (!("gpu" in navigator)) { const o = [...$("dec").options].find((x) => x.value === "gpu"); o.disabled = true; o.text = "GPU (no WebGPU here)"; }
 setGrab(LAB("grab") === "gl" ? "gl" : "canvas");
 showCrop();
+showDecoder(); showCamera();
 resize();   // ai: the pool's first worker, or the GPU worker when the decoder (or auto) asks for it
 showState();
 if (new URLSearchParams(location.search).has("auto")) $("go").onclick();

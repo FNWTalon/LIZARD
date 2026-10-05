@@ -76,19 +76,24 @@
            and the readout; About the last row. Options and labels bare. -->
     <details id="dev" class="dev"><summary>Settings</summary>
       <div class="grid">
-        <label>Encoder <select id="enc"><option value="auto" selected>Auto</option><option value="gpu">GPU</option><option value="wasm">CPU</option></select></label>
+        <!-- ai: GPU and CPU alone (2026-10-05): with neither chosen the encoder is auto's (the GPU where it builds and its first
+             frame is the C's, else the CPU), held by a hidden option that names the one auto runs (send.mjs showEnc) -->
+        <label>Encoder <select id="enc"><option value="auto" selected hidden disabled>GPU</option><option value="gpu">GPU</option><option value="wasm">CPU</option></select></label>
       </div>
       <fieldset id="f-focus"><legend>Code</legend>
         <div class="grid">
-          <!-- ai: blocks a frame, a slider of whole blocks 1 to 128 (8 sub-channels a step), its auto box above it; #subch the value the page reads ("auto" or the sub-channels), the slider and the box views over it (send.mjs) -->
-          <div class="blocks"><label class="inline"><input id="subchAuto" type="checkbox" data-view> Auto</label><span class="row"><span>Blocks a frame</span><span id="blocksOut">60 blocks, 28.1 KB</span></span><input id="blocks" type="range" min="1" max="128" step="1" value="60" data-view aria-label="blocks a frame"><input id="subch" type="hidden" value="480"></div>
+          <!-- ai: blocks a frame, a slider of whole blocks, its first step auto (the largest that fits the room) and 1 to 128 by
+               hand (8 sub-channels a step; an Auto box above it until 2026-10-05); #subch the value the page reads ("auto" or
+               the sub-channels), the slider a view over it (send.mjs) -->
+          <div class="blocks"><span class="row"><span>Blocks a frame</span><span id="blocksOut">60 blocks, 28.1 KB</span></span><input id="blocks" type="range" min="0" max="128" step="1" value="60" data-view aria-label="blocks a frame"><input id="subch" type="hidden" value="480"></div>
           <!-- ai: the display rate, 1 to 60, which the word states -->
           <div class="blocks"><span class="row"><span>Pictures a second</span><span id="fpsOut">60 a second</span></span><input id="fps" type="range" min="1" max="60" step="1" value="60" aria-label="pictures a second"></div>
           <!-- ai: the code's size, a share of <main>'s room, 25 to 100% (send.mjs sizeOf), so the code can be kept off a monitor's edges -->
           <div class="blocks"><span class="row"><span>Size</span><span id="sizeOut">100%</span></span><input id="size" type="range" min="25" max="100" step="1" value="100" aria-label="size"></div>
           <!-- ai: the space between two codes, 0 to 64 modules (send.mjs gapOf), shown with two codes only -->
           <div class="blocks" id="gapRow" hidden><span class="row"><span>Gap</span><span id="gapOut">12 modules</span></span><input id="gap" type="range" min="0" max="64" step="1" value="12" aria-label="gap"></div>
-          <label>Ring <select id="ring"><option value="auto" selected>Auto</option><option value="0">32</option><option value="1">64</option><option value="2">96</option><option value="3">128</option></select></label>
+          <!-- ai: the ring, the 128 by default (sim/lizard_pick.mjs RING_DEFAULT; an Auto option, the same ring, until 2026-10-05) -->
+          <label>Ring <select id="ring"><option value="0">32</option><option value="1">64</option><option value="2">96</option><option value="3" selected>128</option></select></label>
           <!-- ai: two codes side by side for the app's 2:1 crop, the option saying browsers cannot decode 2 codes (2026-09-28) -->
           <label>Codes <select id="codes"><option value="1" selected>One</option><option value="2">Two (browsers cannot decode 2 codes)</option></select></label>
         </div>
@@ -106,7 +111,7 @@
     // ai: Saved state before the first paint (2026-10-02): the modules run after the page is
     // ai: drawn (send.mjs awaits the codec first), so Settings and Advanced opened, and the kept values moved, a moment
     // ai: after the page showed, the chevrons turning as they did. ui.mjs remember and persist's rules, the same keys; the
-    // ai: blocks slider, its auto box and the two labels drawn from the values as send.mjs showBlocks and showFps draw
+    // ai: blocks slider and the labels drawn from the values as send.mjs showBlocks and showFps draw
     // ai: them. The modules run them again later and change nothing.
     (() => { try {
       const ls = localStorage, $ = (id) => document.getElementById(id);
@@ -118,9 +123,8 @@
         if (v !== null && (el.tagName !== "SELECT" || [...el.options].some((o) => o.value === v))) el.value = v;
       }
       const s = +$("subch").value, b = s >= 8 && s <= 1024 && s % 8 === 0 ? s / 8 : 0;
-      $("subchAuto").checked = !b;
-      if (b) $("blocks").value = String(b);
-      $("blocksOut").textContent = b ? `${b} block${b === 1 ? "" : "s"}, ${(b * 469 / 1000).toFixed(1)} KB` : "";
+      $("blocks").value = String(b);
+      $("blocksOut").textContent = b ? `${b} block${b === 1 ? "" : "s"}, ${(b * 469 / 1000).toFixed(1)} KB` : "Auto";
       $("fpsOut").textContent = `${+$("fps").value} a second`;
       $("sizeOut").textContent = `${+$("size").value}%`;
       $("gapOut").textContent = `${+$("gap").value} modules`;
