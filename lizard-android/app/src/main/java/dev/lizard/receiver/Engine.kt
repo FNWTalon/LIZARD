@@ -332,10 +332,61 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                     session = cs
                     val b = d.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
                     b.addTarget(r.surface); b.addTarget(preview)
-                    // ai: no noise reduction where the camera can turn it off (2026-09-30): a filter over the picture
-                    // ai: the decoder then has to read through
-                    val nr = ch.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)?.toList().orEmpty()
-                    if (CameraMetadata.NOISE_REDUCTION_MODE_OFF in nr) b.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_OFF)
+                    // ai: The ISP's enhancements off, each where the lens lists its off mode: the camera is a machine
+                    // ai: vision camera here, and every filter that makes a picture for a person is a filter over the
+                    // ai: code the decoder then reads through. Noise reduction since 2026-09-30; since 2026-10-06 edge
+                    // ai: enhancement (sharpening: an overshoot on every module edge), hot pixel correction, chromatic
+                    // ai: aberration correction, face detection and scene modes (the S26 keeps scene mode 1 whatever is
+                    // ai: asked) and the statistics maps. Measured for edge and hot pixel in 2:1 (two LIZARD-480 painted
+                    // ai: 60, the S26 by hand, the same minutes): 51.7 blocks of 60 a clean capture and 2.8 MB/s off
+                    // ai: against 34.5 to 39.5 and 1.6 to 2.2 MB/s with the record template's FAST (STATUS "The ISP's
+                    // ai: enhancements off"). Three stay the camera's, since all three off together read worse by the
+                    // ai: owner's hand the same evening (which of them is not known): its tone curve (the sRGB preset, or
+                    // ai: an sRGB contrast curve, is the off form here), lens shading correction and distortion
+                    // ai: correction. The `capture:` line reports what the camera did. test: `adb shell setprop
+                    // ai: debug.lizard.camx <name,...>` (read at open): a name leaves that one as the template has it
+                    // ai: (nr, edge, hot, ca, face, scene, stats; `all` every one), `-tone`, `-shade`, `-dist` ask one of
+                    // ai: the three off: the A/B's arms either way.
+                    val lists = { key: CameraCharacteristics.Key<IntArray> -> ch.get(key)?.toList().orEmpty() }
+                    val camxAsked = Native.prop("debug.lizard.camx").split(',').map { it.trim() }.filter { it.isNotEmpty() }
+                    val keep = setOf("tone", "shade", "dist") + camxAsked.filter { !it.startsWith("-") } - camxAsked.filter { it.startsWith("-") }.map { it.drop(1) }.toSet()
+                    val off = { name: String -> !("all" in keep || "0" in keep || name in keep) }
+                    if (off("nr") && CameraMetadata.NOISE_REDUCTION_MODE_OFF in lists(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES))
+                        b.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_OFF)
+                    if (off("edge") && CameraMetadata.EDGE_MODE_OFF in lists(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES)) b.set(CaptureRequest.EDGE_MODE, CameraMetadata.EDGE_MODE_OFF)
+                    if (off("hot") && CameraMetadata.HOT_PIXEL_MODE_OFF in lists(CameraCharacteristics.HOT_PIXEL_AVAILABLE_HOT_PIXEL_MODES)) b.set(CaptureRequest.HOT_PIXEL_MODE, CameraMetadata.HOT_PIXEL_MODE_OFF)
+                    if (off("ca") && CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_OFF in lists(CameraCharacteristics.COLOR_CORRECTION_AVAILABLE_ABERRATION_MODES))
+                        b.set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CameraMetadata.COLOR_CORRECTION_ABERRATION_MODE_OFF)
+                    if (off("face") && CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF in lists(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES))
+                        b.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, CameraMetadata.STATISTICS_FACE_DETECT_MODE_OFF)
+                    if (off("scene") && CameraMetadata.CONTROL_SCENE_MODE_DISABLED in lists(CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES)) {
+                        b.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO); b.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_DISABLED)
+                    }
+                    if (off("stats")) {
+                        if (CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_OFF in lists(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_LENS_SHADING_MAP_MODES))
+                            b.set(CaptureRequest.STATISTICS_LENS_SHADING_MAP_MODE, CameraMetadata.STATISTICS_LENS_SHADING_MAP_MODE_OFF)
+                        if (ch.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_HOT_PIXEL_MAP_MODES)?.contains(false) == true) b.set(CaptureRequest.STATISTICS_HOT_PIXEL_MAP_MODE, false)
+                        if (Build.VERSION.SDK_INT >= 28 && CameraMetadata.STATISTICS_OIS_DATA_MODE_OFF in lists(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_OIS_DATA_MODES))
+                            b.set(CaptureRequest.STATISTICS_OIS_DATA_MODE, CameraMetadata.STATISTICS_OIS_DATA_MODE_OFF)
+                    }
+                    if (off("tone")) {
+                        val modes = lists(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES)
+                        if (CameraMetadata.TONEMAP_MODE_PRESET_CURVE in modes) {
+                            b.set(CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_PRESET_CURVE); b.set(CaptureRequest.TONEMAP_PRESET_CURVE, CameraMetadata.TONEMAP_PRESET_CURVE_SRGB)
+                        } else if (CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE in modes) {
+                            val n = minOf(ch.get(CameraCharacteristics.TONEMAP_MAX_CURVE_POINTS) ?: 2, 64).coerceAtLeast(2)
+                            val pts = FloatArray(2 * n) { i -> val x = (i / 2) / (n - 1f); if (i % 2 == 0) x else if (x <= 0.0031308f) 12.92f * x else 1.055f * Math.pow(x.toDouble(), 1 / 2.4).toFloat() - 0.055f }
+                            b.set(CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE); b.set(CaptureRequest.TONEMAP_CURVE, android.hardware.camera2.params.TonemapCurve(pts, pts, pts))
+                        }
+                    }
+                    if (off("shade") && CameraMetadata.SHADING_MODE_OFF in lists(CameraCharacteristics.SHADING_AVAILABLE_MODES)) b.set(CaptureRequest.SHADING_MODE, CameraMetadata.SHADING_MODE_OFF)
+                    if (off("dist") && Build.VERSION.SDK_INT >= 28 && CameraMetadata.DISTORTION_CORRECTION_MODE_OFF in lists(CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES))
+                        b.set(CaptureRequest.DISTORTION_CORRECTION_MODE, CameraMetadata.DISTORTION_CORRECTION_MODE_OFF)
+                    if (camxAsked.isNotEmpty()) Log.i(TAG, "camx: ${camxAsked.joinToString(",")} (kept as the template has them: ${keep.joinToString(",")})")
+                    // ai: test: `adb shell setprop debug.lizard.camdump 1` logs every key of the request as built, the
+                    // ai: vendor's included, one `request:` line a key at this open: what the template turns on that the
+                    // ai: `capture:` line cannot name
+                    if (Native.prop("debug.lizard.camdump") == "1") { val q = b.build(); for (k in q.keys) Log.i(TAG, "request: ${k.name} = ${q.get(k).let { v -> if (v is IntArray) v.toList().toString() else if (v is FloatArray) v.toList().toString() else v.toString() }}") }
                     // ai: The zoom (Settings.zoom): a crop of the sensor, so the code sits in the middle of the lens's
                     // ai: field and the phone further from its close-focus limit. S26, the 2.2 mm camera, LIZARD-512
                     // ai: aimed by hand to fill the square at each zoom (2026-09-30): 1.0x 398 KB/s, 1.2x 456, 1.4x 589
@@ -419,13 +470,17 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                             t = now; seen = im
                             // ai: `readout`: the sensor's first row to its last (the rolling shutter), which with the
                             // ai: exposure is how long a capture looks at the display
-                            Log.i(TAG, "capture: exposure %.2f ms, iso %d, frame %.2f ms, readout %.2f ms, focus %.2f D (af state %d), eis %d, ois %d, nr %d, edge %d, zoom %.2f".format(
+                            Log.i(TAG, "capture: exposure %.2f ms, iso %d, frame %.2f ms, readout %.2f ms, focus %.2f D (af state %d), eis %d, ois %d, nr %d, edge %d, face %d, scene %d, hot %d, tone %d, shade %d, dist %d, zoom %.2f".format(
                                 (r.get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L) / 1e6, r.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY) ?: 0,
                                 (r.get(android.hardware.camera2.CaptureResult.SENSOR_FRAME_DURATION) ?: 0L) / 1e6, (r.get(android.hardware.camera2.CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1e6,
                                 r.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE) ?: 0f,
                                 r.get(android.hardware.camera2.CaptureResult.CONTROL_AF_STATE) ?: -1, r.get(android.hardware.camera2.CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE) ?: -1,
                                 r.get(android.hardware.camera2.CaptureResult.LENS_OPTICAL_STABILIZATION_MODE) ?: -1, r.get(android.hardware.camera2.CaptureResult.NOISE_REDUCTION_MODE) ?: -1,
                                 r.get(android.hardware.camera2.CaptureResult.EDGE_MODE) ?: -1,
+                                r.get(android.hardware.camera2.CaptureResult.STATISTICS_FACE_DETECT_MODE) ?: -1, r.get(android.hardware.camera2.CaptureResult.CONTROL_SCENE_MODE) ?: -1,
+                                r.get(android.hardware.camera2.CaptureResult.HOT_PIXEL_MODE) ?: -1,
+                                r.get(android.hardware.camera2.CaptureResult.TONEMAP_MODE) ?: -1, r.get(android.hardware.camera2.CaptureResult.SHADING_MODE) ?: -1,
+                                (if (Build.VERSION.SDK_INT >= 28) r.get(android.hardware.camera2.CaptureResult.DISTORTION_CORRECTION_MODE) else null) ?: -1,
                                 if (Build.VERSION.SDK_INT >= 30) r.get(android.hardware.camera2.CaptureResult.CONTROL_ZOOM_RATIO) ?: 1f else 1f))
                         }
                     }
