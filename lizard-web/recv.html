@@ -27,12 +27,18 @@
   @media (prefers-reduced-motion:reduce){#loading .spin{animation:none}}
   #side{max-width:40rem;margin:0 auto;padding-top:8px}
   /* ai: The actions under the state, as the app's (2026-10-01): Start or Stop camera, and once a file is in, Open (the
-     solid one), Save and Share beside it in the same row (#deliver's buttons flow into it; Receive again went 2026-10-05). */
-  #top{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 4px}
-  #go{flex:1 1 12rem}
+     solid one), Save and Share (#deliver's buttons flow in beside it; Receive again went 2026-10-05). Two forms, by the
+     column's width (2026-10-06; a dragged column, or a phone in portrait): two columns, Open over Save on the left and
+     Share over Start camera on the right (Start camera alone, or under Open and Save where the browser shares no file,
+     spans both); or one row of all four where the column holds it, 26rem and up. A word never breaks onto a second
+     line: the row never wraps, and a dragged column stops at what the two columns need (recv.mjs actionsFloor). */
+  #side{container-type:inline-size}
+  #top{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0 4px}
+  #top button,#top .btn{white-space:nowrap}
   #deliver{display:contents}
-  /* ai: a long file name wraps inside its button rather than widening the page */
-  #deliver>*{max-width:100%;overflow-wrap:anywhere}
+  #open{order:1}#share{order:2}#save{order:3}#go{order:4}
+  #top:has(#deliver[hidden]) #go,#top:has(#share[hidden]) #go{grid-column:1/-1}
+  @container (min-width:26rem){#top{display:flex;flex-wrap:nowrap}#go,#deliver>*{order:0}#go{flex:1 1 12rem}}
   /* ai: the verdict and each flag on a line of its own (recv.mjs joins them with newlines) */
   #why{white-space:pre-line}
   #why:empty,#nums:empty{margin:0}

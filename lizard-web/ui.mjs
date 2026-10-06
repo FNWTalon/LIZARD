@@ -18,22 +18,23 @@ export function collapser(button, key) {
   });
 }
 
-// ai: sideResizer(key): the landscape column's width set by dragging its edge (2026-10-05, as the Android app's): a strip
-// ai: on the column's right edge (.side-edge, ui.css), dragged sideways, sets --side, within 180 px and three fifths of
-// ai: the window; kept under `key` on release (each page's inline script restores it before the first paint). The sender
-// ai: re-picks as it does for a resized window.
-export const SIDE_MIN = 180, sideClamp = (px) => Math.max(SIDE_MIN, Math.min(px, innerWidth * 0.6));
-export function sideResizer(key) {
-  const root = document.documentElement, edge = document.createElement("div");
+// ai: sideResizer(key, floor): the landscape column's width set by dragging its edge (2026-10-05, as the Android app's): a
+// ai: strip on the column's right edge (.side-edge, ui.css), dragged sideways, sets --side, within 180 px (or floor(),
+// ai: px, where a page gives one: the least its content needs with no word broken, read at each drag's start and at the
+// ai: restore; recv.mjs actionsFloor) and three fifths of the window; kept under `key` on release (each page's inline
+// ai: script restores it before the first paint). The sender re-picks as it does for a resized window.
+export const SIDE_MIN = 180, sideClamp = (px, min = SIDE_MIN) => Math.max(min, Math.min(px, innerWidth * 0.6));
+export function sideResizer(key, floor) {
+  const root = document.documentElement, edge = document.createElement("div"), lo = () => Math.max(SIDE_MIN, floor?.() || 0);
   edge.className = "side-edge";
   edge.setAttribute("role", "separator"); edge.setAttribute("aria-orientation", "vertical"); edge.setAttribute("aria-label", "Sidebar width");
   document.body.append(edge);
-  try { const v = +localStorage.getItem(key); if (v > 0) root.style.setProperty("--side", `${sideClamp(v)}px`); } catch {}
+  try { const v = +localStorage.getItem(key); if (v > 0) root.style.setProperty("--side", `${sideClamp(v, lo())}px`); } catch {}
   edge.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     edge.setPointerCapture(e.pointerId);
     document.body.classList.add("resizing");
-    const move = (m) => root.style.setProperty("--side", `${sideClamp(m.clientX)}px`);
+    const min = lo(), move = (m) => root.style.setProperty("--side", `${sideClamp(m.clientX, min)}px`);
     const up = () => {
       for (const [t, f] of [["pointermove", move], ["pointerup", up], ["pointercancel", up]]) edge.removeEventListener(t, f);
       document.body.classList.remove("resizing");
