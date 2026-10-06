@@ -39,7 +39,19 @@ const $ = (id) => document.getElementById(id), video = $("v"), shot = $("shot"),
 remember($("dev"), "recv:dev");
 remember($("logs"), "recv:logs");
 collapser($("collapse"), "recv:collapsed");   // ai: the sidebar collapser (ui.mjs); the camera box takes the width
-sideResizer("recv:side");   // ai: the column's edge dragged to resize it (2026-10-05)
+// ai: The column's floor (ui.mjs sideResizer, 2026-10-06): what the actions need in their two-column form (recv.html
+// ai: #top) with no word broken: Open over Save beside Share over Start camera, each label in the buttons' font plus
+// ai: their padding, the gap between the columns, and the column's own padding. Every label counts whether or not a
+// ai: file is in, so the column does not move when one arrives; the labels are measured on a canvas, so a hidden
+// ai: button measures too ("Start camera" stands for #go's two, the longer).
+function actionsFloor() {
+  const b = getComputedStyle($("go")), side = getComputedStyle($("side")), top = getComputedStyle($("top"));
+  const c = (actionsFloor.ctx ??= document.createElement("canvas").getContext("2d"));
+  c.font = `${b.fontStyle} ${b.fontWeight} ${b.fontSize} ${b.fontFamily}`;
+  const w = (label) => c.measureText(label).width + parseFloat(b.paddingLeft) + parseFloat(b.paddingRight);
+  return Math.ceil(Math.max(w("Open"), w("Save")) + parseFloat(top.columnGap) + Math.max(w("Share"), w("Start camera")) + parseFloat(side.paddingLeft) + parseFloat(side.paddingRight));
+}
+sideResizer("recv:side", actionsFloor);   // ai: the column's edge dragged to resize it (2026-10-05), no narrower than the actions need
 // ai: The app's shell (2026-10-01): the bar's Settings, the first-run tip, About and the installed app's worker.
 about($("about"));
 registerApp(() => about($("about"), true));

@@ -363,6 +363,25 @@ const SIZES = [
   await sleep(300);
   await screenshot(s, `${OUT}/recv-laptop-received-stopped.png`);
   check(!s.errors.length, `no console errors over the transfer${s.errors.length ? `: ${s.errors.join("; ")}` : ""}`);
+  // ai: The actions' two forms (recv.html #top, 2026-10-06), through a saved column width: at 500 px the column holds
+  // ai: one row of all four; at 180 px the floor (recv.mjs actionsFloor) lifts it to what the two columns need, Open
+  // ai: over Save beside Share over Start camera. Every button shown for the measure (a reload offers no file), none
+  // ai: wider than its box, so no label broke onto a second line or spilled past its button.
+  const ACTS = `(() => { const $ = (id) => document.getElementById(id); $("deliver").hidden = false; $("share").hidden = false;
+    const r = (id) => $(id).getBoundingClientRect(), o = r("open"), sh = r("share"), sa = r("save"), g = r("go"), near = (a, b) => Math.abs(a - b) < 1;
+    return { spilled: ["open", "share", "save", "go"].filter((id) => $(id).scrollWidth > $(id).clientWidth + 1).join(),
+      row: near(o.top, sh.top) && near(sh.top, sa.top) && near(sa.top, g.top) && o.left < sa.left && sa.left < sh.left,
+      grid: near(o.top, sh.top) && near(sa.top, g.top) && o.bottom <= sa.top && o.left < sh.left && near(o.left, sa.left) && near(sh.left, g.left),
+      side: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--side")), go: $("go").textContent }; })()`;
+  for (const [w, form] of [[500, "row"], [180, "grid"]]) {
+    await evaluate(s, `localStorage.setItem("recv:side", "${w}")`);
+    await navigate(s, BASE);
+    await until(s, `document.documentElement.style.getPropertyValue("--side") !== "" && document.getElementById("go").textContent === "Start camera"`, 10000, "the column's width restored");
+    const m = await evaluate(s, ACTS);
+    await screenshot(s, `${OUT}/recv-laptop-actions-${form}.png`);
+    check(m[form] && !m.spilled && (w === 180 ? m.side > 180 : m.side === 500), `the actions at a ${w} px column: ${form === "row" ? "one row" : "two columns, Open over Save beside Share over Start camera"}, the column ${m.side} px${m.spilled ? `, spilled: ${m.spilled}` : ""}`);
+  }
+  await evaluate(s, `localStorage.removeItem("recv:side")`);
 
   // ai: 4. Home (2026-10-01) in the same profile: the file just received is listed, its Save holds its bytes and Open opens
   // ai: it in a tab of its own; the tips card is shown on this fresh profile, and once dismissed stays so over a reload
