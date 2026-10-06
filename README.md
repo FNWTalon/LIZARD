@@ -27,13 +27,16 @@ and the author's monitors:
 | receiver | rate |
 |---|---|
 | Android app, one code | 1.3 to 1.6 MB/s logged |
-| Android app, two codes side by side (2:1 crop) | 2.0 to 2.2 MB/s logged; 2.9 held with the monitor's contrast at its maximum (reported: 99% of what the sender offered) |
+| Android app, two codes side by side (2:1 crop) | 2.8 MB/s logged, peaks of 2.9 (2,894 KB/s): 50 of 60 blocks a capture, 99% of what the sender offered, with the camera's image enhancements off; 2.0 to 2.2 with them on |
 | Chrome on the same phone | about 0.55 to 0.8 MB/s |
 
 Once the Android app's phase lock holds, the rate stays: on a tripod, a 150 s hold of the lock before the pilots read
-no short captures, and the current lock's holds, by hand, read 0 to 3% short (one phone, two monitors). The rate depends heavily on the sending
-screen (contrast and brightness at their maximum, a steady frame rate) and on the receiving camera: phone cameras
-through a native app work best, browser cameras on laptops and webcams poorly.
+no short captures, and the current lock's holds, by hand, read 0 to 3% short (one phone, two monitors). What moves
+the rate from there is the camera, not the decoder: the app asks the camera for its picture with no sharpening, noise
+reduction or other enhancement (each is a filter over the code), and a phone that has warmed delivers fewer frames
+(2.5 MB/s in place of 2.8 on the same hold). The rate also depends heavily on the sending screen (contrast and
+brightness at their maximum, a steady frame rate) and on the receiving camera: phone cameras through a native app work
+best, browser cameras on laptops and webcams poorly.
 
 Everything was built and run on Linux x86-64. The desktop sender has run on Linux (X11) only: its native library
 cross-builds for Windows with MinGW-w64 but has not been run there, and macOS is not supported yet.
