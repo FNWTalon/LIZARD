@@ -1,6 +1,6 @@
-# Lizard
+# LIZARD
 
-Lizard is an animated 2D code for moving files from a screen to a phone camera: a sender shows a stream of grey
+LIZARD is an animated 2D code for moving files from a screen to a phone camera: a sender shows a stream of grey
 pictures, and a receiver films them and rebuilds the file. Each frame is a grey picture whose spectrum carries the
 data (an OFDM-style design derived from Focus, Hermans et al., MobiSys 2016), inside a self-describing border. Blocks
 are protected by a soft-decision LDPC code and a CRC, and a file goes as chunks of a fountain code, each chunk
