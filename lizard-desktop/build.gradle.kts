@@ -114,13 +114,14 @@ compose.desktop {
         // ai: `./gradlew packageDeb` (debDeps after it adds the native library's own needs to Depends).
         nativeDistributions {
             targetFormats(TargetFormat.Deb, TargetFormat.Msi, TargetFormat.Dmg)
-            packageName = "Lizard"
+            // ai: the app's name as a user reads it: LIZARD, in capitals (the launcher bin/LIZARD, the menu entry)
+            packageName = "LIZARD"
             packageVersion = "1.0.0"
-            description = "Lizard sender"
-            vendor = "Lizard"
+            description = "LIZARD sender"
+            vendor = "LIZARD"
             // ai: the repository's license, NOTICE and the vendored code's licenses (licenseText), which jpackage writes
             // ai: into the package (the .deb's share/doc/copyright said "License: Unknown" without them)
-            copyright = "Copyright 2026 The Lizard authors"
+            copyright = "Copyright 2026 The LIZARD authors"
             licenseFile.set(licenseText.flatMap { it.out })
             modules("java.instrument", "java.prefs", "jdk.unsupported")
             linux {
