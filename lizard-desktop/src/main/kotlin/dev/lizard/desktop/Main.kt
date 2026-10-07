@@ -34,7 +34,7 @@ fun main() {
     application {
         val ws = rememberWindowState(width = 1280.dp, height = 800.dp)
         var before by remember { mutableStateOf(WindowPlacement.Floating) }
-        Window(onCloseRequest = { s.stop(); exitApplication() }, state = ws, title = "Lizard sender", icon = rememberVectorPainter(Icons.mark)) {
+        Window(onCloseRequest = { s.stop(); exitApplication() }, state = ws, title = "LIZARD sender", icon = rememberVectorPainter(Icons.mark)) {
             // ai: F11 full screen and back, Escape out of it, wherever the focus is (the canvas takes none)
             DisposableEffect(Unit) {
                 val keys = KeyEventDispatcher { e ->

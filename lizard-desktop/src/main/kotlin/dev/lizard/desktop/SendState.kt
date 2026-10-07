@@ -10,7 +10,20 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
+import java.awt.BasicStroke
 import java.awt.Canvas
+import java.awt.FileDialog
+import java.awt.Font
+import java.awt.Frame
+import java.awt.Graphics2D
+import java.awt.RenderingHints
+import java.awt.datatransfer.DataFlavor
+import java.awt.dnd.DnDConstants
+import java.awt.dnd.DropTarget
+import java.awt.dnd.DropTargetAdapter
+import java.awt.dnd.DropTargetDropEvent
+import java.awt.geom.Path2D
+import javax.swing.SwingUtilities
 import java.awt.Cursor
 import java.awt.EventQueue
 import java.awt.Graphics
@@ -35,7 +48,10 @@ import kotlin.math.roundToInt
 // ai: presenter's pictures by AWT. Its size in device px is the room the format is picked from; it tells the state when
 // ai: it has a window (addNotify), is shown or resized, and, before that window goes (removeNotify: a dispose, a window
 // ai: made again), stops the presenter on it. A click on it leaves full screen, as a tap on the web's code does; the
-// ai: cursor is hidden there.
+// ai: cursor is hidden there. Idle (2026-10-07, the web's hint in the middle of its page and the app's code box) it
+// ai: is the file's area: the soft fill, the file icon and "Choose a file", or the file's name once one is chosen, or
+// ai: "Test stream"; a click opens the file dialog and a file dropped on it is taken (the test stream off). AWT paints
+// ai: that itself, since nothing of Compose can be drawn over a heavyweight canvas.
 class CodeCanvas(private val s: SendState) : Canvas() {
     @Volatile var presenting = false
 
@@ -45,14 +61,52 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         addComponentListener(object : ComponentAdapter() { override fun componentResized(e: ComponentEvent) = s.areaChanged() })
         // ai: shown or hidden with its parents (Compose's SwingPanel sizes it before it shows it)
         addHierarchyListener { e -> if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) s.areaChanged() }
-        addMouseListener(object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) { if (s.full) s.toggleFull() } })
+        addMouseListener(object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) { if (s.full) s.toggleFull() else if (chooses()) s.chooseFile() } })
+        dropTarget = DropTarget(this, object : DropTargetAdapter() {
+            override fun drop(e: DropTargetDropEvent) {
+                if (s.sending) { e.rejectDrop(); return }
+                e.acceptDrop(DnDConstants.ACTION_COPY)
+                val taken = runCatching {
+                    @Suppress("UNCHECKED_CAST")
+                    val files = e.transferable.getTransferData(DataFlavor.javaFileListFlavor) as List<File>
+                    files.firstOrNull { it.isFile }?.let { if (s.test) s.chooseTest(false); s.pick(it); true } ?: false
+                }.getOrDefault(false)
+                e.dropComplete(taken)
+            }
+        })
+    }
+
+    private fun chooses() = !s.sending && !s.test
+
+    // ai: the look for the state: a hand over the file's area, the default cursor otherwise (full screen hides it)
+    fun idleLook() {
+        if (!s.full) cursor = if (chooses()) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
+        repaint()
     }
 
     override fun update(g: Graphics) = paint(g)
     override fun paint(g: Graphics) {
         if (presenting) return
-        g.color = java.awt.Color.WHITE
-        g.fillRect(0, 0, width, height)
+        val g2 = g as Graphics2D
+        g2.color = java.awt.Color(0xF1, 0xF1, 0xF1)   // ai: the soft fill (Parts.kt Soft)
+        g2.fillRect(0, 0, width, height)
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+        g2.color = java.awt.Color(0x66, 0x66, 0x66)   // ai: Muted
+        // ai: the file icon (Parts.kt Icons.file, Feather's on a 24 grid, 2 px strokes), then the line 8 px under it
+        val cx = width / 2.0; val cy = height / 2.0 - 16
+        val icon = Path2D.Double().apply {
+            moveTo(14.0, 2.0); lineTo(6.0, 2.0); curveTo(4.9, 2.0, 4.0, 2.9, 4.0, 4.0); lineTo(4.0, 20.0); curveTo(4.0, 21.1, 4.9, 22.0, 6.0, 22.0)
+            lineTo(18.0, 22.0); curveTo(19.1, 22.0, 20.0, 21.1, 20.0, 20.0); lineTo(20.0, 8.0); closePath()
+            moveTo(14.0, 2.0); lineTo(14.0, 8.0); lineTo(20.0, 8.0)
+        }
+        g2.stroke = BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+        val t = g2.transform
+        g2.translate(cx - 12, cy - 12); g2.draw(icon); g2.transform = t
+        val text = if (s.test) "Test stream" else s.file?.name ?: "Choose a file"
+        g2.font = Font(Font.SANS_SERIF, Font.PLAIN, 14)
+        val fm = g2.fontMetrics
+        g2.drawString(text, (cx - fm.stringWidth(text) / 2.0).toFloat(), (cy + 12 + 8 + fm.ascent).toFloat())
     }
     override fun addNotify() { super.addNotify(); EventQueue.invokeLater { s.areaChanged() } }
     override fun removeNotify() { s.canvasGone(); super.removeNotify() }
@@ -145,6 +199,14 @@ class SendState {
         val f = fmt ?: return null
         val hz = present?.num("hz") ?: 0.0
         return f.codes * (f.subch / 8) * 469.0 * (if (hz > 0) min(f.fps.toDouble(), hz) else f.fps.toDouble()) / 1000
+    }
+
+    // ai: the platform's own file dialog (GTK's on Linux), one file, over the sender's window (the canvas's frame)
+    fun chooseFile() {
+        val d = FileDialog(SwingUtilities.getWindowAncestor(canvas) as? Frame, "Choose a file", FileDialog.LOAD)
+        d.isMultipleMode = false
+        d.isVisible = true
+        d.files.firstOrNull()?.let { pick(it) }
     }
 
     fun pick(f: File) {
@@ -331,7 +393,8 @@ class SendState {
         is Phase.Error -> ph.why
         Phase.Preparing -> "Preparing $runName"
         Phase.On -> if (paused) "Paused" else "Sending $runName"
-        Phase.Idle -> loadError
+        // ai: idle, the web's "<name>, <size>" (the bytes that go, once the sender says) or the app's "The test stream"
+        Phase.Idle -> loadError.ifEmpty { if (test) "The test stream" else file?.let { "${it.name}, ${Fmt.bytes(if (sentBytes > 0) sentBytes else fileSize)}" } ?: "" }
     }
 
     // ai: The figures (the web's #nums): the rate the pictures actually presented carry (the presenter's fresh pictures a
