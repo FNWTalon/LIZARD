@@ -3,5 +3,7 @@
     <!-- ai: light only, as the rig's pages (ui.css color-scheme:light); Compose draws the rest -->
     <style name="Theme.Lizard" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@android:color/white</item>
+        <!-- ai: the window's own colour white too (2026-10-07): Material.Light's #FAFAFA showed under the first frame -->
+        <item name="android:colorBackground">@android:color/white</item>
     </style>
 </resources>

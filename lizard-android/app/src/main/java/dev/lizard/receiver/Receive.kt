@@ -39,6 +39,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -79,8 +80,8 @@ internal fun MainActivity.ReceiveScreen() {
     } else BoxWithConstraints(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
         // ai: the web's 20rem column, less where the screen is narrow; collapsed (its button at the bar's end, kept:
         // ai: recvCollapsed, 2026-10-02), a 56 dp rail and the camera the rest
-        // ai: no narrower than the actions' two cells with no label folded (2026-10-06)
-        val sideLo = TwoCellFloor(listOf("Open", "Save", "Share", "Start", "Stop"))
+        // ai: no narrower than Open, Share and Save in a row with no label folded (2026-10-07; two cells the day before)
+        val sideLo = maxOf(CellsFloor(listOf("Open", "Share", "Save"), 3), CellsFloor(listOf("Start", "Stop"), 1))
         val sideW = SideWidth(maxWidth, sideDp, sideLo)
         val screenW = maxWidth
         Row(Modifier.fillMaxSize()) {
@@ -130,11 +131,11 @@ private fun MainActivity.RailSquares() {
 }
 
 // ai: The transfer: the state, the meter, the figures (progress, size, time left), then the actions: once the file is
-// ai: kept, two rows of two (2026-10-06, as the web receiver's narrow form): Open (the solid one) and Share, then Save
-// ai: and Start or Stop (the camera's; "Start camera" and "Stop camera" until later that day, cut in a cell); with no
-// ai: file Start alone, the full width (2026-10-05: "Save a copy" renamed, and Receive again deleted, a second Start
-// ai: camera). A label never folds or shortens (Parts.kt Btn): the column's floor is what two cells of the widest
-// ai: label need (TwoCellFloor). Without the camera's permission, why and the one button that
+// ai: kept, Open (the solid one), Share and Save on one row, and Start or Stop (the camera's) alone under them, the
+// ai: full width (2026-10-07, "open | share | save, then start"; two rows of two for a day before that; "Start
+// ai: camera" and "Stop camera" until 2026-10-06, cut in a cell; 2026-10-05: "Save a copy" renamed, and Receive again
+// ai: deleted, a second Start camera). A label never folds or shortens (Parts.kt Btn): the column's floor is what
+// ai: three cells of the widest of those labels need (CellsFloor). Without the camera's permission, why and the one button that
 // ai: gets it. Its first-run tip went 2026-10-02, as the web receiver's.
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -146,7 +147,7 @@ internal fun MainActivity.TransferPanel() {
     if (ln.text.isNotEmpty()) Text(ln.text, style = MaterialTheme.typography.titleMedium, color = toneColour(ln.tone), modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
     Meter(ln.frac)
     if (ln.nums.isNotEmpty()) Text(ln.nums, style = MaterialTheme.typography.bodyMedium, color = Muted)
-    HeatWarning(heat, clocks, Modifier.padding(top = 8.dp))
+    HeatWarning(heat, clocks, engine.cameraSlow, Modifier.padding(top = 8.dp))
     // ai: the file's buttons give way while the camera reads the test stream (2026-10-05), as the state line does
     val kept = if (rx.verified && !(on && rx.state == "test")) files.firstOrNull { it.root == root } else null
     Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -156,16 +157,12 @@ internal fun MainActivity.TransferPanel() {
             val camera: @Composable (Modifier) -> Unit = { m ->
                 Btn(if (running) "Stop" else "Start", if (!running && kept == null) Kind.Primary else Kind.Tonal, enabled = phase != Engine.Phase.Starting, modifier = m) { toggleCamera() }
             }
-            if (kept != null) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Btn("Open", Kind.Primary, modifier = Modifier.weight(1f)) { open(kept) }
-                    Btn("Share", modifier = Modifier.weight(1f)) { share(kept) }
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Btn("Save", modifier = Modifier.weight(1f)) { saveCopy(kept) }
-                    camera(Modifier.weight(1f))
-                }
-            } else camera(Modifier.fillMaxWidth())
+            if (kept != null) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Btn("Open", Kind.Primary, modifier = Modifier.weight(1f)) { open(kept) }
+                Btn("Share", modifier = Modifier.weight(1f)) { share(kept) }
+                Btn("Save", modifier = Modifier.weight(1f)) { saveCopy(kept) }
+            }
+            camera(Modifier.fillMaxWidth())
         }
     }
     // ai: the rate itself is the collapsed rail's and Developer Tools' lab line's (2026-10-05; a line under the buttons
@@ -232,10 +229,14 @@ internal fun MainActivity.Preview(modifier: Modifier) {
             contentAlignment = Alignment.Center) {
             val pw = (c?.preview?.width ?: 16).toFloat()
             val ph = (c?.preview?.height ?: 9).toFloat()
+            // ai: the layout listener turns by the preview's current shape, not the one the view was made with
+            // ai: (2026-10-07): the factory runs once, and a preview of another shape (a lens with no size of the
+            // ai: capture's shape) would be turned by the old one at every layout, stretched
+            val shape = rememberUpdatedState(pw to ph)
             AndroidView({ ctx ->
                 TextureView(ctx).apply {
                     surfaceTextureListener = engine.textureListener
-                    addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ -> turn(v as TextureView, pw, ph) }
+                    addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ -> val (w, hh) = shape.value; turn(v as TextureView, w, hh) }
                 }
             }, Modifier.requiredSize(maxWidth * (g.fullX / g.cropX), maxHeight * (g.fullY / g.cropY)), update = { turn(it, pw, ph) })
             // ai: the 2:1 crop's centre guide (2026-09-30): a red 1 dp line across the middle of the crop's long side,
