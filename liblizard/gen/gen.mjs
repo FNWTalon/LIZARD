@@ -89,6 +89,10 @@ const LIMITS = { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 2 ** 31, m
 const FEATURES = ["timestamp-query", "shader-f16", "subgroups"];
 export const VARIANTS = ["int8", "f16", "f32"].flatMap((precision) => [true, false].map((subgroups) => ({ precision, subgroups, name: `${precision}${subgroups ? "-sg" : ""}` })));
 const BACK_B = [B_CEIL, 16, 8, 4, 2, 1];
+// ai: The rate profiles a back half carries a stage for (gpu/back/tiers.mjs; the lab's rate-by-ring arm, 2026-10-07):
+// ai: LIZ_GEN_TIERS, profiles joined by "+", else these (LIZARD-432, 416 and 480, with and without a 1/2 outer tier).
+// ai: The native host builds the one LIZ_TIERS names (core/dec/front.cpp), and a profile not listed here has none.
+const GEN_TIERS = (process.env.LIZ_GEN_TIERS ?? "7/8:24,3/4:15,1/2:12+7/8:20,3/4:20,1/2:11+7/8:24,3/4:33+7/8:16,3/4:20,1/2:12+7/8:16,3/4:38+7/8:24,3/4:21,1/2:12+7/8:24,3/4:39+7/8:18,3/4:18,2/3:18").split("+").filter(Boolean);
 // ai: The ingest shader (F0, a render pass over a texture_external): the native app writes luma into the layer
 // ai: itself, so it is neither exported nor compiled.
 const SKIP = (code) => /texture_external/.test(code);
@@ -162,6 +166,8 @@ function exportBack(bh) {
     },
     soft: { pipeline: idOf(so.pipeline), align: idOf(so.alignPipeline), bgl: idOf(so.bgl), uvBuf: idOf(so.uvBuf), twBuf: idOf(so.twBuf), params: perSlot(so.params), served: so.served, blocks: so.sizes.map((z) => (z ? z.blocks : 0)), bytes: so.bytes, indirect: so.indirect },
     ldpc: { pipeline: idOf(ld.pipeline), bgl: idOf(ld.bgl), mapBuf: idOf(ld.mapBuf), params: idOf(ld.params), bytes: ld.bytes, blocksMax: ld.blocksMax, recCap: ld.recCap },
+    // ai: a rate profile's stage by its key (gpu/back/tiers.mjs exportFor)
+    tiers: Object.fromEntries([...(bh.tierStages ?? new Map())].map(([k, st]) => [k, st.exportFor(idOf)])),
   };
 }
 
@@ -344,8 +350,10 @@ async function main() {
       bank: "fcn2", cascade: { weights: small, keep: CASCADE.keep, rest: CASCADE.rest }, back: "gpu", backN: 1536, fuse: true, log: (m) => log.push(m), probe: false, cancel: false, twins: null,
     });
     const tree = exportTree(fh, v, tables);
+    const addTiers = async () => { for (const p of GEN_TIERS) await fh.bh.addTiers(p); };
+    await addTiers();
     tree.backs[fh.bh.B] = exportBack(fh.bh);
-    for (const B of BACK_B.filter((b) => b !== fh.bh.B)) { await fh.buildBack(B, true); tree.backs[B] = exportBack(fh.bh); }
+    for (const B of BACK_B.filter((b) => b !== fh.bh.B)) { await fh.buildBack(B, true); await addTiers(); tree.backs[B] = exportBack(fh.bh); }
     tree.log = log.filter((m) => !m.startsWith("built in "));   // ai: no wall-clock line: two gens write the same tree
     const objects = exportObjects(rec, tree, blobs);
     tree.objects = objects;

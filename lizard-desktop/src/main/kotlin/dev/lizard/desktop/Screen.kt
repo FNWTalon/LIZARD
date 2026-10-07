@@ -170,7 +170,10 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
 private fun BlocksField(s: SendState) {
     val auto = s.blocks == 0
     val b = if (auto) s.autoBlocks else s.blocks
-    Field("Blocks", if (auto) (if (b > 0) "Auto, ${Fmt.blocks(b)}" else "Auto") else Fmt.blocks(b)) {
+    // ai: under a rate profile (LIZ_TIERS, 2026-10-07) the slider is not read: the profile and the blocks it paints
+    val profile = System.getenv("LIZ_TIERS").orEmpty()
+    Field("Blocks", if (s.tiers.isNotEmpty()) "${s.tiers}: ${Fmt.blocks(s.sentBlocks)}" else if (profile.isNotEmpty()) profile
+        else if (auto) (if (b > 0) "Auto, ${Fmt.blocks(b)}" else "Auto") else Fmt.blocks(b)) {
         Bar(s.blocks.toFloat(), 0f..128f, 127, done = { s.repick() }) { s.chooseBlocks(it.roundToInt()) }
     }
 }

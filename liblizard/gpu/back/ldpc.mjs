@@ -88,6 +88,8 @@ export async function build(device, { B, sizes, code, cap = 0, variant = "i16", 
   const bytes = { V: 4 * B * blocksMax, ITS: 4 * B * blocksMax, REC: 4 + REC_BYTES * recCap };
   return {
     B, sizes, served, dims, lStride, blocksMax, recCap, bytes, pipeline, pipeline2, bgl, mapBuf, params, variant, stop, rule, rule2,
+    // ai: the uniform's words as written (tiers.mjs makes a copy with the profile's slot zeroed)
+    uniWords: uni,
     // lane: { L, BLK, LISTS, BCOUNTS } from parts A and B. Adds V, ITS, REC and this stage's bind group.
     // ai: With LISTS2 and BCOUNTS2 on the lane (the cancel stage), the second bind group over them too.
     lane(ln) {

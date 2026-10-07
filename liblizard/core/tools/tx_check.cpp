@@ -16,6 +16,8 @@
 // ai:   LIZ_PAINTER=gpu|auto tx_check paint ...   the Sender painting on the GPU (or auto), every frame read blind as before
 // ai:   LIZ_CODES=2 [LIZ_GAP=<modules>] tx_check paint ...   two codes a frame (2026-10-03), the gap between them set
 // ai:       (2026-10-04, TxFormat.gap; GAP_MODULES unset), each read blind at its own offset
+// ai:   LIZ_RUN_OUT=<dir> tx_check paint ...   every symbol read written as a recording too (<dir>/NNNN.gray, W x W luma,
+// ai:       a code a frame, and meta.json), which lizard_gpu_check replay reads (2026-10-07, the GPU's rate profile)
 // ai:   LIZ_TIERS=7/8:20,3/4:20,1/2:11 tx_check paint ...   the rate profile (2026-10-07, TxFormat.tiers, the C's
 // ai:       cpu_dec_tiers): painted by the C and read by a decoder given the same profile; the sub-channels and
 // ai:       blocks the profile's, the command line's count ignored; every block verified as before
@@ -180,6 +182,13 @@ int main(int argc, char** argv) {
       if (k % codes == 0) while (!s.take(rgba.data(), FW * 4)) std::this_thread::sleep_for(std::chrono::microseconds(200));
       const int x0 = (k % codes) * (W + gap);
       for (int y = 0; y < W; y++) for (int x = 0; x < W; x++) luma[static_cast<size_t>(y) * W + x] = rgba[4 * (static_cast<size_t>(y) * FW + x0 + x)];
+      if (const char* ro = getenv("LIZ_RUN_OUT")) {
+        char name[32];
+        snprintf(name, sizeof name, "/%04d.gray", k);
+        std::filesystem::create_directories(ro);
+        FILE* fo = fopen((std::string(ro) + name).c_str(), "wb");
+        if (fo) { fwrite(luma.data(), 1, luma.size(), fo); fclose(fo); }
+      }
       cpu_frame_t fr{};
       const int got = cpu_dec_frame(d, luma.data(), W, W, held, blocks.data(), ok.data(), &fr);
       if (fr.word) { words++; held = fr.version; }
@@ -194,6 +203,12 @@ int main(int argc, char** argv) {
       }
     }
     const double ms = nowMs() - t0;
+    if (const char* ro = getenv("LIZ_RUN_OUT")) {
+      nlohmann::json meta = {{"w", W}, {"h", W}, {"frames", frames * codes}, {"source", "tx_check paint"},
+                             {"config", {{"spec", {{"n", tiers && *tiers ? nFor(wantSubch) : f.n}, {"subch", wantSubch}, {"span", f.span}}}, {"tiers", tiers ? tiers : ""}}}};
+      FILE* fo = fopen((std::string(ro) + "/meta.json").c_str(), "wb");
+      if (fo) { const std::string m = meta.dump(); fwrite(m.data(), 1, m.size(), fo); fclose(fo); }
+    }
     printf("paint: LIZARD-%d x %d n %d, %d x %d px (gap %d px), %d painters: %d frames, %ld of %ld blocks verified, words %d, %.1f frames a second taken\n",
            wantSubch, codes, tiers && *tiers ? nFor(wantSubch) : f.n, FW, W, gap, threads, frames, verified, total, words, 1000.0 * frames / ms);
     printf("stats: %s\n", s.stats().c_str());
@@ -281,6 +296,8 @@ int main(int argc, char** argv) {
     if (!in || fread(img.data(), 1, img.size(), in) != img.size()) { printf("FAIL: %s is not %d x %d bytes\n", argv[2], iw, ih); return 2; }
     fclose(in);
     cpu_dec_t* d = cpu_dec_new(1536);
+    // ai: LIZ_TIERS: the frame read under the rate profile (2026-10-07)
+    if (const char* t = getenv("LIZ_TIERS"); t && *t) { char why[160]; if (cpu_dec_tiers(d, t, why, sizeof why) < 0) { printf("FAIL decoder tiers: %s\n", why); return 1; } }
     const int top = cpu_dec_top(d), BB = cpu_dec_block_bytes(d);
     std::vector<uint8_t> blocks(static_cast<size_t>(top) * BB), ok(top), want(469);
     cpu_frame_t fr{};

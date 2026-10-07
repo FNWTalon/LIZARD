@@ -24,6 +24,7 @@ import { derived } from "./dims.mjs";
 import { PAYLOAD } from "./ref_ldpc.mjs";
 import { pass1WorkgroupBytes, SLOTS } from "../wgsl/back_transform.mjs";
 import { WG_BYTES, WG_BYTES_I16, VARIANTS } from "../wgsl/back_ldpc.mjs";
+import { TierStage, parseTiers } from "./tiers.mjs";
 
 export const PASSES = ["gate", "pass1", "reduce", "pass2", "soft", "ldpc"];
 export { PASSES2 };
@@ -82,12 +83,29 @@ export class BackHalf {
     if (bh.transform.sStride !== dims.sStride) throw new Error(`A's sStride ${bh.transform.sStride} against the chain's ${dims.sStride}`);
     // ai: The paint and the fit need the transform and the soft stage, so they are wired after every stage exists.
     if (bh.cancel) await bh.cancel.wire(bh);
+    bh.fromGate = true;
+    bh.tierStages = new Map();
+    bh.tiers = null;
     dims.cancel = !!bh.cancel;
     bh.bytes = { REC: bh.ldpc.bytes.REC, V: bh.ldpc.bytes.V, ITS: bh.ldpc.bytes.ITS, BCOUNTS: 4 * COUNTS * B, PILOT: bh.soft.bytes.PILOT, ...(bh.cancel ? { BCOUNTS2: 4 * COUNTS * B, CANCEL: bh.cancel.bytes.CANCEL } : {}) };
     // What one readback of the chain's outputs takes, timestamps and other copies aligned after it.
     bh.readBytes = (bh.bytes.REC + bh.bytes.V + bh.bytes.ITS + bh.bytes.BCOUNTS + bh.bytes.PILOT + (bh.bytes.BCOUNTS2 ?? 0) + (bh.bytes.CANCEL ?? 0) + 7) & ~7;
     log(`back half: ${precision}, sizes ${dims.served.map((s) => `${bsizes[s].n}/${bsizes[s].subch} (${bsizes[s].blocks} blocks, bit map ${bsizes[s].bitmap})`).join(", ")}; S ${dims.sStride} entries, L ${dims.lStride} words, ${dims.blkStride} blocks a frame; records cap ${dims.recCap}; readback ${(bh.readBytes / 1024).toFixed(0)} KB a batch`);
     return bh;
+  }
+
+  // ai: A rate profile's stage (tiers.mjs; the lab's rate-by-ring arm, 2026-10-07), built once a profile a back half
+  // ai: and kept by its key; useTiers(key) makes encode() run it (null: none). Not with the cancel stage, whose paint
+  // ai: and gate2 have one rate. A lane made before a stage was added gets its groups at its first encode.
+  async addTiers(text) {
+    if (this.cancel) throw new Error("tiers: the back half was built with the cancel stage, which has one rate");
+    const { key } = parseTiers(text);
+    if (!this.tierStages.has(key)) this.tierStages.set(key, await TierStage.build(this, text));
+    return this.tierStages.get(key);
+  }
+  useTiers(key) {
+    if (key != null && !this.tierStages.has(key)) throw new Error(`tiers ${key}: not added`);
+    this.tiers = key == null ? null : this.tierStages.get(key);
   }
 
   // One lane's buffers over the front half's: gridBuf (gridStride elements a frame, strip order; null when only the
@@ -125,8 +143,12 @@ export class BackHalf {
   // ai: count. fused: pass 1 samples the frame (bindPicture) instead of reading the grid (bindGrid). frames: the
   // ai: batch's slots (at most B); the soft values and the LDPC dispatch only those.
   encode(target, ln, { ts = null, fused = false, frames = this.B } = {}) {
-    const t = this.transform;
-    this.steps(target, ts, [(p) => t.dispatchGate(p, ln), (p) => t.dispatchPass1(p, ln, fused ? "fused" : "grid"), (p) => t.dispatchReduce(p, ln), (p) => t.dispatchPass2(p, ln), (p) => this.soft.dispatch(p, ln, frames), (p) => this.ldpc.dispatch(p, ln, frames)]);
+    const t = this.transform, st = this.tiers;
+    // ai: with a profile (useTiers) the soft pass leaves its slot to the profile's kernels, and the LDPC's runs the
+    // ai: one-rate kernel on a uniform with that slot zeroed, then a dispatch a tier
+    const soft = st ? (p) => { this.soft.dispatch(p, ln, frames, false, st.slot); st.dispatchSoft(p, ln, frames); } : (p) => this.soft.dispatch(p, ln, frames);
+    const ldpc = st ? (p) => st.dispatchLdpc(p, ln, frames, this.fromGate) : (p) => this.ldpc.dispatch(p, ln, frames);
+    this.steps(target, ts, [(p) => t.dispatchGate(p, ln), (p) => t.dispatchPass1(p, ln, fused ? "fused" : "grid"), (p) => t.dispatchReduce(p, ln), (p) => t.dispatchPass2(p, ln), soft, ldpc]);
   }
 
   // ai: Pass two's fourteen dispatches (PASSES2) over a lane whose pass one has run, on a chain built with the cancel

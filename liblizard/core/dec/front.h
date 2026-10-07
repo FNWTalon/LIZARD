@@ -40,6 +40,9 @@ struct BackLane {
   std::vector<BufP> params;   // ai: a size slot each (null where the size is not built)
   GroupP gate, ldpc;
   std::vector<GroupP> p1f, red, p2, soft;
+  // ai: a rate profile's (FrontHalf::tiersKey): its lane buffer and its steps' groups, in the tree's order
+  BufP PS;
+  std::vector<GroupP> tsoft, tldpc;
   const wg::Texture* picture = nullptr;   // ai: the texture p1f's groups are over
   uint64_t bytes = 0;
 };
@@ -177,6 +180,11 @@ class FrontHalf {
   Batcher bt;
   std::function<void(const std::string&)> log;
   std::string precision, floatPrecision, variant;
+  // ai: The rate profile (the lab's rate-by-ring arm, 2026-10-07; gpu/back/tiers.mjs): LIZ_TIERS's key, "" none. Its
+  // ai: frames are those at picture slot tslot whose version is tversion; they carry tblocks blocks.
+  std::string tiersKey, tiersLabel;
+  int tslot = -1, tversion = 0, tblocks = 0;
+  const json* tierStage() const { return tiersKey.empty() ? nullptr : &S->back()["tiers"][tiersKey]; }
   json nets;
   int cap = 256, nodesMax = 0, bankKeep = 4;
   bool reg = true;
