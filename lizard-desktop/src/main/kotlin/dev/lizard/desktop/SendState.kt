@@ -197,8 +197,12 @@ class SendState {
     val capacityKBs: Double? get() {
         val f = fmt ?: return null
         val hz = present?.num("hz") ?: 0.0
-        return f.codes * (f.subch / 8) * 469.0 * (if (hz > 0) min(f.fps.toDouble(), hz) else f.fps.toDouble()) / 1000
+        return f.codes * sentBlocks * 469.0 * (if (hz > 0) min(f.fps.toDouble(), hz) else f.fps.toDouble()) / 1000
     }
+    // ai: the blocks a code of the painted format carries, from the sender's stats (a rate profile, LIZ_TIERS, paints its
+    // ai: own count whatever the slider: 2026-10-07), the configured format's before the first stats; its profile, "" none
+    val sentBlocks: Int get() = sender?.num("blocks")?.toInt()?.takeIf { it > 0 } ?: fmt?.let { it.subch / 8 } ?: 0
+    val tiers: String get() = sender?.str("tiers").orEmpty()
 
     // ai: the platform's own file dialog (GTK's on Linux), one file, over the sender's window (the canvas's frame)
     fun chooseFile() {
@@ -404,7 +408,7 @@ class SendState {
         if (phase != Phase.On || paused) return ""
         val f = fmt ?: return ""
         val pr = present ?: return ""
-        return Fmt.rate(pr.num("shownFps") * f.codes * (f.subch / 8) * 469 / 1000.0)
+        return Fmt.rate(pr.num("shownFps") * f.codes * sentBlocks * 469 / 1000.0)
     }
 
     // ai: The readout (the web's #tx, Developer Tools): the format and why, the file, the frame on the surface, a frame's
@@ -413,9 +417,10 @@ class SendState {
         val f = fmt ?: return ""
         val sd = sender ?: return ""
         val pr = present
-        val b = f.subch / 8
+        val b = sentBlocks
         val l = mutableListOf<String>()
-        l += "LIZARD-${f.subch} ($b blocks), picture ${f.n} samples in the ${f.span / 2}-cell ring" +
+        l += if (tiers.isNotEmpty()) "LIZARD-${sd.num("subch").toInt()} ($tiers: $b blocks), picture ${sd.num("n").toInt()} samples in the ${f.span / 2}-cell ring, the rate profile LIZ_TIERS names"
+        else "LIZARD-${f.subch} ($b blocks), picture ${f.n} samples in the ${f.span / 2}-cell ring" +
             if (blocks > 0) ", set by hand" else ", chosen from a ${room.roundToInt()} px room and nothing else"
         if (!runTest) l += "file $fileSize B${sd.num("sentBytes").toLong().let { if (it in 1 until fileSize) ", $it B as sent (zstd)" else "" }}: ${sd.num("chunks").toInt()} chunk${if (sd.num("chunks").toInt() == 1) "" else "s"}, " +
             "${sd.num("lap").toInt()} data blocks a pass, BLAKE3 ${sd.str("root").take(16)}..., header in the light" +

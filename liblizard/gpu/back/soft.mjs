@@ -93,13 +93,15 @@ export async function build(device, { B, sizes, tables, precision = "f32", indir
     // list's count, so a part-filled batch dispatches no workgroup past them.
     // ai: second: over LISTS2 and ARGS2, counting into BCOUNTS2 (the cancel stage's pass two).
     // ai: Before it, on the same bind groups, the shift's fit (align): a workgroup a frame, a dispatch a size.
-    dispatch(p, ln, frames = B, second = false) {
+    // ai: skip: a picture slot left out (a rate profile's, tiers.mjs, whose own kernels read it), -1 none.
+    dispatch(p, ln, frames = B, second = false, skip = -1) {
       const groups = second ? ln.softBind2 : ln.softBind, args = second ? ln.ARGS2 : ln.ARGS;
       if (!groups) throw new Error("soft: no bind groups over the second lists");
       p.setPipeline(alignPipeline);
-      for (const s of served) { p.setBindGroup(0, groups[s]); p.dispatchWorkgroups(1, 1, frames); }
+      for (const s of served) { if (s === skip) continue; p.setBindGroup(0, groups[s]); p.dispatchWorkgroups(1, 1, frames); }
       p.setPipeline(pipeline);
       for (const s of served) {
+        if (s === skip) continue;
         p.setBindGroup(0, groups[s]);
         if (indirect) p.dispatchWorkgroupsIndirect(args, argsOffset(s)); else p.dispatchWorkgroups(sizes[s].blocks, 1, frames);
       }

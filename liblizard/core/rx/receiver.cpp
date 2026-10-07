@@ -490,7 +490,7 @@ std::string GpuReceiver::stats() {
     // ai: the test stream in the last window's frames comes first (2026-10-05): what the camera reads now is the state, over
     // ai: a file received or in progress, which comes back once the camera is on its frames again
     {"state", !error.empty() ? "error" : !planned ? "starting" : last.test ? "test" : p.done ? "received" : p.live ? "receiving" : lastWord.is_null() ? "looking" : "found"},
-    {"error", error}, {"decoder", "gpu " + variant}, {"zeroCopy", !!ci}, {"layout", cfg.layout},
+    {"error", error}, {"decoder", "gpu " + variant}, {"zeroCopy", !!ci}, {"layout", cfg.layout}, {"tiers", fh ? fh->tiersLabel : std::string()},
     {"capturedFps", last.arrived}, {"processedFps", last.processed}, {"dropped", last.dropped},
     {"foundShare", last.found / n}, {"side", last.found ? last.side / last.found : 0},
     {"heldMs", last.heldN ? last.held / last.heldN : 0}, {"heldMaxMs", last.heldMax}, {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.fresh * 469 / 1000.0 / lastSecs},
@@ -700,11 +700,9 @@ std::unique_ptr<Receiver> Receiver::create(const ReceiverConfig& c, std::functio
   if (c.decoder != "cpu") {
     try {
       auto r = std::make_unique<GpuReceiver>(c, release);
-      if (r->start(why)) {
-        // ai: the rate profile (LIZ_TIERS) is the C's alone: said, so a run meant for it is not read at one rate unnoticed
-        if (const char* t = getenv("LIZ_TIERS"); t && *t && c.log) c.log("receiver: LIZ_TIERS is set and the GPU decoder has one rate: choose the CPU decoder for it");
-        return r;
-      }
+      // ai: under LIZ_TIERS the GPU decoder runs the profile's stage (core/dec/front.cpp), or refuses where the setup
+      // ai: carries none for it, and auto then decodes on the C with the profile (the refusal is the log's why)
+      if (r->start(why)) return r;
     } catch (const std::exception& e) { why = e.what(); }
     if (c.decoder == "gpu") throw std::runtime_error(why);
   }

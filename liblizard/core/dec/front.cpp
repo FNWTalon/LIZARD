@@ -36,6 +36,28 @@ std::vector<wg::Resource> Lane::lvEntries() const {
 
 // ai: decoder.mjs FrontHalf.create, the part a native caller does: the setup's objects built (its create() ran in
 // ai: gen.mjs), the nets taken as the tree names them, the back half at B_CEIL.
+// ai: A rate profile's key (gpu/back/tiers.mjs parseTiers): "7/8:24,3/4:15,1/2:12" or "6:24,4:15,2:12" to
+// ai: "6:24,4:15,2:12", the tree's name for its stage. What the profile may be is gen's to check (the tree holds valid
+// ai: ones only); a text no key reads throws.
+static std::string tiersKeyOf(const std::string& text) {
+  static const char* names[] = {"1/4", "1/3", "1/2", "2/3", "3/4", "5/6", "7/8"};
+  std::string key, tok;
+  auto flush = [&]() {
+    if (tok.empty()) return;
+    const size_t c = tok.find(':');
+    const std::string r = c == std::string::npos ? "" : tok.substr(0, c), n = c == std::string::npos ? "" : tok.substr(c + 1);
+    int rate = -1;
+    for (int i = 0; i < 7; i++) if (r == names[i]) rate = i;
+    if (rate < 0 && r.size() == 1 && r[0] >= '0' && r[0] <= '6') rate = r[0] - '0';
+    if (rate < 0 || n.empty() || n.size() > 4 || !std::all_of(n.begin(), n.end(), [](char ch) { return ch >= '0' && ch <= '9'; })) throw wg::Error("LIZ_TIERS: a tier is <rate>:<blocks>, not " + tok);
+    key += (key.empty() ? "" : ",") + std::to_string(rate) + ":" + std::to_string(std::stoi(n));
+    tok.clear();
+  };
+  for (char ch : text) { if (ch == ',' || ch == ';' || ch == ' ' || ch == '\t') flush(); else tok += ch; }
+  flush();
+  return key;
+}
+
 std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const std::string& variant, double budget, int restart, std::function<void(const std::string&)> log) {
   std::unique_ptr<FrontHalf> fh(new FrontHalf(d));
   fh->log = log ? log : [](const std::string&) {};
@@ -53,7 +75,21 @@ std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const
   fh->bankKeep = T["bankKeep"];
   for (int i = 0; i < 4; i++) fh->modules[i] = T["modules"][i];
   fh->cascade = T["cascade"];
+  // ai: LIZ_TIERS (the lab's rate-by-ring arm, 2026-10-07): the rate profile whose stage the back half runs, one the
+  // ai: setup carries (liblizard/gen/gen.mjs GEN_TIERS); its objects alone are built
+  if (const char* tv = getenv("LIZ_TIERS"); tv && *tv) fh->S->tiersKey = fh->tiersKey = tiersKeyOf(tv);
   fh->S->build(fh->C.B_CEIL);
+  if (!fh->tiersKey.empty()) {
+    const json& tiers = fh->S->back().value("tiers", json::object());
+    if (!tiers.contains(fh->tiersKey)) {
+      std::string have;
+      for (auto it = tiers.begin(); it != tiers.end(); ++it) have += (have.empty() ? "" : "; ") + it.value()["label"].get<std::string>();
+      throw wg::Error("LIZ_TIERS " + std::string(getenv("LIZ_TIERS")) + ": the setup carries no GPU stage for it (" + (have.empty() ? "none: gen.mjs before 2026-10-07" : have) + ")");
+    }
+    const json& st = tiers[fh->tiersKey];
+    fh->tslot = st["slot"]; fh->tversion = st["version"]; fh->tblocks = st["blocks"]; fh->tiersLabel = st["label"];
+    fh->log("tiers: " + fh->tiersLabel + ", " + std::to_string(fh->tblocks) + " blocks on LIZARD-" + std::to_string(8 * fh->tversion) + " at picture slot " + std::to_string(fh->tslot) + " (LIZ_TIERS); that slot decodes no other version");
+  }
   for (auto& r : fh->S->applyNativeNets()) fh->log("native net built: " + r);
   fh->backShared = 0;
   fh->classify = fh->P("classify");
@@ -208,6 +244,22 @@ void FrontHalf::backLane(Lane& ln) {
   b->ldpc = dev.createBindGroup(S->bgl(ld["bgl"]), {b->L, b->BLK, b->lists, S->bufPtr(ld["mapBuf"]), b->V, b->ITS, b->REC, b->counts, S->bufPtr(ld["params"])});
   // ai: transform.mjs bindGate (zero)
   b->gate = dev.createBindGroup(S->bgl(T["gateBgl"]), {ln.framesBuf, ln.selBuf, b->lists, b->args, S->bufPtr(T["gateUni"]), b->counts, b->V, b->ITS, b->REC});
+  // ai: the rate profile's steps (gpu/back/tiers.mjs exportFor): a bind a lane buffer by name or a setup buffer by id
+  if (const json* st = tierStage()) {
+    b->PS = mk((*st)["bytes"]["PS"].get<uint64_t>(), STORAGE | COPY_SRC, "PS");
+    const std::map<std::string, BufP> laneBufs = {{"S", b->s}, {"LISTS", b->lists}, {"L", b->L}, {"EST", b->EST}, {"BLK", b->BLK}, {"BCOUNTS", b->counts},
+                                                  {"PILOT", b->PILOT}, {"PS", b->PS}, {"V", b->V}, {"ITS", b->ITS}, {"REC", b->REC}};
+    auto group = [&](const json& step) {
+      std::vector<wg::Resource> bufs;
+      for (const auto& x : step["binds"]) {
+        const std::string id = x;
+        if (id.rfind("lane:", 0) == 0) bufs.push_back(laneBufs.at(id.substr(5))); else bufs.push_back(S->bufPtr(id));
+      }
+      return dev.createBindGroup(S->bgl(step["bgl"]), bufs);
+    };
+    for (const auto& step : (*st)["soft"]) b->tsoft.push_back(group(step));
+    for (const auto& step : (*st)["ldpc"]) b->tldpc.push_back(group(step));
+  }
   b->bytes = dev.allocated - a0;
   ln.back = std::move(b);
 }
@@ -518,18 +570,31 @@ void FrontHalf::encodeBack(wg::Encoder& e, Lane& ln, int frames, const std::func
   // ai: stage's bind groups), then the soft values, which turn each coefficient back by it
   // ai: (LIZ_ALIGN=0 leaves the fit out, for an A/B: the shift then stays the 0, 0 its buffer was made with)
   static const bool align = !(getenv("LIZ_ALIGN") && std::string(getenv("LIZ_ALIGN")) == "0");
+  const json* st = tierStage();
   if (align) {
     e.setPipeline(*S->pipe(so["align"]));
-    for (auto& sj : so["served"]) { e.setBindGroup(*b.soft[(int)sj]); e.dispatch(1, 1, (uint32_t)frames); }
+    for (auto& sj : so["served"]) { if ((int)sj == tslot) continue; e.setBindGroup(*b.soft[(int)sj]); e.dispatch(1, 1, (uint32_t)frames); }
   }
   e.setPipeline(*S->pipe(so["pipeline"]));
   for (auto& sj : so["served"]) {
     const int s = sj;
+    if (s == tslot) continue;
     e.setBindGroup(*b.soft[s]);
     if (so["indirect"].get<bool>()) e.dispatchIndirect(*b.args, 4ull * (C.ARGS_WORDS * s + C.ARGS_SLOT.at("blocks")));
     else e.dispatch(so["blocks"][s].get<uint32_t>(), 1, (uint32_t)frames);
   }
+  // ai: a step of the rate profile's (exportFor): its dispatch's numbers, "frames" the batch's
+  auto stepOf = [&](const json& step, const GroupP& g) {
+    e.setPipeline(*S->pipe(step["pipeline"]));
+    e.setBindGroup(*g);
+    if (step.contains("indirect")) { e.dispatchIndirect(*b.args, step["indirect"].get<uint64_t>()); return; }
+    uint32_t d[3];
+    for (int k = 0; k < 3; k++) d[k] = step["dispatch"][k].is_string() ? (uint32_t)frames : step["dispatch"][k].get<uint32_t>();
+    e.dispatch(d[0], d[1], d[2]);
+  };
+  if (st) for (size_t k = 0; k < b.tsoft.size(); k++) stepOf((*st)["soft"][k], b.tsoft[k]);
   begin("ldpc");
+  if (st) { for (size_t k = 0; k < b.tldpc.size(); k++) stepOf((*st)["ldpc"][k], b.tldpc[k]); return; }
   e.setPipeline(*S->pipe(bk["ldpc"]["pipeline"]));
   e.setBindGroup(*b.ldpc);
   e.dispatchIndirect(*b.args, 4ull * C.argsLdpc);
@@ -807,10 +872,12 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
     fo.hist.assign(hist + C.HIST_BINS * i, hist + C.HIST_BINS * (i + 1));
     // ai: decoder.mjs pilotOf: over the blocks the version carries, where the soft stage ran (its count column 6)
     // ai: the even blocks (bit 0 of the painted count) and the odd (bit 1), each its own mean and standard error
+    // ai: the blocks the frame carries: its version's, or a rate profile's at its slot (gpu/back/tiers.mjs blocksAt)
+    const int nblk = !tiersKey.empty() && fo.size == tslot && fo.version == tversion ? tblocks : fo.version;
     if (fo.version > 0 && fo.backCounts.size() > 6 && fo.backCounts[6] > 0) for (int g = 0; g < 2; g++) {
       double s = 0, s2 = 0;
       int k = 0;
-      for (int b = g; b < std::min<int>(fo.version, (int)blocksMax); b += 2) { const float v = pilots[i * blocksMax + b]; if (std::isfinite(v)) { s += v; s2 += (double)v * v; k++; } }
+      for (int b = g; b < std::min<int>(nblk, (int)blocksMax); b += 2) { const float v = pilots[i * blocksMax + b]; if (std::isfinite(v)) { s += v; s2 += (double)v * v; k++; } }
       if (!k) continue;
       const double m = s / k, var = k > 1 ? (s2 - s * m) / (k - 1) : 0;
       fo.pilotBlocks += k;

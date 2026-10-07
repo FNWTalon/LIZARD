@@ -122,17 +122,23 @@ void Setup::build(int B) {
   buildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+// ai: A back half's ids: everything it names but its rate profiles' stages, and the one tiersKey names.
+static void backIdsIn(const json& bk, const std::string& tiersKey, std::vector<std::string>& out) {
+  for (auto it = bk.begin(); it != bk.end(); ++it) if (it.key() != "tiers") idsIn(it.value(), out);
+  if (!tiersKey.empty() && bk.contains("tiers") && bk["tiers"].contains(tiersKey)) idsIn(bk["tiers"][tiersKey], out);
+}
+
 void Setup::buildBack(int B) {
   if (!tree["backs"].contains(std::to_string(B))) throw wg::Error("no back half at B = " + std::to_string(B) + " in the setup");
   // ai: The previous back half's objects go (the front half's stay): the web's destroyBack.
   if (backB && backB != B) {
     std::vector<std::string> old;
-    idsIn(back(), old);
+    backIdsIn(back(), tiersKey, old);
     for (const auto& id : old) { buffers.erase(id); pipelines.erase(id); }
   }
   backB = B;
   std::vector<std::string> ids;
-  idsIn(back(), ids);
+  backIdsIn(back(), tiersKey, ids);
   make(ids);
   dev->flush();
 }

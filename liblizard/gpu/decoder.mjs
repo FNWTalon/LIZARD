@@ -36,6 +36,7 @@ import { classifySource, classifyPlan, rankSource, packWeights, packWeightsF16, 
 import { INT8_TWINS } from "./wgsl/classify.mjs";
 import { loadNet } from "./cnn/netfile.mjs";
 import { BackHalf, parseReadback, PASSES as BACK_PASSES, PASSES2 as CANCEL_PASSES } from "./back/back.mjs";
+import { blocksAt } from "./back/tiers.mjs";
 import { Ingest } from "./ingest.mjs";
 import { computePipeline } from "./pipeline.mjs";
 import { Probe } from "./probe.mjs";
@@ -201,7 +202,7 @@ export class FrontHalf {
   // ai: fh.nets says what each net runs in.
   // ai: fh.boot: what create spent, ms: the device, the int8 twins fetched, the front half's pipelines (build), the
   // ai: probe kit and the back half (under B "auto" built here at B_CEIL, 2026-09-29), and the total.
-  static async create(adapter, tables, { B = "auto", budget = budgetFor(adapter?.limits), capMs = CAP_MS, restart = 0, cap = CAP, register = true, log = () => {}, weights = null, precision = "f32", bank = "fcn2", cascade = null, inflight = "auto", back = "gpu", backN = 1024, fuse = true, subgroups = true, probe = false, cancel = false, twins = null } = {}) {
+  static async create(adapter, tables, { B = "auto", budget = budgetFor(adapter?.limits), capMs = CAP_MS, restart = 0, cap = CAP, register = true, log = () => {}, weights = null, precision = "f32", bank = "fcn2", cascade = null, inflight = "auto", back = "gpu", backN = 1024, fuse = true, subgroups = true, probe = false, cancel = false, twins = null, tiers = null } = {}) {
     if (back !== "wasm" && back !== "gpu") throw new Error(`back ${back}`);
     if (tables?.rings?.length !== RING_COUNT || tables.pictures?.length !== SLOTS) throw new Error(`tables: gpu/tables.mjs formatTables(), ${RING_COUNT} rings and ${SLOTS} pictures`);
     const whole = (v) => v >= 1 && v === Math.floor(v);
@@ -294,6 +295,9 @@ export class FrontHalf {
         // ai: fused pass 1 samples by (on the frame's (ring, picture) pair).
         const picture = fuse ? tables.rings.map((t) => ({ span: t.span, margin: t.margin, lattice: t.nodeX })) : null;
         fh.backOpts = { sizes, precision: floatPrecision, cap: 0, variant: "i16", picture, cancel, log };
+        // ai: tiers: a rate profile's text (back/tiers.mjs; the lab's rate-by-ring arm, 2026-10-07), its stage added to
+        // ai: every back half built and run; its frames decode at its picture's slot, which then reads no other version
+        fh.tiersText = tiers;
         // Built before any lane, since a lane's ensure() makes its BackHalf lane. Its shaders are compiled for B
         // frames.
         // ai: Under "auto" for B_CEIL, the lanes' size on every device whose memory allows it (the phone, the iGPU, the
@@ -357,7 +361,10 @@ export class FrontHalf {
     this.destroyBack();
     const a0 = this.allocated;
     this.sink = this.backOwned = [];
-    try { this.bh = await BackHalf.build(this.device, { B, ...this.backOpts, ...(quiet ? { log: () => {} } : {}) }); } finally { this.sink = null; }
+    try {
+      this.bh = await BackHalf.build(this.device, { B, ...this.backOpts, ...(quiet ? { log: () => {} } : {}) });
+      if (this.tiersText) this.bh.useTiers((await this.bh.addTiers(this.tiersText)).key);
+    } finally { this.sink = null; }
     this.backShared = this.allocated - a0;
   }
 
@@ -1319,7 +1326,8 @@ export class FrontHalf {
         hist: hist.subarray(HIST_BINS * i, HIST_BINS * (i + 1)),
         // ai: the pilots (SPEC 7.3; pilotOf): { r, sd, r2, sd2, blocks } over the blocks its version carries, null where the soft
         // ai: stage did not run on it this batch (its column 6 of the back half's counters, sub-channels quantised, is 0)
-        pilot: bk && version > 0 && bk.frames[i].counts[6] > 0 ? pilotOf(bk.frames[i].pilots, version) : null,
+        // ai: (a rate profile's frames over its own blocks, back/tiers.mjs blocksAt)
+        pilot: bk && version > 0 && bk.frames[i].counts[6] > 0 ? pilotOf(bk.frames[i].pilots, blocksAt(this.bh?.tiers, size, version)) : null,
       };
       }),
     };

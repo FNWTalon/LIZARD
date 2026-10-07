@@ -79,7 +79,9 @@ class SendState(private val a: MainActivity) {
                      val painter: String = "", val gpuWhy: String = "", val sentBytes: Long = 0,   // ai: sentBytes: the file's bytes as they go (2026-10-05)
                      // ai: the GPU ring's tally over the last second (2026-10-07, jni.cpp txPostStats): posted, held by
                      // ai: vsyncs, late, behind, buffers filled of the ring's
-                     val gpuRing: Boolean = false, val posted: Long = 0, val held: String = "", val late: Long = 0, val behind: Long = 0, val filled: Int = 0, val slots: Int = 0)
+                     val gpuRing: Boolean = false, val posted: Long = 0, val held: String = "", val late: Long = 0, val behind: Long = 0, val filled: Int = 0, val slots: Int = 0,
+                     // ai: the blocks a code carries and its rate profile (2026-10-07: LIZ_TIERS in debug.lizard.env paints its own count)
+                     val blocks: Int = 0, val tiers: String = "")
 
     private val prefs = a.getSharedPreferences("lizard", Context.MODE_PRIVATE)
     var uri by mutableStateOf<Uri?>(null)
@@ -146,7 +148,7 @@ class SendState(private val a: MainActivity) {
     fun chooseBrightness(b: Int) { brightness = b.coerceIn(1, 100) }
     fun pause(p: Boolean) { if (phase == Phase.On) paused = p }
     // ai: what the code offers at most, KB/s: blocks a frame x 469 B x pictures a second; null before the first configure
-    val capacityKBs get() = if (picked > 0) codes * (picked / 8) * 469.0 * rate / 1000 else null
+    val capacityKBs get() = if (picked > 0) codes * (if (stats.blocks > 0) stats.blocks else picked / 8) * 469.0 * rate / 1000 else null
     fun choosePainter(p: String) { painter = p; prefs.edit().putString("sendPainter", p).apply(); if (phase == Phase.On) reconfigure() }
     fun chooseCodes(c: Int) { codes = c.coerceIn(1, 2); prefs.edit().putInt("sendCodes", codes).apply(); if (phase == Phase.On) reconfigure() }
     fun chooseGap(g: Int) { gap = g.coerceIn(0, 64); prefs.edit().putInt("sendGap", gap).apply(); if (phase == Phase.On) reconfigure() }
@@ -283,7 +285,8 @@ class SendState(private val a: MainActivity) {
             val held = p?.optJSONObject("held")?.let { o -> o.keys().asSequence().sortedBy { it.toIntOrNull() ?: 0 }.joinToString(", ") { "$it: ${o.opt(it)}" } }.orEmpty()
             stats = Stats(j.optString("label"), j.optDouble("shownFps"), j.optDouble("offeredKBs"), j.optDouble("paintMs"), j.optDouble("pass", 0.0),
                 j.optString("painter"), j.optString("gpuWhy"), j.optLong("sentBytes", 0),
-                p?.optBoolean("gpu") ?: false, p?.optLong("posted") ?: 0, held, p?.optLong("late") ?: 0, p?.optLong("behind") ?: 0, p?.optInt("filled") ?: 0, p?.optInt("slots") ?: 0)
+                p?.optBoolean("gpu") ?: false, p?.optLong("posted") ?: 0, held, p?.optLong("late") ?: 0, p?.optLong("behind") ?: 0, p?.optInt("filled") ?: 0, p?.optInt("slots") ?: 0,
+                j.optInt("blocks", 0), j.optString("tiers"))
             if (p?.optBoolean("gpu") == true) Log.i(Engine.TAG, "send: posted ${stats.posted}, held {${held}}, late ${stats.late}, behind ${stats.behind}, ${stats.filled} of ${stats.slots} buffers filled, ${j.optInt("ahead")} of ${j.optInt("depth")} frames painted ahead")
             if (j.optString("error").isNotEmpty()) phase = Phase.Error(j.optString("error"))
             if (p != null && p.optString("error").isNotEmpty()) phase = Phase.Error(p.optString("error"))
@@ -364,7 +367,8 @@ internal fun MainActivity.SendScreen() {
                     Bar(s.brightness.toFloat(), 1f..100f, 98) { v -> val n = v.roundToInt(); if (n != s.brightness) s.chooseBrightness(n) }
                 }
                 Group("Code") {
-                    AutoSlider("Blocks", s.blocks, s.picked / 8, 1..128, { n -> "$n, ${"%.1f".format(Locale.ROOT, n * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
+                    // ai: under a rate profile (2026-10-07) the slider is not read: its title the profile and the blocks it paints
+                    AutoSlider("Blocks", s.blocks, s.picked / 8, 1..128, { n -> if (s.stats.tiers.isNotEmpty()) "${s.stats.tiers}: ${s.stats.blocks}, ${"%.1f".format(Locale.ROOT, s.stats.blocks * 469 / 1000.0)}\u00a0KB" else "$n, ${"%.1f".format(Locale.ROOT, n * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
                     RateSlider(s)
                     // ai: one code, or two side by side for a receiver's 2:1 crop, and their gap (the web's #codes and #gap)
                     Select("Codes", s.codes, listOf(1 to "One", 2 to "Two")) { s.chooseCodes(it) }
