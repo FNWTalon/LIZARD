@@ -27,7 +27,7 @@ and the author's monitors:
 | receiver | rate |
 |---|---|
 | Android app, one code | 1.3 to 1.6 MB/s logged |
-| Android app, two codes side by side (2:1 crop) | 2.8 MB/s logged, peaks of 2.9 (2,894 KB/s): 50 of 60 blocks a capture, 99% of what the sender offered, with the camera's image enhancements off; 2.0 to 2.2 with them on |
+| Android app, two codes side by side (2:1 crop) | up to 3 MB/s on a 1080p monitor (logged: 2.8 sustained, 2.9 peaks, 50 of 60 blocks a capture at 99% of what the sender offered, the camera's image enhancements off; 2.0 to 2.2 with them on) |
 | Chrome on the same phone | about 0.55 to 0.8 MB/s |
 
 Once the Android app's phase lock holds, the rate stays: on a tripod, a 150 s hold of the lock before the pilots read

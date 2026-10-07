@@ -32,6 +32,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 
 // ai: The receiver's engine: the native Receiver (Native.kt) and the rear camera (Camera2) feeding it, every change
 // ai: on one thread ("lizard-engine") so a start, a stop and a receiver's rebuild never interleave; frames arrive on
@@ -90,16 +93,45 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     }
     fun phaseState(): PhaseLock.State? = phase.state
 
+    // ai: The camera's pipeline slowing (2026-10-07, owner: "give the throttling warning if frames drop after being at
+    // ai: max"): once its rate a second (its own timestamps) has stood within 5% of the rate asked, a second under 90%
+    // ai: of that peak, twice running, is the camera completing fewer frames (the phone warm: the 4K run of 2026-10-01,
+    // ai: the 2:1 sessions of 2026-10-06 at 106 to 114 halves a second), and the heat warning says so with the figure
+    // ai: (Parts.kt HeatWarning); back at 95% of the peak twice running clears it. Null while nothing is slow; read by
+    // ai: Receive on the main thread, set from the capture callback through it.
+    data class CameraSlow(val now: Int, val max: Int)
+    var cameraSlow by mutableStateOf<CameraSlow?>(null)
+        private set
+    private fun slowed(v: CameraSlow?, peak: Double) {
+        if (v == null) Log.i(TAG, "camera: back at its rate (peak %.1f a second)".format(peak))
+        else if (cameraSlow == null) Log.i(TAG, "camera: slowed to %d of %d a second (peak %.1f)".format(v.now, v.max, peak))
+        main.post { cameraSlow = v }
+    }
+
     // ai: the preview is a TextureView (a view like any other, so the page can clip it to the crop the decoder reads;
     // ai: a SurfaceView's layer is not clipped by its parents)
     @Volatile private var texture: SurfaceTexture? = null
+    // ai: The preview stream's size is the SurfaceTexture's default buffer size at the session's creation
+    // ai: (OutputConfiguration(Surface) and the camera service both read it off the surface), and a TextureView sets
+    // ai: that size to its own size in pixels whenever it is laid out (TextureView.onSizeChanged, and when it makes
+    // ai: the surface). open() set the preview's size and then waited on openCamera; a layout in between (the system
+    // ai: bars hiding at Starting, a turn, the crop switched) handed the service the view's size, which it rounds to
+    // ai: the nearest size the lens lists, a 4:3 or square one for a tall view, and the view then stretched that
+    // ai: picture into its 16:9 box: the preview stretched vertically instead of cropping, on some starts
+    // ai: (2026-10-07). Only the preview: the ImageReader's surface has its own fixed size. So the preview's size is
+    // ai: kept here, set again right before the session is created (session) and inside every reset by the view
+    // ai: (onSurfaceTextureSizeChanged, which the view calls from its own set); once the stream is configured its
+    // ai: own dimensions hold and the default no longer matters.
+    @Volatile private var previewSize: Size? = null
     val textureListener = object : TextureView.SurfaceTextureListener {
         // ai: a surface that comes while the camera is wanted and closed (the view was remade) reopens it
         override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, hh: Int) {
             texture = st
             h.post { val s = wanted; if (s != null && device == null && !opening) try { open(s) } catch (e: Exception) { fail("The camera could not start: ${e.message}", e) } }
         }
-        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, hh: Int) {}
+        override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, hh: Int) {
+            previewSize?.let { st.setDefaultBufferSize(it.width, it.height) }
+        }
         override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean { texture = null; h.post { closeCamera() }; return true }
         override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
     }
@@ -288,6 +320,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         val t0 = System.nanoTime()
         while (texture == null && System.nanoTime() - t0 < 2_000_000_000L) Thread.sleep(10)
         val st = texture ?: return fail("The camera preview did not appear.")
+        previewSize = preview
         st.setDefaultBufferSize(preview.width, preview.height)
         val surface = Surface(st)
         Log.i(TAG, "open camera $id: $size, preview $preview, fps $fps")
@@ -326,6 +359,9 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         }
         reader = r
         r.setOnImageAvailableListener({ onImage(it) }, fh)
+        // ai: the preview's size set again here, on the thread that creates the session and right before it does:
+        // ai: the view may have reset it since open() (previewSize above)
+        previewSize?.let { p -> texture?.setDefaultBufferSize(p.width, p.height) }
         val outs = listOf(OutputConfiguration(r.surface), OutputConfiguration(preview))
         val exec = Executor { h.post(it) }
         // ai: the call itself can throw (2026-10-06, the S26: CameraAccessException "Error configuring streams: Broken
@@ -419,6 +455,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                         var seen = 0L
                         var prevTs = 0L
                         var watch = 0
+                        var secAt = 0L; var secN = 0; var peak = 0.0; var slowFor = 0; var okFor = 0   // ai: the rate a second, for cameraSlow
                         var asked = Native.prop("debug.lizard.nudge")
                         val gaps = StringBuilder()
                         // ai: test: `adb shell setprop debug.lizard.resolution <WxH>` reopens the camera at that size
@@ -443,6 +480,17 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                                 if (--watch == 0) { Log.i(TAG, "delay: intervals ms$gaps"); gaps.setLength(0) }
                             }
                             prevTs = ts
+                            // ai: the camera's rate a second against its peak (cameraSlow above)
+                            if (secAt == 0L) secAt = ts
+                            secN++
+                            if (ts - secAt >= 1_000_000_000L) {
+                                val rate = secN * 1e9 / (ts - secAt); secAt = ts; secN = 0
+                                if (rate > peak) peak = rate
+                                val max = fps.upper
+                                val slow = cameraSlow
+                                if (peak >= 0.95 * max && rate < 0.9 * peak) { okFor = 0; if (++slowFor >= 2 && slow?.now != rate.roundToInt()) slowed(CameraSlow(rate.roundToInt(), max), peak) }
+                                else { slowFor = 0; if (slow != null && rate >= 0.95 * peak && ++okFor >= 2) slowed(null, peak) }
+                            }
                             if (n % 30 == 15) {
                                 val p = Native.prop("debug.lizard.nudge")
                                 if (p != asked) { asked = p; p.substringBefore('.').toLongOrNull()?.let { us -> if (us > 0) { watch = 30; delay(cs, b, us, this) } } }
@@ -653,6 +701,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         gen++
         rezoom = null
         opening = false
+        if (cameraSlow != null) main.post { cameraSlow = null }
         if (device != null) Log.i(TAG, "close camera")
         try { session?.close() } catch (_: Exception) {}
         session = null

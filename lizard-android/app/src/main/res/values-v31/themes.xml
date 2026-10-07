@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- ai: Android 12 and up draw a splash screen before the first frame (2026-10-07): its background white, as the app's,
+     where the platform took the theme's #FAFAFA; the icon the launcher's. -->
 <resources>
-    <!-- ai: light only, as the rig's pages (ui.css color-scheme:light); Compose draws the rest -->
     <style name="Theme.Lizard" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@android:color/white</item>
-        <!-- ai: the window's own colour white too (2026-10-07): Material.Light's #FAFAFA showed under the first frame -->
         <item name="android:colorBackground">@android:color/white</item>
+        <item name="android:windowSplashScreenBackground">@android:color/white</item>
     </style>
 </resources>

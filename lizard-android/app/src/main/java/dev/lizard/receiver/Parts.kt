@@ -182,18 +182,18 @@ fun SideWidth(screen: Dp, chosen: Float, lo: Dp = 180.dp): Dp {
     return (if (chosen > 0f) chosen.dp else minOf(240.dp, screen * 0.34f)).coerceIn(low, hi)
 }
 
-// ai: The column's floor (2026-10-06): what a screen's rows of two cells need with no label folded. The cells share
-// ai: a row equally (weight 1f each), so it is twice the widest label of all in the buttons' type plus their padding,
-// ai: the gap between and the column's own padding (the first form took each side's own widest, which left "Start
-// ai: camera" cut in its half). A dragged column stops there (SideWidth, SideEdge); every label counts whether or
+// ai: The column's floor (2026-10-06): what a screen's row of `cells` equal cells (weight 1f each) needs with no label
+// ai: folded: `cells` times the widest label in the buttons' type plus their padding, the gaps between and the
+// ai: column's own padding (a first form took each side's own widest, which left "Start camera" cut in its half). A
+// ai: dragged column stops there, and the default is no narrower (SideWidth, SideEdge); every label counts whether or
 // ai: not its button shows, so the column does not move when one appears.
 @Composable
-fun TwoCellFloor(labels: List<String>): Dp {
+fun CellsFloor(labels: List<String>, cells: Int = 2): Dp {
     val tm = rememberTextMeasurer()
     val style = MaterialTheme.typography.labelLarge
     val density = LocalDensity.current
     val cell = labels.maxOf { with(density) { tm.measure(AnnotatedString(it), style).size.width.toDp() } } + 40.dp
-    return cell * 2 + 8.dp + 32.dp
+    return cell * cells + 8.dp * (cells - 1) + 32.dp
 }
 
 // ai: The column's edge (2026-10-05): the hairline between the column and the camera or the code, in a strip wide enough
@@ -307,10 +307,13 @@ fun CodeBlock(text: String, size: Int = 13) =
 // ai: The heat warning (2026-10-01): a red triangle and the line "Thermal throttling. Speeds may slow down." Since
 // ai: 2026-10-03 it shows when the phone has lowered the GPU's clock ceiling (Clocks.kt, under its top; the CPU's not)
 // ai: and says so, "Thermal throttling. GPU at 646 of 1300 MHz."; where the GPU's clock cannot be read, from
-// ai: Android's moderate thermal status (2) up with the words before.
+// ai: Android's moderate thermal status (2) up with the words before. Since 2026-10-07, first of all, when the
+// ai: camera's rate has fallen from its peak (Engine.cameraSlow): "Thermal throttling. Camera at 53 of 60 frames a
+// ai: second.", the loss that costs the rate most.
 @Composable
-fun HeatWarning(status: Int, clocks: Clocks.Read?, modifier: Modifier = Modifier) {
+fun HeatWarning(status: Int, clocks: Clocks.Read?, camera: Engine.CameraSlow? = null, modifier: Modifier = Modifier) {
     val text = when {
+        camera != null -> "Thermal throttling. Camera at ${camera.now} of ${camera.max} frames a second."
         clocks != null -> if (clocks.throttled) Clocks.text(clocks) else return
         status >= android.os.PowerManager.THERMAL_STATUS_MODERATE -> "Thermal throttling. Speeds may slow down."
         else -> return
