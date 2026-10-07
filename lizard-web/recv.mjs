@@ -31,7 +31,7 @@ import { logPost } from "./devlog.mjs";
 import { R_RING, SPAN, MODULES, N_FOR, NAME, FOCUS_BITMAP, PICTURE_SIZES } from "../liblizard/sim/lizard_pick.mjs";
 import { isControlId, PAYLOAD, fractionDone } from "../liblizard/sim/xfer.mjs";
 import { remember, persist, restoreSaved, say, meter, bytes, rate, left, about, registerApp, collapser, sideResizer } from "./ui.mjs";
-import { open as openKept } from "./library.mjs";
+import { open as openKept, list as listKept, watch as watchLibrary } from "./library.mjs";
 const $ = (id) => document.getElementById(id), video = $("v"), shot = $("shot"), sctx = shot.getContext("2d", { willReadFrequently: true });
 // ai: The Developer panel, Advanced since 2026-10-01 (the lab's menus and readouts), opens as it was left, a phone session
 // ai: being a series of reloads; restored here, at the top of the module, so nothing is seen to move. Errors a user must
@@ -762,6 +762,21 @@ function showFile(name, data, how = "checksum ok", type = "", sent = 0) {
   showState();
   if (SAVE_POST) logPost(`/api/file?name=${encodeURIComponent(name)}`, blob);
 }
+// ai: The received file deleted on Home (2026-10-07, as the app's delete): the library's channel says it changed, and
+// ai: where the file this page shows as received is no longer kept, the green line, its buttons and the fountain's
+// ai: transfer go (forgetTransfer), so the same file still in the light is received and kept anew. A change that
+// ai: keeps the file (another deleted, one filed) touches nothing.
+watchLibrary(async () => {
+  const r = ui.received?.root;
+  if (!r) return;
+  const kept = await listKept().catch(() => null);
+  if (!kept || kept.some((e) => e.root === r)) return;
+  ui.received = null;
+  if (fileUrl) { URL.revokeObjectURL(fileUrl); fileUrl = ""; }
+  fileOut = null;
+  forgetTransfer();
+  showState();
+});
 $("open").onclick = () => { if (fileUrl) window.open(fileUrl, "_blank"); };
 $("share").onclick = () => { if (fileOut) navigator.share({ files: [fileOut], title: fileOut.name }).catch(() => {}); };
 // A chunked transfer as it goes (lizard-web/fountain-worker.mjs): where the header came from, each chunk's share of its blocks,
@@ -1101,7 +1116,7 @@ function second() {
   // ai: the Android app holds the camera's phase by the pilots (lizard-android/, PhaseLock.kt) and reads 60 painted. Said
   // ai: while the word is live; the sender's own control for it is Advanced's Pictures a second ("Receiving with" went
   // ai: 2026-10-02).
-  const fast = live && band.fps > WEB_FPS ? `${band.fps} pictures a second is too fast for a browser: use the Lizard app, or send at ${WEB_FPS}.` : "";
+  const fast = live && band.fps > WEB_FPS ? `${band.fps} pictures a second is too fast for a browser: use the LIZARD app, or send at ${WEB_FPS}.` : "";
   ui.why = [lead, clipping && "The picture is washed out: avoid glare, or turn the other screen's brightness down.", live && slow ? "This camera runs slower than the code changes, so some of it is missed." : "", fast].filter(Boolean).join("\n");
   showState();
   recLog.push({ at: Date.now(), ...stats });

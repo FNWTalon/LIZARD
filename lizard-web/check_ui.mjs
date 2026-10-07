@@ -293,7 +293,7 @@ const SIZES = [
   check(ts.state === "Reading the test stream" && ts.nums === "" && /^\d+\sKB\/s, \d+% registered, LIZARD-96 at 24\sfps$/.test(ts.lab) && !ts.meter, `test stream: "${ts.state}" / "${ts.nums}" / "${ts.lab}" / "${ts.why}"`);
   // ai: The native app is recommended only to a sender painting faster than 24 (2026-10-01): not here, and
   // ai: on a clip of the same stream whose word says 30 (a picture a camera frame).
-  check(!/Lizard app/.test(ts.why), `at 24 fps no word of the Lizard app: "${ts.why}"`);
+  check(!/LIZARD app/.test(ts.why), `at 24 fps no word of the LIZARD app: "${ts.why}"`);
   {
     const fastPhy = await makePhy({ phy: "focus", stream: "shake256", n: N_FOR(SUBCH), subch: SUBCH, mode: 1, fps: FC, variants: [{ name: "rx" }] }), fastPath = join(scratch, "fast.y4m");
     const fd = openSync(fastPath, "w"), y = Buffer.alloc(CW * CH), chroma = Buffer.alloc((CW * CH) / 2, 128);
@@ -311,7 +311,7 @@ const SIZES = [
     await until(f, `/at 30\\sfps/.test(document.getElementById("lab").textContent)`, 30000, "the 30 fps test stream read");
     await sleep(1200);
     const fw = await evaluate(f, `document.getElementById("why").textContent`);
-    check(/(^|\n)30 pictures a second is too fast for a browser/.test(fw) && /Lizard app/.test(fw) && /send at 24/.test(fw), `a sender at 30 fps is sent to the Lizard app: "${fw}"`);
+    check(/(^|\n)30 pictures a second is too fast for a browser/.test(fw) && /LIZARD app/.test(fw) && /send at 24/.test(fw), `a sender at 30 fps is sent to the Lizard app: "${fw}"`);
   }
   // ai: The light gone (the video paused, as a camera turned to a wall): the state falls back to looking, the code's
   // ai: name leaves the lab line (until 2026-09-26 the band, once read, stayed on both for good).
@@ -401,7 +401,7 @@ const SIZES = [
     console.log(`     home ${z.name}: ${h.rows.join(" | ")}; ${h.acts}; "${h.usage}"; solid ${h.solid}`);
     check(h.sw <= h.iw, `home ${z.name}: no horizontal scroll (${h.sw} of ${h.iw})`);
     check(h.rows.length === 1 && h.rows[0].startsWith(NAME) && /300\sKB/.test(h.rows[0]) && /^Open,Save,(Share,)?Delete$/.test(h.acts) && h.download === NAME && !h.empty, `home ${z.name}: "${h.rows[0]}" listed with ${h.acts}`);
-    check(h.bar === "Lizard" && h.solid === (z.mobile ? "recv" : "send"), `home ${z.name}: the bar "${h.bar}", the solid one ${h.solid}`);
+    check(h.bar === "LIZARD" && h.solid === (z.mobile ? "recv" : "send"), `home ${z.name}: the bar "${h.bar}", the solid one ${h.solid}`);
     if (k === 0) {
       const bytesOk = await evaluate(s, `fetch(${JSON.stringify(h.href)}).then((r) => r.arrayBuffer()).then((x) => { const u = new Uint8Array(x); let v = 7, same = u.length === ${LEN}; for (let i = 0; same && i < u.length; i++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; same = u[i] === ((v >>> 16) & 255); } return same; })`);
       check(bytesOk, `home: the listed file's Save holds the ${LEN} bytes sent`);
