@@ -381,6 +381,15 @@ async function main() {
     run(TOOLS.val, ["--target-env", "vulkan1.1", out]);
     console.log(`ingest ${f}: ${statSync(out).size} B of SPIR-V`);
   }
+  // ai: The sender's own GLSL (core/tx/*.comp: the desktop presenter's expand of a ring frame into an RGBA8 storage
+  // ai: image, which WGSL's bind kinds here do not cover) to out/spv/send_<name>.spv by glslc (2026-10-07).
+  const txDir = new URL("../core/tx/", HERE);
+  for (const f of readdirSync(txDir).filter((f) => f.endsWith(".comp"))) {
+    const out = fileURLToPath(new URL(`spv/send_${f.replace(/\.comp$/, "")}.spv`, OUT));
+    run(TOOLS.glslc, ["--target-env=vulkan1.1", "-O", fileURLToPath(new URL(f, txDir)), "-o", out]);
+    run(TOOLS.val, ["--target-env", "vulkan1.1", out]);
+    console.log(`sender ${f}: ${statSync(out).size} B of SPIR-V`);
+  }
   const spvBytes = Object.values(compiled).reduce((a, c) => a + c.bytes, 0);
   console.log(`${modules.size} modules: ${Object.keys(compiled).length} compiled (${(spvBytes / 1024).toFixed(0)} KB of SPIR-V), ${failed.length} failed`);
   const naga = run(TOOLS.naga, ["--version"]).trim();

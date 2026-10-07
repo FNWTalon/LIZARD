@@ -192,6 +192,9 @@ enum { FOCUS_QUIET = 2 };
 // pxm pixels a module; lizard-web/send.mjs through lizard-web/send-worker.mjs). rgba holds W^2 * 4 bytes, W = px + 2 FOCUS_QUIET pxm.
 void focus_paint_rgba(const focus_t *f, const float *drive, uint8_t *rgba);
 // The bit map both ends use, FOCUS_BITMAP_* (FOCUS_LDPC only). 0, or -1 for a mode that does not exist.
+// ai: The same symbol as grey levels, one byte a pixel (what the GPU painter writes; the senders keep frames grey,
+// ai: 2026-10-07): grey holds W^2 bytes, the margin 255, every level as focus_paint_rgba's.
+void focus_paint_grey(const focus_t *f, const float *drive, uint8_t *grey);
 int focus_bitmap(focus_t *f, int mode);
 // The same with the quad found elsewhere: eight floats in image pixels, its orientation and its track score.
 int focus_acquire_quad(const focus_t *f, const uint8_t *img, int iw, int ih, float gamma, int mesh, ob_result_t *res,

@@ -29,8 +29,19 @@ namespace lizard {
 // ai: and one pilot count, a frame's ids split between them (the first code the first blocks, as send-worker.mjs).
 // ai: device (2026-10-03, the library): the GPU painter's Vulkan device, a substring of its name (empty: LIZ_VK_DEVICE's,
 // ai: else the first discrete). gap (2026-10-04, the desktop sender's setting; the web's gap slider): the modules between
-// ai: two codes, 0 to 64, GAP_MODULES unless set; one code has none.
-struct TxFormat { int n = 512, subch = 96, span = 128, fps = 60, threads = 3, painter = 0, codes = 1, gap = GAP_MODULES; std::string assets, device; };
+// ai: two codes, 0 to 64, GAP_MODULES unless set; one code has none. The frame ring (2026-10-07, every frame on the
+// ai: GPU): aheadSecs and aheadBytes bound its depth (frames painted ahead of the screen), margin the slots a reader may
+// ai: still hold when a frame is taken (the desktop presenter's swapchain images + 1); hostFrames keeps each painted
+// ai: frame in host memory too, for a host that takes frames by take() (Android's present, the C API; the desktop
+// ai: presenter takes slots and sets it off).
+struct TxFormat {
+  int n = 512, subch = 96, span = 128, fps = 60, threads = 3, painter = 0, codes = 1, gap = GAP_MODULES;
+  std::string assets, device;
+  double aheadSecs = 1.0;
+  uint64_t aheadBytes = 128ull << 20;
+  int margin = 9;
+  bool hostFrames = true;
+};
 
 class Sender {
  public:
@@ -46,15 +57,32 @@ class Sender {
   std::string configure(const TxFormat& f);
   // ai: The GPU painter made ahead of a configure (its device and pipelines: off the thread that configures, which on
   // ai: the phone is the main one); "" or why there is none (configure then sends from the CPU, or refuses painter 1).
-  std::string prepareGpu(const std::string& assets, const std::string& device = "");
+  // ai: extras: what a host asks of the device beyond the kernels (wg::DeviceExtras; the desktop presenter's surface
+  // ai: and swapchain), kept for a configure that makes the painter later. prepareWhy(): the last prepare's refusal.
+  std::string prepareGpu(const std::string& assets, const std::string& device = "", const wg::DeviceExtras* extras = nullptr);
+  const std::string& prepareWhy() const { return prepareWhy_; }
+  // ai: The painter's device (null before a prepare or a GPU configure): a host that presents from it (the desktop
+  // ai: sender, 2026-10-07) shares its instance, device and queues; see wg::Device.
+  wg::Device* device() const;
   // ai: The painted frame's pixels a side (a symbol and its margin: the frame's height), 0 before a configure; width(),
   // ai: the frame's width (codes symbols and the gaps between them; side() with one code).
   int side() const { return side_; }
   int width() const { return width_; }
   // ai: The next frame in order, RGBA width() x side(), into dst rows `stride` bytes apart, if it is painted: true, and
-  // ai: it is the screen's now (its count advances); false and dst untouched if the painters are behind. A GPU frame is
-  // ai: grey (one byte a pixel), made RGBA here as it is copied.
+  // ai: it is the screen's now (its count advances); false and dst untouched if the painters are behind. From the host
+  // ai: copy the painters keep under TxFormat.hostFrames (grey, made RGBA as it is copied); without it, false.
   bool take(uint8_t* dst, int stride);
+  // ai: The next frame in order as its slot in the ring (ring(): frame seq at slot seq mod depth()), if it is painted:
+  // ai: true, seq its number (its count mod 4 the pilots'), and it is the screen's now; false if the painters are
+  // ai: behind. The desktop presenter's take (2026-10-07): no copy, the frame read on the device.
+  bool takeSlot(uint64_t* seq, int* slot);
+  // ai: The ring (gpu_painter.h ring(), frameWords(), rowWords()): null before a configure; a reader keeps the shared
+  // ai: pointer for as long as its commands read the buffer, since a configure makes a new one.
+  std::shared_ptr<wg::Buffer> ring() const;
+  uint32_t ringFrameWords() const;
+  uint32_t ringRowWords() const;
+  int depth() const { return depth_; }
+  const std::string& assets() const { return assets_; }
   // ai: Whether take would give a frame now (the one consumer asks before it locks a window buffer).
   bool ready();
   // ai: The stats JSON (Sender::stats in sender.cpp names the fields).
@@ -70,6 +98,7 @@ class Sender {
   void produce();
   void paint(int k);
   void paintGpu();
+  void upload();
 
   std::unique_ptr<XferTx> xfer_;
   uint32_t nextId_;                 // ai: the test stream's next id (a random first one)
@@ -77,20 +106,25 @@ class Sender {
   int side_ = 0, width_ = 0, gap_ = 0, blocks_ = 0, blockBytes_ = 0, gen_ = 0;
   std::string label_, error_;
   std::mutex mu_;
+  std::mutex xferMu_;               // ai: the transfer's state: the producer fills a frame under it, stats reads under it
   std::condition_variable cv_;
   bool stop_ = true;
-  uint64_t made_ = 0;               // ai: frames made (their blocks), the next to make
+  int depth_ = 0;                   // ai: the ring's frames (gpu_->depth())
+  std::string assets_;
+  uint64_t made_ = 0;               // ai: frames made (their blocks), the next to make; at most depth - margin past shown_
   uint64_t shown_ = 0;              // ai: frames taken, the next to take; its count mod 4 is the pilots'
   std::deque<Job> jobs_;            // ai: made, not painted
-  size_t inFlight_ = 0;             // ai: in a painter's hands
-  std::map<uint64_t, std::vector<uint8_t>> ready_;   // ai: painted, not taken
+  std::map<uint64_t, int> ready_;   // ai: painted into the ring, not taken: seq -> slot
+  std::map<uint64_t, std::vector<uint8_t>> hostOf_;    // ai: a painted frame's host copy (TxFormat.hostFrames), until taken
+  std::map<uint64_t, std::vector<uint8_t>> toUpload_;  // ai: the CPU's painted frames, packed as the ring's rows, for the uploader
   std::map<uint64_t, int> dataOf_;  // ai: a frame's data blocks (its header and manifest not counted), for the lap
   std::vector<std::vector<uint8_t>> spare_;
-  std::thread producer_;
+  std::thread producer_, uploader_;
   std::vector<std::thread> painters_;
   std::unique_ptr<GpuPainter> gpu_;   // ai: kept across configures (its device made once a send)
   bool onGpu_ = false;
-  std::string gpuWhy_, gpuDevice_;
+  std::string gpuWhy_, gpuDevice_, prepareWhy_;
+  std::shared_ptr<const wg::DeviceExtras> extras_;
   // ai: the stats' window: frames taken, data blocks shown, paint ms summed
   std::atomic<uint64_t> takenWin_{0}, dataWin_{0}, dataAll_{0}, paintedWin_{0};
   std::atomic<double> paintMsWin_{0};

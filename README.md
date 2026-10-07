@@ -96,7 +96,7 @@ with the packages `platforms;android-36`, `build-tools;35.0.0`, `ndk;27.1.122970
 or later).
 
 **The desktop sender** needs CMake 3.22 or later (with `JAVA_HOME` naming a JDK where CMake does not find one for its
-JNI headers) and, on Linux, the X11 and XRandR development files; `packageDeb`
+JNI headers) and, on Linux, the X11, XRandR, Xcomposite and Xext development files; `packageDeb`
 also needs `dpkg-deb` and `fakeroot`.
 
 ```

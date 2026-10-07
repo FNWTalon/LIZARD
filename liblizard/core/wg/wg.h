@@ -176,6 +176,14 @@ struct Ticket {
   ~Ticket();
 };
 
+// ai: A host's extras for Device::create: instance and device extensions (a window surface, the swapchain, present_id
+// ai: and present_wait, whose features are enabled with them where the device has both), and a queue family that draws
+// ai: (the first family that both computes and draws is taken anyway; this refuses a device with none).
+struct DeviceExtras {
+  std::vector<std::string> instanceExts, deviceExts;
+  bool graphics = false;
+};
+
 struct Device {
   VkInstance instance = VK_NULL_HANDLE;
   VkPhysicalDevice phys = VK_NULL_HANDLE;
@@ -214,7 +222,13 @@ struct Device {
   std::vector<Init> inits;
 
   // ai: want: a substring of the device name to pick (LIZ_VK_DEVICE), else the first discrete, else the first.
-  static std::unique_ptr<Device> create(const std::string& want = "", bool validate = false, std::function<void(const std::string&)> log = nullptr);
+  // ai: extras (2026-10-07, the desktop sender presents from the painter's device): what a host asks beyond the
+  // ai: kernels' needs, each enabled where offered and left out where not (`has` says which took).
+  static std::unique_ptr<Device> create(const std::string& want = "", bool validate = false, std::function<void(const std::string&)> log = nullptr,
+                                        const DeviceExtras& extras = DeviceExtras());
+  // ai: the device extensions enabled (the kernels' and the extras' that the device had)
+  std::vector<std::string> enabled;
+  bool has(const char* ext) const;
   ~Device();
 
   // ai: zero: filled with zeros at the next submit (WebGPU's rule); false only where an upload covers it whole.

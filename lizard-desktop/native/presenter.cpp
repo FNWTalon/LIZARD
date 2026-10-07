@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <future>
 #include <map>
 #include <stdexcept>
@@ -31,6 +32,7 @@
 #include "volk.h"
 
 #include "sender.h"
+#include "wg.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -38,7 +40,9 @@
 #elif LIZ_X11
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
+#include <X11/extensions/Xcomposite.h>
 #include <X11/extensions/Xrandr.h>
+#include <X11/extensions/shape.h>
 #include <vulkan/vulkan_xlib.h>
 #endif
 
@@ -74,33 +78,27 @@ std::string fmt(const char* f, double v) {
   return b;
 }
 
-std::string lower(std::string s) {
-  for (char& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  return s;
-}
-
-// ai: The functions this presenter calls, fetched from its own instance and device. volk's globals are not used past
-// ai: the loader's entry points: wg (the GPU painter) loads them from its instance, which has no surface extension, so
-// ai: a surface function from there would be null.
+// ai: The functions this presenter calls, fetched from the sender's instance and device (wg's, which made them with
+// ai: Presenter::deviceExtras()): its own tables, since volk's globals are wg's and loaded for its own use.
 #define LIZ_INST_FNS(X)                                                                                                \
-  X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties)                                  \
-  X(vkGetPhysicalDeviceQueueFamilyProperties) X(vkGetPhysicalDeviceMemoryProperties)                                   \
-  X(vkGetPhysicalDeviceFormatProperties) X(vkEnumerateDeviceExtensionProperties) X(vkCreateDevice)                     \
-  X(vkGetDeviceProcAddr) X(vkDestroySurfaceKHR) X(vkGetPhysicalDeviceSurfaceSupportKHR)                                \
-  X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) X(vkGetPhysicalDeviceSurfaceFormatsKHR)
+  X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceFormatProperties) X(vkGetDeviceProcAddr)                 \
+  X(vkDestroySurfaceKHR) X(vkGetPhysicalDeviceSurfaceSupportKHR) X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR)          \
+  X(vkGetPhysicalDeviceSurfaceFormatsKHR)
 #define LIZ_DEV_FNS(X)                                                                                                 \
-  X(vkDestroyDevice) X(vkGetDeviceQueue) X(vkDeviceWaitIdle) X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR)          \
+  X(vkQueueWaitIdle) X(vkCreateSwapchainKHR) X(vkDestroySwapchainKHR)                                                   \
   X(vkGetSwapchainImagesKHR) X(vkAcquireNextImageKHR) X(vkQueuePresentKHR) X(vkQueueSubmit) X(vkCreateSemaphore)      \
   X(vkDestroySemaphore) X(vkCreateFence) X(vkDestroyFence) X(vkWaitForFences) X(vkResetFences) X(vkCreateCommandPool)  \
-  X(vkDestroyCommandPool) X(vkAllocateCommandBuffers) X(vkResetCommandBuffer) X(vkBeginCommandBuffer)                  \
-  X(vkEndCommandBuffer) X(vkCmdPipelineBarrier) X(vkCmdCopyBufferToImage) X(vkCmdClearColorImage) X(vkCmdBlitImage)    \
-  X(vkCreateBuffer) X(vkDestroyBuffer) X(vkGetBufferMemoryRequirements) X(vkAllocateMemory) X(vkFreeMemory)            \
-  X(vkBindBufferMemory) X(vkMapMemory) X(vkCreateImage) X(vkDestroyImage) X(vkGetImageMemoryRequirements)              \
-  X(vkBindImageMemory)
+  X(vkDestroyCommandPool) X(vkAllocateCommandBuffers) X(vkFreeCommandBuffers) X(vkResetCommandBuffer)                  \
+  X(vkBeginCommandBuffer) X(vkEndCommandBuffer) X(vkCmdPipelineBarrier) X(vkCmdClearColorImage) X(vkCmdBlitImage)      \
+  X(vkAllocateMemory) X(vkFreeMemory) X(vkCreateImage) X(vkDestroyImage) X(vkGetImageMemoryRequirements)               \
+  X(vkBindImageMemory) X(vkCreateImageView) X(vkDestroyImageView) X(vkCreateShaderModule) X(vkDestroyShaderModule)     \
+  X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) X(vkCreatePipelineLayout) X(vkDestroyPipelineLayout) \
+  X(vkCreateComputePipelines) X(vkDestroyPipeline) X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool)               \
+  X(vkResetDescriptorPool) X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) X(vkCmdBindPipeline)                  \
+  X(vkCmdBindDescriptorSets) X(vkCmdPushConstants) X(vkCmdDispatch)
 #define LIZ_DECL(f) PFN_##f f = nullptr;
 struct InstFns {
   LIZ_INST_FNS(LIZ_DECL)
-  PFN_vkGetPhysicalDeviceFeatures2 vkGetPhysicalDeviceFeatures2 = nullptr;   // ai: Vulkan 1.1; present_wait's check
 };
 struct DevFns {
   LIZ_DEV_FNS(LIZ_DECL)
@@ -108,10 +106,9 @@ struct DevFns {
 };
 #undef LIZ_DECL
 
-constexpr int FLIGHT = 2;
-
-// ai: The swapchain: FIFO (each present one refresh, the queue's back-pressure the loop's pace), at least 3 images, an
-// ai: 8-bit UNORM format so a grey level reaches the screen as painted, written by transfers (a clear and a blit).
+// ai: The swapchain: FIFO (each present one refresh, the queue's back-pressure the loop's pace), 8 images where the
+// ai: surface allows (the presents queued up to 7 refreshes ahead of the screen, 2026-10-07; 3 before), an 8-bit UNORM
+// ai: format so a grey level reaches the screen as painted, written by transfers (a clear and a blit).
 struct Chain {
   VkSwapchainKHR sc = VK_NULL_HANDLE;
   VkFormat format = VK_FORMAT_UNDEFINED;
@@ -120,15 +117,13 @@ struct Chain {
   std::vector<VkSemaphore> done;   // ai: per image: its commands finished, which its present waits on
 };
 
-// ai: A picture's home on the device: the staging buffer the sender writes (mapped), and the image it is copied to once
-// ai: and blitted from at every refresh it is held. Three, so the one being filled is never one in flight; each remade
-// ai: at the frame's size when a re-pick changes it.
+// ai: A picture's home on the device: an RGBA8 image the expand kernel fills from the sender's ring (grey on the
+// ai: device, no host copy; 2026-10-07) once, and the blit reads at every refresh it is held. Three, so the one being
+// ai: filled is never one in flight; each remade at the frame's size when a re-pick changes it.
 struct Slot {
-  VkBuffer buf = VK_NULL_HANDLE;
-  VkDeviceMemory bufMem = VK_NULL_HANDLE;
-  uint8_t* map = nullptr;
   VkImage img = VK_NULL_HANDLE;
   VkDeviceMemory imgMem = VK_NULL_HANDLE;
+  VkImageView view = VK_NULL_HANDLE;
   int w = 0, h = 0;
   int64_t usedBy = -2;   // ai: the last frame whose commands read or wrote it
 };
@@ -141,6 +136,7 @@ struct Shown {
   bool fresh = false;
   double acquiredMs = 0, submittedMs = 0, shownMs = -1;
   uint32_t epoch = 0;
+  int queued = -1;   // ai: presents from the last one on screen to this one at its submit (the chain's slack); -1 unknown
 };
 
 // ai: The second thread that waits for each present to reach the screen (vkWaitForPresentKHR), in id order. Without
@@ -151,6 +147,7 @@ struct Waiter {
   bool wait = false;
   VkSwapchainKHR sc = VK_NULL_HANDLE;
   double t0 = 0;
+  std::atomic<uint64_t> shownId{0};   // ai: the last present id seen on screen
   std::mutex m;
   std::condition_variable cv;
   std::deque<Shown> todo;
@@ -213,7 +210,7 @@ struct Waiter {
         std::lock_guard<std::mutex> l(m);
         if (stop) break;
       }
-      if (r == VK_SUCCESS) s.shownMs = nowMs() - t0;
+      if (r == VK_SUCCESS) { s.shownMs = nowMs() - t0; shownId = s.id; }
       std::lock_guard<std::mutex> l(m);
       done.push_back(s);
     }
@@ -229,8 +226,16 @@ struct Tally {
   double lastShown = -1, lastFresh = -1;
   uint32_t epoch = 0;
   std::vector<double> gaps;
+  double queuedSum = 0;   // ai: the chain's slack at each submit, summed, and the least (-1: none known)
+  uint64_t queuedN = 0;
+  int queuedMin = -1;
   void add(const Shown& s, double refreshMs) {
     presents++;
+    if (s.queued >= 0) {
+      queuedSum += s.queued;
+      queuedN++;
+      if (queuedMin < 0 || s.queued < queuedMin) queuedMin = s.queued;
+    }
     if (s.epoch != epoch) { epoch = s.epoch; lastShown = lastFresh = -1; }
     if (s.shownMs < 0) { unknown++; lastShown = lastFresh = -1; return; }
     if (lastShown >= 0) {
@@ -360,7 +365,16 @@ struct Presenter::Impl {
   Display* xq = nullptr;
   Window xwin = 0;
   int randr = -1;   // ai: XRandR on xq: -1 not asked yet, 0 no, 1 yes
+  int shapes = -1;  // ai: Composite and Shape on xq: -1 not asked yet, 0 no, 1 yes
 #endif
+  // ai: whether the screen shows the window direct (the swapchain's flips reach the scanout: no compositor, or the
+  // ai: window unredirected) or a compositor draws it: -1 not known (no X11, no Composite), 0 composited, 1 direct.
+  // ai: Read once a second (queryDirect); a change is logged.
+  int direct = -1;
+  // ai: the sender's device (wg's): the painter's frames and the presents on one GPU (2026-10-07); its handles below
+  // ai: are that device's, freed by it, and this presenter frees only what it made on them
+  wg::Device* W = nullptr;
+  bool shareQueue = false;   // ai: one queue in the family: the painter's too, taken under W->mu around a submit or present
   InstFns I;
   DevFns D;
   VkInstance inst = VK_NULL_HANDLE;
@@ -372,12 +386,26 @@ struct Presenter::Impl {
   std::string name;
   bool presentWait = false;
   VkPhysicalDeviceMemoryProperties mem{};
+  VkSurfaceCapabilitiesKHR caps{};
+  double capsAt = -1e9;   // ai: when the surface's capabilities were last read (once a second, and at a remake)
   Chain c;
   std::vector<Slot> slots = std::vector<Slot>(3);
   VkCommandPool pool = VK_NULL_HANDLE;
-  VkCommandBuffer cbs[FLIGHT]{};
-  VkFence fences[FLIGHT]{};
-  VkSemaphore acquired[FLIGHT]{};
+  // ai: one command buffer, fence and acquire semaphore an image, made with the chain: only its back-pressure paces
+  // ai: the loop (two in flight before, which held the presents to two refreshes ahead whatever the chain)
+  std::vector<VkCommandBuffer> cbs;
+  std::vector<VkFence> fences;
+  std::vector<VkSemaphore> acquired;
+  // ai: the expand kernel (liblizard/core/tx/expand.comp, send_expand.spv in the sender's assets): a ring frame to a
+  // ai: slot image; a descriptor set an image in flight (the ring's buffer and the slot's view), and the ring buffer
+  // ai: each holds while its commands may read it (a configure makes a new ring; the old one lives on until then)
+  VkShaderModule expandSm = VK_NULL_HANDLE;
+  VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+  VkPipelineLayout pl = VK_NULL_HANDLE;
+  VkPipeline expandPipe = VK_NULL_HANDLE;
+  VkDescriptorPool dpool = VK_NULL_HANDLE;
+  std::vector<VkDescriptorSet> dsets;
+  std::vector<std::shared_ptr<wg::Buffer>> ringHeld;
   Waiter waiter;
   Tally win, all;
   FILE* csv = nullptr;
@@ -418,50 +446,72 @@ struct Presenter::Impl {
   void run();
   void teardown();
   void presentOnce(bool live);
+  // ai: the queue's submit, present and idle wait, under the device's lock where the painter shares the queue
+  VkResult qSubmit(const VkSubmitInfo& si, VkFence f);
+  VkResult qPresent(const VkPresentInfoKHR& pi);
+  void qIdle();
   void makeChain(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D ext);
   void remake(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D ext);
   void makeSlot(Slot& s, int w, int h);
   void freeSlot(Slot& s);
   VkExtent2D windowSize();
   void queryMode();
+  void queryDirect();
   void applyBypass();
   void drain();
   void window(double secs);
 };
 
+VkResult Presenter::Impl::qSubmit(const VkSubmitInfo& si, VkFence f) {
+  if (!shareQueue) return D.vkQueueSubmit(q, 1, &si, f);
+  std::lock_guard<std::mutex> l(W->mu);
+  return D.vkQueueSubmit(q, 1, &si, f);
+}
+
+VkResult Presenter::Impl::qPresent(const VkPresentInfoKHR& pi) {
+  if (!shareQueue) return D.vkQueuePresentKHR(q, &pi);
+  std::lock_guard<std::mutex> l(W->mu);
+  return D.vkQueuePresentKHR(q, &pi);
+}
+
+void Presenter::Impl::qIdle() {
+  if (!shareQueue) { D.vkQueueWaitIdle(q); return; }
+  std::lock_guard<std::mutex> l(W->mu);
+  D.vkQueueWaitIdle(q);
+}
+
+// ai: The sender's device (wg's, made by Sender::prepareGpu with deviceExtras()): the surface on its instance, the
+// ai: presents on the family's second queue where it has one (the 4090's), else on the painter's own under its lock
+// ai: (RADV, lavapipe); the swapchain, pool, fences and semaphores this presenter's own.
 void Presenter::Impl::setup() {
-  static const VkResult loader = volkInitialize();
-  if (loader != VK_SUCCESS) throw std::runtime_error("no Vulkan loader on this machine");
-  uint32_t version = VK_API_VERSION_1_0;
-  auto enumVersion = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion"));
-  if (enumVersion) enumVersion(&version);
-  VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-  app.pApplicationName = "lizard_presenter";
-  app.apiVersion = std::min(version, static_cast<uint32_t>(VK_API_VERSION_1_2));
-#if defined(_WIN32)
-  const char* ie[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_WIN32_SURFACE_EXTENSION_NAME};
-#elif LIZ_X11
-  const char* ie[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_XLIB_SURFACE_EXTENSION_NAME};
-#else
-  const char* ie[] = {VK_KHR_SURFACE_EXTENSION_NAME};
-  throw std::runtime_error("no window surface for this platform yet");
-#endif
-  VkInstanceCreateInfo ii{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
-  ii.pApplicationInfo = &app;
-  ii.enabledExtensionCount = static_cast<uint32_t>(sizeof ie / sizeof ie[0]);
-  ii.ppEnabledExtensionNames = ie;
-  vkCheck(vkCreateInstance(&ii, nullptr, &inst), "vkCreateInstance");
+  W = sender->device();
+  if (!W) throw std::runtime_error("the sender has no Vulkan device to present from" + (sender->prepareWhy().empty() ? std::string() : ": " + sender->prepareWhy()));
+  inst = W->instance;
+  pd = W->phys;
+  dev = W->dev;
+  qf = W->family;
+  name = W->name;
+  shareQueue = !W->twoQueues;
+  q = shareQueue ? W->queue : W->queue2;
 #define LIZ_LOADI(f)                                                                     \
   I.f = reinterpret_cast<PFN_##f>(vkGetInstanceProcAddr(inst, #f));                      \
-  if (!I.f) throw std::runtime_error("the Vulkan instance has no " #f);
+  if (!I.f) throw std::runtime_error("the sender's Vulkan instance has no " #f " (no window surface extension)");
   LIZ_INST_FNS(LIZ_LOADI)
 #undef LIZ_LOADI
-  I.vkGetPhysicalDeviceFeatures2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceFeatures2"));
+  if (!W->has(VK_KHR_SWAPCHAIN_EXTENSION_NAME)) throw std::runtime_error(name + " has no swapchain");
+#define LIZ_LOADD(f)                                                                     \
+  D.f = reinterpret_cast<PFN_##f>(I.vkGetDeviceProcAddr(dev, #f));                       \
+  if (!D.f) throw std::runtime_error("the Vulkan device has no " #f);
+  LIZ_DEV_FNS(LIZ_LOADD)
+#undef LIZ_LOADD
+  presentWait = W->has(VK_KHR_PRESENT_ID_EXTENSION_NAME) && W->has(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
+  if (presentWait) D.vkWaitForPresentKHR = reinterpret_cast<PFN_vkWaitForPresentKHR>(I.vkGetDeviceProcAddr(dev, "vkWaitForPresentKHR"));
+  if (!D.vkWaitForPresentKHR) presentWait = false;
 
 #if defined(_WIN32)
   if (!target.hwnd) throw std::runtime_error("no window to present to");
   auto createSurface = reinterpret_cast<PFN_vkCreateWin32SurfaceKHR>(vkGetInstanceProcAddr(inst, "vkCreateWin32SurfaceKHR"));
-  if (!createSurface) throw std::runtime_error("no VK_KHR_win32_surface");
+  if (!createSurface) throw std::runtime_error("the sender's Vulkan instance has no VK_KHR_win32_surface");
   VkWin32SurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
   si.hinstance = GetModuleHandleW(nullptr);
   si.hwnd = static_cast<HWND>(target.hwnd);
@@ -473,118 +523,70 @@ void Presenter::Impl::setup() {
   if (!dpy || !xq) throw std::runtime_error("no X display");
   xwin = static_cast<Window>(target.x11Window);
   auto createSurface = reinterpret_cast<PFN_vkCreateXlibSurfaceKHR>(vkGetInstanceProcAddr(inst, "vkCreateXlibSurfaceKHR"));
-  if (!createSurface) throw std::runtime_error("no VK_KHR_xlib_surface");
+  if (!createSurface) throw std::runtime_error("the sender's Vulkan instance has no VK_KHR_xlib_surface");
   VkXlibSurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
   si.dpy = dpy;
   si.window = xwin;
   vkCheck(createSurface(inst, &si, nullptr, &surf), "vkCreateXlibSurfaceKHR");
+#else
+  throw std::runtime_error("no window surface for this platform yet");
 #endif
-
-  // ai: The device that presents to the window (a graphics queue that can present: a blit needs graphics): the one
-  // ai: named like opt.device (or LIZ_VK_DEVICE), else the discrete one first; present_id and present_wait where it has both.
-  std::string want = opt.device;
-  if (want.empty() && std::getenv("LIZ_VK_DEVICE")) want = std::getenv("LIZ_VK_DEVICE");
-  uint32_t n = 0;
-  I.vkEnumeratePhysicalDevices(inst, &n, nullptr);
-  std::vector<VkPhysicalDevice> pds(n);
-  I.vkEnumeratePhysicalDevices(inst, &n, pds.data());
-  int best = -1;
-  std::string names;
-  uint32_t api = 0;
-  for (VkPhysicalDevice p : pds) {
-    VkPhysicalDeviceProperties pp;
-    I.vkGetPhysicalDeviceProperties(p, &pp);
-    names += (names.empty() ? "" : ", ") + std::string(pp.deviceName);
-    if (!want.empty() && lower(pp.deviceName).find(lower(want)) == std::string::npos) continue;
-    uint32_t qn = 0;
-    I.vkGetPhysicalDeviceQueueFamilyProperties(p, &qn, nullptr);
-    std::vector<VkQueueFamilyProperties> qs(qn);
-    I.vkGetPhysicalDeviceQueueFamilyProperties(p, &qn, qs.data());
-    for (uint32_t i = 0; i < qn; i++) {
-      VkBool32 ok = VK_FALSE;
-      I.vkGetPhysicalDeviceSurfaceSupportKHR(p, i, surf, &ok);
-      if (!(qs[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) || !ok) continue;
-      const int score = pp.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 2 : pp.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 1 : 0;
-      if (score > best) { best = score; pd = p; qf = i; name = pp.deviceName; api = pp.apiVersion; }
-      break;
-    }
-  }
-  if (!pd) throw std::runtime_error(want.empty() ? "no Vulkan device presents to this window (there are: " + names + ")"
-                                                 : "no Vulkan device named like \"" + want + "\" presents to this window (there are: " + names + ")");
-  uint32_t en = 0;
-  I.vkEnumerateDeviceExtensionProperties(pd, nullptr, &en, nullptr);
-  std::vector<VkExtensionProperties> ex(en);
-  I.vkEnumerateDeviceExtensionProperties(pd, nullptr, &en, ex.data());
-  auto has = [&](const char* e) {
-    for (const auto& x : ex)
-      if (!std::strcmp(x.extensionName, e)) return true;
-    return false;
-  };
-  if (!has(VK_KHR_SWAPCHAIN_EXTENSION_NAME)) throw std::runtime_error(name + " has no swapchain");
-  if (I.vkGetPhysicalDeviceFeatures2 && app.apiVersion >= VK_API_VERSION_1_1 && api >= VK_API_VERSION_1_1 &&
-      has(VK_KHR_PRESENT_ID_EXTENSION_NAME) && has(VK_KHR_PRESENT_WAIT_EXTENSION_NAME)) {
-    VkPhysicalDevicePresentWaitFeaturesKHR pw{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
-    VkPhysicalDevicePresentIdFeaturesKHR pi{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
-    pi.pNext = &pw;
-    VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    f2.pNext = &pi;
-    I.vkGetPhysicalDeviceFeatures2(pd, &f2);
-    presentWait = pi.presentId && pw.presentWait;
-  }
-  std::vector<const char*> de{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-  VkPhysicalDevicePresentWaitFeaturesKHR pwOn{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
-  VkPhysicalDevicePresentIdFeaturesKHR piOn{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
-  pwOn.presentWait = VK_TRUE;
-  piOn.presentId = VK_TRUE;
-  piOn.pNext = &pwOn;
-  if (presentWait) { de.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME); de.push_back(VK_KHR_PRESENT_WAIT_EXTENSION_NAME); }
-  const float prio = 1;
-  VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-  qi.queueFamilyIndex = qf;
-  qi.queueCount = 1;
-  qi.pQueuePriorities = &prio;
-  VkDeviceCreateInfo di{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-  di.pNext = presentWait ? &piOn : nullptr;
-  di.queueCreateInfoCount = 1;
-  di.pQueueCreateInfos = &qi;
-  di.enabledExtensionCount = static_cast<uint32_t>(de.size());
-  di.ppEnabledExtensionNames = de.data();
-  vkCheck(I.vkCreateDevice(pd, &di, nullptr, &dev), "vkCreateDevice");
-#define LIZ_LOADD(f)                                                                     \
-  D.f = reinterpret_cast<PFN_##f>(I.vkGetDeviceProcAddr(dev, #f));                       \
-  if (!D.f) throw std::runtime_error("the Vulkan device has no " #f);
-  LIZ_DEV_FNS(LIZ_LOADD)
-#undef LIZ_LOADD
-  if (presentWait) D.vkWaitForPresentKHR = reinterpret_cast<PFN_vkWaitForPresentKHR>(I.vkGetDeviceProcAddr(dev, "vkWaitForPresentKHR"));
-  if (!D.vkWaitForPresentKHR) presentWait = false;
-  D.vkGetDeviceQueue(dev, qf, 0, &q);
+  VkBool32 ok = VK_FALSE;
+  I.vkGetPhysicalDeviceSurfaceSupportKHR(pd, qf, surf, &ok);
+  if (!ok) throw std::runtime_error(name + " cannot present to this window from its queue family (LIZ_VK_DEVICE names another GPU)");
   I.vkGetPhysicalDeviceMemoryProperties(pd, &mem);
 
   VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
   pci.queueFamilyIndex = qf;
   vkCheck(D.vkCreateCommandPool(dev, &pci, nullptr, &pool), "vkCreateCommandPool");
-  VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-  cai.commandPool = pool;
-  cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  cai.commandBufferCount = FLIGHT;
-  vkCheck(D.vkAllocateCommandBuffers(dev, &cai, cbs), "vkAllocateCommandBuffers");
-  VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-  fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-  VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-  for (int i = 0; i < FLIGHT; i++) {
-    vkCheck(D.vkCreateFence(dev, &fci, nullptr, &fences[i]), "vkCreateFence");
-    vkCheck(D.vkCreateSemaphore(dev, &sci, nullptr, &acquired[i]), "vkCreateSemaphore");
+  {
+    const std::string path = sender->assets() + "/spv/send_expand.spv";
+    std::ifstream in(path, std::ios::binary);
+    std::vector<char> code((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (code.empty() || code.size() % 4) throw std::runtime_error("no expand kernel at " + path);
+    VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    smi.codeSize = code.size();
+    smi.pCode = reinterpret_cast<const uint32_t*>(code.data());
+    vkCheck(D.vkCreateShaderModule(dev, &smi, nullptr, &expandSm), "vkCreateShaderModule");
+    VkDescriptorSetLayoutBinding b[2]{};
+    b[0].binding = 0; b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; b[0].descriptorCount = 1; b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    b[1].binding = 1; b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; b[1].descriptorCount = 1; b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    VkDescriptorSetLayoutCreateInfo dli{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    dli.bindingCount = 2;
+    dli.pBindings = b;
+    vkCheck(D.vkCreateDescriptorSetLayout(dev, &dli, nullptr, &dsl), "vkCreateDescriptorSetLayout");
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &dsl;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
+    vkCheck(D.vkCreatePipelineLayout(dev, &pli, nullptr, &pl), "vkCreatePipelineLayout");
+    VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    cpi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    cpi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    cpi.stage.module = expandSm;
+    cpi.stage.pName = "main";
+    cpi.layout = pl;
+    vkCheck(D.vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &cpi, nullptr, &expandPipe), "vkCreateComputePipelines");
+    VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 16}};
+    VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    dpi.maxSets = 16;
+    dpi.poolSizeCount = 2;
+    dpi.pPoolSizes = ps;
+    vkCheck(D.vkCreateDescriptorPool(dev, &dpi, nullptr, &dpool), "vkCreateDescriptorPool");
   }
   if (!opt.csv.empty()) {
     csv = std::fopen(opt.csv.c_str(), "w");
     if (!csv) throw std::runtime_error(opt.csv + " could not be written");
-    std::fprintf(csv, "id,picture,fresh,acquired_ms,submitted_ms,shown_ms\n");
+    std::fprintf(csv, "id,picture,fresh,acquired_ms,submitted_ms,shown_ms,queued\n");
   }
   queryMode();
   t0 = lastWin = nowMs();
   window(0);
-  say("presenter: " + name + (presentWait ? ", times from present_wait" : ", times from acquire (no present_wait)") +
+  say("presenter: " + name + (shareQueue ? ", the painter's queue shared" : ", the family's second queue") +
+      (presentWait ? ", times from present_wait" : ", times from acquire (no present_wait)") +
       (modeHz > 0 ? ", the mode's refresh " + fmt("%.3f", modeHz) + " Hz" : ""));
 }
 
@@ -639,21 +641,87 @@ void Presenter::Impl::queryMode() {
 #endif
 }
 
-// ai: X11: asks the window manager to take the window out of the compositor (_NET_WM_BYPASS_COMPOSITOR, 1 on, 0 the
-// ai: manager's choice), so the code's presents reach the screen as the swapchain makes them, not as the compositor
-// ai: redraws (2026-10-03: Chrome under Cinnamon left 8.6% of pictures one refresh or less)
+// ai: X11: is the window on the screen direct, or drawn by a compositor? A compositing manager owns _NET_WM_CM_S<screen>
+// ai: and draws into the composite overlay window; a window it unredirects (Mutter, Muffin, KWin and others cut it out
+// ai: of the overlay's bounding shape) shows direct, its swapchain flipping on its own monitor's vblank. The window's
+// ai: centre inside the overlay's shape: composited. No manager: direct. The overlay is asked for and released around
+// ai: each query, so this process never keeps it mapped past the manager's own hold (2026-10-07: full screen under
+// ai: Muffin was composited whenever another window stood above the sender in the stack, even on the other monitor,
+// ai: and its composite tore 3% of frames; the app keeps the window above the others while full screen).
+void Presenter::Impl::queryDirect() {
+#if LIZ_X11 && !defined(_WIN32)
+  if (shapes < 0) {
+    int ev = 0, er = 0;
+    shapes = XCompositeQueryExtension(xq, &ev, &er) && XShapeQueryExtension(xq, &ev, &er) ? 1 : 0;
+  }
+  int now = -1;
+  if (shapes) {
+    XWindowAttributes wa{};
+    if (!XGetWindowAttributes(xq, xwin, &wa)) return;
+    char sel[32];
+    std::snprintf(sel, sizeof sel, "_NET_WM_CM_S%d", XScreenNumberOfScreen(wa.screen));
+    if (!XGetSelectionOwner(xq, XInternAtom(xq, sel, False))) now = 1;
+    else {
+      int cx = 0, cy = 0;
+      Window child = 0;
+      XTranslateCoordinates(xq, xwin, wa.root, wa.width / 2, wa.height / 2, &cx, &cy, &child);
+      const Window cow = XCompositeGetOverlayWindow(xq, wa.root);
+      int n = 0, order = 0;
+      XRectangle* rs = cow ? XShapeGetRectangles(xq, cow, ShapeBounding, &n, &order) : nullptr;
+      bool covered = false;
+      for (int i = 0; i < n; i++)
+        if (cx >= rs[i].x && cx < rs[i].x + static_cast<int>(rs[i].width) && cy >= rs[i].y && cy < rs[i].y + static_cast<int>(rs[i].height)) covered = true;
+      if (rs) XFree(rs);
+      if (cow) XCompositeReleaseOverlayWindow(xq, wa.root);
+      XFlush(xq);
+      now = covered ? 0 : 1;
+    }
+  }
+  if (now != direct) {
+    direct = now;
+    if (now == 0) say("presenter: the compositor draws the window");
+    else if (now == 1) say("presenter: the screen shows the window direct");
+  }
+#endif
+}
+
+// ai: Full screen's part here. X11: asks the window manager to take the window out of the compositor
+// ai: (_NET_WM_BYPASS_COMPOSITOR, 1 on, 0 the manager's choice), so the code's presents reach the screen as the
+// ai: swapchain makes them, not as the compositor redraws (2026-10-03: Chrome under Cinnamon left 8.6% of pictures one
+// ai: refresh or less), and keeps the window above the others (_NET_WM_STATE_ABOVE, a client message as the EWMH asks
+// ai: for a mapped window): a manager that unredirects only the desktop's topmost window (Mutter, Muffin) then shows
+// ai: the code direct while the user works on another monitor (2026-10-07: composited whenever another window stood
+// ai: above it, it tore 3% of frames and paced by the compositor's monitor). Windows: the window topmost.
 void Presenter::Impl::applyBypass() {
   const int b = bypass.exchange(-1);
   if (b < 0) return;
-#if LIZ_X11 && !defined(_WIN32)
+#if defined(_WIN32)
+  HWND top = GetAncestor(static_cast<HWND>(target.hwnd), GA_ROOT);
+  if (!top) top = static_cast<HWND>(target.hwnd);
+  SetWindowPos(top, b ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  say(std::string("presenter: the window ") + (b ? "topmost" : "no longer topmost"));
+#elif LIZ_X11
   const Window top = topLevel(xq, xwin);
   const unsigned long v = b ? 1 : 0;
   XChangeProperty(xq, top, XInternAtom(xq, "_NET_WM_BYPASS_COMPOSITOR", False), XA_CARDINAL, 32, PropModeReplace,
                   reinterpret_cast<const unsigned char*>(&v), 1);
+  XWindowAttributes wa{};
+  if (XGetWindowAttributes(xq, top, &wa)) {
+    XEvent e{};
+    e.xclient.type = ClientMessage;
+    e.xclient.window = top;
+    e.xclient.message_type = XInternAtom(xq, "_NET_WM_STATE", False);
+    e.xclient.format = 32;
+    e.xclient.data.l[0] = b ? 1 : 0;   // ai: _NET_WM_STATE_ADD, _NET_WM_STATE_REMOVE
+    e.xclient.data.l[1] = static_cast<long>(XInternAtom(xq, "_NET_WM_STATE_ABOVE", False));
+    e.xclient.data.l[2] = 0;
+    e.xclient.data.l[3] = 1;   // ai: the source: an application
+    XSendEvent(xq, wa.root, False, SubstructureRedirectMask | SubstructureNotifyMask, &e);
+  }
   XFlush(xq);
   char t[32];
   std::snprintf(t, sizeof t, "0x%lx", static_cast<unsigned long>(top));
-  say("presenter: compositor bypass " + std::string(b ? "on" : "off") + " on window " + t);
+  say("presenter: compositor bypass " + std::string(b ? "on" : "off") + ", the window " + (b ? "above the others" : "stacked as before") + ", window " + t);
 #endif
 }
 
@@ -670,8 +738,12 @@ void Presenter::Impl::makeChain(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D
   VkFormatProperties fp;
   I.vkGetPhysicalDeviceFormatProperties(pd, pick.format, &fp);
   if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) throw std::runtime_error("the swapchain's format takes no blit");
-  uint32_t count = std::max(3u, caps.minImageCount);
+  // ai: deep: 8 images where the surface allows, the presents queued as far ahead of the screen as the chain holds, so
+  // ai: a stall of several refreshes on this thread or the GPU (a painter batch, an X round trip, a fence) never leaves
+  // ai: a refresh without its present (2026-10-07; 3 images held about two refreshes of slack)
+  uint32_t count = std::max(8u, caps.minImageCount);
   if (caps.maxImageCount) count = std::min(count, caps.maxImageCount);
+  count = std::min(count, 16u);
   VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
   if (!(caps.supportedCompositeAlpha & alpha))
     for (uint32_t b = 1; b; b <<= 1)
@@ -705,6 +777,35 @@ void Presenter::Impl::makeChain(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D
   c.done.assign(n, VK_NULL_HANDLE);
   VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
   for (auto& s : c.done) vkCheck(D.vkCreateSemaphore(dev, &sci, nullptr, &s), "vkCreateSemaphore");
+  // ai: one command buffer, fence and acquire semaphore an image (the queue is idle here: remake waited it out)
+  for (VkFence f : fences) if (f) D.vkDestroyFence(dev, f, nullptr);
+  for (VkSemaphore a : acquired) if (a) D.vkDestroySemaphore(dev, a, nullptr);
+  if (!cbs.empty()) D.vkFreeCommandBuffers(dev, pool, static_cast<uint32_t>(cbs.size()), cbs.data());
+  cbs.assign(n, VK_NULL_HANDLE);
+  fences.assign(n, VK_NULL_HANDLE);
+  acquired.assign(n, VK_NULL_HANDLE);
+  VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+  cai.commandPool = pool;
+  cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  cai.commandBufferCount = n;
+  vkCheck(D.vkAllocateCommandBuffers(dev, &cai, cbs.data()), "vkAllocateCommandBuffers");
+  VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  fci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+  for (uint32_t i = 0; i < n; i++) {
+    vkCheck(D.vkCreateFence(dev, &fci, nullptr, &fences[i]), "vkCreateFence");
+    vkCheck(D.vkCreateSemaphore(dev, &sci, nullptr, &acquired[i]), "vkCreateSemaphore");
+  }
+  for (auto& sl : slots) sl.usedBy = -2;
+  // ai: a descriptor set an image in flight, from the pool emptied (nothing is in flight here)
+  vkCheck(D.vkResetDescriptorPool(dev, dpool, 0), "vkResetDescriptorPool");
+  std::vector<VkDescriptorSetLayout> layouts(n, dsl);
+  VkDescriptorSetAllocateInfo dai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  dai.descriptorPool = dpool;
+  dai.descriptorSetCount = n;
+  dai.pSetLayouts = layouts.data();
+  dsets.assign(n, VK_NULL_HANDLE);
+  vkCheck(D.vkAllocateDescriptorSets(dev, &dai, dsets.data()), "vkAllocateDescriptorSets");
+  ringHeld.assign(n, nullptr);
 }
 
 // ai: The swapchain made again (a new size, out of date, suboptimal): the waits stopped first (a wait on a swapchain
@@ -712,7 +813,7 @@ void Presenter::Impl::makeChain(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D
 void Presenter::Impl::remake(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D ext) {
   waiter.finish();
   drain();
-  D.vkDeviceWaitIdle(dev);
+  qIdle();
   makeChain(caps, ext);
   epoch++;
   waiter.start(D, dev, presentWait, c.sc, t0);
@@ -723,29 +824,15 @@ void Presenter::Impl::remake(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D ex
 }
 
 void Presenter::Impl::freeSlot(Slot& s) {
+  if (s.view) D.vkDestroyImageView(dev, s.view, nullptr);
   if (s.img) D.vkDestroyImage(dev, s.img, nullptr);
   if (s.imgMem) D.vkFreeMemory(dev, s.imgMem, nullptr);
-  if (s.buf) D.vkDestroyBuffer(dev, s.buf, nullptr);
-  if (s.bufMem) D.vkFreeMemory(dev, s.bufMem, nullptr);
   s = Slot{};
 }
 
+// ai: a slot's image: RGBA8, written by the expand kernel (storage), read by the blit (transfer source)
 void Presenter::Impl::makeSlot(Slot& s, int w, int h) {
   freeSlot(s);
-  VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-  bi.size = static_cast<VkDeviceSize>(w) * h * 4;
-  bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-  vkCheck(D.vkCreateBuffer(dev, &bi, nullptr, &s.buf), "vkCreateBuffer");
-  VkMemoryRequirements r;
-  D.vkGetBufferMemoryRequirements(dev, s.buf, &r);
-  VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-  ai.allocationSize = r.size;
-  ai.memoryTypeIndex = memType(r.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  vkCheck(D.vkAllocateMemory(dev, &ai, nullptr, &s.bufMem), "vkAllocateMemory");
-  vkCheck(D.vkBindBufferMemory(dev, s.buf, s.bufMem, 0), "vkBindBufferMemory");
-  void* m = nullptr;
-  vkCheck(D.vkMapMemory(dev, s.bufMem, 0, VK_WHOLE_SIZE, 0, &m), "vkMapMemory");
-  s.map = static_cast<uint8_t*>(m);
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ii.imageType = VK_IMAGE_TYPE_2D;
   ii.format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -754,14 +841,22 @@ void Presenter::Impl::makeSlot(Slot& s, int w, int h) {
   ii.arrayLayers = 1;
   ii.samples = VK_SAMPLE_COUNT_1_BIT;
   ii.tiling = VK_IMAGE_TILING_OPTIMAL;
-  ii.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  ii.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   vkCheck(D.vkCreateImage(dev, &ii, nullptr, &s.img), "vkCreateImage");
+  VkMemoryRequirements r;
   D.vkGetImageMemoryRequirements(dev, s.img, &r);
+  VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
   ai.allocationSize = r.size;
   ai.memoryTypeIndex = memType(r.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
   vkCheck(D.vkAllocateMemory(dev, &ai, nullptr, &s.imgMem), "vkAllocateMemory");
   vkCheck(D.vkBindImageMemory(dev, s.img, s.imgMem, 0), "vkBindImageMemory");
+  VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+  vi.image = s.img;
+  vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  vi.format = VK_FORMAT_R8G8B8A8_UNORM;
+  vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCheck(D.vkCreateImageView(dev, &vi, nullptr, &s.view), "vkCreateImageView");
   s.w = w;
   s.h = h;
 }
@@ -772,8 +867,8 @@ void Presenter::Impl::drain() {
     win.add(s, refreshMs);
     all.add(s, refreshMs);
     if (csv)
-      std::fprintf(csv, "%llu,%llu,%d,%s,%s,%s\n", static_cast<unsigned long long>(s.id), static_cast<unsigned long long>(s.picture),
-                   s.fresh ? 1 : 0, fmt("%.3f", s.acquiredMs).c_str(), fmt("%.3f", s.submittedMs).c_str(), fmt("%.3f", s.shownMs).c_str());
+      std::fprintf(csv, "%llu,%llu,%d,%s,%s,%s,%d\n", static_cast<unsigned long long>(s.id), static_cast<unsigned long long>(s.picture),
+                   s.fresh ? 1 : 0, fmt("%.3f", s.acquiredMs).c_str(), fmt("%.3f", s.submittedMs).c_str(), fmt("%.3f", s.shownMs).c_str(), s.queued);
   }
 }
 
@@ -784,19 +879,24 @@ void Presenter::Impl::window(double secs) {
   const double m = win.measuredHz(modeHz);
   if (m > 0) measured = m;
   queryMode();
+  queryDirect();
   const Slot* s = cur >= 0 ? &slots[cur] : nullptr;
   const double per = secs > 0 ? secs : 1;
   std::string st = "{\"shownFps\":" + fmt("%.1f", secs > 0 ? win.pictures / per : 0) +
                    ",\"presentsPerSec\":" + fmt("%.1f", secs > 0 ? winPresents / per : 0) + ",\"hz\":" + fmt("%.3f", refreshHz()) +
                    ",\"modeHz\":" + fmt("%.3f", modeHz) + ",\"held\":" + win.heldJson() + ",\"missed\":" + std::to_string(win.missed) +
-                   ",\"behind\":" + std::to_string(win.behind) + ",\"paused\":" + (paused ? "true" : "false") + ",\"surface\":\"" +
+                   ",\"behind\":" + std::to_string(win.behind) + ",\"queued\":" + fmt("%.1f", win.queuedN ? win.queuedSum / static_cast<double>(win.queuedN) : 0.0) +
+                   ",\"queuedMin\":" + std::to_string(std::max(0, win.queuedMin)) + ",\"images\":" + std::to_string(c.images.size()) +
+                   ",\"paused\":" + (paused ? "true" : "false") + ",\"surface\":\"" +
                    std::to_string(c.extent.width) + "x" + std::to_string(c.extent.height) + "\",\"frame\":\"" +
                    std::to_string(s ? s->w : 0) + "x" + std::to_string(s ? s->h : 0) + "\",\"presentWait\":" + (presentWait ? "true" : "false") +
+                   (direct >= 0 ? std::string(",\"direct\":") + (direct ? "true" : "false") : std::string()) +
                    ",\"device\":\"" + esc(name) + "\",\"error\":\"";
   const double total = (nowMs() - t0) / 1000;
   std::string tt = "{\"secs\":" + fmt("%.3f", total) + ",\"pictures\":" + std::to_string(all.pictures) + ",\"presents\":" +
                    std::to_string(all.presents) + ",\"held\":" + all.heldJson() + ",\"missed\":" + std::to_string(all.missed) +
-                   ",\"behind\":" + std::to_string(all.behind) + ",\"unknown\":" + std::to_string(all.unknown) + ",\"hz\":" +
+                   ",\"behind\":" + std::to_string(all.behind) + ",\"queued\":" + fmt("%.1f", all.queuedN ? all.queuedSum / static_cast<double>(all.queuedN) : 0.0) +
+                   ",\"queuedMin\":" + std::to_string(std::max(0, all.queuedMin)) + ",\"unknown\":" + std::to_string(all.unknown) + ",\"hz\":" +
                    fmt("%.3f", refreshHz()) + ",\"modeHz\":" + fmt("%.3f", modeHz) + "}";
   {
     std::lock_guard<std::mutex> l(statsMu);
@@ -808,8 +908,13 @@ void Presenter::Impl::window(double secs) {
 }
 
 void Presenter::Impl::presentOnce(bool live) {
-  VkSurfaceCapabilitiesKHR caps;
-  vkCheck(I.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(pd, surf, &caps), "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+  // ai: the surface's capabilities once a second and when the chain must be made again (a resize shows first as out
+  // ai: of date or suboptimal), not every present
+  const double nowT = nowMs();
+  if (!c.sc || resized || suboptimal || nowT - capsAt >= 1000) {
+    vkCheck(I.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(pd, surf, &caps), "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+    capsAt = nowT;
+  }
   VkExtent2D ext = caps.currentExtent;
   if (ext.width == UINT32_MAX) {
     ext = windowSize();
@@ -835,8 +940,10 @@ void Presenter::Impl::presentOnce(bool live) {
   suboptimal = false;
   if (!c.sc || sized || resized) remake(caps, ext);
 
-  const int fl = static_cast<int>(frame % FLIGHT);
+  const int N = static_cast<int>(cbs.size());
+  const int fl = static_cast<int>(frame % N);
   D.vkWaitForFences(dev, 1, &fences[fl], VK_TRUE, UINT64_MAX);
+  ringHeld[fl].reset();
   uint32_t idx = 0;
   // ai: an acquire waits at most 100 ms (a window the screen does not show, minimised or on no monitor, can stall
   // ai: FIFO): then the loop comes round again, so a stop or a stats window is never held up behind it
@@ -847,7 +954,8 @@ void Presenter::Impl::presentOnce(bool live) {
   else vkCheck(r, "vkAcquireNextImageKHR");
   const double acq = nowMs() - t0;
   D.vkResetFences(dev, 1, &fences[fl]);
-  if (measured <= 0 && modeHz <= 0 && firstAcq.size() < 16) {
+  // ai: the first chain-full of acquires return at once (the images are free): the early refresh reads the ones after
+  if (measured <= 0 && modeHz <= 0 && frame >= N && firstAcq.size() < 16) {
     firstAcq.push_back(acq);
     if (firstAcq.size() >= 6) {
       std::vector<double> g;
@@ -857,26 +965,32 @@ void Presenter::Impl::presentOnce(bool live) {
     }
   }
 
-  // ai: a new picture when one is due and painted; a due one not yet painted keeps the last up (behind)
+  // ai: a new picture when one is due and painted: its slot in the sender's ring taken (no copy), expanded below
+  // ai: into a slot image; a due one not yet painted keeps the last up (behind)
   bool fresh = false;
+  int ringSlot = -1;
+  std::shared_ptr<wg::Buffer> ring;
+  uint32_t ringFS = 0, ringRW = 0;
   const double i = static_cast<double>(presents);
   if (live && i + 0.5 >= due) {
     const int p = (cur + 1) % static_cast<int>(slots.size());
-    if (slots[p].usedBy == frame - 1) D.vkWaitForFences(dev, 1, &fences[(frame - 1) % FLIGHT], VK_TRUE, UINT64_MAX);
+    if (slots[p].usedBy >= 0 && slots[p].usedBy > frame - N) D.vkWaitForFences(dev, 1, &fences[slots[p].usedBy % N], VK_TRUE, UINT64_MAX);
     if (lockFor(*senderLock, 2.0)) {
       std::lock_guard<std::mutex> held(*senderLock, std::adopt_lock);
-      if (sender->ready()) {
-        const int fw = sender->width(), fh = sender->side();
-        if (fw > 0 && fh > 0) {
-          if (slots[p].w != fw || slots[p].h != fh) makeSlot(slots[p], fw, fh);
-          if (sender->take(slots[p].map, fw * 4)) {
-            if (cur >= 0) picture++;
-            cur = p;
-            fresh = true;
-            const double per = period();
-            due = i - due > per ? i + per : due + per;
-          }
-        }
+      const int fw = sender->width(), fh = sender->side();
+      uint64_t seq = 0;
+      if (fw > 0 && fh > 0 && sender->takeSlot(&seq, &ringSlot)) {
+        ring = sender->ring();
+        ringFS = sender->ringFrameWords();
+        ringRW = sender->ringRowWords();
+        if (slots[p].w != fw || slots[p].h != fh) makeSlot(slots[p], fw, fh);
+        if (cur >= 0) picture++;
+        cur = p;
+        fresh = true;
+        // ai: the schedule: present i shows this picture, and the next is due a period on, from now where this
+        // ai: one came late (a late picture holds its whole period; the same as before at one refresh a picture)
+        const double per = period();
+        due = std::max(due + per, i + per);
       }
     }
     if (!fresh && cur >= 0) { win.behind++; all.behind++; }
@@ -887,16 +1001,32 @@ void Presenter::Impl::presentOnce(bool live) {
   VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
   D.vkBeginCommandBuffer(cb, &bi);
-  if (fresh) {
+  if (fresh && ring) {
     Slot& s = slots[cur];
-    barrier(D, cb, s.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkBufferImageCopy copy{};
-    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    copy.imageExtent = {static_cast<uint32_t>(s.w), static_cast<uint32_t>(s.h), 1};
-    D.vkCmdCopyBufferToImage(cb, s.buf, s.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-    barrier(D, cb, s.img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
-            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    ringHeld[fl] = ring;
+    VkDescriptorBufferInfo bi{ring->buf, 0, VK_WHOLE_SIZE};
+    VkDescriptorImageInfo ii{VK_NULL_HANDLE, s.view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w[2]{};
+    w[0].sType = w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w[0].dstSet = w[1].dstSet = dsets[fl];
+    w[0].dstBinding = 0; w[0].descriptorCount = 1; w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[0].pBufferInfo = &bi;
+    w[1].dstBinding = 1; w[1].descriptorCount = 1; w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w[1].pImageInfo = &ii;
+    D.vkUpdateDescriptorSets(dev, 2, w, 0, nullptr);
+    // ai: the ring's frame, painted on the painter's queue and complete before the sender marked it ready (its fence
+    // ai: waited there): made visible to this queue's compute stage
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = 0;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    D.vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+    barrier(D, cb, s.img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    D.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, expandPipe);
+    D.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &dsets[fl], 0, nullptr);
+    const uint32_t pc[4] = {static_cast<uint32_t>(ringSlot) * ringFS, ringRW, static_cast<uint32_t>(s.w), static_cast<uint32_t>(s.h)};
+    D.vkCmdPushConstants(cb, pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc);
+    D.vkCmdDispatch(cb, (static_cast<uint32_t>(s.w) + 15) / 16, (static_cast<uint32_t>(s.h) + 15) / 16, 1);
+    barrier(D, cb, s.img, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
   }
   const VkImage img = c.images[idx];
   barrier(D, cb, img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -944,7 +1074,7 @@ void Presenter::Impl::presentOnce(bool live) {
   si.pCommandBuffers = &cb;
   si.signalSemaphoreCount = 1;
   si.pSignalSemaphores = &c.done[idx];
-  vkCheck(D.vkQueueSubmit(q, 1, &si, fences[fl]), "vkQueueSubmit");
+  vkCheck(qSubmit(si, fences[fl]), "vkQueueSubmit");
   const double sub = nowMs() - t0;
 
   VkPresentInfoKHR pi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
@@ -958,7 +1088,7 @@ void Presenter::Impl::presentOnce(bool live) {
   pidInfo.swapchainCount = 1;
   pidInfo.pPresentIds = &id;
   if (presentWait) pi.pNext = &pidInfo;
-  r = D.vkQueuePresentKHR(q, &pi);
+  r = qPresent(pi);
   if (r == VK_ERROR_OUT_OF_DATE_KHR) resized = true;
   else if (r == VK_SUBOPTIMAL_KHR) { if (!ignoreSuboptimal) suboptimal = true; }
   else vkCheck(r, "vkQueuePresentKHR");
@@ -970,6 +1100,7 @@ void Presenter::Impl::presentOnce(bool live) {
     s.acquiredMs = acq;
     s.submittedMs = sub;
     s.epoch = epoch;
+    s.queued = presentWait ? static_cast<int>(id - waiter.shownId.load()) : -1;
     waiter.push(s);
   }
   if (live) presents++;
@@ -1011,25 +1142,35 @@ void Presenter::Impl::run() {
 
 void Presenter::Impl::teardown() {
   waiter.finish();
-  // ai: a device whose functions did not all load made nothing else (they load before anything is made)
-  if (dev) {
-    if (D.vkDeviceWaitIdle) D.vkDeviceWaitIdle(dev);
+  // ai: the device is the sender's: this presenter frees what it made on it and leaves the device and the instance
+  if (dev && D.vkQueueWaitIdle) {
+    qIdle();
     // ai: the last window, however short (its secs say), and the run's totals with every present counted
     if (t0 > 0) window((nowMs() - lastWin) / 1000);
-    for (int i = 0; i < FLIGHT; i++) {
-      if (fences[i]) D.vkDestroyFence(dev, fences[i], nullptr);
-      if (acquired[i]) D.vkDestroySemaphore(dev, acquired[i], nullptr);
-    }
+    for (VkFence f : fences) if (f) D.vkDestroyFence(dev, f, nullptr);
+    for (VkSemaphore a : acquired) if (a) D.vkDestroySemaphore(dev, a, nullptr);
+    if (!cbs.empty() && pool) D.vkFreeCommandBuffers(dev, pool, static_cast<uint32_t>(cbs.size()), cbs.data());
+    fences.clear();
+    acquired.clear();
+    cbs.clear();
     if (pool) D.vkDestroyCommandPool(dev, pool, nullptr);
-    for (auto& s : slots) freeSlot(s);
-    for (VkSemaphore s : c.done) D.vkDestroySemaphore(dev, s, nullptr);
+    pool = VK_NULL_HANDLE;
+    for (auto& sl : slots) freeSlot(sl);
+    for (VkSemaphore a : c.done) D.vkDestroySemaphore(dev, a, nullptr);
     if (c.sc) D.vkDestroySwapchainKHR(dev, c.sc, nullptr);
-    if (D.vkDestroyDevice) D.vkDestroyDevice(dev, nullptr);
-    dev = VK_NULL_HANDLE;
+    c = Chain{};
+    ringHeld.clear();
+    dsets.clear();
+    if (dpool) D.vkDestroyDescriptorPool(dev, dpool, nullptr);
+    if (expandPipe) D.vkDestroyPipeline(dev, expandPipe, nullptr);
+    if (pl) D.vkDestroyPipelineLayout(dev, pl, nullptr);
+    if (dsl) D.vkDestroyDescriptorSetLayout(dev, dsl, nullptr);
+    if (expandSm) D.vkDestroyShaderModule(dev, expandSm, nullptr);
+    dpool = VK_NULL_HANDLE; expandPipe = VK_NULL_HANDLE; pl = VK_NULL_HANDLE; dsl = VK_NULL_HANDLE; expandSm = VK_NULL_HANDLE;
   }
   if (surf && I.vkDestroySurfaceKHR) I.vkDestroySurfaceKHR(inst, surf, nullptr);
-  if (inst && I.vkDestroyInstance) I.vkDestroyInstance(inst, nullptr);
   surf = VK_NULL_HANDLE;
+  dev = VK_NULL_HANDLE;
   inst = VK_NULL_HANDLE;
 #if LIZ_X11 && !defined(_WIN32)
   if (xq) XCloseDisplay(xq);
@@ -1038,6 +1179,23 @@ void Presenter::Impl::teardown() {
 #endif
   if (csv) std::fclose(csv);
   csv = nullptr;
+}
+
+const wg::DeviceExtras& Presenter::deviceExtras() {
+  static const wg::DeviceExtras extras = [] {
+    wg::DeviceExtras x;
+    x.instanceExts = {VK_KHR_SURFACE_EXTENSION_NAME,
+#if defined(_WIN32)
+                      VK_KHR_WIN32_SURFACE_EXTENSION_NAME
+#elif LIZ_X11
+                      VK_KHR_XLIB_SURFACE_EXTENSION_NAME
+#endif
+    };
+    x.deviceExts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PRESENT_ID_EXTENSION_NAME, VK_KHR_PRESENT_WAIT_EXTENSION_NAME};
+    x.graphics = true;
+    return x;
+  }();
+  return extras;
 }
 
 std::unique_ptr<Presenter> Presenter::start(const PresentTarget& target, Sender* sender, std::mutex* senderLock,

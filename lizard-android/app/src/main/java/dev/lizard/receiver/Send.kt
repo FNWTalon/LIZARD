@@ -55,6 +55,7 @@ import org.json.JSONObject
 import java.io.File
 import kotlin.concurrent.thread
 import kotlin.math.floor
+import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
 import java.util.Locale
@@ -75,7 +76,10 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 class SendState(private val a: MainActivity) {
     sealed interface Phase { data object Idle : Phase; data object Preparing : Phase; data object On : Phase; data class Error(val why: String) : Phase }
     data class Stats(val label: String = "", val shownFps: Double = 0.0, val offeredKBs: Double = 0.0, val paintMs: Double = 0.0, val pass: Double = 0.0,
-                     val painter: String = "", val gpuWhy: String = "", val sentBytes: Long = 0)   // ai: sentBytes: the file's bytes as they go (2026-10-05)
+                     val painter: String = "", val gpuWhy: String = "", val sentBytes: Long = 0,   // ai: sentBytes: the file's bytes as they go (2026-10-05)
+                     // ai: the GPU ring's tally over the last second (2026-10-07, jni.cpp txPostStats): posted, held by
+                     // ai: vsyncs, late, behind, buffers filled of the ring's
+                     val gpuRing: Boolean = false, val posted: Long = 0, val held: String = "", val late: Long = 0, val behind: Long = 0, val filled: Int = 0, val slots: Int = 0)
 
     private val prefs = a.getSharedPreferences("lizard", Context.MODE_PRIVATE)
     var uri by mutableStateOf<Uri?>(null)
@@ -116,6 +120,7 @@ class SendState(private val a: MainActivity) {
 
     private var h = 0L
     private var surface: Surface? = null
+    var shown by mutableStateOf(false)   // ai: a picture has been presented since the start (Send.kt CodeBox's overlay)
     private var room = 0
     private var configured = 0          // ai: the room the sender was last configured for
     private var due = 0L
@@ -156,6 +161,7 @@ class SendState(private val a: MainActivity) {
         val u = uri
         if (!test && u == null) return
         phase = Phase.Preparing
+        shown = false
         thread(name = "lizard-send-prep") {
             val dir = File(a.cacheDir, "send").apply { deleteRecursively(); mkdirs() }
             val path = if (test) "" else try {
@@ -175,10 +181,10 @@ class SendState(private val a: MainActivity) {
                 if (hnd == 0L) { phase = Phase.Error("This file cannot be sent: $err"); return@runOnUiThread }
                 if (phase != Phase.Preparing) { Native.txDestroy(hnd); return@runOnUiThread }   // ai: stopped meanwhile
                 h = hnd; configured = 0; phase = Phase.On
+                vsynced = Build.VERSION.SDK_INT >= 33 && Native.prop("debug.lizard.sendvsync") != "0"
                 screenFor(true)
                 reconfigure()
-                due = 0; lastStats = 0
-                vsynced = Build.VERSION.SDK_INT >= 33 && Native.prop("debug.lizard.sendvsync") != "0"
+                due = 0; lastStats = 0; lastTimeline = 0; vsyncNs = 0
                 Log.i(Engine.TAG, "send: ${if (vsynced) "frames posted for their vsync" else "frames into the window's queue"}")
                 if (vsynced && Build.VERSION.SDK_INT >= 33) Choreographer.getInstance().postVsyncCallback(vsync)
                 else Choreographer.getInstance().postFrameCallback(frame)
@@ -191,6 +197,7 @@ class SendState(private val a: MainActivity) {
         if (Build.VERSION.SDK_INT >= 33) Choreographer.getInstance().removeVsyncCallback(vsync)
         if (h != 0L) { Native.txDestroy(h); h = 0 }
         if (phase == Phase.On || phase == Phase.Preparing) phase = Phase.Idle
+        shown = false
         stats = Stats(); paused = false
         screenFor(false)
     }
@@ -201,7 +208,7 @@ class SendState(private val a: MainActivity) {
         if (h == 0L || room <= 0) return
         val subch = if (blocks > 0) 8 * blocks else Pick.pick(room.toDouble())
         val threads = min(4, maxOf(1, Runtime.getRuntime().availableProcessors() - 2))
-        val err = Native.txConfigure(h, Pick.nFor(subch), subch, Pick.span(), fps, threads, when (painter) { "cpu" -> 0; "gpu" -> 1; else -> 2 }, assets, codes, gap)
+        val err = Native.txConfigure(h, Pick.nFor(subch), subch, Pick.span(), fps, threads, when (painter) { "cpu" -> 0; "gpu" -> 1; else -> 2 }, assets, codes, gap, vsynced)
         if (err.isNotEmpty()) { phase = Phase.Error(err); stop(); return }
         configured = room
         picked = subch
@@ -235,16 +242,51 @@ class SendState(private val a: MainActivity) {
         val s = surface
         if (paused) due = 0L   // ai: presented at once on a resume
         else if (s != null && configured > 0 && t >= due - 4_000_000L) {
-            if (Native.txPresent(h, s, vsync, vw, vh)) due = if (due == 0L || t - due > period) t + period else due + period
+            if (Native.txPresent(h, s, vsync, vw, vh)) { due = if (due == 0L || t - due > period) t + period else due + period; if (!shown) shown = true }
         }
-        if (t - lastStats > 1_000_000_000L) {
-            lastStats = t
-            runCatching {
-                val j = JSONObject(Native.txStats(h))
-                stats = Stats(j.optString("label"), j.optDouble("shownFps"), j.optDouble("offeredKBs"), j.optDouble("paintMs"), j.optDouble("pass", 0.0),
-                    j.optString("painter"), j.optString("gpuWhy"), j.optLong("sentBytes", 0))
-                if (j.optString("error").isNotEmpty()) phase = Phase.Error(j.optString("error"))
-            }
+        pollStats(t)
+    }
+    // ai: The vsync path's schedule (2026-10-07: "present on an exact fixed-refresh schedule"): the display's period
+    // ai: from the frame timelines' spacing; a picture every round(period / asked) vsyncs where that is whole within
+    // ai: 1%, else on the asked rate's grid (the web's due rule); for every timeline the Choreographer offers (the
+    // ai: preferred one and the ones after it) not yet passed, the next filled buffer is posted for it where a picture
+    // ai: is due there (Native.txPost), so the compositor holds the pictures ahead. Nothing filled at a due vsync: the
+    // ai: picture on screen stays (counted behind in the ring's tally) and the next picture takes the next due vsync.
+    private var vsyncNs = 0L
+    private var lastTimeline = 0L
+    @RequiresApi(33)
+    private fun tickVsync(d: Choreographer.FrameData) {
+        val tls = d.frameTimelines.sortedBy { it.expectedPresentationTimeNanos }
+        if (tls.size >= 2) { val p = tls[1].expectedPresentationTimeNanos - tls[0].expectedPresentationTimeNanos; if (p > 1_000_000L) vsyncNs = p }
+        val s = surface
+        val askedNs = 1_000_000_000L / fps
+        val perV = if (vsyncNs > 0) askedNs.toDouble() / vsyncNs else 0.0
+        val per = Math.round(perV)
+        val periodNs = if (per >= 1 && vsyncNs > 0 && abs(perV - per) <= 0.01 * per) per * vsyncNs else askedNs
+        if (paused) { due = 0L; lastTimeline = tls.lastOrNull()?.expectedPresentationTimeNanos ?: lastTimeline }
+        else for (tl in tls) {
+            val t = tl.expectedPresentationTimeNanos
+            if (t <= lastTimeline) continue
+            lastTimeline = t
+            if (s == null || configured <= 0 || t + vsyncNs / 2 < due) continue
+            if (Native.txPost(h, s, tl.vsyncId, t, vsyncNs, vw, vh)) { due = if (due == 0L || t - due > periodNs) t + periodNs else due + periodNs; if (!shown) shown = true }
+            else due = t + periodNs
+        }
+        pollStats(tls.firstOrNull()?.expectedPresentationTimeNanos ?: System.nanoTime())
+    }
+    private fun pollStats(t: Long) {
+        if (t - lastStats <= 1_000_000_000L) return
+        lastStats = t
+        runCatching {
+            val j = JSONObject(Native.txStats(h))
+            val p = if (vsynced) JSONObject(Native.txPostStats(h)) else null
+            val held = p?.optJSONObject("held")?.let { o -> o.keys().asSequence().sortedBy { it.toIntOrNull() ?: 0 }.joinToString(", ") { "$it: ${o.opt(it)}" } }.orEmpty()
+            stats = Stats(j.optString("label"), j.optDouble("shownFps"), j.optDouble("offeredKBs"), j.optDouble("paintMs"), j.optDouble("pass", 0.0),
+                j.optString("painter"), j.optString("gpuWhy"), j.optLong("sentBytes", 0),
+                p?.optBoolean("gpu") ?: false, p?.optLong("posted") ?: 0, held, p?.optLong("late") ?: 0, p?.optLong("behind") ?: 0, p?.optInt("filled") ?: 0, p?.optInt("slots") ?: 0)
+            if (p?.optBoolean("gpu") == true) Log.i(Engine.TAG, "send: posted ${stats.posted}, held {${held}}, late ${stats.late}, behind ${stats.behind}, ${stats.filled} of ${stats.slots} buffers filled, ${j.optInt("ahead")} of ${j.optInt("depth")} frames painted ahead")
+            if (j.optString("error").isNotEmpty()) phase = Phase.Error(j.optString("error"))
+            if (p != null && p.optString("error").isNotEmpty()) phase = Phase.Error(p.optString("error"))
         }
     }
     private val frame = object : Choreographer.FrameCallback {
@@ -259,8 +301,7 @@ class SendState(private val a: MainActivity) {
         object : Choreographer.VsyncCallback {
             override fun onVsync(d: Choreographer.FrameData) {
                 if (h == 0L) return
-                val tl = d.preferredFrameTimeline
-                tick(tl.expectedPresentationTimeNanos, tl.vsyncId)
+                tickVsync(d)
                 Choreographer.getInstance().postVsyncCallback(this)
             }
         }
@@ -349,7 +390,7 @@ internal fun MainActivity.SendScreen() {
         }
     } else BoxWithConstraints(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
         // ai: no narrower than Start, Stop or Resume beside Fullscreen with no label folded (2026-10-06)
-        val sideLo = TwoCellFloor(listOf("Start", "Stop", "Resume", "Fullscreen"))
+        val sideLo = CellsFloor(listOf("Start", "Stop", "Resume", "Fullscreen"), 2)
         val sideW = SideWidth(maxWidth, sideDp, sideLo)
         val screenW = maxWidth
         Row(Modifier.fillMaxSize()) {
@@ -377,9 +418,13 @@ internal fun MainActivity.SendScreen() {
 private fun MainActivity.CodeBox(modifier: Modifier) {
     val s = send
     val sending = s.phase == SendState.Phase.On || s.phase == SendState.Phase.Preparing
-    Box(modifier.clipToBounds().background(if (sending) Bg else Soft), contentAlignment = Alignment.Center) {
+    // ai: the file's look stays over the surface until the first picture is presented (2026-10-07): a SurfaceView is
+    // ai: black from its making until its first frame, through Preparing (a file compressed) and the first presents,
+    // ai: and a box drawn over it in the window hides it
+    val shown = sending && s.shown
+    Box(modifier.clipToBounds().background(if (shown) Bg else Soft), contentAlignment = Alignment.Center) {
         if (sending) AndroidView({ ctx -> SurfaceView(ctx).apply { holder.addCallback(s.holder) } }, Modifier.fillMaxSize())
-        else Column(Modifier.fillMaxSize().clickable(enabled = !s.test) { pickFile() }, verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+        if (!shown) Column(Modifier.fillMaxSize().background(Soft).clickable(enabled = !s.test && !sending) { pickFile() }, verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(painterResource(R.drawable.ic_file), contentDescription = null, Modifier.size(24.dp), tint = Muted)
             Text(if (s.test) "Test stream" else if (s.uri == null) "Choose a file" else s.name, style = MaterialTheme.typography.bodyMedium, color = Muted,
@@ -432,7 +477,7 @@ private fun MainActivity.SendPanel(onFull: () -> Unit) {
     }
     if (line.isNotEmpty()) Text(line, style = MaterialTheme.typography.titleMedium, color = if (err != null) Bad else Fg, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
     if (on && st.offeredKBs > 0) Text(Readout.rate(st.offeredKBs), style = MaterialTheme.typography.bodyMedium, color = Muted, modifier = Modifier.padding(top = 2.dp))
-    HeatWarning(heat, clocks, Modifier.padding(top = 8.dp))
+    HeatWarning(heat, clocks, modifier = Modifier.padding(top = 8.dp))
     Spacer(Modifier.height(8.dp))
 }
 
@@ -455,6 +500,7 @@ private fun sendLab(s: SendState): String {
     val st = s.stats
     if (st.label.isEmpty()) return ""
     return "${st.label} on the ${if (st.painter == "gpu") "GPU" else "CPU"}, %.1f frames/s, paint %.1f ms a frame".format(Locale.ROOT, st.shownFps, st.paintMs) +
+        (if (st.gpuRing) "\nposted ${st.posted}, held {${st.held}}, late ${st.late}, behind ${st.behind}, ${st.filled} of ${st.slots} buffers filled" else "") +
         (if (!s.test && s.size > 0) "\nfile ${s.size} B" + (if (st.sentBytes in 1 until s.size) ", ${st.sentBytes} B as sent (zstd)" else "") +
             (if (st.pass > 0) ", pass ${floor(st.pass).toInt()}" else "") else "") +
         if (st.painter == "cpu" && s.painter != "cpu" && st.gpuWhy.isNotEmpty()) "\nnot the GPU: ${st.gpuWhy}" else ""

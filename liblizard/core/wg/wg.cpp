@@ -89,7 +89,9 @@ static std::vector<std::string> deviceExtensions(VkPhysicalDevice p) {
   return out;
 }
 
-std::unique_ptr<Device> Device::create(const std::string& want, bool validate, std::function<void(const std::string&)> log) {
+bool Device::has(const char* ext) const { return std::find(enabled.begin(), enabled.end(), ext) != enabled.end(); }
+
+std::unique_ptr<Device> Device::create(const std::string& want, bool validate, std::function<void(const std::string&)> log, const DeviceExtras& extras) {
   auto d = std::make_unique<Device>();
   d->log = log ? log : [](const std::string&) {};
   static const VkResult loader = volkInitialize();
@@ -115,6 +117,10 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
         iexts.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
         ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
       }
+    // ai: the host's instance extensions (a window surface), where the loader offers them
+    for (const std::string& x : extras.instanceExts)
+      for (auto& e : ie)
+        if (x == e.extensionName) { iexts.push_back(x.c_str()); break; }
   }
   ici.enabledExtensionCount = (uint32_t)iexts.size();
   ici.ppEnabledExtensionNames = iexts.data();
@@ -243,6 +249,7 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   for (uint32_t i = 0; i < qn && fam < 0; i++) if ((qf[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && (qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) fam = (int)i;
   for (uint32_t i = 0; i < qn && fam < 0; i++) if (qf[i].queueFlags & VK_QUEUE_COMPUTE_BIT) fam = (int)i;
   if (fam < 0) throw Error(d->name + ": no compute queue");
+  if (extras.graphics && !(qf[fam].queueFlags & VK_QUEUE_GRAPHICS_BIT)) throw Error(d->name + ": no queue that both computes and draws");
   d->family = (uint32_t)fam;
   F.timestamps = qf[fam].timestampValidBits > 0 && props.limits.timestampComputeAndGraphics;
   d->timestampMask = qf[fam].timestampValidBits >= 64 ? ~0ull : ((1ull << qf[fam].timestampValidBits) - 1);
@@ -280,6 +287,28 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   if (F.coopmat) { cmE.cooperativeMatrix = VK_TRUE; chain(cmE); enable.push_back(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME); }
   VkPhysicalDeviceTimelineSemaphoreFeatures tlE{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
   if (F.timeline) { tlE.timelineSemaphore = VK_TRUE; chain(tlE); if (!v12) enable.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME); }
+  // ai: the host's device extensions, where the device has them; present_id and present_wait with their features
+  // ai: where both are there (else neither: a wait needs the id)
+  auto enabledHas = [&](const char* e) {
+    for (const char* s : enable) if (!strcmp(s, e)) return true;
+    return false;
+  };
+  for (const std::string& x : extras.deviceExts)
+    if (has(x.c_str()) && !enabledHas(x.c_str())) enable.push_back(x.c_str());
+  VkPhysicalDevicePresentIdFeaturesKHR pidE{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
+  VkPhysicalDevicePresentWaitFeaturesKHR pwE{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
+  if (enabledHas(VK_KHR_PRESENT_ID_EXTENSION_NAME) || enabledHas(VK_KHR_PRESENT_WAIT_EXTENSION_NAME)) {
+    VkPhysicalDevicePresentIdFeaturesKHR pidQ{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR};
+    VkPhysicalDevicePresentWaitFeaturesKHR pwQ{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR};
+    pidQ.pNext = &pwQ;
+    VkPhysicalDeviceFeatures2 q2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    q2.pNext = &pidQ;
+    vkGetPhysicalDeviceFeatures2(pick, &q2);
+    const bool both = enabledHas(VK_KHR_PRESENT_ID_EXTENSION_NAME) && enabledHas(VK_KHR_PRESENT_WAIT_EXTENSION_NAME) && pidQ.presentId && pwQ.presentWait;
+    if (both) { pidE.presentId = VK_TRUE; pwE.presentWait = VK_TRUE; chain(pidE); chain(pwE); }
+    else enable.erase(std::remove_if(enable.begin(), enable.end(), [](const char* s) {
+      return !strcmp(s, VK_KHR_PRESENT_ID_EXTENSION_NAME) || !strcmp(s, VK_KHR_PRESENT_WAIT_EXTENSION_NAME); }), enable.end());
+  }
   e2.features.shaderStorageImageExtendedFormats = F.storageR8;
   // ai: a portability layer's device (MoltenVK) must have its subset enabled when it lists it
   if (has("VK_KHR_portability_subset")) enable.push_back("VK_KHR_portability_subset");
@@ -300,6 +329,7 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   dci.enabledExtensionCount = (uint32_t)enable.size();
   dci.ppEnabledExtensionNames = enable.data();
   check(vkCreateDevice(pick, &dci, nullptr, &d->dev), "vkCreateDevice");
+  for (const char* e : enable) d->enabled.push_back(e);
   vkGetDeviceQueue(d->dev, d->family, 0, &d->queue);
   if (d->twoQueues) vkGetDeviceQueue(d->dev, d->family, 1, &d->queue2); else d->queue2 = d->queue;
   VkCommandPoolCreateInfo cpi{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};

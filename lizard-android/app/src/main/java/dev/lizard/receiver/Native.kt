@@ -54,10 +54,15 @@ object Native {
     // ai: the stats JSON; the handle let go.
     @JvmStatic external fun txCreate(path: String, name: String, type: String): Long
     @JvmStatic external fun txError(): String
-    @JvmStatic external fun txConfigure(h: Long, n: Int, subch: Int, span: Int, fps: Int, threads: Int, painter: Int, assets: String, codes: Int, gap: Int): String
+    @JvmStatic external fun txConfigure(h: Long, n: Int, subch: Int, span: Int, fps: Int, threads: Int, painter: Int, assets: String, codes: Int, gap: Int, vsynced: Boolean): String
     @JvmStatic external fun txPrepare(h: Long, assets: String): String
     @JvmStatic external fun txSide(h: Long): Int
     @JvmStatic external fun txPresent(h: Long, surface: android.view.Surface, vsync: Long, w: Int, h2: Int): Boolean
+    // ai: the vsync path's post (2026-10-07, jni.cpp txPost): a picture due at the frame timeline `vsync` (expected on
+    // ai: screen at `expected` ns, the display's period `vsyncNs`): the next GPU-filled buffer posted for it, or the
+    // ai: CPU-copied present where the device has no GPU ring; and the ring's tally since the last call (JSON)
+    @JvmStatic external fun txPost(h: Long, surface: android.view.Surface, vsync: Long, expected: Long, vsyncNs: Long, w: Int, h2: Int): Boolean
+    @JvmStatic external fun txPostStats(h: Long): String
     @JvmStatic external fun txStats(h: Long): String
     @JvmStatic external fun txDestroy(h: Long)
 
