@@ -535,6 +535,7 @@ class CpuReceiver : public Receiver {
   ReceiverConfig cfg;
   std::function<void(uint64_t)> releaseFn;
   std::string gpuWhy, error;
+  std::string tiersLabel;  // ai: the rate profile the workers decode with (LIZ_TIERS), "" one rate
   std::unique_ptr<XferRx> xfer;
   std::unique_ptr<CpuPool> pool;
   std::mutex mu;           // ai: guards the stats window, the word and the error
@@ -578,7 +579,19 @@ CpuReceiver::CpuReceiver(const ReceiverConfig& c, std::function<void(uint64_t)> 
   auto log = cfg.log ? cfg.log : [](const std::string&) {};
   xfer = std::make_unique<XferRx>(cfg.storeDir, log);
   winStart = now();
-  pool = std::make_unique<CpuPool>(CPU_NMAX, 0, cfg.cpuThreads, [this](CpuFrameOut&& o) { done(std::move(o)); }, log);
+  // ai: LIZ_TIERS (the lab's rate-by-ring arm, 2026-10-07; codec.h cpu_dec_tiers): the profile the workers decode
+  // ai: the frames of its sub-channel count with, the sender painting the same (tx/sender.h TxFormat.tiers). One
+  // ai: refused is said and the receiver runs at one rate.
+  std::string tiers;
+  if (const char* t = getenv("LIZ_TIERS"); t && *t) {
+    char label[160];
+    int subch = 0, blocks = 0;
+    if (cpu_tiers_check(t, &subch, &blocks, label, sizeof label) > 0) {
+      tiers = t; tiersLabel = label;
+      log("receiver: rates by ring " + tiersLabel + ", " + std::to_string(blocks) + " blocks on LIZARD-" + std::to_string(subch) + " (LIZ_TIERS)");
+    } else log(std::string("receiver: LIZ_TIERS refused, one rate: ") + label);
+  }
+  pool = std::make_unique<CpuPool>(CPU_NMAX, 0, cfg.cpuThreads, [this](CpuFrameOut&& o) { done(std::move(o)); }, log, tiers);
   log(std::string("receiver: the C on the CPU, ") + (cpu_simd() ? "vector" : "scalar") + " paths, up to " + std::to_string(pool->ceiling()) + " threads" +
       (gpuWhy.empty() ? "" : " (no GPU decoder: " + gpuWhy + ")"));
 }
@@ -664,7 +677,7 @@ std::string CpuReceiver::stats() {
   const double n = std::max(1, lastMsFrames);
   json j = {
     {"state", !error.empty() ? "error" : last.test ? "test" : p.done ? "received" : p.live ? "receiving" : lastWord.is_null() ? "looking" : "found"},
-    {"error", error}, {"decoder", "cpu"}, {"zeroCopy", false}, {"layout", cfg.layout},
+    {"error", error}, {"decoder", "cpu"}, {"zeroCopy", false}, {"layout", cfg.layout}, {"tiers", tiersLabel},
     {"threads", pool->size()}, {"threadsReady", pool->ready()}, {"threadsMax", pool->ceiling()}, {"simd", cpu_simd() != 0}, {"gpuWhy", gpuWhy},
     {"capturedFps", last.arrived}, {"processedFps", last.processed}, {"dropped", last.dropped},
     {"foundShare", last.found / n}, {"side", last.found ? last.side / last.found : 0},
@@ -687,7 +700,11 @@ std::unique_ptr<Receiver> Receiver::create(const ReceiverConfig& c, std::functio
   if (c.decoder != "cpu") {
     try {
       auto r = std::make_unique<GpuReceiver>(c, release);
-      if (r->start(why)) return r;
+      if (r->start(why)) {
+        // ai: the rate profile (LIZ_TIERS) is the C's alone: said, so a run meant for it is not read at one rate unnoticed
+        if (const char* t = getenv("LIZ_TIERS"); t && *t && c.log) c.log("receiver: LIZ_TIERS is set and the GPU decoder has one rate: choose the CPU decoder for it");
+        return r;
+      }
     } catch (const std::exception& e) { why = e.what(); }
     if (c.decoder == "gpu") throw std::runtime_error(why);
   }

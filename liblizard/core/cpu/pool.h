@@ -50,7 +50,9 @@ class CpuPool {
  public:
   // ai: nmax: the largest picture decoded. ceiling: workers at most (0: the machine's cores). fixed: that many
   // ai: workers always (0: the policy decides). done: called on a worker's thread with each frame it decoded.
-  CpuPool(int nmax, int ceiling, int fixed, std::function<void(CpuFrameOut&&)> done, std::function<void(const std::string&)> log);
+  // ai: tiers: a rate profile every worker's decoder takes (codec.h cpu_dec_tiers; the lab's rate-by-ring arm,
+  // ai: 2026-10-07), "" for one rate; one refused is logged and the worker decodes at one rate.
+  CpuPool(int nmax, int ceiling, int fixed, std::function<void(CpuFrameOut&&)> done, std::function<void(const std::string&)> log, std::string tiers = "");
   ~CpuPool();
   // ai: The workers stopped and joined (each frame in hand finished, its done() returned); idempotent, the destructor's
   // ai: first step. An owner whose done() reaches back to the pool calls it before it lets go of its pointer.
@@ -74,6 +76,7 @@ class CpuPool {
   void run(Worker* w);
   void grow();
   int nmax_, ceiling_, fixed_;
+  std::string tiers_;
   std::function<void(CpuFrameOut&&)> done_;
   std::function<void(const std::string&)> log_;
   mutable std::mutex mu_;                       // ai: guards the workers' states and the policy

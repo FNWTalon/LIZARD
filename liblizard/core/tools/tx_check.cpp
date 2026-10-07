@@ -16,6 +16,9 @@
 // ai:   LIZ_PAINTER=gpu|auto tx_check paint ...   the Sender painting on the GPU (or auto), every frame read blind as before
 // ai:   LIZ_CODES=2 [LIZ_GAP=<modules>] tx_check paint ...   two codes a frame (2026-10-03), the gap between them set
 // ai:       (2026-10-04, TxFormat.gap; GAP_MODULES unset), each read blind at its own offset
+// ai:   LIZ_TIERS=7/8:20,3/4:20,1/2:11 tx_check paint ...   the rate profile (2026-10-07, TxFormat.tiers, the C's
+// ai:       cpu_dec_tiers): painted by the C and read by a decoder given the same profile; the sub-channels and
+// ai:       blocks the profile's, the command line's count ignored; every block verified as before
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -149,6 +152,16 @@ int main(int argc, char** argv) {
     const char* pt = getenv("LIZ_PAINTER");
     f.painter = !pt ? 0 : std::string(pt) == "gpu" ? 1 : std::string(pt) == "auto" ? 2 : 0;
     f.assets = assets();
+    // ai: LIZ_TIERS: the rate profile (TxFormat.tiers), painted and read with it; the frame's sub-channels and blocks
+    // ai: are the profile's, whatever the command line's count
+    const char* tiers = getenv("LIZ_TIERS");
+    int wantBlocks = subch / 8, wantSubch = subch;
+    if (tiers && *tiers) {
+      char label[160];
+      if (cpu_tiers_check(tiers, &wantSubch, &wantBlocks, label, sizeof label) <= 0) { printf("FAIL LIZ_TIERS: %s\n", label); return 1; }
+      f.tiers = tiers;
+      printf("tiers: %s, %d blocks on LIZARD-%d\n", label, wantBlocks, wantSubch);
+    }
     const std::string err = s.configure(f);
     if (!err.empty()) { printf("FAIL configure: %s\n", err.c_str()); return 1; }
     printf("painter: %s%s%s\n", s.painter().c_str(), s.gpuWhy().empty() ? "" : ", not the GPU: ", s.gpuWhy().c_str());
@@ -157,6 +170,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<XferRx> rx;
     if (!test) rx = std::make_unique<XferRx>(store);
     cpu_dec_t* d = cpu_dec_new(1536);
+    if (tiers && *tiers) { char why[160]; if (cpu_dec_tiers(d, tiers, why, sizeof why) < 0) { printf("FAIL decoder tiers: %s\n", why); return 1; } }
     const int top = cpu_dec_top(d), BB = cpu_dec_block_bytes(d);
     std::vector<uint8_t> rgba(static_cast<size_t>(FW) * W * 4), luma(static_cast<size_t>(W) * W), blocks(static_cast<size_t>(top) * BB), ok(top), want(469);
     int held = 0, words = 0, faults = 0;
@@ -170,7 +184,7 @@ int main(int argc, char** argv) {
       const int got = cpu_dec_frame(d, luma.data(), W, W, held, blocks.data(), ok.data(), &fr);
       if (fr.word) { words++; held = fr.version; }
       verified += got; total += fr.total;
-      if (fr.version != subch / 8 || got != subch / 8) { faults++; if (faults < 5) printf("frame %d: word %d version %d, %d of %d blocks\n", k, fr.word, fr.version, got, fr.total); }
+      if (fr.version != wantSubch / 8 || got != wantBlocks) { faults++; if (faults < 5) printf("frame %d: word %d version %d, %d of %d blocks\n", k, fr.word, fr.version, got, fr.total); }
       for (int b = 0; b < fr.total; b++) {
         if (!ok[b]) continue;
         const uint8_t* blk = blocks.data() + static_cast<size_t>(b) * BB;
@@ -181,7 +195,7 @@ int main(int argc, char** argv) {
     }
     const double ms = nowMs() - t0;
     printf("paint: LIZARD-%d x %d n %d, %d x %d px (gap %d px), %d painters: %d frames, %ld of %ld blocks verified, words %d, %.1f frames a second taken\n",
-           subch, codes, f.n, FW, W, gap, threads, frames, verified, total, words, 1000.0 * frames / ms);
+           wantSubch, codes, tiers && *tiers ? nFor(wantSubch) : f.n, FW, W, gap, threads, frames, verified, total, words, 1000.0 * frames / ms);
     printf("stats: %s\n", s.stats().c_str());
     if (!test) {
       rx->drain();

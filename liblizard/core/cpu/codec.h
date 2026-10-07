@@ -28,6 +28,14 @@ cpu_dec_t *cpu_dec_new(int nmax);
 void cpu_dec_free(cpu_dec_t *d);
 // ai: The most blocks a frame can carry (the size of ok[], and of blocks[] in cpu_dec_block_bytes each).
 int cpu_dec_top(const cpu_dec_t *d);
+// ai: A rate profile (any.h focus_any_tiers; the lab's rate-by-ring arm, 2026-10-07): spec as focus_tiers_parse reads
+// ai: it ("7/8:20,3/4:20,1/2:11"), NULL or "" for one rate. The frames whose word names the profile's sub-channels
+// ai: decode on its tiers. Returns the tiers set (0 none), or -1 with why in `why` (why_len bytes); cpu_dec_top may
+// ai: grow with it (size the buffers after).
+int cpu_dec_tiers(cpu_dec_t *d, const char *spec, char *why, int why_len);
+// ai: What a spec names, without a decoder: its tiers (1 to 3), subch its sub-channels, blocks its blocks a frame,
+// ai: label its text ("7/8 x 20, 3/4 x 20, 1/2 x 11"); or 0, why in label.
+int cpu_tiers_check(const char *spec, int *subch, int *blocks, char *label, int label_len);
 int cpu_dec_block_bytes(const cpu_dec_t *d);
 // ai: One frame: img is iw x ih luma, rows iw apart, alive for the call. held: the version field of the last word the
 // ai: caller read, 0 none (a frame whose own word does not read is decoded at it, and with none held is not decoded).
