@@ -23,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.ComposeWindow
@@ -35,8 +36,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogWindow
 import androidx.compose.ui.window.WindowPosition
 import androidx.compose.ui.window.rememberDialogState
-import java.awt.FileDialog
-import java.io.File
 import kotlin.math.roundToInt
 
 // ai: The sender's window, the web's page in landscape (lizard-web/send.html): a column on the left (the web's 20rem;
@@ -81,7 +80,7 @@ private fun BrightnessTip(s: SendState, owner: ComposeWindow) {
     val textH = with(LocalDensity.current) { measurer.measure(TIP, style, constraints = Constraints(maxWidth = (w - 40.dp).roundToPx())).size.height.toDp() }
     val h = 20.dp + textH + 16.dp + 40.dp + 16.dp
     val state = rememberDialogState(WindowPosition(owner.x.dp + (owner.width.dp - w) / 2, owner.y.dp + (owner.height.dp - h) / 2), DpSize(w, h))
-    DialogWindow({ s.answerBrightness(false) }, state, title = "Lizard sender", undecorated = true, resizable = false) {
+    DialogWindow({ s.answerBrightness(false) }, state, title = "LIZARD sender", undecorated = true, resizable = false) {
         Column(Modifier.fillMaxSize().background(Bg).border(1.dp, Line).padding(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 16.dp)) {
             Text(TIP, style = style)
             Spacer(Modifier.weight(1f))
@@ -93,21 +92,16 @@ private fun BrightnessTip(s: SendState, owner: ComposeWindow) {
     }
 }
 
-// ai: The column (send.html #side and #settings): the file, Start (Stop, and Pause or Resume, while sending) beside
-// ai: Fullscreen, the state line and the figures, then Settings (the encoder and the code), Developer Tools (what is
-// ai: sent, the readout) and About. Labels bare, no descriptions (2026-10-02).
+// ai: The column (send.html #side and #settings): Start (Stop, and Pause or Resume, while sending) beside Fullscreen,
+// ai: the state line (the file's name and size while idle, as the web's) and the figures, then Settings (the encoder
+// ai: and the code), Developer Tools (what is sent, the readout) and About. Labels bare, no descriptions (2026-10-02).
+// ai: The file is chosen in the code area (SendState.kt CodeCanvas, 2026-10-07; a row here with Change until then).
 @Composable
 private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
     val idle = !s.sending
-    val choose: () -> Unit = { chooseFile(window)?.let { s.pick(it) } }
-    Spacer(Modifier.height(8.dp))
-    val f = s.file
-    if (s.test) ListRow("Test stream", lead = Icons.file)
-    else if (f == null) ListRow("Choose a file", lead = Icons.file, onClick = if (idle) choose else null)
-    // ai: the bytes that go, what compression left of the file once the sender says (its own size before; the own size is
-    // ai: the readout's since 2026-10-05)
-    else ListRow(f.name, Fmt.bytes(if (s.sentBytes > 0) s.sentBytes else s.fileSize), lead = Icons.file, onClick = if (idle) choose else null) { Btn("Change", Kind.Text, enabled = idle) { choose() } }
-    Spacer(Modifier.height(8.dp))
+    // ai: the code area's idle look follows the file, the payload and the run
+    LaunchedEffect(s.file, s.test, s.phase, s.full) { s.canvas.idleLook() }
+    Spacer(Modifier.height(12.dp))
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (idle) Btn("Start", Kind.Primary, enabled = s.canStart, modifier = Modifier.weight(1f)) { s.requestStart() }
         else {
@@ -181,10 +175,3 @@ private fun BlocksField(s: SendState) {
     }
 }
 
-// ai: the platform's own file dialog (GTK's on Linux), one file
-private fun chooseFile(window: ComposeWindow): File? {
-    val d = FileDialog(window, "Choose a file", FileDialog.LOAD)
-    d.isMultipleMode = false
-    d.isVisible = true
-    return d.files.firstOrNull()
-}
