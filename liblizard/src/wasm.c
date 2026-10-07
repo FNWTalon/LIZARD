@@ -118,6 +118,9 @@ int focus_fmt_fps_set(int fps) { return fready ? focus_fmt_fps(&F, fps) : -1; }
 // ai: blocks read, 0 for none.
 int focus_parity_set(int c) { return fready ? focus_parity(&F, c) : -1; }
 int focus_pilot_get(float *out) { return fready ? focus_pilot(&F, 0, out, out + 2) : 0; }
+// ai: the grid's shift the last decode read off the pilots and turned back (focus.h focus_align), for a measurement
+// ai: that re-reads the coefficients focus_dbg_coef holds, which are the ones before the turn (2026-10-07)
+int focus_align_get(float *out) { if (!fready) return 0; focus_align(&F, out); return 1; }
 int focus_subch(void) { return F.subch; }
 int focus_blocks(void) { return F.blocks; }
 int focus_side(void) { return F.px; }
