@@ -8,8 +8,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -26,9 +24,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -54,7 +50,9 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -71,6 +69,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.ui.unit.sp
+
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.border
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.SolidColor
 
 // ai: The web's tokens and parts (lizard-web/ui.css; 2026-10-01): light, black and white, flat; one solid black button
 // ai: on a screen, the others on a soft grey fill, minor ones text alone, every button a pill; a top bar with a back
@@ -121,7 +126,7 @@ fun TopBar(title: String?, onBack: (() -> Unit)?, actions: @Composable RowScope.
                 if (title == null) {
                     Image(painterResource(R.drawable.mark), contentDescription = null, Modifier.size(28.dp))
                     Spacer(Modifier.size(10.dp))
-                    Text("Lizard", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Fg)
+                    Text("LIZARD", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Fg)
                 } else Text(title, style = MaterialTheme.typography.titleLarge, color = Fg, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(start = if (onBack != null) 4.dp else 0.dp))
             }
@@ -169,27 +174,43 @@ fun Square(content: @Composable () -> Unit) = Box(Modifier.size(56.dp), contentA
 
 // ai: The landscape column's width (Receive and Send, 2026-10-05): 240 dp or a third of the screen's width where that is
 // ai: less (320 and 0.45 until then, a fourth wider), or what its edge was dragged to (`chosen`, dp; 0 none), within
-// ai: 180 dp and three fifths of the screen.
-fun SideWidth(screen: Dp, chosen: Float): Dp {
-    val lo = 180.dp
-    val hi = maxOf(lo, screen * 0.6f)
-    return (if (chosen > 0f) chosen.dp else minOf(240.dp, screen * 0.34f)).coerceIn(lo, hi)
+// ai: 180 dp (or `lo`, a screen's own floor: what its buttons need with no label folded, TwoCellFloor, 2026-10-06) and
+// ai: three fifths of the screen.
+fun SideWidth(screen: Dp, chosen: Float, lo: Dp = 180.dp): Dp {
+    val low = maxOf(180.dp, lo)
+    val hi = maxOf(low, screen * 0.6f)
+    return (if (chosen > 0f) chosen.dp else minOf(240.dp, screen * 0.34f)).coerceIn(low, hi)
+}
+
+// ai: The column's floor (2026-10-06): what a screen's rows of two cells need with no label folded. The cells share
+// ai: a row equally (weight 1f each), so it is twice the widest label of all in the buttons' type plus their padding,
+// ai: the gap between and the column's own padding (the first form took each side's own widest, which left "Start
+// ai: camera" cut in its half). A dragged column stops there (SideWidth, SideEdge); every label counts whether or
+// ai: not its button shows, so the column does not move when one appears.
+@Composable
+fun TwoCellFloor(labels: List<String>): Dp {
+    val tm = rememberTextMeasurer()
+    val style = MaterialTheme.typography.labelLarge
+    val density = LocalDensity.current
+    val cell = labels.maxOf { with(density) { tm.measure(AnnotatedString(it), style).size.width.toDp() } } + 40.dp
+    return cell * 2 + 8.dp + 32.dp
 }
 
 // ai: The column's edge (2026-10-05): the hairline between the column and the camera or the code, in a strip wide enough
 // ai: for a finger. Dragged sideways it sets the column's width: onDrag with the new width, from `width` at the drag's
-// ai: start; onDone on release (the caller keeps it).
+// ai: start, no narrower than `lo` (the screen's floor); onDone on release (the caller keeps it).
 @Composable
-fun SideEdge(width: Dp, screen: Dp, onStart: () -> Unit, onDrag: (Dp) -> Unit, onDone: () -> Unit) {
+fun SideEdge(width: Dp, screen: Dp, lo: Dp = 180.dp, onStart: () -> Unit, onDrag: (Dp) -> Unit, onDone: () -> Unit) {
     val density = LocalDensity.current
     val w by rememberUpdatedState(width)
     val start by rememberUpdatedState(onStart)
     val drag by rememberUpdatedState(onDrag)
     val done by rememberUpdatedState(onDone)
     var at by remember { mutableStateOf(0.dp) }
+    val low = maxOf(180.dp, lo)
     val state = rememberDraggableState { dx ->
         at += with(density) { dx.toDp() }
-        drag(at.coerceIn(180.dp, maxOf(180.dp, screen * 0.6f)))
+        drag(at.coerceIn(low, maxOf(low, screen * 0.6f)))
     }
     Box(Modifier.width(16.dp).fillMaxHeight().draggable(state, Orientation.Horizontal,
         onDragStarted = { at = w; start() }, onDragStopped = { done() }), contentAlignment = Alignment.Center) {
@@ -209,13 +230,14 @@ fun RateSquare(kbs: Double?) = Square {
     }
 }
 
-// ai: The buttons (the web's button, .primary, .text, .danger): pills 48 dp tall.
+// ai: The buttons (the web's button, .primary, .text, .danger): pills 48 dp tall. A label is one line and never
+// ai: shortened (2026-10-06; two lines with an ellipsis before): a column is kept wide enough for it (TwoCellFloor).
 enum class Kind { Primary, Tonal, Text, Danger }
 
 @Composable
 fun Btn(text: String, kind: Kind = Kind.Tonal, enabled: Boolean = true, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val mod = modifier.heightIn(min = 48.dp)
-    val label: @Composable () -> Unit = { Text(text, style = MaterialTheme.typography.labelLarge, maxLines = 2, overflow = TextOverflow.Ellipsis) }
+    val label: @Composable () -> Unit = { Text(text, style = MaterialTheme.typography.labelLarge, maxLines = 1, softWrap = false, overflow = TextOverflow.Visible) }
     when (kind) {
         Kind.Primary, Kind.Tonal -> Button(onClick, mod, enabled, CircleShape,
             ButtonDefaults.buttonColors(containerColor = if (kind == Kind.Primary) Fg else Soft, contentColor = if (kind == Kind.Primary) Bg else Fg,
@@ -224,17 +246,6 @@ fun Btn(text: String, kind: Kind = Kind.Tonal, enabled: Boolean = true, modifier
         Kind.Text, Kind.Danger -> TextButton(onClick, mod, enabled, CircleShape,
             ButtonDefaults.textButtonColors(contentColor = if (kind == Kind.Danger) Bad else Fg, disabledContentColor = Fg.copy(alpha = .38f)),
             contentPadding = PaddingValues(horizontal = 12.dp)) { label() }
-    }
-}
-
-// ai: A choice among a few (Settings'): 36 dp, 8 dp corners, on the soft fill; the chosen one solid.
-@Composable
-fun Chip(text: String, on: Boolean, enabled: Boolean = true, onClick: () -> Unit) {
-    Box(Modifier.heightIn(min = 36.dp).clip(RoundedCornerShape(8.dp)).background(if (on) Fg else Soft)
-        .selectable(selected = on, enabled = enabled, role = Role.RadioButton, onClick = onClick).padding(horizontal = 14.dp),
-        contentAlignment = Alignment.Center) {
-        Text(text, style = MaterialTheme.typography.labelLarge, fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
-            color = if (on) Bg else if (enabled) Fg else Fg.copy(alpha = .38f))
     }
 }
 
@@ -344,8 +355,9 @@ fun Fold(title: String, open: Boolean, onToggle: () -> Unit, content: @Composabl
 }
 
 // ai: Settings' fields one rhythm (2026-10-02): 16 dp apart
-// ai: (Fields), each its title over its control, the title row 36 dp whatever is in it (the value on the right, the
-// ai: blocks' Auto chip at its end), a group's heading (Group) 8 dp over its first field.
+// ai: (Fields), each its title over its control (14 sp, the web's label, 2026-10-06), the title row 36 dp whatever is
+// ai: in it (the value on the right, the blocks' Auto chip at its end), a group's heading (Group) 8 dp over its first
+// ai: field.
 @Composable
 fun Fields(content: @Composable ColumnScope.() -> Unit) = Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
 
@@ -353,7 +365,7 @@ fun Fields(content: @Composable ColumnScope.() -> Unit) = Column(Modifier.fillMa
 fun Field(title: String, value: String = "", end: (@Composable () -> Unit)? = null, content: @Composable () -> Unit) {
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().heightIn(min = 36.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall, color = Muted, modifier = Modifier.weight(1f))
+            Text(title, style = MaterialTheme.typography.bodyMedium, color = Muted, modifier = Modifier.weight(1f))
             if (value.isNotEmpty()) Text(value, style = MaterialTheme.typography.bodyMedium, color = Muted)
             end?.invoke()
         }
@@ -368,10 +380,60 @@ fun Group(title: String, content: @Composable ColumnScope.() -> Unit) = Column(M
     Fields(content)
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+// ai: A choice among a few in the web's shape (the pages' select, 2026-10-06; a row of chips until then): the title
+// ai: over a 48 dp field on the soft fill, 8 dp corners, the chosen option's label and a chevron, a tap opening the
+// ai: options as a menu. `blank` shows where no option is the value (the web's placeholder option); an option
+// ai: `enabledFor` says no is greyed and inert.
 @Composable
-fun Chips(content: @Composable () -> Unit) =
-    FlowRow(Modifier.selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { content() }
+fun <T> Select(title: String, value: T, options: List<Pair<T, String>>, blank: String = "", enabled: Boolean = true,
+               enabledFor: (T) -> Boolean = { true }, onChoose: (T) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Text(title, style = MaterialTheme.typography.bodyMedium, color = Muted)
+        Spacer(Modifier.height(4.dp))
+        Box(Modifier.fillMaxWidth()) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(8.dp)).background(Soft)
+                .clickable(enabled = enabled, role = Role.Button) { open = true }.padding(start = 12.dp, end = 14.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Text(options.firstOrNull { it.first == value }?.second ?: blank, style = MaterialTheme.typography.bodyLarge,
+                    color = if (enabled) Fg else Fg.copy(alpha = .38f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                Icon(painterResource(R.drawable.ic_chevron), contentDescription = null, Modifier.size(20.dp), tint = Muted)
+            }
+            DropdownMenu(open, { open = false }) {
+                for ((k, label) in options) DropdownMenuItem({ Text(label, color = Fg) }, { open = false; if (k != value) onChoose(k) }, enabled = enabledFor(k))
+            }
+        }
+    }
+}
+
+// ai: A text field in the web's input look (2026-10-06): the title over a 48 dp box on the soft fill, 8 dp corners, a
+// ai: hairline in the text's colour while it has the focus, the placeholder grey while it is empty.
+@Composable
+fun TextInput(title: String, value: String, placeholder: String, onChange: (String) -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Text(title, style = MaterialTheme.typography.bodyMedium, color = Muted)
+        Spacer(Modifier.height(4.dp))
+        BasicTextField(value, onChange, Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }, singleLine = true,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = Fg), cursorBrush = SolidColor(Fg)) { inner ->
+            Box(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(8.dp)).background(Soft)
+                .border(1.dp, if (focused) Fg else Color.Transparent, RoundedCornerShape(8.dp)).padding(horizontal = 12.dp), contentAlignment = Alignment.CenterStart) {
+                if (value.isEmpty()) Text(placeholder, style = MaterialTheme.typography.bodyLarge, color = Muted)
+                inner()
+            }
+        }
+    }
+}
+
+// ai: The other tool, at the bar's end (the web's #swap, 2026-10-06): the swap arrows and its name, a text button.
+@Composable
+fun SwapBtn(label: String, onClick: () -> Unit) =
+    TextButton(onClick, Modifier.heightIn(min = 48.dp), shape = CircleShape, colors = ButtonDefaults.textButtonColors(contentColor = Fg),
+        contentPadding = PaddingValues(horizontal = 12.dp)) {
+        Icon(painterResource(R.drawable.ic_swap), contentDescription = null, Modifier.size(24.dp), tint = Fg)
+        Spacer(Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1, softWrap = false)
+    }
 
 // ai: A slider in the web's look (2026-10-02): a 6 dp track
 // ai: with round ends, filled up to a round thumb that covers the end it stands on, as the Meter is drawn. Material's

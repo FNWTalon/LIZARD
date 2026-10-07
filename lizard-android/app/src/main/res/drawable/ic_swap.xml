@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ai: the other tool's swap arrows (2026-10-06): Feather's repeat icon (MIT) on a 24 grid, 2 px strokes, as the web pages draw it (lizard-web/send.html, recv.html #swap). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#00000000" android:strokeColor="#111111" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M8,3L4,7l4,4" />
+    <path android:fillColor="#00000000" android:strokeColor="#111111" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M4,7h16" />
+    <path android:fillColor="#00000000" android:strokeColor="#111111" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M16,21l4,-4l-4,-4" />
+    <path android:fillColor="#00000000" android:strokeColor="#111111" android:strokeWidth="2" android:strokeLineCap="round" android:strokeLineJoin="round"
+        android:pathData="M20,17H4" />
+</vector>

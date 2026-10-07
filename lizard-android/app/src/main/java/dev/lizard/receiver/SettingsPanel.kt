@@ -1,13 +1,13 @@
 package dev.lizard.receiver
 
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -39,12 +39,8 @@ internal fun MainActivity.ReceiveSettings() {
     val caps = remember(settings.camera) { runCatching { engine.caps(settings) }.getOrNull() }
     val s = settings
     Fields {
-        Field("Decoder") {
-            Chips {
-                for ((d, label) in listOf("gpu" to "GPU", "cpu" to "CPU"))
-                    Chip(label, s.decoder == d || (s.decoder == "auto" && autoRan == label)) { change(s.copy(decoder = d), true) }
-            }
-        }
+        // ai: the fields in the web's shape, a menu each (2026-10-06; chips until then); auto shows the decoder it runs
+        Select("Decoder", if (s.decoder == "auto") autoRan.ifEmpty { "GPU" }.lowercase() else s.decoder, listOf("gpu" to "GPU", "cpu" to "CPU")) { change(s.copy(decoder = it), true) }
         // ai: the most frames a GPU batch waits for (Settings.batch): 1 hands each capture's reading to the phase lock
         // ai: as it is decoded, for a screen whose cadence slips; 32 the least GPU work a frame (the S26: 6.58 ms a
         // ai: frame at 1, 2.88 at 32). The C decodes a frame at a time: not shown with it.
@@ -53,19 +49,11 @@ internal fun MainActivity.ReceiveSettings() {
         }
         // ai: the back cameras by lens, one chosen (2026-10-05; an Auto chip, the closest-focusing lens, until then: the
         // ai: setting now holds that lens's id itself, Settings.load)
-        Field("Camera") {
-            Chips { for (l in caps?.lenses.orEmpty()) Chip(l.label, s.camera == l.id) { change(s.copy(camera = l.id), true) } }
-        }
-        Field("Resolution") {
-            Chips { for (r in Settings.RESOLUTIONS) Chip(r, s.resolution == r, enabled = caps == null || r in caps.sizes) { change(s.copy(resolution = r), true) } }
-        }
+        Select("Camera", s.camera, caps?.lenses.orEmpty().map { it.id to it.label }, blank = "Camera") { change(s.copy(camera = it), true) }
+        Select("Resolution", s.resolution, Settings.RESOLUTIONS.map { it to it }, enabledFor = { caps == null || it in caps.sizes }) { change(s.copy(resolution = it), true) }
         ZoomField(caps?.zoom)
-        Field("Crop") {
-            Chips { for (d in Settings.LAYOUTS) Chip(if (d == "2:1") "2:1 (experimental)" else d, s.layout == d) { change(s.copy(layout = d), true) } }
-        }
-        Field("Phase lock") {
-            Chips { for (d in Settings.PHASES) Chip(d.replaceFirstChar { it.uppercase() }, s.phase == d) { change(s.copy(phase = d), false) } }
-        }
+        Select("Crop", s.layout, Settings.LAYOUTS.map { it to if (it == "2:1") "2:1 (experimental)" else it }) { change(s.copy(layout = it), true) }
+        Select("Phase lock", s.phase, Settings.PHASES.map { it to it.replaceFirstChar { c -> c.uppercase() } }) { change(s.copy(phase = it), false) }
     }
 }
 
@@ -75,9 +63,7 @@ internal fun MainActivity.ReceiveSettings() {
 @Composable
 internal fun MainActivity.ReceiveAdvanced() {
     val s = settings
-    Field("Save replays") {
-        Chips { for (d in listOf("off", "on")) Chip(d.replaceFirstChar { it.uppercase() }, s.replays == d) { change(s.copy(replays = d), false) } }
-    }
+    Select("Save replays", s.replays, listOf("off" to "Off", "on" to "On")) { change(s.copy(replays = it), false) }
     // ai: the runs in the order begun: the newest finished, then those still recording or saving
     for (rp in MainActivity.runs) {
         CodeBlock(when (rp.state) {
@@ -94,11 +80,9 @@ internal fun MainActivity.ReceiveAdvanced() {
     if (MainActivity.replayNote.isNotEmpty()) CodeBlock(MainActivity.replayNote, size = 12)
     val lab = Readout.lab(phase == Engine.Phase.On, rx)
     if (lab.isNotEmpty()) CodeBlock(lab)
-    OutlinedTextField(s.devlog, { change(s.copy(devlog = it.trim()), false) }, singleLine = true,
-        label = { Text("Dev log address") }, placeholder = { Text("http://host:8080") }, shape = RoundedCornerShape(8.dp),
-        colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Fg, unfocusedBorderColor = Color.Transparent, focusedContainerColor = Soft,
-            unfocusedContainerColor = Soft, focusedLabelColor = Fg, unfocusedLabelColor = Muted, cursorColor = Fg),
-        modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp))
+    Spacer(Modifier.height(16.dp))
+    TextInput("Dev log address", s.devlog, "http://host:8080") { change(s.copy(devlog = it.trim()), false) }
+    Spacer(Modifier.height(16.dp))
     val c = cam
     val camLine = if (c == null) "camera: not open" else
         "camera ${c.id}: ${c.format} ${c.size.width}x${c.size.height}, preview ${c.preview.width}x${c.preview.height}, " +
@@ -130,7 +114,7 @@ private fun MainActivity.ZoomField(range: Range<Float>?) {
 internal fun MainActivity.HomeSettings() {
     var asking by remember { mutableStateOf(false) }
     SectionLabel("Settings")
-    ListRow("Show tips again", onClick = { tipsAgain() })
+    ListRow("Show tips again", "The first-run tips, on every page", onClick = { tipsAgain() })
     val total = files.sumOf { it.size }
     ListRow("Received files", if (files.isEmpty()) "No files kept" else "${files.size} file${if (files.size > 1) "s" else ""} kept, ${Readout.bytes(total)}") {
         if (files.isNotEmpty()) Btn("Delete all", Kind.Danger) { asking = true }
@@ -151,4 +135,4 @@ internal fun MainActivity.About() = Column(Modifier.fillMaxWidth()) {
     ListRow("About", aboutLine(), divider = false)
 }
 
-internal fun MainActivity.aboutLine() = "Lizard ${version()}${installed().let { if (it.isEmpty()) "" else ", installed $it" }}"
+internal fun MainActivity.aboutLine() = "LIZARD ${version()}${installed().let { if (it.isEmpty()) "" else ", installed $it" }}"

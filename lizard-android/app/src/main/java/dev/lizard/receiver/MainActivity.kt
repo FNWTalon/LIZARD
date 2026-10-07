@@ -306,8 +306,12 @@ class MainActivity : ComponentActivity() {
             runOnUiThread { note = n }
         }.start()
     }
-    internal fun delete(e: Library.Entry) { library.delete(e); files = library.list() }
-    internal fun deleteAll() { library.deleteAll(); files = library.list() }
+    // ai: deleting the file the receiver shows as received forgets it there too (2026-10-07, owner: "deleting received
+    // ai: file should also delete the green text"): the state line clears at the next poll, and the file in the light
+    // ai: is received anew
+    internal fun delete(e: Library.Entry) { if (e.root.isNotEmpty() && e.root == root) forgetReceived(); library.delete(e); files = library.list() }
+    internal fun deleteAll() { if (files.any { it.root.isNotEmpty() && it.root == root }) forgetReceived(); library.deleteAll(); files = library.list() }
+    private fun forgetReceived() { engine.clear(); root = ""; unfiled = "" }
     internal fun installed(): String = try {
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT).format(Date(packageManager.getPackageInfo(packageName, 0).lastUpdateTime))
     } catch (_: Exception) { "" }

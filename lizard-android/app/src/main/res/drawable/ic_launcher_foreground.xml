@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- ai: The launcher icon's mark (2026-10-01): mark.xml's drawing scaled 1.25 about the 108 dp canvas's centre, so its
-     corners keep inside the 66 dp circle every launcher mask leaves whole; the white is the background layer's. Also
-     the monochrome layer, which a themed launcher tints. -->
+<!-- ai: The launcher icon's mark (2026-10-01): mark.xml's drawing scaled about the 108 dp canvas's centre; the white is
+     the background layer's. Also the monochrome layer, which a themed launcher tints. Since 2026-10-06 the mark's ink
+     spans 52 dp, Android's rounded-square keyline for an app logo (1.25, 45 dp, until then: a size launchers showed
+     small beside other apps' logos); its corner marks reach 36.8 dp from the centre, inside a squircle or rounded
+     square mask and 3.8 dp past the 66 dp circle a round mask guarantees. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-    <group android:scaleX="1.25" android:scaleY="1.25" android:translateX="14" android:translateY="14">
+    <group android:scaleX="1.4444" android:scaleY="1.4444" android:translateX="7.78" android:translateY="7.78">
         <path android:fillColor="#111111" android:pathData="M14 14h9v9h-9zM41 14h9v9h-9zM14 41h9v9h-9zM41 41h9v9h-9zM25 16h14v3H25zM25 45h14v3H25zM16 25h3v14h-3zM45 25h3v14h-3z" />
         <path android:fillColor="#777777" android:pathData="M25 25h7v7h-7zM32 32h7v7h-7z" />
         <path android:fillColor="#BBBBBB" android:pathData="M32 25h7v7h-7zM25 32h7v7h-7z" />

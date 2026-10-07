@@ -58,6 +58,9 @@ import kotlin.math.floor
 import kotlin.math.min
 import kotlin.math.roundToInt
 import java.util.Locale
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.foundation.interaction.MutableInteractionSource
 
 // ai: Send (2026-10-01): the web sender's job on the phone, the C on the CPU painting (liblizard/core/tx/sender.h). A
 // ai: file chosen here or shared to Lizard from another app is copied into the cache and mapped by the sender; the
@@ -290,18 +293,32 @@ internal fun MainActivity.SendScreen() {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // ai: one code view for both layouts: a turn of the phone moves the surface rather than making another
     val code = remember { movableContentOf<Modifier> { m -> CodeBox(m) } }
+    // ai: Fullscreen (2026-10-06, the web's #fs): the code alone on the page's white, as large as the screen allows,
+    // ai: the system bars hidden; a tap on it or Back brings the screen back (the bars too, unless a send keeps them
+    // ai: hidden). The code's surface moves, not remade (movableContentOf).
+    var full by remember { mutableStateOf(false) }
+    if (full) {
+        BackHandler { full = false }
+        DisposableEffect(Unit) {
+            val c = WindowCompat.getInsetsController(window, window.decorView)
+            c.hide(WindowInsetsCompat.Type.systemBars())
+            onDispose { if (send.phase != SendState.Phase.On && send.phase != SendState.Phase.Preparing) c.show(WindowInsetsCompat.Type.systemBars()) }
+        }
+        BoxWithConstraints(Modifier.fillMaxSize().background(Bg).clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) { full = false },
+            contentAlignment = Alignment.Center) {
+            val a = s.aspect.toFloat()
+            val w = minOf(maxWidth, maxHeight * a)
+            code(Modifier.size(w, w / a))
+        }
+        return
+    }
     val side: @Composable () -> Unit = {
-        SendPanel()
+        SendPanel { full = true }
         Fold("Settings", isOpen("sendSettings"), { toggle("sendSettings") }) {
             Fields {
-                Field("Encoder") {
-                    Chips {
-                        // ai: GPU and CPU alone (2026-10-05; an Auto chip until then): with nothing chosen the setting stays
-                        // ai: auto and the chip of the painter running is marked; a tap chooses that painter outright
-                        Chip("GPU", s.painter == "gpu" || (s.painter == "auto" && s.stats.painter == "gpu")) { s.choosePainter("gpu") }
-                        Chip("CPU", s.painter == "cpu" || (s.painter == "auto" && s.stats.painter == "cpu")) { s.choosePainter("cpu") }
-                    }
-                }
+                // ai: the fields in the web's shape, a menu each (2026-10-06; chips until then); with nothing chosen the setting
+                // ai: stays auto and the menu shows the painter running; a choice takes that painter outright
+                Select("Encoder", if (s.painter == "auto") s.stats.painter.ifEmpty { "gpu" } else s.painter, listOf("gpu" to "GPU", "cpu" to "CPU")) { s.choosePainter(it) }
                 Field("Brightness", "${s.brightness}%") {
                     Bar(s.brightness.toFloat(), 1f..100f, 98) { v -> val n = v.roundToInt(); if (n != s.brightness) s.chooseBrightness(n) }
                 }
@@ -309,25 +326,14 @@ internal fun MainActivity.SendScreen() {
                     AutoSlider("Blocks", s.blocks, s.picked / 8, 1..128, { n -> "$n, ${"%.1f".format(Locale.ROOT, n * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
                     RateSlider(s)
                     // ai: one code, or two side by side for a receiver's 2:1 crop, and their gap (the web's #codes and #gap)
-                    Field("Codes") {
-                        Chips {
-                            Chip("One", s.codes == 1) { s.chooseCodes(1) }
-                            Chip("Two", s.codes == 2) { s.chooseCodes(2) }
-                        }
-                    }
+                    Select("Codes", s.codes, listOf(1 to "One", 2 to "Two")) { s.chooseCodes(it) }
                     if (s.codes == 2) Field("Gap", "${s.gap} modules") { Bar(s.gap.toFloat(), 0f..64f, 63) { v -> val g = v.roundToInt(); if (g != s.gap) s.chooseGap(g) } }
                 }
             }
         }
         Fold("Developer Tools", isOpen("sendAdvanced"), { toggle("sendAdvanced") }) {
             Fields {
-                Field("Payload") {
-                    Chips {
-                        val idle = s.phase != SendState.Phase.On && s.phase != SendState.Phase.Preparing
-                        Chip("File", !s.test, enabled = idle) { s.test = false }
-                        Chip("Test stream", s.test, enabled = idle) { s.test = true }
-                    }
-                }
+                Select("Payload", s.test, listOf(false to "File", true to "Test stream"), enabled = s.phase != SendState.Phase.On && s.phase != SendState.Phase.Preparing) { s.test = it }
             }
             sendLab(s).let { if (it.isNotEmpty()) CodeBlock(it) }
         }
@@ -335,14 +341,16 @@ internal fun MainActivity.SendScreen() {
         Spacer(Modifier.height(24.dp))
     }
     if (!landscape) Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding().padding(horizontal = 16.dp)) {
-        TopBar("Send", onBack = { go(MainActivity.Screen.Home) })
+        TopBar("Send", onBack = { go(MainActivity.Screen.Home) }) { SwapBtn("Receiver") { go(MainActivity.Screen.Receive) } }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             Spacer(Modifier.height(8.dp))
             code(Modifier.fillMaxWidth().aspectRatio(s.aspect.toFloat()))
             side()
         }
     } else BoxWithConstraints(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
-        val sideW = SideWidth(maxWidth, sideDp)
+        // ai: no narrower than Start, Stop or Resume beside Fullscreen with no label folded (2026-10-06)
+        val sideLo = TwoCellFloor(listOf("Start", "Stop", "Resume", "Fullscreen"))
+        val sideW = SideWidth(maxWidth, sideDp, sideLo)
         val screenW = maxWidth
         Row(Modifier.fillMaxSize()) {
             if (isOpen("sendCollapsed")) Rail(onClick = { toggle("sendCollapsed") },
@@ -353,7 +361,7 @@ internal fun MainActivity.SendScreen() {
             }
             // ai: the column's edge, dragged to resize it (2026-10-05); the code re-picked once the finger is off it
             if (isOpen("sendCollapsed")) VerticalDivider(color = Line)
-            else SideEdge(sideW, screenW, onStart = { sideDragging = true }, onDrag = { sideDp = it.value }, onDone = { sideDragging = false; saveSide(); s.resized() })
+            else SideEdge(sideW, screenW, sideLo, onStart = { sideDragging = true }, onDrag = { sideDp = it.value }, onDone = { sideDragging = false; saveSide(); s.resized() })
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().padding(16.dp), contentAlignment = Alignment.Center) {
                 val a = s.aspect.toFloat()
                 val w = minOf(maxWidth, maxHeight * a)
@@ -384,7 +392,7 @@ private fun MainActivity.CodeBox(modifier: Modifier) {
 // ai: "Preparing", "Sending" with the bytes that go, "Paused", or what went wrong), then Start, or Stop (Resume beside it
 // ai: while paused), then the rate the code carries.
 @Composable
-private fun MainActivity.SendPanel() {
+private fun MainActivity.SendPanel(onFull: () -> Unit) {
     val s = send
     val on = s.phase == SendState.Phase.On
     val busy = on || s.phase == SendState.Phase.Preparing
@@ -403,17 +411,29 @@ private fun MainActivity.SendPanel() {
         s.uri != null -> sized
         else -> ""
     }
-    if (line.isNotEmpty()) Text(line, style = MaterialTheme.typography.titleMedium, color = if (err != null) Bad else Fg, modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
-    HeatWarning(heat, clocks, Modifier.padding(top = 8.dp))
-    Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (!busy) Btn("Start", Kind.Primary, enabled = s.test || s.uri != null, modifier = Modifier.fillMaxWidth()) { s.start() }
-        else if (s.paused) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Btn("Resume", Kind.Primary, modifier = Modifier.weight(1f)) { s.pause(false) }
+    // ai: the web sender's order (2026-10-06): the buttons first (Start or Stop beside Fullscreen; paused, Resume and
+    // ai: Stop on one row and Fullscreen under them, so no label folds), then the state line, then the rate as the
+    // ai: web's figures line, 14 sp grey
+    Column(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        val fs: @Composable (Modifier) -> Unit = { m -> Btn("Fullscreen", modifier = m, onClick = onFull) }
+        if (!busy) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Btn("Start", Kind.Primary, enabled = s.test || s.uri != null, modifier = Modifier.weight(1f)) { s.start() }
+            fs(Modifier.weight(1f))
+        } else if (s.paused) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Btn("Resume", Kind.Primary, modifier = Modifier.weight(1f)) { s.pause(false) }
+                Btn("Stop", modifier = Modifier.weight(1f)) { s.stop() }
+            }
+            fs(Modifier.fillMaxWidth())
+        } else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Btn("Stop", modifier = Modifier.weight(1f)) { s.stop() }
+            fs(Modifier.weight(1f))
         }
-        else Btn("Stop", modifier = Modifier.fillMaxWidth()) { s.stop() }
     }
-    if (on && st.offeredKBs > 0) Text(Readout.rate(st.offeredKBs), style = MaterialTheme.typography.titleMedium, color = Fg, modifier = Modifier.padding(bottom = 8.dp))
+    if (line.isNotEmpty()) Text(line, style = MaterialTheme.typography.titleMedium, color = if (err != null) Bad else Fg, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
+    if (on && st.offeredKBs > 0) Text(Readout.rate(st.offeredKBs), style = MaterialTheme.typography.bodyMedium, color = Muted, modifier = Modifier.padding(top = 2.dp))
+    HeatWarning(heat, clocks, Modifier.padding(top = 8.dp))
+    Spacer(Modifier.height(8.dp))
 }
 
 // ai: The rail's squares: play to start (or to resume), pause while sending, and the code's capacity while it is shown
