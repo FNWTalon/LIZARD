@@ -28,7 +28,8 @@ std::vector<uint32_t> spirv(const std::string& path) {
 double nowMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 }  // namespace
 
-std::unique_ptr<GpuPainter> GpuPainter::create(const std::string& assets, std::function<void(const std::string&)> log, const std::string& device) {
+std::unique_ptr<GpuPainter> GpuPainter::create(const std::string& assets, std::function<void(const std::string&)> log, const std::string& device,
+                                               const wg::DeviceExtras* extras) {
   std::unique_ptr<GpuPainter> p(new GpuPainter());
   p->assets_ = assets;
   p->log_ = log ? log : [](const std::string&) {};
@@ -38,7 +39,7 @@ std::unique_ptr<GpuPainter> GpuPainter::create(const std::string& assets, std::f
   const std::string err = p->k_.load(text, readFile(assets + "/" + blob));
   if (!err.empty()) throw std::runtime_error(err);
   const char* want = getenv("LIZ_VK_DEVICE");
-  p->dev_ = wg::Device::create(!device.empty() ? device : want ? want : "", false, p->log_);
+  p->dev_ = wg::Device::create(!device.empty() ? device : want ? want : "", false, p->log_, extras ? *extras : wg::DeviceExtras());
   p->name_ = p->dev_->name;
   using wg::Bind;
   auto& d = *p->dev_;
@@ -79,7 +80,7 @@ std::string GpuPainter::pipes(int n) {
   return "";
 }
 
-std::string GpuPainter::configure(int n, int subch, int span, int fps, int frames, int codes, int gap) {
+std::string GpuPainter::configure(int n, int subch, int span, int fps, int frames, int codes, int gap, int aheadFrames, uint64_t aheadBytes, int margin, bool ringOnly) {
   if (fReady_) { focus_free(&f_); fReady_ = false; }
   if (focus_init(&f_, n, subch, 1, 2.0f, span, 0.f, 0, 0, 0, 0, 0, 0)) return "the codec refused LIZARD-" + std::to_string(subch) + " at n = " + std::to_string(n);
   fReady_ = true;
@@ -87,8 +88,11 @@ std::string GpuPainter::configure(int n, int subch, int span, int fps, int frame
   fps_ = fps;
   if (f_.blocks > k_.permBlocks) return "LIZARD-" + std::to_string(subch) + " has more blocks than the bit map's table";
   try {
-    const std::string pe = pipes(n);
-    if (!pe.empty()) return pe;
+    if (!ringOnly) {
+      const std::string pe = pipes(n);
+      if (!pe.empty()) return pe;
+    }
+    ringOnly_ = ringOnly;
     using namespace wg;
     auto& d = *dev_;
     for (int R = std::max(1, frames); R >= 1; R /= 2) {
@@ -97,8 +101,30 @@ std::string GpuPainter::configure(int n, int subch, int span, int fps, int frame
       const SendTables& t = t_;
       // ai: Z: the symbols an encode (frames x codes): every stage before rsh works a symbol a workgroup z, rsh a frame
       const uint64_t V = t.blocks, np = t.npos, Z = uint64_t(R) * t.codes;
+      // ai: the ring's depth: the budget's, floored at 2R + margin + 1 (an encode's frames twice over and the slots a
+      // ai: reader may still hold); halved on refusal down to that floor before R is
+      const int floorDepth = 2 * R + std::max(0, margin) + 1;
+      int depth = floorDepth;
+      if (aheadFrames > 0 && aheadBytes > 0) {
+        const uint64_t byBytes = aheadBytes / (4ull * t.FS);
+        depth = static_cast<int>(std::min<uint64_t>(static_cast<uint64_t>(aheadFrames), byBytes));
+        depth = std::max(depth, floorDepth);
+      }
+      for (; depth >= floorDepth; depth = depth / 2 >= floorDepth ? depth / 2 : (depth > floorDepth ? floorDepth : 0)) {
       try {
         gPaint_.reset(); gIrows_.reset(); gIpic_.reset(); gTpose_.reset(); gRsv_.reset(); gRsh_.reset();
+        BLOCKS_.reset(); S_.reset(); Y_.reset(); PQT_.reset(); PIC_.reset(); FRAME_.reset(); READ_.reset();
+        FRAME_ = d.createBuffer(uint64_t(depth) * 4ull * t.FS, STORAGE | COPY_SRC | COPY_DST, "send FRAME");
+        READ_ = d.createBuffer(R * 4ull * t.FS, MAP_READ | COPY_DST, "send READ");
+        TIME_ = d.createBuffer(16, MAP_READ | COPY_DST, "send TIME");
+        if (ringOnly) {
+          d.flush();
+          frames_ = R;
+          depth_ = depth;
+          log_("gpu sender: LIZARD-" + std::to_string(subch) + (t.codes > 1 ? " x " + std::to_string(t.codes) : "") + " at " + std::to_string(n) + ", " + std::to_string(t.FW) + " x " + std::to_string(t.W) + " px, a ring of " +
+               std::to_string(depth) + " frames for the CPU's painters, " + std::to_string(d.allocated.load() >> 20) + " MB on " + name_);
+          return "";
+        }
         BLOCKS_ = d.createBuffer(Z * V * k_.blockBytes, STORAGE | COPY_DST, "send BLOCKS");
         PERMW_ = d.createBuffer(V * k_.slotsPerBlock * 2, STORAGE | COPY_DST, "send PERMW", false);
         d.upload(*PERMW_, 0, k_.perm.data(), V * k_.slotsPerBlock * 2);
@@ -122,9 +148,6 @@ std::string GpuPainter::configure(int n, int subch, int span, int fps, int frame
         d.upload(*BORDER_, 0, t.border.data(), t.border.size());
         GU_ = d.createBuffer(48, UNIFORM | COPY_DST, "send GU", false);
         d.writeBuffer(*GU_, 0, t.g.data(), 48);
-        FRAME_ = d.createBuffer(R * 4ull * t.FS, STORAGE | COPY_SRC, "send FRAME");
-        READ_ = d.createBuffer(R * 4ull * t.FS, MAP_READ | COPY_DST, "send READ");
-        TIME_ = d.createBuffer(16, MAP_READ | COPY_DST, "send TIME");
         gPaint_ = d.createBindGroup(bglPaint_, {BLOCKS_, PERMW_, UV_, S_, PU_});
         gIrows_ = d.createBindGroup(bglIrows_, {S_, TW_, Y_, ROWS_, SU_});
         gIpic_ = d.createBindGroup(bglIpic_, {Y_, TW_, PQT_, SU_});
@@ -133,12 +156,14 @@ std::string GpuPainter::configure(int n, int subch, int span, int fps, int frame
         gRsh_ = d.createBindGroup(bglRsh_, {t.copy ? PIC_ : PQT_, TAPS_, BORDER_, FRAME_, GU_});
         d.flush();
         frames_ = R;
+        depth_ = depth;
         staging_.assign(Z * V * k_.blockBytes, 0);
         log_("gpu sender: LIZARD-" + std::to_string(subch) + (t.codes > 1 ? " x " + std::to_string(t.codes) : "") + " at " + std::to_string(n) + ", " + std::to_string(t.FW) + " x " + std::to_string(t.W) + " px, encodes of " + std::to_string(R) +
-             (t.copy ? ", rsh's copy" : "") + ", " + std::to_string(d.allocated.load() >> 20) + " MB on " + name_);
+             (t.copy ? ", rsh's copy" : "") + ", a ring of " + std::to_string(depth) + " frames, " + std::to_string(d.allocated.load() >> 20) + " MB on " + name_);
         return "";
       } catch (const OutOfMemory&) {
-        log_("gpu sender: encodes of " + std::to_string(R) + " do not fit; fewer");
+        log_("gpu sender: encodes of " + std::to_string(R) + " with a ring of " + std::to_string(depth) + " do not fit; fewer");
+      }
       }
     }
     return "no encode of LIZARD-" + std::to_string(subch) + " fits this device's memory";
@@ -147,15 +172,18 @@ std::string GpuPainter::configure(int n, int subch, int span, int fps, int frame
   }
 }
 
-double GpuPainter::encode(const uint8_t* blocks, int count, int parity, std::vector<uint8_t>* out) {
+double GpuPainter::encode(const uint8_t* blocks, int count, int parity, std::vector<uint8_t>* out, uint64_t seq) {
   const SendTables& t = t_;
   const int V = t.blocks, B = t.blockBytes, BB = k_.blockBytes;
+  if (ringOnly_) throw std::runtime_error("the GPU painter holds the ring alone here (the CPU paints)");
   if (count < 1 || count > frames_) throw std::runtime_error("an encode is 1 to " + std::to_string(frames_) + " frames");
+  const uint32_t first = static_cast<uint32_t>(seq % static_cast<uint64_t>(depth_));
+  if (static_cast<int>(first) + count > depth_) throw std::runtime_error("an encode of " + std::to_string(count) + " frames from slot " + std::to_string(first) + " would wrap the ring of " + std::to_string(depth_));
   auto& d = *dev_;
   const int Z = count * t.codes;   // ai: the symbols, a frame's codes one after the other
   for (int i = 0; i < Z * V; i++) std::memcpy(staging_.data() + static_cast<size_t>(i) * BB, blocks + static_cast<size_t>(i) * B, B);
   d.writeBuffer(*BLOCKS_, 0, staging_.data(), static_cast<uint64_t>(Z) * V * BB);
-  const uint32_t first = 0, pc = static_cast<uint32_t>(parity & 3) | (static_cast<uint32_t>(t.codes) << 2);
+  const uint32_t pc = static_cast<uint32_t>(parity & 3) | (static_cast<uint32_t>(t.codes) << 2);
   d.writeBuffer(*GU_, 36, &first, 4);
   d.writeBuffer(*PU_, 4ull * (k_.paramsDims + 3), &pc, 4);
   const uint32_t R = static_cast<uint32_t>(count), RZ = static_cast<uint32_t>(Z), n = static_cast<uint32_t>(t.n);
@@ -170,20 +198,31 @@ double GpuPainter::encode(const uint8_t* blocks, int count, int parity, std::vec
   enc.setPipeline(t.copy ? *rshCopy_ : *rsh_); enc.setBindGroup(*gRsh_); enc.dispatch((t.RW + k_.rshThreads - 1) / k_.rshThreads, t.W, R);
   enc.endPass();
   enc.resolveQuerySet(*qs_, 0, 2, *TIME_, 0);
-  enc.copyBufferToBuffer(*FRAME_, 0, *READ_, 0, uint64_t(R) * 4 * t.FS);
+  if (out) enc.copyBufferToBuffer(*FRAME_, uint64_t(first) * 4 * t.FS, *READ_, 0, uint64_t(R) * 4 * t.FS);
   const double t0 = nowMs();
   auto ticket = d.submit(enc);
   ticket->wait();
   const double wall = nowMs() - t0;
-  const uint8_t* px = d.read(*READ_, 0, uint64_t(R) * 4 * t.FS);
-  for (int f = 0; f < count; f++) {
-    out[f].resize(static_cast<size_t>(t.FW) * t.W);
-    for (int y = 0; y < t.W; y++) std::memcpy(out[f].data() + static_cast<size_t>(y) * t.FW, px + 4 * (static_cast<size_t>(f) * t.FS + static_cast<size_t>(y) * t.RW), t.FW);
+  if (out) {
+    const uint8_t* px = d.read(*READ_, 0, uint64_t(R) * 4 * t.FS);
+    for (int f = 0; f < count; f++) {
+      out[f].resize(static_cast<size_t>(t.FW) * t.W);
+      for (int y = 0; y < t.W; y++) std::memcpy(out[f].data() + static_cast<size_t>(y) * t.FW, px + 4 * (static_cast<size_t>(f) * t.FS + static_cast<size_t>(y) * t.RW), t.FW);
+    }
   }
   if (!d.features.timestamps) return wall;
   uint64_t ts[2];
   std::memcpy(ts, d.read(*TIME_, 0, 16), 16);
   return double((ts[1] - ts[0]) & d.timestampMask) * d.timestampPeriod / 1e6;
+}
+
+void GpuPainter::upload(int slot, const uint8_t* packed) {
+  auto& d = *dev_;
+  const uint64_t bytes = 4ull * t_.FS;
+  d.upload(*FRAME_, static_cast<uint64_t>(slot) * bytes, packed, bytes);
+  auto enc = d.encoder();
+  auto ticket = d.submit(enc);
+  ticket->wait();
 }
 
 GpuPainter::Check GpuPainter::check(const uint8_t* blocks, int count) {

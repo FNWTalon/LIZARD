@@ -48,7 +48,7 @@ import kotlin.math.roundToInt
 // ai: presenter's pictures by AWT. Its size in device px is the room the format is picked from; it tells the state when
 // ai: it has a window (addNotify), is shown or resized, and, before that window goes (removeNotify: a dispose, a window
 // ai: made again), stops the presenter on it. A click on it leaves full screen, as a tap on the web's code does; the
-// ai: cursor is hidden there. Idle (2026-10-07, the web's hint in the middle of its page and the app's code box) it
+// ai: Idle (2026-10-07, the web's hint in the middle of its page and the app's code box) it
 // ai: is the file's area: the soft fill, the file icon and "Choose a file", or the file's name once one is chosen, or
 // ai: "Test stream"; a click opens the file dialog and a file dropped on it is taken (the test stream off). AWT paints
 // ai: that itself, since nothing of Compose can be drawn over a heavyweight canvas.
@@ -78,9 +78,10 @@ class CodeCanvas(private val s: SendState) : Canvas() {
 
     private fun chooses() = !s.sending && !s.test
 
-    // ai: the look for the state: a hand over the file's area, the default cursor otherwise (full screen hides it)
+    // ai: the look for the state: a hand over the file's area, the default cursor otherwise (shown in full screen too,
+    // ai: 2026-10-07)
     fun idleLook() {
-        if (!s.full) cursor = if (chooses()) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
+        cursor = if (chooses()) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
         repaint()
     }
 
@@ -117,8 +118,6 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         return (width * (t?.scaleX ?: 1.0)).roundToInt() to (height * (t?.scaleY ?: 1.0)).roundToInt()
     }
 
-    fun hideCursor(on: Boolean) { cursor = if (on) blank else Cursor.getDefaultCursor() }
-    private val blank by lazy { Toolkit.getDefaultToolkit().createCustomCursor(BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB), Point(0, 0), "none") }
 }
 
 // ai: The run (the web's send.mjs, lizard-android/.../Send.kt SendState): the settings, kept (Prefs), the sender and the
@@ -237,7 +236,9 @@ class SendState {
         runName = if (test) "the test stream" else f!!.name
         val path = if (test) "" else f!!.path
         val type = if (test) "" else runCatching { Files.probeContentType(f!!.toPath()) }.getOrNull() ?: ""
-        val prepare = enc != "cpu"
+        // ai: the device is made whatever the encoder (the presenter shows the code from it, 2026-10-07); the GPU
+        // ai: painter's pipelines come with it
+        val prepare = true
         val my = ++gen
         phase = Phase.Preparing; paused = false
         thread(name = "lizard-send-prep", isDaemon = true) {
@@ -279,7 +280,6 @@ class SendState {
 
     fun toggleFull() {
         full = !full; fullOpen = false
-        canvas.hideCursor(full)
         if (p != 0L) Native.presentFullscreen(p, full)
     }
 
@@ -350,7 +350,7 @@ class SendState {
         if (h == 0L || p != 0L || !canvas.isShowing || areaW <= 0 || areaH <= 0) return
         if (!configure()) return
         canvas.presenting = true
-        val pr = Native.presentStart(canvas, h, fps, size / 100f, false, "")
+        val pr = Native.presentStart(canvas, h, fps, size / 100f, false)
         if (pr == 0L) { fail("The code cannot be shown: ${Native.txError()}"); return }
         p = pr
         if (paused) Native.presentPause(p, true)
@@ -429,7 +429,8 @@ class SendState {
             val held = (pr["held"] as? JsonObject)?.entries?.sortedBy { it.key.toIntOrNull() ?: Int.MAX_VALUE }
                 ?.joinToString(", ") { "${it.key}: ${(it.value as? JsonPrimitive)?.contentOrNull ?: "?"}" }.orEmpty()
             l += "pictures by the refreshes each held: ${held.ifEmpty { "none" }}; missed ${pr.num("missed").toInt()}, behind the painter ${pr.num("behind").toInt()}"
-            l += "presenter: Vulkan on ${pr.str("device")}${if (pr.flag("paused")) ", paused" else ""}"
+            l += "presenter: Vulkan on ${pr.str("device")}${if (pr.flag("paused")) ", paused" else ""}" +
+                when ((pr["direct"] as? JsonPrimitive)?.booleanOrNull) { true -> ", direct"; false -> ", composited"; null -> "" }
         }
         l += (if (sd.str("painter") == "gpu") "encoder: GPU, ${sd.str("device")}, ${Fmt.f1(sd.num("paintMs"))} ms a frame"
             else "encoder: CPU, ${sd.num("painters").toInt()} painters, ${Fmt.f1(sd.num("paintMs"))} ms a frame on one" +

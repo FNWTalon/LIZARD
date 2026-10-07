@@ -26,7 +26,7 @@ object Native {
     // ai: The presenter on a displayable canvas, taking the sender tx's frames: 0, why in txError(). size the code's share
     // ai: of the area's room (0.25 to 1), whole whole device pixels a sample (nearest) or stretched (linear), device a
     // ai: substring of a Vulkan device's name ("" the first, LIZ_VK_DEVICE where set).
-    @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, whole: Boolean, device: String): Long
+    @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, whole: Boolean): Long
     @JvmStatic external fun presentFps(p: Long, fps: Int)
     @JvmStatic external fun presentSize(p: Long, size: Float)
     @JvmStatic external fun presentWhole(p: Long, on: Boolean)

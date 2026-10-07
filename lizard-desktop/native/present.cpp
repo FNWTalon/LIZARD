@@ -238,6 +238,14 @@ int main(int argc, char** argv) {
     f.threads = a.threads;
     f.painter = a.painter == "cpu" ? 0 : a.painter == "gpu" ? 1 : 2;
     f.assets = a.assets;
+    f.hostFrames = false;
+    f.aheadSecs = 1.0;
+    f.aheadBytes = 256ull << 20;
+    f.margin = 9;
+    // ai: the device first, with what the presenter needs of it (the window's surface, the swapchain, present_wait):
+    // ai: the code is shown from the painter's device (2026-10-07)
+    const std::string prep = sender.prepareGpu(a.assets, "", &lizard::Presenter::deviceExtras());
+    if (!prep.empty()) throw std::runtime_error("no Vulkan device to present from: " + prep);
     const std::string err = sender.configure(f);
     if (!err.empty()) throw std::runtime_error(err);
     std::printf("sender: LIZARD-%d%s, n %d in the %d ring, %d a second asked, a frame %d x %d px, painted on the %s%s%s, %s\n",

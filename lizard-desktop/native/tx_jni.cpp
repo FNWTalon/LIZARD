@@ -126,11 +126,12 @@ FN(jstring, txError)(JNIEnv* e, jclass) {
   return e->NewStringUTF(gError.c_str());
 }
 
-// ai: The GPU painter made ahead (its device and pipelines), off the UI thread: "" or why there is none.
+// ai: The device and the GPU painter made ahead, off the UI thread: "" or why there is none. The device carries what the
+// ai: presenter needs of it (the window's surface, the swapchain, present_wait): the code is shown from it (2026-10-07).
 FN(jstring, txPrepare)(JNIEnv* e, jclass, jlong h, jstring assets) {
   const std::string a = str(e, assets);
   std::lock_guard<std::mutex> l(tx(h)->mu);
-  return e->NewStringUTF(tx(h)->s->prepareGpu(a).c_str());
+  return e->NewStringUTF(tx(h)->s->prepareGpu(a, "", &lizard::Presenter::deviceExtras()).c_str());
 }
 
 // ai: The format to paint (n, sub-channels, span, the rate the word states, codes side by side and the gap between them
@@ -141,6 +142,12 @@ FN(jstring, txConfigure)(JNIEnv* e, jclass, jlong h, jint n, jint subch, jint sp
   lizard::TxFormat f;
   f.n = n; f.subch = subch; f.span = span; f.fps = fps; f.codes = codes; f.gap = gap; f.threads = threads; f.painter = painter;
   f.assets = str(e, assets);
+  // ai: the frames stay on the device for the presenter (no host copies), a second of them ahead within 256 MB, the
+  // ai: swapchain's images + 1 of margin (2026-10-07)
+  f.hostFrames = false;
+  f.aheadSecs = 1.0;
+  f.aheadBytes = 256ull << 20;
+  f.margin = 9;
   std::string r;
   // ai: no C++ exception crosses into the JVM (a thread or an allocation refused inside configure would abort it):
   // ai: the reason comes back as the refusal (2026-10-04)
@@ -188,14 +195,14 @@ FN(void, txDestroy)(JNIEnv*, jclass, jlong h) {
 
 // ai: The presenter on a canvas (a heavyweight java.awt.Component, displayable: its native window made), the sender's
 // ai: frames on it: fps pictures a second asked, size the code's share of the room (0.25 to 1), whole pixels or
-// ai: stretched, the Vulkan device by a substring of its name ("" the first discrete, LIZ_VK_DEVICE where set). JAWT
+// ai: stretched, the device the sender's (txPrepare). JAWT
 // ai: is held only to read the window's handle. 0, with why in txError(), where it cannot start. presentStop before the
 // ai: canvas goes or the sender is destroyed.
-FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jfloat size, jboolean whole, jstring device) {
+FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jfloat size, jboolean whole) {
   if (!h) { setError("no sender"); return 0; }
 #if defined(__APPLE__)
   // ai: macOS needs a CAMetalLayer through JAWT's surface layers and MoltenVK: not built yet
-  (void)e; (void)canvas; (void)fps; (void)size; (void)whole; (void)device;
+  (void)e; (void)canvas; (void)fps; (void)size; (void)whole;
   setError("presenting is not built for macOS yet");
   return 0;
 #else
@@ -232,7 +239,6 @@ FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jf
   o.fps = fps;
   o.size = size;
   o.whole = whole == JNI_TRUE;
-  o.device = str(e, device);
   // ai: LIZ_PRESENT_CSV=<path>: a line a present (lizard_present --log's), for reading a run's cadence around a resize
   if (const char* c = std::getenv("LIZ_PRESENT_CSV")) o.csv = c;
   o.log = [](const std::string& m) { std::fprintf(stderr, "lizard: %s\n", m.c_str()); };

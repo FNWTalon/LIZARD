@@ -437,6 +437,24 @@ void focus_paint_rgba(const focus_t *f, const float *drive, uint8_t *rgba) {
 
 void focus_free(focus_t *f) {
   struct focus_ws *w = f->ws;
+void focus_paint_grey(const focus_t *f, const float *drive, uint8_t *grey) {
+  const int side = f->px, m = FOCUS_QUIET * f->pxm, W = side + 2 * m;
+  for (int y = 0; y < W; y++) {
+    uint8_t *row = grey + (size_t)y * W;
+    if (y < m || y >= W - m) { memset(row, 0xFF, (size_t)W); continue; }
+    memset(row, 0xFF, (size_t)m);
+    memset(row + W - m, 0xFF, (size_t)m);
+    const float *d = drive + (size_t)(y - m) * side;
+    uint8_t *o = row + m;
+    for (int x = 0; x < side; x++) {
+      const float t = d[x] * 255.0f + 0.5f;
+      int v = t >= 2147483647.0f ? 255 : t <= -2147483648.0f ? 0 : (int)t;
+      v = v < 0 ? 0 : v > 255 ? 255 : v;
+      o[x] = (uint8_t)v;
+    }
+  }
+}
+
   if (w) { free(w->tre); free(w->tim); free(w->wre); free(w->wim); free(w->cx); free(w->llr); free(w->bits); free(w->data); free(w->amp); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < FOCUS_TIERS; t++) free(w->perm[t]); free(w); }
   for (int t = 0; t < FOCUS_TIERS; t++) ldpc_free(&f->code[t]);
   free(f->pos); free(f->block_tier); ob_layout_free(&f->frame); memset(f, 0, sizeof *f);
