@@ -23,6 +23,23 @@ void cpu_dec_free(cpu_dec_t *d) {
 }
 int cpu_dec_top(const cpu_dec_t *d) { return focus_any_top(&d->any); }
 int cpu_dec_block_bytes(const cpu_dec_t *d) { return d->block_bytes; }
+int cpu_tiers_check(const char *spec, int *subch, int *blocks, char *label, int label_len) {
+  focus_tier_t tier[FOCUS_TIERS];
+  int s = 0;
+  const int tiers = focus_tiers_parse(spec, tier, &s, label, label_len);
+  if (subch) *subch = tiers ? s : 0;
+  if (blocks) { int b = 0; for (int t = 0; t < tiers; t++) b += tier[t].blocks; *blocks = b; }
+  return tiers;
+}
+int cpu_dec_tiers(cpu_dec_t *d, const char *spec, char *why, int why_len) {
+  if (why && why_len > 0) why[0] = 0;
+  if (!spec || !*spec) { focus_any_tiers(&d->any, NULL, 0); return 0; }
+  focus_tier_t tier[FOCUS_TIERS];
+  const int tiers = focus_tiers_parse(spec, tier, NULL, why, why_len);
+  if (!tiers) return -1;
+  if (focus_any_tiers(&d->any, tier, tiers)) { if (why && why_len > 0) { const char *t = "the receiver refused the profile"; int i = 0; for (; t[i] && i + 1 < why_len; i++) why[i] = t[i]; why[i] = 0; } return -1; }
+  return tiers;
+}
 
 int cpu_dec_frame(cpu_dec_t *d, const uint8_t *img, int iw, int ih, int held, uint8_t *blocks, uint8_t *ok, cpu_frame_t *out) {
   memset(&d->res, 0, sizeof d->res);

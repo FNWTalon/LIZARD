@@ -52,19 +52,41 @@ void Sender::stopAll() {
   if (uploader_.joinable()) uploader_.join();
 }
 
-std::string Sender::configure(const TxFormat& f) {
+// ai: A painter's codec of the format: the profile's tiers where one is set (focus_init_tiers), else the one rate.
+int Sender::makeCodec(focus_t* f, const TxFormat& fm) const {
+  if (tiers_ > 0) return focus_init_tiers(f, fm.n, tier_, tiers_, 2.0f, fm.span, 0.f, 0, 0, 0, 0, 0, 0);
+  return focus_init(f, fm.n, fm.subch, 1, 2.0f, fm.span, 0.f, 0, 0, 0, 0, 0, 0);
+}
+
+std::string Sender::configure(const TxFormat& given) {
   stopAll();
-  if (f.codes < 1 || f.codes > 2) return "codes are 1 or 2, not " + std::to_string(f.codes);
-  if (f.gap < 0 || f.gap > 64) return "the gap is 0 to 64 modules, not " + std::to_string(f.gap);
+  if (given.codes < 1 || given.codes > 2) return "codes are 1 or 2, not " + std::to_string(given.codes);
+  if (given.gap < 0 || given.gap > 64) return "the gap is 0 to 64 modules, not " + std::to_string(given.gap);
+  // ai: the rate profile (TxFormat.tiers): the frame's sub-channels are its sum, the picture follows, the C paints
+  TxFormat f = given;
+  {
+    std::lock_guard<std::mutex> l(mu_);
+    tiers_ = 0; tiersLabel_.clear();
+    if (!f.tiers.empty()) {
+      char label[160];
+      int subch = 0;
+      const int tiers = focus_tiers_parse(f.tiers.c_str(), tier_, &subch, label, sizeof label);
+      if (tiers <= 0) return std::string("the rate profile was refused: ") + label;
+      tiers_ = tiers; tiersLabel_ = label;
+      f.subch = subch; f.n = focus_n_for(subch);
+      f.painter = 0;
+    }
+  }
   // ai: one codec made here to say what the format is (and that it is one); each painter makes its own
   focus_t probe{};
-  if (focus_init(&probe, f.n, f.subch, 1, 2.0f, f.span, 0.f, 0, 0, 0, 0, 0, 0)) return "the codec refused LIZARD-" + std::to_string(f.subch) + " at n = " + std::to_string(f.n);
+  if (makeCodec(&probe, f)) return "the codec refused LIZARD-" + std::to_string(f.subch) + " at n = " + std::to_string(f.n);
   // ai: The device and the painter are made here where no prepare did: the frame ring lives in the painter whatever
   // ai: paints (2026-10-07), so a sender needs a Vulkan device. The GPU paints where asked (or auto); auto keeps it only
   // ai: where two frames of the test stream's blocks come out as the C paints them (gpu/encoder.mjs checkNow's rule), so
   // ai: a driver that returns garbage sends from the CPU instead, into the same ring.
   bool gpu = false;
   gpuWhy_.clear();
+  if (tiers_ > 0 && given.painter != 0) gpuWhy_ = "the GPU painter has one rate (the profile is painted by the C)";
   if (!gpu_) {
     try { gpu_ = GpuPainter::create(f.assets, nullptr, f.device, extras_.get()); }
     catch (const std::exception& e) { focus_free(&probe); return std::string("no Vulkan device for the frames: ") + e.what(); }
@@ -107,7 +129,7 @@ std::string Sender::configure(const TxFormat& f) {
   gap_ = f.codes > 1 ? f.gap * probe.pxm : 0;
   width_ = f.codes * side_ + (f.codes - 1) * gap_;
   focus_free(&probe);
-  label_ = "LIZARD-" + std::to_string(f.subch) + (f.codes > 1 ? " x " + std::to_string(f.codes) : "");
+  label_ = "LIZARD-" + std::to_string(f.subch) + (tiers_ > 0 ? " (" + tiersLabel_ + ")" : "") + (f.codes > 1 ? " x " + std::to_string(f.codes) : "");
   // ai: what was made or painted under the old format goes; the count goes on from the screen's
   jobs_.clear(); ready_.clear(); hostOf_.clear(); toUpload_.clear(); dataOf_.clear(); spare_.clear();
   made_ = shown_;
@@ -177,7 +199,7 @@ void Sender::paint(int) {
     rowBytes = 4ull * gpu_->rowWords();
     bytes = 4ull * gpu_->frameWords();
   }
-  if (focus_init(&f, fm.n, fm.subch, 1, 2.0f, fm.span, 0.f, 0, 0, 0, 0, 0, 0)) {
+  if (makeCodec(&f, fm)) {
     std::lock_guard<std::mutex> l(mu_);
     error_ = "a painter's codec failed";
     return;
@@ -384,7 +406,7 @@ std::string Sender::stats() {
     << ",\"shownFps\":" << lastFps_ << ",\"offeredKBs\":" << lastKBs_ << ",\"paintMs\":" << lastPaintMs_
     << ",\"painters\":" << fmt_.threads << ",\"painter\":\"" << (onGpu_ ? "gpu" : "cpu") << "\",\"device\":\"" << esc(gpuDevice_)
     << "\",\"gpuWhy\":\"" << esc(gpuWhy_) << "\",\"ahead\":" << ready_.size() << ",\"depth\":" << depth_ << ",\"side\":" << side_ << ",\"width\":" << width_
-    << ",\"codes\":" << fmt_.codes << ",\"shown\":" << shown_
+    << ",\"codes\":" << fmt_.codes << ",\"shown\":" << shown_ << ",\"blocks\":" << blocks_ << ",\"tiers\":\"" << esc(tiersLabel_) << "\""
     << ",\"test\":" << (xfer_ ? "false" : "true");
   if (xfer_) {
     std::lock_guard<std::mutex> x(xferMu_);

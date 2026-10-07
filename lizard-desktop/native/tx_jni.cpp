@@ -148,6 +148,9 @@ FN(jstring, txConfigure)(JNIEnv* e, jclass, jlong h, jint n, jint subch, jint sp
   f.aheadSecs = 1.0;
   f.aheadBytes = 256ull << 20;
   f.margin = 9;
+  // ai: LIZ_TIERS in the app's environment (the lab's rate-by-ring arm, 2026-10-07): the profile painted in place of
+  // ai: the format asked for (TxFormat.tiers); the window's figures still count the blocks it asked for
+  if (const char* t = getenv("LIZ_TIERS"); t && *t) f.tiers = t;
   std::string r;
   // ai: no C++ exception crosses into the JVM (a thread or an allocation refused inside configure would abort it):
   // ai: the reason comes back as the refusal (2026-10-04)

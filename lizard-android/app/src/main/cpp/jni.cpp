@@ -94,6 +94,26 @@ extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
   return JNI_VERSION_1_6;
 }
 
+// ai: The core's LIZ_* switches for a run driven over adb: `adb shell setprop debug.lizard.env "LIZ_PARTS=0 ..."`, read
+// ai: as each receiver and each sender is made; the names set the last time are unset first, so a property cleared
+// ai: takes effect at the next one (2026-10-07; they stayed set before).
+static void applyDebugEnv() {
+  static std::vector<std::string> set;
+  for (const auto& k : set) unsetenv(k.c_str());
+  set.clear();
+  char v[PROP_VALUE_MAX] = "";
+  __system_property_get("debug.lizard.env", v);
+  std::string all(v);
+  for (size_t a = 0; a < all.size();) {
+    size_t b = all.find(' ', a);
+    if (b == std::string::npos) b = all.size();
+    const std::string kv = all.substr(a, b - a);
+    const size_t eq = kv.find('=');
+    if (eq != std::string::npos && eq > 0) { setenv(kv.substr(0, eq).c_str(), kv.substr(eq + 1).c_str(), 1); set.push_back(kv.substr(0, eq)); __android_log_print(ANDROID_LOG_INFO, "lizard", "env %s", kv.c_str()); }
+    a = b + 1;
+  }
+}
+
 extern "C" JNIEXPORT jlong JNICALL Java_dev_lizard_receiver_Native_create(JNIEnv* e, jclass, jstring assets,
     jstring cacheDir, jstring storeDir, jstring decoder, jstring precision, jstring layout) {
   lizard::ReceiverConfig c;
@@ -103,21 +123,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_lizard_receiver_Native_create(JNIEnv
   c.decoder = str(e, decoder);
   c.precision = str(e, precision);
   c.layout = str(e, layout);
-  // ai: the core's LIZ_* switches for a run driven over adb: `adb shell setprop debug.lizard.env "LIZ_PARTS=0 ..."`,
-  // ai: read as each receiver is made
-  {
-    char v[PROP_VALUE_MAX] = "";
-    __system_property_get("debug.lizard.env", v);
-    std::string all(v);
-    for (size_t a = 0; a < all.size();) {
-      size_t b = all.find(' ', a);
-      if (b == std::string::npos) b = all.size();
-      const std::string kv = all.substr(a, b - a);
-      const size_t eq = kv.find('=');
-      if (eq != std::string::npos && eq > 0) { setenv(kv.substr(0, eq).c_str(), kv.substr(eq + 1).c_str(), 1); __android_log_print(ANDROID_LOG_INFO, "lizard", "env %s", kv.c_str()); }
-      a = b + 1;
-    }
-  }
+  applyDebugEnv();
   c.log = [](const std::string& s) { LOGI("%s", s.c_str()); };
   try {
     auto r = lizard::Receiver::create(c, release);
@@ -796,6 +802,7 @@ bool presentVsynced(Tx* t, int side, int width, int64_t vsync, int w, int h) {
 // ai: txError(0) where it cannot go.
 static std::string gTxError;
 extern "C" JNIEXPORT jlong JNICALL Java_dev_lizard_receiver_Native_txCreate(JNIEnv* e, jclass, jstring path, jstring name, jstring type) {
+  applyDebugEnv();
   auto t = std::make_unique<Tx>();
   const std::string p = str(e, path);
   try {
@@ -837,6 +844,9 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txConfigure
   f.aheadBytes = 96ull << 20;
   f.margin = 2;
   f.hostFrames = !(tx(h)->gpuExpand && vsynced == JNI_TRUE);
+  // ai: LIZ_TIERS (debug.lizard.env; the lab's rate-by-ring arm, 2026-10-07): the profile painted in place of the
+  // ai: format asked for (TxFormat.tiers); the screen's capacity figure still counts the blocks it asked for
+  if (const char* t = getenv("LIZ_TIERS"); t && *t) f.tiers = t;
   tx(h)->fps = fps;
   tx(h)->assets = f.assets;
   return e->NewStringUTF(tx(h)->s->configure(f).c_str());
