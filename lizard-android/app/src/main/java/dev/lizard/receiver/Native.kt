@@ -32,6 +32,8 @@ object Native {
     @JvmStatic external fun file(h: Long): String
     // ai: the camera's reader closed, every frame of it handed back: the GPU decoder drops its imports of its buffers
     @JvmStatic external fun cameraClosed(h: Long)
+    // ai: the transfer in hand forgotten, the held word with it (2026-10-07): the received file deleted from the app
+    @JvmStatic external fun clear(h: Long)
     @JvmStatic external fun destroy(h: Long)
     // ai: Save replays (2026-10-03; liblizard/core/rx/replay.h): a replay keeping the newest `frames` frames in dir (made there),
     // ai: handed to a receiver by record (0 takes it back); replayEnd ends its run once the frames the decoder holds for

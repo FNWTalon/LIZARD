@@ -60,7 +60,8 @@ internal fun MainActivity.ReceiveScreen() {
     // ai: one preview view for both layouts: a second TextureView would destroy the first one's surface, and the
     // ai: camera with it, at every turn of the phone
     val preview = remember { movableContentOf<Modifier> { m -> Preview(m) } }
-    val bar: @Composable () -> Unit = { TopBar("Receive", onBack = { go(MainActivity.Screen.Home) }) }
+    // ai: the other tool at the bar's end, as the web's #swap (2026-10-06)
+    val bar: @Composable () -> Unit = { TopBar("Receive", onBack = { go(MainActivity.Screen.Home) }) { SwapBtn("Sender") { go(MainActivity.Screen.Send) } } }
     val side: @Composable () -> Unit = {
         TransferPanel()
         Fold("Settings", isOpen("recvSettings"), { toggle("recvSettings") }) { ReceiveSettings() }
@@ -78,7 +79,9 @@ internal fun MainActivity.ReceiveScreen() {
     } else BoxWithConstraints(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
         // ai: the web's 20rem column, less where the screen is narrow; collapsed (its button at the bar's end, kept:
         // ai: recvCollapsed, 2026-10-02), a 56 dp rail and the camera the rest
-        val sideW = SideWidth(maxWidth, sideDp)
+        // ai: no narrower than the actions' two cells with no label folded (2026-10-06)
+        val sideLo = TwoCellFloor(listOf("Open", "Save", "Share", "Start", "Stop"))
+        val sideW = SideWidth(maxWidth, sideDp, sideLo)
         val screenW = maxWidth
         Row(Modifier.fillMaxSize()) {
             // ai: Home is the rail's last square in landscape, not the column's bar (2026-10-05): expanding the panel put
@@ -92,7 +95,7 @@ internal fun MainActivity.ReceiveScreen() {
             }
             // ai: the column's edge, dragged to resize it (2026-10-05); the rail's a plain hairline
             if (isOpen("recvCollapsed")) VerticalDivider(color = Line)
-            else SideEdge(sideW, screenW, onStart = { sideDragging = true }, onDrag = { sideDp = it.value }, onDone = { sideDragging = false; saveSide() })
+            else SideEdge(sideW, screenW, sideLo, onStart = { sideDragging = true }, onDrag = { sideDp = it.value }, onDone = { sideDragging = false; saveSide() })
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().padding(16.dp), contentAlignment = Alignment.Center) {
                 val ratio = crop().ratio
                 val viewW = minOf(maxHeight * ratio, maxWidth)
@@ -127,15 +130,18 @@ private fun MainActivity.RailSquares() {
 }
 
 // ai: The transfer: the state, the meter, the figures (progress, size, time left), then the actions: once the file is
-// ai: kept Open (the solid one), Share and Save on one row, and Start or Stop camera alone on the next, the full width
-// ai: (2026-10-05: "Save a copy" renamed, and Receive again deleted, a second Start camera). Without the
-// ai: camera's permission, why and the one button that gets it. Its first-run tip went 2026-10-02, as the web receiver's.
+// ai: kept, two rows of two (2026-10-06, as the web receiver's narrow form): Open (the solid one) and Share, then Save
+// ai: and Start or Stop (the camera's; "Start camera" and "Stop camera" until later that day, cut in a cell); with no
+// ai: file Start alone, the full width (2026-10-05: "Save a copy" renamed, and Receive again deleted, a second Start
+// ai: camera). A label never folds or shortens (Parts.kt Btn): the column's floor is what two cells of the widest
+// ai: label need (TwoCellFloor). Without the camera's permission, why and the one button that
+// ai: gets it. Its first-run tip went 2026-10-02, as the web receiver's.
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun MainActivity.TransferPanel() {
     val on = phase == Engine.Phase.On
     val running = on || phase == Engine.Phase.Starting || phase == Engine.Phase.Loading
-    val ln = if (!granted) Readout.Line(if (denied) "The camera is off for Lizard. Allow it in Android's settings to receive." else "Lizard needs the camera to read the code on the other screen.")
+    val ln = if (!granted) Readout.Line(if (denied) "The camera is off for LIZARD. Allow it in Android's settings to receive." else "LIZARD needs the camera to read the code on the other screen.")
         else Readout.line(on, phase == Engine.Phase.Starting, phase == Engine.Phase.Loading, (phase as? Engine.Phase.Error)?.why, rx, secs)
     if (ln.text.isNotEmpty()) Text(ln.text, style = MaterialTheme.typography.titleMedium, color = toneColour(ln.tone), modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
     Meter(ln.frac)
@@ -146,14 +152,20 @@ internal fun MainActivity.TransferPanel() {
     Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         if (!granted) Btn(if (denied) "Open settings" else "Allow camera", Kind.Primary, modifier = Modifier.fillMaxWidth()) { if (denied) openAppSettings() else askCamera() }
         else {
-            if (kept != null) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Btn("Open", Kind.Primary, modifier = Modifier.weight(1f)) { open(kept) }
-                Btn("Share", modifier = Modifier.weight(1f)) { share(kept) }
-                Btn("Save", modifier = Modifier.weight(1f)) { saveCopy(kept) }
-            }
             // ai: one solid button at a time: Start while nothing waits, else Open
-            Btn(if (running) "Stop camera" else "Start camera", if (!running && kept == null) Kind.Primary else Kind.Tonal, enabled = phase != Engine.Phase.Starting,
-                modifier = Modifier.fillMaxWidth()) { toggleCamera() }
+            val camera: @Composable (Modifier) -> Unit = { m ->
+                Btn(if (running) "Stop" else "Start", if (!running && kept == null) Kind.Primary else Kind.Tonal, enabled = phase != Engine.Phase.Starting, modifier = m) { toggleCamera() }
+            }
+            if (kept != null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Btn("Open", Kind.Primary, modifier = Modifier.weight(1f)) { open(kept) }
+                    Btn("Share", modifier = Modifier.weight(1f)) { share(kept) }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Btn("Save", modifier = Modifier.weight(1f)) { saveCopy(kept) }
+                    camera(Modifier.weight(1f))
+                }
+            } else camera(Modifier.fillMaxWidth())
         }
     }
     // ai: the rate itself is the collapsed rail's and Developer Tools' lab line's (2026-10-05; a line under the buttons

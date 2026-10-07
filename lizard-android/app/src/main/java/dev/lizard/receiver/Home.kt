@@ -52,7 +52,7 @@ internal fun MainActivity.HomeScreen() {
         Spacer(Modifier.height(8.dp))
         if (!tipsSeen) TipCard(onGot = { tipsDone() }) {
             Text("Send a file from one screen to another device's camera.", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, color = Fg)
-            Steps("On the sending device, open Lizard, choose Send and pick a file.", "On the receiving phone, open Lizard and choose Receive.",
+            Steps("On the sending device, open LIZARD, choose Send and pick a file.", "On the receiving phone, open LIZARD and choose Receive.",
                 "Point it at the code until the file arrives. It is kept here.")
             // ai: the example on video (the README's), a link the system opens
             Text(buildAnnotatedString {

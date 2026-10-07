@@ -129,6 +129,9 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     }
 
     fun stats(): String = synchronized(lock) { if (handle != 0L) Native.stats(handle) else "" }
+    // ai: the transfer in hand forgotten (2026-10-07, the received file deleted on Home): the receiver no longer reports
+    // ai: the file, so the state line's "Received" goes, and the same file in the light is received and kept anew
+    fun clear() = h.post { synchronized(lock) { if (handle != 0L) Native.clear(handle) } }
     // ai: Save replays (2026-10-03, MainActivity's replay): the replay (Native.replayNew) handed to the receiver, and to
     // ai: one made while it runs, which hands it each frame it decodes; replayEnd takes replay r back where it is the
     // ai: one handed over, then ends its run on a thread of its own (the frames the decoder still holds for it first,
@@ -325,7 +328,10 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         r.setOnImageAvailableListener({ onImage(it) }, fh)
         val outs = listOf(OutputConfiguration(r.surface), OutputConfiguration(preview))
         val exec = Executor { h.post(it) }
-        d.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR, outs, exec,
+        // ai: the call itself can throw (2026-10-06, the S26: CameraAccessException "Error configuring streams: Broken
+        // ai: pipe" from endConfigure, the camera service's side gone, which killed the app on the engine thread):
+        // ai: a failure the state line reports, and Start tries again
+        try { d.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR, outs, exec,
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(cs: CameraCaptureSession) {
                     if (g != gen) { cs.close(); return }
@@ -502,7 +508,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                         session(d, g, ImageFormat.YUV_420_888, size, preview, fps, ch, ok)
                     } else fail("The camera refused ${size.width}x${size.height}.")
                 }
-            }))
+            })) } catch (e: Exception) { closeReader(); fail("The camera could not start: ${e.message}", e) }
     }
 
     // ai: A second's line for the log while a symbol is in view: what the receiver read (the rig's stats rows say the
