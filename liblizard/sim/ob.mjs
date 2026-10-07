@@ -236,6 +236,9 @@ export class Focus {
   measure(on) { if (M._focus_dbg(on ? 1 : 0)) throw new Error("focus debug buffers"); }
   sent() { const p = M._focus_dbg_sym(); return new Int8Array(M.HEAPU8.buffer, p, 2 * 320 * this.subch).slice(); }
   // Per block of the last decode: LDPC iterations (-1 never converged, -2 declined, 0 not tried) and the estimate made before decoding.
+  // ai: the grid's shift the last decode read off the pilots and turned back, samples along u and v ([0, 0] where
+  // ai: none was taken); read() holds the coefficients before that turn (2026-10-07, scripts/exp/rate_tiers.mjs)
+  align() { this.pAlign ??= M._malloc(8); if (!M._focus_align_get || !M._focus_align_get(this.pAlign)) return [0, 0]; return Array.from(M.HEAPF32.subarray(this.pAlign >> 2, (this.pAlign >> 2) + 2)); }
   blockStats() { const pi = M._focus_blk_its(), pe = M._focus_blk_est() >> 2; return { its: Array.from(new Int8Array(M.HEAPU8.buffer, pi, this.blocks)), est: Array.from(M.HEAPF32.subarray(pe, pe + this.blocks)) }; }
   read() { const p = M._focus_dbg_coef() >> 2; return M.HEAPF32.slice(p, p + 2 * 320 * this.subch); }
   // mesh: 0 off, 1 interior by neighbour average, 2 interior from the border model (research/06). 2 is never worse.
