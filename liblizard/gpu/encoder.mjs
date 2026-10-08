@@ -5,10 +5,11 @@
 // ai:
 // ai: The kernels, one compute pass an encode of up to `sub` frames, a symbol a workgroup z (frames x codes, the codes
 // ai: of a frame side by side):
-// ai:   paint, irows, ipic: the decoder's own encoder (wgsl/cancel_paint.mjs, mode "send": the straddle cancellation's
-// ai:     paint over a plain block buffer): CRC-32, the LDPC's systematic codeword, the bit map and whitening, QPSK onto
-// ai:     the disc, the inverse along x, turn_pack's packing and the inverse along y, clipped to 0..1 in f32, left
-// ai:     quad-major for whole-line stores;
+// ai:   paint: a block a workgroup (wgsl/send.mjs paintSource, 2026-10-07): CRC-32, its code's systematic codeword
+// ai:     (every code of the format's rate profile, src/focus.h focus_tiers_for; the codes' tables in TAB, sendTab,
+// ai:     from the wasm's codec), the bit map and whitening, the pilots, QPSK onto the disc;
+// ai:   irows, ipic: the decoder's own inverse transforms (wgsl/cancel_paint.mjs, mode "send"): the inverse along x,
+// ai:     turn_pack's packing and the inverse along y, clipped to 0..1 in f32, left quad-major for whole-line stores;
 // ai:   tpose: the picture row-major again (wgsl/send.mjs);
 // ai:   rsv, rsh: the C's Lanczos-3 resample onto the ring's square with the C's own taps (sim/ob.mjs resampleGeom),
 // ai:     grey as focus_paint_rgba rounds it, and every pixel outside the square the border's byte (wgsl/send.mjs);
@@ -41,11 +42,12 @@
 // ai: and setFps run one at a time on a chain shared by every encoder, and only the latest configuration's border is ever painted again (an fps
 // ai: change leaves an older one's last frames at the old rate). batch 16 and sub 4 unless asked, sub then batch halved
 // ai: while the device cannot hold a configuration's buffers (cfg.batch, cfg.sub say what it got).
-import { paintSource, irowsSource, ipicSource } from "./wgsl/cancel_paint.mjs";
-import { tposeSource, rsvSource, rshSource, presentSource, TPOSE_TILE, RSV_THREADS, RSH_THREADS } from "./wgsl/send.mjs";
+import { irowsSource, ipicSource } from "./wgsl/cancel_paint.mjs";
+import { paintSource, tposeSource, rsvSource, rshSource, presentSource, TPOSE_TILE, RSV_THREADS, RSH_THREADS } from "./wgsl/send.mjs";
 import { transformTables } from "./back/transform.mjs";
-import { permTable } from "./back/bitmap.mjs";
-import { layWords, packMap } from "./back/ldpc.mjs";
+import { whiten, perm } from "./back/bitmap.mjs";
+import { ruleTables } from "./back/codes.mjs";
+import { CODES, WHITE_SLOTS } from "./wgsl/back_tiers.mjs";
 import { PARAMS_AT } from "./wgsl/back_ldpc.mjs";
 // ai: the gap between two codes, in modules, unless configure names one (lizard-web/send-worker.mjs paints the same for the
 // ai: wasm path; the page's slider gives both)
@@ -55,8 +57,36 @@ import { clipLimit } from "./back/paint.mjs";
 import { computePipeline } from "./pipeline.mjs";
 import { init as initOb, Focus } from "../sim/ob.mjs";
 
-// ai: A block's 473 bytes in BLOCKS, padded to 120 words (wgsl/cancel_paint.mjs paintSource, mode "send").
+// ai: A block's 473 bytes in BLOCKS, padded to 120 words (wgsl/send.mjs paintSource).
 const BLOCK_BYTES = 480;
+
+// ai: The paint's TAB (wgsl/send.mjs paintSource) from the codec's codes (back/codes.mjs ruleTables: { codes, bitmap },
+// ai: the codes in CODES' order): word 0 the whitening's offset; 16 words a code at 16 + 16 c, (n, k, m, z, mb, rows,
+// ai: lay, perm, subs); a code's block rows' first entries (mb + 1), its entries (col | shift << 16), its bit map
+// ai: (slot i's codeword bit in the half i & 1 of word i >> 1); the whitening, a bit a slot of the frame over 1024
+// ai: sub-channels and a word past them. The same for every format: gen/sender.mjs bakes it for the native painter.
+export function sendTab({ codes, bitmap }) {
+  if (codes.length !== CODES.length) throw new Error(`the paint takes ${CODES.length} codes, got ${codes.length}`);
+  let o = 16 + 16 * codes.length;
+  const at = codes.map((c) => { const rows = o; o += c.mb + 1; const lay = o; o += c.slots; const pm = o; o += c.n / 2; return { rows, lay, pm }; });
+  const WHITE = o;
+  o += WHITE_SLOTS / 32 + 1;
+  const tab = new Uint32Array(o);
+  tab[0] = WHITE;
+  codes.forEach((c, q) => {
+    const a = at[q];
+    if (c.n % 2 || 640 * CODES[q].subs < c.n || c.n / 32 > 240) throw new Error(`the ${CODES[q].name} code's n ${c.n} does not fit the paint`);
+    tab.set([c.n, c.k, c.m, c.z, c.mb, a.rows, a.lay, a.pm, CODES[q].subs], 16 + 16 * q);
+    for (let r = 0; r <= c.mb; r++) tab[a.rows + r] = c.lay[r];
+    for (let e = 0; e < c.slots; e++) tab[a.lay + e] = c.lay[c.mb + 1 + 2 * e] | (c.lay[c.mb + 2 + 2 * e] << 16);
+    const p = perm(c.n, c.k, bitmap);
+    for (let i = 0; i < c.n; i++) tab[a.pm + (i >> 1)] |= p[i] << (16 * (i & 1));
+  });
+  if (bitmap) { const w = whiten(WHITE_SLOTS); for (let i = 0; i < WHITE_SLOTS; i++) if (w[i]) tab[WHITE + (i >> 5)] |= 1 << (i & 31); }
+  return tab;
+}
+// ai: The codec's codes and profiles, read once a page on the codec's chain (ruleTables sets up a codec of its own).
+let codesOnce = null;
 // ai: Frames a half unless asked (16), and frames an encode at most.
 export const BATCH = 16, SUB = 4;
 // ai: Timestamp readbacks in flight at most; a batch that finds none free goes untimed.
@@ -110,7 +140,7 @@ export class GpuEncoder {
     const module = d.createShaderModule({ label: "send present", code: presentSource() });
     // ai: The pipelines under names of their own: `present` is the method.
     [this.paintPipe, this.tposePipe, this.rsvPipe, this.rshPipe, this.rshCopyPipe, this.presentPipe] = await Promise.all([
-      computePipeline(d, { code: paintSource({ prec: "f32", mode: "send" }), layout: this.pl("paint"), label: "send paint" }),
+      computePipeline(d, { code: paintSource(), layout: this.pl("paint"), label: "send paint" }),
       computePipeline(d, { code: tposeSource(), layout: this.pl("tpose"), label: "send tpose" }),
       computePipeline(d, { code: rsvSource(), layout: this.pl("rsv"), label: "send rsv" }),
       computePipeline(d, { code: rshSource(), layout: this.pl("rsh"), label: "send rsh" }),
@@ -154,10 +184,16 @@ export class GpuEncoder {
     await initOb();
     alive();
     const pipes = this.pipesFor(n);
-    // ai: The codec changes hands from here (transformTables sets up and frees its own, then this configuration's
-    // ai: Focus), so the Focus before it can no longer paint, whether or not this configuration comes to be.
+    // ai: The codec changes hands from here (ruleTables, the first time, and transformTables set up and free their own,
+    // ai: then this configuration's Focus), so the Focus before it can no longer paint, whether or not this
+    // ai: configuration comes to be.
     codec.focus?.free();
     codec.focus = null;
+    codesOnce ??= await ruleTables();
+    const rt = codesOnce, profile = rt.profiles[subch / 8];
+    if (!profile || (bitmap ?? rt.bitmap) !== rt.bitmap) throw new Unavailable(`the GPU encoder paints the format's codes and bit map, not LIZARD-${subch}'s${profile ? ` bit map ${bitmap}` : ""}`);
+    // ai: TAB, the encoder's for its life (the same for every format; release leaves it, destroy takes the device)
+    if (!this.TAB) { const tab = sendTab(rt); this.TAB = this.device.createBuffer({ size: tab.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }); this.device.queue.writeBuffer(this.TAB, 0, tab); }
     const [tb] = await transformTables([{ n, subch, bitmap }]);
     const fc = new Focus(n, subch, 1, { span, bitmap });
     let c = null;
@@ -165,7 +201,8 @@ export class GpuEncoder {
       alive();
       if (fps) fc.setFps(fps);
       const g = fc.resampleGeom(), V = fc.blocks, B = fc.blockBytes, W = fc.side + 2 * fc.quiet * fc.cell;
-      if (g.n !== n || tb.blocks !== V || B !== PAYLOAD) throw new Error(`the tables (${tb.blocks} blocks at ${n}) and the codec (${V} of ${B} B at ${g.n}) disagree`);
+      const want = profile.reduce((a, t) => a + t.count, 0);
+      if (g.n !== n || tb.blocks !== subch / 8 || V !== want || B !== PAYLOAD) throw new Error(`the tables (${tb.blocks} chunks at ${n}, a profile of ${want} blocks) and the codec (${V} of ${B} B at ${g.n}) disagree`);
       const [irows, ipic] = await pipes;
       alive();
       // ai: The sizes. Over the device's limits: FRAME (two halves of batch frames) halves batch, the scratch (sub
@@ -179,6 +216,7 @@ export class GpuEncoder {
         sub = Math.min(sub, batch);
         if (batch < 1) throw new Unavailable(`no configuration of LIZARD-${subch} at ${n} fits this device's memory`);
         const t = this.shape({ spec, codes, gapModules: gap, tb, g, fc, V, B, W, batch, sub, irows, ipic }), z = t.sizes;
+        t.profile = profile;
         if (z.FRAME > most) { batch = Math.floor(batch / 2); continue; }
         if (Math.max(z.BLOCKS, z.S, z.Y, z.PQT, z.PIC) > most) {
           if (sub === 1) throw new Unavailable(`one frame of LIZARD-${subch} at ${n} needs a buffer over this device's limit`);
@@ -235,10 +273,11 @@ export class GpuEncoder {
       c.bufs.push(b);
       return b;
     };
+    // ai: the paint's uniform: the blocks, each code's tier (first block, first sub-channel, blocks), dims, the CRC's powers
     const paintUni = new Uint32Array(PARAMS_AT.words);
     paintUni.set([V, 0, 0, 0], PARAMS_AT.sizes);
+    for (const t of c.profile) paintUni.set([t.firstBlock, t.sub0, t.count, 0], PARAMS_AT.sizes + 4 * (1 + t.c));
     paintUni.set([V, sStride, R, 0], PARAMS_AT.dims);
-    paintUni.set(layWords(tb.code), PARAMS_AT.lay);
     paintUni.set(crcPowers(PAYLOAD), PARAMS_AT.pw);
     const size = new ArrayBuffer(48), s32 = new Uint32Array(size), sf = new Float32Array(size), lim = clipLimit(c.subch);
     s32.set([n, Vr, yStride, sStride, (n * n) / 4, 0, 0, 0]); sf[8] = lim; sf[9] = Math.fround(0.5 / lim);
@@ -250,7 +289,6 @@ export class GpuEncoder {
     c.g = new Uint32Array([n, q, c.sq, W, codes, c.FW, c.RW, c.FS, 1, 0, c.gap, 0]);
     c.BLOCKS = buf(c.sizes.BLOCKS, U.STORAGE | U.COPY_DST);
     c.staging = new Uint8Array(c.sizes.BLOCKS);
-    const PERMW = buf(V * 5120 * 2, U.STORAGE | U.COPY_DST, packMap(permTable({ blocks: V, mode: tb.bitmap })));
     const UV = buf(4 * tb.UV.length, U.STORAGE | U.COPY_DST, tb.UV);
     c.S = buf(c.sizes.S, U.STORAGE | U.COPY_DST);
     const PU = buf(4 * PARAMS_AT.words, U.UNIFORM | U.COPY_DST, paintUni);
@@ -266,7 +304,7 @@ export class GpuEncoder {
     c.PG = buf(48, U.UNIFORM | U.COPY_DST, c.g);
     c.FRAME = [buf(c.sizes.FRAME, U.STORAGE | U.COPY_SRC), buf(c.sizes.FRAME, U.STORAGE | U.COPY_SRC)];
     const group = (k, list) => d.createBindGroup({ layout: this.bgl[k], entries: list.map((r, binding) => ({ binding, resource: r.buffer ? r : { buffer: r } })) });
-    c.paintGroup = group("paint", [c.BLOCKS, PERMW, UV, c.S, PU]);
+    c.paintGroup = group("paint", [c.BLOCKS, this.TAB, UV, c.S, PU]);
     c.PU = PU;
     c.irowsGroup = group("irows", [c.S, TW, Y, ROWS, SU]);
     c.ipicGroup = group("ipic", [Y, TW, PQT, SU]);

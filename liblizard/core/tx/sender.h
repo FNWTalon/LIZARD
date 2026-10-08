@@ -18,10 +18,6 @@
 #include "gpu_painter.h"
 #include "xfer_tx.h"
 
-extern "C" {
-#include "any.h"   // ai: focus.h, and the rate profile's parser (focus_tiers_parse)
-}
-
 namespace lizard {
 
 // ai: The symbol (lizard-web/send.mjs spec): n the picture, subch the sub-channels (the version is subch / 8), span
@@ -45,11 +41,6 @@ struct TxFormat {
   uint64_t aheadBytes = 128ull << 20;
   int margin = 9;
   bool hostFrames = true;
-  // ai: A rate profile (the lab's rate-by-ring arm, 2026-10-07; src/any.h focus_tiers_parse: "7/8:20,3/4:20,1/2:11",
-  // ai: inner first), "" for one rate. Set, the frame's sub-channels are the profile's sum and its picture follows
-  // ai: (focus_n_for), whatever n and subch say, and the C paints: the GPU's kernels have one rate. A receiver reads
-  // ai: it with the same profile (rx/receiver.cpp LIZ_TIERS, the CPU decoder).
-  std::string tiers;
 };
 
 class Sender {
@@ -113,12 +104,7 @@ class Sender {
   uint32_t nextId_;                 // ai: the test stream's next id (a random first one)
   TxFormat fmt_;
   int side_ = 0, width_ = 0, gap_ = 0, blocks_ = 0, blockBytes_ = 0, gen_ = 0;
-  std::string label_, error_;
-  // ai: the rate profile (TxFormat.tiers) as parsed, tiers_ 0 for one rate, and its text for the label and the stats
-  focus_tier_t tier_[FOCUS_TIERS] = {};
-  int tiers_ = 0;
-  std::string tiersLabel_;
-  int makeCodec(focus_t* f, const TxFormat& fm) const;
+  std::string label_, error_, tiers_;   // ai: tiers_: the format's rate profile as text (the stats' tiers)
   std::mutex mu_;
   std::mutex xferMu_;               // ai: the transfer's state: the producer fills a frame under it, stats reads under it
   std::condition_variable cv_;

@@ -82,8 +82,9 @@ class GpuPainter {
   std::shared_ptr<wg::BindGroupLayout> bglPaint_, bglIrows_, bglIpic_, bglTpose_, bglRsv_, bglRsh_;
   std::shared_ptr<wg::Pipeline> paint_, tpose_, rsv_, rsh_, rshCopy_, irows_, ipic_;
   int pipesN_ = 0;
+  std::shared_ptr<wg::Buffer> TAB_;   // ai: the paint's codes and whitening (send_tables.h SendConsts tab), made at create
   // ai: a configuration's buffers and groups
-  std::shared_ptr<wg::Buffer> BLOCKS_, PERMW_, UV_, S_, PU_, TW_, ROWS_, SU_, Y_, PQT_, PIC_, TAPS_, BORDER_, GU_, FRAME_, READ_, TIME_;
+  std::shared_ptr<wg::Buffer> BLOCKS_, UV_, S_, PU_, TW_, ROWS_, SU_, Y_, PQT_, PIC_, TAPS_, BORDER_, GU_, FRAME_, READ_, TIME_;
   std::shared_ptr<wg::BindGroup> gPaint_, gIrows_, gIpic_, gTpose_, gRsv_, gRsh_;
   std::shared_ptr<wg::QuerySet> qs_;
   std::vector<uint8_t> staging_;

@@ -16,15 +16,15 @@
 #include "ob.h"
 #include "fmt.h"
 
-// THE code rate, not a parameter. 3/4 (ldpc.h index 4) and nothing else, because the rate is a bet on a capture
-// the sender cannot see and 3/4 is the only setting that is good on both sides of it. Measured over ten cells
-// (focus_ringrate.mjs, focus_ratemix.mjs, archived in archive/rates-by-ring/exp/): 7/8 everywhere is +10% where
-// the capture matches the sender's assumption and -42% at 360 px, the protected plans are the reverse, and cycling
-// plans frame to frame is exactly averaging (+0.5% mean, 0.84x worst). 3/4 sits on the efficient frontier between the
-// two failure modes.
-// A rig that KNOWS its capture can still spend that +10%: focus_init_tiers takes rates explicitly and is what
-// scripts/exp/focus_sweep.mjs uses (and focus_ringrate.mjs did). It is not in the format word, so no receiver is ever told.
-enum { FOCUS_RATE = 4 };
+// The code rate follows the frequency (the format's rate profile): a frame's sub-channels carry LDPC blocks at three
+// rates from the lowest frequencies outwards, 7/8 on about the inner FOCUS_TIER_IN percent of them (7 sub-channels a
+// block), 1/2 on about the outer FOCUS_TIER_OUT percent (12 a block) and 3/4 between (8 a block), because a capture's
+// signal-to-noise ratio falls with the frequency: the low sub-channels carry more than 3/4 needs and the high ones
+// less. Every block is the same 473 B whatever its rate, so a profile moves a frame's capacity by its block count.
+// The profile is a function of the sub-channel count alone (focus_tiers_for), which the format word names, so a
+// receiver told the version knows it; focus_init builds it for FOCUS_LDPC. FOCUS_RATE is the middle tier's rate, and
+// a frame too small to hold the others (up to LIZARD-40) is one tier of it.
+enum { FOCUS_RATE = 4, FOCUS_TIER_IN = 32, FOCUS_TIER_OUT = 30 };
 
 // ai: THE RINGS (2026-09-27: three ring sizes; that evening 32, 64 and 128, then four: 32, 64, 96 and 128). The
 // ai: dotted band holds FOCUS_RING[r] cells of 2 x 2 modules on a side, the border round it is 15 modules (a 12-module
@@ -140,9 +140,19 @@ int focus_pilot(const focus_t *f, int blocks, float r[2], float sd[2]);
 void focus_align(const focus_t *f, float d[2]);
 // corner: side in modules of the solid corner mark (layout.h). 0 takes the default, negative asks for none.
 // corner_filled: keep depth 3 light through it, which is what makes the mark detectable. Ignored when corner is 0.
+// FOCUS_LDPC: the format's rate profile for subch (focus_tiers_for), a multiple of 8.
 int focus_init(focus_t *f, int n, int subch, int mode, float clip, int span, float tilt, int corner, int corner_filled, int centre, int edge, int track_alt, int border);
-// The general form of FOCUS_LDPC: up to FOCUS_TIERS runs of blocks. focus_init is one tier of subch / 8 blocks, 8 sub-channels each.
+// The general form of FOCUS_LDPC: up to FOCUS_TIERS runs of blocks, any rates (an experiment's; the format's profile is
+// focus_tiers_for's).
 int focus_init_tiers(focus_t *f, int n, const focus_tier_t *tier, int tiers, float clip, int span, float tilt, int corner, int corner_filled, int centre, int edge, int track_alt, int border);
+// The format's rate profile for subch sub-channels (a multiple of 8, 8 to 1024): a 7/8 blocks of 7 sub-channels, m 3/4
+// blocks of 8 and c 1/2 blocks of 12, inner first, with 7 a + 8 m + 12 c = subch and m >= 1, the (a, c) whose 7 a and
+// 12 c are nearest FOCUS_TIER_IN and FOCUS_TIER_OUT percent of subch (least squares, in integers; the first of equals in
+// a, then c rising). LIZARD-432: 7/8 x 20, 3/4 x 20, 1/2 x 11. Writes the tiers present (1 to 3) to tier[] and returns
+// their count, or 0 for a count that is no format's.
+int focus_tiers_for(int subch, focus_tier_t tier[FOCUS_TIERS]);
+// The blocks a frame of subch sub-channels carries under that profile (0 for no format).
+int focus_blocks_for(int subch);
 void focus_free(focus_t *f);
 // blocks: blocks * block_bytes. drive: px^2 values in 0..1, the frame at pxm pixels a module and the picture resampled into it.
 void focus_encode(const focus_t *f, const uint8_t *blocks, float *drive);
@@ -191,10 +201,10 @@ enum { FOCUS_QUIET = 2 };
 // The symbol as a page paints it, RGBA, grey levels round(drive * 255), the margin round it (FOCUS_QUIET modules at
 // pxm pixels a module; lizard-web/send.mjs through lizard-web/send-worker.mjs). rgba holds W^2 * 4 bytes, W = px + 2 FOCUS_QUIET pxm.
 void focus_paint_rgba(const focus_t *f, const float *drive, uint8_t *rgba);
-// The bit map both ends use, FOCUS_BITMAP_* (FOCUS_LDPC only). 0, or -1 for a mode that does not exist.
 // ai: The same symbol as grey levels, one byte a pixel (what the GPU painter writes; the senders keep frames grey,
 // ai: 2026-10-07): grey holds W^2 bytes, the margin 255, every level as focus_paint_rgba's.
 void focus_paint_grey(const focus_t *f, const float *drive, uint8_t *grey);
+// The bit map both ends use, FOCUS_BITMAP_* (FOCUS_LDPC only). 0, or -1 for a mode that does not exist.
 int focus_bitmap(focus_t *f, int mode);
 // The same with the quad found elsewhere: eight floats in image pixels, its orientation and its track score.
 int focus_acquire_quad(const focus_t *f, const uint8_t *img, int iw, int ih, float gamma, int mesh, ob_result_t *res,

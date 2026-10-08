@@ -57,6 +57,8 @@ object Native {
     @JvmStatic external fun txConfigure(h: Long, n: Int, subch: Int, span: Int, fps: Int, threads: Int, painter: Int, assets: String, codes: Int, gap: Int, vsynced: Boolean): String
     @JvmStatic external fun txPrepare(h: Long, assets: String): String
     @JvmStatic external fun txSide(h: Long): Int
+    // ai: the blocks a frame of subch sub-channels carries (the format's rate profile, src/focus.h focus_blocks_for)
+    @JvmStatic external fun blocksFor(subch: Int): Int
     @JvmStatic external fun txPresent(h: Long, surface: android.view.Surface, vsync: Long, w: Int, h2: Int): Boolean
     // ai: the vsync path's post (2026-10-07, jni.cpp txPost): a picture due at the frame timeline `vsync` (expected on
     // ai: screen at `expected` ns, the display's period `vsyncNs`): the next GPU-filled buffer posted for it, or the

@@ -18,9 +18,6 @@
 // ai:       (2026-10-04, TxFormat.gap; GAP_MODULES unset), each read blind at its own offset
 // ai:   LIZ_RUN_OUT=<dir> tx_check paint ...   every symbol read written as a recording too (<dir>/NNNN.gray, W x W luma,
 // ai:       a code a frame, and meta.json), which lizard_gpu_check replay reads (2026-10-07, the GPU's rate profile)
-// ai:   LIZ_TIERS=7/8:20,3/4:20,1/2:11 tx_check paint ...   the rate profile (2026-10-07, TxFormat.tiers, the C's
-// ai:       cpu_dec_tiers): painted by the C and read by a decoder given the same profile; the sub-channels and
-// ai:       blocks the profile's, the command line's count ignored; every block verified as before
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -154,16 +151,8 @@ int main(int argc, char** argv) {
     const char* pt = getenv("LIZ_PAINTER");
     f.painter = !pt ? 0 : std::string(pt) == "gpu" ? 1 : std::string(pt) == "auto" ? 2 : 0;
     f.assets = assets();
-    // ai: LIZ_TIERS: the rate profile (TxFormat.tiers), painted and read with it; the frame's sub-channels and blocks
-    // ai: are the profile's, whatever the command line's count
-    const char* tiers = getenv("LIZ_TIERS");
-    int wantBlocks = subch / 8, wantSubch = subch;
-    if (tiers && *tiers) {
-      char label[160];
-      if (cpu_tiers_check(tiers, &wantSubch, &wantBlocks, label, sizeof label) <= 0) { printf("FAIL LIZ_TIERS: %s\n", label); return 1; }
-      f.tiers = tiers;
-      printf("tiers: %s, %d blocks on LIZARD-%d\n", label, wantBlocks, wantSubch);
-    }
+    // ai: the blocks a frame carries: the format's rate profile's (src/focus.h focus_blocks_for)
+    const int wantBlocks = focus_blocks_for(subch), wantSubch = subch;
     const std::string err = s.configure(f);
     if (!err.empty()) { printf("FAIL configure: %s\n", err.c_str()); return 1; }
     printf("painter: %s%s%s\n", s.painter().c_str(), s.gpuWhy().empty() ? "" : ", not the GPU: ", s.gpuWhy().c_str());
@@ -172,7 +161,6 @@ int main(int argc, char** argv) {
     std::unique_ptr<XferRx> rx;
     if (!test) rx = std::make_unique<XferRx>(store);
     cpu_dec_t* d = cpu_dec_new(1536);
-    if (tiers && *tiers) { char why[160]; if (cpu_dec_tiers(d, tiers, why, sizeof why) < 0) { printf("FAIL decoder tiers: %s\n", why); return 1; } }
     const int top = cpu_dec_top(d), BB = cpu_dec_block_bytes(d);
     std::vector<uint8_t> rgba(static_cast<size_t>(FW) * W * 4), luma(static_cast<size_t>(W) * W), blocks(static_cast<size_t>(top) * BB), ok(top), want(469);
     int held = 0, words = 0, faults = 0;
@@ -205,12 +193,12 @@ int main(int argc, char** argv) {
     const double ms = nowMs() - t0;
     if (const char* ro = getenv("LIZ_RUN_OUT")) {
       nlohmann::json meta = {{"w", W}, {"h", W}, {"frames", frames * codes}, {"source", "tx_check paint"},
-                             {"config", {{"spec", {{"n", tiers && *tiers ? nFor(wantSubch) : f.n}, {"subch", wantSubch}, {"span", f.span}}}, {"tiers", tiers ? tiers : ""}}}};
+                             {"config", {{"spec", {{"n", f.n}, {"subch", wantSubch}, {"span", f.span}}}}}};
       FILE* fo = fopen((std::string(ro) + "/meta.json").c_str(), "wb");
       if (fo) { const std::string m = meta.dump(); fwrite(m.data(), 1, m.size(), fo); fclose(fo); }
     }
     printf("paint: LIZARD-%d x %d n %d, %d x %d px (gap %d px), %d painters: %d frames, %ld of %ld blocks verified, words %d, %.1f frames a second taken\n",
-           wantSubch, codes, tiers && *tiers ? nFor(wantSubch) : f.n, FW, W, gap, threads, frames, verified, total, words, 1000.0 * frames / ms);
+           wantSubch, codes, f.n, FW, W, gap, threads, frames, verified, total, words, 1000.0 * frames / ms);
     printf("stats: %s\n", s.stats().c_str());
     if (!test) {
       rx->drain();
@@ -230,7 +218,7 @@ int main(int argc, char** argv) {
     const auto mb = slurp(man);
     const std::string text(mb.begin(), mb.end());
     SendConsts k;
-    const std::string le = k.load(text, slurp(assets() + "/" + nlohmann::json::parse(text)["perm"]["blob"].get<std::string>()));
+    const std::string le = k.load(text, slurp(assets() + "/" + nlohmann::json::parse(text)["tab"]["blob"].get<std::string>()));
     if (!le.empty()) { printf("FAIL %s\n", le.c_str()); return 1; }
     const auto ib = slurp(dir + "/index.json");
     const auto index = nlohmann::json::parse(std::string(ib.begin(), ib.end()));
@@ -296,8 +284,6 @@ int main(int argc, char** argv) {
     if (!in || fread(img.data(), 1, img.size(), in) != img.size()) { printf("FAIL: %s is not %d x %d bytes\n", argv[2], iw, ih); return 2; }
     fclose(in);
     cpu_dec_t* d = cpu_dec_new(1536);
-    // ai: LIZ_TIERS: the frame read under the rate profile (2026-10-07)
-    if (const char* t = getenv("LIZ_TIERS"); t && *t) { char why[160]; if (cpu_dec_tiers(d, t, why, sizeof why) < 0) { printf("FAIL decoder tiers: %s\n", why); return 1; } }
     const int top = cpu_dec_top(d), BB = cpu_dec_block_bytes(d);
     std::vector<uint8_t> blocks(static_cast<size_t>(top) * BB), ok(top), want(469);
     cpu_frame_t fr{};

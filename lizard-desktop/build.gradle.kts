@@ -23,7 +23,7 @@ dependencies {
 }
 
 // ai: What the app carries as resources: the native library (lizard-desktop/build/native, CMake on native/) and the GPU
-// ai: painter's kernels and tables (liblizard/out: setup/send.json, its PERMW blob, spv/send_*.spv; ../lizard-android/build.sh gen).
+// ai: painter's kernels and tables (liblizard/out: setup/send.json, its TAB blob, spv/send_*.spv; ../lizard-android/build.sh gen).
 // ai: Native.kt extracts them at start to a folder named by their hash.
 val bundled = layout.buildDirectory.dir("bundled")
 val liblizardOut = rootDir.resolve("../liblizard/out")
@@ -34,7 +34,7 @@ val nativeLib = rootDir.resolve("build/native/" + System.getProperty("os.name").
         else -> "liblizard_desktop.so"
     }
 })
-// ai: the PERMW blob send.json names; a tree without liblizard/out or the native library (a fresh clone) still
+// ai: the TAB blob send.json names (the paint's codes, since 2026-10-07; PERMW before); a tree without liblizard/out or the native library (a fresh clone) still
 // ai: configures, and bundleInputs says what to run (a Sync with no files is skipped, its own actions too)
 val sendJson = liblizardOut.resolve("setup/send.json")
 val perm = if (sendJson.isFile) Regex("\"blob\"\\s*:\\s*\"([^\"]+)\"").find(sendJson.readText())?.groupValues?.get(1) else null

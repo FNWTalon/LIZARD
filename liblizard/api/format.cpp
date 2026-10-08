@@ -38,7 +38,7 @@ liz_geometry geometryOf(const liz_format& f) {
   g.gap = f.codes > 1 ? LIZ_GAP_MODULES * g.pxm : 0;
   g.width = f.codes * g.side + (f.codes - 1) * g.gap;
   g.height = g.side;
-  g.frame_blocks = f.codes * f.blocks;
+  g.frame_blocks = f.codes * focus_blocks_for(8 * f.blocks);
   return g;
 }
 
@@ -69,6 +69,8 @@ LIZ_API double liz_room_for(int blocks, int ring) {
   const int rc = guard([&] { needBlocks(blocks); v = roomFor(blocks, ringIndex(ring)); return LIZ_OK; });
   return rc < 0 ? rc : v;
 }
+
+LIZ_API int liz_blocks_for(int blocks) { return blocks >= 1 && blocks <= LIZ_MAX_BLOCKS ? focus_blocks_for(8 * blocks) : 0; }
 
 LIZ_API int liz_pick(double w, double h, int codes, int ring, int top) {
   return guard([&] {

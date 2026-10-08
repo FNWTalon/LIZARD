@@ -1,9 +1,11 @@
-// The format's LDPC base matrix: rate 3/4 (focus.h FOCUS_RATE) at 8 sub-channels a block, so n_max 5120 and z = 106,
-// 12 block rows by 36 data block columns. Each entry is a circulant's shift, -1 where the base graph has no edge; the
-// staircase is not in it, being the same for every code (ldpc.c). This IS the format's code. It was written out once
-// (2026-09-24) from what ldpc_init generated for it, the 3/4 profile row, seed 1, the xorshift draws and the cycle
-// score, so that none of those can move the format's code any more: a change to any of them now moves only the codes
-// outside the format. test/ldpc_table.c prints this from the generator and fails if the two differ.
+// The format's LDPC base matrices, one a rate of the rate profile (focus.h focus_tiers_for: 7/8 on 7 sub-channels a
+// block, 3/4 on 8, 1/2 on 12), each at its block's n_max (640 slots a sub-channel), so z = 93, 106 and 160. Each entry
+// is a circulant's shift, -1 where the base graph has no edge; the staircase is not in it, being the same for every
+// code (ldpc.c). These ARE the format's codes. The 3/4 table was written out once (2026-09-24) from what ldpc_init
+// generated for it, the 3/4 profile row, seed 1, the xorshift draws and the cycle score, so that none of those can
+// move the format's code any more; the 7/8 and 1/2 tables the same way when the rate profile made them the format's
+// (2026-10-07), from the generator's rows 6 and 2 at seed 1. A change to the generator now moves only the codes
+// outside the format. test/ldpc_table.c prints each from the generator and fails if they differ.
 #ifndef OB_LDPC_BASE_H
 #define OB_LDPC_BASE_H
 
@@ -23,5 +25,55 @@ static const short LDPC_BASE[LDPC_BASE_MB][LDPC_BASE_KB] = {
   {  85,  75,  42,  51,  92,  31,  47,  27,  -1,  -1,  41,  -1,  -1,  -1,  79,  -1,   0,  -1,  -1,  -1,  -1,  -1, 105,  -1,  83,  -1,  -1,  -1,  -1,  -1,  -1,  15,  -1,  -1,  40,  -1 },
   {   9,  21,   4,  48,  43,  77,  67, 105,  -1,  -1, 105,  -1,  66,  -1,  -1,  -1,  -1,  50,  -1,  -1,  90,  -1,  -1,  -1,  -1,  46,  -1,  -1,  -1,  -1,  94,  -1,  -1,  -1,  -1,  50 }
 };
+
+
+// The 7/8 code: 7 sub-channels a block, n_max 4480, z = 93, 6 block rows by 42 data block columns.
+enum { LDPC_BASE78_Z = 93, LDPC_BASE78_RATE = 6, LDPC_BASE78_MB = 6, LDPC_BASE78_KB = 42 };
+static const short LDPC_BASE78[LDPC_BASE78_MB][LDPC_BASE78_KB] = {
+  {  89,  62,  -1,  62,  -1,  76,  21,  -1,  -1,  40,  52,  -1,  -1,  24,  69,  -1,  -1,  89,  37,  -1,  81,  -1,   0,  -1,  31,  -1,  -1,   6,  83,  -1,  58,  -1,  -1,  50,  -1,  83,  -1,  34,  13,  -1,   6,  -1 },
+  {   8,  -1,  62,  72,  -1,  32,  -1,  77,  71,  -1,  -1,  54,  64,  -1,  -1,  57,  45,  -1,  -1,  43,  -1,  30,   6,  -1,  -1,  35,  32,  -1,  11,  -1,  81,  -1,  84,  -1,  -1,  58,  31,  -1,  -1,  51,  23,  -1 },
+  {  -1,  78,  40,   9,  66,  -1,  33,  -1,  14,  -1,  54,  -1,  -1,  69,  -1,  23,  -1,  72,  74,  -1,  49,  -1,  -1,  23,   1,  -1,  -1,  34,  -1,  20,  61,  -1,  17,  -1,  -1,  89,  -1,  54,  23,  -1,  62,  -1 },
+  {  39,  -1,  64,  -1,  34,  53,  -1,  92,  -1,  89,  24,  -1,   3,  -1,  72,  -1,  32,  -1,  19,  -1,  -1,  41,  18,  -1,  -1,   3,  -1,  82,   0,  -1,  -1,  11,  -1,  26,  42,  -1,  47,  -1,  85,  -1,  -1,  70 },
+  {  32,  49,  -1,  20,  25,  -1,  -1,  37,  -1,  86,  -1,  27,  -1,  81,  -1,  90,  30,  -1,  -1,  60,  13,  -1,  -1,  55,  -1,  91,   0,  -1,  -1,  92,  -1,  82,  55,  -1,  19,  -1,  74,  -1,  -1,  42,  -1,  42 },
+  {  -1,  36,  25,  -1,  33,  28,  21,  -1,  45,  -1,  -1,  34,  29,  -1,  27,  -1,  -1,  82,  -1,  51,  -1,  30,  -1,  24,  83,  -1,  55,  -1,  -1,  58,  -1,  78,  -1,  39,  57,  -1,  -1,  70,  -1,  89,  -1,  28 }
+};
+
+// The 1/2 code: 12 sub-channels a block, n_max 7680, z = 160, 24 block rows by 24 data block columns.
+enum { LDPC_BASE12_Z = 160, LDPC_BASE12_RATE = 2, LDPC_BASE12_MB = 24, LDPC_BASE12_KB = 24 };
+static const short LDPC_BASE12[LDPC_BASE12_MB][LDPC_BASE12_KB] = {
+  {  -1,  -1, 126,  -1,  13,  -1,  -1,  -1,  99,  31,  -1,  -1,  -1,  -1,  -1,  -1,  -1, 148,  -1,  -1,  -1,  -1,  -1,  -1 },
+  {  -1, 125,  -1,  -1,  -1,  26, 155,  -1,  -1,  57,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  58,  -1,  -1,  -1,  -1,  -1 },
+  {  -1,  -1,  31,  -1,  -1,  10,  -1,  26,  -1,  -1,  -1,  -1,  -1,  27,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  67,  -1,  -1 },
+  {  -1,  -1, 125,  -1,  -1, 108,  -1, 102,  -1,  -1,  33,  -1,  -1,  -1,  -1,  17,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1 },
+  { 138,  -1,  -1, 142,  -1,  -1, 108,  -1,  -1,  -1,  -1, 144,  -1,  -1,  -1,  -1,  -1,  -1,  70,  -1,  -1,  -1,  -1, 133 },
+  {  70,  -1,  -1, 136,  -1,  -1,  -1,  -1,  48,  -1,  -1,  -1,  14,  -1,  -1,  -1,  -1,  -1,  15,  -1,  -1,  -1,  -1,  -1 },
+  {  -1,  -1,  83,  -1, 124,  -1,  -1,  97,  -1, 136,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  52,  -1,  -1 },
+  { 128,  -1,  -1,  23,  -1,  -1,  50,  -1,  -1,  -1,  -1,  37,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  44,  -1 },
+  {  -1, 131,  -1,  71,  -1,  -1,  93,  -1,  -1,  62,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  64,  -1,  -1,  -1,  -1,  -1,  -1 },
+  { 110,  -1,  -1,  -1,  20,  -1,  -1,  -1, 140,  -1,  -1,  -1, 115,  -1,  -1,  -1,  93,  -1,  -1,  -1,  -1,  -1,  -1,  -1 },
+  {  -1,  -1,  15,  -1,  -1,  93, 112,  -1,  -1,  -1,  -1,  12,  -1,  -1,  -1,  -1,  42,  -1,  -1,  -1,  -1,  -1,  -1,  -1 },
+  {  -1, 106,  -1,  80,  -1,  -1,  -1,  47,  -1,  -1,  65,  -1,  -1,  -1,  -1,  -1,  -1,  35,  -1,  -1,  -1,  -1,  -1,  -1 },
+  {  -1,  -1, 150,  -1,  -1, 122,  -1,  -1,  15,  96,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  67,  -1,  -1,  -1,  -1 },
+  {  55,  -1,  -1,  -1, 110,  -1,  -1,  -1,  63,  -1,  -1,  -1,  -1, 142,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  21,  -1 },
+  {  85,  -1,  -1,  -1,  69,  -1,  -1,  -1, 157,  15,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1, 121,  -1,  -1,  -1 },
+  {  -1,  -1,   8,  -1,  -1,  74,  44,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  43, 140,  -1,  -1,  -1,  -1,  -1,  -1,  -1 },
+  {  -1, 124,  -1,  -1, 127,  -1,  -1, 120,  -1,  -1,  -1,  -1,  -1,  -1,  90, 142,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1 },
+  {  -1,  19,  -1,  -1,  -1, 129,  -1,  -1,   2, 123,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  88,  -1,  -1 },
+  {  -1,  89,  -1,  -1,  27,  -1, 107,  -1,  -1,  23,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  19 },
+  {  -1, 136,  -1,   2,  -1,  -1,  -1, 123,  -1,  -1,  -1,  -1,  -1,  -1, 107,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  82,  -1 },
+  {  10,  -1,  -1,  93,  -1,  -1, 134,  -1,  -1,  -1,  -1,  -1,  -1,  69,  -1,  -1,  -1,  -1,  -1,  -1, 120,  -1,  -1, 104 },
+  { 159,  -1,  -1,  99,  -1,  -1,  -1, 109,  -1,  -1,  -1,  -1, 131,  -1,  -1,  -1,  -1,  -1,  -1,  36,  -1,  -1,  -1,  -1 },
+  {  -1, 108,  -1,  -1,  -1, 135,  -1, 145,  -1,  -1,  41,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  -1,  48,  -1,  -1,  -1 },
+  {  -1,  -1,   7,  -1, 105,  -1,  -1,  -1,  72,  -1,  -1,  -1,  -1,  -1, 158,  -1,  -1,  -1,  -1, 107,  -1,  -1,  -1,  -1 }
+};
+
+// The tables by (z, rate) at seed LDPC_BASE_SEED, for ldpc_init: the format's three codes.
+typedef struct { int z, rate, mb, kb; const short *shift; } ldpc_base_t;
+static const ldpc_base_t LDPC_BASES[] = {
+  { LDPC_BASE78_Z, LDPC_BASE78_RATE, LDPC_BASE78_MB, LDPC_BASE78_KB, &LDPC_BASE78[0][0] },
+  { LDPC_BASE_Z, LDPC_BASE_RATE, LDPC_BASE_MB, LDPC_BASE_KB, &LDPC_BASE[0][0] },
+  { LDPC_BASE12_Z, LDPC_BASE12_RATE, LDPC_BASE12_MB, LDPC_BASE12_KB, &LDPC_BASE12[0][0] },
+};
+enum { LDPC_BASES_N = sizeof LDPC_BASES / sizeof LDPC_BASES[0] };
 
 #endif

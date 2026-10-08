@@ -35,7 +35,9 @@ std::unique_ptr<GpuPainter> GpuPainter::create(const std::string& assets, std::f
   p->log_ = log ? log : [](const std::string&) {};
   const auto manifest = readFile(assets + "/setup/send.json");
   const std::string text(manifest.begin(), manifest.end());
-  const std::string blob = nlohmann::json::parse(text)["perm"]["blob"];
+  const auto json = nlohmann::json::parse(text);
+  if (!json.contains("tab")) throw std::runtime_error("the GPU sender's " + assets + "/setup/send.json predates the rate profile: regenerate liblizard/out");
+  const std::string blob = json["tab"]["blob"];
   const std::string err = p->k_.load(text, readFile(assets + "/" + blob));
   if (!err.empty()) throw std::runtime_error(err);
   const char* want = getenv("LIZ_VK_DEVICE");
@@ -57,6 +59,9 @@ std::unique_ptr<GpuPainter> GpuPainter::create(const std::string& assets, std::f
   p->rsh_ = d.createPipeline(spirv(spv + "rsh.spv"), p->bglRsh_, "send rsh");
   p->rshCopy_ = d.createPipeline(spirv(spv + "rshCopy.spv"), p->bglRsh_, "send rsh copy");
   p->qs_ = d.createQuerySet(2, "send time");
+  // ai: TAB, the paint's codes and whitening: the same for every format, made once
+  p->TAB_ = d.createBuffer(4ull * p->k_.tab.size(), wg::STORAGE | wg::COPY_DST, "send TAB", false);
+  d.upload(*p->TAB_, 0, p->k_.tab.data(), 4ull * p->k_.tab.size());
   return p;
 }
 
@@ -86,7 +91,6 @@ std::string GpuPainter::configure(int n, int subch, int span, int fps, int frame
   fReady_ = true;
   focus_fmt_fps(&f_, fps);
   fps_ = fps;
-  if (f_.blocks > k_.permBlocks) return "LIZARD-" + std::to_string(subch) + " has more blocks than the bit map's table";
   try {
     if (!ringOnly) {
       const std::string pe = pipes(n);
@@ -126,8 +130,6 @@ std::string GpuPainter::configure(int n, int subch, int span, int fps, int frame
           return "";
         }
         BLOCKS_ = d.createBuffer(Z * V * k_.blockBytes, STORAGE | COPY_DST, "send BLOCKS");
-        PERMW_ = d.createBuffer(V * k_.slotsPerBlock * 2, STORAGE | COPY_DST, "send PERMW", false);
-        d.upload(*PERMW_, 0, k_.perm.data(), V * k_.slotsPerBlock * 2);
         UV_ = d.createBuffer(4 * np, STORAGE | COPY_DST, "send UV", false);
         d.upload(*UV_, 0, t.uv.data(), 4 * np);
         S_ = d.createBuffer(Z * np * 8, STORAGE | COPY_DST, "send S");
@@ -148,7 +150,7 @@ std::string GpuPainter::configure(int n, int subch, int span, int fps, int frame
         d.upload(*BORDER_, 0, t.border.data(), t.border.size());
         GU_ = d.createBuffer(48, UNIFORM | COPY_DST, "send GU", false);
         d.writeBuffer(*GU_, 0, t.g.data(), 48);
-        gPaint_ = d.createBindGroup(bglPaint_, {BLOCKS_, PERMW_, UV_, S_, PU_});
+        gPaint_ = d.createBindGroup(bglPaint_, {BLOCKS_, TAB_, UV_, S_, PU_});
         gIrows_ = d.createBindGroup(bglIrows_, {S_, TW_, Y_, ROWS_, SU_});
         gIpic_ = d.createBindGroup(bglIpic_, {Y_, TW_, PQT_, SU_});
         gTpose_ = d.createBindGroup(bglTpose_, {PQT_, PIC_, GU_});

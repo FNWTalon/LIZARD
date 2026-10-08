@@ -148,7 +148,7 @@ class SendState(private val a: MainActivity) {
     fun chooseBrightness(b: Int) { brightness = b.coerceIn(1, 100) }
     fun pause(p: Boolean) { if (phase == Phase.On) paused = p }
     // ai: what the code offers at most, KB/s: blocks a frame x 469 B x pictures a second; null before the first configure
-    val capacityKBs get() = if (picked > 0) codes * (if (stats.blocks > 0) stats.blocks else picked / 8) * 469.0 * rate / 1000 else null
+    val capacityKBs get() = if (picked > 0) codes * (if (stats.blocks > 0) stats.blocks else Native.blocksFor(picked)) * 469.0 * rate / 1000 else null
     fun choosePainter(p: String) { painter = p; prefs.edit().putString("sendPainter", p).apply(); if (phase == Phase.On) reconfigure() }
     fun chooseCodes(c: Int) { codes = c.coerceIn(1, 2); prefs.edit().putInt("sendCodes", codes).apply(); if (phase == Phase.On) reconfigure() }
     fun chooseGap(g: Int) { gap = g.coerceIn(0, 64); prefs.edit().putInt("sendGap", gap).apply(); if (phase == Phase.On) reconfigure() }
@@ -367,8 +367,9 @@ internal fun MainActivity.SendScreen() {
                     Bar(s.brightness.toFloat(), 1f..100f, 98) { v -> val n = v.roundToInt(); if (n != s.brightness) s.chooseBrightness(n) }
                 }
                 Group("Code") {
-                    // ai: under a rate profile (2026-10-07) the slider is not read: its title the profile and the blocks it paints
-                    AutoSlider("Blocks", s.blocks, s.picked / 8, 1..128, { n -> if (s.stats.tiers.isNotEmpty()) "${s.stats.tiers}: ${s.stats.blocks}, ${"%.1f".format(Locale.ROOT, s.stats.blocks * 469 / 1000.0)}\u00a0KB" else "$n, ${"%.1f".format(Locale.ROOT, n * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
+                    // ai: the slider sets the format's size (its sub-channels / 8); its title the blocks that size carries under the
+                    // ai: format's rate profile and their bytes (2026-10-07)
+                    AutoSlider("Blocks", s.blocks, s.picked / 8, 1..128, { n -> val b = Native.blocksFor(8 * n); "$b, ${"%.1f".format(Locale.ROOT, b * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
                     RateSlider(s)
                     // ai: one code, or two side by side for a receiver's 2:1 crop, and their gap (the web's #codes and #gap)
                     Select("Codes", s.codes, listOf(1 to "One", 2 to "Two")) { s.chooseCodes(it) }

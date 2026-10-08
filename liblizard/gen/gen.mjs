@@ -89,10 +89,6 @@ const LIMITS = { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 2 ** 31, m
 const FEATURES = ["timestamp-query", "shader-f16", "subgroups"];
 export const VARIANTS = ["int8", "f16", "f32"].flatMap((precision) => [true, false].map((subgroups) => ({ precision, subgroups, name: `${precision}${subgroups ? "-sg" : ""}` })));
 const BACK_B = [B_CEIL, 16, 8, 4, 2, 1];
-// ai: The rate profiles a back half carries a stage for (gpu/back/tiers.mjs; the lab's rate-by-ring arm, 2026-10-07):
-// ai: LIZ_GEN_TIERS, profiles joined by "+", else these (LIZARD-432, 416 and 480, with and without a 1/2 outer tier).
-// ai: The native host builds the one LIZ_TIERS names (core/dec/front.cpp), and a profile not listed here has none.
-const GEN_TIERS = (process.env.LIZ_GEN_TIERS ?? "7/8:24,3/4:15,1/2:12+7/8:20,3/4:20,1/2:11+7/8:24,3/4:33+7/8:16,3/4:20,1/2:12+7/8:16,3/4:38+7/8:24,3/4:21,1/2:12+7/8:24,3/4:39+7/8:18,3/4:18,2/3:18").split("+").filter(Boolean);
 // ai: The ingest shader (F0, a render pass over a texture_external): the native app writes luma into the layer
 // ai: itself, so it is neither exported nor compiled.
 const SKIP = (code) => /texture_external/.test(code);
@@ -164,10 +160,12 @@ function exportBack(bh) {
       twBufs: perSlot(t.twBufs), x12Bufs: perSlot(t.x12Bufs), rowsBufs: perSlot(t.rowsBufs), picUnis: perSlot(t.picUnis), gateUni: idOf(t.gateUni),
       sizes: t.tables.map((tb) => (tb ? { n: tb.n, subch: tb.subch, blocks: tb.blocks, m2: tb.m2, sx2: tb.sx2, sq2: tb.sq2 } : null)),
     },
-    soft: { pipeline: idOf(so.pipeline), align: idOf(so.alignPipeline), bgl: idOf(so.bgl), uvBuf: idOf(so.uvBuf), twBuf: idOf(so.twBuf), params: perSlot(so.params), served: so.served, blocks: so.sizes.map((z) => (z ? z.blocks : 0)), bytes: so.bytes, indirect: so.indirect },
-    ldpc: { pipeline: idOf(ld.pipeline), bgl: idOf(ld.bgl), mapBuf: idOf(ld.mapBuf), params: idOf(ld.params), bytes: ld.bytes, blocksMax: ld.blocksMax, recCap: ld.recCap },
-    // ai: a rate profile's stage by its key (gpu/back/tiers.mjs exportFor)
-    tiers: Object.fromEntries([...(bh.tierStages ?? new Map())].map(([k, st]) => [k, st.exportFor(idOf)])),
+    // ai: the one-rate soft and LDPC stages make the lane's buffers; their kernels are not run (the rate profile's are,
+    // ai: below), so their pipelines are not named and the native host builds none of them
+    soft: { pipeline: null, align: null, bgl: idOf(so.bgl), uvBuf: idOf(so.uvBuf), twBuf: idOf(so.twBuf), params: perSlot(so.params), served: so.served, blocks: so.sizes.map((z) => (z ? z.blocks : 0)), bytes: so.bytes, indirect: so.indirect },
+    ldpc: { pipeline: null, bgl: idOf(ld.bgl), mapBuf: idOf(ld.mapBuf), params: idOf(ld.params), bytes: ld.bytes, blocksMax: ld.blocksMax, recCap: ld.recCap },
+    // ai: the format's rate profile's stage (gpu/back/tiers.mjs exportFor), in the soft and LDPC stages' place
+    rule: bh.rule.exportFor(idOf),
   };
 }
 
@@ -350,10 +348,8 @@ async function main() {
       bank: "fcn2", cascade: { weights: small, keep: CASCADE.keep, rest: CASCADE.rest }, back: "gpu", backN: 1536, fuse: true, log: (m) => log.push(m), probe: false, cancel: false, twins: null,
     });
     const tree = exportTree(fh, v, tables);
-    const addTiers = async () => { for (const p of GEN_TIERS) await fh.bh.addTiers(p); };
-    await addTiers();
     tree.backs[fh.bh.B] = exportBack(fh.bh);
-    for (const B of BACK_B.filter((b) => b !== fh.bh.B)) { await fh.buildBack(B, true); await addTiers(); tree.backs[B] = exportBack(fh.bh); }
+    for (const B of BACK_B.filter((b) => b !== fh.bh.B)) { await fh.buildBack(B, true); tree.backs[B] = exportBack(fh.bh); }
     tree.log = log.filter((m) => !m.startsWith("built in "));   // ai: no wall-clock line: two gens write the same tree
     const objects = exportObjects(rec, tree, blobs);
     tree.objects = objects;
@@ -371,14 +367,14 @@ async function main() {
     try { compiled[h] = compile(h, code); } catch (e) { if (!e.tool) throw e; failed.push({ h, message: e.message }); }
   }
   // ai: The sender's GPU encoder (gen/sender.mjs, 2026-10-02): its kernels as out/spv/send_<name>.spv, its manifest
-  // ai: setup/send.json and its bit map's table blobs/<hash>.bin, for core/tx/gpu_painter.cpp.
+  // ai: setup/send.json and its paint's TAB blobs/<hash>.bin (the codes and the whitening), for core/tx/gpu_painter.cpp.
   const send = await senderSetup();
-  writeFileSync(new URL(`blobs/${send.perm.hash}.bin`, OUT), send.perm.bytes);
+  writeFileSync(new URL(`blobs/${send.tab.hash}.bin`, OUT), send.tab.bytes);
   for (const [k, code] of Object.entries(send.modules)) {
     try { compiled[`send_${k}`] = compile(`send_${k}`, code); } catch (e) { if (!e.tool) throw e; failed.push({ h: `send_${k}`, message: e.message }); }
   }
   writeFileSync(new URL("setup/send.json", OUT), JSON.stringify(send.manifest));
-  console.log(`sender: ${Object.keys(send.modules).length} kernels, PERMW ${(send.perm.bytes.byteLength / 1024).toFixed(0)} KB`);
+  console.log(`sender: ${Object.keys(send.modules).length} kernels, TAB ${(send.tab.bytes.byteLength / 1024).toFixed(0)} KB`);
   for (const f of failed) console.log(`FAIL ${f.h}\n${f.message}\n`);
   // ai: The native host's own shaders (core/ingest/*.comp, GLSL: the camera's ingest samples through a YCbCr
   // ai: sampler, which WGSL has no word for) to out/spv/ingest_<name>.spv by glslc.

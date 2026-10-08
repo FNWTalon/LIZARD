@@ -42,7 +42,9 @@ symbol and carries a format word that says what is inside (the sub-channel count
 and the display rate the sender intends): one Reed-Solomon codeword over every word cell of the border, 8, 16, 24 or 32
 bytes by ring. The
 payload travels in blocks of 473 bytes (a 32-bit block id and 469 payload bytes) with a CRC-32, each coded by a
-rate-3/4 QC-LDPC code onto 8 consecutive sub-channels of 320 coefficients. Block 0 holds the lowest frequencies and the
+QC-LDPC code onto consecutive sub-channels of 320 coefficients at a rate that follows the frequency: 7/8 on 7
+sub-channels a block in the inner tier, 3/4 on 8 in the middle, 1/2 on 12 in the outer (the rate profile, a function of
+the sub-channel count, 3.1). Block 0 holds the lowest frequencies and the
 blocks run outwards, and blocks from any frame feed a Wirehair fountain, so the receiver needs no particular frame. A
 file travels in chunks, a fountain each, described by a header block and verified chunk by chunk against its BLAKE3
 hash, all in the light (7.5 to 7.10).
@@ -77,10 +79,11 @@ Lizard was chosen over the binary grid code, which carries more above its cliff 
 | coefficient | one frequency (u, v) of the picture's 2D DFT; it carries one QPSK symbol, two slots |
 | slot | one transmitted bit: the sign of a coefficient's real or imaginary part |
 | sub-channel | 320 consecutive coefficients of the frequency order (6.3) |
-| block | 8 consecutive sub-channels: 2560 coefficients, 5120 slots, one codeword, 473 bytes |
-| codeword | the 5088-bit LDPC codeword of one block (section 8) |
+| block | 473 bytes, one codeword on consecutive sub-channels: 7 at rate 7/8, 8 at 3/4, 12 at 1/2 (3.1) |
+| codeword | the LDPC codeword of one block: 4464 bits at 7/8, 5088 at 3/4, 7680 at 1/2 (section 8) |
+| rate profile | the blocks' code rates by frequency, inner first, a function of subch alone (3.1) |
 | subch | the number of sub-channels in a frame; LIZARD-512 has subch = 512 |
-| version | V = subch / 8, the number of blocks a frame; what the word's second byte carries. It says what is inside the ring and nothing about the ring (3.1) |
+| version | V = subch / 8, the format's size; what the word's second byte carries. A frame of it carries B(V) blocks, the rate profile's count. It says what is inside the ring and nothing about the ring (3.1) |
 | block id | bytes 0 to 3 of a block: 14 bits of chunk over 18 of fountain symbol (7.5) |
 | chunk | 2^k bytes of the file (the last may be shorter), its own Wirehair fountain (7.6) |
 | fountain symbol | the low 18 bits of a block id: the block's Wirehair block id in its chunk's fountain (7.5). `liblizard/src/xfer.h` calls it the symbol; it is not a symbol in the sense above |
@@ -137,12 +140,13 @@ define them, its real arithmetic (6.6 to 6.8) to the formula, not to the referen
 never checks conformance.
 
 **Not the format.** Each of these exists in the code or the record. None is part of the format, and the format word
-cannot state any of them. A receiver told nothing reads a rate-tier, `FOCUS_RS` or other-bit-map frame wrongly.
+cannot state any of them. A receiver told nothing reads a frame of other rate tiers, `FOCUS_RS` or another bit map wrongly.
 
 - A power tilt across the sub-channels (`focus_t.tilt`, in dB; 6.5). Sender only: the receiver measures each
   sub-channel's amplitude.
-- Rate tiers (`liblizard/src/focus.c:focus_init_tiers`): up to three runs of blocks at code rates other than 3/4, a block taking
-  7 sub-channels at 7/8, 9 at 2/3 and 12 at 1/2.
+- Rate tiers other than the profile's (`liblizard/src/focus.c:focus_init_tiers`): up to three runs of blocks at any of the
+  generator's rates, a block taking 7 sub-channels at 7/8, 8 at 3/4, 9 at 2/3 and 12 at 1/2. The format's tiers are the
+  rate profile's alone (3.1).
 - `FOCUS_RS`, mode 0 of `liblizard/src/focus.c:focus_init`: the FOCUS paper's RS(80,64) per sub-channel with hard QPSK.
 - Bit map modes other than LINEAR (7.3).
 - Straddle cancellation, reading a capture that straddles a frame change by subtracting what the receiver already
@@ -169,10 +173,41 @@ cannot state any of them. A receiver told nothing reads a rate-tier, `FOCUS_RS` 
 ### 3.1 Names, versions and the ladder (normative)
 
 - A **sub-channel** is 320 consecutive coefficients of the picture's coefficient order (`liblizard/src/focus.h:FOCUS_SUB`, 6.3).
-- A **block** is 8 consecutive sub-channels (`FOCUS_GROUP`): block b is sub-channels 8b to 8b + 7
-  (`liblizard/src/focus.c:init`, `block_sub`).
+- A **block** is 473 bytes coded as one codeword on consecutive sub-channels, as many as its rate needs: 7 at 7/8, 8 at
+  3/4 (`FOCUS_GROUP`), 12 at 1/2. Blocks are laid from sub-channel 0 outwards, each beginning where the one before
+  ended (`liblizard/src/focus.c:init`, `block_sub`).
 - A **format** is named after its sub-channel count subch: LIZARD-512 has subch = 512. Its **version** is
-  V = subch / 8, the number of blocks a frame. The format word's version byte carries V (`liblizard/src/focus.c:fmt_paint`).
+  V = subch / 8, its size. The format word's version byte carries V (`liblizard/src/focus.c:fmt_paint`). A frame of it
+  carries B(V) blocks, the rate profile's count (below).
+
+**The rate profile** (2026-10-07). The code rate follows the frequency. A capture's signal-to-noise ratio falls with the
+frequency, so the lowest sub-channels carry more than rate 3/4 needs and the highest less. Inner first, a frame of
+subch sub-channels carries a blocks at 7/8 (7 sub-channels each), m at 3/4 (8 each) and c at 1/2 (12 each), with
+7a + 8m + 12c = subch and m >= 1. Of the (a, c) that fit, the profile is the one with the least
+(700 a - 32 subch)^2 + (1200 c - 30 subch)^2, in integers, the first of equals in rising a, then rising c: 7a near 32%
+of the sub-channels and 12c near 30% (`liblizard/src/focus.c:focus_tiers_for`, `FOCUS_TIER_IN` = 32, `FOCUS_TIER_OUT` =
+30; `liblizard/sim/lizard_pick.mjs:tiersFor`, the same integers). A tier of no blocks is absent: LIZARD-8 to -40 are one
+tier of 3/4, and every larger format has all three. B(V) = a + m + c (`focus_blocks_for`): V up to V = 10, then at most
+7 under V (121 at LIZARD-1024), never falling as V rises. Every block is 473 bytes whatever its rate, so the profile
+moves a frame's capacity by its block count alone. It is a function of subch, which the word names, so a receiver told
+the version knows every block's place and code, and nothing else is signalled.
+
+| format | tiers, inner first | blocks B(V) |
+|---|---|---|
+| LIZARD-8 to -40 | 3/4 x V | 1 to 5 |
+| LIZARD-48 | 7/8 x 4, 3/4 x 1, 1/2 x 1 | 6 |
+| LIZARD-128 | 7/8 x 4, 3/4 x 8, 1/2 x 3 | 15 |
+| LIZARD-256 | 7/8 x 12, 3/4 x 11, 1/2 x 7 | 30 |
+| LIZARD-432 | 7/8 x 20, 3/4 x 20, 1/2 x 11 | 51 |
+| LIZARD-512 | 7/8 x 24, 3/4 x 25, 1/2 x 12 | 61 |
+| LIZARD-568 | 7/8 x 24, 3/4 x 29, 1/2 x 14 | 67 |
+| LIZARD-1024 | 7/8 x 48, 3/4 x 47, 1/2 x 26 | 121 |
+
+Why (non-normative). Before 2026-10-07 every block was 3/4 on 8 sub-channels and B(V) = V (section 12). On two
+recorded 2:1 phone captures (one phone at 1080; section 11), each frame's own residuals re-modulated under a profile and
+read by the reference decoder's soft values and LDPC gave +17.5% bytes a frame at LIZARD-432 under this profile and
++25% at LIZARD-416 under one of its shape (7/8 x 16, 3/4 x 20, 1/2 x 12), against one rate 3/4 at the same sub-channel
+count, though the profile offers 5 to 7% fewer blocks; 7/8 everywhere read a third less.
 
 **Versions collapse** (2026-09-27). A version names what is inside the symbol, its sub-channel count, and nothing
 else: not a symbol size, not a module count. The symbol's size is its ring's, one of four (3.3), and any ring may carry
@@ -180,8 +215,9 @@ any version. The names stay: LIZARD-k already states the sub-channel count.
 
 **Every whole number of blocks** (2026-10-01). A sender MAY paint any version from 1 to 128: every multiple of 8 sub-channels
 from 8 to 1024, LIZARD-8, -16, ..., -1024 (`liblizard/sim/lizard_pick.mjs:VERSIONS`, 128 values). One block is the smallest step
-a symbol can take: the word names blocks a frame, and a block is 8 sub-channels. The reference sender's control is a
-slider of blocks a frame with an automatic pick beside it (`lizard-web/send.html`), and its picker reaches all 128. A
+a symbol can take: the word names subch / 8, a step of 8 sub-channels. The reference sender's control is a slider of
+versions, each labelled with the blocks its profile carries, with an automatic pick beside it (`lizard-web/send.html`),
+and its picker reaches all 128. A
 receiver reads the version the word names with no flag: the word states any version from 1 to 128
 (`liblizard/src/fmt.c:ob_fmt_encode`, `ob_fmt_decode`, `OB_FMT_VERSION_MAX` = 128), and `liblizard/src/focus.c:focus_init` builds any
 positive multiple of 8 sub-channels up to 1024. Checked 2026-10-01: every one of the 128 in each of the four rings
@@ -336,37 +372,45 @@ format had before 2026-09-23.
 
 ### 3.4 Capacity (normative)
 
-A block (section 7 defines its layout):
+A block (section 7 defines its layout), by its rate (3.1):
 
-- 8 sub-channels x 320 coefficients x 2 bits = 5120 slots.
-- The codeword fills 5088 of them: rate 3/4, 48 base columns lifted by z = floor(5120 / 48) = 106
-  (`liblizard/src/ldpc.c:ldpc_init`). The other 32 slots carry known values (7.3).
-- The information word is k = 3816 bits, 477 bytes: the 473 bytes the codec is handed for the block, then their
-  CRC-32 (`liblizard/src/focus.c:focus_encode`; `block_bytes` = k / 8 - 4 = 473, `liblizard/src/focus.c:init`).
+| rate | sub-channels | slots | codeword n | z | known slots | information k |
+|---|---|---|---|---|---|---|
+| 7/8 | 7 | 4480 | 4464 | 93 | 16 | 3906 |
+| 3/4 | 8 | 5120 | 5088 | 106 | 32 | 3816 |
+| 1/2 | 12 | 7680 | 7680 | 160 | 0 | 3840 |
+
+- Slots: the sub-channels x 320 coefficients x 2 bits. The codeword: 48 base columns lifted by z = floor(slots / 48)
+  (`liblizard/src/ldpc.c:ldpc_init`). The slots past it carry known values (7.3).
+- The information word's first 3816 bits, 477 bytes, are the 473 bytes the codec is handed for the block, then their
+  CRC-32 (`liblizard/src/focus.c:focus_encode`); at 7/8 and 1/2 the 90 and 24 bits past them are zeros, which a decoder
+  knows. `block_bytes` = k / 8 - 4 = 473 for the smallest k of the format's codes, the 3/4 code's, which every format
+  has (`liblizard/src/focus.c:init`).
 - The first 4 of those 473 bytes are the block id, a uint32, little-endian (7.5, `liblizard/src/xfer.h`), which leaves 469
   useful bytes (7.1).
 
-A frame of version V has V blocks, 2560 V coefficients, 5120 V slots and 469 V useful bytes (3752 V bits, 73.3% of
-the slots), in whichever ring it is painted. Its ceiling in bytes a second is 469 V times the display rate; goodput,
-what the receiver's decoded blocks deliver, is lower.
+A frame of version V has B(V) blocks (3.1), 2560 V coefficients, 5120 V slots and 469 B(V) useful bytes, in
+whichever ring it is painted (3752 V bits, 73.3% of the slots, under one rate 3/4 before 2026-10-07; 3536 bits a block
+of 7/8, 3752 of 3/4 and 3752 of 1/2 on its 4480, 5120 and 7680 slots). Its ceiling in bytes a second is 469 B(V) times
+the display rate; goodput, what the receiver's decoded blocks deliver, is lower.
 
-| n | blocks a frame, ladder | useful bytes a frame |
-|---|---|---|
-| 256 | 2, 4 | 938, 1876 |
-| 384 | 6 to 10 | 2814 to 4690 |
-| 512 | 12 to 16 | 5628 to 7504 |
-| 768 | 18 to 40 | 8442 to 18760 |
-| 1024 | 42 to 70 | 19698 to 32830 |
-| 1536 | 72 to 128 | 33768 to 60032 |
+| n | versions | blocks a frame | useful bytes a frame |
+|---|---|---|---|
+| 256 | 1 to 4 | 1 to 4 | 469 to 1876 |
+| 384 | 5 to 10 | 5 to 10 | 2345 to 4690 |
+| 512 | 11 to 17 | 10 to 16 | 4690 to 7504 |
+| 768 | 18 to 40 | 17 to 38 | 7973 to 17822 |
+| 1024 | 41 to 71 | 39 to 67 | 18291 to 31423 |
+| 1536 | 72 to 128 | 68 to 121 | 31892 to 56749 |
 
 **Worked example, LIZARD-512.** subch = 512, V = 64. R = sqrt(5120 x 64 / pi) = 322.96 and 3R = 968.9, so n = 1024
 (768 < 968.9 <= 1024). Its default ring is 64: span = 128, so 158 modules a side and 162 with the margin; pxm =
-ceil(1024 / 128) = 8, an exact copy, so the symbol paints 1264 x 1264 pixels, 1296 x 1296 with the margin. It carries 64
-blocks on 163,840 coefficients (327,680 slots), 30,016 useful bytes a frame, and its version byte is 64 (0x40). At 24
-frames a second its ceiling is 720,384 B/s.
+ceil(1024 / 128) = 8, an exact copy, so the symbol paints 1264 x 1264 pixels, 1296 x 1296 with the margin. It carries 61
+blocks (7/8 x 24, 3/4 x 25, 1/2 x 12) on 163,840 coefficients (327,680 slots), 28,609 useful bytes a frame, and its
+version byte is 64 (0x40). At 24 frames a second its ceiling is 686,616 B/s (720,384 under one rate).
 
 To reproduce, in node with `init()` from `liblizard/sim/ob.mjs`: `M._focus_setup(1024, 512, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0)` returns
-473 (block bytes), then `M._focus_blocks()` gives 64, `M._focus_side()` 1264, `M._focus_cell()` 8 and `M._focus_quiet()`
+473 (block bytes), then `M._focus_blocks()` gives 61, `M._focus_side()` 1264, `M._focus_cell()` 8 and `M._focus_quiet()`
 2 (2026-09-27). Painting a frame with `M._focus_tx_rgba(blocks, drive, rgba)` gives 1296 x 1296 pixels, the codec's
 2-module margin (16 px) included. Every (ring, picture) pair painted this way reads back blind byte-exact
 (`scripts/exp/ring_pairs.mjs` with `SUBCH=16,32,48,80,96,128,144,320,336,560,576,1024`, the first and last format of each
@@ -796,7 +840,7 @@ run its band cuts short is not a word run, and stays light. The data is the same
 | byte | field | value |
 |---|---|---|
 | `cw[0]` | magic | `0x4C` (ASCII `L`) |
-| `cw[1]` | version | sub-channels / 8, which is blocks a frame; 1 to 128. It names the picture: n = `focus_n_for(8 * version)` (3.2) |
+| `cw[1]` | version | sub-channels / 8, 1 to 128; the blocks a frame and their rates follow from it (3.1). It names the picture: n = `focus_n_for(8 * version)` (3.2) |
 | `cw[2]` | fps | whole frames a second the sender means to paint at, 1 to 255; 0 means not stated |
 | `cw[3]` to `cw[bytes - 1]` | parity | Reed-Solomon, 5.2 |
 
@@ -808,8 +852,8 @@ run its band cuts short is not a word run, and stays light. The data is the same
   sub-channels up to 1024 and refuses more.
 - fps is the rate the sender intends, not the rate it achieves. No decode decision depends on it. A sender MAY change
   it between frames: only the word's cells change (`liblizard/src/focus.c:focus_fmt_fps`, 9.2).
-- Nothing else is in the word. The mode is always LDPC and the rate always 3/4 (`liblizard/src/focus.h:FOCUS_RATE`), and the bit
-  map is always LINEAR, the only one the format has, so the word names none (2026-09-24; 7.3). Everything about
+- Nothing else is in the word. The mode is always LDPC, the rates are the profile's for the version (3.1,
+  `liblizard/src/focus.c:focus_tiers_for`; one rate 3/4 before 2026-10-07), and the bit map is always LINEAR, the only one the format has, so the word names none (2026-09-24; 7.3). Everything about
   the transfer (fountain seeds, file length, hash, name) is in the header block (7.7).
 
 ### 5.2 Reed-Solomon (bytes, 3)
@@ -1186,18 +1230,21 @@ n / r_top:
 The rows are the first and last format of each n. Before 2026-09-27 (3.2) the ratio ran to 5.98 (LIZARD-576 at 2048);
 it now stays between 3.01 and 4.49.
 
-Block 0 (the first 8 sub-channels) runs from the centre out to radius 40.3 in every format.
+Block 0 runs from the centre out to radius 37.8 from LIZARD-48 up (the 7/8 tier's 7 sub-channels) and 40.3 below (8
+sub-channels of 3/4).
 
 ### 6.4 Blocks
 
-Block b is sub-channels 8b to 8b + 7 (3.1): coefficients C_(2560 b) to C_(2560 b + 2559), 5120 slots. Every block is
-coded at rate 3/4 (section 8), whose codeword fills 5088 slots and leaves the last 32 to the whitening (7.3). Rate tiers
-and `FOCUS_RS` build other frames, which are not the format (section 2).
+Block b's rate and place come from the rate profile (3.1): it takes g_b sub-channels, 7, 8 or 12 by its rate, from
+sub-channel s_b, the sum of the sub-channels of the blocks before it; coefficients C_(320 s_b) to C_(320 (s_b + g_b) -
+1), 640 g_b slots. Its codeword (section 8) fills 4464, 5088 or 7680 of them and leaves the last 16, 32 or none to the
+whitening (7.3). Under one rate (before 2026-10-07, and LIZARD-8 to -40 now) g_b = 8 and s_b = 8b. Other rate tiers and
+`FOCUS_RS` build other frames, which are not the format (section 2).
 
 ### 6.5 Symbols
 
 Frame slot 2s lies on the real axis of coefficient C_s and frame slot 2s + 1 on its imaginary axis, 0 <= s < 320 subch,
-so a frame has 640 subch slots. Block b's slot k is frame slot 5120 b + k. The slot bits x_0, x_1, ... are the frame's
+so a frame has 640 subch slots. Block b's slot k is frame slot 640 s_b + k (6.4). The slot bits x_0, x_1, ... are the frame's
 whitened, permuted codeword bits (7.3). Coefficient s carries
 
 ```
@@ -1524,17 +1571,18 @@ Normative, except where a paragraph says otherwise. Sources: `liblizard/src/focu
 `perm_fill`, `map_out`, `map_in`, `focus_finish_bits`; `liblizard/src/focus.h` `FOCUS_BITMAP`; `liblizard/src/layout.c` `ob_crc32`. For the
 transfer (7.5 to 7.10): `liblizard/src/xfer.h`, `liblizard/src/xfer.c`, and their wasm exports in `liblizard/src/wasm.c`.
 
-A frame of version V carries V blocks. Each block is one LDPC codeword with its own CRC-32. Blocks are independent, so a
+A frame of version V carries B(V) blocks (3.1). Each block is one LDPC codeword with its own CRC-32. Blocks are independent, so a
 frame delivers any subset of them. Block 0 sits at the lowest spatial frequencies and the blocks run outwards, so blur,
 distance and resampling take the last blocks first.
 
-In this section and in section 8, n, k and m are the code's length, information length and parity count (5088, 3816
-and 1272), not the picture size.
+In this section and in section 8, n, k and m are the block's code's length, information length and parity count (5088,
+3816 and 1272 at 3/4; 4464, 3906 and 558 at 7/8; 7680, 3840 and 3840 at 1/2), not the picture size.
 
 ### 7.1 The block
 
-A block is 473 bytes. The number comes from the code: `focus.c:init` sets block_bytes = k/8 - 4 = 3816/8 - 4, and the 4
-bytes held back are the CRC.
+A block is 473 bytes at every rate. The number comes from the code: `focus.c:init` sets block_bytes = k/8 - 4 for the
+smallest k of the format's codes, the 3/4 code's (every format has a 3/4 tier), 3816/8 - 4, and the 4 bytes held back
+are the CRC.
 
 | bytes | content |
 |---|---|
@@ -1543,16 +1591,18 @@ bytes held back are the CRC.
 
 The picture codec (`liblizard/src/focus.c`) treats the 473 bytes as opaque; the id's layout is the transfer's (7.5, `liblizard/src/xfer.h`,
 2026-09-24). `liblizard/sim/phy.mjs:makeFocus` writes the id in `frame` and reads it in `tally`. A frame's payload is
-V x 469 bytes.
+B(V) x 469 bytes.
 
-**Information word**, k = 3816 bits (`focus.c:focus_encode`):
+**Information word**, k bits (`focus.c:focus_encode`): 3816 at 3/4, 3906 at 7/8, 3840 at 1/2.
 
 | bits | content |
 |---|---|
 | 0 to 3783 | block bytes 0 to 472. Bit i is bit 7 - (i mod 8) of byte floor(i / 8): most significant bit first. |
 | 3784 to 3815 | CRC-32 of bytes 0 to 472. Bit 3784 + i is bit 31 - i of the CRC: most significant bit first. |
+| 3816 to k - 1 | zeros: 90 bits at 7/8, 24 at 1/2, none at 3/4. |
 
-The word fills k exactly. There is no padding.
+At 3/4 the word fills k exactly. At 7/8 and 1/2 the zeros past the CRC are known to the decoder (the reference feeds
+them as certain zeros, `focus.c:focus_finish_bits`), so the roomier code spends them on protection.
 
 **CRC-32** (`layout.c:ob_crc32`) is the CRC of IEEE 802.3 and zlib: polynomial 0x04C11DB7 processed reflected
 (0xEDB88320, each byte least significant bit first), register initialised to 0xFFFFFFFF, result complemented. The CRC-32
@@ -1567,46 +1617,62 @@ and then the CRC (`focus.c:focus_finish_bits`).
 
 ### 7.2 Where a block lies in the frame
 
-6.3 orders the frame's coefficients by rising frequency, 320 to a sub-channel. Block b (b = 0 to V - 1) owns:
+6.3 orders the frame's coefficients by rising frequency, 320 to a sub-channel. Block b (b = 0 to B(V) - 1), of g_b
+sub-channels from sub-channel s_b (6.4), owns:
 
-- sub-channels 8b to 8b + 7;
-- coefficients 2560b to 2560b + 2559 in that order;
-- 5120 slots, two a coefficient. Slot i of the block is the real part of coefficient 2560b + floor(i / 2) when i is
-  even, and its imaginary part when i is odd. It lies in sub-channel 8b + floor(i / 640), and its place in the frame is
-  slot 5120b + i.
+- sub-channels s_b to s_b + g_b - 1;
+- coefficients 320 s_b to 320 (s_b + g_b) - 1 in that order;
+- 640 g_b slots, two a coefficient. Slot i of the block is the real part of coefficient 320 s_b + floor(i / 2) when i
+  is even, and its imaginary part when i is odd. It lies in sub-channel s_b + floor(i / 640), and its place in the
+  frame is slot 640 s_b + i.
+
+Under one rate (g_b = 8, s_b = 8b) these are sub-channels 8b to 8b + 7, coefficients 2560b to 2560b + 2559 and frame
+slots 5120b + i.
 
 A slot bit 0 is sent as a positive component and a 1 as a negative one (`focus.c:focus_encode`). 6.5 gives the
 magnitude.
 
 ### 7.3 The bit map
 
-A codeword has 5088 bits and a block has 5120 slots. The bit map puts the codeword on the slots and whitens it. The
-format's map is LINEAR (`focus.h:FOCUS_BITMAP`). For block b, its codeword c (section 8), the whitening sequence w and
-the picture's parity q (9.1):
+A codeword has n bits and its block 640 g_b slots: 4464 of 4480 at 7/8, 5088 of 5120 at 3/4, 7680 of 7680 at 1/2. The
+bit map puts the codeword on the slots and whitens it. The format's map is LINEAR (`focus.h:FOCUS_BITMAP`). For block b,
+its codeword c (section 8), the whitening sequence w and the picture's parity q (9.1):
 
 ```
-slot[i] = (i < 5088 ? c[(1943 * i) mod 5088] : q) XOR w[5120 b + i],    i = 0 .. 5119
+slot[i] = (i < n ? c[(st * i) mod n] : q) XOR w[640 s_b + i],    i = 0 .. 640 g_b - 1
+```
+
+with st 1709 at 7/8, 1943 at 3/4 and 2933 at 1/2 (below). At 3/4, the one rate before 2026-10-07:
+
+```
+slot[i] = (i < 5088 ? c[(1943 * i) mod 5088] : q) XOR w[640 s_b + i],    i = 0 .. 5119
 ```
 
 **The permutation** (`focus.c:perm_fill`). Slot i carries codeword bit perm(i) = i * st mod n. The stride st is
 floor(0.3819660113 n + 0.5), then raised by 1 until gcd(st, n) = 1 (0.3819660113 is 1/phi^2, phi the golden ratio). For
 n = 5088 the first value, 1943, is already prime to n (1943 = 29 x 67, 5088 = 2^5 x 3 x 53), so st = 1943. Inverse:
 codeword bit t lies on slot 1799 t mod 5088, since 1943 x 1799 = 1 mod 5088. perm(0) to perm(11) are 0, 1943, 3886, 741,
-2684, 4627, 1482, 3425, 280, 2223, 4166, 1021. Every run of the codeword (a circulant's 106 bits, the parity chain) is
-spread across the block's coefficients.
+2684, 4627, 1482, 3425, 280, 2223, 4166, 1021. For n = 4464 (7/8) the first value, 1705, shares 31 with n, and 1706,
+1707 and 1708 share 2, 3 and 4, so st = 1709; codeword bit t lies on slot 3077 t mod 4464, and perm(0) to perm(11) are
+0, 1709, 3418, 663, 2372, 4081, 1326, 3035, 280, 1989, 3698, 943. For n = 7680 (1/2) the first value, 2933, is prime
+to n, so st = 2933; codeword bit t lies on slot 1757 t mod 7680, and perm(0) to perm(11) are 0, 2933, 5866, 1119, 4052,
+6985, 2238, 5171, 424, 3357, 6290, 1543. Every run of the codeword (a circulant's z bits, the parity chain) is spread
+across the block's coefficients.
 
-**The pilots** (5088 to 5119: coefficients 2544 to 2559 of the block, the top of sub-channel 8b + 7; 2026-09-30;
-signed 2026-10-01). The last 32 slots carry no code bit: the whitening XOR a bit of the picture's
-count c (9.1), bit 0 of it on an even block (b even) and bit 1 on an odd one. So an even block's tail flips sign picture
-to picture, and an odd block's every second picture; where the bit is 1 the 16 coefficients are painted inverted. They
+**The pilots** (the block's slots past its codeword, the top of its last sub-channel: 5088 to 5119 at 3/4,
+coefficients 2544 to 2559 of the block; 4464 to 4479 at 7/8, coefficients 2232 to 2239; none at 1/2, whose codeword
+fills its block; 2026-09-30; signed 2026-10-01). The slots past the codeword carry no code bit: the whitening XOR a bit
+of the picture's count c (9.1), bit 0 of it on an even block (b even, b the block's place in the frame) and bit 1 on an
+odd one. So an even block's tail flips sign picture to picture, and an odd block's every second picture; where the bit
+is 1 the tail's coefficients are painted inverted. They
 cost no capacity (the codeword never used them) and no power (the same QPSK points, turned by 180 degrees). The LDPC
-ignores them. What a receiver reads from them, per block b, from the coefficients after its transform and detrend: the
-32 axis values y_i of the tail (slot 5088 + 2k the real part of coefficient 2544 + k, 5088 + 2k + 1 its imaginary),
-against the known signs, in units of the rms axis value of the tail's sub-channel (m2 its mean |y|^2 over the 320
-coefficients):
+ignores them. What a receiver reads from them, per block b with a tail, from the coefficients after its transform and
+detrend: the T axis values y_i of the tail (T = 32 at 3/4, 16 at 7/8; slot n + 2k the real part of coefficient n / 2 +
+k, n + 2k + 1 its imaginary), against the known signs, in units of the rms axis value of the tail's sub-channel (m2
+its mean |y|^2 over the 320 coefficients; a 1/2 block has no tail and reads none):
 
 ```
-r_b = (1 / 32) sum_i (1 - 2 w[5120 b + 5088 + i]) y_i / sqrt(m2 / 2)
+r_b = (1 / T) sum_i (1 - 2 w[640 s_b + n + i]) y_i / sqrt(m2 / 2)
 ```
 
 and a frame has two readings: r, the mean of r_b over the even blocks its format carries, and r2, the mean over the
@@ -1644,10 +1710,12 @@ The C does the same with a 23-bit register: s = 0x7FFFFF, and for each i, w[i] =
 s = ((s << 1) OR w[i]) AND 0x7FFFFF. The sequence starts with 18 zeros and then 5 ones. Its first 128 bits are
 `00003e000ffc03e0f8ffffce000c1c03` (hex, the first bit of each digit most significant).
 
-w is indexed by the slot's place in the frame, 5120b + i, and restarts at slot 0 in every frame. It depends on nothing
-else: not the payload, the frame number, the format or n. So at one picture size n, a smaller format's slots are a prefix
-of a larger format's that carries the same first blocks (LIZARD-256 against LIZARD-512 at n = 1024: 163,840 slots, all
-equal), and the same 473 bytes paint differently in different block positions. The period, 2^23 - 1, is longer than the
+w is indexed by the slot's place in the frame, 640 s_b + i, and restarts at slot 0 in every frame. It depends on
+nothing else: not the payload, the frame number, the format or n. So at one picture size n, the same block bytes in the
+same code at the same place paint the same slots in any format: a smaller format's slots are a prefix of a larger
+format's as far as their tiers agree (LIZARD-256 and LIZARD-512 share their first 12 blocks, the 7/8 ones, slot for
+slot; under one rate the whole of the smaller frame), and the same 473 bytes paint differently in different block
+positions. The period, 2^23 - 1, is longer than the
 largest frame (LIZARD-1024: 655,360 slots).
 
 **Why** (non-normative; STATUS.md, "The bit map", 2026-09-23). Unwhitened, the payload's own bits were the picture's
@@ -1662,7 +1730,8 @@ values of `focus.h:FOCUS_BITMAP_*` (NONE, WHITE, SPREAD, INNER) are lab settings
 
 ### 7.4 Test vector
 
-LIZARD-16 (n = 256, 2 blocks). Block b is the id b as uint32 little-endian, then 469 payload bytes, byte j = j mod 256:
+LIZARD-16 (n = 256, 2 blocks, one tier of 3/4 under the rate profile, so these are the 3/4 code's vectors). Block b
+is the id b as uint32 little-endian, then 469 payload bytes, byte j = j mod 256:
 
 ```
 block 0: 00 00 00 00 | 00 01 02 ... fe ff 00 01 ... d4
@@ -1950,9 +2019,12 @@ prose files (STATUS.md, 2026-10-05).
 Normative except 8.3 and 8.5. Sources: `liblizard/src/ldpc_base.h` `LDPC_BASE`; `liblizard/src/ldpc.h`; `liblizard/src/ldpc.c` `ldpc_init`,
 `ldpc_generate`, `count_cycles`, `ldpc_encode`; `liblizard/src/focus.h` `FOCUS_RATE`; `liblizard/src/focus.c` `init`.
 
-Every block uses one code: a quasi-cyclic irregular repeat-accumulate (QC-IRA) code of rate 3/4, H = [Hd | Hp]. Hd is
-built from 106 x 106 circulant permutation matrices; Hp is a bit-level accumulator (a staircase). The rate is not a
-parameter (`focus.h:FOCUS_RATE`, index 4 of the profile table in `ldpc.c`), and the format word does not carry it.
+A block's code is one of three quasi-cyclic irregular repeat-accumulate (QC-IRA) codes, H = [Hd | Hp], by its tier
+(3.1): rate 7/8 (z = 93), 3/4 (z = 106) and 1/2 (z = 160). Hd is built from z x z circulant permutation matrices; Hp is
+a bit-level accumulator (a staircase). The rates are the profile's, fixed by the version (`focus.c:focus_tiers_for`;
+indices 6, 4 and 2 of the profile table in `ldpc.c`), and the format word carries none. 8.1 to 8.5 give the 3/4 code,
+the one rate before 2026-10-07; 8.6 gives the 7/8 and 1/2 codes, which are built, encoded and decoded the same way at
+their own sizes.
 
 ### 8.1 Parameters
 
@@ -2090,7 +2162,8 @@ The C loops j2 and j3 over all 48 base columns. Columns 36 to 47 never hold a sh
 
 ### 8.4 Encoding
 
-Systematic and linear-time (`ldpc.c:ldpc_encode`). The codeword is the 3816 information bits, then p_0 to p_1271:
+Systematic and linear-time (`ldpc.c:ldpc_encode`). The codeword is the k information bits, then p_0 to p_(m-1) (at 3/4,
+3816 bits, then p_0 to p_1271):
 
 ```
 p_c = p_(c-1) XOR (XOR of the data bits in check c),    p_(-1) = 0
@@ -2115,19 +2188,20 @@ compute and scale its soft values any way it likes.
   to 80.
 - Positive means slot bit 0.
 
-**Per block**, slot order to codeword order: for i < 5088, L_code[1943 i mod 5088] = L_slot[i], negated where
-w[5120b + i] = 1. The 32 tail slots are dropped.
+**Per block**, slot order to codeword order: for i < n, L_code[st i mod n] = L_slot[i], negated where
+w[640 s_b + i] = 1 (at 3/4, L_code[1943 i mod 5088]). The tail slots are dropped. At 7/8 and 1/2 the information bits
+past the CRC, 3816 to k - 1, are fed as certain zeros (+127).
 
 **Decline gate.** Each sub-channel's information per coded bit is estimated as J(2 sqrt(A2 / N)), with ten Brink's
-approximation J(sigma) = (1 - 2^(-0.3073 sigma^1.787))^1.1064. A block's estimate is the mean over its 8 sub-channels.
-A block under 0.2 x k / n = 0.15 (`FOCUS_DECLINE`) is not decoded.
+approximation J(sigma) = (1 - 2^(-0.3073 sigma^1.787))^1.1064. A block's estimate is the mean over its sub-channels.
+A block under 0.2 x k / n (`FOCUS_DECLINE`: 0.175 at 7/8, 0.15 at 3/4, 0.10 at 1/2) is not decoded.
 
 **LDPC decoder**, layered normalised min-sum:
 
-- A layer is one block row. Its 106 checks share no bit, so they run side by side.
+- A layer is one block row. Its z checks share no bit, so they run side by side.
 - Check-to-bit messages are int8, magnitude at most 127. Posteriors are int16, clamped to [-8191, 8191].
 - min1 and min2 are scaled by 13/16, as (x x 13) >> 4.
-- The sweep over the 12 layers alternates direction every iteration, because the staircase carries parity information
+- The sweep over the mb layers alternates direction every iteration, because the staircase carries parity information
   only one step against the sweep per pass.
 - Check 0 has no parity bit c - 1. The layer feeds that slot as a certain 0 (posterior 8191).
 - Decoding stops when the syndrome is zero, after at most 30 iterations. A block whose count of unsatisfied checks after
@@ -2136,6 +2210,120 @@ A block under 0.2 x k / n = 0.15 (`FOCUS_DECLINE`) is not decoded.
 
 This describes `liblizard/src/ldpc.c` as of 2026-09-22 and `liblizard/src/focus.c` as of 2026-09-23. An LDPC early stop under test in the
 speed round has not landed; if it does, the stopping rule above changes and the format does not.
+
+### 8.6 The 7/8 and 1/2 codes
+
+The rate profile's other two codes (3.1), normative like the 3/4 code. Each is H = [Hd | Hp] as in 8.2, at its own z:
+codeword bit z j + t (t = 0 to z - 1) is bit t of data column j, codeword bit k + c is parity bit c, check c = mb i + r
+(r the block row, 0 to mb - 1, i the position, 0 to z - 1) holds data bit z j + ((i - sh[r][j]) mod z) for each shift
+of block row r, parity bit c - 1 when c > 0, and parity bit c. Encoding is 8.4's accumulator over the m checks.
+
+| | 7/8 | 1/2 |
+|---|---|---|
+| sub-channels a block, slots | 7, 4480 | 12, 7680 |
+| codeword n | 4464 = 48 z | 7680 = 48 z |
+| information k | 3906 = 42 z | 3840 = 24 z |
+| parity bits and checks m | 558 = 6 z | 3840 = 24 z |
+| lifting z | 93 | 160 |
+| base graph | 6 block rows, 42 data columns | 24 block rows, 24 data columns |
+| data column degree | 4 for columns 0 to 5, 3 for 6 to 41 | 8 for columns 0 to 9, 3 for 10 to 23 |
+| data circulants | 132, 22 in each block row | 122, 5 in each block row but rows 4 and 20, which have 6 |
+| check degree | 24: 22 data bits and 2 parity bits (check 0: 23) | 7, 8 in block rows 4 and 20 (check 0 one fewer) |
+| edges | 13,391 | 27,199 |
+| cycles of length 4 | none | none |
+| H, FNV-1a over row pointers and column indices (`liblizard/test/ldpc_table.c`) | d942b2a6 | 83296c5e |
+
+They were written out on 2026-10-07 from what `ldpc.c:ldpc_generate` made for (z = 93, rate index 6, seed 1) and
+(z = 160, rate index 2, seed 1): 8.3's construction with the profile table's rows 6 (6 block rows, 6 heavy columns of
+degree 4) and 2 (24 block rows, 10 heavy columns of degree 8), s starting at 2654435761 + 6 x 97 + 1 and + 2 x 97 + 1,
+md modulo z, and the loops over each code's own block rows and data columns. The reference ships them as
+`liblizard/src/ldpc_base.h:LDPC_BASE78` and `LDPC_BASE12`, which `ldpc_init` builds from, as it does the 3/4 code from
+`LDPC_BASE`; `liblizard/test/ldpc_table.c` holds all three to the generator and to the hashes above. 8.5 applies at each
+code's own z, mb and decline bar.
+
+**The 7/8 shift table** (a dash: no circulant):
+
+```
+r \ j   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17
+0      89  62   -  62   -  76  21   -   -  40  52   -   -  24  69   -   -  89
+1       8   -  62  72   -  32   -  77  71   -   -  54  64   -   -  57  45   -
+2       -  78  40   9  66   -  33   -  14   -  54   -   -  69   -  23   -  72
+3      39   -  64   -  34  53   -  92   -  89  24   -   3   -  72   -  32   -
+4      32  49   -  20  25   -   -  37   -  86   -  27   -  81   -  90  30   -
+5       -  36  25   -  33  28  21   -  45   -   -  34  29   -  27   -   -  82
+
+r \ j  18  19  20  21  22  23  24  25  26  27  28  29  30  31  32  33  34  35
+0      37   -  81   -   0   -  31   -   -   6  83   -  58   -   -  50   -  83
+1       -  43   -  30   6   -   -  35  32   -  11   -  81   -  84   -   -  58
+2      74   -  49   -   -  23   1   -   -  34   -  20  61   -  17   -   -  89
+3      19   -   -  41  18   -   -   3   -  82   0   -   -  11   -  26  42   -
+4       -  60  13   -   -  55   -  91   0   -   -  92   -  82  55   -  19   -
+5       -  51   -  30   -  24  83   -  55   -   -  58   -  78   -  39  57   -
+
+r \ j  36  37  38  39  40  41
+0       -  34  13   -   6   -
+1      31   -   -  51  23   -
+2       -  54  23   -  62   -
+3      47   -  85   -   -  70
+4      74   -   -  42   -  42
+5       -  70   -  89   -  28
+```
+
+**The 1/2 shift table**:
+
+```
+r \ j   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17
+0       -   - 126   -  13   -   -   -  99  31   -   -   -   -   -   -   - 148
+1       - 125   -   -   -  26 155   -   -  57   -   -   -   -   -   -   -   -
+2       -   -  31   -   -  10   -  26   -   -   -   -   -  27   -   -   -   -
+3       -   - 125   -   - 108   - 102   -   -  33   -   -   -   -  17   -   -
+4     138   -   - 142   -   - 108   -   -   -   - 144   -   -   -   -   -   -
+5      70   -   - 136   -   -   -   -  48   -   -   -  14   -   -   -   -   -
+6       -   -  83   - 124   -   -  97   - 136   -   -   -   -   -   -   -   -
+7     128   -   -  23   -   -  50   -   -   -   -  37   -   -   -   -   -   -
+8       - 131   -  71   -   -  93   -   -  62   -   -   -   -   -   -   -  64
+9     110   -   -   -  20   -   -   - 140   -   -   - 115   -   -   -  93   -
+10      -   -  15   -   -  93 112   -   -   -   -  12   -   -   -   -  42   -
+11      - 106   -  80   -   -   -  47   -   -  65   -   -   -   -   -   -  35
+12      -   - 150   -   - 122   -   -  15  96   -   -   -   -   -   -   -   -
+13     55   -   -   - 110   -   -   -  63   -   -   -   - 142   -   -   -   -
+14     85   -   -   -  69   -   -   - 157  15   -   -   -   -   -   -   -   -
+15      -   -   8   -   -  74  44   -   -   -   -   -   -   -   -  43 140   -
+16      - 124   -   - 127   -   - 120   -   -   -   -   -   -  90 142   -   -
+17      -  19   -   -   - 129   -   -   2 123   -   -   -   -   -   -   -   -
+18      -  89   -   -  27   - 107   -   -  23   -   -   -   -   -   -   -   -
+19      - 136   -   2   -   -   - 123   -   -   -   -   -   - 107   -   -   -
+20     10   -   -  93   -   - 134   -   -   -   -   -   -  69   -   -   -   -
+21    159   -   -  99   -   -   - 109   -   -   -   - 131   -   -   -   -   -
+22      - 108   -   -   - 135   - 145   -   -  41   -   -   -   -   -   -   -
+23      -   -   7   - 105   -   -   -  72   -   -   -   -   - 158   -   -   -
+
+r \ j  18  19  20  21  22  23
+0       -   -   -   -   -   -
+1      58   -   -   -   -   -
+2       -   -   -  67   -   -
+3       -   -   -   -   -   -
+4      70   -   -   -   - 133
+5      15   -   -   -   -   -
+6       -   -   -  52   -   -
+7       -   -   -   -  44   -
+8       -   -   -   -   -   -
+9       -   -   -   -   -   -
+10      -   -   -   -   -   -
+11      -   -   -   -   -   -
+12      -  67   -   -   -   -
+13      -   -   -   -  21   -
+14      -   - 121   -   -   -
+15      -   -   -   -   -   -
+16      -   -   -   -   -   -
+17      -   -   -  88   -   -
+18      -   -   -   -   -  19
+19      -   -   -   -  82   -
+20      -   - 120   -   - 104
+21      -  36   -   -   -   -
+22      -   -  48   -   -   -
+23      - 107   -   -   -   -
+```
 
 ## 9. Animation and transport (non-normative)
 
@@ -2163,7 +2351,7 @@ rate travels in the format word and the transfer's layout in its blocks (7.5 to 
   - **Control blocks.** Slot 0 of a frame, block 0, the lowest ring and the last a frame loses, carries a control block
     once `every` data blocks have gone since the last one: the header on even turns and the manifest's blocks in turn
     on odd ones. every = 63 (1.6% of the airtime), or lap / (8 m) data blocks when that is less, m the manifest blocks
-    (at least 1), so a short file gets them more often. At LIZARD-512, 64 blocks a frame, that is a control block every
+    (at least 1), so a short file gets them more often. At LIZARD-512, 61 blocks a frame, that is a control block every
     frame and the header every other frame. An empty file's frames are all header.
   - **Shuffle.** Each frame's data slots are shuffled (Fisher-Yates, xorshift32 seeded from the frame count), because
     slot k is ring k, and a round robin whose chunk count divides the frame's would pin a chunk to rings a distant
@@ -2366,7 +2554,9 @@ trained classifier find the corner marks, votes along the symbol's diagonals fin
 every quad, orientation and ring (`liblizard/gpu/wgsl/finder.mjs` `RING_COUNT` 4, 128 hypotheses: 4 quads x 8 orientations x 4
 rings), PICK picks the ring, the border nodes are refitted against that ring's nodes, the word is read and the picture
 sampled, and a back half on the device does the transform with the detrend, the soft values and the decline gate, the
-LDPC and the CRC-32. The format's tables come from the wasm codec at start: the rings' borders (built at n = 256 in each
+LDPC and the CRC-32. The rate profile is one stage there (`liblizard/gpu/back/tiers.mjs`,
+`liblizard/gpu/wgsl/back_tiers.mjs`): every version's tiers a row of a table, each block's soft values, estimate,
+decline and pilot over its own sub-channels and code, a dispatch a code. The format's tables come from the wasm codec at start: the rings' borders (built at n = 256 in each
 ring) and the pictures apart (`liblizard/gpu/tables.mjs` `formatTables()` returns `{ rings, pictures }`, the pictures from
 `liblizard/sim/lizard_pick.mjs` `PICTURE_SIZES`; a frame's sample grid is its (ring, picture) pair's, `gridOf`). A device with
 32 KB of workgroup memory and no `shader-f16` builds no 1536 picture (pass 1 needs 33,792 B in f32), as it built no
@@ -2423,6 +2613,7 @@ simulator sweep. Every figure is from STATUS.md unless its line says it was meas
 | The GPU decoder at those sizes: LIZARD-192 at 1080, 5.53 ms of compute a frame at 768 against 5.68 at 1024 (pass 1 0.545 against 0.744), 1,152 of 1,152 blocks in both; LIZARD-1024 at 2160, 16.25 at 1536 against 18.21 at 2048 (pass 1 1.85 against 3.78), 6,024 against 6,035 of 6,144 blocks; bad 0 | the desktop's two-CU RDNA-2 iGPU, f16, 48 synthetic frames a cell, one cell each, batch auto, two rounds interleaved (means), the cancel stage off; tree copies with `PICTURE_SIZES` edited; 2026-09-27 | desktop |
 | Encode: LIZARD-1024 takes 17.5 ms in C (`focus_tx`) and 19.2 ms with the RGBA, so a 60 fps sender misses its frame by about 3 ms | node on the desktop, the n / 8 + 60 border | desktop |
 | Rate: 7/8 everywhere is +10% where the capture matches the sender's assumption and -42% at 360 px | ten test cells (`liblizard/src/focus.h`, `FOCUS_RATE`) | simulator |
+| The rate profile against one rate 3/4 at the same sub-channel count: +17.5% bytes a frame read at LIZARD-432 under the profile (7/8 x 20, 3/4 x 20, 1/2 x 11), +25% at LIZARD-416 under one of its shape (7/8 x 16, 3/4 x 20, 1/2 x 12), though they offer 5.6 and 7.7% fewer blocks; 7/8 everywhere 33 to 36% less | `scripts/exp/rate_tiers.mjs`: two recorded 2:1 captures of one phone (S26 Ultra at 1080, zoom 1.5, 960 x 960 halves, 236 and 299 frames whose bytes are known), each frame's residuals re-modulated under each profile and read by the C decoder's own soft values and LDPC (the one-rate profile through this path reads the real decode's bytes exactly); one phone, one distance; 2026-10-07 | phone recording |
 | Bit map: whitening took a frame of 100-byte payloads from 6 of 64 blocks to 64; at 8 px of motion blur LINEAR reads 870 B a frame against 674 in order (LIZARD-64) and 791 against 557 (LIZARD-128) | 48 frames (`liblizard/src/focus.h`, `FOCUS_BITMAP`) | simulator |
 | n / 8 + 60 against n / 4 + 30: useful bytes summed over 17 test cells -1% (LIZARD-16) to -13% (LIZARD-560), the losses where the picture is short of pixels; more frames registered at the far end and at 45 degrees | 6 frames a test cell, told receiver | simulator |
 | A file in chunks through the rig's pages, the header from the light: 98.3% of the one fountain's rate at 10 MB and 98.7% at 600 KB (the control blocks are 1.6% of the airtime); 64 MB, past what one fountain carries, in 16 chunks at 698.3 KB/s, 97.0% of the 720.1 KB/s the display painted; the receiver about 40 MB with the blocks in OPFS, 230 MB with them in memory | `lizard-web/check_rates.mjs`: a clean synthetic clip, display 24 fps, camera 30, headless desktop Chrome, the header kept off the network, the file held to BLAKE3 by two implementations; LIZARD-96 at 1280 x 720, LIZARD-512 at 2560 x 1440; no phone; OPFS tried in Chrome only; 2026-09-24 | desktop |
@@ -2436,7 +2627,7 @@ Each of these was built and measured, or decided. The reason given is the one on
 | decision | reason | record |
 |---|---|---|
 | The ladder is every multiple of 16 from LIZARD-16 to LIZARD-1024: 64 formats, version = blocks a frame, versions 2 to 128; the names stay under the rings (every whole number of blocks since 2026-10-01, next row) | a symbol a computer paints can afford more versions than QR's 40 (2026-09-23); it replaced the five formats of 2026-09-21; LIZARD-k already states the sub-channel count (2026-09-27) | STATUS "64 formats" |
-| Every whole number of blocks, 1 to 128, a slider on the sender in place of the menu of 64 | one block (8 sub-channels) is the smallest step the word names | 2026-10-01; `liblizard/sim/lizard_pick.mjs:VERSIONS`, `lizard-web/send.html` |
+| Every whole number of blocks, 1 to 128, a slider on the sender in place of the menu of 64 | one version (8 sub-channels) is the smallest step the word names; the blocks a frame are the rate profile's since 2026-10-07 | 2026-10-01; `liblizard/sim/lizard_pick.mjs:VERSIONS`, `lizard-web/send.html` |
 | The largest picture (LIZARD-576 to -1024; n = 1536 since 2026-09-27, 2048 before) is for fixed rigs; apps are advised to stop at LIZARD-560; the library does not cap | a 2048 picture doubles decode and heap and stops dead under blur where 1024 degrades (both measured on the 542-module border, section 11; neither measured at 1536); the library's picker takes the largest format a room holds, so in the default ring any room of 1,170.6 device px or more gets the largest picture | 2026-09-23; `liblizard/sim/lizard_pick.mjs:ROOM_FOR` |
 | The picture size is the first of 256, 384, 512, 768, 1024 and 1536 with n >= 3R: 2^k and 3 x 2^k, each at most 1.5 times the one before; a 3 x 2^k transform takes one radix-3 stage, and every power of two stays radix 2 | on the powers of two each step gave a format four times the samples for one more block (LIZARD-144 at n / 2R = 2.99); at the smaller sizes the simulator read 0.85% fewer blocks, the C's sampler and transform took 0.62 to 0.69 of their time, and the iGPU 2.6 and 10.8% less compute a frame (section 11); no format moved a coefficient or its ring | 2026-09-27; STATUS "Picture sizes between the powers of two"; 3.2 |
 | Four rings: the band holds B = 32, 64, 96 or 128 cells of 2 x 2 modules a side, a side is 2B + 30 modules (94, 158, 222, 286), the picture spans 2B; any ring may carry any picture | the ring bootstraps what is inside, and versions collapse (the rows below) | 2026-09-27 (three rings that morning, four that evening); STATUS "Three rings: the ring bootstraps what is inside, versions collapse" |
@@ -2451,12 +2642,12 @@ Each of these was built and measured, or decided. The reason given is the one on
 | The word carries the display rate | the one property of an animated symbol that no single frame shows | `liblizard/src/fmt.h` |
 | The margin, 2 modules of light, is part of the symbol, and the codec paints it (`FOCUS_QUIET`) | the finder assumes light outside the ring: noise up to the ring cost LIZARD-256 73 to 96% of its blocks; in the codec, every encoder built from `liblizard/src/` paints it and no JS keeps a copy | 2026-09-23 and 2026-09-24; `liblizard/src/focus.h` |
 | Only ladder versions are painted; a receiver reads any version the word states, with no flag; the codec refuses a symbol past LIZARD-1024 | an odd version is unsupported; past version 128 the word cannot name the symbol | 2026-09-24; `liblizard/sim/lizard_pick.mjs:VERSIONS`, `liblizard/src/focus.c:init` |
-| H is the printed shift table, `liblizard/src/ldpc_base.h`, not a construction | with H generated at start-up, a change to the profile, the seed or the cycle score would have changed the format without warning | 2026-09-24; 8.2 |
+| H is the printed shift table, `liblizard/src/ldpc_base.h`, not a construction (the 7/8 and 1/2 codes' too since 2026-10-07) | with H generated at start-up, a change to the profile, the seed or the cycle score would have changed the format without warning | 2026-09-24; 8.2, 8.6 |
 | The transfer is in the light: the block id as 14 bits of chunk over 18 of fountain symbol, a header block, manifest blocks, and chunks of 2^10 to 2^24 bytes each verified by BLAKE3 against the file's root | a camera alone recovers a file; a chunk aligned at its own size is a subtree of BLAKE3's tree, so each is checked on arrival, as Bao and iroh stream; one fountain stops at 30 MB | 2026-09-24; `liblizard/src/xfer.h` |
 | The rig's sender interleaves every chunk over the whole file, laps with fresh repair ids, not chunks in turn | in turn needs a budget per chunk a lap, since nothing says a chunk arrived: counted over 64 MB at LIZARD-512, 15% random loss took 1.18 laps interleaved against 1.25 to 2.18 in turn, and nothing lost 1.001 against 1.10 to 1.49 | STATUS 2026-09-24; a count, not a camera |
 | No guard ring: the symbol ends at its 2-module margin | the ring round the margin was a sender option (2026-09-23) that recovered part of what noise at the ring cost, not the line fallback's cells; judged useless | 2026-09-26 |
 | Luminance only: grey levels, never colour; two brand colours are allowed as a luma ramp under the palette rule | colour is what made cimbar unreliable | project rules |
-| One code rate, 3/4 | the rate is a bet on a capture the sender cannot see, and 3/4 sits between the two failure modes; other rates, rates by frequency ring and cycling plans each lose on one side | `liblizard/src/focus.h:FOCUS_RATE` |
+| The code rate follows the frequency: the rate profile, 7/8 inner, 3/4 between, 1/2 outer, a function of the sub-channel count (3.1) | a capture's signal-to-noise ratio falls with the frequency, and on recorded phone captures re-modulated under each profile it read +17.5 and +25% bytes a frame over one rate (section 11). One rate 3/4 was the format before 2026-10-07: the rate a bet on a capture the sender cannot see, after profiles set on the simulator lost 4 to 16% where the capture did not match them; the recorded channel's own noise settled it the other way | 2026-10-07; `liblizard/src/focus.c:focus_tiers_for` |
 | The bit map is LINEAR, whitened, and the only one, so the word names none | whitening fixes small payloads; LINEAR spreads every run of the code across the block; the word has no free bit for a mode, and the other modes are lab settings | `liblizard/src/focus.h:FOCUS_BITMAP`; 2026-09-24 |
 | The format is never gated on a decoder | a weak decoder is fixed; it never decides or reverts a format choice | 2026-09-23; section 2 |
 | Lizard over the binary grid code | not throughput (the binary code is ahead above its cliff): Lizard degrades where the binary code stops dead; no further work on the binary code, which `scripts/exp/` still reaches through `liblizard/sim/phy.mjs`; the rig has no path for it since 2026-09-26 (its receiver was told by the server) | 2026-09-20 and 2026-09-26 |
@@ -2616,11 +2807,22 @@ number so references to the others hold.
     camera's loss against the interleaved schedule, OPFS in Firefox or Safari, or a phone's BLAKE3 and Wirehair
     solve times. The sender holds every chunk's encoder, about 1.75 times the file in Wirehair's heap, which puts its
     limit at a few hundred MB; not measured on a phone either.
+27. The rate profile beyond one phone at 1080. Its split (about 32% of the sub-channels at 7/8 inside, 30% at 1/2
+    outside) was set on two recorded captures of one phone at one distance and zoom (section 11). At 720p or at range
+    the outer sub-channels read worse and the knee moves inward; a profile set for one capture lost 4 to 16% where the
+    capture did not match it on the simulator (research/10). A second phone and a capture at range are owed.
 
 ## 14. Changes since the 2026-09-22 spec
 
 The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
 
+- **The rate profile** (2026-10-07). Every block was coded at rate 3/4 on 8 sub-channels, and a frame of version V
+  carried V blocks. The rate now follows the frequency: 7/8 on 7 sub-channels a block in the inner tier, 3/4 on 8 in the
+  middle, 1/2 on 12 in the outer, by the sub-channel count alone (3.1), so a frame carries B(V) blocks: V up to LIZARD-80,
+  at most 7 fewer above (121 at LIZARD-1024). The word is unchanged: the version names the size, and the profile follows
+  from it. The 7/8 and 1/2 codes are printed tables as the 3/4 code is (8.6). The pilots ride in the 7/8 and 3/4
+  blocks' tails; a 1/2 block has none (7.3). A one-rate frame of LIZARD-48 or more, painted before, reads as the profile
+  today and decodes nothing; LIZARD-8 to -40 are unchanged.
 - **Every whole number of blocks** (2026-10-01). The 64 formats by 16 became 128 by 8, versions 1 to 128, all of which the word
   already named and every receiver already read; the reference sender sets blocks a frame on a slider (3.1, 5.1). Tables
   below that list 64 formats list the ladder as it was.

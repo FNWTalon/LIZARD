@@ -82,7 +82,10 @@ export async function transformTables(sizes) {
     // focus_setup puts the format's own bit map in place, so a size that names none gets that (a replay of a
     // recording names its own, 0 before the bit map existed).
     const fc = new Focus(n, subch, 1), bitmap = z.bitmap ?? fc.bitmap;
-    const shape = fc.shape(), pos = fc.posTable(), tab = fc.tables(), code = fc.ldpcCode().code;
+    // ai: blocks here are 8-sub-channel chunks, the gate's unit: a frame's version, whose rows and soft values a
+    // ai: profile does not change (2026-10-07: the format's rate profile, src/focus.h focus_tiers_for, gives a frame
+    // ai: fewer blocks than chunks, gpu/back/tiers.mjs); code is the 3/4 code the one-rate stages are built with
+    const shape = { ...fc.shape(), blocks: subch / 8 }, pos = fc.posTable(), tab = fc.tables();
     const disc = discLayout(shape, pos), rowsBy = rowsByCount(shape, pos);
     if (rowsBy[shape.blocks] !== disc.V) throw new Error(`${n}/${subch}: the blocks take ${rowsBy[shape.blocks]} rows of the disc's ${disc.V}`);
     const x12 = new Float32Array(4 * n), tw = new Float32Array(2 * n);
@@ -90,6 +93,8 @@ export async function transformTables(sizes) {
     for (let m = 0; m < n; m++) { const th = -2 * Math.PI * m / n; tw[2 * m] = Math.cos(th); tw[2 * m + 1] = Math.sin(th); }
     const sx2 = tab[6 * n], sq2 = tab[6 * n + 1];
     fc.free();
+    const one = new Focus(256, 8, 1), code = one.ldpcCode().code;
+    one.free();
     return { n, subch, bitmap, blocks: shape.blocks, code, shape, pos, V: disc.V, rowsBy, rows: disc.rows, off: disc.off, UV: disc.UV, UC: disc.UC, npos: shape.npos, x12, tw, sx2, sq2, m2: sx2 / n, cx: tab.slice(0, n), qx: tab.slice(n, 2 * n) };
   });
 }

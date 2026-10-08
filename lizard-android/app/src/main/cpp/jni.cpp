@@ -844,9 +844,6 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txConfigure
   f.aheadBytes = 96ull << 20;
   f.margin = 2;
   f.hostFrames = !(tx(h)->gpuExpand && vsynced == JNI_TRUE);
-  // ai: LIZ_TIERS (debug.lizard.env; the lab's rate-by-ring arm, 2026-10-07): the profile painted in place of the
-  // ai: format asked for (TxFormat.tiers); the screen's capacity figure still counts the blocks it asked for
-  if (const char* t = getenv("LIZ_TIERS"); t && *t) f.tiers = t;
   tx(h)->fps = fps;
   tx(h)->assets = f.assets;
   return e->NewStringUTF(tx(h)->s->configure(f).c_str());
@@ -905,6 +902,9 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txPostStats
 }
 
 extern "C" JNIEXPORT jint JNICALL Java_dev_lizard_receiver_Native_txSide(JNIEnv*, jclass, jlong h) { return tx(h)->s->side(); }
+// ai: The blocks a frame of subch sub-channels carries under the format's rate profile (src/focus.h focus_blocks_for),
+// ai: for the Blocks slider's figures before a configure
+extern "C" JNIEXPORT jint JNICALL Java_dev_lizard_receiver_Native_blocksFor(JNIEnv*, jclass, jint subch) { return focus_blocks_for(subch); }
 
 // ai: The next frame onto the surface, if it is painted: true when one was posted. On the main thread, at the display's
 // ai: pace (Send.kt's Choreographer); a surface other than the last one is taken up afresh. vsync: the frame timeline's

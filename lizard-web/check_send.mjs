@@ -61,7 +61,7 @@ import { makePhy, blindSpec } from "../liblizard/sim/phy.mjs";
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { init as initWh, Decoder } from "../liblizard/sim/fountain.mjs";
 import { XferReceiver, MemoryStore, ID_HEADER, blake3, hex } from "../liblizard/sim/xfer.mjs";
-import { N_FOR, NAME, SPAN, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion } from "../liblizard/sim/lizard_pick.mjs";
+import { N_FOR, NAME, SPAN, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor } from "../liblizard/sim/lizard_pick.mjs";
 import { tabs, open, evaluate, navigate } from "./phone.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("./..", import.meta.url))), PAD = 32, FPS = 24, FILE_BYTES = 50000, GRABS = 60, GPU = process.env.ENC === "gpu";
@@ -244,7 +244,9 @@ for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file
     const n2 = `${name}, the gap moved to ${c.regap} while running`;
     console.log(`${n2}: ${((Date.now() - t0) / 1000).toFixed(1)} s, gap ${mods.toFixed(2)} modules, halves ${o.halves.map((h) => `version ${h.fmt?.version ?? "none"} ${h.seen} verified ${h.bad} bad`).join(", ")}`);
     if (Math.abs(mods - c.regap) > 0.5) faults.push(`${n2}: the gap is ${mods.toFixed(2)} modules after 5 s`);
-    for (const [k, h] of o.halves.entries()) if (!(h.fmt && h.seen > 0 && h.bad === 0 && h.seen === h.fmt.version)) faults.push(`${n2}: half ${k} read ${h.seen} blocks, ${h.bad} bad, word ${h.fmt ? h.fmt.version : "none"}`);
+    // ai: every block of the half: the format's rate profile's count for the version its word names (2026-10-07;
+    // ai: the version itself before, one 8-sub-channel block a version)
+    for (const [k, h] of o.halves.entries()) if (!(h.fmt && h.seen > 0 && h.bad === 0 && h.seen === blocksFor(8 * h.fmt.version))) faults.push(`${n2}: half ${k} read ${h.seen} blocks of ${h.fmt ? blocksFor(8 * h.fmt.version) : "?"}, ${h.bad} bad, word ${h.fmt ? h.fmt.version : "none"}`);
     if (o.g.w !== 2 * o.g.h + o.g.gap) faults.push(`${n2}: the canvas is ${o.g.w} x ${o.g.h}, not two squares ${o.g.gap} px apart`);
   }
 }

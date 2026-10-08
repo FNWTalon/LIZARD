@@ -169,11 +169,11 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
 @Composable
 private fun BlocksField(s: SendState) {
     val auto = s.blocks == 0
-    val b = if (auto) s.autoBlocks else s.blocks
-    // ai: under a rate profile (LIZ_TIERS, 2026-10-07) the slider is not read: the profile and the blocks it paints
-    val profile = System.getenv("LIZ_TIERS").orEmpty()
-    Field("Blocks", if (s.tiers.isNotEmpty()) "${s.tiers}: ${Fmt.blocks(s.sentBlocks)}" else if (profile.isNotEmpty()) profile
-        else if (auto) (if (b > 0) "Auto, ${Fmt.blocks(b)}" else "Auto") else Fmt.blocks(b)) {
+    // ai: the slider sets the format's size (its sub-channels / 8); the title is the blocks that size carries under the
+    // ai: format's rate profile, and their bytes (2026-10-07: 51 blocks at the slider's 54)
+    val v = if (auto) s.autoBlocks else s.blocks
+    val b = if (v > 0) Native.blocksFor(8 * v) else 0
+    Field("Blocks", if (auto) (if (b > 0) "Auto, ${Fmt.blocks(b)}" else "Auto") else Fmt.blocks(b)) {
         Bar(s.blocks.toFloat(), 0f..128f, 127, done = { s.repick() }) { s.chooseBlocks(it.roundToInt()) }
     }
 }

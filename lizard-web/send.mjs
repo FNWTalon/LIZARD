@@ -7,7 +7,7 @@
 // ai: ids the URL presets.
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { DEFAULT_LOG2 } from "../liblizard/sim/xfer.mjs";
-import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, versionOf } from "../liblizard/sim/lizard_pick.mjs";
+import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, versionOf, blocksFor } from "../liblizard/sim/lizard_pick.mjs";
 import { GAP_MODULES } from "../liblizard/gpu/encoder.mjs";
 import { logPost } from "./devlog.mjs";
 import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, collapser, sideResizer } from "./ui.mjs";
@@ -206,8 +206,9 @@ function showBlocks() {
   $("blocksOut").textContent = auto ? (b ? `Auto, ${blocksText(b)}` : "Auto") : blocksText(b);
 }
 // ai: the title says "Blocks a frame", so the value is the count and its bytes alone, which fit beside it in the 20rem column
-// ai: "60, 28.1 KB": the count and what a frame holds, under the title "Blocks" (2026-10-05; "60 blocks, ..." before)
-const blocksText = (b) => `${b}, ${((b * 469) / 1000).toFixed(1)} KB`;
+// ai: "57, 26.7 KB": the blocks a frame of the slider's size carries (the format's rate profile, 2026-10-07: 57 at
+// ai: its 60) and what they hold, under the title "Blocks" (2026-10-05; "60 blocks, ..." before)
+const blocksText = (v) => { const b = blocksFor(8 * v); return `${b}, ${((b * 469) / 1000).toFixed(1)} KB`; };
 $("blocks").addEventListener("input", () => { const v = +$("blocks").value; $("blocksOut").textContent = v ? blocksText(v) : "Auto"; });
 $("blocks").addEventListener("change", () => { const v = +$("blocks").value; $("subch").value = v ? String(8 * v) : "auto"; $("subch").dispatchEvent(new Event("change")); });
 $("subch").addEventListener("change", showBlocks);
@@ -481,7 +482,7 @@ async function start() {
   const auto = () => {
     const r = room(), squeezed = SAMPLES(shown.n, ringOf(shown)) > r;
     const how = $("subch").value !== "auto" ? ", set by hand" : `, chosen from a ${r.toFixed(0)} px window and nothing else`;
-    return `\n${NAME(shown.subch)} (${versionOf(shown.subch)} blocks), picture ${shown.n} samples in the ${RINGS[ringOf(shown)]}-cell ring${how}` +
+    return `\n${NAME(shown.subch)} (${blocksFor(shown.subch)} blocks), picture ${shown.n} samples in the ${RINGS[ringOf(shown)]}-cell ring${how}` +
       (squeezed ? `\nshown at ${(r / SAMPLES(shown.n, ringOf(shown))).toFixed(2)} device px a sample, so the page is downscaling. That is fine while it AVERAGES; painting nearest drops samples.` : "");
   };
   // ai: The test stream starts at a random id each start (under 2^30, clear of the control ids), so a receiver that saw an
@@ -552,7 +553,7 @@ async function start() {
         `\nworker ${ahead.size} ready ahead, ${behind} animation frames found nothing ready\nanimation frames ${afps.toFixed(1)} a second, the screen ${(1000 / tickMs).toFixed(1)} Hz by their intervals; pictures held 1, 2, 3, 4+ refreshes: ${held.join(", ")}\n${encLine}`;
       $("tx").textContent = line;
       offeredKBs = (painted / dt) * cfg.codes * cfg.blocksPerFrame * cfg.usefulBytes / 1000;
-      // ai: #tx's first line names the format (auto(): "LIZARD-480 (60 blocks), picture ..."; the lab line #lab did until
+      // ai: #tx's first line names the format (auto(): "LIZARD-480 (57 blocks), picture ..."; the lab line #lab did until
       // ai: 2026-10-02, repeating #nums' rate and pass: deleted). The user's figure (#nums): the offered rate alone (the
       // ai: pass went to #tx on 2026-10-05).
       $("nums").textContent = rate(offeredKBs);
