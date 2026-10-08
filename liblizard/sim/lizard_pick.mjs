@@ -76,7 +76,23 @@ export const PAINTED_MARGIN = () => {
 // ai: step a symbol can take; the 64 of 16 to 1024 by 16 before.
 export const VERSIONS = Array.from({ length: 128 }, (_, i) => 8 * (i + 1));
 export const NAME = (subch) => `LIZARD-${subch}`;
-export const versionOf = (subch) => subch / 8;   // blocks a frame; also what the format word carries
+export const versionOf = (subch) => subch / 8;   // what the format word carries; the blocks a frame are blocksFor's
+// ai: The format's rate profile (2026-10-07; src/focus.c focus_tiers_for, the same integers): [[rate, blocks, subs],
+// ai: ...] inner first, 7/8 blocks of 7 sub-channels on about TIER_IN percent of them, 1/2 blocks of 12 on about the
+// ai: outer TIER_OUT percent, 3/4 blocks of 8 between; [] for a count that is no format's. blocksFor: the blocks a
+// ai: frame carries, each 473 B.
+export const TIER_IN = 32, TIER_OUT = 30;
+export function tiersFor(subch) {
+  if (subch < 8 || subch % 8 || subch > 1024) return [];
+  let best = -1, ba = 0, bc = 0;
+  for (let a = 0; 7 * a <= subch - 8; a++) for (let c = 0; 7 * a + 12 * c <= subch - 8; c++) {
+    if ((subch - 7 * a - 12 * c) % 8) continue;
+    const d7 = 700 * a - TIER_IN * subch, d2 = 1200 * c - TIER_OUT * subch, cost = d7 * d7 + d2 * d2;
+    if (best < 0 || cost < best) { best = cost; ba = a; bc = c; }
+  }
+  return [...(ba ? [[6, ba, 7]] : []), [4, (subch - 7 * ba - 12 * bc) / 8, 8], ...(bc ? [[2, bc, 12]] : [])];
+}
+export const blocksFor = (subch) => tiersFor(subch).reduce((n, [, b]) => n + b, 0);
 // The border in modules a side, which src/focus.c sets as the corner mark's own size plus the guard interval,
 // because the border grows OUTWARDS to hold its marks and nothing ever reaches into the picture.
 export const OB_MARGIN = 12 + 3;

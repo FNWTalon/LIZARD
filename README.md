@@ -3,7 +3,8 @@
 LIZARD is an animated 2D code for moving files from a screen to a phone camera: a sender shows a stream of grey
 pictures, and a receiver films them and rebuilds the file. Each frame is a grey picture whose spectrum carries the
 data (an OFDM-style design derived from Focus, Hermans et al., MobiSys 2016), inside a self-describing border. Blocks
-are protected by a soft-decision LDPC code and a CRC, and a file goes as chunks of a fountain code, each chunk
+are protected by a soft-decision LDPC code whose rate follows the frequency (7/8 on the lowest, where a capture holds
+the most, 1/2 on the highest) and a CRC, and a file goes as chunks of a fountain code, each chunk
 compressed with zstd where that makes it smaller and each verified by BLAKE3 against the file's root.
 
 - **Demo:** [fosslabs.dev](https://fosslabs.dev)
@@ -27,7 +28,8 @@ and the author's monitors:
 | receiver | rate |
 |---|---|
 | Android app, one code | 1.3 to 1.6 MB/s logged |
-| Android app, two codes side by side (2:1 crop) | up to 3 MB/s on a 1080p monitor (logged: 2.8 sustained, 2.9 peaks, 50 of 60 blocks a capture at 99% of what the sender offered, the camera's image enhancements off; 2.0 to 2.2 with them on) |
+| Android app, two codes side by side (2:1 crop), the rate following the frequency | 3.4 MB/s and up on a 1080p monitor: two LIZARD-568 codes of 67 blocks each at 60 pictures a second, about 90% of what the sender offers (by hand, not yet logged) |
+| the same, one code rate (before 2026-10-07) | up to 3 MB/s on a 1080p monitor (logged: 2.8 sustained, 2.9 peaks, 50 of 60 blocks a capture at 99% of what the sender offered, the camera's image enhancements off; 2.0 to 2.2 with them on) |
 | Chrome on the same phone | about 0.55 to 0.8 MB/s |
 
 Once the Android app's phase lock holds, the rate stays: on a tripod, a 150 s hold of the lock before the pilots read

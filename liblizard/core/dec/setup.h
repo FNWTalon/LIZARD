@@ -55,9 +55,6 @@ struct Setup {
   // ai: The front half's objects and the back half at batch size B, built (a back half built before is dropped).
   void build(int B);
   void buildBack(int B);
-  // ai: The rate profile whose stage a back half builds (gpu/back/tiers.mjs; the back's "tiers" by this key, the
-  // ai: lab's rate-by-ring arm, 2026-10-07): "" none, and no profile's objects are made.
-  std::string tiersKey;
   const json& back() const { return tree["backs"][std::to_string(backB)]; }
   int backB = 0;
 

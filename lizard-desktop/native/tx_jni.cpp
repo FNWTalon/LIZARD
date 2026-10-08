@@ -148,9 +148,6 @@ FN(jstring, txConfigure)(JNIEnv* e, jclass, jlong h, jint n, jint subch, jint sp
   f.aheadSecs = 1.0;
   f.aheadBytes = 256ull << 20;
   f.margin = 9;
-  // ai: LIZ_TIERS in the app's environment (the lab's rate-by-ring arm, 2026-10-07): the profile painted in place of
-  // ai: the format asked for (TxFormat.tiers); the window's figures still count the blocks it asked for
-  if (const char* t = getenv("LIZ_TIERS"); t && *t) f.tiers = t;
   std::string r;
   // ai: no C++ exception crosses into the JVM (a thread or an allocation refused inside configure would abort it):
   // ai: the reason comes back as the refusal (2026-10-04)
@@ -165,6 +162,9 @@ FN(jstring, txConfigure)(JNIEnv* e, jclass, jlong h, jint n, jint subch, jint sp
   return e->NewStringUTF(r.c_str());
 }
 
+// ai: The blocks a frame of subch sub-channels carries under the format's rate profile (src/focus.h focus_blocks_for),
+// ai: for the Blocks slider's figures before a configure
+FN(jint, blocksFor)(JNIEnv*, jclass, jint subch) { return focus_blocks_for(subch); }
 FN(jint, txSide)(JNIEnv*, jclass, jlong h) {
   std::lock_guard<std::mutex> l(tx(h)->mu);
   return tx(h)->s->side();

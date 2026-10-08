@@ -18,6 +18,8 @@ object Native {
     // ai: painter: 0 the CPU, 1 the GPU, 2 auto; gap: modules between two codes; "" or the refusal
     @JvmStatic external fun txConfigure(h: Long, n: Int, subch: Int, span: Int, fps: Int, codes: Int, gap: Int, threads: Int, painter: Int, assets: String): String
     @JvmStatic external fun txSide(h: Long): Int
+    // ai: the blocks a frame of subch sub-channels carries (the format's rate profile, src/focus.h focus_blocks_for)
+    @JvmStatic external fun blocksFor(subch: Int): Int
     @JvmStatic external fun txWidth(h: Long): Int
     @JvmStatic external fun txReady(h: Long): Boolean
     @JvmStatic external fun txStats(h: Long): String

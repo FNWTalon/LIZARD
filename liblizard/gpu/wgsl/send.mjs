@@ -1,6 +1,8 @@
-// ai: The sender's GPU encoder after the inverse transform (gpu/encoder.mjs; 2026-09-29, as the sender has lagged at
-// ai: LIZARD-1024; bit exact only in the ring). The picture comes from wgsl/cancel_paint.mjs in its "send" mode: PIC,
-// ai: n x n f32 a symbol in 0..1, clipped. Three shaders, the C's arithmetic (src/focus.c resample, focus_paint_rgba):
+// ai: The sender's GPU encoder (gpu/encoder.mjs; 2026-09-29, as the sender has lagged at LIZARD-1024; bit exact only in
+// ai: the ring): PAINT, a block's codeword onto the disc (below, 2026-10-07: every code of the format's rate profile;
+// ai: wgsl/cancel_paint.mjs's send mode, one code, until then), then the inverse transforms (wgsl/cancel_paint.mjs
+// ai: irows and ipic in their "send" mode: PIC, n x n f32 a symbol in 0..1, clipped), then three shaders, the C's
+// ai: arithmetic (src/focus.c resample, focus_paint_rgba):
 // ai: TPOSE, the picture row-major: ipic leaves it quad-major (PICQ[x / 4][y], four columns' rows consecutive, so its
 // ai:   stores are whole lines); a tile of 16 quads by 16 rows a workgroup through workgroup memory, read a quad's 16
 // ai:   rows (256 B) at a time and written a row's 16 quads at a time, so both sides move whole lines.
@@ -23,6 +25,9 @@
 // ai: PRESENT, a render pass onto the canvas: pixel (x, y) shows the frame's byte (x / whole, y / whole), grey.
 // ai: The tolerance: the square within one grey level of the C's (its FFT's rounding differs), the border equal.
 
+import { CRC_SPLIT, PARAMS_STRUCT } from "./back_ldpc.mjs";
+import { KNOWN } from "./back_tiers.mjs";
+
 export const TPOSE_TILE = 16;
 export const RSV_THREADS = 64;
 export const RSH_THREADS = 64;
@@ -37,6 +42,162 @@ export const RSH_THREADS = 64;
 const G = /* wgsl */ `
 struct G { a: vec4u, b: vec4u, c: vec4u }
 `;
+
+// ai: PAINT, a workgroup a (block, symbol), 128 threads (src/focus.c focus_encode and map_out, the C's arithmetic
+// ai: exactly): the block's 473 payload bytes from BLOCKS, their CRC-32 (the LDPC's split CRC), its code's systematic
+// ai: codeword (the data bits, zeros past the 477 B where the code holds more, then the m parity bits: the IRA
+// ai: accumulator, a prefix XOR over the checks in check order, a lane ceil(m / 128) of them), its slots (slot i the
+// ai: codeword bit its code's bit map names, a slot past the codeword a bit of its frame's count: the pilots; each
+// ai: XOR the whitening at its slot of the frame) and the QPSK coefficients (+-a a bit, a = 0.70710678, amp 1 at
+// ai: tilt 0) into the symbol's disc in S at the UV entries. A block's code and first sub-channel come from its tier
+// ai: (src/focus.h focus_tiers_for: 7/8 blocks of 7 sub-channels, 3/4 of 8, 1/2 of 12, from the lowest frequencies
+// ai: out), the codes' shapes and tables from TAB, so the shader holds no code of its own.
+// ai: Bindings: BLOCKS (ro, 120 words a block, block b of symbol r at (r blocks + b) 120), TAB (ro, gpu/encoder.mjs
+// ai: sendTab: word 0 the whitening's offset, then 16 words a code at 16 + 16 c, (n, k, m, z, mb, rows, lay, perm,
+// ai: subs), its block rows' first entries, its entries (col | shift << 16), its bit map two slots a word; the
+// ai: whitening a bit a slot), UV (ro, a coefficient's S entry), S (rw, the disc), P (uniform, wgsl/back_ldpc.mjs
+// ai: PARAMS_AT): sizes[0] = (blocks, UV offset, 0, 0), sizes[1 + c] = (first block, first sub-channel, blocks, 0) of
+// ai: code c in CODES' order (0 blocks: a code the format has none of), dims = (blocks, sStride, symbols, c0 + 4
+// ai: codes), pw the CRC's powers; lay unread. Dispatch (blocks, 1, symbols): frames x codes of an encode. The pilots
+// ai: (SPEC 7.3): a frame's count is c0 (the encode's first frame's) + its place in the encode, mod 4, the frame
+// ai: symbol r / codes; bit 0 on an even block, bit 1 on an odd.
+export const PAINT_THREADS = 128;
+export const CW_WORDS = 240;   // ai: the longest codeword's words, the 1/2 code's 7680 bits
+export function paintSource() {
+  return /* wgsl */ `
+${PARAMS_STRUCT}
+@group(0) @binding(0) var<storage, read> BLOCKS: array<u32>;
+@group(0) @binding(1) var<storage, read> TAB: array<u32>;
+@group(0) @binding(2) var<storage, read> UV: array<u32>;
+@group(0) @binding(3) var<storage, read_write> S: array<vec2f>;
+@group(0) @binding(4) var<uniform> P: Params;
+const KNOWN: u32 = ${KNOWN}u;
+const TH: u32 = ${PAINT_THREADS}u;
+const A: f32 = 0.70710678;
+var<workgroup> packw: array<u32, 120>;
+var<workgroup> crcw: atomic<u32>;
+var<workgroup> cw: array<atomic<u32>, ${CW_WORDS}>;
+var<workgroup> scan: array<u32, ${PAINT_THREADS}>;
+
+// ai: Data bit j of the codeword: the payload bytes MSB first, then the CRC MSB first, as packw holds them (four
+// ai: bytes a word in memory order); zeros past them.
+fn dataBit(j: u32) -> u32 {
+  if (j >= KNOWN) { return 0u; }
+  let t = j & 31u;
+  return (packw[j >> 5u] >> (8u * (t >> 3u) + 7u - (t & 7u))) & 1u;
+}
+fn cwBit(j: u32) -> u32 { return (atomicLoad(&cw[j >> 5u]) >> (j & 31u)) & 1u; }
+fn white(s: u32) -> u32 { return (TAB[TAB[0] + (s >> 5u)] >> (s & 31u)) & 1u; }
+${CRC_SPLIT()}
+@compute @workgroup_size(${PAINT_THREADS})
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u32) {
+  let b: u32 = wg.x;
+  let r: u32 = wg.z;
+  if (b >= P.sizes[0].x) { return; }
+  // ai: the block's tier: its code, and its first sub-channel
+  var c: u32 = 0u;
+  for (var q: u32 = 0u; q < 3u; q = q + 1u) {
+    let t = P.sizes[1u + q];
+    if (b >= t.x && b < t.x + t.z) { c = q; }
+  }
+  let tt = P.sizes[1u + c];
+  let h: u32 = 16u + 16u * c;
+  let n: u32 = TAB[h];
+  let k: u32 = TAB[h + 1u];
+  let m: u32 = TAB[h + 2u];
+  let z: u32 = TAB[h + 3u];
+  let mb: u32 = TAB[h + 4u];
+  let rowsAt: u32 = TAB[h + 5u];
+  let layAt: u32 = TAB[h + 6u];
+  let permAt: u32 = TAB[h + 7u];
+  let subs: u32 = TAB[h + 8u];
+  let cpl: u32 = (m + TH - 1u) / TH;
+  let sub0: u32 = tt.y + (b - tt.x) * subs;
+  // ai: this block's bit of its symbol's frame's count: the pilots' flip
+  let pq: u32 = ((((P.dims.w & 3u) + r / max(P.dims.w >> 2u, 1u)) & 3u) >> (b & 1u)) & 1u;
+  // ai: The payload from BLOCKS: bytes 0 to 471 in words 0 to 117, byte 472 alone in word 118.
+  let base: u32 = (r * P.sizes[0].x + b) * 120u;
+  if (i < 118u) { packw[i] = BLOCKS[base + i]; }
+  if (i == 118u) { packw[118] = BLOCKS[base + 118u] & 0xffu; }
+  if (i == 119u) { packw[119] = 0u; }
+  workgroupBarrier();
+  let crc: u32 = crcOf(i);
+  if (i == 0u) {
+    packw[118] = packw[118] | (((crc >> 24u) & 0xffu) << 8u) | (((crc >> 16u) & 0xffu) << 16u) | (((crc >> 8u) & 0xffu) << 24u);
+    packw[119] = crc & 0xffu;
+  }
+  workgroupBarrier();
+  // ai: The systematic part of the codeword, a bit an index, every word of it (the parity's zeros too); then every
+  // ai: lane's cpl checks in check order, the check's parity as the XOR of its data bits, the prefix within them
+  // ai: kept a bit each.
+  for (var w: u32 = i; w < (n + 31u) / 32u; w = w + TH) {
+    var word: u32 = 0u;
+    for (var t: u32 = 0u; t < 32u; t = t + 1u) {
+      let j = 32u * w + t;
+      if (j < k) { word = word | (dataBit(j) << t); }
+    }
+    atomicStore(&cw[w], word);
+  }
+  var pl: u32 = 0u;
+  var acc: u32 = 0u;
+  for (var q: u32 = 0u; q < cpl; q = q + 1u) {
+    let chk = cpl * i + q;
+    if (chk < m) {
+      let ii = chk / mb;
+      let rr = chk % mb;
+      var t: u32 = 0u;
+      let e1: u32 = TAB[rowsAt + rr + 1u];
+      // ai: the data bit of entry e in check (rr, ii): col z + (ii - shift) mod z (src/ldpc.c ldpc_init)
+      for (var e: u32 = TAB[rowsAt + rr]; e < e1; e = e + 1u) {
+        let lc = TAB[layAt + e];
+        var s: u32 = ii + z - (lc >> 16u);
+        if (s >= z) { s = s - z; }
+        t = t ^ dataBit((lc & 0xffffu) * z + s);
+      }
+      acc = acc ^ t;
+    }
+    pl = pl | (acc << q);
+  }
+  scan[i] = acc;
+  workgroupBarrier();
+  // ai: The prefix XOR across lanes (ldpc_encode's running acc), a read, a barrier and a write a step.
+  for (var d: u32 = 1u; d < TH; d = d << 1u) {
+    var v: u32 = scan[i];
+    if (i >= d) { v = v ^ scan[i - d]; }
+    workgroupBarrier();
+    scan[i] = v;
+    workgroupBarrier();
+  }
+  let ex: u32 = scan[i] ^ acc;
+  for (var q: u32 = 0u; q < cpl; q = q + 1u) {
+    let chk = cpl * i + q;
+    if (chk < m && (((pl >> q) & 1u) ^ ex) != 0u) {
+      let j = k + chk;
+      atomicOr(&cw[j >> 5u], 1u << (j & 31u));
+    }
+  }
+  workgroupBarrier();
+  // ai: Slots 2 cc and 2 cc + 1 of coefficient cc (every code's n is even: a pair is inside the codeword or past it),
+  // ai: one bit map word the pair; the whitening at the frame's slot.
+  let slot0: u32 = 640u * sub0;
+  let uvBase: u32 = P.sizes[0].y + 320u * sub0;
+  let sBase: u32 = r * P.dims.y;
+  for (var cc: u32 = i; cc < 320u * subs; cc = cc + TH) {
+    let i0: u32 = 2u * cc;
+    var b0: u32 = pq;
+    var b1: u32 = pq;
+    if (i0 < n) {
+      let pe = TAB[permAt + cc];
+      b0 = cwBit(pe & 0xffffu);
+      b1 = cwBit(pe >> 16u);
+    }
+    b0 = b0 ^ white(slot0 + i0);
+    b1 = b1 ^ white(slot0 + i0 + 1u);
+    S[sBase + UV[uvBase + cc]] = vec2f(select(A, -A, b0 != 0u), select(A, -A, b1 != 0u));
+  }
+}
+`;
+}
 
 // ai: Bindings: PICQ (ro, vec4f), PIC (rw, vec4f), G. Dispatch (n / 4 / TPOSE_TILE, n / TPOSE_TILE, symbols), 64 threads.
 export function tposeSource() {

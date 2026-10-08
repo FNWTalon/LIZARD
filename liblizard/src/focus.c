@@ -375,10 +375,40 @@ static int init(focus_t *f, int n, int subch, int mode, const focus_tier_t *tier
 
 const int FOCUS_RING[FOCUS_RINGS] = { 32, 64, 96, 128 };
 
+int focus_tiers_for(int subch, focus_tier_t tier[FOCUS_TIERS]) {
+  if (subch < FOCUS_GROUP || subch % FOCUS_GROUP || subch > FOCUS_GROUP * OB_FMT_VERSION_MAX) return 0;
+  long long best = -1;
+  int ba = 0, bc = 0;
+  for (int a = 0; 7 * a <= subch - FOCUS_GROUP; a++)
+    for (int c = 0; 7 * a + 12 * c <= subch - FOCUS_GROUP; c++) {
+      if ((subch - 7 * a - 12 * c) % FOCUS_GROUP) continue;
+      const long long d7 = 700LL * a - (long long)FOCUS_TIER_IN * subch, d2 = 1200LL * c - (long long)FOCUS_TIER_OUT * subch;
+      const long long cost = d7 * d7 + d2 * d2;
+      if (best < 0 || cost < best) { best = cost; ba = a; bc = c; }
+    }
+  int t = 0;
+  if (ba) tier[t++] = (focus_tier_t){ 6, ba, 7 };
+  tier[t++] = (focus_tier_t){ FOCUS_RATE, (subch - 7 * ba - 12 * bc) / FOCUS_GROUP, FOCUS_GROUP };
+  if (bc) tier[t++] = (focus_tier_t){ 2, bc, 12 };
+  return t;
+}
+int focus_blocks_for(int subch) {
+  focus_tier_t tier[FOCUS_TIERS];
+  const int n = focus_tiers_for(subch, tier);
+  int b = 0;
+  for (int t = 0; t < n; t++) b += tier[t].blocks;
+  return b;
+}
+
 int focus_init(focus_t *f, int n, int subch, int mode, float clip, int span, float tilt, int corner, int corner_filled, int centre, int edge, int track_alt, int border) {
-  if (mode == FOCUS_LDPC && (subch < FOCUS_GROUP || subch % FOCUS_GROUP)) { memset(f, 0, sizeof *f); return -1; }
+  if (mode == FOCUS_LDPC) {
+    focus_tier_t tier[FOCUS_TIERS];
+    const int tiers = focus_tiers_for(subch, tier);
+    if (!tiers) { memset(f, 0, sizeof *f); return -1; }
+    return init(f, n, subch, mode, tier, tiers, clip, span, tilt, corner, corner_filled, centre, edge, track_alt, border);
+  }
   const focus_tier_t one = { FOCUS_RATE, subch / FOCUS_GROUP, FOCUS_GROUP };
-  return init(f, n, subch, mode, &one, mode == FOCUS_LDPC ? 1 : 0, clip, span, tilt, corner, corner_filled, centre, edge, track_alt, border);
+  return init(f, n, subch, mode, &one, 0, clip, span, tilt, corner, corner_filled, centre, edge, track_alt, border);
 }
 
 int focus_init_tiers(focus_t *f, int n, const focus_tier_t *tier, int tiers, float clip, int span, float tilt, int corner, int corner_filled, int centre, int edge, int track_alt, int border) {
@@ -435,8 +465,6 @@ void focus_paint_rgba(const focus_t *f, const float *drive, uint8_t *rgba) {
   }
 }
 
-void focus_free(focus_t *f) {
-  struct focus_ws *w = f->ws;
 void focus_paint_grey(const focus_t *f, const float *drive, uint8_t *grey) {
   const int side = f->px, m = FOCUS_QUIET * f->pxm, W = side + 2 * m;
   for (int y = 0; y < W; y++) {
@@ -455,6 +483,8 @@ void focus_paint_grey(const focus_t *f, const float *drive, uint8_t *grey) {
   }
 }
 
+void focus_free(focus_t *f) {
+  struct focus_ws *w = f->ws;
   if (w) { free(w->tre); free(w->tim); free(w->wre); free(w->wim); free(w->cx); free(w->llr); free(w->bits); free(w->data); free(w->amp); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < FOCUS_TIERS; t++) free(w->perm[t]); free(w); }
   for (int t = 0; t < FOCUS_TIERS; t++) ldpc_free(&f->code[t]);
   free(f->pos); free(f->block_tier); ob_layout_free(&f->frame); memset(f, 0, sizeof *f);

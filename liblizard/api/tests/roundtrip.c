@@ -46,7 +46,7 @@ static void formats(void) {
         if (!enc) continue;
         CHECK(liz_geometry_of(&f, &g) == LIZ_OK && liz_encoder_geometry(enc, &e) == LIZ_OK && !memcmp(&g, &e, sizeof g),
               "LIZARD-%d ring %d: geometry", 8 * b, ring);
-        CHECK(g.width == codes * g.side + (codes - 1) * g.gap && g.frame_blocks == codes * b, "LIZARD-%d: frame size", 8 * b);
+        CHECK(g.width == codes * g.side + (codes - 1) * g.gap && g.frame_blocks == codes * liz_blocks_for(b) && liz_blocks_for(b) >= 1 && liz_blocks_for(b) <= b, "LIZARD-%d: frame size", 8 * b);
         liz_encoder_free(enc);
         made++;
       }

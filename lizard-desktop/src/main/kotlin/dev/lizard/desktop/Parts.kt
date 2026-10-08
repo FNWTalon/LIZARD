@@ -251,8 +251,11 @@ fun Fields(content: @Composable ColumnScope.() -> Unit) = Column(Modifier.fillMa
 fun Field(title: String, value: String = "", end: (@Composable () -> Unit)? = null, content: @Composable () -> Unit) {
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().heightIn(min = 36.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall, color = Muted, modifier = Modifier.weight(1f))
-            if (value.isNotEmpty()) Text(value, style = MaterialTheme.typography.bodyMedium, color = Muted)
+            // ai: the title on one line whatever the value's length; the value the rest of the row, cut at its end
+            Text(title, style = MaterialTheme.typography.titleSmall, color = Muted, maxLines = 1, softWrap = false)
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+                if (value.isNotEmpty()) Text(value, style = MaterialTheme.typography.bodyMedium, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
             end?.invoke()
         }
         Spacer(Modifier.height(4.dp))

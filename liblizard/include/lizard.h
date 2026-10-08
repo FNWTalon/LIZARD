@@ -83,7 +83,9 @@ typedef enum {
 
 /* ---- 1. format arithmetic ---------------------------------------------------------------------------------------- */
 
-/* ai: blocks: 1 to 128 a symbol (LIZARD-8 to LIZARD-1024: the number is 8 x blocks); ring: 0 to 3 or LIZ_RING_DEFAULT;
+/* ai: blocks: the format's size, 1 to 128 (LIZARD-8 to LIZARD-1024: the number is 8 x blocks), the version its word
+ * ai: names; a symbol of it carries liz_blocks_for(blocks) blocks, the code's rate following the frequency (7/8 on its
+ * ai: lowest sub-channels, 1/2 on its highest, 3/4 between: 51 at LIZARD-432); ring: 0 to 3 or LIZ_RING_DEFAULT;
  * ai: fps: 1 to 255, the display rate the symbol's word states; codes: 1, or 2 symbols side by side (one format, one
  * ai: word, the frame's blocks split between them, the first code the first ones). */
 typedef struct {
@@ -93,7 +95,7 @@ typedef struct {
 /* ai: What a format paints. n: the picture's samples a side; span: the picture's modules a side (2 x the ring's
  * ai: cells); pxm: pixels a module; side: a symbol's pixels a side, its margin in; width, height: the frame's pixels
  * ai: (codes symbols and the gaps between them); gap: the pixels between two codes; frame_blocks: blocks a frame
- * ai: (codes x blocks). */
+ * ai: (codes x liz_blocks_for(blocks)). */
 typedef struct {
   int n, span, pxm, side, width, height, gap, frame_blocks;
 } liz_geometry;
@@ -104,6 +106,8 @@ LIZ_API int liz_geometry_of(const liz_format *format, liz_geometry *out);
 /* ai: The pixels a side a symbol of this many blocks needs on a display for its outer coefficients to keep 2.7 pixels
  * ai: a cycle (the web sender's ROOM_FOR); a negative error for an argument out of range. */
 LIZ_API double liz_room_for(int blocks, int ring);
+/* ai: The blocks a symbol of a format's size (blocks, 1 to 128) carries: the format's rate profile's count; 0 outside. */
+LIZ_API int liz_blocks_for(int blocks);
 /* ai: The most blocks a symbol may carry, at most top_blocks, for codes symbols in a room of w x h display pixels (the
  * ai: web sender's pickVersion: each symbol's room is the width over codes and the gaps, against the height); at least 1. */
 LIZ_API int liz_pick(double w, double h, int codes, int ring, int top_blocks);
@@ -131,7 +135,7 @@ typedef struct {
   int ring;           /* ai: the ring that registered, 0 to 3; -1 none */
   int n;              /* ai: the picture it was finished at; 0 not finished */
   int word;           /* ai: the frame's own word read */
-  int blocks;         /* ai: the blocks a symbol of the format it was decoded at (0 none) */
+  int blocks;         /* ai: the size of the format it was decoded at, its version (0 none) */
   int fps;            /* ai: the display rate its word states */
   int held_used;      /* ai: decoded at the held word, its own not read */
   int total;          /* ai: the blocks the symbol carries */

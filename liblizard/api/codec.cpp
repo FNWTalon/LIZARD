@@ -54,7 +54,7 @@ LIZ_API liz_encoder* liz_encoder_new(const liz_format* format) {
     e->made = true;
     if (focus_fmt_fps(&e->f, format->fps)) throw Error(LIZ_E_FORMAT, "the codec refused " + std::to_string(format->fps) + " a second");
     // ai: the arithmetic of format.cpp held to the codec's own
-    if (e->f.pxm != e->g.pxm || e->f.px + 2 * FOCUS_QUIET * e->f.pxm != e->g.side || e->f.block_bytes != LIZ_BLOCK || e->f.blocks != format->blocks)
+    if (e->f.pxm != e->g.pxm || e->f.px + 2 * FOCUS_QUIET * e->f.pxm != e->g.side || e->f.block_bytes != LIZ_BLOCK || e->f.blocks != focus_blocks_for(8 * format->blocks))
       throw Error(LIZ_E_INTERNAL, "the geometry differs from the codec's");
     e->drive.resize(size_t(e->f.px) * e->f.px);
     e->rgba.resize(size_t(e->g.side) * e->g.side * 4);
@@ -75,7 +75,7 @@ LIZ_API int liz_encoder_paint(liz_encoder* e, const uint8_t* blocks, uint32_t pi
     const liz_geometry& g = e->g;
     need(stride >= g.width * bpp, "a stride of at least the frame's width in bytes");
     focus_parity(&e->f, int(picture & 3));
-    const size_t per = size_t(e->fmt.blocks) * LIZ_BLOCK;
+    const size_t per = size_t(e->f.blocks) * LIZ_BLOCK;
     for (int k = 0; k < e->fmt.codes; k++) {
       focus_encode(&e->f, blocks + k * per, e->drive.data());
       focus_paint_rgba(&e->f, e->drive.data(), e->rgba.data());

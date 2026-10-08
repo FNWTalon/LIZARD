@@ -16,9 +16,11 @@
 // ai: The disc lives in S's frame slot r and the rows in Y's (yStride = V n): scratch pass one has finished with.
 // ai: Every workgroup takes its slot's size from PLAN's KEYTAB entry (its tag's size bit): the paint serves every
 // ai: size from one pipeline, irows and ipic are built a size and return on a slot of another.
-// ai: mode "send" (2026-09-29, the sender's GPU encoder, gpu/encoder.mjs): the same arithmetic over a plain BLOCKS
-// ai: buffer, one size and every block, a slot a symbol (wg.z the code), no PLAN; ipic clips at P.c and stores the
-// ai: picture as f32 (vec4f, four adjacent x). Mode "cancel" (the default) is the cancel stage's, byte for byte as before.
+// ai: irows and ipic take mode "send" (2026-09-29, the sender's GPU encoder, gpu/encoder.mjs): one size, a slot a
+// ai: symbol, no PLAN; ipic clips at P.c and stores the picture as f32 (vec4f, four adjacent x). Mode "cancel" (the
+// ai: default) is the cancel stage's, byte for byte as before. The sender's paint is its own since 2026-10-07
+// ai: (wgsl/send.mjs paintSource: every code of the format's rate profile); this one paints the one-rate blocks the
+// ai: cancel stage reads.
 import { BUTTERFLIES, store, firstStage, laterStages, V8 } from "./back_transform.mjs";
 import { CRC_SPLIT, PARAMS_STRUCT } from "./back_ldpc.mjs";
 import { planLayout, NONE, KEYTAB_WORDS } from "./cancel_gate.mjs";
@@ -43,21 +45,9 @@ const BM: u32 = ${blocksMax}u;
 // ai: (uniform, the LDPC's shape, wgsl/back_ldpc.mjs PARAMS_AT: sizes[s] = (blocks, UV entry offset, PERMW entry
 // ai: offset, 0), dims = (blocksMax, sStride, R, 0), lay and pw as the LDPC's uniform holds them). Dispatch
 // ai: (blocksMax, 1, R).
-// ai: Mode "send": BLOCKS (ro, 120 words a block, block b of symbol r at (r blocks + b) 120), PERMW, UV, S, P;
-// ai: sizes[0] = (blocks, 0, 0, 0), dims = (blocks, sStride, symbols, c0 + 4 codes). Dispatch (blocks, 1, symbols): a
-// ai: symbol a slot, frames x codes of an encode (gpu/encoder.mjs). The pilots (SPEC 7.3; signed since 2026-10-01): a
-// ai: slot past the codeword carries the whitening XOR a bit of its frame's count, c0 (the encode's first frame's) +
-// ai: the frame's place in the encode, mod 4, the frame symbol r / codes: bit 0 on an even block, bit 1 on an odd.
-export function paintSource({ prec, B, blocksMax, refSlots, mode = "cancel" }) {
+export function paintSource({ prec, B, blocksMax, refSlots }) {
   const { ty } = store(prec);
-  const head = mode === "send" ? /* wgsl */ `
-${PARAMS_STRUCT}
-@group(0) @binding(0) var<storage, read> BLOCKS: array<u32>;
-@group(0) @binding(1) var<storage, read> PERMW: array<u32>;
-@group(0) @binding(2) var<storage, read> UV: array<u32>;
-@group(0) @binding(3) var<storage, read_write> S: array<${ty}>;
-@group(0) @binding(4) var<uniform> P: Params;
-` : /* wgsl */ `
+  const head = /* wgsl */ `
 ${PARAMS_STRUCT}
 struct Rec { count: u32, words: array<u32> }
 @group(0) @binding(0) var<storage, read> REC: Rec;
@@ -100,18 +90,7 @@ fn cwBit(j: u32) -> u32 { return (atomicLoad(&cw[j >> 5u]) >> (j & 31u)) & 1u; }
 ${CRC_SPLIT()}
 @compute @workgroup_size(${PAINT_THREADS})
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u32) {
-` + (mode === "send" ? /* wgsl */ `  let b: u32 = wg.x;
-  let r: u32 = wg.z;
-  let s: u32 = 0u;
-  if (b >= P.sizes[s].x) { return; }
-  // ai: this block's bit of its symbol's frame's count: the pilots' flip
-  let pq: u32 = ((((P.dims.w & 3u) + r / max(P.dims.w >> 2u, 1u)) & 3u) >> (b & 1u)) & 1u;
-  // ai: The payload from BLOCKS: bytes 0 to 471 in words 0 to 117, byte 472 alone in word 118.
-  let base: u32 = (r * P.sizes[s].x + b) * 120u;
-  if (i < 118u) { packw[i] = BLOCKS[base + i]; }
-  if (i == 118u) { packw[118] = BLOCKS[base + 118u] & 0xffu; }
-  if (i == 119u) { packw[119] = 0u; }
-  workgroupBarrier();` : /* wgsl */ `  let b: u32 = wg.x;
+` + /* wgsl */ `  let b: u32 = wg.x;
   let r: u32 = wg.z;
   let e: u32 = PLAN[SLOTS + r];
   if (e == NONE) { return; }
@@ -125,7 +104,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
   if (i < 118u) { packw[i] = REC.words[base + 2u + i]; }
   if (i == 118u) { packw[118] = REC.words[base + 120u] & 0xffu; }
   if (i == 119u) { packw[119] = 0u; }
-  workgroupBarrier();`) + /* wgsl */ `
+  workgroupBarrier();` + /* wgsl */ `
   let crc: u32 = crcOf(i);
   if (i == 0u) {
     packw[118] = packw[118] | (((crc >> 24u) & 0xffu) << 8u) | (((crc >> 16u) & 0xffu) << 16u) | (((crc >> 8u) & 0xffu) << 24u);
@@ -185,8 +164,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
     let e1 = pe >> 16u;
     var b0: u32 = e0 >> 15u;
     var b1: u32 = e1 >> 15u;
-    if ((e0 & 0x7fffu) != 0x7fffu) { b0 = b0 ^ cwBit(e0 & 0x7fffu); }${mode === "send" ? " else { b0 = b0 ^ pq; }" : ""}
-    if ((e1 & 0x7fffu) != 0x7fffu) { b1 = b1 ^ cwBit(e1 & 0x7fffu); }${mode === "send" ? " else { b1 = b1 ^ pq; }" : ""}
+    if ((e0 & 0x7fffu) != 0x7fffu) { b0 = b0 ^ cwBit(e0 & 0x7fffu); }
+    if ((e1 & 0x7fffu) != 0x7fffu) { b1 = b1 ^ cwBit(e1 & 0x7fffu); }
     let val = vec2f(select(A, -A, b0 != 0u), select(A, -A, b1 != 0u));
     S[sBase + UV[uvBase + c]] = ${ty}(val);
   }

@@ -10,22 +10,24 @@
 
 namespace lizard {
 
-std::string SendConsts::load(const std::string& manifest, const std::vector<uint8_t>& permBytes) {
+std::string SendConsts::load(const std::string& manifest, const std::vector<uint8_t>& tabBytes) {
   nlohmann::json j;
   try { j = nlohmann::json::parse(manifest); } catch (const std::exception& e) { return std::string("the sender's manifest: ") + e.what(); }
+  if (!j.contains("tab") || !j.contains("codes")) return "the sender's manifest predates the rate profile (no tab or codes): regenerate liblizard/out";
   slots = j["slots"]; tposeTile = j["tposeTile"]; rsvThreads = j["rsvThreads"]; rshThreads = j["rshThreads"];
-  blockBytes = j["blockBytes"]; clip = j["clip"];
+  blockBytes = j["blockBytes"]; clip = j["clip"]; bitmap = j["bitmap"];
   const auto& p = j["paramsAt"];
-  paramsSizes = p["sizes"]; paramsDims = p["dims"]; paramsLay = p["lay"]; paramsPw = p["pw"]; paramsWords = p["words"];
-  lay = j["lay"].get<std::vector<uint32_t>>();
+  paramsSizes = p["sizes"]; paramsDims = p["dims"]; paramsPw = p["pw"]; paramsWords = p["words"];
   pw = j["pw"].get<std::vector<uint32_t>>();
   sizes = j["sizes"].get<std::vector<int>>();
-  permBlocks = j["perm"]["blocks"]; slotsPerBlock = j["perm"]["slotsPerBlock"];
-  const size_t want = static_cast<size_t>(permBlocks) * slotsPerBlock * 2;
-  if (permBytes.size() != want) return "the sender's PERMW is " + std::to_string(permBytes.size()) + " B, not " + std::to_string(want);
-  perm.resize(want / 4);
-  std::memcpy(perm.data(), permBytes.data(), want);
-  if (lay.size() != 180 || pw.size() != 120) return "the sender's lay or pw words are not 180 and 120";
+  codeRate.clear(); codeSubs.clear();
+  for (const auto& c : j["codes"]) { codeRate.push_back(c["rate"]); codeSubs.push_back(c["subs"]); }
+  const size_t words = j["tab"]["words"];
+  if (tabBytes.size() != 4 * words) return "the sender's TAB is " + std::to_string(tabBytes.size()) + " B, not " + std::to_string(4 * words);
+  tab.resize(words);
+  std::memcpy(tab.data(), tabBytes.data(), 4 * words);
+  if (pw.size() != 120) return "the sender's pw words are not 120";
+  if (slots < 1 + static_cast<int>(codeRate.size())) return "the paint's uniform holds " + std::to_string(slots) + " sizes, too few for the codes' tiers";
   return "";
 }
 
@@ -106,12 +108,22 @@ std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTa
   t.FS = 64 * ((t.RW * t.W + 63) / 64);
   t.g = {static_cast<uint32_t>(n), static_cast<uint32_t>(t.q), static_cast<uint32_t>(t.sq), static_cast<uint32_t>(t.W), static_cast<uint32_t>(codes),
          static_cast<uint32_t>(t.FW), static_cast<uint32_t>(t.RW), static_cast<uint32_t>(t.FS), 1, 0, static_cast<uint32_t>(t.gap), 0};
-  // ai: the paint's uniform: block count at slot 0, dims (blocks, npos, symbols an encode, parity | codes << 2: set an
-  // ai: encode)
+  // ai: the paint's uniform: block count at slot 0; each tier at slot 1 + its code's place in TAB (first block, first
+  // ai: sub-channel, blocks; src/focus.c init lays the tiers out from the lowest frequencies in order); dims (blocks,
+  // ai: npos, symbols an encode, parity | codes << 2: set an encode)
+  if (f.bitmap != k.bitmap) return "the codec's bit map " + std::to_string(f.bitmap) + " is not the paint's " + std::to_string(k.bitmap);
   t.pu.assign(k.paramsWords, 0);
   t.pu[k.paramsSizes] = static_cast<uint32_t>(f.blocks);
+  for (int q = 0, b = 0, sub = 0; q < f.tiers; q++) {
+    int c = -1;
+    for (size_t i = 0; i < k.codeRate.size(); i++) if (k.codeRate[i] == f.tier[q].rate && k.codeSubs[i] == f.tier[q].subs) c = static_cast<int>(i);
+    if (c < 0) return "a tier at rate " + std::to_string(f.tier[q].rate) + " of " + std::to_string(f.tier[q].subs) + " sub-channels, which the paint has no code for";
+    uint32_t* at = t.pu.data() + k.paramsSizes + 4 * (1 + c);
+    if (at[2]) return "two tiers of one code";
+    at[0] = static_cast<uint32_t>(b); at[1] = static_cast<uint32_t>(sub); at[2] = static_cast<uint32_t>(f.tier[q].blocks);
+    b += f.tier[q].blocks; sub += f.tier[q].blocks * f.tier[q].subs;
+  }
   t.pu[k.paramsDims] = static_cast<uint32_t>(f.blocks); t.pu[k.paramsDims + 1] = static_cast<uint32_t>(t.npos); t.pu[k.paramsDims + 2] = static_cast<uint32_t>(frames * codes);
-  std::copy(k.lay.begin(), k.lay.end(), t.pu.begin() + k.paramsLay);
   std::copy(k.pw.begin(), k.pw.end(), t.pu.begin() + k.paramsPw);
   // ai: the border: the C's paint of the symbol with every block zero (only the square depends on them)
   std::vector<uint8_t> zero(static_cast<size_t>(f.blocks) * f.block_bytes, 0), rgba(static_cast<size_t>(t.W) * t.W * 4);

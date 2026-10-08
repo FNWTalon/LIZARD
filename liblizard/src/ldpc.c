@@ -111,11 +111,14 @@ int ldpc_init(ldpc_t *c, int n_max, int rate, uint32_t seed) {
   c->z = z; c->mb = mb; c->kb = kb; c->rate = rate; c->norm = ldpc_norm ? ldpc_norm : p->norm;
   c->n = LDPC_NB * z; c->k = kb * z; c->m = mb * z;
 
-  // The format's code is the table (ldpc_base.h); every other code, and the format's own under a test's profile
-  // override, is generated.
+  // The format's codes are the tables (ldpc_base.h, one a rate of the rate profile); every other code, and the
+  // format's own under a test's profile override, is generated.
   static _Thread_local int shift[LDPC_NB][LDPC_NB];   // ai: scratch, a thread's own
-  if (z == LDPC_BASE_Z && rate == LDPC_BASE_RATE && seed == LDPC_BASE_SEED && ldpc_override_heavy < 0 && mb == LDPC_BASE_MB) {
-    for (int r = 0; r < mb; r++) for (int j = 0; j < LDPC_NB; j++) shift[r][j] = j < LDPC_BASE_KB ? LDPC_BASE[r][j] : -1;
+  const ldpc_base_t *base = 0;
+  for (int t = 0; t < LDPC_BASES_N; t++)
+    if (z == LDPC_BASES[t].z && rate == LDPC_BASES[t].rate && seed == LDPC_BASE_SEED && ldpc_override_heavy < 0 && mb == LDPC_BASES[t].mb && kb == LDPC_BASES[t].kb) base = &LDPC_BASES[t];
+  if (base) {
+    for (int r = 0; r < mb; r++) for (int j = 0; j < LDPC_NB; j++) shift[r][j] = j < base->kb ? base->shift[r * base->kb + j] : -1;
   } else if (ldpc_generate(z, rate, seed, shift) < 0) return -1;
   int rowdeg[LDPC_NB] = { 0 };
   for (int r = 0; r < mb; r++) for (int j = 0; j < kb; j++) rowdeg[r] += shift[r][j] >= 0;

@@ -41,8 +41,8 @@ struct CpuPool::Worker {
   bool go = false;
 };
 
-CpuPool::CpuPool(int nmax, int ceiling, int fixed, std::function<void(CpuFrameOut&&)> done, std::function<void(const std::string&)> log, std::string tiers)
-    : nmax_(nmax), tiers_(std::move(tiers)), done_(std::move(done)), log_(std::move(log)) {
+CpuPool::CpuPool(int nmax, int ceiling, int fixed, std::function<void(CpuFrameOut&&)> done, std::function<void(const std::string&)> log)
+    : nmax_(nmax), done_(std::move(done)), log_(std::move(log)) {
   const int cores = std::max(1u, std::thread::hardware_concurrency());
   ceiling_ = ceiling > 0 ? ceiling : cores;
   fixed_ = std::min(fixed, ceiling_);
@@ -125,10 +125,6 @@ void CpuPool::run(Worker* w) {
   cpu_dec_t* dec = cpu_dec_new(nmax_);
   std::vector<uint8_t> blocks, ok;
   int bb = 0;
-  if (dec && !tiers_.empty()) {
-    char why[160];
-    if (cpu_dec_tiers(dec, tiers_.c_str(), why, sizeof why) < 0 && log_) log_(std::string("cpu pool: the rate profile was refused, one rate: ") + why);
-  }
   if (dec) {
     bb = cpu_dec_block_bytes(dec);
     blocks.resize((size_t)cpu_dec_top(dec) * bb);

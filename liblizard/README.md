@@ -1,8 +1,9 @@
 # liblizard
 
 The Lizard code as a library: a luminance-only animated barcode that carries a file from a screen to a camera. A
-frame is a grey picture whose FFT coefficients carry blocks of 473 bytes (a 4-byte id and 469 of payload, CRC-checked)
-inside a border that says what is inside; a file goes as a fountain-coded transfer verified by its BLAKE3 root.
+frame is a grey picture whose FFT coefficients carry blocks of 473 bytes (a 4-byte id and 469 of payload, CRC-checked),
+each LDPC-coded at a rate that follows the frequency (7/8 inside, 3/4, 1/2 outside), inside a border that says what is
+inside; a file goes as a fountain-coded transfer verified by its BLAKE3 root.
 
 One C API (`include/lizard.h`), three bindings over it:
 
@@ -16,8 +17,9 @@ macOS has no preset and has never been built.
 
 ## Layers
 
-1. **Format arithmetic.** A format is blocks a symbol (1 to 128: LIZARD-8 to -1024), a ring (the border: 32, 64, 96
-   or 128 cells, the 128 by default), the display rate its word states, and one code or two side by side.
+1. **Format arithmetic.** A format is its size (1 to 128: LIZARD-8 to -1024; a symbol of it carries `liz_blocks_for`
+   blocks, the rate profile's count), a ring (the border: 32, 64, 96 or 128 cells, the 128 by default), the display
+   rate its word states, and one code or two side by side.
    `liz_geometry_of` gives what it paints; `liz_room_for` and `liz_pick` the room a symbol needs on a display and the
    most blocks that fit a room.
 2. **The per-frame codec**, on the CPU (NEON on arm64, WebAssembly SIMD in the wasm build, scalar elsewhere).
