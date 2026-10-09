@@ -1507,7 +1507,21 @@ function showRates() {
     o.text = `${o.value}${o.disabled ? " (unavailable)" : ""}`;
   }
 }
-$("go").onclick = () => (track ? stopCamera() : start());
+// ai: The browser's limit (#first, 2026-10-09), before the first camera start on this browser: shown until a start goes
+// ai: from it (its Start camera, kept as recv:limitSeen), Cancel or Escape leaving it for the next press. Home's Receive
+// ai: (?auto) shows it too, being how most starts come; ?seen (the checks') takes it as seen. A restart on a camera
+// ai: setting's change never shows it.
+const LIMIT_SEEN = "recv:limitSeen";
+let limitHere = PARAMS.has("seen");
+const limitSeen = () => { try { return limitHere || localStorage.getItem(LIMIT_SEEN) === "1"; } catch { return limitHere; } };
+$("firstStart").onclick = () => {
+  limitHere = true;
+  try { localStorage.setItem(LIMIT_SEEN, "1"); } catch {}
+  $("first").close();
+  start();
+};
+$("firstCancel").onclick = () => $("first").close();
+$("go").onclick = () => (track ? stopCamera() : limitSeen() ? start() : $("first").showModal());
 $("railCam").onclick = () => $("go").onclick();
 $("railOpen").onclick = () => $("open").onclick();
 $("railSave").onclick = () => $("save").click();
