@@ -68,6 +68,9 @@
       <div class="row"><button id="go" class="primary" disabled>Start</button><button id="stop" hidden>Stop</button><button id="fs">Fullscreen</button></div>
       <p id="state" class="status" role="status"></p>
       <p id="nums" class="nums"></p>
+      <!-- ai: the browser's limit said once (2026-10-09): a browser loses pictures it cannot see (power saving, a
+           compositor's repeats), so the native senders paint more steadily -->
+      <p id="browserNote" class="hint">The browser version may not reach full speed.</p>
     </div>
     <section id="settings" class="settings">
       <!-- ai: Settings and Developer Tools, two rows that open (2026-10-02): Settings (#dev, its open state and every control in
