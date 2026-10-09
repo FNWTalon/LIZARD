@@ -261,7 +261,7 @@ const seenAdd = (id) => { seenIds.add(id); if (seenIds.size >= SEEN_KEEP) { seen
 const policy = new PoolPolicy();
 let repeatShare = 0, stuck = 0, workerErrs = 0, lastErr = "";
 // Rates come from one-second buckets, the last five summed: a window that slides instead of one that restarts.
-// msFound and msMiss are split because a frame that registers nothing returns after detect (src/dec.c, src/focus.c)
+// msFound and msMiss are split because a frame that registers nothing returns after detect (src/focus.c)
 // and costs a quarter of one that goes on to sample and FEC. Over the recorded sessions that is 8 ms against 31 at
 // the 1080 crop, so a mix that moves reads as the decoder getting slower when nothing about it changed.
 // ai: tapEmpty: callbacks on which the tap had no new VideoFrame; tapDelivered, tapClosedUnseen, tapGapMax: the tap's own
@@ -948,12 +948,12 @@ function second() {
     // LIZARD's data is in grey LEVELS, so a squeezed or clipped range loses signal at every frequency at once.
     // 41% of full range with 13% of the picture pinned at 255 is what a badly overexposed run looked like, against
     // 64% and 87% for runs that read well, so this is worth having on screen while the phone is still in hand.
-    // ai: Read through the lens: bandFps is all a receiver knows of the sender's rate, and research/rig/stats.jsonl carries it so
-    // ai: a run can be checked against the sender's line in the same row after.
+    // ai: Read through the lens: bandFps is all a receiver knows of the sender's rate, and the stats row carries it so a
+    // ai: run can be checked against the sender's line.
     bandVersion: band?.version ?? 0, bandFps: band?.fps ?? 0,
     rateAsked: $("fps").value, rateNote, srcCrop, photoCaps, greyRange: levels?.range ?? 0, greyClipHi: levels?.hi ?? 0, greyClipLo: levels?.lo ?? 0, greyMedian: levels?.mid ?? 0,
-    // Which grab produced this second. research/rig/stats.jsonl already holds every field of this object, so the two
-    // arms of the experiment can be split apart afterwards by this one.
+    // Which grab produced this second. The stats row already holds every field of this object, so the two arms of
+    // the experiment can be split apart afterwards by this one.
     // ai: Frames handed to `decoder` (the GPU worker under F0, or the pool's workers) as VideoFrames in the window, and as
     // ai: luma by the grab; the page's ms for each (the whole callback; 0 under the worker's track, which costs this page
     // ai: nothing a frame); where they came from (the track read in the GPU worker, the page's track processor or the
@@ -1306,7 +1306,7 @@ async function compareGrabs(rect) {
 // cur.grab therefore counts something different here: the main thread's own cost, the upload and two draws going
 // out plus the getBufferSubData coming back, and not the wait for the GPU, which is the point of the fence. It is
 // the honest figure for what the page spends, but it is NOT the canvas path's number with a smaller value, so the
-// arms are judged on sustained goodput and the throttling curve in research/rig/stats.jsonl, not on this.
+// arms are judged on sustained goodput and the throttling curve in the stats rows, not on this.
 function glFrame(rect, sub, arrive, before) {
   const t0 = performance.now();
   // One saturated callback is one lost frame. The readback loop below and the submit at the bottom
@@ -1426,7 +1426,7 @@ async function startCamera() {
   // What this browser will let us say about exposure, recorded rather than assumed. The Image Capture extensions
   // (exposureMode, exposureTime, exposureCompensation, iso, whiteBalanceMode) are a Chromium thing in practice and
   // this rig's figures come from Firefox for Android, so the honest answer for any given phone is whatever its own
-  // getCapabilities() says. It lands in research/rig/stats.jsonl, so a recorded run carries the answer with it.
+  // getCapabilities() says. It lands in the stats row, so a run carries the answer with it.
   try {
     const c = track.getCapabilities?.() ?? {};
     photoCaps = Object.fromEntries(["exposureMode", "exposureCompensation", "exposureTime", "iso", "whiteBalanceMode", "colorTemperature", "brightness", "contrast", "focusMode", "focusDistance", "zoom", "torch"]

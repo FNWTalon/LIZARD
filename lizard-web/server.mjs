@@ -6,8 +6,9 @@
 // Serves the repository over http (localhost) and https (LAN, self-signed: a phone's camera
 // ai: needs a secure origin), and takes the pages' development logs, the only thing a page sends it (2026-09-26):
 // ai: nothing it answers is read by a
-// ai: page to decode or paint. POSTs: /api/stats (the receiver's row a second, appended to research/rig/stats.jsonl with the
-// ai: sender's last line beside it), /api/sender (the sender's line and config), /api/selftest, /api/fft,
+// ai: page to decode or paint. POSTs: /api/stats (the receiver's row a second, the latest kept in memory alone: rows are
+// ai: logged only in a replay since 2026-10-09, research/rig/stats.jsonl no longer written), /api/sender (the sender's line
+// ai: and config), /api/selftest, /api/fft,
 // ai: /api/file. GETs for node scripts: /api/info, /api/stats (the last row, for lizard-web/check_rates.mjs).
 import { createServer as http } from "node:http";
 import { createServer as https } from "node:https";
@@ -45,11 +46,9 @@ async function handle(req, res) {
   if (p === "/api/info") return json({ phoneUrl, lan, https: HTTPS, http: HTTP });
   if (p === "/api/stats") {
     if (req.method === "POST") {
+      // ai: the latest row alone, for the checks' GET (2026-10-09: no row is appended to a log here; rows are logged
+      // ai: only as part of a replay, the Android app's Save replays)
       stats = JSON.parse(await body(req)); statsAt = Date.now();
-      // Every second of every run, appended: a phone's throttling curve cannot be watched and scanned at the same time.
-      // The sender's own line goes in the same row. Without it a stalled sender is invisible afterwards and the
-      // receiver's falling counters read as a codec fault; that mistake cost a log dig once.
-      try { mkdirSync(RIG, { recursive: true }); appendFileSync(join(RIG, "stats.jsonl"), JSON.stringify({ at: statsAt, ...stats, sender, senderAt, senderAgeSecs: senderAt ? (statsAt - senderAt) / 1000 : null }) + "\n"); } catch {}
     }
     // senderAgeSecs is worked out here, against the rig's own clock. The receiver is a different
     // device and its clock can be minutes off, so it must never subtract one from the other.

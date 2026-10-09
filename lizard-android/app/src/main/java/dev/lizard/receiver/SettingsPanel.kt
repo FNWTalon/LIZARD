@@ -24,7 +24,7 @@ import org.json.JSONObject
 
 // ai: Settings, as the web's pages hold them since 2026-10-02. Receive: under
 // ai: the transfer, Settings (the decoder and its batch size, the camera: lens, resolution, zoom, crop, phase lock), Developer Tools (Save
-// ai: replays, the lab line, the dev log's address, the camera's and the receiver's raw readout) and About, the camera running beside
+// ai: replays, the lab line, the readout: the decoder, camera, code, file, lock and heat a line each) and About, the camera running beside
 // ai: them. Home: the tips again, the received files with Delete all, About. The Settings screen, reached by a gear on
 // ai: Home and Receive, went with them. Options bare, no descriptions.
 
@@ -57,8 +57,8 @@ internal fun MainActivity.ReceiveSettings() {
 }
 
 // ai: The lab's readouts: Save replays (MainActivity's runs: the switch, each run listed with its Download once ended,
-// ai: how the last Download went), the lab line, the dev log's address, then the
-// ai: camera's and the receiver's raw readout.
+// ai: how the last Download went), the lab line, then the readout (devReadout). The dev log's address and the stats
+// ai: JSON printed whole went 2026-10-09 (rows are logged only in a replay; the JSON's 150-frame series made it a page).
 @Composable
 internal fun MainActivity.ReceiveAdvanced() {
     val s = settings
@@ -79,17 +79,56 @@ internal fun MainActivity.ReceiveAdvanced() {
     if (MainActivity.replayNote.isNotEmpty()) CodeBlock(MainActivity.replayNote, size = 12)
     val lab = Readout.lab(phase == Engine.Phase.On, rx)
     if (lab.isNotEmpty()) CodeBlock(lab)
-    Spacer(Modifier.height(16.dp))
-    TextInput("Dev log address", s.devlog, "http://host:8080") { change(s.copy(devlog = it.trim()), false) }
-    Spacer(Modifier.height(16.dp))
+    CodeBlock(devReadout(), size = 12)
+}
+
+// ai: The readout, a labelled line or two a part, from the receiver's stats JSON (receiver.cpp stats), the camera
+// ai: (Engine.CamInfo, cameraNow), the phase lock's snapshot and the heat; a part with nothing to say is left out.
+private fun MainActivity.devReadout(): String {
+    val j = runCatching { JSONObject(raw) }.getOrNull()
+    val f = { x: Double, d: Int -> String.format(Locale.ROOT, "%.${d}f", x) }
+    val out = mutableListOf<String>()
+    fun put(label: String, vararg lines: String?) {
+        lines.filterNotNull().filter { it.isNotEmpty() }.forEachIndexed { i, l -> out.add((if (i == 0) label else "").padEnd(9) + l) }
+    }
+    if (j != null) {
+        val dec = j.optString("decoder")
+        put("decoder", if (dec.startsWith("gpu")) "GPU ${dec.removePrefix("gpu").trim()}${if (j.optBoolean("zeroCopy")) ", zero-copy" else ""}, " +
+                "batches up to ${j.optInt("cap", j.optInt("B"))}, ${f(j.optDouble("gpuMs", 0.0), 2)} ms of GPU a frame"
+            else if (dec == "cpu") "CPU, ${j.optInt("threads")} of ${j.optInt("threadsMax")} threads${if (j.optBoolean("simd")) ", NEON" else ""}, " +
+                "${f(j.optDouble("cpuMs", 0.0), 1)} ms a frame" else dec,
+            j.optString("gpuWhy").takeIf { dec == "cpu" && it.isNotEmpty() }?.let { "no GPU: $it" })
+    }
     val c = cam
-    val camLine = if (c == null) "camera: not open" else
-        "camera ${c.id}: ${c.format} ${c.size.width}x${c.size.height}, preview ${c.preview.width}x${c.preview.height}, " +
-            "fps [${c.fps.lower},${c.fps.upper}], min frame %.2f ms, sensor %d°%s".format(c.minFrameMs, c.sensorOrientation,
-                if (c.note.isEmpty()) "" else ", ${c.note}")
-    val forced = if (s.precision != "auto") "\nprecision ${s.precision} (set by tools/phone/ab.sh p=)" else ""
-    val pretty = runCatching { JSONObject(raw).toString(1) }.getOrDefault(raw)
-    CodeBlock("$camLine$forced\n$pretty", size = 12)
+    val now = engine.cameraNow()
+    put("camera", c?.let { "${it.id}: ${it.size.width}x${it.size.height} ${it.format} at ${it.fps.upper} fps, ${settings.layout} crop${if (it.note.isEmpty()) "" else ", ${it.note}"}" } ?: "not open",
+        j?.let { "${f(it.optDouble("capturedFps", 0.0), 0)} captured, ${f(it.optDouble("processedFps", 0.0), 0)} decoded, ${it.optInt("dropped")} dropped a second" +
+            if (it.has("heldMs")) ", held ${f(it.optDouble("heldMs", 0.0), 0)} ms (${f(it.optDouble("heldMaxMs", 0.0), 0)} max)" else "" },
+        now?.let { "exposure ${f(it.exposureMs, 2)} ms, ISO ${it.iso}, readout ${f(it.readoutMs, 2)} ms" })
+    if (j != null) {
+        val word = j.optJSONObject("word")
+        val v = word?.optInt("version", 0) ?: 0
+        put("code", "found ${f(100 * j.optDouble("foundShare", 0.0), 0)}%" + (if (j.optDouble("side", 0.0) > 0) ", symbol ${f(j.optDouble("side"), 0)} px" else "") +
+                (if (v > 0) ", LIZARD-${8 * v}${word?.optInt("fps", 0)?.takeIf { it > 0 }?.let { " at $it fps" } ?: ""}" else ", no word yet"),
+            "${Readout.rate(j.optDouble("goodputKBs", 0.0))}, ${j.optInt("blocks")} blocks in ${f(j.optDouble("windowSecs", 0.0), 2)} s" +
+                (j.optJSONObject("totals")?.let { t -> "; ${t.optLong("blocks")} blocks in ${t.optLong("frames")} frames all told" } ?: ""))
+        val file = j.optJSONObject("file")
+        put("file", when {
+            j.optBoolean("test") -> "the test stream"
+            file == null -> "none yet"
+            else -> "${file.optString("name").ifEmpty { "(no name)" }}: ${Readout.partOf(file.optLong("received").toDouble(), file.optLong("size"))}" +
+                ", chunks ${file.optInt("chunksVerified")} of ${file.optInt("chunks")} verified${if (file.optBoolean("verified")) ", whole" else ""}"
+        })
+    }
+    engine.phaseState()?.let { p ->
+        val pct = { x: Double -> if (x.isNaN()) "-" else "${f(100 * x, 0)}%" }
+        put("lock", "${settings.phase}, ${p.arm} ${p.what}: ${pct(p.a)} before, ${pct(p.b)} after; gain ${f(p.gain, 2)}, pace ${f(p.pace, 0)} us a second, ${p.delays} delays")
+    }
+    put("heat", "thermal $heat" + (clocks?.let { ", GPU ${it.mhz} of ${it.top} MHz" } ?: "") + (powerW?.let { ", ${f(it, 1)} W" } ?: "") +
+        (if (batteryC > 0) ", battery ${f(batteryC, 1)} C" else ""))
+    if (settings.precision != "auto") put("precision", "${settings.precision} (set by tools/phone/ab.sh p=)")
+    j?.optString("error")?.takeIf { it.isNotEmpty() }?.let { put("error", it) }
+    return out.joinToString("\n")
 }
 
 // ai: Zoom as a slider (2026-10-01; chips of 1, 1.4 and 2 before):

@@ -2,8 +2,8 @@ package dev.lizard.receiver
 
 import android.content.Context
 
-// ai: The app's switches, in SharedPreferences "lizard"; Receive's Settings but devlog and replays, which are
-// ai: Developer Tools', and precision, which only the tools set:
+// ai: The app's switches, in SharedPreferences "lizard"; Receive's Settings but replays, which is Developer Tools',
+// ai: and precision, which only the tools set:
 // ai:   decoder     auto | gpu | cpu                      ReceiverConfig.decoder
 // ai:   precision   auto | int8 | f16 | f32               ReceiverConfig.precision; set only by tools/phone/ab.sh p= since
 // ai:               2026-10-01 (its chips went)
@@ -18,7 +18,8 @@ import android.content.Context
 // ai:               out to its soft corners (Engine.session; set live, Engine.zoom)
 // ai:   (focus      auto | dioptres, Receive's Focus of 2026-10-04, went 2026-10-05: autofocus, the camera's continuous
 // ai:               video mode, always, Engine.applyFocus; a stored one is removed at the next save)
-// ai:   devlog      the rig's address (http://host:8080), empty for none
+// ai:   (devlog     the rig's address for the stats rows, went 2026-10-09: rows are logged only in a replay; a stored
+// ai:               one is removed at the next save)
 // ai:   batch       1 to 32, the most frames a GPU launch takes (Receive's Settings, 2026-10-02; since 2026-10-08 a
 // ai:               launch goes as soon as a frame waits and takes every frame then waiting up to this, where it
 // ai:               waited for this many before); 32 by default (receiver.h batchCap); set live
@@ -44,7 +45,6 @@ data class Settings(
     val camera: String = "",
     val resolution: String = "1920x1080",
     val zoom: String = "1.5",
-    val devlog: String = "",
     val phase: String = "track",
     val batch: String = "32",
     val replays: String = "off",
@@ -55,7 +55,7 @@ data class Settings(
     fun save(ctx: Context, cam: String?) {
         val e = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("decoder", decoder).putString("precision", precision).putString("layout", layout).putString("camera", camera)
-            .remove("fps").putString("devlog", devlog).putString("phase", phase).putString("batch", batch).remove("replays")
+            .remove("fps").remove("devlog").putString("phase", phase).putString("batch", batch).remove("replays")
         for ((k, v) in lens()) { e.putString(key(k, cam), v); if (cam != null) e.remove(k) }
         e.remove("focus"); if (cam != null) e.remove(key("focus", cam))   // ai: the focus of 2026-10-04, stored until 2026-10-05
         e.apply()
@@ -87,7 +87,7 @@ data class Settings(
             val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val d = Settings()
             val s = Settings(p.getString("decoder", d.decoder)!!, p.getString("precision", d.precision)!!,
-                p.getString("layout", d.layout)!!, p.getString("camera", d.camera)!!, d.resolution, d.zoom, p.getString("devlog", d.devlog)!!,
+                p.getString("layout", d.layout)!!, p.getString("camera", d.camera)!!, d.resolution, d.zoom,
                 p.getString("phase", d.phase)!!.let { if (it == "auto") "track" else it }, p.getString("batch", d.batch)!!, d.replays)
             val cam = rearId(s.camera)
             return s.copy(camera = cam ?: s.camera).forCamera(ctx, cam)

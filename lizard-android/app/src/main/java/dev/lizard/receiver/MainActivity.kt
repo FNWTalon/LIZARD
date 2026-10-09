@@ -117,11 +117,11 @@ class MainActivity : ComponentActivity() {
     private var ended = ""       // ai: the root whose arrival stopped the camera (once a root)
     private var saving: Library.Entry? = null
     private var asked = false
-    private val devlog = DevLog()
     // ai: Save replays (Developer Tools, 2026-10-03; the web's Record 300 frames, recv.mjs saveRun, as a rolling
     // ai: window): while the switch is on and the camera runs, the newest REPLAY_FRAMES frames the decoder is handed
     // ai: are kept as a run's folder under filesDir/replays (liblizard/core/rx/replay.h), its stats.jsonl the last
-    // ai: REPLAY_LOG rows the dev log gets a second; the run ends when either stops. A finished run keeps its Download
+    // ai: REPLAY_LOG stats rows, made a second while a run records and at no other time (2026-10-09: rows are logged only
+    // ai: as part of a replay; the rig's dev log went); the run ends when either stops. A finished run keeps its Download
     // ai: until a newer run ends with frames, then goes (the companion's `runs`). `owner` the Engine recording the run,
     // ai: which this activity's poll alone ends; null once it ends.
     enum class ReplayState { Recording, Ending, Ready, Failed }
@@ -219,8 +219,8 @@ class MainActivity : ComponentActivity() {
     // ai: (BatteryManager CURRENT_NOW, uA, negative while it discharges on the S26) times its voltage, null while
     // ai: plugged in, when it measures the charger instead; read once a second, the stats row's `powerW` and
     // ai: `batteryC`, a `power:` log line every 5 s with the mean.
-    private var powerW: Double? = null
-    private var batteryC = 0.0
+    internal var powerW: Double? = null
+    internal var batteryC = 0.0
     private var powerSum = 0.0
     private var powerN = 0
     private fun readPower() {
@@ -398,6 +398,7 @@ class MainActivity : ComponentActivity() {
         val dir = File(replaysDir, run)
         val h = Native.replayNew(dir.path, run, REPLAY_FRAMES)
         runs.add(Replay(run, dir, h, ReplayState.Recording, owner = engine))
+        statsRows.clear()   // ai: a run's rows are its own
         engine.replay(h)
         Log.i(Engine.TAG, "replay: $run")
     }
@@ -533,8 +534,10 @@ class MainActivity : ComponentActivity() {
                     if (c != null && (was == null || ((c.throttled || was.throttled) && c != was)))
                         Log.i(Engine.TAG, "clocks: gpu ${c.mhz} of ${c.top} MHz, thermal $heat")
                 }
-                // ai: the rig's log once a second (4 polls), the transfer's average since its first decode added to it
-                if ((tick++ % 4 == 0 || last) && s.isNotEmpty() && (phase == Engine.Phase.On || last)) {
+                // ai: a stats row once a second (4 polls) while a replay records, for its stats.jsonl, and at no other time
+                // ai: (2026-10-09: rows are logged only as part of a replay); the transfer's average since its first decode added to it
+                val recording = runs.any { it.state == ReplayState.Recording && it.owner === engine }
+                if ((tick++ % 4 == 0 || last) && recording && s.isNotEmpty() && (phase == Engine.Phase.On || last)) {
                     // ai: and the phone's thermal status (`thermal`, 2026-10-01), so a slower camera can be told from a hot one;
                     // ai: the GPU's clock ceiling (`gpuMaxMHz`, 2026-10-03); the camera's exposure, sensitivity, readout and
                     // ai: frame, and the phase lock's snapshot (`phase`: its arm and
@@ -549,7 +552,6 @@ class MainActivity : ComponentActivity() {
                         if (ph != null) put("phase", JSONObject().put("arm", ph.arm).put("state", ph.what).put("a", nz(ph.a)).put("b", nz(ph.b)).put("k", nz(ph.k))
                             .put("se", nz(ph.se)).put("n", ph.n).put("gain", ph.gain).put("pace", ph.pace).put("stood", ph.stood).put("edge", ph.edge).put("flatMs", ph.flatMs).put("delays", ph.delays))
                         if (j != null && r.hasFile && !r.verified && secs >= 1) put("avgKBs", r.received / secs / 1000) }.toString() }.getOrDefault(s)
-                    devlog.post(settings.devlog, "/api/stats", body)
                     statsRows.addLast(body)
                     while (statsRows.size > REPLAY_LOG) statsRows.removeFirst()
                 }
