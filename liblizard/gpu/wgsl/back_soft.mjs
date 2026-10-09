@@ -1,5 +1,5 @@
-// Back half part B: soft values, and the decline gate (DESIGN.md sections 1, 4 and 5; src/focus.c lines 1067 to
-// 1104). One workgroup a block, 256 threads: sub-channel g = t / 32 of the block, lane l = t % 32 holding 10 of
+// Back half part B: soft values, and the decline gate (DESIGN.md sections 1, 4 and 5; src/focus.c focus_finish_bits).
+// One workgroup a block, 256 threads: sub-channel g = t / 32 of the block, lane l = t % 32 holding 10 of
 // its 320 coefficients, gathered from S through the UV table (the S index of pos[i]). The per sub-channel
 // moments are a 32-lane tree in workgroup memory; the block's estimate is the mean of its 8 and needs no atomic
 // because the 8 sub-channels sit in the one workgroup. A lane's 10 coefficients are 20 consecutive int8 slots,
@@ -52,7 +52,7 @@ var<workgroup> red4: array<f32, ${THREADS}>;
 var<workgroup> kOf: array<f32, 8>;
 var<workgroup> estOf: array<f32, 8>;
 
-// axis_info (focus.c line 53): the information an axis at SNR g carries.
+// axis_info (src/focus.c): the information an axis at SNR g carries.
 fn jinfo(g: f32) -> f32 {
   if (g <= 0.0) { return 0.0; }
   let base = 1.0 - exp2(-0.3073 * pow(2.0 * sqrt(g), 1.7870));

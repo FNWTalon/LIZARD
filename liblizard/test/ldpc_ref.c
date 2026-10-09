@@ -1,4 +1,4 @@
-// ai: Floating-point reference decoders for the format's LDPC code (ldpc_ref.h): layered sum-product and layered
+// ai: Floating-point reference decoders for the format's LDPC codes (ldpc_ref.h): layered sum-product and layered
 // ai: min-sum with a scale and an offset, one block row a layer as ldpc_decode runs it. Test-only; see
 // ai: test/ldpc_awgn.c and test/ldpc_replay.c for what they measure.
 #include "ldpc_ref.h"

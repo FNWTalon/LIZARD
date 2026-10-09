@@ -8,7 +8,7 @@
 // chaining values of all the chunks combine to the root (2026-09-24).
 //
 // ---- The block ----
-// Every Lizard block is 473 bytes (src/focus.c block_bytes, the same in all 64 formats): the id, uint32
+// Every LIZARD block is 473 bytes (src/focus.c block_bytes, the same in all 128 formats and at every rate): the id, uint32
 // little-endian in bytes 0 to 3, then XFER_PAYLOAD = 469 bytes of payload.
 //
 //   id bits 31..18  chunk   0 .. 16382 a chunk of the file, 16383 (XFER_CONTROL) a control block

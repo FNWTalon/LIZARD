@@ -379,7 +379,6 @@ jdoubleArray receiverSeries(JNIEnv* e, jclass, jlong v, jdouble since) {
   e->SetDoubleArrayRegion(a, 0, n, buf.data());
   return a;
 }
-void receiverSoon(JNIEnv*, jclass, jlong v, jboolean on) { liz_receiver_soon(h<JReceiver>(v)->r, on ? 1 : 0); }
 void receiverBatchCap(JNIEnv*, jclass, jlong v, jint n) { liz_receiver_batch_cap(h<JReceiver>(v)->r, n); }
 jstring receiverFile(JNIEnv* e, jclass, jlong v) { return e->NewStringUTF(liz_receiver_file(h<JReceiver>(v)->r)); }
 void receiverClear(JNIEnv*, jclass, jlong v) { liz_receiver_clear(h<JReceiver>(v)->r); }
@@ -463,7 +462,6 @@ const JNINativeMethod METHODS[] = {
     M(receiverWantsLuma, "(J)Z"),
     M(receiverStats, "(J)Ljava/lang/String;"),
     M(receiverSeries, "(JD)[D"),
-    M(receiverSoon, "(JZ)V"),
     M(receiverBatchCap, "(JI)V"),
     M(receiverFile, "(J)Ljava/lang/String;"),
     M(receiverClear, "(J)V"),

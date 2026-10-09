@@ -58,7 +58,7 @@ std::string Sender::configure(const TxFormat& f) {
   if (f.gap < 0 || f.gap > 64) return "the gap is 0 to 64 modules, not " + std::to_string(f.gap);
   // ai: one codec made here to say what the format is (and that it is one); each painter makes its own
   focus_t probe{};
-  if (focus_init(&probe, f.n, f.subch, 1, 2.0f, f.span, 0.f, 0, 0, 0, 0, 0, 0)) return "the codec refused LIZARD-" + std::to_string(f.subch) + " at n = " + std::to_string(f.n);
+  if (focus_init(&probe, f.n, f.subch, 1, txClip(), f.span, 0.f, 0, 0, 0, 0, 0, 0)) return "the codec refused LIZARD-" + std::to_string(f.subch) + " at n = " + std::to_string(f.n);
   // ai: The device and the painter are made here where no prepare did: the frame ring lives in the painter whatever
   // ai: paints (2026-10-07), so a sender needs a Vulkan device. The GPU paints where asked (or auto); auto keeps it only
   // ai: where two frames of the test stream's blocks come out as the C paints them (gpu/encoder.mjs checkNow's rule), so
@@ -106,7 +106,8 @@ std::string Sender::configure(const TxFormat& f) {
   side_ = probe.px + 2 * FOCUS_QUIET * probe.pxm;
   gap_ = f.codes > 1 ? f.gap * probe.pxm : 0;
   width_ = f.codes * side_ + (f.codes - 1) * gap_;
-  // ai: the profile as text: "7/8 x 20, 3/4 x 20, 1/2 x 11" (the stats' tiers), read before the probe is freed
+  // ai: the profile as text: "7/8 x 24, 3/4 x 17, 2/3 x 16, 1/2 x 10" at LIZARD-568 (the stats' tiers), read before
+  // ai: the probe is freed
   tiers_.clear();
   for (int t = 0; t < probe.tiers; t++) tiers_ += (t ? ", " : "") + std::string(probe.tier[t].rate == 6 ? "7/8" : probe.tier[t].rate == 4 ? "3/4" : probe.tier[t].rate == 3 ? "2/3" : "1/2") + " x " + std::to_string(probe.tier[t].blocks);
   focus_free(&probe);
@@ -180,7 +181,7 @@ void Sender::paint(int) {
     rowBytes = 4ull * gpu_->rowWords();
     bytes = 4ull * gpu_->frameWords();
   }
-  if (focus_init(&f, fm.n, fm.subch, 1, 2.0f, fm.span, 0.f, 0, 0, 0, 0, 0, 0)) {
+  if (focus_init(&f, fm.n, fm.subch, 1, txClip(), fm.span, 0.f, 0, 0, 0, 0, 0, 0)) {
     std::lock_guard<std::mutex> l(mu_);
     error_ = "a painter's codec failed";
     return;
@@ -387,7 +388,7 @@ std::string Sender::stats() {
     << ",\"shownFps\":" << lastFps_ << ",\"offeredKBs\":" << lastKBs_ << ",\"paintMs\":" << lastPaintMs_
     << ",\"painters\":" << fmt_.threads << ",\"painter\":\"" << (onGpu_ ? "gpu" : "cpu") << "\",\"device\":\"" << esc(gpuDevice_)
     << "\",\"gpuWhy\":\"" << esc(gpuWhy_) << "\",\"ahead\":" << ready_.size() << ",\"depth\":" << depth_ << ",\"side\":" << side_ << ",\"width\":" << width_
-    << ",\"codes\":" << fmt_.codes << ",\"shown\":" << shown_ << ",\"blocks\":" << blocks_ << ",\"tiers\":\"" << tiers_ << "\""
+    << ",\"codes\":" << fmt_.codes << ",\"shown\":" << shown_ << ",\"blocks\":" << blocks_ << ",\"tiers\":\"" << tiers_ << "\",\"clip\":" << txClip()
     << ",\"test\":" << (xfer_ ? "false" : "true");
   if (xfer_) {
     std::lock_guard<std::mutex> x(xferMu_);

@@ -4,7 +4,7 @@
 // ai: test stream at LIZARD-96 and at LIZARD-16, LIZARD-96 carrying a 50,000-byte file chosen through the file input
 // ai: (DOM.setFileInputFiles), and the test stream at the page's own pick (?payload=test&auto), which must be the
 // ai: library's pick for the room the page measured (sim/lizard_pick.mjs pickVersion over the whole ladder since 2026-09-29,
-// ai: capped at LIZARD-560 before; on the rings a 1080 px room picks LIZARD-480 either way), then that pick with two codes (&codes=2): the canvas 2:1, each half read on its own,
+// ai: capped at LIZARD-560 before; a 1080 px room picks LIZARD-608 in the default 128 ring), then that pick with two codes (&codes=2): the canvas 2:1, each half read on its own,
 // ai: the right half's word the same and none of its ids the left's (no browser decodes two codes; the C here reads
 // ai: each half as a native receiver would), and the pick again, changed while it runs (below). Each time the page's canvas is
 // ai: read back as luma, padded with white as the page's surround is, and decoded by the C told nothing (sim/phy.mjs
@@ -29,7 +29,7 @@
 // ai: version or the new at 24 fps with 0 bad (the frames in flight: AHEAD, 3, on wasm, up to two batches of 16 under
 // ai: the GPU encoder; a GPU canvas with nothing presented for 120 animation frames, while the new configuration is made,
 // ai: is counted, not judged), and the first frame at the new version, the library's pick for the room the page then
-// ai: measures (a 720 px room: LIZARD-208, n = 768), must read it at 24 fps, its blocks verified, 0 bad, off the arm's
+// ai: measures (a 720 px room: LIZARD-272, n = 768, in the 128 ring), must read it at 24 fps, its blocks verified, 0 bad, off the arm's
 // ai: canvas with the state line still sending, and its ids all above every id read before (send.mjs nextId: a re-pick
 // ai: changes the blocks a frame, and ids counted from seq would come back as repeats). The page's report after it (#tx
 // ai: and #nums, written together once a second, so a grab can hold the one from before the change) must name it in #nums
@@ -39,11 +39,12 @@
 // ai: repaints the border's word. Grabbed from the change on, every frame must read the new version at 24 until the first
 // ai: that says 30, which is judged as the re-pick's was, and the report after it must say "of 30 asked", the same encoder.
 // ai: Each wait is bounded (60 s for the re-pick, SwiftShader's compile and check at the new picture inside it; 30 s for
-// ai: the rate), and how long each change took to reach the canvas is printed. The C's blind decoder misses a few clean
+// ai: the rate), and how long each change took to reach the canvas is printed. The C's blind decoder missed a few clean
 // ai: frames (2026-09-29, the C's own paint of the test stream, whole pixels in white: 8 of 2,000 at LIZARD-208 and 3 of
 // ai: 1,000 at LIZARD-480, each registered in the 32 ring, no word, no block, where a decoder told the version reads every
-// ai: block), which the case's twenty-odd grabs would meet: a grab on the way with no word is decoded told at the old and
-// ai: new versions, and read so it is printed as missed, not failed; a frame no decoder reads still fails. The first five
+// ai: block; 0 of 8,000 such frames since the finder's hold at equal significance, 2026-10-04, though 4 of 19,776 at
+// ai: LIZARD-416 on 1,296 px frames still read no word), which the case's twenty-odd grabs could meet: a grab on the
+// ai: way with no word is decoded told at the old and new versions, and read so it is printed as missed, not failed; a frame no decoder reads still fails. The first five
 // ai: cases judge one grab each blind, a missed one read told and grabbed again (below).
 // ai: The gap between two codes (2026-10-03, send.html's Gap slider): two codes again at gap 0 and at 40 modules
 // ai: (&gap=), each canvas's gap the modules asked within half a module and both halves read blind; then the gap moved
@@ -156,7 +157,8 @@ const decoded = (g, r) => `canvas ${g.w} x ${g.h}, picture n = ${r.n}, word ${r.
 const pageLine = (g) => `  page: ${g.state} | ${g.nums} | ${g.tx.split("\n").slice(0, 3).join(" | ")} | ${g.tx.split("\n").find((l) => l.startsWith("painted ")) ?? "no painted line"} | ${encoderOf(g).line} (#${g.which})`;
 
 const faults = [];
-// ai: 488 (61 blocks, 2026-10-01): a whole number of blocks the 16-step ladder never offered, set as the slider sets it
+// ai: 488 (version 61, 58 blocks under the rate profile; 2026-10-01): a version the 16-step ladder never offered, set as
+// ai: the slider sets it
 for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file: true }, { subch: "auto" }, { subch: "auto", codes: 2 }, { subch: "auto", codes: 2, gap: 0 }, { subch: "auto", codes: 2, gap: 40, regap: 4 }, { subch: "auto", midStream: true }]) {
   const codes = c.codes ?? 1;
   let name = `LIZARD-${c.subch}${c.file ? `, a ${FILE_BYTES} B file` : ", test stream"}${c.gap !== undefined ? `, gap ${c.gap}` : ""}`;
@@ -254,8 +256,9 @@ for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file
 // ai: The canvas grabbed and decoded from the moment of a change until want(r) holds, or ms pass. Every grab on the way
 // ai: must read a word `ok` allows (the frames the change left in flight, or the new ones) with 0 bad. A grab the blind
 // ai: decoder reads no word on is decoded told at the sub-channel counts in subs (readTold): read so, with 0 bad and a
-// ai: word ok allows, it is a good frame the blind decoder missed (the C's blind decoder registers the wrong ring on a
-// ai: few clean frames, 2026-09-29, the C's own paint of the same ids alike), counted as missed; read by neither, it is
+// ai: word ok allows, it is a good frame the blind decoder missed (the C's blind decoder registered the wrong ring on a
+// ai: few clean frames, 2026-09-29, the C's own paint of the same ids alike; rarer since 2026-10-04, above), counted as
+// ai: missed; read by neither, it is
 // ai: a stray, a fault. A grab of the GPU canvas that saw nothing presented in 120 animation frames (GRAB throws) is
 // ai: counted as idle, not judged. before: the words read on the way, run-length ("60@24 x3"); ids: every id they verified.
 async function grabUntil(want, ok, subs, ms) {

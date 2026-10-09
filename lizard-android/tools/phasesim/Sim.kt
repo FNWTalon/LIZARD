@@ -72,7 +72,7 @@ fun run(name: String, mode: PhaseLock.Mode, every: Int, tcNs: Long, tdNs: Double
     class Cap(val ts: Long, val blocks: Int, val r: Double, val rSd: Double, val r2: Double, val r2Sd: Double)   // ai: the two readings and their own errors
     val all = ArrayList<Cap>()
     var nextStats = ts + 500_000_000L
-    // ai: `phasesim.batch=B`: the series as the receiver's batches hand it over and a lock asked at every capture: a
+    // ai: `phasesim.batch=B`: the series as a batching receiver hands it over and a lock asked at every capture: a
     // ai: batch closes B captures on, is decoded 15 ms and 3.2 ms a frame later, and reaches the lock at the next
     // ai: capture (unset: the series asked twice a second, 0.7 s behind, as the app fed it to 2026-10-01).
     // ai: `phasesim.soon=S`: batches of S while the lock asks for its frames soon (`PhaseLock.soon`)
@@ -297,7 +297,7 @@ fun replay(file: String): Int {
 
 // ai: A recorded series through the lock itself (scripts/exp/replay_phase.py --series: a line `V <version>`, then a
 // ai: row a half-frame, ts_ns verified found r rsd r2 r2sd), open loop: the captures in order, each one's rows handed
-// ai: over as the receiver's batches hand them (the rule above: 32 captures a batch, 8 while the lock asks for them
+// ai: over as a batching receiver hands them (the rule above: 32 captures a batch, 8 while the lock asks for them
 // ai: soon, read at the first capture after the batch's close plus a frame, 15 ms and 3.2 ms a frame), then onCapture
 // ai: with the capture's own timestamp (delayed where its interval is over 16.8 ms; the lock's delays move nothing
 // ai: here). The lock's lines as they come (its leaks and moves too under -Dphase.debug=1), each at the capture's
@@ -305,11 +305,13 @@ fun replay(file: String): Int {
 fun series(file: String) {
     var version = 64
     val rows = ArrayList<PhaseLock.Frame>()
+    val vers = ArrayList<Int>()   // ai: the word's version at each row: a `V` line holds from where it stands (2026-10-07; the last one held for the whole run before)
     for (l in java.io.File(file).readLines()) {
         if (l.isBlank() || l.startsWith("#")) continue
         if (l.startsWith("V ")) { version = l.substring(2).trim().toInt(); continue }
         val f = l.trim().split(Regex("\\s+"))
         rows.add(PhaseLock.Frame(f[0].toLong(), f[1].toInt(), f[2] == "1", f[3].toDouble(), f[4].toDouble(), f[5].toDouble(), f[6].toDouble()))
+        vers.add(version)
     }
     if (rows.isEmpty()) { println("no rows in $file"); return }
     val t0 = rows.first().ts
@@ -318,7 +320,7 @@ fun series(file: String) {
     val p = PhaseLock({ println("%7.2f s  %s".format((tNow - t0) / 1e9, it)); if (it.contains("the hold stands")) stands++; if (it.contains("search")) searches++ })
     p.set(PhaseLock.Mode.Track)
     val open = ArrayList<PhaseLock.Frame>()
-    val due = ArrayDeque<Pair<Long, List<PhaseLock.Frame>>>()
+    val due = ArrayDeque<Triple<Long, List<PhaseLock.Frame>, Int>>()
     val asks = ArrayList<Long>()
     var i = 0; var prevTs = 0L; var captures = 0; var inBatch = 0
     while (i < rows.size) {
@@ -326,8 +328,8 @@ fun series(file: String) {
         while (i < rows.size && rows[i].ts == ts) { open.add(rows[i]); i++ }
         captures++; inBatch++
         tNow = ts
-        while (due.isNotEmpty() && due.first().first <= ts) p.onWindow(due.removeFirst().second, version)
-        if (inBatch >= (if (p.soon) 8 else 32)) { due.addLast(Pair(ts + 16_650_000L + 15_000_000L + 3_200_000L * open.size, open.toList())); open.clear(); inBatch = 0 }
+        while (due.isNotEmpty() && due.first().first <= ts) { val d = due.removeFirst(); p.onWindow(d.second, d.third) }
+        if (inBatch >= (if (p.soon) 8 else 32)) { due.addLast(Triple(ts + 16_650_000L + 15_000_000L + 3_200_000L * open.size, open.toList(), vers[i - 1])); open.clear(); inBatch = 0 }
         val delayed = prevTs != 0L && ts - prevTs > 16_800_000L
         val us = p.onCapture(ts, delayed)
         if (us > 0) asks.add(us)

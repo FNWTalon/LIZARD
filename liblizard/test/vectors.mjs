@@ -82,26 +82,26 @@ const greySquare = (e, a, b) => { const o = new Uint8Array((b - a) * (b - a)); l
 // ai: 3-module guard, FOCUS_CP = 3).
 {
   const e = encode(256, 16, () => {});
-  want("P2 slot bits sha256", sha(e.slots), "726c1e022ebb8c61cd6ded139be3a029b0102d39f81fdceeb08c70410edea142");
-  want("P2 packed first 16", hex(pack(e.slots).subarray(0, 16)), "00203e010efc0be0f8bfbdce000c0c03");
+  want("P2 slot bits sha256", sha(e.slots), "6a1cebe89d813d0cbc345cc590f031e2c0ee48bf09dd15d384bfb12882a69e09");
+  want("P2 packed first 16", hex(pack(e.slots).subarray(0, 16)), "00203e000ff403e0b8fffdcc001c1c03");
   want("P2 drive side", String(e.side), "316");
-  want("P2 drive row 30 cols 30..33", Array.from(e.drive.subarray(30 * 316 + 30, 30 * 316 + 34), (v) => v.toFixed(7)).join(", "), "0.7166191, 1.0000000, 1.0000000, 1.0000000");
-  want("P2 grey row 30 cols 30..45", greyRow(e, 30, 30, 16), "183 255 255 255 255 177 121 120 138 131 96 57 41 61 104 135");
-  want("P2 grey row 230 cols 230..245", greyRow(e, 230, 230, 16), "255 255 119 22 9 42 74 89 93 104 132 176 211 213 182 148");
+  want("P2 drive row 30 cols 30..33", Array.from(e.drive.subarray(30 * 316 + 30, 30 * 316 + 34), (v) => v.toFixed(7)).join(", "), "0.7305945, 0.9875329, 1.0000000, 1.0000000");
+  want("P2 grey row 30 cols 30..45", greyRow(e, 30, 30, 16), "186 252 255 255 255 192 116 96 112 132 139 132 112 96 104 135");
+  want("P2 grey row 230 cols 230..245", greyRow(e, 230, 230, 16), "255 235 152 104 83 65 49 49 68 94 119 145 162 161 143 132");
   const sq = greySquare(e, 24, 292);
-  want("P2 square sha256", sha(sq), "4b0fece66fb3a1963ae8d322893800afedcd2164914f6c519b75fc2033b76116");
-  want("P2 square zeros / 255s", `${sq.filter((v) => v === 0).length} / ${sq.filter((v) => v === 255).length}`, "1619 / 1698");
-  want("P2 whole drive sha256", sha(greySquare(e, 0, 316)), "49f87e1569ffd094642136cb1025ab20e038f23b8d068a0f2ce774e851ff377a");
+  want("P2 square sha256", sha(sq), "1eecfb5b7940cf345cf409812c497de7bbcda44a90d143f243b7ad52e410d84d");
+  want("P2 square zeros / 255s", `${sq.filter((v) => v === 0).length} / ${sq.filter((v) => v === 255).length}`, "1628 / 1709");
+  want("P2 whole drive sha256", sha(greySquare(e, 0, 316)), "5452e1978a3904e014205d8a22c225b9659f4cf70a00ef30630fffe725128432");
 }
 // ai: 6.12 P3, LIZARD-64, every payload byte zero: n 384 in the 64 ring, side 474, pxm 3 (a copy), the picture
 // ai: from pixel 45, the resampled square [36, 438).
 {
   const e = encode(nFor(64), 64, () => {});
-  want("P3 slot bits sha256", sha(e.slots), "530e72f118c1c3f3b90b6017548c13039b3c9415922ff234a6a10853af28250e");
+  want("P3 slot bits sha256", sha(e.slots), "f93ce4c7107e054bda67f4b2d7d91b024da17dc8af24670c2ed26efc82de4f28");
   want("P3 drive side", String(e.side), "474");
-  want("P3 grey row 45 cols 45..60", greyRow(e, 45, 45, 16), "94 159 255 255 196 145 208 229 141 71 91 129 132 127 138 156");
-  want("P3 square sha256", sha(greySquare(e, 36, 438)), "3da487dd12bb2fd61466373bb6377ff80a1afa2deae35d4ddc21dc36db074a1a");
-  want("P3 whole drive sha256", sha(greySquare(e, 0, 474)), "ec6c4e4cd91acb3aaaac44e9ab13ce99078a25aed4784d7baa60daaf0ad0593f");
+  want("P3 grey row 45 cols 45..60", greyRow(e, 45, 45, 16), "151 201 220 197 182 222 255 255 191 114 83 101 128 134 136 145");
+  want("P3 square sha256", sha(greySquare(e, 36, 438)), "9cfc1129d286ced2bd750614fd314ac9e2c2f8ea0882515de3893c0a8937d0ca");
+  want("P3 whole drive sha256", sha(greySquare(e, 0, 474)), "025532283ce407bb54fe1b1333d7a33ae0391751f47b144bba0ec26b89c7c91b");
 }
 // ai: 7.4, LIZARD-16, block b = id b LE32 then byte j = j mod 256.
 {
@@ -111,10 +111,10 @@ const greySquare = (e, a, b) => { const o = new Uint8Array((b - a) * (b - a)); l
     const p = M._malloc(473); M.HEAPU8.set(blk(b), p);
     want(`7.4 block ${b} CRC-32`, "0x" + (M._ob_test_crc_hash(p, 473) >>> 0).toString(16).toUpperCase().padStart(8, "0"), b ? "0x90C7A3FE" : "0x9F59BCE3");
     M._free(p);
-    want(`7.4 block ${b} slots 0..127`, hex(pack(e.slots.subarray(5120 * b, 5120 * b + 128))), b ? "77df2df63b06611785ae191b9d491b47" : "2a6d2d409722af16f5f2c5ec83cda6fb");
+    want(`7.4 block ${b} slots 0..127`, hex(pack(e.slots.subarray(5120 * b, 5120 * b + 128))), b ? "73db2dd63b0e6957c5ac1b598d499bc7" : "0e4d0c60972aa716b5f2c5ae81ddb6fb");
     want(`7.4 block ${b} slots 5088..5119`, hex(pack(e.slots.subarray(5120 * b + 5088, 5120 * b + 5120))), b ? "8afe77aa" : "a909ab10");
   }
-  want("7.4 frame slots packed sha256", sha(pack(e.slots)), "8881113e5edfc7b2c3ac85c58d00b57d4186021e9c3a66a045715263e95cbd1f");
+  want("7.4 frame slots packed sha256", sha(pack(e.slots)), "ce4bbd787faaed53466ecabc2b53a065d5eb0fc9c89daa66627d8f442dd1f5d0");
 }
 // ai: 9.3, the test stream.
 {

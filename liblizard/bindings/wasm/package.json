@@ -1,7 +1,7 @@
 {
   "name": "lizard",
   "version": "0.1.0",
-  "description": "The Lizard code: a luminance-only animated barcode that carries a file from a screen to a camera",
+  "description": "The LIZARD code: a luminance-only animated barcode that carries a file from a screen to a camera",
   "type": "module",
   "main": "./index.mjs",
   "types": "./index.d.ts",

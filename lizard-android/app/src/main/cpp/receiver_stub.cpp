@@ -1,4 +1,4 @@
-// ai: A stand-in Receiver (LIZ_STUB_RECEIVER=ON) until core's lizard_rx lands: every frame is counted and handed back
+// ai: A stand-in Receiver (LIZ_STUB_RECEIVER=ON) in place of core's lizard_rx: every frame is counted and handed back
 // ai: at once, from the stub's own thread, as the real one releases from its threads (the JNI attach path runs). It
 // ai: decodes nothing: its stats say "looking" with the camera's rates, so the app's camera, push and release are
 // ai: checked on a phone before the decoder is.
@@ -14,9 +14,11 @@
 // ai:   blocks       CRC-verified blocks since the start
 // ai:   foundShare   share of the last second's frames registered, 0 to 1
 // ai:   bandVersion  the version the last read word names (sub-channels / 8), 0 before any
-// ai:   file         null before a transfer's header, else {name, size, received, verified, root, type} (bytes, bytes,
-// ai:                bool, the BLAKE3 root in hex, the header's media type)
-// ai: and, for the Advanced readout only: frames, dropped, res, input (hb or luma), gpuMs.
+// ai:   file         null before a transfer's header, else {name, size, received, verified, root, type, sent, sentIn}
+// ai:                (bytes, bytes, bool, the BLAKE3 root in hex, the header's media type, the bytes as sent and those
+// ai:                of them in, 2026-10-05)
+// ai:   word         the last word read: version, fps (the rate it states)
+// ai: and, for the Developer Tools readout only: frames, dropped, res, input (hb or luma), gpuMs.
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -69,7 +71,6 @@ class StubReceiver final : public Receiver {
 
   // ai: no frame is decoded: no word, no rows
   std::vector<double> series(double) override { return {0}; }
-  void soon(bool) override {}
   void batchCap(int) override {}
   std::string file() override { return {}; }
   void clear() override {}

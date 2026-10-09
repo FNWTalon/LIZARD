@@ -4,7 +4,7 @@
 // ai: frame, y the frame), the same outputs to the bit (each slot under the frame's count: its score and its reading's
 // ai: twelve words; nothing past the count), the contract's codes (liblizard/gpu/cnn/q8c.mjs forwardCodesC) on the
 // ai: kernel's own Xq. On the Adreno 840 the fast build costs 0.36 ms a frame of 1,024 patches against the twin's 0.48
-// ai: (core/nets/README.md).
+// ai: (2026-09-30, int8-sg, 96 recorded frames; core/nets/README.md).
 // ai:
 // ai: A workgroup is 64 invocations and takes PP patches (4 by default: workgroup x takes x 4 .. x 4 + 3; the rest of
 // ai: the dispatch returns at once). Each patch's cut, statistics and Xq are the WGSL's own arithmetic in its own order

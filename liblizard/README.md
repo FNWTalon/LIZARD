@@ -1,9 +1,9 @@
 # liblizard
 
-The Lizard code as a library: a luminance-only animated barcode that carries a file from a screen to a camera. A
+The LIZARD code as a library: a luminance-only animated barcode that carries a file from a screen to a camera. A
 frame is a grey picture whose FFT coefficients carry blocks of 473 bytes (a 4-byte id and 469 of payload, CRC-checked),
-each LDPC-coded at a rate that follows the frequency (7/8 inside, 3/4, 1/2 outside), inside a border that says what is
-inside; a file goes as a fountain-coded transfer verified by its BLAKE3 root.
+each LDPC-coded at a rate that follows the frequency (7/8 inside, then 3/4 and 2/3, 1/2 outside), inside a border
+that says what is inside; a file goes as a fountain-coded transfer verified by its BLAKE3 root.
 
 One C API (`include/lizard.h`), three bindings over it:
 

@@ -61,6 +61,11 @@ static int count_cycles(int mb, int z, int shift[][LDPC_NB], int r, int j, int s
 
 // Test hook: a degree profile to use instead of the table's, for the ablations in test/.
 int ldpc_override_heavy = -1, ldpc_override_dh = 0, ldpc_norm = 0;
+int ldpc_codes_set = -1;
+static int codes_set(void) {
+  if (ldpc_codes_set < 0) { const char *e = getenv("LIZ_TABLES"); ldpc_codes_set = e && *e ? atoi(e) : 0; }
+  return ldpc_codes_set;
+}
 
 static profile_t profile(int rate) {
   profile_t prof = PROFILE[rate];
@@ -107,16 +112,21 @@ int ldpc_init(ldpc_t *c, int n_max, int rate, uint32_t seed) {
   const profile_t prof = profile(rate), *p = &prof;
   int z = n_max / LDPC_NB;
   if (z < 8) return -1;
-  int mb = p->mb, kb = LDPC_NB - mb;
-  c->z = z; c->mb = mb; c->kb = kb; c->rate = rate; c->norm = ldpc_norm ? ldpc_norm : p->norm;
-  c->n = LDPC_NB * z; c->k = kb * z; c->m = mb * z;
-
-  // The format's codes are the tables (ldpc_base.h, one a rate of the rate profile); every other code, and the
-  // format's own under a test's profile override, is generated.
+  // The format's codes are the tables (ldpc_base.h, one a rate of the rate profile, each with its own block rows, data
+  // columns and columns never sent); every other code, and the format's own under a test's profile override, is
+  // generated over 48 columns.
   static _Thread_local int shift[LDPC_NB][LDPC_NB];   // ai: scratch, a thread's own
-  const ldpc_base_t *base = 0;
+  const ldpc_base_t *base = 0, *set = codes_set() == 1 ? LDPC_BASES_V1 : codes_set() == 2 ? LDPC_BASES_V2 : LDPC_BASES;
   for (int t = 0; t < LDPC_BASES_N; t++)
-    if (z == LDPC_BASES[t].z && rate == LDPC_BASES[t].rate && seed == LDPC_BASE_SEED && ldpc_override_heavy < 0 && mb == LDPC_BASES[t].mb && kb == LDPC_BASES[t].kb) base = &LDPC_BASES[t];
+    if (z == set[t].z && rate == set[t].rate && seed == LDPC_BASE_SEED && ldpc_override_heavy < 0) base = &set[t];
+  // ai: the lab set 2's tables carry their own z (128): matched by rate where the codeword fits the block's n_max
+  if (!base && codes_set() == 2)
+    for (int t = 0; t < LDPC_BASES_N; t++)
+      if (rate == set[t].rate && seed == LDPC_BASE_SEED && ldpc_override_heavy < 0 && (set[t].kb + set[t].mb) * set[t].z <= n_max) { base = &set[t]; z = set[t].z; }
+  int mb = base ? base->mb : p->mb, kb = base ? base->kb : LDPC_NB - mb, np = base ? base->np * z : 0;
+  if (mb > LDPC_NB || kb > LDPC_NB) return -1;
+  c->z = z; c->mb = mb; c->kb = kb; c->rate = rate; c->norm = ldpc_norm ? ldpc_norm : p->norm;
+  c->n = (kb + mb) * z; c->k = kb * z; c->m = mb * z; c->np = np; c->nt = c->n - np;
   if (base) {
     for (int r = 0; r < mb; r++) for (int j = 0; j < LDPC_NB; j++) shift[r][j] = j < base->kb ? base->shift[r * base->kb + j] : -1;
   } else if (ldpc_generate(z, rate, seed, shift) < 0) return -1;
@@ -386,7 +396,7 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
 void ldpc_tables(const ldpc_t *c, int32_t *dims, int32_t *lay) {
   dims[0] = c->n; dims[1] = c->k; dims[2] = c->m; dims[3] = c->z; dims[4] = c->zp;
   dims[5] = c->mb; dims[6] = c->kb; dims[7] = c->norm; dims[8] = c->slots_max; dims[9] = c->slots_total;
-  dims[10] = c->lay_ptr[c->mb];
+  dims[10] = c->lay_ptr[c->mb]; dims[11] = c->np;
   if (!lay) return;
   for (int r = 0; r <= c->mb; r++) lay[r] = c->lay_ptr[r];
   for (int e = 0; e < c->lay_ptr[c->mb]; e++) { lay[c->mb + 1 + 2 * e] = c->lay_col[e]; lay[c->mb + 2 + 2 * e] = c->lay_shift[e]; }

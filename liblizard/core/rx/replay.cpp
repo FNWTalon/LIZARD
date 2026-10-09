@@ -21,8 +21,8 @@ namespace lizard {
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
-// ai: how long the run's end waits for frames the GPU decoder took and has not handed over: a batch staged when the
-// ai: camera stops launches at its bound (1.5 batches of arrivals, 0.8 s at 32 and 60 a second), then runs
+// ai: how long the run's end waits for frames the GPU decoder took and has not handed over: a frame staged when the
+// ai: camera stops launches once a lane is free (2026-10-08; before, at its bound of 1.5 batches of arrivals), then runs
 constexpr auto HELD_WAIT = std::chrono::seconds(4);
 
 // ai: A folder of its own: one that holds anything already is refused, never emptied (emptying it, a proposed fix for

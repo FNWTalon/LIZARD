@@ -55,7 +55,8 @@ struct Params { gridStride: u32, yStride: u32, partStride: u32, size: u32, n: u3
 // ai: Then from listsHead + 2 B each frame's block count (listsBlocks): the version F8 gave it (sel.y = 1 +
 // ai: version, gpu/wgsl/word.mjs: its word's, or the held one) up to the size's blocks. Every version is a prefix of
 // ai: its size's largest (src/focus.c: coefficients by frequency, the whitening by slot, block b on sub-channels 8b
-// ai: to 8b + 7), so the soft stage and the LDPC take a frame's first count blocks and leave the rest.
+// ai: to 8b + 7: here a block is the gate's 8-sub-channel chunk, the rate profile's blocks gpu/back/tiers.mjs's), so
+// ai: the soft stage and the LDPC take a frame's first count blocks and leave the rest.
 // ai: Then from listsHead + 3 B each frame's row count (listsRows): the disc rows its first count blocks need
 // ai: (gpu/back/transform.mjs rowsByCount, in the gate's uniform at gateRowsAt(count, size)), which pass 1's store and
 // ai: pass 2 stop at. Pass 2's dispatch is the most rows any listed frame of the size needs; pass 1's and reduce's
@@ -532,7 +533,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) tid: 
     if (e < row.z) { u = i32(e + ustart); } else { u = i32(e) - i32(row.z) - i32(row.w); }
     let m: u32 = u32(u + i32(N)) % N;
     let xu: vec4f = x12[m];
-    // The C's spectral subtraction (src/focus.c focus_finish_bits lines 1001 to 1010) in its units: buf holds
+    // The C's spectral subtraction (src/focus.c focus_finish_bits) in its units: buf holds
     // T / n, so the surface's spectrum D is taken off as D / n, and S = (T - D) / n^2.
     var d: vec2f = c0.z * cmul(xu.xy, xv.xy);
     if (vv == 0u) { d += nf * (c0.x * xu.xy + c0.w * xu.zw); }

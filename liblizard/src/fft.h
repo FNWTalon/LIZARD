@@ -13,8 +13,8 @@
 // ai: size is not transformed.
 void fft_cols(float *re, float *im, int rows, int cols, int pitch, int inverse);
 
-// Which radix fft_cols uses from here on: 2 (the default), 4 or 8. A size the radix does not divide takes one
-// leading radix-2 or radix-4 stage and the rest at the full radix; 512 is 8^3, so 8 divides it exactly. The output
+// Which radix fft_cols uses from here on: 2 (the default) or 4; any other value takes 2 (radix 8 has no kernel,
+// fft.c). A size the radix does not divide takes one leading radix-2 stage and the rest at the full radix. The output
 // differs between radices in its last bits, the order of the additions not being the same, so a build that wants
 // to be compared byte for byte against another must be on the same one. scripts/exp/fft_bench.mjs and scripts/pages/fft.html time
 // them; a phone is the only place the choice can be made.

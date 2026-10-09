@@ -82,7 +82,7 @@ export function geometry(format) {
   return geometryFrom(p + 16);
 }
 export function roomFor(blocks, ring = RING_DEFAULT) { return check(mod()._liz_room_for(blocks, ring)); }
-// ai: the most blocks a symbol may carry in a w x h room of display pixels (the senders' pick)
+// ai: the largest size (format.blocks) a symbol may have in a w x h room of display pixels (the senders' pick)
 export function pick(w, h, { codes = 1, ring = RING_DEFAULT, top = MAX_BLOCKS } = {}) { return check(mod()._liz_pick(w, h, codes, ring, top)); }
 
 // ---- 2. the per-frame codec ------------------------------------------------------------------------------------------
@@ -127,9 +127,9 @@ function decodedFrom(p, count, blocks) {
 }
 
 export class Decoder {
-  // ai: nmax: the largest picture decoded (0: every format). held: the held word (the blocks a symbol of the last word
-  // ai: read), the one thing carried from frame to frame; decoders reading one stream may share it through decode's
-  // ai: held option.
+  // ai: nmax: the largest picture decoded (0: every format). held: the held word (the size, format.blocks, the last
+  // ai: word read names), the one thing carried from frame to frame; decoders reading one stream may share it through
+  // ai: decode's held option.
   constructor(nmax = 0) {
     mod();
     this.h = made(M._liz_decoder_new(nmax));
@@ -240,7 +240,7 @@ export class Rx {
       rejected: M.HEAPU32[(p + 40) >> 2], solveMs: M.HEAPF64[(p + 48) >> 3],
     };
   }
-  // ai: each chunk: 0 to 99 the share in, 254 decoded and waiting on the manifest, 255 verified
+  // ai: each chunk: 0 to 99 the share in (a floor until the manifest is in), 255 verified
   get chunks() {
     const n = check(M._liz_rx_chunks(this.h, 0, 0)), p = scratch.at(Math.max(1, n));
     check(M._liz_rx_chunks(this.h, p, n));

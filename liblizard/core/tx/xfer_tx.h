@@ -19,7 +19,7 @@ namespace lizard {
 class XferTx {
  public:
   // ai: data: the file's bytes, alive as long as this (the app maps the file); name and type as the header carries them
-  // ai: (a name cut to 255 bytes at a character, a type kept only where it is printable ASCII of at most 162).
+  // ai: (a name cut to 255 bytes at a character, a type kept only where it is printable ASCII of at most 158).
   // ai: Throws std::runtime_error where the file cannot go (too many chunks, a chunk Wirehair seeded apart).
   XferTx(const uint8_t* data, size_t length, const std::string& name, const std::string& type, int chunkLog2 = 22);
   ~XferTx();

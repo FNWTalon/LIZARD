@@ -3,9 +3,9 @@
 // ai:   the camera's (push): a frame onto the ring at once (its ingest submitted on the ingest queue), or dropped;
 // ai:   the releaser: each camera buffer handed back (release(tag)) once its ingest has run, so a buffer is held for
 // ai:     about a millisecond, never behind a batch;
-// ai:   the decoder: plans on the first frame's shape, launches batches by the web's rule (the target size staged, or
-// ai:     the oldest waiting FILL batches of arrivals), two in flight, finishes them, keeps the held word, and hands each
-// ai:     frame's verified blocks to the transfer.
+// ai:   the decoder: plans on the first frame's shape, launches as soon as a frame is staged and a lane is free, with
+// ai:     every frame then staged (since 2026-10-08: nothing held back to fill a batch), two in flight, finishes them,
+// ai:     keeps the held word, and hands each frame's verified blocks to the transfer.
 #include "receiver.h"
 #include "replay.h"
 #include "front.h"
@@ -30,15 +30,13 @@ namespace lizard {
 
 namespace {
 
-constexpr int STAGE_BATCHES = 2;       // ai: gpuqueue.mjs: batches' worth staged past which a new frame is dropped
-constexpr double FILL = 1.5;           // ai: the launch bound in batches of arrivals
-constexpr double RATE_TAU = 2000;      // ai: ms the arrival-rate EMA remembers
-constexpr double RATE_MIN = 5;         // ai: fps the EMA never goes under
-// ai: A batch's frames while results are wanted soon (Receiver::soon): at 60 captures a second a batch of 32 is 533 ms
-// ai: of arrivals, so a frame's reading is 0.35 to 1.1 s old when it is delivered, and a batch of 8 is 133 ms. A
-// ai: smaller batch costs the GPU more a frame (the S26 at 60 frames a second: 2.88 ms a
-// ai: frame at 32, 3.20 at 8, 3.74 at 4, 6.58 at 1).
-constexpr int SOON = 8;
+// ai: Batches' worth staged past which a new frame is dropped (gpuqueue.mjs). A batch is never waited for (2026-10-08):
+// ai: a launch goes as soon as a frame is staged and a lane is free and takes every frame staged then, so a GPU that
+// ai: keeps up decodes each frame alone, its reading at the phase lock a frame after its capture, and one that falls
+// ai: behind decodes what arrived meanwhile together. Waiting for 32 held a reading half a second and more and a hot
+// ai: phone stalled behind it; one frame a launch dropped a quarter of the halves at 120 a second (a half alone cost
+// ai: the S26 11.0 ms of GPU at the 1536 picture against 8.3 ms of arrivals).
+constexpr int STAGE_BATCHES = 2;
 
 // ai: The crops of a camera frame (ReceiverConfig.layout): 1:1 the centre square (the web's cropAtSource or
 // ai: baseRect); 2:1 the centre region twice as long as it is high along the frame's long side, its two halves (each a
@@ -107,7 +105,6 @@ class GpuReceiver : public Receiver {
   void push(const CameraFrame& f) override;
   std::string stats() override;
   std::vector<double> series(double sinceMs) override { std::lock_guard<std::mutex> l(mu); return stamps.since(held, sinceMs); }
-  void soon(bool on) override { soonOn = on; cv.notify_all(); }
   void batchCap(int n) override { cap = n; cv.notify_all(); }
   std::string file() override;
   void clear() override;
@@ -150,9 +147,7 @@ class GpuReceiver : public Receiver {
   std::shared_mutex planMu;
   int held = 0;
   int batchSize = 1;                      // ai: the batcher's size as the decoder thread last read it (push is another thread)
-  std::atomic<bool> soonOn{false};        // ai: Receiver::soon, set by the caller's thread and read by the decoder's
-  std::atomic<int> cap{0};                // ai: Receiver::batchCap, the same; 0 for none
-  double iv = 1000.0 / 30, lastPush = 0;
+  std::atomic<int> cap{0};                // ai: Receiver::batchCap, set by the caller's thread and read by the decoder's; 0 for none
   // ai: camera buffers waiting for their ingest to finish before release: (timeline value, tag)
   std::mutex relMu;
   std::condition_variable relCv;
@@ -168,8 +163,8 @@ class GpuReceiver : public Receiver {
   void decoderLoop();
   void releaserLoop();
   void drop(uint64_t tag) { releaseFn(tag); }
-  // ai: the last window as it was: its length (a window ends at the first batch past a second, 1.07 s at batches of
-  // ai: 32) and the frames it processed. `last.arrived` and `last.processed` are rates; a count over the window is
+  // ai: the last window as it was: its length (a window ends at the first batch delivered past a second) and the
+  // ai: frames it processed. `last.arrived` and `last.processed` are rates; a count over the window is
   // ai: a rate only over lastSecs, and a share only over lastFrames (to 2026-10-01 the goodput counted the window as
   // ai: a second, at 1024 B a KB, and read 4.2% over the page's; the registered share read 107%)
   double lastSecs = 1;
@@ -233,7 +228,7 @@ bool GpuReceiver::start(std::string& why) {
   return true;
 }
 
-// ai: gpuqueue.mjs push, place and stage: the arrival rate's EMA, the shape planned on the decoder thread, a frame
+// ai: gpuqueue.mjs push, place and stage: the shape planned on the decoder thread, a frame
 // ai: dropped before it touches the device once STAGE_BATCHES batches' worth are staged, else onto the ring.
 void GpuReceiver::push(const CameraFrame& f) {
   const double now = fh->now();
@@ -249,8 +244,6 @@ void GpuReceiver::push(const CameraFrame& f) {
     std::lock_guard<std::mutex> l(mu);
     win.arrived++;
     stamps.put(f.tag, f.timestampNs);
-    if (lastPush) { const double dt = std::min(now - lastPush, 1000 / RATE_MIN); iv += (dt - iv) * std::min(1.0, dt / RATE_TAU); }
-    lastPush = now;
     if (side == failedW) dropped = true;
     else {
       if (side > shapeW) { shapeW = side; planned = false; failedW = 0; }
@@ -304,15 +297,16 @@ void GpuReceiver::releaserLoop() {
       toRelease.pop_front();
     }
     releaseFn(next.tag);
-    // ai: how long the camera's buffer was held (the reader has 16: past 16 frames' time the camera drops)
+    // ai: how long the camera's buffer was held (the app's reader has 32: past 32 frames' time the camera drops)
     const double heldMs = fh->now() - next.at;
     std::lock_guard<std::mutex> l(mu);
     win.held += heldMs; win.heldN++; win.heldMax = std::max(win.heldMax, heldMs);
   }
 }
 
-// ai: gpuqueue.mjs maybeLaunch and the batch's done: the plan on the first shape, then batches while fewer than
-// ai: inflight compute and a lane is free, once the ring holds the target or the oldest has waited the bound.
+// ai: The plan on the first shape, then a launch whenever a frame is staged while fewer than inflight compute and a
+// ai: lane is free, taking every frame staged then up to the batcher's size or the cap (gpuqueue.mjs maybeLaunch's
+// ai: wait for a full batch went 2026-10-08), and the oldest finished in order.
 void GpuReceiver::decoderLoop() {
   std::deque<std::unique_ptr<InFlight>> flight;
   std::deque<Kept> flightKept;   // ai: beside each batch in flight, the frames it keeps and for which replay
@@ -369,29 +363,17 @@ void GpuReceiver::decoderLoop() {
       std::shared_ptr<Replay> recNow;
       {
         std::unique_lock<std::mutex> l(mu);
-        // ai: A batch goes once `target` frames wait: the batcher's size, or less where the app caps it (batchCap,
-        // ai: the setting) or asks for its results soon (SOON frames); the bound on the oldest frame's wait follows
-        // ai: it. It takes every frame already waiting, up to the batcher's size (2026-10-02; `target` before): a
-        // ai: target is when a batch may go, not its size, so a GPU that falls behind at a small one (a hot phone at
-        // ai: 1: 6 to 8 ms a frame at 32 there, more alone) decodes its backlog at once rather than a frame at a time
-        // ai: while staging fills and drops, its results older and older. The batcher's size is not changed by a
-        // ai: target (a small batch neither grows it nor counts against it; one over the cap still halves it), and is
-        // ai: what staging admits by (batchSize, in push).
-        const int size = batchSize = std::max(1, fh->size());
+        // ai: a batch goes as soon as a frame is staged and a lane is free, with every frame staged then, up to the
+        // ai: batcher's size or the cap where one is set (Receiver::batchCap; STAGE_BATCHES above)
+        batchSize = std::max(1, fh->size());
         const int c = cap.load();
-        int target = c > 0 ? std::min(size, c) : size;
-        if (soonOn) target = std::min(target, SOON);
-        const double bound = FILL * target * iv;
         const bool room = (int)flight.size() < fh->inflightMax() && fh->freeLane();
         if (room && !staging.empty()) {
-          const double waited = fh->now() - staging.front()->at;
-          if ((int)staging.size() >= target || waited >= bound) {
-            const int n = std::min<int>(size, (int)staging.size());
-            batch.assign(staging.begin(), staging.begin() + n);
-            batchReplay.assign(stagingReplay.begin(), stagingReplay.begin() + n);
-            staging.erase(staging.begin(), staging.begin() + n);
-            stagingReplay.erase(stagingReplay.begin(), stagingReplay.begin() + n);
-          }
+          const int n = std::min<int>(c > 0 ? std::min(batchSize, c) : batchSize, (int)staging.size());
+          batch.assign(staging.begin(), staging.begin() + n);
+          batchReplay.assign(stagingReplay.begin(), stagingReplay.begin() + n);
+          staging.erase(staging.begin(), staging.begin() + n);
+          stagingReplay.erase(stagingReplay.begin(), stagingReplay.begin() + n);
         }
         heldNow = held;
         recNow = rec;
@@ -494,7 +476,7 @@ std::string GpuReceiver::stats() {
     {"capturedFps", last.arrived}, {"processedFps", last.processed}, {"dropped", last.dropped},
     {"foundShare", last.found / n}, {"side", last.found ? last.side / last.found : 0},
     {"heldMs", last.heldN ? last.held / last.heldN : 0}, {"heldMaxMs", last.heldMax}, {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.fresh * 469 / 1000.0 / lastSecs},
-    {"gpuMs", last.gpuFrames ? last.gpuMs / last.gpuFrames : 0}, {"B", fh ? batchSize : 0}, {"soon", soonOn.load()}, {"cap", cap.load()},
+    {"gpuMs", last.gpuFrames ? last.gpuMs / last.gpuFrames : 0}, {"B", fh ? batchSize : 0}, {"cap", cap.load()},
     {"bandVersion", lastWord.is_null() ? json() : lastWord["version"]}, {"word", lastWord},
     {"totals", {{"frames", totalFrames}, {"blocks", totalBlocks}}}, {"series", stamps.series},
     // ai: a file only once a header named one: the page reads a file's presence as a transfer under way; type, the
@@ -524,8 +506,7 @@ class CpuReceiver : public Receiver {
   void push(const CameraFrame& f) override;
   std::string stats() override;
   std::vector<double> series(double sinceMs) override { std::lock_guard<std::mutex> l(mu); return stamps.since(held.load(), sinceMs); }
-  void soon(bool) override {}   // ai: a frame at a time already: each result comes as its worker finishes
-  void batchCap(int) override {}
+  void batchCap(int) override {}   // ai: a frame at a time already
   std::string file() override { auto p = xfer->progress(); return p.done ? p.path : ""; }
   void clear() override { xfer->clear(); std::lock_guard<std::mutex> l(mu); lastWord = nullptr; held = 0; }
   bool wantsLuma() const override { return true; }

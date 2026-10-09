@@ -4,7 +4,8 @@
 // ai: One thread of its own does every Vulkan and window call: it opens its own X display connection on X11 (a window id
 // ai: is good on any connection, and Xlib stays off AWT's thread), makes the window's surface and a FIFO swapchain, and
 // ai: at every refresh clears the area white and blits the picture on screen into it, centred; a new picture is taken
-// ai: from the Sender (core/tx) into a mapped staging buffer when one is due (each picture held round(refresh / fps)
+// ai: from the Sender's ring (core/tx; Sender::takeSlot, no copy) and expanded on the device into a slot image when one
+// ai: is due, since 2026-10-07 (each picture held round(refresh / fps)
 // ai: refreshes where that is whole within 1%, else a grid). Vulkan is reached through its own function tables (from its
 // ai: own instance and device), never through volk's globals, which the GPU painter's wg reloads for its instance.
 #pragma once

@@ -1,7 +1,8 @@
-// The sender's encoder, off the page's thread (lizard-web/send.mjs), for a Lizard symbol. It builds each frame's
+// The sender's encoder, off the page's thread (lizard-web/send.mjs), for a LIZARD symbol. It builds each frame's
 // blocks (the test stream, or the fountain for a file), encodes them and writes the finished RGBA pixels in wasm
 // (src/focus.c focus_paint_rgba), a few frames ahead of the page, so the page only puts pixels on its canvas. At
-// LIZARD-1024 that is 13 ms here and a few on the page, where the page used to spend 45 ms a frame on both.
+// LIZARD-1024 that was 13 ms here and a few on the page, where the page used to spend 45 ms a frame on both (2026-09-23,
+// n = 2048 then).
 //
 // Messages run one at a time in arrival order (the chain below), so a frame asked for after a re-pick is encoded with
 // the new code and one asked for before it with the old: the page's block ids stay right across the change.
@@ -9,11 +10,12 @@
 // A file goes as a chunked transfer (sim/xfer.mjs): its header and manifest in the light, a fountain per chunk, and the
 // block ids chosen here by the transfer's schedule, so the page's baseId only counts blocks.
 // ai: codes: symbols a frame, 1 or 2 (the page's "codes"). Two are painted side by side in one buffer, a gap of
-// ai: GAP_MODULES modules between them (2026-09-30: widened by about 2 modules, then 2 more: 4; then 12, as the 8
+// ai: gapModules modules between them (the page's slider since 2026-10-03, GAP_MODULES unless given;
+// ai: 2026-09-30: widened by about 2 modules, then 2 more: 4; then 12, as the 8
 // ai: modules of white between the rims could not be seen; packed to their quiet zones from 2026-09-28, since with two
 // ai: codes the whole performance rests on packing), the first with the frame's first blocksPerFrame ids and the second
 // ai: with the next, one format and one word for both.
-// ai: The gap is the same modules in the page's GPU encoder (gpu/encoder.mjs GAP_MODULES): change both.
+// ai: The default gap is the same modules in the page's GPU encoder (gpu/encoder.mjs GAP_MODULES): change both.
 // ai: Under the page's GPU encoder (gpu/encoder.mjs, since 2026-09-29) frames are asked for a batch at a time
 // ai: ("frames": count frames from seq) and come back as their blocks alone, one buffer, frame after frame, each codes x
 // ai: blocksPerFrame x 473 bytes; the page encodes them.
@@ -60,7 +62,7 @@ async function handle(m) {
     const t = performance.now(), V = phy.blocksPerFrame, ids = xs ? xs.frameIds(V * codes) : null;
     // ai: Each symbol's pixels are a view into the wasm heap, good until the next paint, so each is copied row by row
     // ai: into its place (side k of codes) before the next is painted. The page hands its last buffer back to be filled.
-    // ai: Two codes sit a gap of GAP_MODULES apart (since 2026-09-30; packed to their quiet zones before), the gap the
+    // ai: Two codes sit a gap of gapModules apart (since 2026-09-30; packed to their quiet zones before), the gap the
     // ai: colour of the margin beside it; the frame is
     // ai: codes w + (codes - 1) gap px wide and the message says the gap.
     let out = null, w = 0, gap = 0, fw = 0;

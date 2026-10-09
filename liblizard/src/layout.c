@@ -35,7 +35,7 @@ static int mark_cell(const float *pos, int n, int i, int len) {
   return i == 0 ? OB_FB / 2 : i == n - 1 ? len - OB_FB / 2 - 1 : (int)pos[i];
 }
 
-// j is the TRACK cell's index, not a module: the track takes every second cell of the band now, the word the rest.
+// j is the TRACK cell's index, not a module: the track takes every second run of OB_BAND_RUN cells of the band, the word the rest.
 int ob_thin_track(int side, int j, int alt) {
   if (alt) return j & 1;   // Data Matrix's clock: the same on every side, so it cannot fix rotation
   uint32_t v = (uint32_t)(side * 4099 + (j >> 1)) * 2654435761u + 40503u;
@@ -43,7 +43,7 @@ int ob_thin_track(int side, int j, int alt) {
   return (int)((v ^ (uint32_t)j) & 1);   // bit for the pair of track cells, flipped in its second
 }
 
-// Cell i of either coded ring spans OB_CELL modules from reserve + i * OB_CELL, and both rings are read
+// Cell i of the coded band spans OB_CELL modules from reserve + i * OB_CELL, and the band is read
 // from reserve up to `reserve` short of the far corner, so the corners, where two sides meet, are never
 // read. That dead stretch is what a corner mark is painted into, which is why a mark of 8 modules or
 // less is free: `reserve` does not move and no cell that anything reads is touched.
@@ -161,7 +161,7 @@ int ob_layout_init(ob_layout_t *L, const ob_cfg_t *cfg) {
   if (cfg->thin) {
     if (w < 64 || h < 64) return -1;
     L->w = w; L->h = h; L->tx = L->ty = 1; L->rate = rate;
-    // A mark wider than a quarter of the side would leave the coded rings nothing, and one under 5
+    // A mark wider than a quarter of the side would leave the coded band nothing, and one under 5
     // has no light ring on both faces of a dark core, so neither is a mark.
     L->margin = cfg->border > OB_THIN ? cfg->border : OB_THIN;
     L->corner = cfg->corner >= 5 && 4 * cfg->corner <= w && 4 * cfg->corner <= h ? cfg->corner : 0;

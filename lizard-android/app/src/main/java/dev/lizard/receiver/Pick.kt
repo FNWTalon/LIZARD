@@ -4,7 +4,7 @@ import kotlin.math.PI
 import kotlin.math.sqrt
 
 // ai: Which format a room holds (2026-10-01, the app's sender): liblizard/sim/lizard_pick.mjs pickVersion ported, the room
-// ai: the only input: the largest of the 64 formats whose top ring keeps T_DISPLAY_CYCLE device px a cycle in roomPx,
+// ai: the only input: the largest of the 128 formats whose top ring keeps T_DISPLAY_CYCLE device px a cycle in roomPx,
 // ai: in the default ring (the 128 since 2026-10-01, span 256; the 64 before), the margin the codec paints
 // ai: (FOCUS_QUIET, 2 modules) counted. Keep equal to the web's RING_DEFAULT.
 object Pick {

@@ -2,7 +2,7 @@
 // ai: (the first 10 hex digits of the SHA-256 of the bytes it ships with) and every reference to it rewritten, so a URL
 // ai: names one byte sequence for ever: two builds' files never collide, an unchanged file keeps its URL and its cached
 // ai: copy, and a page is never handed another build's module. Ported from another project's asset hasher, changed
-// ai: where Lizard differs:
+// ai: where LIZARD differs:
 // ai:   - ES modules: import specifiers, new URL("...", import.meta.url), and a backtick literal with no ${} are
 // ai:     references like any quoted string;
 // ai:   - three bases, tried together (one that lands on a shipped file wins; two that land on two is an error):

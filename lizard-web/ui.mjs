@@ -1,4 +1,4 @@
-// ai: The helpers every Lizard page shares, for the parts in ui.css. Page-only: no worker imports this.
+// ai: The helpers every LIZARD page shares, for the parts in ui.css. Page-only: no worker imports this.
 
 // ai: remember(details, key): keeps a <details>' open state across reloads (a phone session is a series of reloads).
 // ai: Storage can throw (a private window, blocked site data); the page then opens as its markup says.

@@ -1,13 +1,12 @@
-/* Wirehair for the browser: a narrow C ABI shaped around what a Decimen frame header
- * already carries.
+/* Wirehair for the transfer (src/xfer.h), in the browser and natively: a narrow C ABI shaped
+ * around what the transfer's header and manifest already carry.
  *
- * The header is 22 bytes and gives us totalLen, blockLen and seq. Wirehair's V2 decoder
+ * They give each chunk's bytes as sent, in blocks of 469 bytes. Wirehair's V2 decoder
  * wants a 32-byte serialized wire profile instead, and every field of that profile is
- * either a pinned constant or derivable from the header EXCEPT `seed_attempt`, which the
- * encoder picks. So the sender reads its chosen seed back out of the profile and puts it in
- * the header's `sessionId` slot (a u16, previously "random per sender start", vestigial
- * under Wirehair), and the receiver rebuilds the profile from parts. Net wire format
- * change: none.
+ * either a pinned constant or derivable from those EXCEPT `seed_attempt`, which the
+ * encoder picks. So the sender reads its chosen seed back out of the profile and sends it
+ * (each chunk's manifest entry, or the header for a one-chunk file), and the receiver
+ * rebuilds the profile from parts.
  */
 #include <wirehair/wirehair.h>
 
@@ -64,8 +63,8 @@ EMSCRIPTEN_KEEPALIVE
 uint32_t lizard_wh_max_blocks(void) { return 64000; }
 
 /* Create an encoder over `message`. Returns the chosen seed_attempt (0..255) on success,
- * or a negative WirehairV2Result on failure. The caller must put the returned seed in the
- * frame header so the receiver can rebuild the profile. */
+ * or a negative WirehairV2Result on failure. The caller must send the returned seed (the
+ * manifest, or the header) so the receiver can rebuild the profile. */
 EMSCRIPTEN_KEEPALIVE
 int lizard_wh_encoder_create(const void* message, uint32_t message_bytes, uint32_t block_bytes,
                           void** codec_out)
@@ -95,7 +94,7 @@ int lizard_wh_encoder_create(const void* message, uint32_t message_bytes, uint32
 	return static_cast<int>(parsed.seed_attempt);
 }
 
-/* Build a decoder from the parts a frame header carries. */
+/* Build a decoder from the parts the header and manifest carry. */
 EMSCRIPTEN_KEEPALIVE
 int lizard_wh_decoder_create(uint32_t message_bytes, uint32_t block_bytes, uint32_t seed_attempt,
                           void** codec_out)
@@ -141,7 +140,7 @@ int lizard_wh_decode(void* codec, uint32_t block_id, const void* data, uint32_t 
 }
 
 /* Only valid once lizard_wh_decode returned 1. Does NOT authenticate: the caller checks the
- * header's payloadFnv, which Decimen already does. Returns bytes written or negative. */
+ * chunk's BLAKE3 against the file's root (src/xfer.h). Returns bytes written or negative. */
 EMSCRIPTEN_KEEPALIVE
 int lizard_wh_recover(void* codec, void* out, uint32_t capacity)
 {

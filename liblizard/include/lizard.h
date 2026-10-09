@@ -1,4 +1,4 @@
-/* ai: liblizard: the Lizard code as a library (2026-10-03): the C (NEON on arm64) and the GPU through Vulkan behind one
+/* ai: liblizard: the LIZARD code as a library (2026-10-03): the C (NEON on arm64) and the GPU through Vulkan behind one
  * ai: portable API, with no UI. A luminance-only animated barcode: a frame is a grey picture whose FFT
  * ai: coefficients carry blocks of 473 bytes (a 4-byte little-endian id and 469 of payload, CRC-checked), inside a
  * ai: border that says what is inside; a file goes as a fountain-coded transfer verified by its BLAKE3 root.
@@ -67,7 +67,7 @@ enum {
   LIZ_BLOCK = 473,         /* ai: a block: the id and the payload */
   LIZ_ID_BYTES = 4,        /* ai: the id, little-endian */
   LIZ_PAYLOAD = 469,
-  LIZ_MAX_BLOCKS = 128,    /* ai: blocks a symbol at most (LIZARD-1024) */
+  LIZ_MAX_BLOCKS = 128,    /* ai: the largest format's size (LIZARD-1024; its symbol carries liz_blocks_for(128)) */
   LIZ_RINGS = 4,           /* ai: the borders: rings of 32, 64, 96 or 128 cells a side */
   LIZ_RING_DEFAULT = -1,   /* ai: the senders' default ring, the 128 */
   LIZ_GAP_MODULES = 12,    /* ai: two codes side by side are this many modules apart */
@@ -85,7 +85,7 @@ typedef enum {
 
 /* ai: blocks: the format's size, 1 to 128 (LIZARD-8 to LIZARD-1024: the number is 8 x blocks), the version its word
  * ai: names; a symbol of it carries liz_blocks_for(blocks) blocks, the code's rate following the frequency (7/8 on its
- * ai: lowest sub-channels, 1/2 on its highest, 3/4 between: 51 at LIZARD-432); ring: 0 to 3 or LIZ_RING_DEFAULT;
+ * ai: lowest sub-channels, then 3/4 and 2/3, 1/2 on its highest: 51 at LIZARD-432); ring: 0 to 3 or LIZ_RING_DEFAULT;
  * ai: fps: 1 to 255, the display rate the symbol's word states; codes: 1, or 2 symbols side by side (one format, one
  * ai: word, the frame's blocks split between them, the first code the first ones). */
 typedef struct {
@@ -108,8 +108,9 @@ LIZ_API int liz_geometry_of(const liz_format *format, liz_geometry *out);
 LIZ_API double liz_room_for(int blocks, int ring);
 /* ai: The blocks a symbol of a format's size (blocks, 1 to 128) carries: the format's rate profile's count; 0 outside. */
 LIZ_API int liz_blocks_for(int blocks);
-/* ai: The most blocks a symbol may carry, at most top_blocks, for codes symbols in a room of w x h display pixels (the
- * ai: web sender's pickVersion: each symbol's room is the width over codes and the gaps, against the height); at least 1. */
+/* ai: The largest size (blocks) a symbol may have, at most top_blocks, for codes symbols in a room of w x h display
+ * ai: pixels (the web sender's pickVersion: each symbol's room is the width over codes and the gaps, against the
+ * ai: height); at least 1. */
 LIZ_API int liz_pick(double w, double h, int codes, int ring, int top_blocks);
 
 /* ---- 2. the per-frame codec -------------------------------------------------------------------------------------- */
@@ -142,13 +143,14 @@ typedef struct {
   int verified;       /* ai: the blocks verified */
   float quad[8];      /* ai: its corners in the image, x y x y ..., top left, top right, bottom right, bottom left */
   int pilot_blocks;   /* ai: blocks the pilots were read over (0 none) */
-  float pilot_r[2];   /* ai: the pilots' readings over the even blocks and the odd: their signs the picture's count */
-  float pilot_sd[2];  /* ai: their standard errors */
+  float pilot_r[2];   /* ai: the pilots' readings over the even blocks and the odd: their signs the picture's count;
+                         ai: NaN for a parity with no block (a one-block symbol has no odd reading, so no side) */
+  float pilot_sd[2];  /* ai: their standard errors (NaN with its reading) */
 } liz_decoded;
 
 /* ai: One captured frame (or one region of it: px at the region's first pixel, w x h, rows stride bytes apart): its
  * ai: verified blocks packed into verified (liz_decoder_max_blocks x LIZ_BLOCK bytes), their count returned. held: the
- * ai: caller's, the blocks a symbol of the last word read (0 none), shared by every decoder reading one stream; a frame
+ * ai: caller's, the size (blocks) the last word read names (0 none), shared by every decoder reading one stream; a frame
  * ai: whose own word does not read is decoded at it, and with none held is not decoded; it is updated whenever a
  * ai: frame's own word reads. Every frame is otherwise decoded on its own. out may be NULL. */
 LIZ_API int liz_decode(liz_decoder *d, const uint8_t *px, int w, int h, int stride, liz_pixfmt fmt, int *held,
@@ -167,7 +169,7 @@ LIZ_API void liz_stream_fill(uint32_t id, uint8_t payload[LIZ_PAYLOAD]);
 typedef struct liz_tx liz_tx;
 enum { LIZ_TX_COPY = 1 };  /* ai: liz_tx_new copies the bytes; without it they must outlive the liz_tx */
 /* ai: A file: its bytes, its name and media type as its header carries them (a name cut to 255 bytes, a type kept
- * ai: where it is printable ASCII of at most 162). */
+ * ai: where it is printable ASCII of at most 158). */
 LIZ_API liz_tx *liz_tx_new(const uint8_t *data, size_t length, const char *name, const char *type, int flags);
 /* ai: A file read from a path (into memory); name NULL takes the path's last part. */
 LIZ_API liz_tx *liz_tx_new_path(const char *path, const char *name, const char *type);
@@ -272,8 +274,7 @@ LIZ_API const char *liz_receiver_stats(liz_receiver *r);
  * ai: the held word's version: ms, verified blocks, new blocks, found, the pilots' r and its error over the even blocks,
  * ai: then over the odd (NaN none); returns the doubles written. For a camera's phase lock. */
 LIZ_API int liz_receiver_series(liz_receiver *r, double since_ms, double *out, int cap);
-/* ai: results wanted soon (smaller GPU batches), and the most frames a GPU batch waits for (0: its own size) */
-LIZ_API void liz_receiver_soon(liz_receiver *r, int on);
+/* ai: the most frames a GPU launch takes, 1 to 32 (0: the batcher's size); a launch goes as soon as a frame waits */
 LIZ_API void liz_receiver_batch_cap(liz_receiver *r, int frames);
 /* ai: the received file's path once whole and verified, else "" */
 LIZ_API const char *liz_receiver_file(liz_receiver *r);

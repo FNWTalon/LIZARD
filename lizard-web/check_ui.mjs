@@ -2,14 +2,13 @@
 // ai: headless Chrome, driven through phone.mjs's DevTools calls, at four sizes: phone portrait 412 x 915 at 2.625,
 // ai: phone landscape 915 x 412, laptop 1366 x 768, desktop 1920 x 1080. Screenshots of every step go to research/build/ui/.
 // ai:   0. The sender: idle (Start disabled until a file, a tap on the middle opens the file chooser; Start and
-// ai:      Fullscreen in its controls, the other tool and Settings in the bar), then the test stream on auto, Advanced
-// ai:      closed then open: <main>'s box and the version unmoved by it (a resize re-picks mid-stream), nor by the bar's
-// ai:      Settings, #c inside <main>; #tx's first line names the version (the lab line #lab did until 2026-10-02), the
+// ai:      Fullscreen in its controls, the other tool in the bar), then the test stream on auto, Settings (#dev, the
+// ai:      checks' "Advanced") closed then open: <main>'s box and the version unmoved by it (a resize re-picks
+// ai:      mid-stream), #c inside <main>; #tx's first line names the version (the lab line #lab did until 2026-10-02), the
 // ai:      numbers line (#nums) the speed;
 // ai:      the defaults LIZARD-480 at 60 ("Receiving with" went 2026-10-02); Fullscreen, then its end clearing body.full.
-// ai:   1. The receiver on Chrome's fake camera, Advanced closed then open: #v visible and above 100 x 100 px with more
-// ai:      than 10 frame callbacks a second; at the phone sizes #go and #view on screen with no scrolling; Settings in view
-// ai:      from the bar.
+// ai:   1. The receiver on Chrome's fake camera, Settings (#dev) closed then open: #v visible and above 100 x 100 px with
+// ai:      more than 10 frame callbacks a second; at the phone sizes #go and #view on screen with no scrolling.
 // ai:   2. getUserMedia made to throw NotAllowedError, then navigator.mediaDevices taken away: each sentence in red.
 // ai:   3. LIZARD-96 through a 1920 x 1080 clip as the fake camera: the test stream read (its state, speed and lab line),
 // ai:      then a 300,000 B file: receiving (the meter, progress, size, speed and time left), received (Save holds the
@@ -17,8 +16,9 @@
 // ai:      camera left on (Receive again, which received it anew, went 2026-10-05).
 // ai:   4. Home in the same profile at the four sizes: the received file listed, Save holding its bytes, Open, the tips
 // ai:      card shown on a fresh profile and remembered once dismissed, Settings, Delete emptying the received files.
-// ai: All pages: no horizontal scroll, Advanced closed on a fresh profile and remembered over a reload, a menu's setting
-// ai: kept over a reload with a URL preset winning its own load (the sender's surround, the receiver's GPU crop), no
+// ai: All pages: no horizontal scroll, Settings (#dev) closed on a fresh profile and remembered over a reload, a menu's
+// ai: setting kept over a reload with a URL preset winning its own load (the sender's ring, the receiver's GPU crop and
+// ai: decoder), no
 // ai: console error but the ones the start errors put there on purpose.
 // ai: node lizard-web/check_ui.mjs, from anywhere (about 70 s, a few of them making the clips). APP=1 runs the same
 // ai: against the built app (lizard-web/app/, node lizard-web/pwa/build.mjs first), its worker serving the pages. Exit 1 on a failure.
@@ -87,7 +87,7 @@ const MEASURE = `(async () => {
 })()`;
 // ai: The bar's Settings button (#set) and its check went 2026-10-02.
 
-// ai: A Developer menu's setting kept over a reload (localStorage, ui.mjs persist, 2026-09-29), and a URL preset of it
+// ai: A Settings menu's setting kept over a reload (localStorage, ui.mjs persist, 2026-09-29), and a URL preset of it
 // ai: winning for its own load without overwriting what was kept; then set back so the rest runs on the defaults.
 // ai: the entries in an OPFS folder (the received files' lizard-files), -1 where it is missing
 const opfsFiles = (dir) => `(async () => { try { const d = await (await navigator.storage.getDirectory()).getDirectoryHandle("${dir}"); let n = 0; for await (const k of d.keys()) n++; return n; } catch { return -1; } })()`;
@@ -216,7 +216,7 @@ const SIZES = [
       await navigate(s, BASE);
       check(await evaluate(s, `document.getElementById("dev").open`), `${z.name}: Advanced's open state remembered over a reload`);
       await remembered(s, BASE, "gcrop", "tracked", "full", z.name);
-      // ai: the decoder's switch, in Settings since 2026-10-01 (outside Advanced, so kept by its own persist)
+      // ai: the decoder's switch, in Settings since 2026-10-01 (#dev since 2026-10-02, kept as its other menus are)
       await remembered(s, BASE, "dec", "cpu", "auto", z.name);
     }
     await evaluate(s, `document.getElementById("dev").open = false`);
@@ -311,7 +311,7 @@ const SIZES = [
     await until(f, `/at 30\\sfps/.test(document.getElementById("lab").textContent)`, 30000, "the 30 fps test stream read");
     await sleep(1200);
     const fw = await evaluate(f, `document.getElementById("why").textContent`);
-    check(/(^|\n)30 pictures a second is too fast for a browser/.test(fw) && /LIZARD app/.test(fw) && /send at 24/.test(fw), `a sender at 30 fps is sent to the Lizard app: "${fw}"`);
+    check(/(^|\n)30 pictures a second is too fast for a browser/.test(fw) && /LIZARD app/.test(fw) && /send at 24/.test(fw), `a sender at 30 fps is sent to the LIZARD app: "${fw}"`);
   }
   // ai: The light gone (the video paused, as a camera turned to a wall): the state falls back to looking, the code's
   // ai: name leaves the lab line (until 2026-09-26 the band, once read, stayed on both for good).

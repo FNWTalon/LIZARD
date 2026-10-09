@@ -5,12 +5,12 @@
 //
 // ai: The receiver is blind (2026-09-26): nothing is posted to it, and the rig here only takes its development logs (the
 // ai: stats rows this script reads, and the finished file, ?save=post). It counts bad blocks from the light (a test frame
-// ai: known by its blocks' bytes, sim/phy.mjs blockJudge); a Lizard run fails if it held none to the stream. LIE=1, the
+// ai: known by its blocks' bytes, sim/phy.mjs blockJudge); a LIZARD run fails if it held none to the stream. LIE=1, the
 // ai: negative control: every LIE_EVERY-th display frame's block 1 carries its id's bytes with one bit flipped, its CRC
 // ai: right, and the run passes only if the page counts bad blocks. REPICK=<subch> (the test stream): the clip's second
 // ai: half at that version, as a sender re-picks mid-stream (ids go on from where the first half left them), held to
 // ai: both halves' version read through the lens and decoded at the display's rate.
-// Files (XFER=600k by default, a comma list of the cases below): a Lizard file as the sender page sends it, a chunked
+// Files (XFER=600k by default, a comma list of the cases below): a LIZARD file as the sender page sends it, a chunked
 // ai: transfer (sim/xfer.mjs), its header in the light only, as the sender sends it, so
 // the receiver has the light and nothing else. The page hands the finished file back (recv.html?save=post) and it is
 // ai: held to the file sent: the same bytes, and BLAKE3 from the wasm (the vendored C, proved against the official
@@ -31,9 +31,9 @@ import { N_FOR } from "../liblizard/sim/lizard_pick.mjs";
 
 const at = (p) => fileURLToPath(new URL(p, import.meta.url));
 const dir = process.argv[2] ?? at("../research/build/check"), CW = +(process.env.CW ?? 1920), CH = +(process.env.CH ?? 1080), FD = 24, FC = 30, ONLY_TEST = process.env.ONLY === "test", FRAMES = ONLY_TEST ? 330 : 420;
-// ai: TIERS=1: rates by ring and a power tilt, the sender's dense option.
+// ai: TIERS=1: rates by ring and a power tilt, a profile off the format's own (sim/ob.mjs Focus tiers).
 // stream: the same generator the live sender uses, so this measures what the demo measures.
-// SUBCH picks the Lizard version (96 unless asked; a bigger one needs a clip tall enough for its picture, CW and CH).
+// SUBCH picks the LIZARD version (96 unless asked; a bigger one needs a clip tall enough for its picture, CW and CH).
 const SUBCH = +(process.env.SUBCH ?? 96), REPICK = +(process.env.REPICK ?? 0), LIE = process.env.LIE === "1", LIE_EVERY = 24;
 const spec = { phy: "focus", stream: "shake256", n: N_FOR(SUBCH), subch: SUBCH, mode: 1, fps: FD, ...(process.env.TIERS ? { tiers: [[6, 8], [4, 12], [2, 12]], tilt: 9 } : {}), variants: [{ name: "rx" }] };
 // VERIFY=1: the receiver's crop, checked from outside. The clip gets a grey marker (60, 100, 140, 180, clockwise
@@ -197,7 +197,7 @@ function framesLine(s, indent = "") {
 // ai: blocks and new bytes a frame, frames with new data a second, KB/s of new bytes on the page's clock, bad, the
 // ai: decoder's ms a frame (the GPU's device time), the crop (the #gcrop menu, the share of frames decoded from a tracked
 // ai: crop, the mean side, every size with its count), and over the same rows the batch size, the worker's lag from a
-// ai: frame's arrival to its answer, and with the stage timing menu on every stage's device ms a frame (bank the proposer,
+// ai: frame's arrival to its answer, and with ?gstages=on every stage's device ms a frame (bank the proposer,
 // ai: describe the classifiers) and their sum. Exact over the interval, where the 5 s window's rates move with
 // ai: the batches that land in it.
 function totalsLine(s, indent = "") {
@@ -223,7 +223,7 @@ if (process.env.ONLY !== "files") {
   let lies = 0;
   if (LIE) { const gen = sourceFor("shake256"), T = phy.blocksPerFrame; phy.setSource((id, out) => { gen(id, out); if (id % (LIE_EVERY * T) === 1) { out[0] ^= 1; lies++; } }); }
   // ai: REPICK: the second half at another version, its ids from where the first half's end. Made at the cut, not
-  // ai: before: the wasm holds one Lizard codec, and a second Focus replaces the first's.
+  // ai: before: the wasm holds one LIZARD codec, and a second Focus replaces the first's.
   let phy2 = null;
   const cut = Math.floor((half * FD) / FC), spec2 = { ...spec, n: N_FOR(REPICK), subch: REPICK };
   await clip(`${dir}/test.y4m`, async (seq) => {
@@ -233,7 +233,7 @@ if (process.env.ONLY !== "files") {
   }, REPICK ? 2 * half : half);
   const s = REPICK ? await chrome(resolve(dir, "test.y4m"), (2 * half) / FC - 1) : DEC === "gpu" ? await chrome(resolve(dir, "test.y4m"), 10 + MOTION_S + GPU_BOOT_S, gpuDecodingFor(10 + MOTION_S)) : await chrome(resolve(dir, "test.y4m"), 10 + MOTION_S);
   console.log(`test stream, ${phy.label}${phy2 ? `, then ${phy2.label} from display frame ${cut}` : ""}, ${per.toFixed(0)} B per display frame, display ${FD} fps, camera ${FC} fps; nothing posted to the receiver${LIE ? `; ${lies} lying blocks painted (block 1 of every ${LIE_EVERY}th display frame)` : ""}`);
-  // ai: Blind, and bad counted from the light: a Lizard run whose page held no block to the stream did not judge.
+  // ai: Blind, and bad counted from the light: a LIZARD run whose page held no block to the stream did not judge.
   const tot = s.totals ?? {}, judgedOk = tot.judged > 0;
   console.log(`decode: ${s.decode ?? "?"}; bad ${tot.bad ?? "?"} of ${tot.judged ?? "?"} blocks held to the test stream from the light over the run${s.decode !== "blind" ? "  FAILED: the receiver did not read blind" : ""}${judgedOk ? "" : "  FAILED: no block judged"}`);
   if (s.decode !== "blind" || !judgedOk) process.exitCode = 1;

@@ -6,7 +6,7 @@
   /* ai: context) in it (layout()) and fills it with the surround (paintSurround()). So nothing the */
   /* ai: controls do may move that box while a symbol is painted: a resize re-picks the version mid-stream. */
   /* ai: Portrait (a phone sending): the bar and the controls on top, <main> the rest of one screen. svh, so a phone's */
-  /* ai: address bar coming and going moves nothing (vh where there is no svh). Settings (Advanced in it) hang below */
+  /* ai: address bar coming and going moves nothing (vh where there is no svh). Settings and Developer Tools hang below */
   /* ai: that screen, reached by scrolling or the bar's Settings, so opening them never shrinks <main>. */
   #stage{position:relative;display:flex;flex-direction:column;height:100vh;height:100svh}
   #col,#pane{display:contents}
@@ -36,7 +36,7 @@
   main.drop{outline:3px dashed var(--fg);outline-offset:-12px}
   /* ai: Landscape and desktop: a 20rem column beside <main>, the bar fixed at its top and the controls over Settings in */
   /* ai: a pane under it that scrolls on its own (#pane, 2026-10-02, its scrollbar below the top bar, */
-  /* ai: as the receiver's), so Advanced opens inside it. The figures' reserved line is portrait's alone (it keeps <main> */
+  /* ai: as the receiver's), so Developer Tools opens inside it. The figures' reserved line is portrait's alone (it keeps <main> */
   /* ai: still there); here an empty state or figures line takes no room. */
   @media (orientation:landscape){
     #stage{display:grid;grid-template-columns:var(--side) minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
@@ -70,7 +70,7 @@
       <p id="nums" class="nums"></p>
     </div>
     <section id="settings" class="settings">
-      <!-- ai: Settings and Advanced, two rows that open (2026-10-02): Settings (#dev, its open state and every control in
+      <!-- ai: Settings and Developer Tools, two rows that open (2026-10-02): Settings (#dev, its open state and every control in
            it kept) holds the encoder and the code (blocks a frame, the rate its word states, its size, the gap, the ring,
            the codes); Developer Tools (#logs) what is sent (2026-10-03: the test stream is for developers and testers)
            and the readout; About the last row. Options and labels bare. -->
@@ -85,7 +85,7 @@
           <!-- ai: blocks a frame, a slider of whole blocks, its first step auto (the largest that fits the room) and 1 to 128 by
                hand (8 sub-channels a step; an Auto box above it until 2026-10-05); #subch the value the page reads ("auto" or
                the sub-channels), the slider a view over it (send.mjs) -->
-          <div class="blocks"><span class="row"><span>Blocks</span><span id="blocksOut">60, 28.1 KB</span></span><input id="blocks" type="range" min="0" max="128" step="1" value="60" data-view aria-label="blocks"><input id="subch" type="hidden" value="480"></div>
+          <div class="blocks"><span class="row"><span>Blocks</span><span id="blocksOut">57, 26.7 KB</span></span><input id="blocks" type="range" min="0" max="128" step="1" value="60" data-view aria-label="blocks"><input id="subch" type="hidden" value="480"></div>
           <!-- ai: the display rate, 1 to 60, which the word states -->
           <div class="blocks"><span class="row"><span>FPS</span><span id="fpsOut">60</span></span><input id="fps" type="range" min="1" max="60" step="1" value="60" aria-label="FPS"></div>
           <!-- ai: the code's size, a share of <main>'s room, 25 to 100% (send.mjs sizeOf), so the code can be kept off a monitor's edges -->
@@ -110,7 +110,7 @@
     </section>
     <script>
     // ai: Saved state before the first paint (2026-10-02): the modules run after the page is
-    // ai: drawn (send.mjs awaits the codec first), so Settings and Advanced opened, and the kept values moved, a moment
+    // ai: drawn (send.mjs awaits the codec first), so Settings and Developer Tools opened, and the kept values moved, a moment
     // ai: after the page showed, the chevrons turning as they did. ui.mjs remember and persist's rules, the same keys; the
     // ai: blocks slider and the labels drawn from the values as send.mjs showBlocks and showFps draw
     // ai: them. The modules run them again later and change nothing.

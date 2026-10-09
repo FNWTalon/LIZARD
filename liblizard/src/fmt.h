@@ -4,10 +4,10 @@
 // It carries the version because that is what precedent carries. QR's format word is 15 bits, 5 of data (error
 // level and mask) and 10 of BCH, drawn twice. Aztec's mode message is 28 bits compact, 7 of data (layers and
 // codeword count) with Reed-Solomon over the rest. Neither says anything about the TRANSFER: a QR symbol's mode
-// indicator and character count live in the data stream, inside the payload's own error correction. Lizard's do
+// indicator and character count live in the data stream, inside the payload's own error correction. LIZARD's do
 // the same. Sub-channels are 8 * version, the picture size is the smallest that holds them (sim/lizard_pick.mjs
-// N_FOR), the mode is always LDPC and the rate is always 3/4 (focus.h FOCUS_RATE), and the fountain's header is
-// payload.
+// N_FOR), the mode is always LDPC, the code rates are the rate profile the sub-channels give (focus.h
+// focus_tiers_for), and the fountain's header is payload.
 //
 // It carries the display rate because that is the one thing about an ANIMATED symbol that no single frame shows.
 // The version is a property of the picture in front of the camera; the rate is a property of a sequence the
@@ -44,8 +44,8 @@
 // OB_FMT_MAGIC: a fixed byte the decoder checks after Reed-Solomon. RS can miscorrect past its distance, and a
 // wrong word is worse than none: it would send the receiver to another picture size and cost every block of
 // every frame until it changed again. 0x4c is 'L'.
-// OB_FMT_VERSION_MAX: the top version a word may state, LIZARD-1024's 128 blocks. A byte could say 255; keeping the
-// range to the formats that exist keeps it a check on a miscorrected word, with the magic.
+// OB_FMT_VERSION_MAX: the top version a word may state, LIZARD-1024's 128 (121 blocks under the rate profile). A byte
+// could say 255; keeping the range to the formats that exist keeps it a check on a miscorrected word, with the magic.
 // OB_FMT_BYTES: the shortest word, RS(8, 3), the 32 ring's, and OB_FMT_SIDE_CELLS the cells a side it needs.
 // OB_FMT_BYTES_MAX: the longest a band holds, RS(36, 3) (W = 72; the rings' longest is RS(32, 3), the 128's). A wider
 // border paints its remaining word cells light.

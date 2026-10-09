@@ -107,7 +107,6 @@ LIZ_API int liz_receiver_series(liz_receiver* r, double since, double* out, int 
   });
 }
 
-LIZ_API void liz_receiver_soon(liz_receiver* r, int on) { guard([&] { need(r, "a receiver"); r->r->soon(on != 0); return LIZ_OK; }); }
 LIZ_API void liz_receiver_batch_cap(liz_receiver* r, int n) { guard([&] { need(r, "a receiver"); r->r->batchCap(n); return LIZ_OK; }); }
 
 LIZ_API const char* liz_receiver_file(liz_receiver* r) {

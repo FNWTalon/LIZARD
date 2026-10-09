@@ -20,7 +20,30 @@ async function loader() {
 // arrive meanwhile (lizard-web/recv-worker.mjs read nothing that way), and a page that only wants the arithmetic would pay
 // for a codec instance.
 export let QUIET;
-export async function init() { M ??= await (await loader())(); QUIET ??= M._focus_quiet?.(); return M; }
+export async function init() {
+  if (!M) {
+    M = await (await loader())();
+    // ai: a rate profile under test (LIZ_PROFILE, src/focus.h focus_profile_set), which the wasm has no environment to
+    // ai: read: handed in at load, as the native hosts read it from theirs
+    const spec = typeof process !== "undefined" && process.env ? process.env.LIZ_PROFILE : null;
+    if (spec && M._focus_profile_set) setProfile(spec);
+    // ai: which set of the format's LDPC tables (LIZ_TABLES, src/ldpc.h ldpc_codes_set: 1 the set before 2026-10-08's,
+    // ai: for the recordings painted under it), the same way
+    const codes = typeof process !== "undefined" && process.env ? process.env.LIZ_TABLES : null;
+    if (codes && M._focus_codes_set) M._focus_codes_set(+codes);
+  }
+  QUIET ??= M._focus_quiet?.();
+  return M;
+}
+// ai: Sets the codec's rate profile under test ("6432:24/20/26"; "" the format's); the tiers it names, or throws.
+export function setProfile(spec) {
+  const b = new TextEncoder().encode(`${spec}\0`), p = M._malloc(b.length);
+  M.HEAPU8.set(b, p);
+  const n = M._focus_profile_set(p);
+  M._free(p);
+  if (n < 0) throw new Error(`rate profile ${spec}: refused`);
+  return n;
+}
 
 // Stage times since the last call, ms, summed over the decodes in between (slots: PROF_* in src/internal.h).
 // Both codes share one table: a stage one of them does not have stays at 0.
@@ -121,10 +144,10 @@ export class FocusAny {
     this.pImg = 0; this.imgCap = 0;
   }
   // ai: held: the version field (sub-channels / 8) of the last word the caller read, 0 for none; a frame whose own word
-  // ai: does not read is decoded at it. Returns n (blocks decoded), ring (the ring that registered, 0 to 2, or -1),
+  // ai: does not read is decoded at it. Returns n (blocks decoded), ring (the ring that registered, 0 to 3, or -1),
   // ai: pictureN (the picture finished, 0 for none), held (whether the held configuration stood in), fmt (the word this
-  // ai: frame read, or null), builds (pictures built since the setup), ok and blocks (as many as the finished picture's top carries; a smaller sub-channel count's
-  // ai: blocks are a prefix and the rest decline), pilot (what the pilots read: { r, sd, r2, sd2, blocks }, or null). rgba: img is a
+  // ai: frame read, or null), builds (pictures built since the setup), ok and blocks (as many as the finished version's own codec carries,
+  // ai: its rate profile's blocks), pilot (what the pilots read: { r, sd, r2, sd2, blocks }, or null). rgba: img is a
   // ai: canvas's RGBA, made luma in wasm as Focus.decode does.
   decode(img, iw, ih, { gamma = 1, mesh = 2, held = 0, rgba = false } = {}) {
     let pLuma;
@@ -152,15 +175,21 @@ export class Focus {
   // NEGATIVE asks for none, which is what the experiments that measure the mark's own effect pass. cornerFilled:
   // keep depth 3 light through it, which is what makes it detectable. centre: one mark at the picture's
   // middle instead of four at the corners, for archive/build-scratch-2026-09/mark_race.mjs.
-  // span: modules across the picture, 0 for the format's own (src/focus.h FOCUS_CELL); a number is an experiment's override.
+  // span: modules across the picture, 0 for the default ring (src/focus.h FOCUS_RING_DEFAULT), 2 B for ring B; another number is an experiment's override.
   // bitmap: how a block's bits lie on its coefficients (src/focus.h FOCUS_BITMAP_*), left out for the format's own.
   // A capture painted before 2026-09-23 was painted with none (0): sim/phy.mjs recordedSpec says so for a replay.
-  // ai: The border is always Lizard's (ring, marks, band): FOCUS's own finder frame and its `thin` switch were deleted
+  // ai: The border is always LIZARD's (ring, marks, band): FOCUS's own finder frame and its `thin` switch were deleted
   // ai: on 2026-09-26, so a `thin` key is ignored. A build from before then (OB_BUILD, an A/B) still takes the switch
   // ai: after span, and gets 1, the border every build since paints.
   constructor(n, subch, mode, { clip = 2, span = 0, tilt = 0, tiers = null, corner = 0, cornerFilled = 0, centre = 0, edge = 0, trackAlt = 0, border = 0, bitmap } = {}) {
     const was = M._focus_setup.length === 13 ? [1] : [];
-    if (tiers) { const a = [...tiers, [0, 0], [0, 0]].slice(0, 3).flatMap(([r, b]) => [r, b, b ? Focus.SUBS[r] : 0]); this.blockBytes = M._focus_setup_tiers(n, clip, span, ...was, tilt, corner, cornerFilled, centre, edge, trackAlt, border, ...a); }
+    if (tiers) {
+      // ai: as many tiers as this build's focus_setup_tiers takes (three a tier, after ten), four in the format's
+      const slots = Math.floor((M._focus_setup_tiers.length - 10 - was.length) / 3) || 3;
+      if (tiers.length > slots) throw new Error(`focus: ${tiers.length} tiers, this build takes ${slots}`);
+      const a = [...tiers, ...Array(slots).fill([0, 0])].slice(0, slots).flatMap(([r, b]) => [r, b, b ? Focus.SUBS[r] : 0]);
+      this.blockBytes = M._focus_setup_tiers(n, clip, span, ...was, tilt, corner, cornerFilled, centre, edge, trackAlt, border, ...a);
+    }
     else this.blockBytes = M._focus_setup(n, subch, mode, clip, span, ...was, tilt, corner, cornerFilled, centre, edge, trackAlt, border);
     if (this.blockBytes < 0) throw new Error(`focus ${n}/${tiers ? JSON.stringify(tiers) : subch}/${mode} rejected`);
     // A build from before the bit map (OB_BUILD, an A/B) has no switch and paints with none.
@@ -371,9 +400,10 @@ export class Focus {
     // ints and the function has no length to check against. That cost an afternoon: the corruption does not
     // fault, it just makes every later decode return nothing, which reads exactly like a bad capture.
     M._focus_ldpc_tables(0, pD, 0);
-    const d = M.HEAP32.subarray(pD >> 2, (pD >> 2) + 11);
+    const d = M.HEAP32.subarray(pD >> 2, (pD >> 2) + 12);
+    // ai: np the bits never sent (the 7/8 code's first 93 since 2026-10-08), nt = n - np the bits a block's slots carry
     const code = { n: d[0], k: d[1], m: d[2], z: d[3], zp: d[4], mb: d[5], kb: d[6], norm: d[7],
-      slotsMax: d[8], slotsTotal: d[9], slots: d[10] };
+      slotsMax: d[8], slotsTotal: d[9], slots: d[10], np: d[11], nt: d[0] - d[11] };
     const pLay = M._malloc(4 * (code.mb + 1 + 2 * code.slots));
     M._focus_ldpc_tables(0, pD, pLay);
     code.lay = M.HEAP32.slice(pLay >> 2, (pLay >> 2) + code.mb + 1 + 2 * code.slots);

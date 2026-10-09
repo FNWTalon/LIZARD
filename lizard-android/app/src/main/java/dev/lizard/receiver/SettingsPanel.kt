@@ -23,17 +23,17 @@ import kotlin.math.roundToInt
 import org.json.JSONObject
 
 // ai: Settings, as the web's pages hold them since 2026-10-02. Receive: under
-// ai: the transfer, Settings (the decoder and its frames a batch, the camera: lens, resolution, zoom, crop, phase lock), Advanced (the lab
-// ai: line, the dev log's address, the camera's and the receiver's raw readout) and About, the camera running beside
+// ai: the transfer, Settings (the decoder and its batch size, the camera: lens, resolution, zoom, crop, phase lock), Developer Tools (Save
+// ai: replays, the lab line, the dev log's address, the camera's and the receiver's raw readout) and About, the camera running beside
 // ai: them. Home: the tips again, the received files with Delete all, About. The Settings screen, reached by a gear on
 // ai: Home and Receive, went with them. Options bare, no descriptions.
 
 // ai: The decoder (2026-10-01: auto by default, the user free to switch; auto takes the GPU where the phone runs it,
-// ai: else the C, Receiver::create): chips GPU and CPU alone since 2026-10-05 (an Auto chip naming what auto last ran
-// ai: on, "Auto (GPU)", until then; "Decoding on the GPU." under the chips until 2026-10-02): with nothing chosen the
-// ai: setting stays auto and the chip of what auto runs on is marked; a tap chooses that decoder outright. The lab's
-// ai: switches (their chips save and restart as they did, MainActivity.change; their keys unchanged, tools/phone/ab.sh
-// ai: rewrites them).
+// ai: else the C, Receiver::create): GPU and CPU alone since 2026-10-05, a menu since 2026-10-06 (an Auto chip naming
+// ai: what auto last ran on, "Auto (GPU)", until 2026-10-05; "Decoding on the GPU." under the chips until 2026-10-02):
+// ai: with nothing chosen the setting stays auto and the menu shows what auto runs on; a choice takes that decoder
+// ai: outright. The lab's switches (their menus save and restart as the chips did, MainActivity.change; their keys
+// ai: unchanged, tools/phone/ab.sh rewrites them).
 @Composable
 internal fun MainActivity.ReceiveSettings() {
     val caps = remember(settings.camera) { runCatching { engine.caps(settings) }.getOrNull() }
@@ -41,9 +41,8 @@ internal fun MainActivity.ReceiveSettings() {
     Fields {
         // ai: the fields in the web's shape, a menu each (2026-10-06; chips until then); auto shows the decoder it runs
         Select("Decoder", if (s.decoder == "auto") autoRan.ifEmpty { "GPU" }.lowercase() else s.decoder, listOf("gpu" to "GPU", "cpu" to "CPU")) { change(s.copy(decoder = it), true) }
-        // ai: the most frames a GPU batch waits for (Settings.batch): 1 hands each capture's reading to the phase lock
-        // ai: as it is decoded, for a screen whose cadence slips; 32 the least GPU work a frame (the S26: 6.58 ms a
-        // ai: frame at 1, 2.88 at 32). The C decodes a frame at a time: not shown with it.
+        // ai: the most frames a GPU launch takes (Settings.batch): a launch goes as soon as a frame waits, with every
+        // ai: frame then waiting up to this; 1 decodes each frame alone. The C decodes a frame at a time: not shown with it.
         if (s.decoder != "cpu") Field("Batch size", "${s.frames}") {
             Bar(s.frames.toFloat(), 1f..32f, 30) { v -> val n = v.roundToInt().coerceIn(1, 32); if (n != s.frames) change(s.copy(batch = n.toString()), false) }
         }

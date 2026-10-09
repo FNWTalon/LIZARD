@@ -1,7 +1,7 @@
 // BI-AWGN waterfall for the LDPC family: for each rate and length, the channel mutual
 // information at which the frame error rate crosses 10%, which is the inner code's operating
 // point under a fountain. The gap between that and the rate is what the code wastes.
-// ai: When n gives the format's code (5088 to 5135), a second table follows: the same crossing on the format's code
+// ai: When n gives the format's 3/4 code (5088 to 5135), a second table follows: the same crossing on that code
 // ai: for decoder arms (ldpc_ref.h), each on the same frames: today's decoder as focus.c runs it (the int8 soft values,
 // ai: 30 iterations, the stall rule), without the rule and at 100 iterations, at other scales, float min-sum, offset
 // ai: min-sum over a sweep of offsets, and sum-product (BP) on the float LLRs and on the int8 ones. Each arm's crossing
@@ -198,7 +198,7 @@ static void report_all(ctx_t *ctx, const awgn_arm_t *a, size_t count, const doub
   for (size_t i = 0; i < count; i++) report(ctx, &a[i], sigma, frames, 0.79);
 }
 
-// ai: The format's code, every arm. Offset min-sum's offsets are swept at 30 iterations and the best is run at 100.
+// ai: The format's 3/4 code, every arm. Offset min-sum's offsets are swept at 30 iterations and the best is run at 100.
 // ai: Two arms change only the quantiser in front of today's decoder: the rate sweep's (clipped at +-127 instead of
 // ai: +-80, so LLRs up to 15.9) and half the scale (round(4 x LLR), clipped at +-80: LLRs up to 20, and every message
 // ai: cap doubled in LLR terms).

@@ -15,7 +15,7 @@ import { init as initOb, Codec, Focus, FocusAny, prof, streamBlock } from "./ob.
 import { isControlId, PAYLOAD } from "./xfer.mjs";
 import { PICTURE_SIZES } from "./lizard_pick.mjs";
 
-// What the sender paints outside a Lizard frame, in SAMPLES: the codec's margin (fc.quiet modules, src/focus.h
+// What the sender paints outside a LIZARD frame, in SAMPLES: the codec's margin (fc.quiet modules, src/focus.h
 // FOCUS_QUIET), or spec.quiet modules where an experiment overrides it. Specs give modules; the painters take samples,
 // and until 2026-09-23 this file handed the margin over unconverted, so the rig painted half a module where the
 // harnesses painted two.
@@ -46,13 +46,13 @@ export function blockBytesShake(id, len, out = new Uint8Array(len)) {
   return out;
 }
 
-// The spec a RECORDING was made with, fit to replay. A Lizard sender has written its bit map into its config since
+// The spec a RECORDING was made with, fit to replay. A LIZARD sender has written its bit map into its config since
 // 2026-09-23 (src/focus.h FOCUS_BITMAP); a recording without one was painted before the map existed, so with none.
 // A spec written by hand takes the format's own, so only something replayed from disk goes through this.
 // A recording carries the spec it was painted with, and replays under what that meant then. No bitmap field: painted
 // before the bit map existed. span 0 on a single picture: painted between the morning and the evening of 2026-09-23,
 // when "the format's own" was n / 4 modules across the picture; since then the sender writes the span it paints
-// (SPAN(n), n / 8 + 30), so a 0 in a recording means that day's rule and nothing else.
+// (SPAN(n): n / 8 + 30 then, 2 B in ring B since 2026-09-27), so a 0 in a recording means that day's rule and nothing else.
 export const recordedSpec = (spec) => (spec.phy === "focus" ? { bitmap: 0, ...spec, ...(!spec.span && !spec.grid ? { span: spec.n / 4 } : {}) } : spec);
 
 // ai: The largest picture a receiver builds: the ladder's top (1536, LIZARD-576 to -1024), so it reads any version the
@@ -60,7 +60,7 @@ export const recordedSpec = (spec) => (spec.phy === "focus" ? { bitmap: 0, ...sp
 // ai: deleted that day since the ring's word names the size). A blind C worker builds a picture's
 // ai: codec only when a word names it (src/wasm.c pic_for, a few ms since the same day's counting sort).
 export const BLIND_NMAX = PICTURE_SIZES.at(-1);
-// ai: The blind spec, the one a receiver decodes Lizard with: any ring, any picture to nmax, told nothing.
+// ai: The blind spec, the one a receiver decodes LIZARD with: any ring, any picture to nmax, told nothing.
 export const blindSpec = (nmax = BLIND_NMAX) => ({ phy: "focus", blind: 1, nmax });
 // ai: A recording read blind, as a receiver would have read it; stream is the recording's generator, for blockJudge.
 // ai: Only a recording on today's border reads: research/captures v0.1 and v0.2 were painted before the three rings
@@ -280,7 +280,7 @@ async function makeGrid(spec) {
   await initOb();
   const k = spec.grid, { mode = 1, clip = 2, tilt = 0, corner = 0, cornerFilled = 0, centre = 0, edge = 0, trackAlt = 0, border = 0, bitmap, fps = 0, variants = [{ name: "ldpc" }] } = spec;
   // The parent's picture split k ways on each axis: same cell, same normalised radius, same code per block.
-  const n = spec.n / k, span = (spec.span ?? 0) / k, subch = spec.subch / k / k;   // span 0: each tile derives its own, FOCUS_CELL samples a module like the parent's
+  const n = spec.n / k, span = (spec.span ?? 0) / k, subch = spec.subch / k / k;   // span 0: each tile takes the default ring (src/focus.h FOCUS_RING_DEFAULT), as the parent does
   if (!Number.isInteger(n) || !Number.isInteger(span) || !Number.isInteger(subch) || subch % 8)
     throw new Error(`grid ${k}: ${spec.n}/${spec.span}/${spec.subch} does not divide into tiles`);
   const fc = new Focus(n, subch, mode, { clip, span, tilt, corner, cornerFilled, centre, edge, trackAlt, border, bitmap });

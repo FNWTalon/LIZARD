@@ -5,8 +5,13 @@
 #include "camera.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <set>
 #include <cmath>
 #include <cstring>
+
+// ai: LIZ_DUMP_S, read once: where the lab's spectrum dump goes (null: none)
+static const char* dumpPath() { static const char* p = getenv("LIZ_DUMP_S"); return p && *p ? p : nullptr; }
 
 namespace lizard {
 
@@ -74,6 +79,16 @@ std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const
     if (tw != "small" && !t["large"].is_null()) { fh->classify = fh->S->pair(t["large"]["pipe"]); fh->weightsBuf = fh->S->bufPtr(t["large"]["buf"]); fh->S->tree["weightsPrecision"] = "int8"; fh->nets["large"] = "int8"; }
     fh->twinForms = nullptr;
   }
+  // ai: The LDPC kernel's two forms (2026-10-08; gpu/wgsl/back_tiers.mjs LDPC_FORMS): both exact, "reg" faster where
+  // ai: on-chip memory bounds the workgroups (the desktop's GPUs), "reg+i32" where atomic stores cost (the Adreno), so
+  // ai: both are timed on the first batch and the faster kept. LIZ_LDPC_FORM=0 or 1 takes one, untimed (an A/B).
+  {
+    const json& rule = fh->S->back()["rule"];
+    const char* lf = getenv("LIZ_LDPC_FORM");
+    if (rule.contains("ldpcAlt")) {
+      if (lf && *lf) fh->ldpcForm = atoi(lf) == 1 ? 1 : 0; else fh->ldpcPending = true;
+    }
+  }
   fh->bt.fh = fh.get();
   fh->bt.budget = budget;
   fh->bt.capMs = fh->C.CAP_MS;
@@ -83,11 +98,15 @@ std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const
   return fh;
 }
 
-// ai: The back half's static bytes (the web's backShared: the buffers BackHalf.build made).
+// ai: The back half's static bytes (the web's backShared: the buffers BackHalf.build made), each buffer once: one the
+// ai: back half's groups name several times was counted at each until 2026-10-08, which at a small batch exceeded the
+// ai: device's whole allocation and wrapped plan's unsigned `front`, the batcher then planning one frame whatever it
+// ai: was asked.
 static uint64_t backBytesOf(Setup& S) {
   uint64_t n = 0;
+  std::set<std::string> seen;
   std::function<void(const json&)> walk = [&](const json& j) {
-    if (j.is_string()) { const std::string& s = j.get_ref<const std::string&>(); if (s.size() > 1 && s[0] == 'b' && S.buffers.count(s)) n += S.buffers[s]->size; }
+    if (j.is_string()) { const std::string& s = j.get_ref<const std::string&>(); if (s.size() > 1 && s[0] == 'b' && S.buffers.count(s) && seen.insert(s).second) n += S.buffers[s]->size; }
     else if (j.is_array() || j.is_object()) for (const auto& v : j) walk(v);
   };
   walk(S.back());
@@ -543,7 +562,11 @@ void FrontHalf::encodeBack(wg::Encoder& e, Lane& ln, int frames, const std::func
   const size_t nAlign = st["soft"].size() / 3;
   for (size_t k = align ? 0 : nAlign; k < b.rsoft.size(); k++) stepOf(st["soft"][k], b.rsoft[k]);
   begin("ldpc");
-  for (size_t k = 0; k < b.rldpc.size(); k++) stepOf(st["ldpc"][k], b.rldpc[k]);
+  // ai: LIZ_LDPC_ONLY=<k> (a lab switch, 2026-10-08, for timing one code's kernel alone): only the profile's code k
+  // ai: (CODES order) runs; the other codes' blocks are left undecoded, so the blocks counted are code k's alone.
+  static const int only = getenv("LIZ_LDPC_ONLY") ? atoi(getenv("LIZ_LDPC_ONLY")) : -1;
+  const json& lsteps = ldpcForm == 1 ? st["ldpcAlt"] : st["ldpc"];
+  for (size_t k = 0; k < b.rldpc.size(); k++) if (only < 0 || (size_t)only == k) stepOf(lsteps[k], b.rldpc[k]);
 }
 
 // ai: decoder.mjs batch, up to the submit: the frame records and held version written, each slot copied into its
@@ -704,6 +727,16 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
       o += sz;
     }
   }
+  // ai: LIZ_DUMP_S=<file> (a lab dump, 2026-10-08; scripts/exp/gpu_channel.mjs): each frame's spectrum S (the back half's
+  // ai: transform output, the soft stage's input: cbytes an entry, sStride entries a frame, in the disc's order) copied
+  // ai: out beside the readback, written with the frame's shift, pilots and verified ids at finishBatch
+  if (dumpPath()) {
+    const json& T = S->back()["transform"];
+    const uint64_t bytes = T["cbytes"].get<uint64_t>() * T["sStride"].get<uint64_t>() * (uint64_t)nb;
+    if (!ln.dumpBuf || ln.dumpBuf->size < bytes) ln.dumpBuf = dev.createBuffer(bytes, wg::MAP_READ | wg::COPY_DST, "dumpS", false);
+    e.copyBufferToBuffer(*ln.back->s, 0, *ln.dumpBuf, 0, bytes);
+    f->dumpBytes = bytes;
+  }
   if (prof) {
     f->nq = ln.qsProfile->count;
     e.resolveQuerySet(*ln.qsProfile, 0, f->nq, *ln.qsProfileBuf, 0);
@@ -821,14 +854,18 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
     // ai: the blocks the frame carries: its version's under the format's rate profile (gpu/back/tiers.mjs blocks)
     const json& rb = bk["rule"]["blocks"];
     const int nblk = fo.version > 0 && fo.version < (int)rb.size() ? rb[fo.version].get<int>() : fo.version;
-    if (fo.version > 0 && fo.backCounts.size() > 6 && fo.backCounts[6] > 0) for (int g = 0; g < 2; g++) {
-      double s = 0, s2 = 0;
-      int k = 0;
-      for (int b = g; b < std::min<int>(nblk, (int)blocksMax); b += 2) { const float v = pilots[i * blocksMax + b]; if (std::isfinite(v)) { s += v; s2 += (double)v * v; k++; } }
-      if (!k) continue;
-      const double m = s / k, var = k > 1 ? (s2 - s * m) / (k - 1) : 0;
-      fo.pilotBlocks += k;
-      (g ? fo.pilotR2 : fo.pilotR) = (float)m; (g ? fo.pilotSd2 : fo.pilotSd) = (float)std::sqrt(std::max(var, 0.0) / k);
+    if (fo.version > 0 && fo.backCounts.size() > 6 && fo.backCounts[6] > 0) {
+      // ai: a parity with no blocks (version 1: one block, an even one) reads NaN, as focus_pilot's does
+      fo.pilotR = fo.pilotSd = fo.pilotR2 = fo.pilotSd2 = NAN;
+      for (int g = 0; g < 2; g++) {
+        double s = 0, s2 = 0;
+        int k = 0;
+        for (int b = g; b < std::min<int>(nblk, (int)blocksMax); b += 2) { const float v = pilots[i * blocksMax + b]; if (std::isfinite(v)) { s += v; s2 += (double)v * v; k++; } }
+        if (!k) continue;
+        const double m = s / k, var = k > 1 ? (s2 - s * m) / (k - 1) : 0;
+        fo.pilotBlocks += k;
+        (g ? fo.pilotR2 : fo.pilotR) = (float)m; (g ? fo.pilotSd2 : fo.pilotSd) = (float)std::sqrt(std::max(var, 0.0) / k);
+      }
     }
   }
   // ai: run's keep: each kept frame's bytes off the lane's keepBuf; LIZ_DUMP's written, and handed on only where the
@@ -866,7 +903,78 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
     try { measureTwins(ln, lead); } catch (const std::exception& ex) { log(std::string("int8 twins not measured (") + ex.what() + "): the float files"); twinForms = nullptr; }
     out.twinMs = now() - t1;
   }
+  // ai: timed on the first batch whose codewords are enough to time (a batch before a code is in view runs none)
+  long codewords = 0;
+  for (const auto& fo : out.frames) if (fo.backCounts.size() > 3) codewords += fo.backCounts[3];
+  if (ldpcPending && nb && codewords >= 64) {
+    const double t1 = now();
+    try { measureLdpc(ln, nb); } catch (const std::exception& ex) { ldpcPending = false; log(std::string("LDPC forms not timed (") + ex.what() + "): the first"); }
+    out.twinMs = std::max(0.0, out.twinMs) + now() - t1;
+  }
+  // ai: LIZ_DUMP_S: a record a frame the word named (u32 0x44505347, u32 tag, i32 version, u32 n, u32 cbytes, u32
+  // ai: sStride, f32 dx, f32 dy (the pilots' shift, PILOT past the blocks), f32 pilotR, f32 pilotR2, u32 records, then
+  // ai: a (u32 block, u32 id) a verified block, then the frame's S, cbytes x sStride bytes), appended to the file
+  if (f->dumpBytes) {
+    const json& T = S->back()["transform"];
+    const uint64_t cb = T["cbytes"].get<uint64_t>(), ss = T["sStride"].get<uint64_t>();
+    const uint8_t* sp = dev.read(*ln.dumpBuf, 0, f->dumpBytes);
+    if (FILE* fp = fopen(dumpPath(), "ab")) {
+      for (int i = 0; i < nb; i++) {
+        const auto& fo = out.frames[i];
+        if (fo.empty || fo.version <= 0) continue;
+        const uint32_t head[6] = {0x44505347u, (uint32_t)fo.tag, (uint32_t)fo.version, (uint32_t)fo.n, (uint32_t)cb, (uint32_t)ss};
+        const float fl[4] = {pilots[Bb * blocksMax + 2 * i], pilots[Bb * blocksMax + 2 * i + 1], fo.pilotR, fo.pilotR2};
+        const uint32_t nrec = (uint32_t)fo.records.size();
+        fwrite(head, 4, 6, fp); fwrite(fl, 4, 4, fp); fwrite(&nrec, 4, 1, fp);
+        for (const auto& x : fo.records) { const uint32_t r2[2] = {(uint32_t)x.block, x.id}; fwrite(r2, 4, 2, fp); }
+        fwrite(sp + (uint64_t)i * cb * ss, 1, cb * ss, fp);
+      }
+      fclose(fp);
+    }
+  }
   return out;
+}
+
+// ai: The LDPC kernel's two forms timed on this batch's nb frames, still on its lane (its soft values, blocks and lists
+// ai: as the batch left them): every code's dispatch in one form, then in the other, in timestamp pairs, three rounds in
+// ai: alternating order, the first untimed; the faster kept (the first on a tie). Their writes (V, ITS, REC, the
+// ai: counters) are the batch's own again, already read back, and the next batch's gate clears them.
+void FrontHalf::measureLdpc(Lane& ln, int nb) {
+  ldpcPending = false;
+  if (!dev.features.timestamps) { log("LDPC forms not timed (no timestamps): the first"); return; }
+  const json& st = S->back()["rule"];
+  auto& b = *ln.back;
+  const uint32_t R = C.TWIN_ROUNDS, A = 2;
+  auto qs = dev.createQuerySet(2 * A * R);
+  auto res = dev.createBuffer(16ull * A * R, wg::QUERY_RESOLVE | wg::COPY_SRC);
+  auto rd = dev.createBuffer(res->size, wg::MAP_READ | wg::COPY_DST);
+  auto e = dev.encoder();
+  for (uint32_t r = 0; r < R; r++) {
+    for (uint32_t j = 0; j < A; j++) {
+      const uint32_t i = r % 2 ? A - 1 - j : j, k = r * A + i;
+      const json& steps = i ? st["ldpcAlt"] : st["ldpc"];
+      e.beginComputePass(qs.get(), (int)(2 * k), (int)(2 * k + 1));
+      for (size_t q = 0; q < b.rldpc.size(); q++) {
+        const json& step = steps[q];
+        e.setPipeline(*S->pipe(step["pipeline"]));
+        e.setBindGroup(*b.rldpc[q]);
+        uint32_t d[3];
+        for (int x = 0; x < 3; x++) d[x] = step["dispatch"][x].is_string() ? (uint32_t)nb : step["dispatch"][x].get<uint32_t>();
+        e.dispatch(d[0], d[1], d[2]);
+      }
+      e.endPass();
+    }
+  }
+  e.resolveQuerySet(*qs, 0, qs->count, *res, 0);
+  e.copyBufferToBuffer(*res, 0, *rd, 0, res->size);
+  dev.submit(e)->wait();
+  const uint64_t* t = (const uint64_t*)dev.read(*rd, 0, rd->size);
+  double best[2] = {1e30, 1e30};
+  for (uint32_t r = 1; r < R; r++) for (uint32_t i = 0; i < A; i++) { const uint32_t k = r * A + i; best[i] = std::min(best[i], (double)((t[2 * k + 1] - t[2 * k]) & dev.timestampMask) * dev.timestampPeriod / 1e6 / nb); }
+  ldpcForm = best[1] < best[0] ? 1 : 0;
+  const json forms = st.contains("ldpcForms") ? st["ldpcForms"] : json::array({"first", "second"});
+  ldpcTimes = {{"frames", nb}, {"by", "timestamps"}, {forms[0].get<std::string>(), best[0]}, {forms[1].get<std::string>(), best[1]}, {"kept", forms[ldpcForm]}};
+  log("LDPC forms timed on " + std::to_string(nb) + " frames: " + ldpcTimes.dump());
 }
 
 // ai: decoder.mjs measureTwins and timeArms: each classifier with an int8 twin timed in both forms on this batch's

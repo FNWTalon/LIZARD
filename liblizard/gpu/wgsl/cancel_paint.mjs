@@ -1,7 +1,7 @@
-// ai: The cancel stage's paint (gpu/back/DESIGN.md 13.1; the build brief's steps 3 to 5): a reference's known
+// ai: The cancel stage's paint (gpu/back/DESIGN.md 13.1): a reference's known
 // ai: picture painted on the device from pass one's verified blocks, the sender's encode with unknown blocks left
 // ai: out (their coefficients zero, so 0.5 where nothing is painted). Three shaders, the encoder's arithmetic
-// ai: (src/focus.c focus_encode 583 to 660, turn_pack 402 to 426, clip_row 430 to 437; src/ldpc.c ldpc_encode):
+// ai: (src/focus.c focus_encode, turn_pack, clip_row; src/ldpc.c ldpc_encode):
 // ai: PAINT, a workgroup a (block, paint slot), 128 threads: the block's 473 payload bytes from REC through PLAN's
 // ai:   record pointer, its CRC-32 (the LDPC's split CRC), the systematic codeword (data bits, then the 1272 parity
 // ai:   bits as a prefix XOR over the checks in check order), the block's 5120 slots through PERMW (the bit map and
@@ -26,7 +26,7 @@ import { CRC_SPLIT, PARAMS_STRUCT } from "./back_ldpc.mjs";
 import { planLayout, NONE, KEYTAB_WORDS } from "./cancel_gate.mjs";
 
 export const PAINT_THREADS = 128;   // ai: the split CRC wants 119 lanes; 128 lanes cover the 1272 checks at 10 each
-export const A_QPSK = 0.70710678;   // ai: the C's 0.70710678f (focus.c 618), amp 1 at tilt 0
+export const A_QPSK = 0.70710678;   // ai: the C's 0.70710678f (focus.c focus_encode), amp 1 at tilt 0
 
 const planConsts = ({ B, blocksMax, refSlots }) => {
   const L = planLayout({ blocksMax, B, refSlots });

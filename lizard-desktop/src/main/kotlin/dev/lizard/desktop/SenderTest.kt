@@ -12,7 +12,7 @@ import kotlin.system.exitProcess
 // ai: size 25 to 100 (%); gap 0 to 64 (modules); ring auto, 32, 64, 96 or 128; full 0 or 1 (the window full screen, the
 // ai: compositor bypassed); file=<path> (a file in place of the test stream, as the file row's pick gives it); steps
 // ai: (2026-10-04, the app's own controls, which only a hand had moved): comma separated <seconds>:<action>, from when
-// ai: the presenter first presents, each as the control does it: full (Fullscreen, F11), pause, resume, stop, start,
+// ai: the presenter first presents, each as the control does it: full (Fullscreen, F11), max (the window maximized), pause, resume, stop, start,
 // ai: size=N, gap=N, codes=N, blocks=N (0 auto), fps=N (each a slider's release), enc=auto|gpu|cpu, rail, press (Start as
 // ai: the button presses it: the brightness tip first where it is due), confirm and cancel (the tip's buttons); each logged
 // ai: on stderr as "step <s>: <action>" when it is taken. Each second's presenter stats go to stderr as "present: {...}".
@@ -126,6 +126,7 @@ class SenderTest private constructor(private val secs: Double, private val kv: M
         fun n(r: IntRange) = v.toIntOrNull()?.takeIf { it in r } ?: fail("LIZ_SENDER_TEST: step $act")
         when (k) {
             "full" -> s.toggleFull()
+            "max" -> s.maximize?.invoke()
             "rail" -> s.toggleRail()
             "pause" -> s.pause(true)
             "resume" -> s.pause(false)

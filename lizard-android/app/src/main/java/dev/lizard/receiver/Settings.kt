@@ -2,8 +2,8 @@ package dev.lizard.receiver
 
 import android.content.Context
 
-// ai: The app's switches, in SharedPreferences "lizard"; the decoder in Settings, the rest in
-// ai: Advanced:
+// ai: The app's switches, in SharedPreferences "lizard"; Receive's Settings but devlog and replays, which are
+// ai: Developer Tools', and precision, which only the tools set:
 // ai:   decoder     auto | gpu | cpu                      ReceiverConfig.decoder
 // ai:   precision   auto | int8 | f16 | f32               ReceiverConfig.precision; set only by tools/phone/ab.sh p= since
 // ai:               2026-10-01 (its chips went)
@@ -12,16 +12,16 @@ import android.content.Context
 // ai:               that focuses closest (Engine.rearId) and is stored as that id at the next save (2026-10-05; "auto" a
 // ai:               choice of its own until then, and a stored "auto" loads the same way)
 // ai:   resolution  1280x720 | 1920x1080 | 2560x1440 | 3840x2160, the camera's ImageReader (1920x1080)
-// ai:   zoom        the camera's zoom ratio, 0.1 apart over its range up to 4 (Advanced's slider since 2026-10-01; chips
+// ai:   zoom        the camera's zoom ratio, 0.1 apart over its range up to 4 (Settings' slider since 2026-10-01; chips
 // ai:               of 1, 1.4 and 2 before); 1.5 by default since 2026-10-02 (the zoom of the 2:1 runs at 2.2+ MB/s;
 // ai:               1.4 before, the 2026-09-30 sweep's best, 1.7 next): the code in the middle of the lens's field, not
 // ai:               out to its soft corners (Engine.session; set live, Engine.zoom)
 // ai:   (focus      auto | dioptres, Receive's Focus of 2026-10-04, went 2026-10-05: autofocus, the camera's continuous
 // ai:               video mode, always, Engine.applyFocus; a stored one is removed at the next save)
 // ai:   devlog      the rig's address (http://host:8080), empty for none
-// ai:   batch       1 to 32, the most frames a GPU batch waits for (Receive's Settings, 2026-10-02: the lock's readings
-// ai:               come back a batch's wait after their capture, so at 1 the lock can re-tune each frame); 32 by
-// ai:               default, the batcher's own size (receiver.h batchCap); set live
+// ai:   batch       1 to 32, the most frames a GPU launch takes (Receive's Settings, 2026-10-02; since 2026-10-08 a
+// ai:               launch goes as soon as a frame waits and takes every frame then waiting up to this, where it
+// ai:               waited for this many before); 32 by default (receiver.h batchCap); set live
 // ai:   phase       off | track: the camera's phase against the display (PhaseLock.kt; track by default since
 // ai:               2026-10-01, the night it read 93 to 95% of a sender at 60
 // ai:               painted; a sender that paints slower loses nothing to it; a stored "auto", the arm deleted that
@@ -50,7 +50,6 @@ data class Settings(
     val replays: String = "off",
 ) {
     val frames get() = batch.toIntOrNull()?.coerceIn(1, 32) ?: 32
-
     // ai: cam: the id the camera switch resolves to (Engine.rearId), null where the phone has no back camera (the
     // ai: lens's values then stay under the plain keys)
     fun save(ctx: Context, cam: String?) {

@@ -1,8 +1,9 @@
 // ai: The app's sender (2026-10-01): lizard-web/send-worker.mjs natively, the C on the CPU (NEON). One thread makes each
 // ai: frame's blocks in order (a file's ids by XferTx's schedule, or the test stream's from a random first id, SHAKE256 of
 // ai: each id, as the page's); a few painters, each with its own codec (src/focus.c keeps its scratch in the codec),
-// ai: encode and paint them ahead (focus_encode, focus_paint_rgba: grey RGBA with the margin, the pilots' count the
-// ai: frame's number mod 4); the app takes them in order (take) and puts them on the screen at the display's pace.
+// ai: encode and paint them ahead (focus_encode, focus_paint_grey: grey with the margin, the pilots' count the
+// ai: frame's number mod 4) into the GPU painter's frame ring (2026-10-07), or the GPU paints them (painter, below);
+// ai: the app takes them in order (take, takeSlot) and puts them on the screen at the display's pace.
 #pragma once
 #include <atomic>
 #include <condition_variable>

@@ -22,7 +22,7 @@ const L = new Int32Array(14);
 { const p = M._malloc(4 * 14); M._xfer_layout(p); L.set(new Int32Array(M.HEAPU8.buffer, p, 14)); M._free(p); }
 const [ID_BYTES, PAYLOAD, SYM_BITS, CHUNK_BITS, ID_HEADER, ID_MANIFEST, PER_BLOCK, NAME_MAX, TYPE_MAX, , , , VERSION] = L;
 check(ID_BYTES === 4 && PAYLOAD === 469 && SYM_BITS === 18 && CHUNK_BITS === 14 && ID_HEADER >>> 0 === 0xfffc0000 && ID_MANIFEST >>> 0 === 0xfffc0001 && PER_BLOCK === 12 && TYPE_MAX === 158 && VERSION === 2, "layout");
-check(M._focus_setup(512, 128, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0) === ID_BYTES + PAYLOAD, "a Lizard block is the id and the payload");
+check(M._focus_setup(512, 128, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0) === ID_BYTES + PAYLOAD, "a LIZARD block is the id and the payload");
 check(M._xfer_id_of(3, 7) >>> 0 === 3 * 2 ** 18 + 7 && M._xfer_kind_of(0xfffc0000) === 1 && M._xfer_kind_of(0xfffc0005) === 2 && M._xfer_kind_of(0xfffc0000 + 1366) === 2 && M._xfer_kind_of(0xfffc0000 + 1367) === -1 && M._xfer_kind_of(5) === 0, "ids");
 
 const b3 = (bytes) => { const p = put(bytes), o = M._malloc(32); M._xfer_b3_hash(p, bytes.length, o); const h = take(o, 32); M._free(p); M._free(o); return h; };

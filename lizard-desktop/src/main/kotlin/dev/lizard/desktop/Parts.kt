@@ -94,7 +94,7 @@ val LizardColours = lightColorScheme(primary = Fg, onPrimary = Bg, background = 
     surfaceVariant = Soft, onSurfaceVariant = Muted, outline = Line, outlineVariant = Line, error = Bad,
     surfaceContainerLowest = Bg, surfaceContainerLow = Bg, surfaceContainer = Bg, surfaceContainerHigh = Bg, surfaceContainerHighest = Bg)
 
-// ai: The icons: Feather's (MIT) on a 24 grid, 2 px strokes, as the web pages and the app draw them; and Lizard's mark
+// ai: The icons: Feather's (MIT) on a 24 grid, 2 px strokes, as the web pages and the app draw them; and LIZARD's mark
 // ai: (lizard-web/icon.svg: the corner marks, the dark ring between them, a grey picture, on white), the window's icon.
 object Icons {
     private fun stroked(name: String, vararg d: String) = ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).apply {
@@ -242,8 +242,8 @@ fun Fold(title: String, open: Boolean, onToggle: () -> Unit, content: @Composabl
 }
 
 // ai: Settings' fields one rhythm (2026-10-02; the web's headers and spacing were inconsistent): 16 dp apart
-// ai: (Fields), each its title over its control, the title row 36 dp whatever is in it (the value on the right, the
-// ai: blocks' Auto chip at its end), a group's heading (Group) 8 dp over its first field.
+// ai: (Fields), each its title over its control, the title row 36 dp whatever is in it (the value on the right, `end`
+// ai: at its end), a group's heading (Group) 8 dp over its first field.
 @Composable
 fun Fields(content: @Composable ColumnScope.() -> Unit) = Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
 

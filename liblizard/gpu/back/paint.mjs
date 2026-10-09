@@ -16,7 +16,7 @@ import { crcPowers, PAYLOAD } from "./ref_ldpc.mjs";
 const U = globalThis.GPUBufferUsage;
 
 // ai: Every sender's clip ratio and tilt today (SPEC.md 13 item 8): the clip level the paint reproduces, the C's
-// ai: f32 arithmetic (focus.c 646): lim = 2 clip sqrt(0.5 subch 320) at tilt 0.
+// ai: f32 arithmetic (focus.c focus_encode): lim = 2 clip sqrt(0.5 subch 320) at tilt 0.
 export const CLIP = 2;
 export const clipLimit = (subch, clip = CLIP) => Math.fround(Math.fround(2 * clip) * Math.fround(Math.sqrt(Math.fround(0.5 * subch * 320))));
 // ai: ipic's LIM uniform: version v's (lim, 0.5 / lim, 0, 0) at v, versions 1 to 128 (8 v sub-channels); 0 unused.

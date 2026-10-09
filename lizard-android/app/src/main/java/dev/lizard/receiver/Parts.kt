@@ -174,7 +174,7 @@ fun Square(content: @Composable () -> Unit) = Box(Modifier.size(56.dp), contentA
 
 // ai: The landscape column's width (Receive and Send, 2026-10-05): 240 dp or a third of the screen's width where that is
 // ai: less (320 and 0.45 until then, a fourth wider), or what its edge was dragged to (`chosen`, dp; 0 none), within
-// ai: 180 dp (or `lo`, a screen's own floor: what its buttons need with no label folded, TwoCellFloor, 2026-10-06) and
+// ai: 180 dp (or `lo`, a screen's own floor: what its buttons need with no label folded, CellsFloor, 2026-10-06) and
 // ai: three fifths of the screen.
 fun SideWidth(screen: Dp, chosen: Float, lo: Dp = 180.dp): Dp {
     val low = maxOf(180.dp, lo)
@@ -231,7 +231,7 @@ fun RateSquare(kbs: Double?) = Square {
 }
 
 // ai: The buttons (the web's button, .primary, .text, .danger): pills 48 dp tall. A label is one line and never
-// ai: shortened (2026-10-06; two lines with an ellipsis before): a column is kept wide enough for it (TwoCellFloor).
+// ai: shortened (2026-10-06; two lines with an ellipsis before): a column is kept wide enough for it (CellsFloor).
 enum class Kind { Primary, Tonal, Text, Danger }
 
 @Composable
@@ -309,20 +309,27 @@ fun CodeBlock(text: String, size: Int = 13) =
 // ai: and says so, "Thermal throttling. GPU at 646 of 1300 MHz."; where the GPU's clock cannot be read, from
 // ai: Android's moderate thermal status (2) up with the words before. Since 2026-10-07, first of all, when the
 // ai: camera's rate has fallen from its peak (Engine.cameraSlow): "Thermal throttling. Camera at 53 of 60 frames a
-// ai: second.", the loss that costs the rate most.
+// ai: second.", the loss that costs the rate most. heatText is its line, null while nothing throttles.
+fun heatText(status: Int, clocks: Clocks.Read?, camera: Engine.CameraSlow? = null): String? = when {
+    camera != null -> "Thermal throttling. Camera at ${camera.now} of ${camera.max} frames a second."
+    clocks != null -> if (clocks.throttled) Clocks.text(clocks) else null
+    status >= android.os.PowerManager.THERMAL_STATUS_MODERATE -> "Thermal throttling. Speeds may slow down."
+    else -> null
+}
+
 @Composable
 fun HeatWarning(status: Int, clocks: Clocks.Read?, camera: Engine.CameraSlow? = null, modifier: Modifier = Modifier) {
-    val text = when {
-        camera != null -> "Thermal throttling. Camera at ${camera.now} of ${camera.max} frames a second."
-        clocks != null -> if (clocks.throttled) Clocks.text(clocks) else return
-        status >= android.os.PowerManager.THERMAL_STATUS_MODERATE -> "Thermal throttling. Speeds may slow down."
-        else -> return
-    }
+    val text = heatText(status, clocks, camera) ?: return
     Row(modifier.semantics(mergeDescendants = true) {}, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Icon(painterResource(R.drawable.ic_alert), contentDescription = "Warning", Modifier.size(20.dp), tint = Bad)
         Text(text, style = MaterialTheme.typography.bodyMedium, color = Bad)
     }
 }
+
+// ai: The heat warning in a rail (2026-10-08): the red triangle alone in a square, a mark with no action, its line the
+// ai: description.
+@Composable
+fun HeatSquare(text: String) = Square { Icon(painterResource(R.drawable.ic_alert), contentDescription = text, Modifier.size(24.dp), tint = Bad) }
 
 // ai: A screen (2026-10-02): the bar fixed at the top,
 // ai: what is under it scrolling on its own; one column at most 640 dp wide, centred.
@@ -339,7 +346,7 @@ fun Page(title: String?, onBack: (() -> Unit)?, content: @Composable ColumnScope
     }
 }
 
-// ai: A row that opens (the web's details.dev, 2026-10-02: Settings and Advanced on Send and Receive): a hairline over
+// ai: A row that opens (the web's details.dev, 2026-10-02: Settings and Developer Tools on Send and Receive): a hairline over
 // ai: it, its title, a chevron that turns, and what it holds straight under it; its state the caller's, kept
 // ai: (MainActivity.folds).
 @Composable
@@ -359,7 +366,7 @@ fun Fold(title: String, open: Boolean, onToggle: () -> Unit, content: @Composabl
 
 // ai: Settings' fields one rhythm (2026-10-02): 16 dp apart
 // ai: (Fields), each its title over its control (14 sp, the web's label, 2026-10-06), the title row 36 dp whatever is
-// ai: in it (the value on the right, the blocks' Auto chip at its end), a group's heading (Group) 8 dp over its first
+// ai: in it (the value on the right, `end` at its end), a group's heading (Group) 8 dp over its first
 // ai: field.
 @Composable
 fun Fields(content: @Composable ColumnScope.() -> Unit) = Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp), content = content)

@@ -12,7 +12,7 @@
 //
 // THE SCHEDULE: every chunk interleaved with every other, in proportion to its blocks, over the whole file (a lap),
 // and laps repeated for as long as the sender runs, each with fresh repair ids. Not chunks in turn, because a camera's
-// loss is steady and bursty, not rare: Lizard degrades instead of stopping, so at a distance the outer rings go and a
+// loss is steady and bursty, not rare: LIZARD degrades instead of stopping, so at a distance the outer rings go and a
 // frame brings a share of its blocks, and a hand that moves loses whole seconds. In turn, a chunk gets a fixed budget
 // a lap (K plus a margin m, since nothing comes back to say it arrived); a receiver losing more than m / (1 + m) of
 // its blocks finishes no chunk in the first lap, and the margin itself is airtime a receiver that loses nothing throws
@@ -31,7 +31,7 @@
 // chunk or two at a solve, not the file. The sender holds every chunk's Wirehair encoder, about 1.75 times the file,
 // which is what the one-fountain file mode held too.
 //
-// Blocks are spread over a frame's slots by a shuffle drawn from the frame count: slot k of a Lizard frame is ring k,
+// Blocks are spread over a frame's slots by a shuffle drawn from the frame count: slot k of a LIZARD frame is ring k,
 // the outer ones the first to go, and a plain round robin would pin chunk c to the same slots whenever the chunk count
 // divides the frame's (every chunk on a ring that a distant camera never reads). Control blocks (the header, then the
 // manifest) take slot 0, the lowest ring, the one read first and lost last.
@@ -54,7 +54,7 @@ export const idOf = (chunk, symbol) => ((chunk << SYMBOL_BITS) | symbol) >>> 0;
 // 2 manifest blocks at 4 MiB, 64 and 5 at 1 MiB, and an 8 GB one 1,908 against 7,630.
 export const DEFAULT_LOG2 = 22;
 // One control block for this many data blocks (1.6% of the airtime), more often for a short file, so a small file is
-// not waiting on its header. A camera that joins sees the header within 128 blocks: 2 frames at LIZARD-512, 11 at 96.
+// not waiting on its header. A camera that joins sees the header within 128 blocks: 3 frames at LIZARD-512 (61 blocks), 12 at 96 (11).
 const CONTROL_EVERY = 63;
 const REC = ID_BYTES + PAYLOAD;   // a stored block: its symbol, then its payload
 

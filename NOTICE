@@ -1,10 +1,10 @@
-Lizard
-Copyright 2026 The Lizard authors
+LIZARD
+Copyright 2026 The LIZARD authors
 
 Licensed under the Apache License, Version 2.0 (LICENSE).
 
-Lizard's code is derived from the design of FOCUS: F. Hermans, L. McNamara, G. Sörös, C. Rohner, T. Voigt and
-E. Ngai, "Focus: Robust Visual Codes for Everyone", MobiSys 2016. Lizard is an independent implementation; no code
+LIZARD's code is derived from the design of FOCUS: F. Hermans, L. McNamara, G. Sörös, C. Rohner, T. Voigt and
+E. Ngai, "Focus: Robust Visual Codes for Everyone", MobiSys 2016. LIZARD is an independent implementation; no code
 from that work is included.
 
 This product includes third-party software, each under its own license, kept beside it:

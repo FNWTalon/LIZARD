@@ -5,12 +5,14 @@ import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ContentValues
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.pm.ShortcutInfo
 import android.content.pm.ShortcutManager
 import android.graphics.drawable.Icon
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
@@ -43,6 +45,7 @@ import androidx.lifecycle.Lifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -52,9 +55,9 @@ import java.util.Locale
 import java.util.TimeZone
 
 // ai: The app (2026-10-01): three screens, Home (Send and Receive, the received files, and at the bottom Settings: the
-// ai: tips again, the received files' size, About), Receive (the camera and the transfer, then Settings and Advanced,
-// ai: rows that open, and About) and Send (a
-// ai: file, Start, Settings, Advanced, About); since 2026-10-02 as the web's pages after their tidying, the Settings
+// ai: tips again, the received files' size, About), Receive (the camera and the transfer, then Settings and Developer
+// ai: Tools, rows that open, and About) and Send (a
+// ai: file, Start, Settings, Developer Tools, About); since 2026-10-02 as the web's pages after their tidying, the Settings
 // ai: screen and its gears gone. One activity, its `screen` and the system back between them, no navigation library.
 // ai: The web's pages are the same shell (lizard-web/index.html, recv.html, send.html) and the words the
 // ai: same (Readout.kt). The camera runs on Receive alone, from entering it (or a resume there) to leaving it (or a
@@ -103,8 +106,8 @@ class MainActivity : ComponentActivity() {
     internal fun saveSide() { prefs.edit().putFloat("sideDp", sideDp).apply() }
     // ai: the rows that open, open or not, kept by key (the web's send:dev, send:logs, recv:dev, recv:logs)
     internal val folds = mutableStateMapOf<String, Boolean>()
-    internal var autoRan by mutableStateOf("")             // ai: what auto last decoded on, GPU or CPU (the decoder's Auto chip)
-    internal var raw by mutableStateOf("")                 // ai: the stats JSON as it came, for Advanced
+    internal var autoRan by mutableStateOf("")             // ai: what auto last decoded on, GPU or CPU (the Decoder menu's value under auto)
+    internal var raw by mutableStateOf("")                 // ai: the stats JSON as it came, for Developer Tools
     internal var rx by mutableStateOf(Readout.Rx())
     internal var root by mutableStateOf("")                // ai: the transfer in hand's BLAKE3 root, hex
     internal var secs by mutableStateOf(0.0)
@@ -180,7 +183,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); handle(intent) }
-    // ai: Receive from the shortcut or ab.sh; Send from its shortcut, or with a file another app shared to Lizard
+    // ai: Receive from the shortcut or ab.sh; Send from its shortcut, or with a file another app shared to LIZARD
     private fun handle(i: Intent?) {
         if (i?.action == Intent.ACTION_SEND) {
             @Suppress("DEPRECATION") val u = i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
@@ -212,6 +215,26 @@ class MainActivity : ComponentActivity() {
     internal var heat by mutableStateOf(0)
     // ai: the GPU's clock ceiling against its top (Clocks.kt), read once a second by the poll; null where unreadable
     internal var clocks by mutableStateOf<Clocks.Read?>(null)
+    // ai: The whole phone's power off the charger (2026-10-08, for the heat's levers): the battery's discharge current
+    // ai: (BatteryManager CURRENT_NOW, uA, negative while it discharges on the S26) times its voltage, null while
+    // ai: plugged in, when it measures the charger instead; read once a second, the stats row's `powerW` and
+    // ai: `batteryC`, a `power:` log line every 5 s with the mean.
+    private var powerW: Double? = null
+    private var batteryC = 0.0
+    private var powerSum = 0.0
+    private var powerN = 0
+    private fun readPower() {
+        val b = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return
+        batteryC = b.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 0) / 10.0
+        val plugged = b.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0
+        val ua = getSystemService(BatteryManager::class.java)?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW) ?: Int.MIN_VALUE
+        val mv = b.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 0)
+        powerW = if (plugged || ua == Int.MIN_VALUE || mv <= 0) null else abs(ua.toDouble()) * mv / 1e9
+        powerW?.let { powerSum += it; powerN++ }
+    }
+    // ai: `adb shell setprop debug.lizard.dim <0..1>` (2026-10-08, a lab switch for the heat's levers): Receive's
+    // ai: window brightness while the camera runs, acted on when the value changes; anything else, the system's
+    private var dimAsked = ""
     private val heatListener = PowerManager.OnThermalStatusChangedListener { if (it != heat) Log.i(Engine.TAG, "thermal status $it"); heat = it }
     override fun onResume() {
         super.onResume()
@@ -259,7 +282,7 @@ class MainActivity : ComponentActivity() {
     // ai: the back camera the camera switch opens (Engine.rearId), the id the lens's own settings are kept under
     // ai: (Settings.forCamera, 2026-10-04); null where the phone has none or the camera service fails
     private fun camId(camera: String): String? = runCatching { engine.rearId(camera) }.getOrNull()
-    // ai: A Developer (Advanced) switch: kept, and the camera started again where the switch needs it. Another lens
+    // ai: A Settings or Developer Tools switch: kept, and the camera started again where the switch needs it. Another lens
     // ai: chosen brings its own resolution and zoom (as last kept for it, else the defaults).
     internal fun change(s0: Settings, restart: Boolean) {
         val cam = camId(s0.camera)
@@ -270,7 +293,7 @@ class MainActivity : ComponentActivity() {
         engine.batch(s.frames)
         if (restart && screen == Screen.Receive && phase != Engine.Phase.Idle && granted) startCamera()
     }
-    // ai: Advanced's zoom slider: the camera moved live (Engine.zoom, no restart), the setting kept at every step
+    // ai: Settings' zoom slider: the camera moved live (Engine.zoom, no restart), the setting kept at every step
     internal fun zoomTo(z: Float) {
         if (settings.zoom.toFloatOrNull() == z) return
         settings = settings.copy(zoom = "%.1f".format(java.util.Locale.ROOT, z))
@@ -306,9 +329,8 @@ class MainActivity : ComponentActivity() {
             runOnUiThread { note = n }
         }.start()
     }
-    // ai: deleting the file the receiver shows as received forgets it there too (2026-10-07, owner: "deleting received
-    // ai: file should also delete the green text"): the state line clears at the next poll, and the file in the light
-    // ai: is received anew
+    // ai: deleting the file the receiver shows as received forgets it there too (2026-10-07): the state line's green
+    // ai: "Received" clears at the next poll, and the file in the light is received anew
     internal fun delete(e: Library.Entry) { if (e.root.isNotEmpty() && e.root == root) forgetReceived(); library.delete(e); files = library.list() }
     internal fun deleteAll() { if (files.any { it.root.isNotEmpty() && it.root == root }) forgetReceived(); library.deleteAll(); files = library.list() }
     private fun forgetReceived() { engine.clear(); root = ""; unfiled = "" }
@@ -488,6 +510,21 @@ class MainActivity : ComponentActivity() {
                         if (phase == Engine.Phase.On || phase == Engine.Phase.Starting || phase == Engine.Phase.Loading) { stopped = true; engine.stop(); last = true }
                     }
                 }
+                // ai: the phone's power once a second (readPower), its 5 s mean in the log; the dim switch
+                if (tick % 4 == 0) {
+                    readPower()
+                    if (tick % 20 == 0 && powerN > 0) { Log.i(Engine.TAG, "power: %.2f W (5 s mean), battery %.1f C".format(powerSum / powerN, batteryC)); powerSum = 0.0; powerN = 0 }
+                    else if (tick % 20 == 0) Log.i(Engine.TAG, "power: plugged in, battery %.1f C".format(batteryC))
+                    val d = Native.prop("debug.lizard.dim")
+                    val on = phase == Engine.Phase.On
+                    val want = if (on) d.toFloatOrNull()?.takeIf { it in 0f..1f } else null
+                    val key = if (want == null) "" else d
+                    if (key != dimAsked) {
+                        dimAsked = key
+                        window.attributes = window.attributes.apply { screenBrightness = want ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE }
+                        Log.i(Engine.TAG, "dim: window brightness " + (want?.toString() ?: "the system's"))
+                    }
+                }
                 // ai: the GPU's clock once a second, a log line at the first read and whenever a throttle's ceiling moves
                 if (tick % 4 == 0) {
                     val c = withContext(Dispatchers.IO) { Clocks.read() }
@@ -507,6 +544,7 @@ class MainActivity : ComponentActivity() {
                     val cn = engine.cameraNow(); val ph = engine.phaseState()
                     val body = runCatching { JSONObject(s).put("thermal", heat).apply {
                         if (c != null) put("gpuMaxMHz", c.mhz)
+                        powerW?.let { put("powerW", it) }; put("batteryC", batteryC)
                         if (cn != null) { put("exposureMs", cn.exposureMs); put("iso", cn.iso); put("readoutMs", cn.readoutMs); put("frameMs", cn.frameMs) }
                         if (ph != null) put("phase", JSONObject().put("arm", ph.arm).put("state", ph.what).put("a", nz(ph.a)).put("b", nz(ph.b)).put("k", nz(ph.k))
                             .put("se", nz(ph.se)).put("n", ph.n).put("gain", ph.gain).put("pace", ph.pace).put("stood", ph.stood).put("edge", ph.edge).put("flatMs", ph.flatMs).put("delays", ph.delays))

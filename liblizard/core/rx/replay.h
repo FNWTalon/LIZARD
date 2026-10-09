@@ -17,7 +17,7 @@ namespace lizard {
 
 class Replay {
  public:
-  // ai: dir: the replay's folder, made here (emptied first if it holds anything) and the replay's alone; keep: the
+  // ai: dir: the replay's folder, made here (refused if it holds anything) and the replay's alone; keep: the
   // ai: frames kept, the newest
   Replay(std::string dir, std::string run, int keep);
   Replay(const Replay&) = delete;

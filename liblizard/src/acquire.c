@@ -1303,12 +1303,12 @@ int ob_test_mark_cfg(const ob_layout_t *L, int32_t *out) {
 // picture texture here: the picture offers dozens of small things with a mark's cross-section, and four of them
 // always span more of the image than the marks do.
 //
-// Lizard can press the module-count test much harder than QR can, because the count is not being estimated: two
+// LIZARD can press the module-count test much harder than QR can, because the count is not being estimated: two
 // adjacent marks are exactly L->w - 2 * mark_mid modules apart and a mark's own cross-section gives the module
 // size, so a quad whose side over its module size is not that number is not this symbol.
-// One form at a time. The two forms have different centres (the gapped core's middle is (S + 3) / 2 in from the
-// corner, the merged square's is S / 2), and blur is the same all over a capture, so four marks of one symbol are
-// one form; mixing them would only let a picture blob stand in for a mark. `score` comes back as the quad's
+// One form at a time. The two forms have different centres (the gapped core's middle is (OB_THIN_TRACK + S - 1) / 2 in
+// from the corner, 8 at S = 12; the merged square's is S / 2), and blur is the same all over a capture, so four marks
+// of one symbol are one form; mixing them would only let a picture blob stand in for a mark. `score` comes back as the quad's
 // disagreement with the known spacing, smaller is better, so the caller can set the forms against each other.
 //
 // Which quad is RIGHT is not decided here. Spacing ranks them; the track read in find_frame is what believes one,
@@ -1464,7 +1464,7 @@ int ob_test_homography(const float *src, const float *dst, float *out) {
 
 // Four points determine a homography exactly, so every error in them is an error in it. Eight over-determine it,
 // which is the difference between trusting one measurement and averaging several: QR v40 carries 46 alignment
-// patterns for the same reason Lizard carries more than its corners.
+// patterns for the same reason LIZARD carries more than its corners.
 //
 // The correspondences cannot be known before the map is, so this runs after it: the corner quad gives a first H,
 // H says where the edge marks must be, and anything found within half a mark of a prediction joins the fit.
@@ -2040,9 +2040,9 @@ static inline int holds_in(float best, int orient, const ob_layout_t *L) {
   return orient < 4 && best >= 0.15f * fmaxf(1.0f, sqrtf(128.0f / (float)cells));
 }
 
-// Ls: the layouts the symbol may be, which differ only in how many modules a side (focus.h FOCUS_CELL); *which
-// comes back as the one that registered. The first is tried first everywhere, so a receiver that already knows
-// puts it there and pays for the others only when it does not register.
+// Ls: the layouts the symbol may be, which differ only in how many modules a side (focus.h FOCUS_RING); *which
+// comes back as the one that registered. The mark path scores every one before a hold settles it (holds_in); the
+// line path tries the first first and the others only when it does not register.
 static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, const uint8_t *bin, float *quad, int *orient, float *score_out, float *best_mark, int *which) {
   int w = im->w, h = im->h, big = w > h ? w : h, n[4], nl[4];
   fpt_t *pts[4] = { 0 };            // allocated only if the scan runs, which a settled mark quad skips

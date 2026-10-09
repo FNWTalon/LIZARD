@@ -27,18 +27,16 @@ and the author's monitors:
 
 | receiver | rate |
 |---|---|
-| Android app, one code | 1.3 to 1.6 MB/s logged |
-| Android app, two codes side by side (2:1 crop), the rate following the frequency | 3.4 MB/s and up on a 1080p monitor: two LIZARD-568 codes of 67 blocks each at 60 pictures a second, about 90% of what the sender offers (by hand, not yet logged) |
-| the same, one code rate (before 2026-10-07) | up to 3 MB/s on a 1080p monitor (logged: 2.8 sustained, 2.9 peaks, 50 of 60 blocks a capture at 99% of what the sender offered, the camera's image enhancements off; 2.0 to 2.2 with them on) |
-| Chrome on the same phone | about 0.55 to 0.8 MB/s |
+| Android app, two codes side by side (2:1 crop) | 3.8 MB/s median and 4.0 max over 13 minutes on a 1080p monitor (logged 2026-10-08): two LIZARD-592 codes of 70 blocks each at 60 pictures a second from the desktop sender, 96% of the blocks read on a clean capture |
+| Android app, one code | 1.3 to 1.6 MB/s logged (2026-10-01, before the code rate followed the frequency) |
+| Chrome on the same phone | about 0.55 to 0.8 MB/s (one code, before the code rate followed the frequency) |
 
-Once the Android app's phase lock holds, the rate stays: on a tripod, a 150 s hold of the lock before the pilots read
-no short captures, and the current lock's holds, by hand, read 0 to 3% short (one phone, two monitors). What moves
-the rate from there is the camera, not the decoder: the app asks the camera for its picture with no sharpening, noise
-reduction or other enhancement (each is a filter over the code), and a phone that has warmed delivers fewer frames
-(2.5 MB/s in place of 2.8 on the same hold). The rate also depends heavily on the sending screen (contrast and
-brightness at their maximum, a steady frame rate) and on the receiving camera: phone cameras through a native app work
-best, browser cameras on laptops and webcams poorly.
+Once the Android app's phase lock holds, the rate stays: its holds, by hand, read 0 to 3% of captures short (one
+phone, two monitors). What moves the rate from there is the camera, not the decoder: the app asks the camera for its
+picture with no sharpening, noise reduction or other enhancement (each is a filter over the code), and a phone that
+has warmed delivers fewer frames. The rate also depends heavily on the sending screen (contrast and brightness at
+their maximum, a steady frame rate) and on the receiving camera: phone cameras through a native app work best,
+browser cameras on laptops and webcams poorly.
 
 Everything was built and run on Linux x86-64. The desktop sender has run on Linux (X11) only: its native library
 cross-builds for Windows with MinGW-w64 but has not been run there, and macOS is not supported yet.

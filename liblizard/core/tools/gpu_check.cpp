@@ -194,9 +194,8 @@ static int ingestCheck(Ctx& c, std::string v, const std::string& run = "") {
 // ai: layout 2:1: each camera frame is two recorded frames side by side (2W x H), which the receiver cuts in half.
 // ai: A frame's timestamp is its push time on the steady clock, and the receiver's series is asked after every push as
 // ai: the app's phase lock asks it (Receiver::series): the last line but one says how old a frame's row was when it
-// ai: came, and the verified blocks of every row. LIZ_SOON=1: results asked for soon from the first push
-// ai: (Receiver::soon: the GPU decoder's batches at 8 frames). LIZ_BATCH=<n>: the most frames a batch waits for
-// ai: (Receiver::batchCap, the app's Batch size).
+// ai: came, and the verified blocks of every row. LIZ_BATCH=<n>: the most frames a launch takes (Receiver::batchCap,
+// ai: the app's Batch size); a launch goes as soon as a frame waits either way.
 static int receive(Ctx& c, const std::string& run, double fps, const std::string& storeDir, const std::string& layout = "1:1") {
   const std::string dir = c.barcode + "/captures/v0.3/" + run;
   auto metaBytes = readAll(dir + "/meta.json");
@@ -225,8 +224,7 @@ static int receive(Ctx& c, const std::string& run, double fps, const std::string
   cfg.log = [](const std::string& m) { std::cout << "  " << m << std::endl; };
   std::atomic<int> released{0};
   auto rx = Receiver::create(cfg, [&](uint64_t) { released++; });
-  if (getenv("LIZ_SOON") && atoi(getenv("LIZ_SOON"))) rx->soon(true);
-  if (getenv("LIZ_BATCH")) rx->batchCap(atoi(getenv("LIZ_BATCH")));
+  if (rx && getenv("LIZ_BATCH")) rx->batchCap(atoi(getenv("LIZ_BATCH")));
   // ai: LIZ_REPLAY=<dir> (Save replays, 2026-10-03; rx/replay.h): the newest LIZ_REPLAY_FRAMES (300) frames the
   // ai: decoder is handed kept in <dir> as the app's Developer Tools keeps them, the run ended once the pushes are done
   std::shared_ptr<Replay> replay;
@@ -308,8 +306,8 @@ static int receive(Ctx& c, const std::string& run, double fps, const std::string
     printf("replay: %d frames kept, %lld B%s\n", n, (long long)replay->bytes(), replay->error().empty() ? "" : (" (" + replay->error() + ")").c_str());
   }
   // ai: the frames still staged or in flight when the pushes stop: their rows and blocks counted, so two runs count
-  // ai: the same frames, but not their ages (no frame is coming to fill their batch); until no row has come for
-  // ai: longer than the receiver waits to launch a part batch (1.5 batches of 32 at this pace)
+  // ai: the same frames, but not their ages; until no row has come for 1.5 batches of 32 at this pace (the receiver's
+  // ai: bound on a part batch until 2026-10-08, when launches stopped waiting; kept as the margin)
   for (auto quiet = std::chrono::steady_clock::now(); std::chrono::duration<double>(std::chrono::steady_clock::now() - quiet).count() < 1.5 * 32 / fps + 0.25;) {
     if (poll(false)) quiet = std::chrono::steady_clock::now();
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -509,7 +507,7 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
   fh->plan(W, H);
   std::deque<std::unique_ptr<InFlight>> flight;
   int held = 0, found = 0, words = 0, heldFrames = 0, next = 0;
-  long blocks = 0;
+  long blocks = 0, codewords = 0, iterations = 0;   // ai: the LDPC's codewords run and iterations summed (the back half's COUNTS 3 and 7)
   std::vector<float> pilots, pilots2;   // ai: each frame's pilot readings where read (SPEC 7.3): the even blocks', the odd blocks'
   double gpuMs = 0, gpuFrames = 0;
   std::vector<std::pair<std::string, double>> stageSum;
@@ -521,6 +519,7 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
       if (fo.empty) continue;
       found += fo.finder.found == 1;
       blocks += (long)fo.records.size();
+      if (fo.backCounts.size() > 7) { codewords += fo.backCounts[3]; iterations += fo.backCounts[7]; }
       if (fo.hasWord) { words++; held = fo.word.version; }
       heldFrames += fo.held;
       if (fo.pilotBlocks) { pilots.push_back(fo.pilotR); pilots2.push_back(fo.pilotR2); }
@@ -560,6 +559,7 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
   }
   printf("%s: %d frames, %d found, %d words, %d held, %ld verified blocks; %.2f ms of GPU a frame, %.0f frames a second end to end (%s, batches of %d)\n", run.c_str(), frames, found, words, heldFrames, blocks,
          gpuFrames ? gpuMs / gpuFrames : -1, frames / (ms / 1000), v.c_str(), fh->B);
+  printf("ldpc: %ld codewords, %ld iterations (%.2f a codeword)\n", codewords, iterations, codewords ? (double)iterations / codewords : 0.0);
   for (auto* pv : {&pilots, &pilots2}) if (!pv->empty()) {
     std::vector<float> v = *pv;
     std::sort(v.begin(), v.end());

@@ -354,7 +354,11 @@ async function main() {
     const objects = exportObjects(rec, tree, blobs);
     tree.objects = objects;
     for (const p of Object.values(objects.pipelines)) if (!modules.has(p.module)) modules.set(p.module, rec.modules.get(p.module));
-    writeFileSync(new URL(`setup/${v.name}.json`, OUT), JSON.stringify(tree));
+    // ai: under a rate profile being tested (LIZ_PROFILE, src/focus.h focus_profile_set) the setup is that profile's,
+    // ai: setup/<variant>@<tag>.json beside the format's (the shaders and blobs are content-hashed, so a candidate adds
+    // ai: only its setups and its TAB); core/dec/setup.cpp loads it under the same variable
+    const TAG = process.env.LIZ_PROFILE ? `@${process.env.LIZ_PROFILE.replace(/[:/]/g, "_")}` : "";
+    writeFileSync(new URL(`setup/${v.name}${TAG}.json`, OUT), JSON.stringify(tree));
     summary.push({ variant: v.name, pipelines: Object.keys(objects.pipelines).length, buffers: Object.keys(objects.buffers).length, nets: fh.nets });
     console.log(`${v.name}: ${Object.keys(objects.pipelines).length} pipelines, ${Object.keys(objects.buffers).length} buffers, nets ${JSON.stringify(fh.nets)}`);
   }

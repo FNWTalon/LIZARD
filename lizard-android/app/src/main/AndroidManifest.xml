@@ -25,7 +25,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- ai: a file shared to Lizard from another app opens Send with it (2026-10-01, MainActivity.handle) -->
+            <!-- ai: a file shared to LIZARD from another app opens Send with it (2026-10-01, MainActivity.handle) -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />

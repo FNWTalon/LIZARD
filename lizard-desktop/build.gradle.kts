@@ -1,7 +1,7 @@
 // ai: The desktop sender (2026-10-03): a native sender with the web sender's UI, painting on the CPU or on Vulkan. Its
 // ai: stack, for portability and vsync: Kotlin on the JVM, the UI in Compose Multiplatform,
 // ai: the code drawn by the native presenter (lizard-desktop/native/presenter.cpp: its own Vulkan swapchain, FIFO, on the code
-// ai: area's AWT canvas, its window found through JAWT), the encoders the Android app's native core over JNI
+// ai: area's AWT canvas, its window found through JAWT), the encoders liblizard/core's (as the Android app's) over JNI
 // ai: (lizard-desktop/native).
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import java.time.Instant

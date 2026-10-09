@@ -1,5 +1,5 @@
 // zstd for the transfer (src/xfer.h: a chunk goes as one zstd frame where that is shorter than its bytes), as every
-// Lizard build calls it: the parameters are pinned here, so the web's sender in wasm and the native senders write the
+// LIZARD build calls it: the parameters are pinned here, so the web's sender in wasm and the native senders write the
 // same frame for the same chunk, and any receiver reads any sender's. Changing a parameter changes what senders paint,
 // not what receivers can read: a zstd frame is a zstd frame.
 #ifndef LIZARD_ZSTD_SHIM_H

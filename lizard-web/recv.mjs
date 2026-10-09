@@ -5,12 +5,12 @@
 // navigator.hardwareConcurrency: a phone that keeps up with one worker runs one, and stays cooler.
 // What is shared between workers lives here: the set of block ids already seen (two workers often
 // decode two captures of the same display frame) and, through one fountain worker, the file.
-// ai: The decoder (Settings: Auto, GPU, CPU; ?dec=) swaps the pool for one GPU worker (recv-gpu-worker.mjs, the whole decode on WebGPU,
+// ai: The decoder (Settings: GPU or CPU, auto while neither is chosen; ?dec=) swaps the pool for one GPU worker (recv-gpu-worker.mjs, the whole decode on WebGPU,
 // ai: gpu/). It is sent every frame and batches them; its results take the same path as the pool's.
 // ai: The whole receiver is blind (2026-09-26): both decoders are told nothing, each frame is read at the picture
 // ai: size and version its own word names, its blocks judged from the light (a test frame is known by its blocks'
 // ai: bytes), nothing carries between frames beyond a batch, and a file comes from the light's header. Nothing is fetched
-// ai: from a server: stats rows, recordings and received files are posted as development logs (devlog.mjs), best effort,
+// ai: from a server: stats rows and received files are posted as development logs (devlog.mjs), best effort,
 // ai: never awaited.
 // One canvas, #shot, is both what is on screen and what is read back for the decoder. It used to be two answers:
 // the screen got the <video> under CSS object-fit: cover, resolved by the compositor, and the decoder got a
@@ -26,14 +26,13 @@ import { makeGlGrab } from "./glgrab.mjs";
 import { frameTap, cornerProbe } from "./vframes.mjs";
 import { verdict } from "./verdict.mjs";
 import { PoolPolicy } from "./pool.mjs";
-import { tarBlob } from "./tar.mjs";
 import { logPost } from "./devlog.mjs";
 import { R_RING, SPAN, MODULES, N_FOR, NAME, FOCUS_BITMAP, PICTURE_SIZES } from "../liblizard/sim/lizard_pick.mjs";
 import { isControlId, PAYLOAD, fractionDone } from "../liblizard/sim/xfer.mjs";
 import { remember, persist, restoreSaved, say, meter, bytes, rate, left, about, registerApp, collapser, sideResizer } from "./ui.mjs";
 import { open as openKept, list as listKept, watch as watchLibrary } from "./library.mjs";
 const $ = (id) => document.getElementById(id), video = $("v"), shot = $("shot"), sctx = shot.getContext("2d", { willReadFrequently: true });
-// ai: The Developer panel, Advanced since 2026-10-01 (the lab's menus and readouts), opens as it was left, a phone session
+// ai: Settings and Developer Tools (the Developer panel until 2026-10-01) open as they were left, a phone session
 // ai: being a series of reloads; restored here, at the top of the module, so nothing is seen to move. Errors a user must
 // ai: see go to #state instead.
 remember($("dev"), "recv:dev");
@@ -59,8 +58,8 @@ const PARAMS = new URLSearchParams(location.search), VERIFY = PARAMS.has("verify
 // ai: The lab's switches that were test-only menus until 2026-10-01, URL parameters alone since, each read where its
 // ai: menu was: grab=gl, srccrop=full, workers=<n>, and the
 // ai: GPU worker's gprec=int8|f16|f32, gsg=off, gtest=nocascade|b1, gcancel=on, gsrc=page, gstages=on. The stale stored
-// ai: values of those menus go, so none comes back if a menu ever does. The GPU self-test and the Record button went
-// ai: with them: gpu_selftest.html by its URL, a recording by ?rec (=post).
+// ai: values of those menus go, so none comes back if a menu ever does. The GPU self-test went with them
+// ai: (gpu_selftest.html by its URL). The page records no replays since 2026-10-09: the Android app's Save replays does.
 const LAB = (k, d) => PARAMS.get(k) ?? d;
 for (const k of ["gprec", "gsg", "gtest", "gcancel", "gsrc", "gstages", "grab", "srccrop", "workers"]) try { localStorage.removeItem(`recv:${k}`); } catch {}
 // ai: A chunked file's header comes in the light, and only from there. ?save=post hands a finished file to the
@@ -88,8 +87,8 @@ const VFC = typeof HTMLVideoElement !== "undefined" && !!HTMLVideoElement.protot
 // synchronously. ?glcs=default lets the browser colour-manage the upload, which is the one thing on that path
 // that can move a pixel's value; the arms are meant to be compared, so it is a switch and not a decision.
 //
-// It is a menu and not only a URL and not only a build, because the question it exists for is about a WARM
-// phone: one that has been running a minute is a different machine from a cold one, and switching arms in place
+// It is a switch (a menu until 2026-10-01, the URL's grab=gl since) and not a build, because the question it exists
+// for is about a WARM phone: one that has been running a minute is a different machine from a cold one, and switching arms in place
 // compares them on the same machine instead of across two runs with a cooldown in between.
 //
 // The arm is NOT chosen automatically, and that is deliberate. It was tried: the page ran both for 1.5 s and
@@ -102,15 +101,14 @@ const VFC = typeof HTMLVideoElement !== "undefined" && !!HTMLVideoElement.protot
 // glGrab holds the GL arm (lizard-web/glgrab.mjs) while it is the one running, so glFrame below drives it; the WebGPU
 // arm that shared its shape was deleted on 2026-09-23 (STATUS.md, "The WebGPU decoder archived").
 let glGrab = null, webglGrab = null, grabMode = "canvas", grabNote = "";
-// Which arm to grab with, decided on this device rather than guessed from the browser's name. The canvas grab
+// Which arm to grab with is asked for, never guessed from the browser's name. The canvas grab
 // is fine on some phones and ruinous on others: `willReadFrequently` is a hint, and a canvas that is also on
 // screen is the one a browser is most likely to keep GPU-backed, where every getImageData stalls the pipeline
 // to pull the surface back. Measured on a phone, the canvas arm cost the frame on Chrome and the GL arm did
 // not; on Firefox, the browser every figure in STATUS.md came from, the canvas arm is what those figures used.
 //
-// So neither arm is hardcoded and neither browser is named. The page runs both for a moment and keeps the
-// cheaper, which also covers the devices nobody has tried. `?grab=canvas` or `?grab=gl` forces one and skips
-// the calibration, which is what an experiment comparing the arms wants.
+// So neither browser is named: the canvas arm runs unless `?grab=gl` asks for the GL one (the calibration that ran
+// both and kept the cheaper, above, is gone), which is what an experiment comparing the arms wants.
 function setGrab(want) {
   if (want === "gl" && !webglGrab) {
     webglGrab = makeGlGrab(video, { colorSpace: PARAMS.get("glcs") ?? "none" });
@@ -132,41 +130,24 @@ function setGrab(want) {
 }
 const pool = [], fountain = new Worker(new URL("./fountain-worker.mjs", import.meta.url), { type: "module" });
 // ai: config: what the decoders are told, always set (lizardConfig): nothing but the picture sizes to build.
-let config = null, track = null, run = "", file = "", next = 0, busySkips = 0;
-// Recording (Developer Tools' "Record 300 frames", 2026-10-03; a URL's
-// ?rec alone from 2026-10-01; 600 frames until then): the next REC_FRAMES frames a worker is handed, CONSECUTIVELY, kept as raw luma
-// with the seconds of stats either side of them, and written out as ONE file the browser downloads.
-//
-// It used to upload a frame at a time as each was decoded. A frame is 1.17 MB at the 1080 crop and the pool
-// hands out about 50 a second, so that asked 58 MB/s of the phone's wifi and landed 13 frames of 60 with
-// nothing saying which were missing. Nothing needs to go over the network at all: the frames are already in
-// the phone's memory, and a download is local.
-//
-// The cost is that weight: 350 MB at the 1080 crop and 1.4 GB at 2160 (600 frames' 700 MB and 2.8 GB before), held until the run is saved and the
-// link is let go. Ten seconds was taken as the shortest run that says anything about a link whose state moves (focus,
-// exposure, heat); since 2026-10-03 a run is 300 frames, five seconds at 60. It is NOT spent on the JS heap: each frame arrives from its worker as a
-// Blob, which the browser is free to keep on disk, and the tar is built by reference from those same blobs.
-// Held as arrays instead, a run would be the arrays plus the tar's copy of them, twice 2.8 GB in one renderer,
-// which no phone survives and no amount of RAM fixes.
-const REC_FRAMES = 300, REC_LOG = 60;
-let recording = 0, recFrames = [], recLog = [], recUrl = "", recSaved = false;
+let config = null, track = null, file = "", next = 0, busySkips = 0;
 let photoCaps = {}, levels = null;   // what the camera says it can be told, and the grey range it actually delivers
 // The last format word read out of a symbol (src/fmt.h): the version, and the rate the sender means to paint at.
-// ai: Lizard's decoders read everything from the light; this is what the light last said of the format, as shown
+// ai: LIZARD's decoders read everything from the light; this is what the light last said of the format, as shown
 // ai: and recorded. It moves only when two results in a row that read a word agree on the new one (bandSeen is the
 // ai: last word read), so a stray wrong word (a random frame passes the word check at about 3e-7 at n = 256) is never
 // ai: shown and a real change shows two frames later. Decoding is untouched: every frame decodes by its own word.
 let band = null, bandSeen = null;
-// ai: What the light says: Lizard's word.
+// ai: What the light says: LIZARD's word.
 function showCfg() {
-  const light = !band ? "no format word read yet" : `${NAME(8 * band.version)} (version ${band.version}), ${band.fps ? `${band.fps} fps` : "no rate"} from the band`;
+  const light = !band ? "no format word read yet" : `${NAME(8 * band.version)}, ${band.fps ? `${band.fps} fps` : "no rate"} from the band`;
   $("cfg").textContent = `light: ${light}`;
 }
 // ai: What the side column says (showState). err: why a start, or the transfer, failed, a plain sentence kept until the
 // ai: next start; starting: a start under way; received: the last file finished ({ name, n, secs, root }); testAt: when a
 // ai: frame last showed the test stream; bandAt: when a frame last read a format word; stoppedAt: when the camera last
 // ai: stopped (the pause is taken off a resumed transfer's clock, tFirst); lab: the stats tick's lab line (#lab, in
-// ai: Advanced: the numbers line's until 2026-10-01); why: its hints in plain words.
+// ai: Developer Tools: the numbers line's until 2026-10-01); why: its hints in plain words.
 // ai: fileAt: when a frame last brought blocks that were not the test stream's (2026-10-05: the test stream owns the
 // ai: display only while it is the newer of the two)
 const ui = { err: "", starting: false, received: null, testAt: -Infinity, fileAt: -Infinity, bandAt: -Infinity, stoppedAt: 0, lab: "", why: "" };
@@ -180,7 +161,7 @@ const recent = (at) => performance.now() - at < LIVE_MS;
 // ai: second from the stats tick. The received file's buttons stay whatever the state, until the next file replaces them.
 // ai: The words and figures are the Android app's too (Readout.kt; 2026-10-01): the user's figures are progress, size,
 // ai: speed and time left; the format's name and the registered
-// ai: share are the lab line's, in Advanced (#lab).
+// ai: share are the lab line's, in Developer Tools (#lab).
 let stateShown = "";
 // ai: New bytes a second over the last closed one-second bucket (KB/s), null before a second has closed (the last two
 // ai: buckets from 2026-09-29 to 2026-09-30).
@@ -241,9 +222,6 @@ function showState() {
   // ai: a file's actions first, the camera's button after them, in the order a keyboard tabs as well
   const top = $("top"), last = !$("deliver").hidden;
   if (last ? top.lastElementChild !== go : top.firstElementChild !== go) last ? top.append(go) : top.prepend(go);
-  // ai: Record 300 frames: while the camera runs and no recording is being taken
-  const busy = !!(recording || recHeld.size);
-  $("rec").disabled = !on || busy; $("rec").textContent = busy ? `Recording, ${recording} to go` : `Record ${REC_FRAMES} frames`;
   // ai: the collapsed rail (recv.html #rail): the camera's pause or play, the last second's rate while a file or the
   // ai: test stream is read (its figure over its unit), and once the file is in a green check in the rate's square (a
   // ai: mark, no action), then Open (Feather's external-link) and Save (its download), the deliver row's own actions, in
@@ -261,60 +239,14 @@ function partOf(n, whole) {
   const all = bytes(whole), unit = all.split(" ")[1], v = n / { B: 1, KB: 1e3, MB: 1e6, GB: 1e9 }[unit];
   return `${unit === "B" ? Math.round(v) : v < 9.95 ? v.toFixed(1) : Math.round(v)} of ${nb(all)}`;
 }
-const recTag =() => (recording > 0 ? { run, i: REC_FRAMES - recording-- } : null);
-// Which worker owes which frame. The run is written out when nothing is owed, not when the last frame is handed
-// out: workers finish out of order, so the last one handed out is rarely the last one back. A worker that is
-// replaced or dropped while it owes one can never hand it back, so kill() writes that debt off instead of
-// leaving the run waiting on it for ever. At 60 frames a run was over before the watchdog's two seconds were
-// up and this could not happen; at 600 it is a twelve second window and it happens.
-const recHeld = new Map();
-const recDone = () => { if (!recording && !recSaved && recFrames.length && !recHeld.size) { recSaved = true; saveRun(); } };
-
-// A run, as one tar: meta.json and stats.jsonl beside NNNN.gray, which is the layout lizard-web/server.mjs wrote and
-// scripts/exp/capture_check.mjs reads, so `tar -xf` into research/captures puts it exactly where the tools expect it.
-function saveRun() {
-  const enc = new TextEncoder(), have = recFrames.filter(Boolean);
-  if (!have.length) { $("run").textContent = `${run}: not one frame came back`; return; }
-  // Per frame, and not one size for the run: a tracked crop changes size as the symbol's apparent size does, so
-  // a run can hold several. The top-level w and h stay the first frame's, for readers written before that was
-  // true; sizes is indexed by the file's own number, so a gap left by a worker that was lost keeps its place.
-  // ai: config is what a replay reads (scripts/exp/capture_check.mjs, through liblizard/sim/phy.mjs recordedSpec): the format the light last
-  // ai: named under today's rule (from: "band"), its stream the test stream's; decoder is what the decoders were told.
-  const v = band?.version, n = v && N_FOR(8 * v);
-  // ai: The ring is the one the word was read in (the workers send it with the word), the default where none came.
-  const painted = v ? { from: "band", spec: { phy: "focus", n, subch: 8 * v, mode: 1, span: SPAN(n, band.ring), bitmap: FOCUS_BITMAP, stream: "shake256" } } : null;
-  const meta = { run, w: have[0].w, h: have[0].h, frames: have.length, of: REC_FRAMES, sizes: recFrames.map((f) => f && [f.w, f.h]), config: painted, decoder: config };
-  const files = [
-    { name: "meta.json", bytes: enc.encode(JSON.stringify(meta, null, 1)) },
-    // The seconds around the run, not just during it: REC_LOG seconds of stats against the ten the frames
-    // cover, so what the link was doing before they were taken is on record too.
-    { name: "stats.jsonl", bytes: enc.encode(recLog.map((r) => JSON.stringify(r)).join("\n") + "\n") },
-    ...recFrames.map((f, i) => f && { name: `${String(i).padStart(4, "0")}.gray`, bytes: f.blob }).filter(Boolean),
-  ];
-  const blob = tarBlob(files);
-  if (recUrl) URL.revokeObjectURL(recUrl);
-  recUrl = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = recUrl; a.download = `${run}.tar`;
-  // Short of REC_FRAMES means workers were lost mid-frame. The names keep their index, so the gap says which.
-  a.textContent = `save ${run}.tar (${have.length}${have.length < REC_FRAMES ? ` of ${REC_FRAMES}` : ""} frames, ${(blob.size / 1e6).toFixed(0)} MB)`;
-  // ai: The tar's names are flat (meta.json, NNNN.gray), so it is unpacked into a folder of its own.
-  $("run").replaceChildren(a, `  then: mkdir -p research/captures/v0.3/${run} && tar -xf ${run}.tar -C research/captures/v0.3/${run}`);
-  // ai: Downloaded as soon as it is written, on the phone (2026-09-26: posting runs to the rig lagged too much);
-  // ai: the link stays for a browser that wants a tap for it.
-  a.click();
-  // recv.html?rec=post: hand the same bytes to the rig instead of waiting for a tap, for a scripted run.
-  // One request, not one per frame, which is the whole difference.
-  if (PARAMS.get("rec") === "post") logPost(`/api/run?name=${run}`, blob);
-}
 // Block ids already forwarded. Ids only ever increase (wirehair is rateless, so the sender keeps minting them),
 // which used to make this grow for as long as the session lasted: about 500 a second here, and the same again
 // inside every worker. Two generations instead of one set, rolled on INSERTION, so what ages out is only ids from
 // far enough back that they cannot recur. A frozen sender inserts nothing, so it forgets nothing and still reads
 // as repeats. Forwarding a duplicate would be harmless anyway (liblizard/wirehair/shim.cpp: duplicate ids are
 // idempotent); what this set is really for is the withNew / repeat split and the bytes it saves.
-// Two generations of this many: at LIZARD-1024's 128 blocks a frame and 60 frames a second that is 17 to 34 s of ids,
-// where 1 << 14 was 2 to 4 s and a repeat older than that counted as new.
+// Two generations of this many: at LIZARD-1024's 121 blocks a frame and 60 frames a second that is 9 to 18 s of ids,
+// where 1 << 14 was 2 to 4.5 s and a repeat older than that counted as new.
 const SEEN_KEEP = 1 << 16;
 let seenIds = new Set(), seenOld = new Set();
 const seenHas = (id) => seenIds.has(id) || seenOld.has(id);
@@ -405,12 +337,9 @@ const limit = () => FIXED || CORES;
 // was only slow, its late reply cleared busy a SECOND time and freed a slot that already had the next frame
 // queued behind the first, so the slot ran a frame behind for good; on one that had really died, the slot went on
 // being handed a frame per rotation for the rest of the session, and those lost frames are what grow the pool.
-// Every terminate goes through here. A worker carries the frames it owes down with it, so they are written off
-// on the way: the run then saves with a hole in its numbering instead of never saving at all.
+// Every terminate goes through here.
 function kill(slot) {
-  for (const [i, s] of recHeld) if (s === slot) recHeld.delete(i);
   slot.w?.terminate();
-  recDone();   // it may have been the last frame anyone was still waiting on
 }
 function newWorker(slot) {
   kill(slot);
@@ -450,7 +379,7 @@ function resize() {
   if (!pool.length) spawn();
 }
 
-// ai: The GPU decoder: one worker in place of the pool, chosen in the menu like the grab arm so a figure names its
+// ai: The GPU decoder: one worker in place of the pool, chosen in Settings so a figure names its
 // ai: decoder. It batches, so it is never busy and never busy-skipped, and it keeps its own queue limit (the dropped
 // ai: count in its stats): the pool policy does not apply. When it cannot run the pool takes over (a GPU asked for by
 // ai: name snaps the menu back to CPU; auto stays auto and keeps the pool for the page's life) and
@@ -551,19 +480,16 @@ function onGpu(m) {
   if (m.type === "lost" && gpu.sentVf && !vfOff) { vfOff = `off since the GPU was lost with VideoFrames going to it (${m.reason})`; stopGpu(); return startGpu(); }
   if (m.type === "lost") return gpuFail(`lost: ${m.reason}`);
   // ai: The worker's first frame off the track landed: the page's tap has nothing more to send and is stopped (its reader
-  // ai: would go on closing frames unseen). A recording asked for before that is handed to the worker whole; one part way
-  // ai: through on the tap cannot be continued there (the worker numbers from 0) and is closed short, as a lost worker's.
-  // ai: Or the worker declined the track and stopped the clone: the tap stays, and its frames still owed are written off.
+  // ai: would go on closing frames unseen). Or the worker declined the track and stopped the clone: the tap stays.
   if (m.type === "source") {
-    if (m.kind === "worker-track") { gpu.source = "worker-track"; gpu.sentVf = true; tap?.stop(); tap = null; if (recording === REC_FRAMES) recordOnWorker(); else if (recording) { recording = 0; recDone(); } }
-    else { gpu.source = ""; gpu.trackSent = false; gpu.crop = null; gpu.trackWhy = m.why || "the worker declined the track"; for (const [i, s] of recHeld) if (s === gpu) recHeld.delete(i); recDone(); }
+    if (m.kind === "worker-track") { gpu.source = "worker-track"; gpu.sentVf = true; tap?.stop(); tap = null; }
+    else { gpu.source = ""; gpu.trackSent = false; gpu.crop = null; gpu.trackWhy = m.why || "the worker declined the track"; }
     return;
   }
   // ai: Under the worker's track this page hands over no frame: the frames that reached the worker are the window's
   // ai: VideoFrames sent (vfSent, and sent, so none reads as grabbed), and frames arriving with no decode back is what the
   // ai: watchdog watches (waitingSince, as a send sets it on the tap).
   if (m.type === "stats") { gpu.stats = m; if (gpu.source === "worker-track" && m.arrived) { cur.vfSent += m.arrived; cur.sent += m.arrived; gpu.waitingSince ||= performance.now(); } return; }
-  if (m.type === "recorded") return recorded(m);
   if (m.type === "error") { workerErrs++; lastErr = m.message; return; }
   if (m.type !== "result") return;
   // ai: A frame its queue had no room for is a skip, as a busy pool's is, and proves the worker alive but not decoding:
@@ -588,9 +514,8 @@ $("gcrop").onchange = () => postCrop();   // ai: the worker's track takes the ne
 // ai: worker copies the crop to luma (recv-worker.mjs lumaOf: 0.3 ms at a 720 crop, where the canvas grab was 41 ms on
 // ai: the S26 Ultra and the GL grab 29). Either way the readback is skipped and the camera element is the preview. Under
 // ai: F0 no frame is grabbed: the grey range comes with each batch (the device's histogram of the ingested luma,
-// ai: gpu/wgsl/pyramid.mjs), the worker's queue copies its own planning luma, and a recording's luma is copied out of
-// ai: the VideoFrame in the worker; the pool measures the range on the luma it copies and
-// ai: records that luma, so every frame goes as a VideoFrame (a luma frame in rotation cost the GL arm a frame in 32:
+// ai: gpu/wgsl/pyramid.mjs) and the worker's queue copies its own planning luma; the pool measures the range on the
+// ai: luma it copies, so every frame goes as a VideoFrame (a luma frame in rotation cost the GL arm a frame in 32:
 // ai: its readback landed a callback later and took the one worker). The grab stays wherever this page makes no
 // ai: VideoFrame or the worker takes none (it says why when ready). vfOff: F0 given up for the session; poolVfOff: the
 // ai: pool's VideoFrames given up for the session (a worker could not read one, or the page's tap gave none).
@@ -634,7 +559,7 @@ function sendVideoFrame(sub, tag) {
   trackTags.set(tag, sub);
   gpu.sentVf = true;
   cur.vfSent++;
-  send(gpu, { type: "frame", tag, frame: vf, x: sub.x, y: sub.y, w: sub.w, h: sub.h, record: recTag() }, [vf]);   // ai: recorded from the frame in the worker
+  send(gpu, { type: "frame", tag, frame: vf, x: sub.x, y: sub.y, w: sub.w, h: sub.h }, [vf]);
   return true;
 }
 // ai: The tap's sink under the GPU decoder (vframes.mjs frameTap): every frame the track delivers goes to the worker
@@ -655,7 +580,7 @@ function tapSink(vf) {
   trackTags.set(tag, sub);
   gpu.sentVf = true;
   cur.vfSent++;
-  send(gpu, { type: "frame", tag, frame: vf, x: sub.x, y: sub.y, w: sub.w, h: sub.h, record: recTag() }, [vf]);
+  send(gpu, { type: "frame", tag, frame: vf, x: sub.x, y: sub.y, w: sub.w, h: sub.h }, [vf]);
 }
 // ai: The same for a pool worker, with the same three answers, and the frame's decode settings as the grab sends them.
 // ai: The crop goes in the video's pixels, as the GPU worker's does; the worker maps it into the frame's coded pixels
@@ -674,7 +599,7 @@ function sendPoolFrame(slot, sub, tag) {
   if (!vf) return false;
   trackTags.set(tag, sub);
   cur.vfSent++;
-  send(slot, { type: "frame", tag, frame: vf, x: sub.x, y: sub.y, w: sub.w, h: sub.h, delay: DELAY, prof: PROF, record: recTag(), verify: VERIFY }, [vf]);
+  send(slot, { type: "frame", tag, frame: vf, x: sub.x, y: sub.y, w: sub.w, h: sub.h, delay: DELAY, prof: PROF, verify: VERIFY }, [vf]);
   return true;
 }
 
@@ -705,14 +630,6 @@ function postCrop() {
   if (c && c.x === r.x && c.y === r.y && c.w === r.w && c.h === r.h) return;
   gpu.crop = r;
   gpu.w.postMessage({ type: "crop", ...r });
-}
-// ai: Under the worker's track this page hands out no frame, so it cannot number them: the worker numbers the run's
-// ai: REC_FRAMES itself, and the page owes them all to it from the start, as it owes a tap frame from its send.
-function recordOnWorker() {
-  if (gpu?.source !== "worker-track" || recording !== REC_FRAMES) return;
-  gpu.w.postMessage({ type: "record", run, n: REC_FRAMES });
-  for (let i = 0; i < REC_FRAMES; i++) recHeld.set(i, gpu);
-  recording = 0;
 }
 // ai: Why the GPU worker's frames come off this page's tap and not the track in the worker; "" under the worker's track.
 function trackNote() {
@@ -757,8 +674,8 @@ function showFile(name, data, how = "checksum ok", type = "", sent = 0) {
   ui.err = "";   // ai: a fountain error is not fatal (fountain-worker.mjs goes on), so a file can still finish after one
   // ai: The camera off once the file is in (2026-10-01):
   // ai: nothing is left to read, and the phone cools. Once a file (the fountain offers it once), so Start camera after
-  // ai: it reads on; not while a recording is being taken, which would be cut short.
-  if (track && !recording && !recHeld.size) { second(); stopCamera(); }
+  // ai: it reads on.
+  if (track) { second(); stopCamera(); }
   showState();
   if (SAVE_POST) logPost(`/api/file?name=${encodeURIComponent(name)}`, blob);
 }
@@ -823,10 +740,6 @@ fountain.onmessage = ({ data: m }) => {
 
 function onResult(slot, m) {
   if (m.type === "ready") { slot.ready = m.version === config?.version; slot.frames = !!m.frames; slot.readyAt ??= performance.now(); slot.setupMs ??= m.setupMs ?? null; return; }
-  // A recorded frame landed, or did not. Either way the slot it held in flight is free.
-  // A recorded frame, straight from the worker that decoded it. Kept by index, since the workers finish out
-  // of order, and written out once the last of them is in.
-  if (m.type === "recorded") return recorded(m);
   slot.busy = false; slot.sentAt = 0; slot.deaths = 0;
   if (m.type === "result" && m.ms) { slot.secMs += m.ms; slot.secN++; slot.firstMs ??= Math.round(m.ms); if (m.built) slot.buildMs += Math.round(m.ms); }
   // Kept, because the stats line below rewrites $("out") every second and an error shown there is gone before
@@ -839,8 +752,6 @@ function onResult(slot, m) {
   if (m.probe) cropProbe = m.probe;
   take(m);
 }
-// ai: No blob: the frame was answered but never decoded, so the run keeps the gap.
-function recorded(m) { recHeld.delete(m.i); if (m.blob) recFrames[m.i] = m; recDone(); }
 // ai: One decoded frame, from a pool worker or the GPU worker: the two send the same message. B: a block's payload bytes.
 function take(m) {
   const B = config.usefulBytes;
@@ -850,7 +761,7 @@ function take(m) {
   let news = 0;
   if (m.test) ui.testAt = performance.now();
   else if (m.ids?.length) ui.fileAt = performance.now();
-  // ai: A Lizard frame's blocks new to the page go to the fountain, but not a test frame's (m.test): the light says they
+  // ai: A LIZARD frame's blocks new to the page go to the fountain, but not a test frame's (m.test): the light says they
   // ai: are the test stream's, so no transfer is theirs.
   if (m.ids) {
     // New to the transfer, not just to that worker. A control block (a transfer's header or manifest, sim/xfer.mjs) is
@@ -908,7 +819,7 @@ function take(m) {
   }
   if (!tFirst && m.seen && !m.test) tFirst = m.tag;   // ai: the test stream's frames are no file's, so its time is not the file's
 }
-// ai: Lizard's decoders, told nothing (sim/phy.mjs blindSpec: every picture of the ladder, each at its top: the word names
+// ai: LIZARD's decoders, told nothing (sim/phy.mjs blindSpec: every picture of the ladder, each at its top: the word names
 // ai: which, and a receiver reads any version it names, with no flag; the #sizes menu that capped it at 1024 by default
 // ai: went 2026-09-29).
 // ai: Versions are this page's own, which the workers' ready echoes.
@@ -944,9 +855,7 @@ function second() {
   // And a slot that never came up at all, which costs the pool a worker just as quietly.
   for (const c of [...pool]) if (!c.ready && performance.now() - c.bootAt > BOOT_DEADLINE) revive(c);
   if (gpu) watchGpu();
-  // Not while a recording is being taken: a worker terminated mid-frame never hands its back, and the run comes
-  // back with a hole. A run is seconds, so keeping the pool as it is for that long costs nothing.
-  if (policy.tick({ busySkips, size: pool.length, hasIdle: pool.some((c) => c.ready && !c.busy), auto: !FIXED }) && !recording && !recHeld.size) {
+  if (policy.tick({ busySkips, size: pool.length, hasIdle: pool.some((c) => c.ready && !c.busy), auto: !FIXED })) {
     const i = pool.findIndex((c) => c.ready && !c.busy);   // never one with a frame still out, nor one still starting up
     if (i >= 0) kill(pool.splice(i, 1)[0]);
   }
@@ -1032,7 +941,7 @@ function second() {
       // ai: answering a batch, F0's device time a frame, frames that reached the worker and their largest gap, VideoFrames open at once
       gpuBatches: gpu.stats.batches ?? 0, gpuCarried: gpu.stats.carried ?? 0, gpuHost: gpu.stats.host ?? null, gpuSubmitToMap: gpu.stats.submitToMap ?? 0, gpuMapLatency: gpu.stats.mapLatency ?? null,
       gpuDoneMs: gpu.stats.doneMs ?? 0, gpuIngestMs: gpu.stats.ingestMs ?? 0, gpuArrived: gpu.stats.arrived ?? 0, gpuGapMax: gpu.stats.gapMax ?? 0, gpuOpenMax: gpu.stats.openMax ?? 0 } : {}),
-    // Lizard's data is in grey LEVELS, so a squeezed or clipped range loses signal at every frequency at once.
+    // LIZARD's data is in grey LEVELS, so a squeezed or clipped range loses signal at every frequency at once.
     // 41% of full range with 13% of the picture pinned at 255 is what a badly overexposed run looked like, against
     // 64% and 87% for runs that read well, so this is worth having on screen while the phone is still in hand.
     // ai: Read through the lens: bandFps is all a receiver knows of the sender's rate, and research/rig/stats.jsonl carries it so
@@ -1067,7 +976,7 @@ function second() {
   // every frame whatever else is right, and that is worth saying while the phone is still in hand.
   const slow = band?.fps && stats.capturedFps < band.fps - 1 ? `CAMERA BELOW THE DISPLAY RATE at ${stats.capturedFps.toFixed(0)} fps: some frames are never seen` : "";
   const bandLine = band
-    ? `band: version ${band.version}${band.fps ? `, ${band.fps} fps stated` : ", no rate stated"}${slow ? `  ${slow}` : ""}`
+    ? `band: ${NAME(8 * band.version)}${band.fps ? `, ${band.fps} fps stated` : ", no rate stated"}${slow ? `  ${slow}` : ""}`
     : "band: no format word read yet";
   const g = gpu?.stats, num = (v) => (typeof v === "number" ? v.toFixed(1) : "?");
   const decLine = gpu
@@ -1101,10 +1010,9 @@ function second() {
     `grey ${levels ? `${(100 * stats.greyRange / 255).toFixed(0)}% of range (p5..p95), median ${stats.greyMedian}, ${(100 * stats.greyClipHi).toFixed(1)}% pinned white, ${(100 * stats.greyClipLo).toFixed(1)}% black${clipping ? `  ${clipping}` : ""}` : "not measured yet"}`,
     `camera accepts: ${Object.keys(stats.photoCaps).join(", ") || "nothing beyond size and rate"}`,
     `bad blocks ${stats.bad} of ${stats.judged} held to the test stream`,
-    (recording || recHeld.size) && `recording, ${recording} to go, ${recHeld.size} still in the workers`,
   ].filter(Boolean).join("\n");
-  // ai: The lab line (#lab, in Advanced; the numbers line until 2026-10-01): the last second's rate, the registered share and
-  // ai: the format's name while its word is live. The Android app's Advanced shows the same line.
+  // ai: The lab line (#lab, in Developer Tools; the numbers line until 2026-10-01): the last second's rate, the registered
+  // ai: share and the format's name while its word is live. The Android app's Developer Tools shows the same line.
   const live = band && recent(ui.bandAt), named = live ? `, ${NAME(8 * band.version)}${band.fps ? ` at ${nb(`${band.fps} fps`)}` : ""}` : "";
   ui.lab = live || w.found ? `${nb(`${Math.round(stats.goodputKBs)} KB/s`)}, ${Math.round(100 * stats.foundShare)}% registered${named}` : "no code yet";
   // ai: The hints (#why) in plain words, one a line (2026-10-01): the verdict's and the flags' lab wording stays in #out
@@ -1114,13 +1022,11 @@ function second() {
   // ai: A sender painting faster than WEB_FPS is one for the native app (2026-10-01): a browser cannot delay a camera
   // ai: frame, so its captures fall anywhere in the display's refresh and above 24 a second too many hold two pictures;
   // ai: the Android app holds the camera's phase by the pilots (lizard-android/, PhaseLock.kt) and reads 60 painted. Said
-  // ai: while the word is live; the sender's own control for it is Advanced's Pictures a second ("Receiving with" went
+  // ai: while the word is live; the sender's own control for it is Settings' FPS slider ("Receiving with" went
   // ai: 2026-10-02).
   const fast = live && band.fps > WEB_FPS ? `${band.fps} pictures a second is too fast for a browser: use the LIZARD app, or send at ${WEB_FPS}.` : "";
   ui.why = [lead, clipping && "The picture is washed out: avoid glare, or turn the other screen's brightness down.", live && slow ? "This camera runs slower than the code changes, so some of it is missed." : "", fast].filter(Boolean).join("\n");
   showState();
-  recLog.push({ at: Date.now(), ...stats });
-  if (recLog.length > REC_LOG) recLog.shift();
   // ai: The frame path's diagnostics go to the console (read over adb DevTools) and the stats row, not the page, which
   // ai: keeps what a user aims and judges by (2026-09-25).
   console.info(`frames: camera ${stats.capturedFps.toFixed(1)}, callbacks ${stats.callbackFps.toFixed(1)}, processed ${stats.processedFps.toFixed(1)}, new data ${stats.decodedFps.toFixed(1)} (${stats.goodputKBs.toFixed(1)} KB/s, average ${num(stats.avgKBs)} over ${num(stats.avgSecs)} s, band v${stats.bandVersion}, registered ${(100 * stats.foundShare).toFixed(0)}%, bad ${stats.bad} of ${stats.judged} judged), skipped ${stats.skippedFps.toFixed(1)} (merged ${stats.missedFps.toFixed(1)}, tap empty ${num(stats.tapEmptyFps)}, closed unseen ${num(stats.tapClosedUnseen)}); long tasks ${stats.longTasks} (${num(stats.longTaskMs)} ms)${g ? `; gpu: batches ${g.batches}, carrying ${num(g.carried)}, ${num(g.ms)} ms a frame, map ${num(g.mapLatency)}, done ${num(g.doneMs)}, ingest ${num(g.ingestMs)}, arrived ${g.arrived}, open ${g.openMax}, held ${g.held ?? 0}, dropped ${g.dropped}, cancelled ${g.cancelled ?? 0}, gained ${g.gained ?? 0}` : ""}`);
@@ -1133,7 +1039,8 @@ setInterval(second, 1000);
 // THE crop, in camera pixels: the centred square of the frame's short side in either orientation (a phone held
 // upright loses rows, not columns), or the whole frame. Computed here and nowhere else. Whole-pixel offsets: a
 // fractional source origin makes the browser interpolate, and a smeared module edge costs the read.
-// Where the symbol was last seen, in camera pixels. build/crop_ceiling.mjs measured a tight crop returning the
+// Where the symbol was last seen, in camera pixels. crop_ceiling.mjs (archived: ../archive/build-scratch-2026-09/)
+// measured a tight crop returning the
 // whole payload in every noise cell; locate.mjs (archived: ../archive/locate-first/exp/) then measured four BLIND ways to find that crop and all of
 // them failed for one reason, that the symbol cannot be located with the detector that cannot find it. A
 // previous frame's quad is not blind. The symbol is found from the whole frame once and tracked after that.
@@ -1165,9 +1072,6 @@ function cropRect() { return baseRect(); }
 // ai: under hand motion (STATUS "What the tracker costs the GPU decoder"). The pool always tracks.
 function decodeRect(base) {
   if (!trackBox || VERIFY || (gpu && $("gcrop").value === "full")) return base;   // VERIFY is there to prove the decoded region IS the centre square
-  // ai: A recording takes the whole square the preview shows, not the tracker's crop, so its frames are one size and
-  // ai: hold the symbol's surround (the tracker's crop moves and shrinks with the symbol).
-  if (recording || recHeld.size) return base;
   const x = Math.max(base.x, trackBox.x), y = Math.max(base.y, trackBox.y);
   const w = Math.min(base.x + base.w, trackBox.x + trackBox.w) - x, h = Math.min(base.y + base.h, trackBox.y + trackBox.h) - y;
   if (w < TRACK_MIN || h < TRACK_MIN || w * h >= base.w * base.h * 0.95) return base;
@@ -1330,7 +1234,7 @@ function onFrame(now, meta) {
   cur.read += performance.now() - tDraw;
   cur.grab += performance.now() - tGrab;
   trackTags.set(before, sub);
-  send(slot, { type: "frame", rgba, w, h, tag: before, delay: DELAY, prof: PROF, record: recTag() }, [rgba]);
+  send(slot, { type: "frame", rgba, w, h, tag: before, delay: DELAY, prof: PROF }, [rgba]);
 }
 
 // Round robin over the idle workers, so none goes cold and captures of one display frame spread out.
@@ -1345,7 +1249,6 @@ function send(slot, msg, transfer) {
     slot.busy = true;
     slot.sentAt = performance.now();   // the watchdog above needs to know how long it has been out
   }
-  if (msg.record) recHeld.set(msg.record.i, slot);
   cur.sent++;
   slot.w.postMessage(msg, transfer);
 }
@@ -1414,7 +1317,7 @@ function glFrame(rect, sub, arrive, before) {
     const slot = freeSlot();
     if (!slot) { lost(); break; }   // finished with nowhere to put it, which the canvas path counts the same way
     if (VERIFY) probeCorners(got.luma, got.w, got.h, 1);
-    send(slot, { type: "frame", luma: got.luma.buffer, w: got.w, h: got.h, tag: got.tag, delay: DELAY, prof: PROF, record: recTag() }, [got.luma.buffer]);
+    send(slot, { type: "frame", luma: got.luma.buffer, w: got.w, h: got.h, tag: got.tag, delay: DELAY, prof: PROF }, [got.luma.buffer]);
   }
   // Split, because the two halves fail for different reasons: the first is the fence poll and the
   // getBufferSubData that follows it, the second the upload, the two draws and the readPixels going out.
@@ -1455,8 +1358,6 @@ function stopCamera() {
   while (pool.length > 1 && !FIXED) kill(pool.pop());
   for (const slot of pool) slot.busy = false;
   if (gpu) gpu.waitingSince = 0;   // ai: frames it still owes are no longer awaited, so its silence is not a stall
-  // Stopping mid-run ends it: what came back is saved rather than stranded with no link to it.
-  recording = 0; recHeld.clear(); recDone();
   cur = fresh(); buckets = []; policy.reset();
   shot.width = shot.height = 0; cropCheck.key = ""; trackBox = null; trackTags.clear();   // nothing of the last session left on screen, and the next one tests its source rect again
   if (glGrab) glGrab.canvas.width = glGrab.canvas.height = 0;
@@ -1546,7 +1447,7 @@ async function startCamera() {
 // ai: side makes the track's frames that square, so no stage after the camera sees the rest, and the centre crop
 // ai: becomes the whole frame. The rate is held. Where resizeMode is not a supported constraint (a browser that might
 // ai: scale to the square and squash it) nothing is asked; a refusal, or an answer that is not the square or is
-// ai: slower, puts the track's first constraints back, as does the "camera crop: full frame" menu (the fallback by
+// ai: slower, puts the track's first constraints back, as does ?srccrop=full (a menu until 2026-10-01; the fallback by
 // ai: hand, and the arm to compare against). Continuous focus rides in the same call, since a later applyConstraints
 // ai: replaces the whole set and would drop the square. Returns what happened, for the stats row; the camera's start
 // ai: checks the frames that then arrive (squareOrBack).
@@ -1608,7 +1509,6 @@ function showRates() {
 }
 $("go").onclick = () => (track ? stopCamera() : start());
 $("railCam").onclick = () => $("go").onclick();
-$("rec").onclick = () => startRec();
 $("railOpen").onclick = () => $("open").onclick();
 $("railSave").onclick = () => $("save").click();
 // A new resolution, rate or camera needs a new stream.
@@ -1632,25 +1532,15 @@ async function listCameras() {
 navigator.mediaDevices?.addEventListener?.("devicechange", listCameras);
 // The browser drops the wake lock whenever the page is hidden; take it back on return.
 document.addEventListener("visibilitychange", async () => { if (track && document.visibilityState === "visible") try { wake = await navigator.wakeLock?.request("screen"); } catch {} });
-// ai: startRec: the run itself, started by ?rec at load, before the camera, for a scripted run (lizard-web/check_rates.mjs),
-// ai: whose frames are taken as they arrive (the Record button, test-only, went 2026-10-01).
-function startRec() {
-  run = `run-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-  recording = REC_FRAMES; recFrames = new Array(REC_FRAMES).fill(null); recHeld.clear(); recSaved = false;   // the last run's frames are let go here, not before, so its link stays good until this one starts
-  if (recUrl) { URL.revokeObjectURL(recUrl); recUrl = ""; }
-  $("run").textContent = "";
-  recordOnWorker();   // ai: under the worker's track the worker numbers the frames
-  showState();
-}
 // Controls can be preset from the URL: recv.html?workers=4&res=1280x720&auto
-// ai: The Developer panel's settings as the user last left them (localStorage, since 2026-09-29);
+// ai: Settings' menus as the user last left them (localStorage, since 2026-09-29);
 // ai: the URL's presets after, so a scripted run still gets what it names. The camera's menu fills later (listCameras).
 for (const el of $("dev").querySelectorAll("select")) persist(el, `recv:${el.id}`);
 listCameras();
 for (const [k, v] of new URLSearchParams(location.search)) if ($(k) && "value" in $(k) && [...($(k).options ?? [])].some((o) => o.value === v)) $(k).value = v;
 // ai: Auto's adapter asked first, so the first decoder made is the one kept (a pool worker made and killed before)
 if ($("dec").value === "auto") await askGpu();
-// ai: Lizard's decoders from the start, told nothing.
+// ai: LIZARD's decoders from the start, told nothing.
 setConfig(lizardConfig(), true);
 // ai: No WebGPU (Firefox for Android): the menu says so, and ?dec=gpu falls back with the reason on the page.
 if (!("gpu" in navigator)) { const o = [...$("dec").options].find((x) => x.value === "gpu"); o.disabled = true; o.text = "GPU (no WebGPU here)"; }
@@ -1660,5 +1550,3 @@ showDecoder(); showCamera();
 resize();   // ai: the pool's first worker, or the GPU worker when the decoder (or auto) asks for it
 showState();
 if (new URLSearchParams(location.search).has("auto")) $("go").onclick();
-// recv.html?rec: start a recording without the button, so a scripted run can take one (lizard-web/check_rates.mjs).
-if (PARAMS.has("rec")) startRec();

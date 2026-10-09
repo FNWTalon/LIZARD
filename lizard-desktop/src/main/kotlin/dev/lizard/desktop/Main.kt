@@ -9,6 +9,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
@@ -52,17 +55,53 @@ fun main() {
                 onDispose { KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(keys) }
             }
             // ai: (the presenter keeps the window above the others while full screen: presenter.cpp applyBypass)
+            // ai: Leaving goes through Floating, which clears the full-screen state, and a window that was maximized
+            // ai: is maximized again once it is out: ComposeWindow.setPlacement(Maximized) sets the maximized bits and
+            // ai: nothing else, so "back to Maximized" left the window full screen for good (2026-10-07: Fullscreen pressed
+            // ai: in full screen goes back to the window it came from).
+            // ai: The leave is asked whatever Compose reports of the window (a leave within a second of the entry found
+            // ai: the placement not yet "Fullscreen" and did nothing), and asked again if the manager's full screen
+            // ai: arrives after it.
+            var restoreMax by remember { mutableStateOf(false) }
+            s.maximize = { ws.placement = WindowPlacement.Maximized }
             LaunchedEffect(s.full) {
-                if (s.full && ws.placement != WindowPlacement.Fullscreen) { before = ws.placement; ws.placement = WindowPlacement.Fullscreen }
-                else if (!s.full && ws.placement == WindowPlacement.Fullscreen) ws.placement = before
+                if (s.full) { if (ws.placement != WindowPlacement.Fullscreen) { before = ws.placement; ws.placement = WindowPlacement.Fullscreen } }
+                else {
+                    restoreMax = before == WindowPlacement.Maximized
+                    ws.placement = WindowPlacement.Floating
+                }
             }
             // ai: full screen left by the window manager's own means: once the window was full screen and is no longer
             // ai: (2026-10-04, on a real screen: reacting to "not full screen" undid a full screen asked before the
             // ai: manager had made it, the bypass on, then off, the column back)
             var wasFull by remember { mutableStateOf(false) }
+            val scope = rememberCoroutineScope()
             LaunchedEffect(ws.placement) {
-                if (ws.placement == WindowPlacement.Fullscreen) wasFull = true
-                else if (wasFull) { wasFull = false; if (s.full) s.toggleFull() }
+                if (ws.placement == WindowPlacement.Fullscreen) {
+                    wasFull = true
+                    if (!s.full) ws.placement = WindowPlacement.Floating
+                } else if (wasFull) {
+                    wasFull = false
+                    if (s.full) s.toggleFull()
+                    if (restoreMax) {
+                        restoreMax = false
+                        // ai: the manager unmaximizes after it leaves full screen (Floating asks both), so the window is
+                        // ai: maximized again once its bounds have held still (asked at once, the request was undone by
+                        // ai: the unmaximize still to come); its own scope, since this effect restarts at each placement
+                        scope.launch {
+                            var last = window.bounds
+                            var still = 0
+                            var waited = 0
+                            while (still < 4 && waited < 40) {
+                                delay(50)
+                                waited++
+                                val b = window.bounds
+                                if (b == last) still++ else { still = 0; last = b }
+                            }
+                            if (!s.full) ws.placement = WindowPlacement.Maximized
+                        }
+                    }
+                }
             }
             SendScreen(s, window)
             if (test != null) LaunchedEffect(Unit) { test.run(s) }

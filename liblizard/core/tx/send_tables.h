@@ -19,7 +19,7 @@ namespace lizard {
 
 // ai: gen/sender.mjs's manifest (liblizard/out/setup/send.json): what no format changes.
 struct SendConsts {
-  int slots = 0, tposeTile = 16, rsvThreads = 64, rshThreads = 64, blockBytes = 480, clip = 2, bitmap = 0;
+  int slots = 0, tposeTile = 16, rsvThreads = 64, rshThreads = 64, blockBytes = 480, bitmap = 0;
   int paramsSizes = 0, paramsDims = 0, paramsPw = 0, paramsWords = 0;
   std::vector<uint32_t> pw;
   std::vector<int> codeRate, codeSubs;   // ai: the paint's codes in TAB's order (gpu/wgsl/back_tiers.mjs CODES): ldpc.h rate, sub-channels a block
@@ -43,6 +43,11 @@ struct SendTables {
   std::vector<uint8_t> border;  // ai: W x W grey, padded to a whole word
   std::vector<uint32_t> pu;     // ai: PARAMS_AT.words: sizes[0] (blocks), sizes[1 + c] (code c's tier: first block, first sub-channel, blocks), dims (blocks, npos, symbols an encode, 0), pw
 };
+
+// ai: The clip ratio c every native painter's codec takes (SPEC 6.7: the level c x the picture's rms; the paint's
+// ai: level is the codec's own f.clip): 2, or LIZ_CLIP (1 to 4) for a sender-side A/B. A receiver does not depend on
+// ai: it (2026-10-07, the clip ratio tried at 1.6 on the real channel).
+float txClip();
 
 // ai: The gap between two codes of a frame, in modules, where none is set (liblizard/gpu/encoder.mjs GAP_MODULES,
 // ai: lizard-web/send-worker.mjs the same, since 2026-09-30); TxFormat.gap sets it

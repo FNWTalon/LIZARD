@@ -4,7 +4,7 @@
 // is first run through this to say which side moved. Also here: the CRC-32 split the shader uses (one lane a
 // 4-byte chunk, combined through a table of x^(8 k) mod P), checked against the plain crc32 on random messages.
 import { crc32, mapTable } from "./bitmap.mjs";
-import { loadStop, gives } from "./stop/rule.mjs";
+import { loadStop, gives, ruleUrlFor } from "./stop/rule.mjs";
 
 // The code itself is never restated here: every function takes the wasm's Focus.ldpcCode().code.
 export const PAYLOAD = 473;                   // bytes a block, the id first
@@ -32,11 +32,15 @@ export const DEFAULT_STOP = "learned";
 export const DEFAULT_STOP2 = "funnel2";
 const FUNNEL2 = [[1, 0.322], [2, 0.311], [4, 0.281], [12, 0.228], [15, 0.212], [20, 0.114]];
 export const C_RULE = Object.freeze({ name: "c", stall: true, funnel: [], net: null });
-// ai: The rule a name gives for a code with m checks (a checkpoint's count is ceil(fraction m)); "learned" loads its
-// ai: weights file (stop/rule.mjs loadStop, once).
+// ai: The rule a name gives for a code with m checks (a checkpoint's count is ceil(fraction m)); "learned" loads that
+// ai: code's weights file (stop/rule.mjs ruleUrlFor, loadStop, once a file; the 7/8 and 1/2 codes' since 2026-10-07).
 export async function stopRule(name, m) {
   if (name === "c") return C_RULE;
-  if (name === "learned") return { name, stall: false, funnel: [], net: await loadStop() };
+  if (name === "learned") {
+    const net = await loadStop(ruleUrlFor(m));
+    if (net.m !== m) throw new Error(`stop rule: the file for ${m} checks was trained on a code of ${net.m}`);
+    return { name, stall: false, funnel: [], net };
+  }
   if (name === "funnel2") return { name, stall: true, funnel: FUNNEL2.map(([j, f]) => [j, Math.ceil(f * m)]), net: null };
   throw new Error(`ldpc stop rule ${name}: one of ${[...FIRST_READ, DEFAULT_STOP2].join(", ")}`);
 }
@@ -62,24 +66,27 @@ export function stopAt(trace, used, rule = C_RULE, est = 0, { maxIter = 30 } = {
   return -1;
 }
 
-// lay: [mb + 1] row pointers then (col, shift) pairs (Focus.ldpcCode().code.lay). Every block row of the
-// 3/4 code has exactly nd data slots; the shader is written to that and this checks it.
+// lay: [mb + 1] row pointers then (col, shift) pairs (Focus.ldpcCode().code.lay). nd is the widest block row's data
+// slots; a narrower row (the 3/4 code's 14 or 15 since 2026-10-08, the 2/3 and 1/2 codes' always) is padded with
+// [-1, 0], a slot the decoder holds as a certain zero (the C's dummy, src/ldpc.c).
 export function rowTable(code) {
-  const { mb, lay } = code, nd = lay[1] - lay[0], rows = [];
+  const { mb, lay } = code, rows = [];
+  let nd = 0;
+  for (let r = 0; r < mb; r++) nd = Math.max(nd, lay[r + 1] - lay[r]);
   for (let r = 0; r < mb; r++) {
-    if (lay[r + 1] - lay[r] !== nd) throw new Error(`block row ${r} has ${lay[r + 1] - lay[r]} data slots, not ${nd}`);
     const row = [];
     for (let e = lay[r]; e < lay[r + 1]; e++) row.push([lay[mb + 1 + 2 * e], lay[mb + 2 + 2 * e]]);
+    while (row.length < nd) row.push([-1, 0]);
     rows.push(row);
   }
   return { nd, rows };
 }
 
 // Slot e of check (r, i) as an index into L laid out as the C keeps it: data bit v at v, parity bit k + chk at
-// k + (chk % mb) z + chk / mb. -1 for the absent staircase bit of check 0.
+// k + (chk % mb) z + chk / mb. -1 for the absent staircase bit of check 0 and for a padded data slot.
 function slotIndex(code, rows, r, i, e) {
   const { k, z, mb } = code, nd = rows[0].length;
-  if (e < nd) { const [col, s] = rows[r][e]; return col * z + (i - s + z) % z; }
+  if (e < nd) { const [col, s] = rows[r][e]; return col < 0 ? -1 : col * z + (i - s + z) % z; }
   if (e === nd) return r > 0 ? k + (r - 1) * z + i : i > 0 ? k + (mb - 1) * z + i - 1 : -1;
   return k + r * z + i;
 }
