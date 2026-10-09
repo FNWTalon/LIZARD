@@ -223,7 +223,8 @@ function showState() {
   const top = $("top"), last = !$("deliver").hidden;
   if (last ? top.lastElementChild !== go : top.firstElementChild !== go) last ? top.append(go) : top.prepend(go);
   // ai: the collapsed rail (recv.html #rail): the camera's pause or play, the last second's rate while a file or the
-  // ai: test stream is read (its figure over its unit), and once the file is in a green check in the rate's square (a
+  // ai: test stream is read (its figure over its unit), under it the share of a file in while one comes (its percent over
+  // ai: "%", 2026-10-09), and once the file is in a green check in the rate's square (a
   // ai: mark, no action), then Open (Feather's external-link) and Save (its download), the deliver row's own actions, in
   // ai: black (2026-10-05; the green tick opened the file until then)
   const cam = $("railCam");
@@ -231,6 +232,9 @@ function showState() {
   const now = (on && h && !offered) || testing ? recentKBs() : null, [v, u] = now != null ? rate(now).split(/\s/) : ["", ""];   // ai: \s takes rate()'s no-break space
   $("railRate").innerHTML = v ? `${v}<small>${u}</small>` : "";
   $("railRate").hidden = !!ui.received && !testing;   // ai: the check takes its square, except while the test stream is read
+  const coming = on && h && !offered && !testing && frac != null;   // ai: the receiving line's own fraction, none under an error
+  $("railPct").innerHTML = coming ? `${Math.floor(100 * frac)}<small>%</small>` : "";
+  $("railPct").hidden = !coming;
   $("railDone").hidden = $("railOpen").hidden = $("railSave").hidden = !ui.received || testing;
 }
 const nb = (s) => s.replace(/ /g, "\u00a0");   // ai: a figure and its unit kept on one line

@@ -333,7 +333,7 @@ const SIZES = [
   const s = await chrome("file", [`--use-file-for-fake-video-capture=${path}`]);
   await size(s, SIZES[0]);
   await navigate(s, `${BASE}?auto&seen`);
-  const STATE = `(() => { const $ = (id) => document.getElementById(id), m = $("meter"); return { state: $("state").textContent, good: $("state").classList.contains("good"), nums: $("nums").textContent, why: $("why").textContent, meter: m.hidden ? null : m.firstElementChild?.style.width, deliver: !$("deliver").hidden, clear: !!$("clear"), open: !$("open").hidden && $("open").classList.contains("primary"), go: $("go").textContent, goSolid: $("go").classList.contains("primary"), save: $("save").textContent, href: $("save").href, download: $("save").download,  railRate: $("railRate").textContent, railDone: !$("railDone").hidden && !$("railOpen").hidden && !$("railSave").hidden, railOff: $("railCam").classList.contains("off") }; })()`;
+  const STATE = `(() => { const $ = (id) => document.getElementById(id), m = $("meter"); return { state: $("state").textContent, good: $("state").classList.contains("good"), nums: $("nums").textContent, why: $("why").textContent, meter: m.hidden ? null : m.firstElementChild?.style.width, deliver: !$("deliver").hidden, clear: !!$("clear"), open: !$("open").hidden && $("open").classList.contains("primary"), go: $("go").textContent, goSolid: $("go").classList.contains("primary"), save: $("save").textContent, href: $("save").href, download: $("save").download,  railRate: $("railRate").textContent, railPct: $("railPct").hidden ? null : $("railPct").textContent, railDone: !$("railDone").hidden && !$("railOpen").hidden && !$("railSave").hidden, railOff: $("railCam").classList.contains("off") }; })()`;
   await until(s, `/^Receiving/.test(document.getElementById("state").textContent) && parseFloat(document.getElementById("meter").firstElementChild?.style.width) > 40`, 60000, "Receiving, two fifths of the way");
   const a = await evaluate(s, STATE);
   await screenshot(s, `${OUT}/recv-phone-portrait-receiving.png`);
@@ -343,9 +343,11 @@ const SIZES = [
   // ai: the collapsed rail's squares follow the page whether or not it is shown (2026-10-02): the pause square, the
   // ai: last second's rate where the line has one, no tick yet
   check(!a.railOff && !a.railDone && (/ left$/.test(a.nums) ? /^[\d.]+(KB|MB)\/s$/.test(a.railRate) : true), `receiving: the rail's camera on, its rate "${a.railRate}", no check, Open or Save`);
+  // ai: the share of the file in under the rate (2026-10-09), the figures line's own percent
+  check(a.railPct === `${a.nums.match(/^(\d+)%/)?.[1]}%`, `receiving: the rail's percent "${a.railPct}" as the line's "${a.nums.split(",")[0]}"`);
   await until(s, `/^Received/.test(document.getElementById("state").textContent)`, 60000, "Received");
   const b = await evaluate(s, STATE);
-  check(b.railOff && b.railDone && b.railRate === "", `received: the rail's play square, the green check, Open and Save, no rate`);
+  check(b.railOff && b.railDone && b.railRate === "" && b.railPct === null, `received: the rail's play square, the green check, Open and Save, no rate or percent`);
   await screenshot(s, `${OUT}/recv-phone-portrait-received.png`);
   const got = await evaluate(s, `fetch(document.getElementById("save").href).then((r) => r.arrayBuffer()).then((x) => { const u = new Uint8Array(x); let v = 7, same = u.length === ${LEN}; for (let i = 0; same && i < u.length; i++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; same = u[i] === ((v >>> 16) & 255); } return { n: u.length, same }; })`);
   console.log(`     received: "${b.state}" / "${b.nums}", meter ${b.meter}, "${b.save}" ${b.href.slice(0, 5)}... as ${b.download}`);
