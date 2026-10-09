@@ -61,6 +61,13 @@ object Readout {
     // ai: no answer from the receiver yet: the line's "Getting ready", and the preview's cover with its spinner (Receive.kt)
     fun gettingReady(on: Boolean, starting: Boolean, loading: Boolean, rx: Rx) =
         starting || loading || (on && (rx.state.isEmpty() || rx.state == "starting" || rx.state == "loading"))
+    // ai: how much of the file is in: the bytes as sent where the manifest has said them, the file's own until then; the
+    // ai: meter, the figures' percentage and the rail's (Parts.kt PctSquare)
+    fun fraction(rx: Rx): Double {
+        val total = if (rx.sent > 0) rx.sent else rx.size
+        val got = if (rx.sent > 0) rx.sentIn else rx.received
+        return if (total > 0) (got.toDouble() / total).coerceIn(0.0, 1.0) else 0.0
+    }
     fun line(on: Boolean, starting: Boolean, loading: Boolean, error: String?, rx: Rx, secs: Double): Line = when {
         error != null -> Line(error, Tone.Bad)
         starting -> Line("Starting the camera")
@@ -73,7 +80,7 @@ object Readout {
             // ai: the bytes as sent where the manifest has said them, the file's own until then (recv.mjs the same)
             val total = if (rx.sent > 0) rx.sent else rx.size
             val got = if (rx.sent > 0) rx.sentIn else rx.received
-            val frac = if (total > 0) (got.toDouble() / total).coerceIn(0.0, 1.0) else 0.0
+            val frac = fraction(rx)
             val now = rx.goodputKBs
             // ai: the rate itself is its own line under the buttons since 2026-10-05 (Receive.kt RateLine), so not here
             val leftNow = if (now > 0) ", ${left((total - got) / (now * 1000))}" else ""

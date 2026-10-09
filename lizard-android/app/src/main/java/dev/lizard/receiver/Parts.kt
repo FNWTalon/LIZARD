@@ -69,6 +69,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.ui.unit.sp
+import kotlin.math.floor
 
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -227,6 +228,16 @@ fun RateSquare(kbs: Double?) = Square {
             Text(p[0], style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = Fg)
             Text(p.getOrElse(1) { "" }, style = MaterialTheme.typography.labelSmall, color = Muted)
         }
+    }
+}
+
+// ai: The share of a file in, in a rail's square (2026-10-09): its whole percent over "%", as the rate's figure over its
+// ai: unit; the figures line's own percentage
+@Composable
+fun PctSquare(frac: Double) = Square {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("${floor(100 * frac).toInt()}", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = Fg)
+        Text("%", style = MaterialTheme.typography.labelSmall, color = Muted)
     }
 }
 

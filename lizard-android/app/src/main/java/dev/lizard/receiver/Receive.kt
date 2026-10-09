@@ -108,7 +108,8 @@ internal fun MainActivity.ReceiveScreen() {
 
 // ai: The collapsed rail's squares (2026-10-02): the
 // ai: camera's pause or play (toggleCamera, as Start and Stop camera), the last second's rate while a file or the test
-// ai: stream is read (its figure over its unit, Readout.rate), and once the file is kept a green check in the rate's
+// ai: stream is read (its figure over its unit, Readout.rate), under it the share of a file in while one comes (its
+// ai: percent over "%", PctSquare; 2026-10-09), and once the file is kept a green check in the rate's
 // ai: square (a mark, no action), then Open and Save, the panel's own actions, in the foreground's colour (2026-10-05;
 // ai: the green tick opened the file until then). While the phone throttles (the heat warning's test, Parts.kt
 // ai: heatText), its red triangle above the play or pause, or in the green check's square once the file is kept
@@ -126,8 +127,10 @@ private fun MainActivity.RailSquares() {
         IconBtn(if (running) R.drawable.ic_pause else R.drawable.ic_play, if (running) "Stop camera" else "Start camera",
             enabled = granted && phase != Engine.Phase.Starting) { toggleCamera() }
     }
-    if (kept == null) RateSquare(if (reading) rx.goodputKBs else null)
-    else {
+    if (kept == null) {
+        RateSquare(if (reading) rx.goodputKBs else null)
+        if (reading && !testing) PctSquare(Readout.fraction(rx))
+    } else {
         if (hot != null) HeatSquare(hot)
         else Square { Icon(painterResource(R.drawable.ic_check), contentDescription = "Received ${kept.name}", Modifier.size(24.dp), tint = Good) }
         Square { IconBtn(R.drawable.ic_open, "Open ${kept.name}") { open(kept) } }
