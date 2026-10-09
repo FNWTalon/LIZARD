@@ -29,7 +29,7 @@ enum { OB_MAP_TILED = 0, OB_MAP_INTERLEAVED = 1 };
 // gap, and one coded band. The solid line is what a receiver finds (four long curves) and what
 // gives the displacement across the border; the band is the timing track and gives it along the
 // border. The track's cells are 2 x 2 and Manchester coded from a different sequence on each side,
-// so no run is longer than four modules (every 5 x 5 patch sees an edge).
+// so no run of track cells is longer than four modules (every 5 x 5 patch of the track sees an edge).
 //
 // The band carries BOTH the track and the format word (fmt.h), interleaved in runs of OB_BAND_RUN
 // cells. The word says which format this is and the sender's display rate; everything else about
@@ -42,8 +42,8 @@ enum { OB_MAP_TILED = 0, OB_MAP_INTERLEAVED = 1 };
 // finder cannot tell the border from a bar across the page (scripts/exp/background.mjs, straight bars: the
 // thin frame gets 0% where the finder frame it replaced gets 100%). A solid block is a 2D template
 // that is rare in the world, and it has ONE feature scale where the finder frame's bullseye had
-// five, which is why it can survive the blur that killed that. S <= 8 costs nothing at all: both
-// coded rings already skip 8 modules at each end of each side, which is what `reserve` is.
+// five, which is why it can survive the blur that killed that. S <= 8 costs nothing at all: the
+// coded band already skips 8 modules at each end of each side, which is what `reserve` is.
 // corner_filled keeps depth 3 light through the mark so the first dark run's inner edge, which is what
 // the line finder fits, stays where it is all the way round.
 // The default mark, on every thin frame unless a caller asks for none. 12 and gapped because that is where the
@@ -150,11 +150,11 @@ typedef struct {
   int w, h, tx, ty, rate;
   int map;          // OB_MAP_*: a block's cells stay inside its tile, or spread over the frame
   int pilot_step;   // 0 = none, else one pilot cell per pilot_step x pilot_step cells
-  int thin;         // ai: 1, what focus.c always builds: Lizard's border, the anchor itself, OB_THIN modules deep at
+  int thin;         // ai: 1, what focus.c always builds: LIZARD's border, the anchor itself, OB_THIN modules deep at
                     // ai: least, no tiles and no code (focus.c owns the picture). 0: the binary code's finders and tiles.
-  int border;       // thin only: modules of border, at least OB_THIN. Depths 0 to 5 are the line, track and
-                    // format ring whatever this is; the rest is light, and it is where a mark can live without
-                    // touching the picture. Eating picture costs about eight times its area in payload; a wider
+  int border;       // thin only: modules of border, at least OB_THIN. Depths 0 to 6 are the line, the gap and
+                    // the band (track and word) whatever this is; the rest is light, and it is where a mark can
+                    // live without touching the picture. Eating picture costs about eight times its area in payload; a wider
                     // border costs only camera pixels a sample, which is nothing until resolution is short.
   int corner;       // thin only: side in modules of the solid corner mark, 0 = none. Past OB_THIN it eats picture.
   int corner_filled;// 0 (the default) keeps depth 3 light through the mark, so the line finder's edge never
@@ -162,7 +162,7 @@ typedef struct {
                     // cannot be detected and it loses half the payload at 720 (STATUS.md). Experiments only.
   int edge;         // thin only: side in modules of one mark at the middle of each side, 0 = none. Four more
                     // correspondences, so the homography stops being exactly determined and can be fitted; QR
-                    // v40 carries 46 alignment patterns against Lizard's 4 marks. Off by default: measured as
+                    // v40 carries 46 alignment patterns against LIZARD's 4 marks. Off by default: measured as
                     // costing more track than it buys in fit (fmt.h).
   int track_alt;    // 1 = the timing track alternates 1:1 (Data Matrix's clock) instead of being Manchester coded
                     // from a per-side hash. A clock gives the module pitch as a frequency, which survives blur

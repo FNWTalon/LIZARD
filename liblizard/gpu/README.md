@@ -1,7 +1,7 @@
 # The GPU decoder
 
-A second Lizard decoder, designed from the format for a GPU. The C in `../src/` stays the reference and the one
-the phone rig carries; this one is judged only on blocks that pass their CRC-32, on throughput, and on a
+A second LIZARD decoder, designed from the format for a GPU. The C in `../src/` stays the reference and the
+decoder where this one cannot run; this one is judged only on blocks that pass their CRC-32, on throughput, and on a
 negative control. It has no parity with the C at any stage, not even on decisions.
 
 What exists: the whole decode. The front half finds the symbol, orients it, identifies its ring (one of four
@@ -35,20 +35,20 @@ and the archive deleted on 2026-09-29.
 | | file | what |
 |---|---|---|
 | F0 | ingest | only for a frame given as a VideoFrame (`../ingest.mjs`): its crop to luma, (77 R + 150 G + 29 B + 128) >> 8 on 8-bit values, in the frame's layer, a render pass a frame (r8unorm is not a storage format); a frame given as luma is written with writeTexture |
-| levels | histogram | not a decode stage: a 256-bin histogram of the middle half of each frame's crop, every second pixel each way, read back with the batch (`frames[i].hist`) so the receiver's grey range, median and clip shares come from the luma the decoder sees, a VideoFrame's included (no luma frame on the CPU under F0). Reads the layer, writes only its own buffer; the decode is untouched |
+| levels | pyramid (one kernel with F1 since 2026-09-30) | not a decode stage: a 256-bin histogram of the middle half of each frame's crop, every second pixel each way, read back with the batch (`frames[i].hist`) so the receiver's grey range, median and clip shares come from the luma the decoder sees, a VideoFrame's included (no luma frame on the CPU under F0). Reads the layer, writes only its own buffer; the decode is untouched |
 | F1 | pyramid | 2 x 2 means, levels 1 to 4 |
-| F2 | bank | the peaks proposed to F4, each 16 x 16 tile of every level keeping its 4 strongest as (x, y, sigma, response). A trained fully convolutional proposer on levels 1 to 4 (`cnn/proposer/`), a module (`../bank_<name>.mjs`, contract in `wgsl/bank.mjs`): `fcn2` (version 2, the default since late 2026-09-24: each pixel standardised over its own 15 x 15 box, so the map is the level's alone and a workgroup takes a region of tiles; int8 where WGSL has it since 2026-09-26; `scripts/gpu/cnn/proposer/README.md` "Version 2") or `fcn` (version 1: 11,479 blocks on the 19 x 40 set on the 4090, the C 10,366; bank 3.4 ms a frame on the iGPU in f16 at 1080, the DoG bank 5.2; `FCN_STORE=region=2` and `flat[=sd]` are its variants). The difference-of-Gaussians banks it replaced (`global`, `tiled`, `perscale`) were deleted on 2026-09-26 |
+| F2 | bank | the peaks proposed to F4, each 16 x 16 tile of every level keeping its 4 strongest as (x, y, sigma, response). A trained fully convolutional proposer on levels 1 to 4 (`cnn/proposer/`), a module (`../bank_<name>.mjs`, contract in `wgsl/bank.mjs`): `fcn2` (version 2, the default since late 2026-09-24: each pixel standardised over its own 15 x 15 box, so the map is the level's alone and a workgroup takes a region of tiles; int8 where WGSL has it since 2026-09-26; `scripts/gpu/cnn/proposer/README.md` "Version 2") or `fcn` (version 1, the default until late 2026-09-24; `FCN_STORE=region=2` and `flat[=sd]` are its variants). The difference-of-Gaussians banks it replaced (`global`, `tiled`, `perscale`) were deleted on 2026-09-26 |
 | F3 | bank SELECT | the strongest `cap` peaks a frame, one cut over every level |
 | F4 | classify, RANK, classify | per peak: is it a corner mark, which way is out, how big a module. `classify` is the trained network (`cnn/`), run as a cascade: the small net (cnn-v3) on every kept peak, RANK keeps the 64 strongest by its mark logit (128 until 2026-09-24; STATUS.md, "Speed, round three") as a device-side list (a total order on the logit's bits, a NaN last; every list slot written each batch), the large net (cnn-v1) on those and overwrites their readings (`wgsl/classify.mjs CASCADE`; `CASCADE=off` runs one net on every peak). The kernel is `wgsl/classify_gemm.mjs` since 2026-09-24: several patches a workgroup, a register tile a lane, a split conv reduced by subgroup shuffles where the adapter has the `subgroups` feature (the decoder asks for it); `wgsl/classify.mjs` is the reference kernel `scripts/gpu/cnn/test_gemm.mjs` checks it against, and holds RANK and `CASCADE`. `DESCRIBE`, the hand-written score it replaced, was deleted on 2026-09-26 |
-| F5 | finder VOTE, PEAKS, GATHER | every reading with p at least `SMIN` votes along a ray toward the symbol's centre (the diagonals cross there under any perspective), one lane a reading; the K strongest crossings each gather a quad in two rounds (the band about the crossing, then about the centre a filled diagonal pair gives); a quad is its four corners or nothing |
+| F5 | finder VOTE, GATHER (PEAKS inside it since 2026-09-30) | every reading with p at least `SMIN` votes along a ray toward the symbol's centre (the diagonals cross there under any perspective), one lane a reading; the K strongest crossings each gather a quad in two rounds (the band about the crossing, then about the centre a filled diagonal pair gives); a quad is its four corners or nothing |
 | F6 | finder SCORE, PICK | every (four-cornered quad, orientation, ring) read against the known timing track near the corners; argmax: the ring, never the picture |
 | F7 | register NODES, REFIT | every border node correlated against the border as painted (256 lanes a node over offsets and sample groups, the coarse round on one shared lattice, the fine round moving each placed sample by the map's Jacobian); a homography and lens refit by Gauss-Newton as straight-line WGSL; each side's residual fitted by a polynomial of 1 to 6 coefficients, the count chosen by AICc on the side's own nodes (2026-09-29). Run twice; profiled as nodes1, refit1, nodes2, refit2 |
 | F8 | word | the format word, one code a ring over every word cell (`src/fmt.h`: RS(8,3), (16,3), (24,3), (32,3) in the 32, 64, 96 and 128 rings), each cell read at its planned centre against its track pairs' grey, maximum likelihood over every version 1 to 128 and rate; the frame decodes at the word's version, or the batch's held one (the last word the host read) when none is taken, or not at all: `sel` = (ring, 1 + version, picture slot, 0), the block count and picture for the back half (after F7, on found and told frames alike); `scripts/gpu/word_check.mjs` holds its tables and decision to the wasm |
 | F9 | sample | only when grids are read back (`BACK=wasm` or `both`): the picture through the map plus the Coons patch of the sides' residuals, in the strip order the back half reads. With the GPU back half B2's pass 1 samples instead, by the same map, patch (`sample.mjs COONS`, one copy) and bilinear read |
 | B1 | back gate (`back_transform.mjs`) | lists each built picture's frames by the slot F8 gave them (a frame not valid, with no version, or naming an unbuilt picture is on no list) and writes the indirect dispatch sizes (pass 1, reduce and pass 2 a picture, and B4's first read: the most blocks and frames of a listed picture, so an empty slot costs nothing) and each frame's (w, h), blocks, rows and ring for the fused pass 1 (whose PIC holds each ring's grid for the picture and lattice); zeroes the counters, verdicts and record count, so the host clears nothing |
 | B2 | back pass1, reduce, pass2 | pass 1 samples a column pair through the map (or reads F9's grid under `BACK=both`); the picture's 2D DFT kept as S = T / n^2 on the disc only: along y a column pair at a time (the column means apart, which keeps f16 safe), the detrend's five sums reduced, then along x a kept row at a time with the detrend subtracted in the spectrum; Y and S in f16 where the device has shader-f16 |
-| B3 | back soft (`back_soft.mjs`) | a sub-channel's 320 coefficients to int8 LLRs in slot order through their moments, and a block whose estimate is under the decline bar marked declined |
-| B4 | back ldpc (`back_ldpc.mjs`) | a codeword a workgroup: bit map and whitening as one gather, layered min-sum in i16 with the C's norm and caps and the funnel stop rule (a codeword whose fewest violated checks so far is still at or above a count after iteration 1, 2, 4, 9, 12, 15 or 20 is given up, `back/DESIGN.md` 6; `?ldpcstop=c` on the page, `LDPC_STOP=c` in the harness, is the C's stall rule), the CRC-32, and a verified block's 473 bytes compacted into the result record; one verdict and an iteration count a block |
+| B3 | back soft (`back_tiers.mjs` talign, tsoft, tblocks: the rate profile's stage, `back/tiers.mjs`, since 2026-10-07) | the grid's shift fitted from the pilots in the blocks' tails and turned back (since 2026-10-01); a sub-channel's 320 coefficients to int8 LLRs in slot order through their moments (`back_soft.mjs`'s arithmetic), with its pilot reading; a block's estimate over its own sub-channels (7, 8, 9 or 12 by its code), the block declined under its code's bar (0.2 k / n). Every version's profile is a row of the stage's table, so any version at any picture decodes |
+| B4 | back ldpc (`back_tiers.mjs` tldpc, a dispatch a code: 7/8, 3/4, 2/3, 1/2) | a codeword a workgroup: bit map and whitening as one gather, layered min-sum in i16 with the C's norm and caps (`back_ldpc.mjs`'s), the bits past the payload and CRC known zeros, each code's own learned stop (a small net trained on that code's neutral codewords, `back/stop/`, `back/DESIGN.md` 6; `?ldpcstop=c` on the page, `LDPC_STOP=c` in the harness, is the C's stall rule), the CRC-32, and a verified block's 473 bytes compacted into the result record; one verdict and an iteration count a block |
 
 `decoder.mjs` is the host; `tables.mjs` takes the format's tables from the wasm codec at start: a table a ring (the
 border: lattice, kind map, marks, track and word plans) and the pictures (six since 2026-09-27), apart.
@@ -122,24 +122,27 @@ decoder's own batches.
 - In flight: 2 lanes. A trial of 3 in the same budget (2026-09-25) never fired on the iGPU (96 to 99% busy at 2)
   and on the phone measured a starved feed, not the device, so it went.
 - The ring (the GPU queue, `decoder.mjs` `enqueue`): Bmax + 4 layers at the lanes' shape, counted in the budget
-  beside the lanes, so Bmax is a little smaller with it (at 1080 f16 on the S26 about 9 instead of 11). A frame
+  beside the lanes, so Bmax is a little smaller with it where memory binds (SwiftShader; on the S26, the iGPU and the
+  4090 `B_CEIL` binds first since the budget became the device's own `maxBufferSize`). A frame
   goes onto it the moment it arrives and its VideoFrame is closed; a batch is cut from staged slots, its encoder
   beginning with a copy a slot into the lane's layer, and the slots are freed at the submit.
 - Device lost. The page makes a new device and a decoder that starts at half the batch that was running and never
   grows past it (`create` `restart`), and runs the lost batches again on it, in order.
 - A batch carries any number of frames up to its lanes' B. Every dispatch covers only the frames it carries (the
   back half's soft values and LDPC too, `back.mjs` `encode` `frames`), clears and readbacks cover only them, and an
-  empty slot exits at once. What is left is the back half's gate, which walks every slot in one thread: on the
-  iGPU a batch of 1 in lanes of 111 took 10.8 ms against 10.0 in lanes of 1 (11.9 while the soft values and the LDPC
-  still dispatched every slot).
+  empty slot exits at once; the back half's gate still walks every slot in one thread. On the iGPU a batch of 1 in
+  lanes of 111 took 10.8 ms against 10.0 in lanes of 1 (11.9 while the soft values and the LDPC still dispatched every
+  slot, 2026-09-24), most likely lane 1's one-time zero-fill on its first use rather than the gate (STATUS.md,
+  "Dynamic batching").
 - The page asks node for jobs of the controller's size (`GET /job?want=n`, `scripts/gpu/harness/run.mjs` `autoJobs`) and cuts
   a larger one (the first, asked before the plan, or one asked before a change) into batches of the size wanted as
   each goes; its batches' results go back as one. The total line names the size, Bmax, the limit that bound it, the
   in-flight count and why, and the plan's time, which comes before the first submit and so outside the span.
 
-On the iGPU at the default budget auto takes 13 frames at 1080 and 4 at 2160, both bound by memory, and its rate
-matches the best fixed B; no batch past 8 at 1080 or 4 at 2160 buys throughput, since the device is 96 to 98% busy
-at every B (STATUS.md, "Dynamic batching").
+On the iGPU auto takes `B_CEIL`'s 32 at 1080 since the budget became the device's `maxBufferSize` (2026-09-25), and
+the 400 ms cap holds 2160 to about 8. At the 128 MiB budget before, it took 13 frames at 1080 and 4 at 2160, both
+bound by memory, and its rate matched the best fixed B; no batch past 8 at 1080 or 4 at 2160 bought throughput, since
+the device was 96 to 98% busy at every B (STATUS.md, "Dynamic batching", 2026-09-24).
 
 ### Batches in flight, and what the total line means
 

@@ -8,7 +8,7 @@ import kotlin.math.roundToInt
 // ai: The receive screen's words and figures, the web receiver's (lizard-web/recv.mjs showState, ui.mjs bytes, rate,
 // ai: left) in Kotlin: one wording on every surface (2026-10-01). The user's figures are progress, size, speed and time
 // ai: left; the format's name and the registered
-// ai: share are the lab line's, in Advanced. 1 KB = 1000 B, a figure kept on its line (a no-break space), digits as the
+// ai: share are the lab line's, in Developer Tools. 1 KB = 1000 B, a figure kept on its line (a no-break space), digits as the
 // ai: web prints them whatever the phone's locale. Pure: no Android in here.
 object Readout {
     private const val NB = ' '
@@ -86,7 +86,7 @@ object Readout {
         else -> Line("")
     }
 
-    // ai: The lab line (Advanced): the last second's rate, the registered share and, while a word is read, the format,
+    // ai: The lab line (Developer Tools): the last second's rate, the registered share and, while a word is read, the format,
     // ai: the web's #lab ("1571 KB/s, 97% registered, LIZARD-480 at 60 fps", or "no code yet").
     fun lab(on: Boolean, rx: Rx): String {
         if (!on) return ""

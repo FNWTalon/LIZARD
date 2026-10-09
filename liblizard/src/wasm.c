@@ -70,9 +70,9 @@ int focus_setup(int n, int subch, int mode, float clip, int span, float tilt, in
   fready = 1;
   return F.block_bytes;
 }
-// Up to three runs of blocks at different code rates (focus.h): rate index, blocks, sub-channels a block; a run of 0 blocks ends the list.
-int focus_setup_tiers(int n, float clip, int span, float tilt, int corner, int corner_filled, int centre, int edge, int track_alt, int border, int r0, int b0, int s0, int r1, int b1, int s1, int r2, int b2, int s2) {
-  const focus_tier_t all[FOCUS_TIERS] = { { r0, b0, s0 }, { r1, b1, s1 }, { r2, b2, s2 } };
+// Up to four runs (FOCUS_TIERS) of blocks at different code rates (focus.h): rate index, blocks, sub-channels a block; a run of 0 blocks ends the list.
+int focus_setup_tiers(int n, float clip, int span, float tilt, int corner, int corner_filled, int centre, int edge, int track_alt, int border, int r0, int b0, int s0, int r1, int b1, int s1, int r2, int b2, int s2, int r3, int b3, int s3) {
+  const focus_tier_t all[FOCUS_TIERS] = { { r0, b0, s0 }, { r1, b1, s1 }, { r2, b2, s2 }, { r3, b3, s3 } };
   int tiers = 0;
   while (tiers < FOCUS_TIERS && all[tiers].blocks > 0) tiers++;
   if (fready) { focus_free(&F); fready = 0; }
@@ -82,7 +82,7 @@ int focus_setup_tiers(int n, float clip, int span, float tilt, int corner, int c
 }
 // ai: A receiver told nothing: the module's one blind receiver (any.h), behind the exports.
 static focus_any_t ANY = { .which = -1 };
-// ai: nmax: the largest picture this receiver decodes (1024 by default, 1536 for an industrial rig). Returns the
+// ai: nmax: the largest picture this receiver decodes (1536, the ladder's top, in every receiver since 2026-09-29). Returns the
 // ai: block bytes (473), or -1.
 int focus_any_setup(int nmax) { return focus_any_init(&ANY, nmax); }
 // ai: blocks and ok hold focus_any_max_blocks() blocks. held: the sub-channel count / 8 of the last word the caller
@@ -294,10 +294,13 @@ void focus_block_subs(int32_t *first, int32_t *count) {
 }
 
 // The LDPC code behind a block, for a decoder running elsewhere. tier is a block's tier
-// index; focus_block_tiers says which block is on which. See ldpc.c ldpc_tables for the layout.
+// index; focus_block_tiers says which block is on which. See ldpc.c ldpc_tables for the layout (12 dims).
 void focus_ldpc_tables(int tier, int32_t *dims, int32_t *lay) {
   if (fready && tier >= 0 && tier < FOCUS_TIERS) ldpc_tables(&F.code[tier], dims, lay);
 }
+// ai: Which set of the format's tables the codecs built from here on take (ldpc.h ldpc_codes_set: 0 today's, 1 the set
+// ai: before 2026-10-08); the wasm has no environment for LIZ_TABLES, so sim/ob.mjs passes it.
+void focus_codes_set(int set) { ldpc_codes_set = set; }
 void focus_block_tiers(int32_t *out) { if (fready) for (int b = 0; b < F.blocks; b++) out[b] = F.block_tier[b]; }
 // The decode finished from soft values AND hard decisions worked out elsewhere. bits: blocks * code[0].n, one
 // decision a byte. its: what each block spent, or 0 to say one iteration each.

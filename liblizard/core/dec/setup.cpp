@@ -32,9 +32,20 @@ std::vector<std::string> variantsFor(const wg::Device& d, bool subgroups) {
   return out;
 }
 
+// ai: A variant's setup: setup/<variant>.json, or under a rate profile being tested (LIZ_PROFILE, src/focus.h
+// ai: focus_profile_set, which the C reads too) the one gen.mjs wrote for it, setup/<variant>@<tag>.json (':' and '/'
+// ai: as '_'); a profile with no setup of its own builds no GPU variant, never the format's
+std::string setupName(const std::string& variant) {
+  const char* p = getenv("LIZ_PROFILE");
+  if (!p || !*p) return "setup/" + variant + ".json";
+  std::string t = p;
+  for (auto& ch : t) if (ch == ':' || ch == '/') ch = '_';
+  return "setup/" + variant + "@" + t + ".json";
+}
+
 std::vector<std::string> variantsIn(const std::string& root, const std::vector<std::string>& variants) {
   std::vector<std::string> out;
-  for (const auto& v : variants) if (std::ifstream(root + "/setup/" + v + ".json")) out.push_back(v);
+  for (const auto& v : variants) if (std::ifstream(root + "/" + setupName(v))) out.push_back(v);
   return out;
 }
 
@@ -43,7 +54,7 @@ std::unique_ptr<Setup> Setup::load(wg::Device& d, ReadFile read, const std::stri
   s->dev = &d;
   s->read = read;
   s->variant = variant;
-  auto bytes = read("setup/" + variant + ".json");
+  auto bytes = read(setupName(variant));
   s->tree = json::parse(bytes.begin(), bytes.end());
   s->objects = std::move(s->tree["objects"]);
   s->tree.erase("objects");

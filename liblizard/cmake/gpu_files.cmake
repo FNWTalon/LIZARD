@@ -1,7 +1,8 @@
 # ai: The GPU files the engines read (2026-10-03), out of the generated tree (out/: gen's setup, SPIR-V and blobs):
 # ai: each decoder variant's setup and the modules and blobs it names (core/dec/setup.cpp reads objects.pipelines[].module
 # ai: as spv/<module>.spv and objects.buffers[].blob as blobs/<blob>.bin), the camera's ingest kernel, the sender's setup
-# ai: with its blob (perm.blob) and its send_*.spv (core/tx/gpu_painter.cpp). Nothing else of the tree: its raw SPIR-V,
+# ai: with its blob (tab.blob, the paint's codes and whitening since 2026-10-07; perm.blob before) and its send_*.spv
+# ai: (core/tx/gpu_painter.cpp). Nothing else of the tree: its raw SPIR-V,
 # ai: the stale blobs of earlier generations and the benchmarks' kernels are not read.
 # ai:   liz_gpu_files(<out var> <tree> <variants...>): the files, relative to the tree
 function(liz_gpu_files out tree)
@@ -10,8 +11,8 @@ function(liz_gpu_files out tree)
   list(FILTER sends EXCLUDE REGEX "\\.raw\\.spv$")
   list(APPEND files ${sends})
   file(READ ${tree}/setup/send.json send)
-  string(JSON perm GET "${send}" perm blob)
-  list(APPEND files ${perm})
+  string(JSON tab GET "${send}" tab blob)
+  list(APPEND files ${tab})
   foreach(v ${ARGN})
     if(NOT EXISTS ${tree}/setup/${v}.json)
       message(FATAL_ERROR "no GPU setup ${v} in ${tree}")

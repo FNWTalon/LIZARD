@@ -1,4 +1,4 @@
-/* ai: The look every Lizard page shares: light, black and white, flat (no gradients, no shadows). Since 2026-10-01: */
+/* ai: The look every LIZARD page shares: light, black and white, flat (no gradients, no shadows). Since 2026-10-01: */
 /* ai: one solid black button a screen, the others on a soft grey fill, minor actions text alone, every button a pill; */
 /* ai: a top app bar with a back arrow; lists */
 /* ai: of rows for files and settings; cards on a soft fill. Colour is for two things only: an error (--bad) and a */
@@ -48,7 +48,7 @@ select:disabled,input:disabled{color:rgba(17,17,17,.38)}
 .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 
 /* ai: Status: .status is the state line, .nums the user's figures under it (progress, size, speed, time left: their
-   figures of one width so they do not jitter), .lab the lab line in Advanced (a code block, as the readouts), .why the
+   figures of one width so they do not jitter), .lab the lab line in Developer Tools (a code block, as the readouts), .why the
    hints when there are any. */
 .status{font-size:18px;font-weight:600;line-height:1.35;margin:4px 0}
 .nums{font-size:14px;font-variant-numeric:tabular-nums;color:var(--muted);margin:2px 0}
@@ -153,34 +153,36 @@ button.item{width:100%;justify-content:flex-start;padding:8px 0;font-weight:400;
 @media (hover:hover){.menu .acts>*:hover{background:var(--soft)}}
 .empty{display:flex;flex-direction:column;align-items:center;gap:8px;padding:24px 0;color:var(--muted);font-size:14px;text-align:center}
 
-/* ai: Advanced (details.dev, the Developer panel until 2026-10-01): the lab's switches and readouts, closed unless opened
-   (ui.mjs remember keeps it); its summary a row with a chevron that turns. */
+/* ai: Settings and Developer Tools (details.dev; the Developer panel until 2026-10-01, Advanced until 2026-10-03): the
+   switches and readouts, closed unless opened (ui.mjs remember keeps it); its summary a row with a chevron that turns. */
 details.dev{border-top:1px solid var(--line);margin-top:8px}
 details.dev>summary{list-style:none;display:flex;align-items:center;min-height:56px;cursor:pointer;font-weight:500;user-select:none}
 details.dev>summary::-webkit-details-marker{display:none}
 details.dev>summary::after{content:"";margin:0 6px 0 auto;width:8px;height:8px;border-right:2px solid var(--muted);
   border-bottom:2px solid var(--muted);transform:translateY(-2px) rotate(45deg);transition:transform .15s}
 details.dev[open]>summary::after{transform:translateY(2px) rotate(225deg)}
-/* ai: Advanced's first line straight under its row (2026-10-02) */
+/* ai: a fold's first line straight under its row (2026-10-02) */
 details.dev>summary+*,details.dev>summary+.grid>label:first-child{margin-top:0}
 /* ai: Settings' fields, one rhythm (2026-10-02): a label 4 px over its control,
-   16 px between fields whatever the control (a menu, a slider, the auto box), a group's header 16 px above it and 8 px
+   16 px between fields whatever the control (a menu, a slider), a group's header 16 px above it and 8 px
    over its first field */
 details.dev .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,14rem),1fr));gap:16px;margin:4px 0 16px}
 details.dev label{display:grid;gap:4px;font-size:14px;color:var(--muted);margin:0}
-/* ai: the sender's blocks a frame (2026-10-01): a slider beside its auto box, the count and what it holds above */
+/* ai: the sender's blocks a frame (2026-10-01): a slider (its first step auto since 2026-10-05, an auto box beside it
+   before), the count and what it holds above */
 .blocks{display:flex;flex-direction:column;gap:4px;margin:0}.blocks .row{display:flex;align-items:center;gap:12px;justify-content:space-between}
 /* ai: a slider's title and value in the fields' label style (2026-10-02) */
 .blocks .row>span{font-size:14px;color:var(--muted)}
 .blocks label.inline{display:flex;align-items:center;gap:8px;white-space:nowrap;align-self:flex-start;color:var(--fg);font-size:15px;margin:0 0 8px}
-/* ai: the Code group's auto box right under its heading */
+/* ai: the Code group's first field right under its heading */
 #f-focus>.grid{margin-top:0}#f-focus>.grid>.blocks:first-child{margin-top:0}
 .item .s:empty{display:none}
-/* ai: the auto box (2026-10-02, on its own row above blocks a frame): a plain 18 px checkbox, not the fields' 48 px fill */
+/* ai: the auto box (2026-10-02 to 2026-10-05, on its own row above blocks a frame; no page has one since): a plain 18 px
+   checkbox, not the fields' 48 px fill */
 .blocks input[type=checkbox]{width:18px;height:18px;min-height:0;padding:0;margin:0;accent-color:var(--fg)}
 #blocksOut,#fpsOut{color:var(--muted);font-variant-numeric:tabular-nums}
 details.dev fieldset{border:0;margin:16px 0 0;padding:0;min-width:0}
-/* ai: About, a tool page's last row, under Advanced (2026-10-02) */
+/* ai: About, a tool page's last row, under Developer Tools (2026-10-02) */
 .settings .about{border-top:1px solid var(--line);margin-top:8px}
 details.dev legend{font-size:14px;font-weight:600;color:var(--fg);padding:0;margin-bottom:8px}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);

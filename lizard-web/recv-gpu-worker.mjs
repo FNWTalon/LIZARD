@@ -1,19 +1,16 @@
 // ai: The receiver's GPU decode worker: the whole decode on the GPU (gpu/decoder.mjs through gpuqueue.mjs), told nothing
 // ai: (the ring found, each frame's version and picture from its own word, F8, or from the last word read, which
 // ai: the worker holds for the queue's next batch: the held configuration, done below), and answering every frame with
-// ai: recv-worker.mjs's own result message, so the page's dedupe, fountain, tracking and recording take either without
+// ai: recv-worker.mjs's own result message, so the page's dedupe, fountain and tracking take either without
 // ai: knowing which.
 // ai:   page to worker: { type: "config", config } ({ version, spec: sim/phy.mjs blindSpec }; any other spec is answered
-// ai:     unavailable); { type: "frame", tag, w, h, luma | rgba,
-// ai:     record } for each grabbed frame, the buffer transferred (the other fields a CPU worker gets are ignored); or,
-// ai:     F0 (lizard-web/vframes.mjs), { type: "frame", tag, frame, x, y, w, h }: a VideoFrame, transferred, and the crop
-// ai:     the page would have grabbed, which the decoder takes to luma on the device; with record set, its crop's luma
-// ai:     is copied out of the frame here (vframes.mjs lumaOf) and recorded as a luma frame's is.
+// ai:     unavailable); { type: "frame", tag, w, h, luma | rgba } for each grabbed frame, the buffer transferred (the
+// ai:     other fields a CPU worker gets are ignored); or, F0 (lizard-web/vframes.mjs), { type: "frame", tag, frame, x,
+// ai:     y, w, h }: a VideoFrame, transferred, and the crop the page would have grabbed, which the decoder takes to luma
+// ai:     on the device.
 // ai:     Or the camera track itself (Chrome): { type: "track", track, crop: { x, y, w, h }, fps, pageTimeOrigin }, a
 // ai:     clone transferred, read here by a MediaStreamTrackProcessor, every frame queued with the latest crop
-// ai:     ({ type: "crop", x, y, w, h } moves it) and tagged on the page's clock; { type: "track", track: null } ends it;
-// ai:     { type: "record", run, n } numbers the next n track frames (record: { run, i }) and records them as a frame
-// ai:     message's record does.
+// ai:     ({ type: "crop", x, y, w, h } moves it) and tagged on the page's clock; { type: "track", track: null } ends it.
 // ai:   worker to page: { type: "ready", version, frames, framesWhy, processor, gpu: { adapter, precision, nets, bank, B, inflight } }
 // ai:     (nets: the arithmetic each net runs in, gpu/decoder.mjs fh.nets { bank, small, large })
 // ai:     (frames: this device imports a VideoFrame; framesWhy: why not; processor: a track can be read here) or
@@ -21,7 +18,7 @@
 // ai:     frame is read, or { type: "source", kind: "page", why } when the track gives none in SOURCE_WAIT, fails, or
 // ai:     ?gsrc=page declines it (the page keeps its tap); one { type: "result", ... } per frame (a track frame's with
 // ai:     box: { x, y, w, h }, the crop used; with gained, the blocks among its own that straddle cancellation, pass two,
-// ai:     verified, where it verified any), then { type: "recorded", ... } when record is set; { type: "stats",
+// ai:     verified, where it verified any); { type: "stats",
 // ai:     ms, lag, B, inflight, queued, held, dropped, f0, vf, luma, levelsFrom, batches, carried, host, submitToMap,
 // ai:     mapLatency, doneMs, ingestMs, arrived, gapMax, openMax, cancelled, gained } at most once a second
 // ai:     (vf and luma: { n, found, blocks } of the window's VideoFrame frames and its luma frames; cancelled and
@@ -31,26 +28,26 @@
 // ai:     at WIN0 below);
 // ai:     { type: "lost", reason } once it gives up; { type: "error", tag, message } as the CPU worker's. A frame not
 // ai:     decoded (dropped from the queue, or no decoder yet) is answered with the CPU worker's no-decoder result plus
-// ai:     dropped: true, and its luma is still recorded.
+// ai:     dropped: true.
 // ai: ?pref=high-performance|low-power on the worker's URL asks for that adapter (a machine with two GPUs); ?cancel=1
-// ai: puts straddle cancellation in the decoder (the receiver's "GPU cancellation" menu; off by default).
+// ai: puts straddle cancellation in the decoder (the receiver's ?gcancel=on; off by default).
 import { blockJudge } from "../liblizard/sim/phy.mjs";
 import { init as initOb, heapTop } from "../liblizard/sim/ob.mjs";
 import { PAYLOAD } from "../liblizard/sim/xfer.mjs";
 import { openGpu, GpuQueue, Unavailable, unsupported, quadOf } from "./gpuqueue.mjs";
-import { importsWhyNot, LUMA_EVERY, lumaOf } from "./vframes.mjs";
+import { importsWhyNot, LUMA_EVERY } from "./vframes.mjs";
 import { Ingest } from "../liblizard/gpu/ingest.mjs";
 
 const Q = new URLSearchParams(globalThis.location?.search ?? "");
 const PREF = Q.get("pref");
 // ai: Diagnostic switches (?prec=int8|f16|f32, that precision alone; ?sg=0) for a device whose int8, f16 or subgroup
 // ai: arithmetic is suspect; ?cancel=1 puts straddle cancellation (pass two, gpu/back/cancel.mjs) in the decoder (the
-// ai: receiver's "GPU cancellation" menu).
+// ai: receiver's ?gcancel=on).
 const OPEN = { pref: PREF, prec: Q.get("prec"), subgroups: Q.get("sg") !== "0", test: Q.get("test"), cancel: Q.get("cancel") === "1" };
-// ai: ?stages=1 (the receiver's "GPU stage timing" menu): every batch profiled a pass a stage, its stage ms a frame in
+// ai: ?stages=1 (the receiver's ?gstages=on): every batch profiled a pass a stage, its stage ms a frame in
 // ai: the stats (stageMs). Off by default: the profile splits the one compute pass, so it is not the default's timing.
 const STAGES = Q.get("stages") === "1";
-// ai: ?gsrc=page (the receiver's "GPU frames" menu): the page's tap feeds this worker, and a track sent anyway is declined.
+// ai: ?gsrc=page (passed on from the receiver's own): the page's tap feeds this worker, and a track sent anyway is declined.
 const PAGE_TAP = Q.get("gsrc") === "page";
 const SOURCE_WAIT = 3000;    // ai: ms a track may give no frame after arriving before the page is told to keep its tap
 const log = (m) => console.info(`gpu worker: ${m}`);
@@ -69,7 +66,7 @@ const keyOf = (s) => JSON.stringify(s);
 async function configure(c) {
   if (c !== latest) return;   // ai: a newer config is queued behind this one
   try {
-    if (!c.spec?.blind) throw new Unavailable(unsupported(c.spec) ?? "a told Lizard spec: the receiver decodes blind (sim/phy.mjs blindSpec)");
+    if (!c.spec?.blind) throw new Unavailable(unsupported(c.spec) ?? "a told LIZARD spec: the receiver decodes blind (sim/phy.mjs blindSpec)");
     const k = keyOf(c.spec);
     if (k !== key) {
       const old = queue;
@@ -118,9 +115,9 @@ function arrival() {
 
 function frame(m) {
   if (m.frame) return videoFrame(m);
-  const { tag, w, h, record } = m, isRgba = m.rgba !== undefined, px = new Uint8Array(isRgba ? m.rgba : m.luma);
+  const { tag, w, h } = m, isRgba = m.rgba !== undefined, px = new Uint8Array(isRgba ? m.rgba : m.luma);
   const luma = isRgba ? toLuma(px, w * h) : px;
-  const item = { tag, w, h, luma, record, ctx, at: arrival(), levels: levelsOf(px, w, h, isRgba), levelsFrom: "luma", blob: record ? new Blob([luma]) : null };
+  const item = { tag, w, h, luma, ctx, at: arrival(), levels: levelsOf(px, w, h, isRgba), levelsFrom: "luma" };
   // ai: A frame whose bytes are not w x h would fail its whole batch's upload, and a failed batch ends the GPU path.
   if (queue && ctx && w > 0 && h > 0 && px.length === (isRgba ? 4 : 1) * w * h) queue.push(item);
   else answerEmpty(item);
@@ -129,22 +126,19 @@ function frame(m) {
 
 // ai: F0 from the page: a VideoFrame the page's tap took, with the crop it would have grabbed.
 function videoFrame(m) {
-  const { tag, w, h, x, y, frame: source, record } = m;
-  return pushVideoFrame({ tag, w, h, x, y, source, f0: true, record: record ?? null, ctx, at: arrival(), levels: null, levelsFrom: "gpu", blob: null, box: null });
+  const { tag, w, h, x, y, frame: source } = m;
+  return pushVideoFrame({ tag, w, h, x, y, source, f0: true, ctx, at: arrival(), levels: null, levelsFrom: "gpu", box: null });
 }
 
 // ai: A VideoFrame into the queue, from the page or off the track here. The queue closes it once the decoder has it,
 // ai: or once it is dropped; one that never reaches the queue is closed here. A crop outside its frame would fail the
 // ai: whole batch, ending the GPU path, so it is checked first (Ingest.check, the decoder's own test). Its luma never
 // ai: reaches this worker, so its grey levels come back with its batch (done: the decoder's histogram of the layer).
-// ai: A recorded frame's luma is copied out here (vframes.mjs lumaOf, 0.3 ms at a 720 crop), the frame left open for
-// ai: the ingest: a recording needs no grab. A copy that fails records nothing for it.
-async function pushVideoFrame(item) {
-  const { source, x, y, w, h, record } = item;
+function pushVideoFrame(item) {
+  const { source } = item;
   sinceLevels++;
   let ok = !!(queue && ctx) && framesWhy === null;
   if (ok) try { Ingest.check(item); } catch { ok = false; }
-  if (ok && record) { try { item.blob = new Blob([(await lumaOf(source, x, y, w, h, { close: false })).luma]); } catch { item.blob = null; } }
   if (ok) queue.push(item);
   else { source.close(); answerEmpty(item); }
   stats();
@@ -153,9 +147,8 @@ async function pushVideoFrame(item) {
 // ai: The camera track in the worker: the page's tap took only the newest frame between two callbacks and lost one each
 // ai: time two came, where a reader here sees every frame the camera hands over. trk: the track in hand, its reader, the
 // ai: crop the page last posted, the previous frame's arrival on the page's clock (the next frame's tag) and the timer
-// ai: for a track that gives no frame; trackFps: the camera's rate the page sent, for the queue's launch bound; rec: a
-// ai: recording's numbering, { run, i, n }.
-let trk = null, trackFps = 0, rec = null;
+// ai: for a track that gives no frame; trackFps: the camera's rate the page sent, for the queue's launch bound.
+let trk = null, trackFps = 0;
 // ai: Now on the page's clock: both clocks count from their own timeOrigin on the same monotonic time.
 const pageNow = (t) => performance.timeOrigin + performance.now() - t.pageTimeOrigin;
 
@@ -182,7 +175,7 @@ function sourcePage(t, why) {
 function stopTrack() {
   const t = trk;
   if (!t) return;
-  trk = null; rec = null;
+  trk = null;
   clearTimeout(t.timer);
   t.reader.cancel().catch(() => {});
   t.track.stop();
@@ -207,16 +200,15 @@ async function readTrack(t) {
 
 // ai: A track frame into the queue with the crop the page last posted, tagged with the previous frame's arrival on the
 // ai: page's clock (the page tags its own frames with the callback before, so tFirst and the tags' order hold), the crop
-// ai: echoed as box for the page's tracker, and numbered for a recording the page asked for.
+// ai: echoed as box for the page's tracker.
 function trackFrame(t, source) {
   const now = pageNow(t), tag = t.prev || now - 33;
   t.prev = now;
-  const { x, y, w, h } = t.crop, record = rec ? { run: rec.run, i: rec.i++ } : null;
-  if (rec && rec.i >= rec.n) rec = null;
-  return pushVideoFrame({ tag, w, h, x, y, source, f0: true, record, ctx, at: arrival(), levels: null, levelsFrom: "gpu", blob: null, box: { x, y, w, h } });
+  const { x, y, w, h } = t.crop;
+  return pushVideoFrame({ tag, w, h, x, y, source, f0: true, ctx, at: arrival(), levels: null, levelsFrom: "gpu", box: { x, y, w, h } });
 }
 
-// ai: The canvas grab's RGBA as luma, with the arithmetic the codec uses (src/acquire.c) and recv-worker.mjs records.
+// ai: The canvas grab's RGBA as luma, with the arithmetic the codec uses (src/acquire.c).
 function toLuma(px, n) {
   const out = new Uint8Array(n);
   for (let i = 0, j = 0; i < n; i++, j += 4) out[i] = (77 * px[j] + 150 * px[j + 1] + 29 * px[j + 2] + 128) >> 8;
@@ -224,7 +216,7 @@ function toLuma(px, n) {
 }
 
 // ai: recv-worker.mjs's grey range, the middle half of the frame as it arrived, from the first luma frame once
-// ai: LUMA_EVERY frames of either kind have come since the last (a recording's frames, or a page that sends luma).
+// ai: LUMA_EVERY frames of either kind have come since the last (a page that sends luma).
 function levelsOf(px, w, h, isRgba) {
   if (++sinceLevels < LUMA_EVERY) return null;
   sinceLevels = 0;
@@ -293,7 +285,6 @@ function post(item, out) {
   if (!out.dropped && levels) { out.levels = levels; levels = null; }
   if (item.box) out.box = item.box;   // ai: a track frame's crop, which the page's tracker never saw
   postMessage(out, out.bytes ? [out.bytes] : []);
-  if (item.record) postMessage({ type: "recorded", i: item.record.i, w: item.w, h: item.h, blob: item.blob });
 }
 
 // ai: stats: ms is the device's time a frame and lag a frame's wait from arrival to its answer, both over the frames
@@ -381,5 +372,4 @@ onmessage = ({ data: m }) => {
   else if (m.type === "frame") frame(m);
   else if (m.type === "track") trackMsg(m);
   else if (m.type === "crop") { if (trk) trk.crop = { x: m.x, y: m.y, w: m.w, h: m.h }; }
-  else if (m.type === "record") rec = trk && m.n > 0 ? { run: m.run, i: 0, n: m.n } : null;
 };

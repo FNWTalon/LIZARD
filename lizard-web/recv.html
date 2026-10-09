@@ -72,11 +72,11 @@
   <!-- ai: Start or Stop camera, and the received file (2026-10-01): Open the one solid button, Save, and Share where the browser shares files; the file stays in the received files. Receive again (Clear until 2026-10-01) went 2026-10-05: a second Start camera -->
   <div id="top"><button id="go" class="primary">Start camera</button><div id="deliver" hidden><button id="open" class="primary">Open</button><a id="save" class="btn" download>Save</a><button id="share" hidden>Share</button></div></div>
   <section id="settings" class="settings">
-    <!-- ai: Settings and Advanced, two rows that open (2026-10-02): Settings (#dev, its open state and every menu in it
-         kept) holds the decoder, the camera and the GPU decoder's crop; Advanced (#logs) the lab line and the readouts;
+    <!-- ai: Settings and Developer Tools, two rows that open (2026-10-02): Settings (#dev, its open state and every menu in it
+         kept) holds the decoder, the camera and the GPU decoder's crop; Developer Tools (#logs) the lab line and the readouts;
          About the last row. -->
   <details class="dev" id="dev"><summary>Settings</summary>
-    <!-- ai: the decoder, the user's to switch (2026-10-01): auto takes the GPU where WebGPU runs on a real adapter, else the CPU pool (recv.mjs decoderChoice) -->
+    <!-- ai: the decoder, the user's to switch (2026-10-01): auto takes the GPU where WebGPU runs on a real adapter, else the CPU pool (recv.mjs gpuWanted) -->
     <!-- ai: every control a labelled field, its options bare (2026-10-02; the Camera and GPU decoder groups and their
          prefixed options, "camera: auto (rear)", "rate: 60 first", before) -->
     <div class="grid">
@@ -90,17 +90,16 @@
       <label>GPU crop <select id="gcrop"><option value="full" selected>Full square</option><option value="tracked">Tracked</option></select></label>
     </div>
   </details>
-  <!-- ai: Developer Tools ("Advanced" until 2026-10-03): Record 300 frames (recv.mjs startRec, the tar of raw luma a
-       replay reads; a URL's ?rec alone since 2026-10-01), then the lab line and the readouts -->
+  <!-- ai: Developer Tools ("Advanced" until 2026-10-03): the lab line and the readouts (no replay recording since
+       2026-10-09: the Android app's Save replays records) -->
   <details class="dev" id="logs"><summary>Developer Tools</summary>
-    <button id="rec" type="button" disabled>Record 300 frames</button>
     <p id="lab" class="lab"></p>
-    <pre id="cfg" class="readout">light: no format word read yet</pre><pre id="out" class="readout"></pre><pre id="file" class="readout"></pre><pre id="run" class="readout"></pre>
+    <pre id="cfg" class="readout">light: no format word read yet</pre><pre id="out" class="readout"></pre><pre id="file" class="readout"></pre>
   </details>
     <div class="item about"><span class="body"><span class="t">About</span><span id="about" class="s"></span></span></div>
   </section>
   <script>
-  // ai: Saved state before the first paint (2026-10-02): Settings and Advanced open and the kept
+  // ai: Saved state before the first paint (2026-10-02): Settings and Developer Tools open and the kept
   // ai: menus set as ui.mjs remember and persist set them, with the same keys, before the module runs and the page is
   // ai: drawn (the chevrons turned on load otherwise). A camera kept by id waits for its option (recv.mjs restoreSaved).
   (() => { try {

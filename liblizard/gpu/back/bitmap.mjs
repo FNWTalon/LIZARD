@@ -13,8 +13,9 @@ export function whiten(count) {
 
 const gcd = (a, b) => { while (b) { const t = a % b; a = b; b = t; } return a; };
 
-// Slot i of a block carries codeword bit perm[i] (focus.c perm_fill). Modes are src/focus.h FOCUS_BITMAP_*:
-// 0 none and 1 white leave the order alone; 2 spread, 3 linear (the format's), 4 inner.
+// Slot i of a block carries sent bit perm[i], codeword bit np + perm[i] (focus.c perm_fill; np the bits a code never
+// sends, 93 at 7/8 since 2026-10-08, 0 elsewhere): n is the sent length nt, k the sent data bits. Modes are
+// src/focus.h FOCUS_BITMAP_*: 0 none and 1 white leave the order alone; 2 spread, 3 linear (the format's), 4 inner.
 export function perm(n, k, mode) {
   const p = new Int32Array(n), m = n - k;
   if (mode === 2) {
@@ -36,14 +37,17 @@ export function inverse(p) {
   return inv;
 }
 
-// One row a block: MAP[b][j] = the block's slot carrying codeword bit j, bit 15 set where that slot is whitened.
-// Mode 0 is the identity with nothing flipped (a recording painted before the bit map existed). white is applied
-// by the C for any mode above 0 (map_in runs when f->bitmap is set), so mode 1 flips without permuting.
-export function mapTable({ blocks, subs = 8, n = 5088, k = 3816, mode }) {
-  const slotsPerBlock = subs * 640, white = mode ? whiten(blocks * slotsPerBlock) : null, inv = inverse(perm(n, k, mode));
+// One row a block: MAP[b][j] = the block's slot carrying codeword bit j, bit 15 set where that slot is whitened;
+// 0x7fff for a bit never sent (j < np). Mode 0 is the identity with nothing flipped (a recording painted before the
+// bit map existed). white is applied by the C for any mode above 0 (map_in runs when f->bitmap is set), so mode 1
+// flips without permuting.
+export const NO_SLOT = 0x7fff;
+export function mapTable({ blocks, subs = 8, n = 5088, k = 3816, np = 0, mode }) {
+  const slotsPerBlock = subs * 640, white = mode ? whiten(blocks * slotsPerBlock) : null, inv = inverse(perm(n - np, k - np, mode));
   const map = new Uint16Array(blocks * n);
   for (let b = 0; b < blocks; b++) for (let j = 0; j < n; j++) {
-    const slot = inv[j];
+    if (j < np) { map[b * n + j] = NO_SLOT; continue; }
+    const slot = inv[j - np];
     map[b * n + j] = slot | (white && white[b * slotsPerBlock + slot] ? 0x8000 : 0);
   }
   return map;
@@ -52,11 +56,11 @@ export function mapTable({ blocks, subs = 8, n = 5088, k = 3816, mode }) {
 // ai: The other direction, for the cancel stage's paint (wgsl/cancel_paint.mjs): one row a block, PERMW[b][i] = the
 // ai: codeword bit slot i carries (perm[i]; 0x7fff past the codeword, a slot that carries zeros), bit 15 set where the
 // ai: slot is whitened. Mode 0 is the identity with nothing flipped, as mapTable's.
-export function permTable({ blocks, subs = 8, n = 5088, k = 3816, mode }) {
-  const slotsPerBlock = subs * 640, white = mode ? whiten(blocks * slotsPerBlock) : null, p = perm(n, k, mode);
+export function permTable({ blocks, subs = 8, n = 5088, k = 3816, np = 0, mode }) {
+  const slotsPerBlock = subs * 640, white = mode ? whiten(blocks * slotsPerBlock) : null, nt = n - np, p = perm(nt, k - np, mode);
   const tab = new Uint16Array(blocks * slotsPerBlock);
   for (let b = 0; b < blocks; b++) for (let i = 0; i < slotsPerBlock; i++) {
-    tab[b * slotsPerBlock + i] = (i < n ? p[i] : 0x7fff) | (white && white[b * slotsPerBlock + i] ? 0x8000 : 0);
+    tab[b * slotsPerBlock + i] = (i < nt ? np + p[i] : 0x7fff) | (white && white[b * slotsPerBlock + i] ? 0x8000 : 0);
   }
   return tab;
 }
@@ -135,10 +139,10 @@ export function dataBits(payload, k) {
   return bits;
 }
 
-// The slots the C paints for a block (focus.c map_out): slot i = cw[perm[i]] xor white, zeros past the codeword,
-// whitened too. Mode 0 paints the codeword as is.
+// The slots the C paints for a block (focus.c map_out): slot i = cw[np + perm[i]] xor white, zeros past the
+// codeword, whitened too. Mode 0 paints the sent bits as they are.
 export function blockSlots(code, permTab, white, firstSlot, slotsPerBlock, payload, mode) {
-  const cw = encodeCodeword(code, dataBits(payload, code.k)), slots = new Uint8Array(slotsPerBlock);
-  for (let i = 0; i < slotsPerBlock; i++) slots[i] = (i < code.n ? cw[mode ? permTab[i] : i] : 0) ^ (mode ? white[firstSlot + i] : 0);
+  const cw = encodeCodeword(code, dataBits(payload, code.k)), slots = new Uint8Array(slotsPerBlock), np = code.np ?? 0, nt = code.n - np;
+  for (let i = 0; i < slotsPerBlock; i++) slots[i] = (i < nt ? cw[np + (mode ? permTab[i] : i)] : 0) ^ (mode ? white[firstSlot + i] : 0);
   return slots;
 }

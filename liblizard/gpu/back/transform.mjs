@@ -211,7 +211,7 @@ export class Transform {
   }
 
   // One batch's buffers over the front half's lane buffers: gridBuf (gridStride elements a frame, strip order; null
-  // where only the fused pass 1 runs, or until bindGrid), framesBuf (Frame structs) and selBuf (vec2u a frame).
+  // where only the fused pass 1 runs, or until bindGrid), framesBuf (Frame structs) and selBuf (vec4u a frame).
   // Returns the lane with its device bytes counted. With zero the gate's bind group waits for bindGate(ln) once ln.V,
   // ln.ITS and ln.REC exist; the fused pass 1's wait for bindPicture(ln, ...).
   lane({ gridBuf = null, gridStride, framesBuf, selBuf }) {

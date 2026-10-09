@@ -31,7 +31,9 @@ import kotlin.math.abs
 // ai:   deep in a mix (no capture mostly one picture, so no count): a quarter of a refresh later, and look again;
 // ai:   the pace as below: each move of the line a TI-th of the way, and the hold's own spacing from the first
 // ai:     balance on, to what the leaks leave of the line's place over the time held.
-// ai: Frames that do not flash (an older sender, `usePilots` off for the A/B) are read by their blocks as below.
+// ai: Frames that do not flash (an older sender, `usePilots` off for the A/B), or that carry no side (a format of one
+// ai: block has bit 0 alone: r and no r2, so a capture says how much of the neighbours it holds and not which; the
+// ai: decoders report the odd reading as NaN there), are read by their blocks as below.
 // ai: Hold and Scan are the measuring tools that came first, on a grid of `gridNs` (a 60 Hz refresh on the camera's
 // ai: clock): a hold of each capture's start at one point of it, and a scan of every point a step apart, a line each,
 // ai: ending as a hold at the middle of the longest run of points that read as well as the best.
@@ -129,10 +131,10 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
     private var edgeClean = false   // ai: frames since that step have held neither neighbour (it landed inside the top)
     private var flatHalf = 0L
     // ai: Whether the lock wants its frames soon: track, with a symbol registered in the last RECENT (`foundT`:
-    // ai: the newest registered frame fed; with nothing in view the small batches would only cost), until a hold
-    // ai: by the pilots first asks no move (and again from a mix too deep to read). The receiver then decodes in
-    // ai: small batches, so a frame's reading is a tenth of a second old and not half a second; once the hold
-    // ai: stands it goes back to its own (Engine.kt).
+    // ai: the newest registered frame fed), until a hold by the pilots first asks no move (and again from a mix too
+    // ai: deep to read). The receiver decoded in small batches while it was on until 2026-10-08, when the native
+    // ai: receiver stopped waiting for a batch (a launch as soon as a frame is staged and a lane is free); only
+    // ai: tools/phasesim reads it now, modelling a batching receiver.
     private var stood = false
     private var foundT = 0L
     val soon get() = mode == Mode.Track && usePilots && !plainly && !stood && now >= rest && foundT != 0L && now - foundT < RECENT_NS
@@ -413,10 +415,15 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         while (lately.size > FLASH_FRAMES) lately.removeFirst()
         val was = flashing
         val seen = flashNow()
-        flashing = usePilots && (seen ?: flashing)
-        // ai: frames with no reading at all (a decoder that reads none) are plainly not a flashing sender's
-        plainly = !usePilots || (if (seen != null) !seen else plainly || (lately.isEmpty() && got.isNotEmpty()))
-        if (flashing != was) say(if (flashing) "phase: the frames flash: held by the pilots' leaks" else "phase: the frames do not flash: read by their blocks")
+        // ai: a side: a frame with both readings (a format of one block has r alone, and a hold needs which neighbour,
+        // ai: not how much). The newest FLASH_FRAMES decide, so a format changed under the lock moves it within a
+        // ai: second either way
+        val sided = lately.count { !it.r2.isNaN() }
+        flashing = usePilots && sided > 0 && (seen ?: flashing)
+        // ai: frames with no reading at all (a decoder that reads none), or none with a side, are plainly not a
+        // ai: flashing sender's for the hold: read by their blocks
+        plainly = !usePilots || (if (seen != null && sided > 0) !seen else plainly || (got.isNotEmpty() && sided == 0))
+        if (flashing != was) say(if (flashing) "phase: the frames flash: held by the pilots' leaks" else if (sided == 0 && lately.isNotEmpty()) "phase: the frames carry no side (one reading): read by their blocks" else "phase: the frames do not flash: read by their blocks")
         // ai: a search or a hold under way is the other kind's: frames that flash take the hold where it is, and
         // ai: frames seen not to flash give the pilots' hold up for a search
         if (flashing && (searching || (line >= 0 && !byLeaks))) { if (searching) here() else { byLeaks = true; prevT = 0; edgeDir = 0; flatHalf = 0 } }
@@ -774,7 +781,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         if (est == null) {
             // ai: no frame tells its neighbours apart. Deep in a mix (half the frames' r under DEEP: no capture is
             // ai: mostly one picture) nothing has a side: a quarter of a refresh later, and look again. Only where
-            // ai: half the frames have no sure sign: frames that have one and are just too few yet (a batch of 8,
+            // ai: half the frames have no sure sign: frames that have one and are just too few yet (a small batch,
             // ai: its ends without a neighbour) will tell the side with the next batch, and a blind step is not it
             val mid = fs.map { abs(it.r) }.sorted()[fs.size / 2]
             val signed = fs.count { abs(it.r) >= R_FLASH && !it.r2.isNaN() && abs(it.r2) >= R_FLASH }

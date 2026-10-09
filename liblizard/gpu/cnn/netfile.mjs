@@ -43,7 +43,7 @@ function slots(spec, arch) {
 // ai: The document from a weights file's bytes (ArrayBuffer, Uint8Array or a node Buffer).
 export function readNet(bytes) {
   const { tensors, metadata: m } = readSafetensors(bytes);
-  if (m.format !== "pt" || !m["lizard.spec"] || !m["lizard.arch"]) throw new Error("weights: no lizard.spec and lizard.arch metadata: not a Lizard weights file");
+  if (m.format !== "pt" || !m["lizard.spec"] || !m["lizard.arch"]) throw new Error("weights: no lizard.spec and lizard.arch metadata: not a LIZARD weights file");
   const spec = m["lizard.spec"], arch = JSON.parse(m["lizard.arch"]), used = new Set();
   if (m["lizard.quant"]) arch.quant = JSON.parse(m["lizard.quant"]);
   const layers = slots(spec, arch).map(([name, prefix, dil]) => {

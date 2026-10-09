@@ -50,6 +50,7 @@ struct BackLane {
 
 struct Lane {
   int B = 0, slotsG = 0;
+  BufP dumpBuf;   // ai: LIZ_DUMP_S's copy of the back half's spectrum, made on the first batch that dumps
   bool busy = false, watched = false, reserved = false;
   uint32_t W = 0, H = 0;
   uint64_t gridStride = 0;
@@ -79,7 +80,7 @@ struct Lane {
 struct Slot {
   int id = -1;
   uint32_t w = 0, h = 0;
-  double at = 0;          // ai: ms on the decoder's clock at enqueue (the queue's launch bound runs from it)
+  double at = 0;          // ai: ms on the decoder's clock at enqueue (the web queue's launch bound; none natively)
   bool luma = false;      // ai: the host-luma path: the frame is in the slot's staging buffer, and its batch copies it into the layer
   // ai: the batch copy that last read the layer: the slot is not written again until it is done (Vulkan orders
   // ai: nothing between the ingest's queue and the decoder's; the web's one queue ordered the next write for free)
@@ -105,7 +106,7 @@ struct FrameOut {
   std::vector<uint32_t> hist;         // ai: HIST_BINS
   // ai: the pilots (SPEC 7.3; decoder.mjs pilotOf): the mean of the soft stage's per-block r over the even blocks the
   // ai: frame's version carries (pilotR: bit 0 of the painted count) and over the odd (pilotR2: bit 1), with their
-  // ai: standard errors, where the soft stage ran on it (pilotBlocks 0: none)
+  // ai: standard errors, where the soft stage ran on it (pilotBlocks 0: none; a parity with no blocks NaN, version 1's odd)
   int pilotBlocks = 0;
   float pilotR = 0, pilotSd = 0, pilotR2 = 0, pilotSd2 = 0;
   // ai: the frame as the ring held it, w x h bytes in rows of w, where its batch kept it (run's keep: Save replays)
@@ -155,6 +156,7 @@ struct InFlight {
   int nb = 0;
   uint32_t W = 0, H = 0;
   uint64_t cntOff = 0, resOff = 0, histOff = 0, backOff = 0, tsOff = 0, readBytes = 0;
+  uint64_t dumpBytes = 0;   // ai: LIZ_DUMP_S: the spectrum's bytes this batch copied out, 0 when not dumping
   uint32_t nq = 0;
   std::vector<std::string> stages;   // ai: profiled: the stage a timestamp pair each
   double submitted = 0, t0 = 0;
@@ -193,6 +195,11 @@ class FrontHalf {
   BufP weightsBuf, weightsBuf0;
   json twinForms;   // ai: the twins still to measure (null once measured)
   json twins;       // ai: the measurement
+  // ai: the LDPC kernel's form in use (gpu/back/tiers.mjs exportFor: 0 the rule's "ldpc" steps, 1 its "ldpcAlt"), the
+  // ai: two still to be timed on the first batch, and the timing
+  int ldpcForm = 0;
+  bool ldpcPending = false;
+  json ldpcTimes;
 
   int B = 0;        // ai: the lanes' size
   std::vector<std::unique_ptr<Lane>> lanes;
@@ -253,6 +260,7 @@ class FrontHalf {
   int takeSlot();   // ai: under ringMu: a free slot whose last copy is done, from the head on; -1 none
   void buildBack(int B);
   void measureTwins(Lane& ln, int nb);
+  void measureLdpc(Lane& ln, int nb);
   BatchOut finishBatch(std::unique_ptr<InFlight> f);
   uint64_t argsOffset(int s, const char* slot) const { return 4ull * (C.ARGS_WORDS * s + C.ARGS_SLOT.at(slot)); }
 };

@@ -1,7 +1,7 @@
 // ai: The GPU decoder (gpu/decoder.mjs FrontHalf) opened for the sender's format and fed from a frame queue, for the
 // ai: receiver's GPU worker (recv-gpu-worker.mjs). Throughput over latency: the decoder's ms a frame falls with the
-// ai: batch (17 ms alone, 9.5 at 7 on the S26 Ultra), so a batch waits to fill, and a stale frame is worth less than
-// ai: the next one, so whatever cannot be taken is dropped, never queued behind. Each frame goes onto the device the
+// ai: batch (17 ms alone, 9.5 at 7 on the S26 Ultra in Chrome, 2026-09-25), so a batch waits to fill, and a stale frame
+// ai: is worth less than the next one, so whatever cannot be taken is dropped, never queued behind. Each frame goes onto the device the
 // ai: moment it arrives (fh.enqueue: a slot on the decoder's ring) and its VideoFrame is closed in the same task, so
 // ai: a camera buffer is held only until its ingest executes on the device's in-order queue. A batch is cut from the
 // ai: ring, the oldest staged frames first, once it holds the batch size (fh.size) or the oldest has waited the
@@ -35,10 +35,10 @@ const RATE_MIN = 5;          // ai: fps the EMA never goes under: a longer gap i
 // ai: installed app rewrites to its files' hashed names (lizard-web/pwa/hash.mjs).
 const INSTALLED = { large: "gpu/cnn/weights.safetensors", small: CASCADE.weights };
 
-// ai: Why a spec is not the GPU decoder's to read, or null. It reads Lizard in the format (soft LDPC): any of the
+// ai: Why a spec is not the GPU decoder's to read, or null. It reads LIZARD in the format (soft LDPC): any of the
 // ai: rings, any of the picture sizes (gpu/tables.mjs PICTURES). A blind spec (sim/phy.mjs blindSpec) is the format by construction.
 export function unsupported(spec) {
-  if (spec?.phy !== "focus") return `${spec?.phy ?? "no"} code: the GPU decoder reads Lizard only`;
+  if (spec?.phy !== "focus") return `${spec?.phy ?? "no"} code: the GPU decoder reads LIZARD only`;
   if (spec.blind) return PICTURES.some((s) => s.n === spec.nmax) ? null : `picture sizes to ${spec.nmax}: none of ${PICTURES.map((s) => s.n).join(", ")}`;
   if (spec.grid) return "a split picture (grid) is not the format";
   if (spec.mode !== 1) return "RS blocks: the GPU back half is the soft LDPC only";
@@ -61,8 +61,8 @@ const weightsOf = (path) => {
 // ai: the decoder reads it blind all the same. restart: the batch size after a lost device (gpu/decoder.mjs create).
 // ai: Throws Unavailable when there is no adapter or it fails.
 // ai: prec ("int8", "f16" or "f32") and subgroups (false) override what the adapter offers: diagnostic switches for a
-// ai: device whose int8, f16 or subgroup arithmetic is suspect (recv.html menus); prec "int8" also names the int8
-// ai: form for a test. With no prec the decoder is built at the first precision of precisionChain(adapter)
+// ai: device whose int8, f16 or subgroup arithmetic is suspect (the receiver's ?gprec= and ?gsg=off); prec "int8" also
+// ai: names the int8 form for a test. With no prec the decoder is built at the first precision of precisionChain(adapter)
 // ai: (gpu/decoder.mjs: int8 where the browser has the packed integer dot product, then f16 where shader-f16, then
 // ai: f32) that builds (receiverChain). An int8 build that fails is logged and the next
 // ai: precision tried on a new adapter (an adapter makes one device); a float build that fails is Unavailable.
@@ -70,7 +70,7 @@ const weightsOf = (path) => {
 // ai: 1).
 // ai: probe: the self-test's readback of every stage (gpu/probe.mjs, scripts/pages/gpu_selftest.mjs); the receiver never sets
 // ai: it. cancel: straddle cancellation as pass two of every batch, in the batch's own submit (gpu/back/cancel.mjs),
-// ai: off unless the receiver's "GPU cancellation" menu turns it on; the self-test's judged runs keep it off, since
+// ai: off unless the receiver's ?gcancel=on turns it on; the self-test's judged runs keep it off, since
 // ai: its reference predates pass two. nets: { large, small }, classifier files by path
 // ai: under liblizard/ in place of the installed ones (INSTALLED), as gpu/harness/page.mjs takes a job's; a q8 file
 // ai: (arch.quant) runs int8 at precision int8 and is refused at a float one. The GPU bench's arms name them

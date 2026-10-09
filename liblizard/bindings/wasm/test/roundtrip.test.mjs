@@ -1,4 +1,4 @@
-// ai: The wasm binding end to end (2026-10-03, the library's P3 check), node --test from bindings/wasm:
+// ai: The wasm binding end to end (2026-10-03), node --test from bindings/wasm:
 // ai:   1. the format arithmetic against the web sender's own (sim/lizard_pick.mjs), every row of the C test's table,
 // ai:      where liblizard/build.sh has built the codec's wasm (else skipped, saying so);
 // ai:   2. the test stream in every ring, one code and two (a 2:1 canvas read by its halves), every block back, none bad;

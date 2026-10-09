@@ -44,7 +44,7 @@
 #define XXH_INLINE_ALL
 #define ZSTD_LEGACY_SUPPORT 0
 #ifndef __EMSCRIPTEN__
-/* ZSTD_MULTITHREAD off: Lizard compresses a chunk at a time, in wasm with no threads */
+/* ZSTD_MULTITHREAD off: LIZARD compresses a chunk at a time, in wasm with no threads */
 #endif
 #define ZSTD_TRACE 0
 /* TODO: Can't amalgamate ASM function */

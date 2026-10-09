@@ -50,7 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 
 // ai: Receive (2026-10-01): the bar, fixed, and under it the camera's crop, the transfer's panel, then Settings and
-// ai: Advanced, rows that open (the camera still running, so Advanced's readouts can be watched while aiming), and
+// ai: Developer Tools, rows that open (the camera still running, so its readouts can be watched while aiming), and
 // ai: About; the words are Readout.kt's, the web receiver's. As the web page since 2026-10-02: landscape is a column on
 // ai: the left, the bar over the rest scrolling on its own and a hairline on its right, and the camera on the right, as
 // ai: big as the rest of the screen allows and centred there (the camera on the left before, 2026-10-01); portrait the
@@ -110,21 +110,26 @@ internal fun MainActivity.ReceiveScreen() {
 // ai: camera's pause or play (toggleCamera, as Start and Stop camera), the last second's rate while a file or the test
 // ai: stream is read (its figure over its unit, Readout.rate), and once the file is kept a green check in the rate's
 // ai: square (a mark, no action), then Open and Save, the panel's own actions, in the foreground's colour (2026-10-05;
-// ai: the green tick opened the file until then).
+// ai: the green tick opened the file until then). While the phone throttles (the heat warning's test, Parts.kt
+// ai: heatText), its red triangle above the play or pause, or in the green check's square once the file is kept
+// ai: (2026-10-08).
 @Composable
 private fun MainActivity.RailSquares() {
     val running = phase == Engine.Phase.On || phase == Engine.Phase.Starting || phase == Engine.Phase.Loading
-    Square {
-        IconBtn(if (running) R.drawable.ic_pause else R.drawable.ic_play, if (running) "Stop camera" else "Start camera",
-            enabled = granted && phase != Engine.Phase.Starting) { toggleCamera() }
-    }
     val testing = phase == Engine.Phase.On && rx.state == "test"
     val reading = phase == Engine.Phase.On && ((rx.hasFile && !rx.verified) || testing)
     // ai: the received file's squares give way to the test stream's rate while the camera reads it (2026-10-05)
     val kept = if (rx.verified && !testing) files.firstOrNull { it.root == root } else null
+    val hot = heatText(heat, clocks, engine.cameraSlow)
+    if (hot != null && kept == null) HeatSquare(hot)
+    Square {
+        IconBtn(if (running) R.drawable.ic_pause else R.drawable.ic_play, if (running) "Stop camera" else "Start camera",
+            enabled = granted && phase != Engine.Phase.Starting) { toggleCamera() }
+    }
     if (kept == null) RateSquare(if (reading) rx.goodputKBs else null)
     else {
-        Square { Icon(painterResource(R.drawable.ic_check), contentDescription = "Received ${kept.name}", Modifier.size(24.dp), tint = Good) }
+        if (hot != null) HeatSquare(hot)
+        else Square { Icon(painterResource(R.drawable.ic_check), contentDescription = "Received ${kept.name}", Modifier.size(24.dp), tint = Good) }
         Square { IconBtn(R.drawable.ic_open, "Open ${kept.name}") { open(kept) } }
         Square { IconBtn(R.drawable.ic_save, "Save ${kept.name}") { saveCopy(kept) } }
     }
@@ -132,7 +137,7 @@ private fun MainActivity.RailSquares() {
 
 // ai: The transfer: the state, the meter, the figures (progress, size, time left), then the actions: once the file is
 // ai: kept, Open (the solid one), Share and Save on one row, and Start or Stop (the camera's) alone under them, the
-// ai: full width (2026-10-07, "open | share | save, then start"; two rows of two for a day before that; "Start
+// ai: full width (2026-10-07; two rows of two for a day before that; "Start
 // ai: camera" and "Stop camera" until 2026-10-06, cut in a cell; 2026-10-05: "Save a copy" renamed, and Receive again
 // ai: deleted, a second Start camera). A label never folds or shortens (Parts.kt Btn): the column's floor is what
 // ai: three cells of the widest of those labels need (CellsFloor). Without the camera's permission, why and the one button that

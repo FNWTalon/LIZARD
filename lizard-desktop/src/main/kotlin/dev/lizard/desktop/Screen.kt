@@ -164,13 +164,13 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
 }
 
 // ai: Blocks a frame (send.html #blocks), 0 for auto: the slider's first step is auto (2026-10-05; an Auto chip over the
-// ai: title until then), its title "Auto, 60 blocks, 28.1 KB" once auto's pick in the area is known, every step right of
+// ai: title until then), its value "Auto, 60, 28.1 KB" once auto's pick in the area is known, every step right of
 // ai: it a count by hand, committed on release.
 @Composable
 private fun BlocksField(s: SendState) {
     val auto = s.blocks == 0
     // ai: the slider sets the format's size (its sub-channels / 8); the title is the blocks that size carries under the
-    // ai: format's rate profile, and their bytes (2026-10-07: 51 blocks at the slider's 54)
+    // ai: format's rate profile, and their bytes (2026-10-07; LIZARD-568, the slider's 71, carries 67)
     val v = if (auto) s.autoBlocks else s.blocks
     val b = if (v > 0) Native.blocksFor(8 * v) else 0
     Field("Blocks", if (auto) (if (b > 0) "Auto, ${Fmt.blocks(b)}" else "Auto") else Fmt.blocks(b)) {

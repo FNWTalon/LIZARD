@@ -1,17 +1,28 @@
 # The GPU back half: design (2026-09-24)
 
-Input: the n x n sampled picture the front half writes (F9, `wgsl/sample.mjs`), one a frame, B frames a batch.
-Output: CRC-verified blocks with their ids, and nothing else, read back once a batch. The reference for every rule
-is `src/focus.c` `focus_finish_bits` (lines 955 to 1226), `src/ldpc.c` `ldpc_decode_stall`, `src/layout.c` `ob_crc32`.
-The decoder is judged on blocks that pass their CRC-32 against the truth stream, on ms a frame at batch B on both
-GPUs, and on a negative control; never on parity with the C. Every table named below was verified today by calling
-the export from node (`init()` from `sim/ob.mjs`); the checks and their counts are in sections 8 and 9.
+Input: the n x n sampled picture the front half writes (F9, `wgsl/sample.mjs`), one a frame, B frames a batch; since
+the fused pass 1 (section 12), the frame itself through the front half's map.
+Output: CRC-verified blocks with their ids, and nothing else, read back once a batch (since 2026-09-30 also each
+block's pilot reading, since 2026-10-01 each frame's grid shift). The reference for every rule
+is `src/focus.c` `focus_finish_bits`, `src/ldpc.c` `ldpc_decode_stall`, `src/layout.c` `ob_crc32`.
+The decoder is judged on blocks that pass their CRC-32 against the truth stream, on ms a frame at batch B (the
+iGPU's; the 4090 counts blocks), and on a negative control; never on parity with the C. Every table named below
+was verified today by calling the export from node (`init()` from `sim/ob.mjs`); the checks and their counts are in
+sections 8 and 9.
 
-Formats in play: n / subch = 256/32, 512/128, 1024/560, 2048/1024 (the top of each picture size, `gpu/tables.mjs`)
-and the recorded runs' 256/16, 512/64, 1024/192, 1024/256, 1024/512. Every format is ONE LDPC code (rate 3/4:
-n 5088, k 3816, m 1272, z 106, 12 block rows of 15 data slots) and one block size, 473 payload bytes, the first 4
-the block id (LE). Blocks a frame = subch / 8. Tiers exist in the C (`focus_init_tiers`) and not in the format
-(`FOCUS_RATE`), so the design carries one code and one tier; every table is read per tier anyway.
+Formats in play when this was written (2026-09-24): n / subch = 256/32, 512/128, 1024/560, 2048/1024 (the top of
+each picture size then) and the recorded runs' 256/16, 512/64, 1024/192, 1024/256, 1024/512; the tables, sizes and
+measurements of sections 1 to 12 are those formats' at one code rate, on recordings of the border before 2026-09-27
+unless they are v0.3's. Since 2026-09-27 the pictures are 256, 384, 512, 768, 1024 and 1536 (`sim/lizard_pick.mjs`
+`PICTURE_SIZES`; tops 32, 80, 136, 320, 568 and 1024 sub-channels), and 2048 is none. Every format then was ONE LDPC
+code (rate 3/4: n 5088, k 3816, m 1272, z 106, 12 block rows of 15 data slots) and one block size, 473 payload
+bytes, the first 4 the block id (LE), subch / 8 blocks a frame. Since 2026-10-07 the code rate follows the frequency
+(`src/focus.h` `focus_tiers_for`): from the lowest frequencies out, 7/8 on 7 sub-channels a block (n 4464, z 93),
+3/4 on 8, 2/3 on 9 (n 5760, z 120; since 2026-10-08) and 1/2 on 12 (n 7680, z 160), every block 473 bytes. Pass
+one's soft values and LDPC are the rule stage since (`back/tiers.mjs`, `wgsl/back_tiers.mjs`): a frame's profile is
+a row of its table by the frame's version, and the arithmetic of sections 1 and 4 to 7 runs a code at a time, each
+code with its own block rows and its own learned stop. The one-rate soft and LDPC stages below are still built, for
+their buffers and pass two.
 
 ## 1. Stages, in order, and the arithmetic each reproduces
 
@@ -35,7 +46,7 @@ recorded frames, past f16's 65504); every constant of the detrend is divided the
   only (section 3). The detrend goes in the epilogue, in f32, in the C's units T = n^2 S before the store: for every
   (u, v): T -= pxy X1[u] X1[v]; on v = 0: T(u, 0) -= n (px X1[u] + pxx X2[u]); on u = 0: T(0, v) -= n (py X1[v] +
   pyy X2[v]). X1, X2 are the DFTs of cx and qx (`focus_tables`, complex, index (u + n) mod n). T(0, 0) carries
-  nothing and is not stored. This is the C's spectral subtraction (focus.c lines 1001 to 1010) to the letter; a
+  nothing and is not stored. This is the C's spectral subtraction (focus.c `focus_finish_bits`) to the letter; a
   spatial subtraction of the same surface before A1 is identical by linearity, and it is the option only if a
   pass over the picture ahead of A1 ever becomes free (it costs the picture's bytes again, and it breaks the
   fused sampler, which has no picture to pre-pass).
@@ -52,16 +63,21 @@ recorded frames, past f16's 65504); every constant of the detrend is divided the
   white[5120 b + inv[j]] = 1. perm[i] = i P mod 5088 with P = 1943 (`perm_fill`, LINEAR), inv = perm^-1; white =
   PRBS-23, x^23 + x^18 + 1 from the all-ones state, one bit a slot of the frame in pos order (`whiten_fill`). Bit
   map 0 (every recording before 2026-09-23, `recordedSpec`): inv is the identity and nothing is flipped. Slots 5088
-  to 5119 of a block carry whitened zeros and are not read. k = 3816 = 473 * 8 + 32 exactly, so the C's "known
-  zeros past the payload" loop (focus.c line 1110) is empty at this rate.
+  to 5119 of a block carried whitened zeros and were not read; since 2026-09-30 they carry the pilots (the
+  whitening XOR a bit of the painted picture's count, SPEC 7.3), which the soft stage reads and, since 2026-10-01,
+  fits the grid's shift from (16 such slots at 7/8, none at 2/3 and 1/2, whose codewords fill their blocks).
+  k = 3816 = 473 * 8 + 32 exactly, so the C's "known zeros past the payload" loop (focus.c `focus_finish_bits`)
+  is empty at this rate; the 7/8, 2/3 and 1/2 codes' k (3906, 3840, 3840) is roomier, and their bits past 3816 go in
+  as known zeros at 127, as the C's do.
 - **C LDPC**: normalised min-sum, layered by block row, norm 13/16, posteriors clamped to +-8191, messages to
   +-127, cap 30 iterations, sweep direction alternating each iteration, the stall rule (violated checks after
   iteration 9 above 0.95 of the count after iteration 1 gives up, `FOCUS_STALL_IT`, `FOCUS_STALL_RATIO`), exit on a
   clear syndrome. Integer arithmetic, kept integer: the norm and caps were set on 78 000 blocks
-  (`test/ldpc_ablate.c`, focus.c line 1097) and mean what they were measured to mean only in integers. Given
-  equal LLRs the decisions and the iteration count equal the C's bit for bit under the stop rule `"c"`; the first
-  read's default since 2026-09-28 is the learned rule (section 6; the funnel from 2026-09-24), which gives up on a
-  failing codeword by a small net's reading and verifies the same codewords but for its budget of 1 in 1,000.
+  (`test/ldpc_ablate.c`, focus.c `focus_finish_bits`) and mean what they were measured to mean only in integers.
+  Given equal LLRs the decisions and the iteration count equal the C's bit for bit under the stop rule `"c"`; the
+  first read's default since 2026-09-28 is the learned rule (section 6; the funnel from 2026-09-24; each code of the
+  rate profile its own net since 2026-10-07), which gives up on a failing codeword by a small net's reading and
+  verifies the same codewords but for its budget of 1 in 1,000.
 - **C CRC-32 and compaction**: the 473 payload bytes are systematic bits 0..3783, MSB first in each byte; the CRC
   is bits 3784..3815 MSB first; `ob_crc32` is the reflected polynomial 0xEDB88320, init and final xor 0xFFFFFFFF.
   Equal means verified; a verified block claims a record slot and is written; nothing else leaves the device.
@@ -83,7 +99,7 @@ the batch's held word names, else y 0. A frame is sampled and listed when y >= 2
 | name | writer -> reader | element and order | 256/32 | 512/128 | 1024/560 | 2048/1024 |
 |---|---|---|---|---|---|---|
 | P | F9 -> A1 (not made with the fused pass 1, section 12) | f32 at f * gridStride, strip order: (x div 64) n 64 + y 64 + x mod 64, 0..1 | 256 KB | 1 MB | 4 MB | 16 MB |
-| LISTS, ARGS | gate -> all | u32 [SLOTS sizes][1 + B] (SLOTS = 6 since 2026-09-27, `wgsl/common.mjs`): count, then frame indices, then each frame's (w, h) and each frame's block count (2026-09-26: the version F8 read in sel.y = 1 + v (or the held one, 2026-09-27), up to the size's blocks, else the size's; soft and LDPC run a frame's first count blocks), then each frame's row count (2026-09-26, `listsRows`: the disc rows that count takes, section 3 "Rows a frame"); u32 [SLOTS][12] indirect args, (x, y, z) for pass 1, reduce, pass 2 (the most rows a listed frame of the size takes) and the blocks slot (blocks, 1, count) | 376 B + 288 B at B = 8 (`listsWords`, `argsWords`) | | | |
+| LISTS, ARGS | gate -> all | u32 [SLOTS sizes][1 + B] (SLOTS = 6 since 2026-09-27, `wgsl/common.mjs`): count, then frame indices, then each frame's (w, h) and each frame's block count (2026-09-26: the version F8 read in sel.y = 1 + v (or the held one, 2026-09-27), up to the size's blocks, which are 8-sub-channel chunks; a frame with neither is not listed since 2026-09-27, the size's count before; soft and LDPC ran a frame's first count blocks, and the rule stage, since 2026-10-07, the profile of that version), then each frame's row count (2026-09-26, `listsRows`: the disc rows that count takes, section 3 "Rows a frame"); u32 [SLOTS][12] indirect args, (x, y, z) for pass 1, reduce, pass 2 (the most rows a listed frame of the size takes) and the blocks slot (blocks, 1, count) | 376 B + 288 B at B = 8 (`listsWords`, `argsWords`) | | | |
 | PART | A1 -> reduce, A2 | f32 [n][4] a column: (sum z, sum z cx[y], sum z qx[y], the column mean); the mean is what was Y0 (folded into w on 2026-09-25, section 13: the binding it held goes to the cancel variant's REF) | 4 KB | 8 KB | 16 KB | 32 KB |
 | COEF | reduce -> A2 | f32 [8]: px, py, pxy, pxx, pyy, 0, 0, 0 | 32 B | | | |
 | Y | A1 -> A2 | complex, v major: (v, x) at (v - 1) n + x, 1 <= v < V; f16x2 (f32x2 on the 4090); V rows of room a frame (2026-09-25: the cancel stage's inverse rows fill a frame's slot with a whole disc, rows 0 to V - 1, section 13) | 82 KB | 330 KB | 1.38 MB | 3.74 MB |
@@ -140,22 +156,24 @@ n <= 1024 and 2 at 2048; the sampler fusion removes the sector waste entirely. P
 in runs of 4 (the L2 merges neighbouring workgroups' partial lines). Pass 2 reads a row of Y contiguous (the
 v = 0 row from Y0 as f32) and writes its compact disc row. Twiddles: a quarter-wave table (n / 4 complex f32) in
 a storage buffer read once a butterfly; the 2026-09-22 port found a table slower, but that transform was
-storage bound; measure both. Four pipelines a pass (one per n), dispatched indirectly from ARGS over LISTS; a
-workgroup for a frame of another size returns before its first barrier.
+storage bound; measure both. A pipeline a pass for each n (four then, six since 2026-09-27), dispatched indirectly
+from ARGS over LISTS; a workgroup for a frame of another size returns before its first barrier.
 
 Rows a frame (2026-09-26). Every size is built at its top (`gpu/tables.mjs` CURRENT) and a frame decodes the
 version its word names, a prefix of the top's coefficients, so it needs only the rows its blocks' coefficients
 reach. `transform.mjs rowsByCount` gives rowsBy[c], the rows the first c blocks take (block b is pos[2560 b ..
-2560 b + 2559], sub-channels 8b to 8b + 7), from the top's own pos table; `scripts/gpu/back/check_rows.mjs` holds every version
-of every size to its own disc's V (128 of 128: 256 41 to 81, 512 91 to 167, 1024 172 to 341, 2048 343 to 457). The
+2560 b + 2559], sub-channels 8b to 8b + 7: an 8-sub-channel chunk, the version's unit, whatever the rate profile's
+blocks span), from the top's own pos table; `scripts/gpu/back/check_rows.mjs` holds every version
+of every size to its own disc's V (128 of 128 over the six sizes, 2026-09-27). The
 gate's uniform carries it as rows[c][size]; the gate writes each frame's rows beside its block count in LISTS
 (`listsRows`), pass 1 stores Y rows 1 to rows - 1 (the FFT itself is unchanged: every column still runs whole), pass 2
 returns on a row past the frame's before its first barrier (LISTS is read-only there, so the branch is uniform) and
 its indirect dispatch takes the most rows any listed frame of the size needs. S past a frame's rows is left stale:
 the soft stage reads only its first count blocks' coefficients, all inside them. gate2 copies the rows into LISTS2
 and sizes pass 2b the same way. The rule since 2026-09-26 (every frame decodes on its own, no memory across
-frames or batches) makes the word the only source: a frame whose word is not read runs its size's top, rows and
-blocks, so the recordings older than 2026-09-24's word (every timing run of the protocol) keep the top's cost.
+frames or batches) makes the word the only source: a frame whose word is not read decodes at the batch's held word,
+or, with none held, is not listed (since 2026-09-27; until then it ran its size's top rows and blocks, which kept
+the recordings older than the word, every timing run of the protocol, at the top's cost).
 irows and ipic (the cancel stage's paint) still run the size's V: a reference's rows past its version are zero.
 
 Precision: f16 for Y, S and the workgroup-memory exchange where `shader-f16` exists (the iGPU, phones), f32 on
@@ -193,8 +211,9 @@ sees a slot again. Bit map 0: MAP[b][j] = j. L stays in the C's slot order so B 
 ## 5. The decline gate
 
 BLK.declined a block from blk_est < 0.15. C's workgroup for a declined block writes verdict 2, ITS -2, and returns
-before touching L: a workgroup with no work, which the shape rules allow. The gate and the stall rule are the two
-thresholds this decoder keeps from the C. They are format decoder rules measured on 78 000 blocks, and on the
+before touching L: a workgroup with no work, which the shape rules allow. The gate and the stall rule were the two
+thresholds this decoder kept from the C (the stall rule left the first read for the learned stop on 2026-09-28,
+section 6). They are format decoder rules measured on 78 000 blocks, and on the
 hard runs the iterations they save are the LDPC's largest cost: on 02-36-59 (60 frames, 1920 blocks) the C
 stalls 1076 blocks at 9 iterations, runs 716 to the cap and verifies 128 at 1.1 mean; on 21-34-51 (3840 blocks)
 758 stall, 798 cap, 2283 verify at 3.2 mean, 1 declines. That is 520 and 630 full iterations a frame.
@@ -207,7 +226,7 @@ H is never stored. The device holds the block row tables from `focus_ldpc_tables
 k + 12 i + r, and the previous check's k + 12 i + r - 1; for r = 0 the previous is (11, i - 1), and at i = 0 it is
 absent (the C models it as a certain zero, posterior 8191, message re-zeroed every layer, and never scatters it
 back; skipping the slot is the same arithmetic). A JS encoder built from exactly these tables reproduces what
-the C paints on every slot (section 9), so the H the implementer reconstructs is the C's.
+the C paints on every slot (section 9), so the H rebuilt from these tables is the C's.
 
 One workgroup a codeword, 128 threads, lane i < 106 is check position i. Workgroup memory: L as i32 [5088],
 20352 B, data in code order, parity transposed as the C keeps it, Lp[r * 106 + i] = bit k + 12 i + r, so a slot's
@@ -252,14 +271,18 @@ CRC passes, so no rule makes a wrong block verify, and what a rule costs is the 
   `stop/rule.mjs` `netWords`, each layer input-major so the lanes read consecutive words) sit in MAP behind the bit
   maps, so the stage keeps its 8 storage buffers; 536 B more workgroup memory (i16: 21,384 B). The flags variants are
   refused with it (the rule reads the exact count after every iteration). The net, its trainer and its file are
-  `stop/` (`scripts/gpu/back/stop/README.md`).
+  `stop/` (`scripts/gpu/back/stop/README.md`). Each code of the rate profile has its own net, trained the same way
+  on that code's neutral channel to its plateau (`stop/stop_78.safetensors`, `stop_23.safetensors` and
+  `stop_12.safetensors` beside the 3/4 code's `stop.safetensors`, picked by the code's checks, `stop/rule.mjs`
+  `ruleUrlFor`; since 2026-10-07, the 2/3 code's since 2026-10-08), their words one after another in the rule stage's
+  table (`back/tiers.mjs` `ruleContents`); the 1/2 code's kernel with its net needs 31,748 B of workgroup memory.
 - `"c"`, the C's rule: the stall test after iteration 9 and the cap of 30. The check that the kernel's min-sum is the
   C's: under it `test_ldpc` holds the GPU to `ref_ldpc.mjs` and that to the C (`rxLdpc`) on every block. Its shader is
   the one before 2026-09-24, byte for byte, in all six variants.
 - Pass two keeps its own rule, `"funnel2"` (13.6): the stall test and six checkpoints, out of this change's scope.
 
-The learned rule. The question: given what lane 0 can hold after an iteration, is the codeword hopeless? It is
-answered on neutral codewords only (`scripts/gpu/back/stop/neutral.py`: the format's code through a generic channel and the soft
+The learned rule, as set for the 3/4 code. The question: given what lane 0 can hold after an iteration, is the
+codeword hopeless? It is answered on neutral codewords only (`scripts/gpu/back/stop/neutral.py`: the format's code through a generic channel and the soft
 stage's own demapper, channel information half near the decoding threshold and half from hopeless to clean, uneven
 and dead sub-channels, fades the soft stage cannot see apart, gain and erasures; no recorded run informs a range):
 524,288 codewords to train, as many to set the threshold (val) and as many held out (test), each traced through an
@@ -432,9 +455,9 @@ configuration at a time. Verified today at every format above (shapes printed fr
 | n, bw, vblocks, subch, blocks, npos | `M._focus_shape(p)`, `Focus.shape()` | 6 i32 |
 | pos, decoded to (u, v) | `M._focus_pos_ptr()`, `Focus.posTable()`; v = (p div (n bw)) bw + (p mod (n bw)) mod bw, uw = (p mod (n bw)) div bw, u = uw < n / 2 ? uw : uw - n | subch * 320 u32; entry 0 is (1, 0) |
 | cx, qx, X1, X2, sx2, sq2 | `M._focus_tables_out(p)`, `Focus.tables()` | 6 n + 2 f32 (1538, 3074, 6146, 12290) |
-| block first sub-channel, count | `M._focus_block_subs(pFirst, pCount)`, `Focus.ldpcCode().first, .count` | blocks i32 each; first = 8 b, count 8 |
-| block tier | `M._focus_block_tiers(p)` | blocks i32, all 0 |
-| LDPC dims and schedule | `M._focus_ldpc_tables(tier, pDims, pLay)` (pLay = 0 sizes it), `Focus.ldpcCode().code` | dims: n 5088, k 3816, m 1272, z 106, zp 112, mb 12, kb 36, norm 13, slotsMax 17, slotsTotal 204, slots 180; lay 373 i32 |
+| block first sub-channel, count | `M._focus_block_subs(pFirst, pCount)`, `Focus.ldpcCode().first, .count` | blocks i32 each; first = 8 b, count 8 (at one rate; under the rate profile each block's own first sub-channel and its code's 7, 8, 9 or 12) |
+| block tier | `M._focus_block_tiers(p)` | blocks i32, all 0 (at one rate; each block's tier under the rate profile) |
+| LDPC dims and schedule | `M._focus_ldpc_tables(tier, pDims, pLay)` (pLay = 0 sizes it), `Focus.ldpcCode().code` (tier 0: the profile's innermost code since 2026-10-07) | dims at 3/4: n 5088, k 3816, m 1272, z 106, zp 112, mb 12, kb 36, norm 13, slotsMax 17, slotsTotal 204, slots 180; lay 373 i32 |
 | block bytes | the return of `M._focus_setup(...)`, `Focus.blockBytes` | 473 |
 | bit map mode | `M._focus_bitmap_get()` | 3; 0 for a replay of a recording without `bitmap` (`recordedSpec`) |
 | perm, inv, white, MAP | not exported; regenerated in JS from section 1 (`bitmap.mjs`) and verified against what the C paints (section 9). C to add: `int focus_bitmap_tables_out(int tier, uint8_t *white, int32_t *perm)` in src/wasm.c copying `F.ws->white` (subch * 640 B) and `F.ws->perm[tier]` (`code[tier].n` i32) | perm 5088; white subch * 640 |
@@ -493,9 +516,9 @@ slot order, est and declined; equal to the C's own by construction (double, the 
   encoded, `sent()` gives the exact symbols, Gaussian noise added in JS at five levels, LLRs from the reference,
   blocks decoded by `rxLdpc` and by the GPU at each level.
 
-## 10. Three implementers
+## 10. Three stages: files and acceptance
 
-Files: host `gpu/back/<stage>.mjs`, shaders `gpu/wgsl/back_<stage>.mjs`, test `gpu/back/test_<stage>.mjs`. Each
+Files: host `gpu/back/<stage>.mjs`, shaders `gpu/wgsl/back_<stage>.mjs`, test `scripts/gpu/back/test_<stage>.mjs`. Each
 host module has `build(device, { B, sizes, tables })` creating its outputs and pipelines and `encode(enc, lane)`
 recording its passes; the next stage binds the previous one's buffers by the names in section 2. Bind group
 layouts explicit; every function scope `var` initialised; no `pass`, `meta`, `ref`, `shared`, `out` as names;
@@ -537,7 +560,7 @@ only; the product reads back REC, V, ITS and BCOUNTS and nothing else.
 Nothing above was found wrong against the C; these are the details B and C bind to, from `gpu/back/transform.mjs`.
 
 - `Transform.build(device, { B, tables, precision, cpw, tw })` with `tables = await transformTables(sizes)`, sizes in
-  ascending n (up to 4; a size's index is its position, and `sel[f].z` indexes it). `t.lane({ gridBuf, gridStride,
+  ascending n (up to 4 then, `SLOTS` = 6 since 2026-09-27; a size's index is its position, and `sel[f].z` indexes it). `t.lane({ gridBuf, gridStride,
   framesBuf, selBuf })` returns the lane; `t.encode(enc, lane, { ts })` records gate, pass 1, reduce, pass 2 as
   four compute passes (a timestamp pair each when `ts = { qs, base }` is given).
 - Per frame strides are the largest size's in the build: `t.sStride` (S entries), `t.yStride` (Y entries, V n
@@ -550,7 +573,8 @@ Nothing above was found wrong against the C; these are the details B and C bind 
   reduce, pass 2, then since the composition B's blocks slot (blocks, 1, count)) with usage INDIRECT, entry k of
   size s at byte offset 4 (12 s + 3 k) (`ARGS_SLOT`, `argsOffset`); a later stage that dispatches one workgroup a
   frame of size s can reuse the reduce entry, (1, 1, count). The gate lists a frame only when frames[f].valid and
-  sel[f].y >= 2 and sel[f].z names a built size below 4; it used to fold an index of 4 or more into size 3.
+  sel[f].y >= 2 and sel[f].z names a built size below `SLOTS` (4 then); it used to fold an index of 4 or more into
+  size 3.
 - `lane.coefBuf`: f32 [B][8] = (px, py, pxy, pxx, pyy, 0, 0, 0). `lane.countsBuf`: u32 [B][8], cleared by
   `encode` (or, built with `zero`, by the gate, which also zeroes C's V, ITS and REC count: the composed chain),
   columns 0 to 2 written by A (columns transformed = n, rows transformed = V, entries stored = npos); B and C take
@@ -567,7 +591,8 @@ Nothing above was found wrong against the C; these are the details B and C bind 
   sincos (1.28, and -118 dB on the 4090 against the chain's -129); the cost was the number of cache lines a wave's
   load touches, not what it fetches. Workgroup memory: two exchange buffers plus 48 B a thread of partials, 14 KB
   at 1024 f16, 28 KB at 2048 f16 (phones), 45 KB at 2048 f32 (the 4090's 48 KB only; SwiftShader's 32 KB cannot
-  build it, so the test simulates 2048 on real adapters only).
+  build it, so the test simulates 2048 on real adapters only). At 1536, the largest picture since 2026-09-27,
+  21,504 B in f16 and 33,792 B in f32, which SwiftShader's 32 KB cannot build either.
 - Measured (`scripts/gpu/back/test_transform.mjs`, 16 frames a run registered by the C's own sampler, B = 8, 5 submits a batch,
   the median; blocks = the disc through the soft-value reference and the C's LDPC, the C's own count beside):
 
@@ -576,10 +601,9 @@ Nothing above was found wrong against the C; these are the details B and C bind 
   | iGPU f16, ms a frame (gate + pass 1 + reduce + pass 2) | 0.60 (0.001, 0.538, 0.001, 0.060) | 0.85 (0.001, 0.762, 0.001, 0.090) | 0.075 | 3.64 at B = 2 (3.37 pass 1) |
   | iGPU f16, S vs f64 dB (worst frame) | -60.0 (-58.1) | -59.4 (-58.4) | -63.2 (-61.6) | -59.9 (-55.9) |
   | iGPU f16, blocks GPU / C, bad | 390 / 389, 0 | 568 / 568, 0 | 32 / 32, 0 | 256 / 256, 0 |
-  | 4090 f32, ms a frame | 0.014 (0.001, 0.009, 0.002, 0.003) | 0.014 | 0.006 | 0.051 at B = 8 |
   | 4090 f32, S vs f64 dB | -129.5 | -129.0 | -131.9 | -128.7 (1024 / 1024 blocks) |
   | iGPU f32, ms a frame | 0.96 | | 0.088 | |
-  | budget (section 10) | 1.5 / 0.10 | 2.5 / 0.15 | | 6 / 0.4 |
+  | iGPU budget (section 10) | 1.5 | 2.5 | | 6 |
 
   The C's f32 spectrum sits -129 to -133 dB from the same f64 reference, so the f32 GPU is the C's equal and f16
   is 70 dB under the strongest ring. Counters exact on every frame. Pass 1 is still 90% of the iGPU's time; its
@@ -630,8 +654,8 @@ differs from the text, and the interfaces C and the composition bind to (`gpu/ba
   the C, the rest off by one, 0 by more, sign 100.0000%, rho 0.999999, 288 / 288 and 569 / 568 blocks, 0 bad. At
   T / n (S kept out of f16's subnormals) the slots that cross zero against the C fall from 41 and 100 to 1 and 4
   of 1.3 M and 2.6 M, blocks the same: one constant at A's pass 2 store if it is ever wanted. GPU ms a frame, one
-  compute pass, timestamps, median of 10 repeats: 4090 f32 0.002 at 1024/256, 0.003 to 0.009 at 1024/512; iGPU
-  f32 0.06 / 0.13, f16 0.05 / 0.11 (the budget was 0.3 at 1024/512). Indirect dispatch from an ARGS slot changes
+  compute pass, timestamps, median of 10 repeats: iGPU f32 0.06 / 0.13 at 1024/256 / 1024/512, f16 0.05 / 0.11
+  (the budget was 0.3 at 1024/512). Indirect dispatch from an ARGS slot changes
   none of these by more than 3%, so the direct dispatch stays. FULL (all 600 frames of each, iGPU, T / n^2): f32
   12872 / 12872 and 25690 / 25690 blocks from the C's S (12872 and 25689 from the f64 reference's); f16 12871 /
   12872 and 25689 / 25690 (12871 and 25693 from the reference's); 84 of the 197 M slots of 21-34 off by more than
@@ -659,7 +683,9 @@ text, and the interfaces the composition binds to (`gpu/back/ldpc.mjs`):
   `rxAssemble`. Cap = B x blocksMax records; the count is claimed by one `atomicAdd` a verified block.
 - **One dispatch, direct**: (blocksMax, B, 4), workgroup (x, y, s) block x of frame LISTS[s][1 + y]; a workgroup
   past its size's block count or frame count returns before its first barrier (LISTS and BLK are read-only
-  storage, which the uniformity analysis accepts as uniform at a uniform index). No ARGS slot is read.
+  storage, which the uniformity analysis accepts as uniform at a uniform index). No ARGS slot is read. (From
+  2026-09-28 the decoder's pass one dispatched it from the gate's ARGS words, `argsLdpc`, over `SLOTS` sizes; since
+  2026-10-07 the rule stage's LDPC runs pass one, a dispatch a code.)
 - **MAP** is built by the stage (`bitmap.mjs mapTable`) once a bit map MODE in play, with the largest block count
   that mode serves: block b's row is the same in every format (the whitening runs over the frame's slots in pos
   order, block b at 5120 b). u16 pairs packed in u32; a size's (blocks, MAP offset) rides in the params uniform.
@@ -708,14 +734,14 @@ goes: 2300 to 7500 iterations a batch of 8.
 Time, GPU timestamps a batch of 8 (median of 10 timed passes after 2 warm passes), ms a frame, on 02-36 /
 12-00 / 21-34 (16 frames each), and the us a codeword-iteration the sweep settles at:
 
-| variant | iGPU (RDNA-2, 2 CUs) ms a frame | us an iteration | 4090 ms a frame | 4090 ms a batch |
-|---|---|---|---|---|
-| base | 11.0 / 7.0 / 13.0 | 21 | 0.26 / 0.27 / 0.26 | 2.04 / 2.16 / 2.07 |
-| hoist | 7.2 / 4.6 / 9.4 | 14.1 | 0.16 / 0.16 / 0.16 | 1.28 / 1.28 / 1.28 |
-| reg | 7.2 / 4.6 / 9.3 | 13.7 | 0.25 / 0.16 / 0.16 | 2.01 (min 1.13) / 1.28 / 1.28 |
-| i16 (default) | 6.3 / 4.0 / 8.2 (7.5 over all 56) | 12.1 | 0.22 / 0.22 / 0.26 | 1.79 / 1.79 / 2.08 |
-| flags | 5.6 / 3.6 / 7.5 | 11.0 | 0.23 / 0.12 / 0.12 | 1.84 / 0.97 / 0.97 |
-| i16flags | 4.6 / 3.0 / 6.2 | 9.0 | 0.43 (min 0.24) / 0.17 / 0.20 | 3.44 / 1.39 / 1.62 |
+| variant | iGPU (RDNA-2, 2 CUs) ms a frame | us an iteration |
+|---|---|---|
+| base | 11.0 / 7.0 / 13.0 | 21 |
+| hoist | 7.2 / 4.6 / 9.4 | 14.1 |
+| reg | 7.2 / 4.6 / 9.3 | 13.7 |
+| i16 (default) | 6.3 / 4.0 / 8.2 (7.5 over all 56) | 12.1 |
+| flags | 5.6 / 3.6 / 7.5 | 11.0 |
+| i16flags | 4.6 / 3.0 / 6.2 | 9.0 |
 
 Scaling with codewords in flight. iGPU, i16, 02-36: 32 codewords 6.97 ms (477 iterations, 14.6 us each), 64
 6.99 (13.6), 128 20.4 (12.6), 256 50.8 (12.1); 21-34 at B = 32, i16: 16 frames in flight (1024 codewords, 10 442
@@ -723,17 +749,11 @@ iterations) 7.87 ms a frame, 12.1 us an iteration, and 32 in flight (2048 codewo
 equal to the C's (`IGPU=1 B=32 RUNS=21-34:32 VARIANT=i16 REPEATS=3`). The 13.7 ms a frame this line gave before was that point measured
 with VARIANT=base (21 us an iteration), not i16. Time is proportional to iterations run from 64 codewords up: nothing is left to hide, the WGP is
 instruction bound (six resident codewords in place of four, i16 against reg, bought 1.13x; the flag gate,
-which removes a third of the reads and the index arithmetic, 1.27x). 4090, base, 21-34: 64 / 128 / 256 / 512
-codewords 2.06 / 2.06 / 2.07 / 2.07 ms a batch, 1024 2.86, 2048 4.78: flat to about a thousand codewords, a
-latency floor of about 5 us a row step (3.3 under reg), so a bigger batch is free there. Budgets: the 4090 is
-under its 0.3 ms a frame with every variant; the iGPU misses 3 ms on 02-36 and 1.5 on 12-00 by 2.1x and 2.7x
-with the default, 1.5x and 2x with i16flags, and sits beside this desktop's wasm (4.13 / 5.43 ms on 02-36 /
-21-34). Caveats: the 4090's LDPC times are bimodal between runs of the same test on the same batch, by 5x to 12x:
-i16 at 12-00 read 9.86 ms a batch in one run and 1.79 in two others, 02-36 21.0 against 1.77 to 2.21. Read every
-4090 time in this section as approximate and the minimum beside the median. What is known: the 4090 idles at 210
-MHz between the test's jobs (the wasm side takes about a second a batch) and a job of a few ms does not always
-raise it; section 11 gives the chain's times as the median and min over seven runs. The iGPU shares package power
-with a CPU other jobs were loading (load average 10 to 28 during these runs); an iGPU submit of about 2 s or
+which removes a third of the reads and the index arithmetic, 1.27x). Budgets: the iGPU misses 3 ms on 02-36 and
+1.5 on 12-00 by 2.1x and 2.7x with the default, 1.5x and 2x with i16flags, and sits beside this desktop's wasm
+(4.13 / 5.43 ms on 02-36 / 21-34). The 4090's times are not reported (its LDPC times were bimodal between runs of
+the same test on the same batch, by 5x to 12x; it idles at 210 MHz between the test's jobs). The iGPU shares
+package power with a CPU other jobs were loading (load average 10 to 28 during these runs); an iGPU submit of about 2 s or
 more (base at B = 32, 5 timed passes: 3 s) comes back empty with no error. Not built: the two codewords a workgroup variant, and R packed at 36 bits a check (9 words for
 8 checks), which with i16 posteriors would be 15.9 KB, two codewords in a 32 KB phone core.
 
@@ -751,24 +771,25 @@ const bh = await BackHalf.build(device, { B, sizes, precision, cap, variant, log
 const ln = bh.lane({ gridBuf, gridStride, framesBuf, selBuf });   // a front-half lane's own buffers
 bh.encode(enc, ln, { ts: { qs, base } });   // six compute passes, a timestamp pair each at qs[base + 2k]
 bh.encode(pass, ln);                        // or the six dispatches appended to a pass the caller holds open
-const used = bh.readback(enc, ln, readBuf, off);   // REC, V, ITS, BCOUNTS copied to readBuf at off; used = bh.readBytes
+const used = bh.readback(enc, ln, readBuf, off);   // REC, V, ITS, BCOUNTS (and PILOT since 2026-09-30) copied to readBuf at off; used = bh.readBytes
 const r = parseReadback(mappedArrayBuffer, off, bh.dims);
 //   r.records: [{ frame, block, its, id, payload (473 B, id first) }], the verified blocks only
 //   r.frames[f]: { verdict, its (blocksMax each), counts (COUNT: columns, rows, stored, tried, verified, records,
-//   subch, iterations) }
+//   subch, iterations), pilots (a block's pilot reading, 2026-09-30), shift (the grid's, 2026-10-01) }
 bh.destroyLane(ln);
 ```
 
-- `sizes`: the decoder's four, at the size index `sel[f].z`, each `{ n, subch, span, bitmap }` or null. If `bitmap`
+- `sizes`: the decoder's six (four until 2026-09-27), at the size index `sel[f].z`, each `{ n, subch, span, bitmap }` or null. If `bitmap`
   is left out, the format's own is used (3, `focus_setup`'s). A replay must pass `recordedSpec`'s value: 0 for a
   recording made before 2026-09-23. With the wrong bit map, every block fails its CRC and nothing else goes wrong.
 - Pass null for a size whose picture does not fit the lane's grid (n^2 > gridStride). The finder cannot pick such a
   size, and leaving it out sets blocksMax, and with it every stride and the readback, by the largest size that can
-  occur. With 2048/1024 built, blocksMax is 128. With 1024/560 as the largest, it is 70.
+  occur. With 2048/1024 built, blocksMax was 128; with 1024/560 as the largest, 70. With 1536/1024 built (the largest
+  since 2026-09-27) it is 128, in 8-sub-channel chunks (the rate profile's 121 blocks fit under it).
 - A size whose pass 1 needs more workgroup memory than the device offers is left unbuilt, and the build logs it
-  (2048 in f32 on SwiftShader's 32 KB). The gate leaves a frame off every list when:
+  (1536 in f32 on SwiftShader's 32 KB; 2048 before 2026-09-27). The gate leaves a frame off every list when:
   - its size is not built;
-  - its `sel[f].z` is 4 or more;
+  - its `sel[f].z` is `SLOTS` (6; 4 until 2026-09-27) or more;
   - its `sel[f].y` is under 2 (not found, or no version from its word or the held one);
   - its `frames[f].valid` is 0.
 - The host clears nothing. The gate zeroes BCOUNTS, V, ITS and REC's count at the head of the chain, so the chain can
@@ -780,8 +801,10 @@ bh.destroyLane(ln);
 - `precision: "f16"` keeps Y and S in f16 where the device has `shader-f16` and falls back to f32 with a log.
   `variant` is the LDPC row kernel, default `"i16"`. `cap` is the number of records a batch (default 0, meaning B x
   blocksMax). A verified block past the cap is still counted: BCOUNTS column 4 against column 5.
-- Device limits: workgroup memory at the adapter's maximum. The LDPC needs 20 848 B. Pass 1 needs 14 KB (f16) or
-  28 KB (f32) at 1024, and 28 KB or 45 KB at 2048. Each stage binds at most 8 storage buffers. `FrontHalf.create`
+- Device limits: workgroup memory at the adapter's maximum. The LDPC needs 20 848 B (21,384 B with the learned stop
+  since 2026-09-28; the rule stage's 1/2 code with its stop 31,748 B). Pass 1 needs 14 KB (f16) or 28 KB (f32) at
+  1024, and 28 KB or 45 KB at 2048 (21,504 B or 33,792 B at 1536, the largest since 2026-09-27). Each stage binds at
+  most 8 storage buffers. `FrontHalf.create`
   already asks for both limits and for `shader-f16`.
 
 ### A lane's buffers
@@ -815,7 +838,8 @@ The shared tables are built once, not per lane:
 
 ### What is read back
 
-`bh.readBytes` a batch = (4 + 484 recCap) + 2 (4 B blocksMax) + 32 B, rounded up to 8. REC goes over whole because
+`bh.readBytes` a batch = (4 + 484 recCap) + 2 (4 B blocksMax) + 32 B, rounded up to 8 (and PILOT's 4 B blocksMax +
+8 B a frame since the pilots, 2026-09-30 and 2026-10-01). REC goes over whole because
 its count exists only on the device. Reading count x 484 instead would take a second round trip.
 
 | build (B = 8) | bytes a batch | a frame |
@@ -825,7 +849,8 @@ its count exists only on the device. Reading count x 484 instead would take a se
 | 256/32 to 1024/512 | 252 168 (measured) | 30.8 KB |
 | 1024/256 alone | 126 216 (measured) | 15.4 KB |
 
-The front half reads back its grid today, 4 MB a frame at 1024. The chain makes that copy unnecessary.
+The front half read back its grid then, 4 MB a frame at 1024; the chain made that copy unnecessary, and the fused
+pass 1 (section 12) the grid itself.
 
 ### Acceptance
 
@@ -900,15 +925,6 @@ runs' medians, with the minimum over all submits in brackets.
 | 06-26-06, 256/16 | 0.025 | 0.005 | 0.005 | 0.079 | 0.13 (0.11) | 0.16 (0.11) | 0.11 |
 | simulated 2160, 2048/1024, B = 2 | 3.88 | 0.28 | 0.30 | 1.84 | 6.31 (6.05) | 6.42 (5.73) | 5.51 |
 
-| 4090, f32 (7 runs; busy on 3) | pass 1 | pass 2 | soft | LDPC | chain | one pass | busy |
-|---|---|---|---|---|---|---|---|
-| 12-00-29, 1024/256 | 0.010 | 0.004 | 0.002 | 0.223 (0.185) | 0.245 (0.209) | 0.242 (0.204) | 0.264 (0.213) |
-| 21-34-51, 1024/512 | 0.045 (0.012) | 0.019 (0.005) | 0.009 | 0.418 (0.218) | 0.526 (0.247) | 0.317 (0.255) | 0.301 (0.249) |
-| 20-04-09, 1024/256 | 0.010 | 0.004 | 0.002 | 0.185 (0.165) | 0.209 (0.190) | 0.205 (0.181) | 0.214 (0.186) |
-| 02-36-59, 1024/256 | 0.010 | 0.004 | 0.002 | 0.226 (0.206) | 0.249 (0.231) | 0.246 (0.212) | 0.344 (0.235) |
-| 06-26-06, 256/16 | 0.003 | 0.003 | 0.002 | 0.009 | 0.020 (0.019) | 0.018 (0.017) | 0.026 (0.020) |
-| simulated 2160, 2048/1024, B = 8 | 0.444 (0.043) | 0.167 (0.012) | 0.016 | 0.092 (0.033) | 0.730 (0.102) | 0.125 (0.105) | 0.126 (0.107) |
-
 On the iGPU:
 - The LDPC takes 81 to 89% of the chain at 1024, and pass 1 most of the rest.
 - At 2048 the transform takes 66%.
@@ -918,15 +934,8 @@ On the iGPU:
 - On 02-36 and 21-34 it is about 1.2 and 1.1 times the wasm back half on one desktop thread (5.6 and 7.3 ms, section
   10's figures, measured on 60 frames against these 16).
 
-On the 4090, 12-00, 20-04, 02-36 and 06-26 hold within 16% across runs. The other two do not:
-- 21-34 drifts down within each run, from 0.5 to 0.75 ms on the first submits to 0.25 to 0.35 on the last. A clock
-  rising under load would do this; the clock was not read.
-- The simulated 2048 sits in one of two states 6.5 times apart, 0.11 or 0.73 ms a frame. The state switches within a
-  run, and the one-pass and busy submits land in either. Most of the difference is in the transform: pass 1 is 0.048
-  against 0.44 and pass 2 is 0.013 against 0.17, while the LDPC moves only 2.4 times. The transform passes are
-  bandwidth bound and the LDPC is latency bound, so a memory clock left low would fit this, but that is not measured.
-- This is the same 5x to 12x swing the standalone LDPC showed (section C). Take the minimum as what the 4090 does
-  once it is busy. Either way, it finishes the back half of a 1024 frame in 0.2 to 0.5 ms.
+The 4090's times are not reported: they swung between runs (two states 6.5 times apart on the simulated 2048), as
+the standalone LDPC's did (section C).
 
 Section 10's "all" row is not measured here: all 19 runs behind the GPU front half, against the 92 247 blocks. It is
 the wiring's acceptance.
@@ -1046,7 +1055,8 @@ paints them, fits the mixture's two shares as planes over three bases each, subt
 Everything runs on the device on pass one's results, with no host round trip, inside the batch's own command buffer
 after pass one. From late 2026-09-25 to 2026-09-27
 it ran a batch later, in the next batch's command buffer (13.8, reverted). `encode` is pass one, `encodeCancel` pass
-two. This section is the format of the buffers and calls the groups code against, and what is built.
+two. This section is the format of the buffers and calls, and what was built. Since 2026-10-07 the stage does not
+build (`back.mjs` refuses `cancel`): its paint and gate2 are one rate, and the format's rate profile is not.
 
 ### 13.0 Pass one's changes (built, checked)
 - The column means ride in PART's w (pass 1 stores `vec4f(S1, SC, SQ, mean)`, pass 2's row v = 0 reads `part[..].w`):
@@ -1067,8 +1077,8 @@ two. This section is the format of the buffers and calls the groups code against
   paint's inverse transforms (the same kernels, conj in and conj out).
 
 ### 13.1 Buffers (in the BackHalf lane unless shared; `dims.mjs derived()` gives every stride)
-nmax the largest built n; cb 4 (f16x2) or 8 (f32x2); R = `refSlots` = min(floor(B / 2) + 1, 16), 4 with a 2048
-picture built; NONE = 0xffffffff.
+nmax the largest built n; cb 4 (f16x2) or 8 (f32x2); R = `refSlots` = min(floor(B / 2) + 1, 16), 4 with a picture
+past 1024 built (2048 then, 1536 since 2026-09-27); NONE = 0xffffffff.
 
 | name | writer -> reader | layout | bytes at 1024/560, B 32 |
 |---|---|---|---|
@@ -1097,7 +1107,7 @@ at B 32, 13.7); the carry 6.0 MB shared; Y grows 4 KB a frame (f16). At 2048/102
 the B 32 rate, so its Bmax under a tight budget is smaller than the lanes would need to be (B_CEIL, not memory,
 binds on the S26 and the 4090; on SwiftShader's 1 GiB the smoke planned lanes of 22).
 
-The paint (built, checked: group A, 2026-09-25). Shaders `wgsl/cancel_paint.mjs` (`paintSource({ prec, B, blocksMax,
+The paint (built and checked 2026-09-25). Shaders `wgsl/cancel_paint.mjs` (`paintSource({ prec, B, blocksMax,
 refSlots })`, `irowsSource({ n, ... })`, `ipicSource({ n, ... })`), host `back/paint.mjs` (`Paint.build(device, bh, {
 log })` after `BackHalf.build`: the pipelines, PERMW, the uniforms, and `bh.cancel.stages` paint, irows, ipic
 set; `lane(ln)` after `bh.lane`; `dispatch(p, ln, name)`), `bitmap.mjs permTable`. Every workgroup takes its slot's
@@ -1113,18 +1123,18 @@ serves every size from one pipeline, irows and ipic are built a size and return 
   (ldpc_encode's running acc), parity bit K + chk atomicOr'd in. Then coefficient c of the block (2560, 20 a lane):
   slots 2c and 2c + 1 through PERMW (one u32 holds the pair), the whitening in bit 15, a slot past the codeword
   (0x7fff) carrying the whitening alone (map_out); `S[r sStride + UV[uvOff + 2560 b + c]] = (+-a, +-a)`, a =
-  0.70710678, minus where the bit is 1 (focus_encode 616 to 620). Uniform: the LDPC's shape (sizes[s] = (blocks, UV
+  0.70710678, minus where the bit is 1 (`focus_encode`). Uniform: the LDPC's shape (sizes[s] = (blocks, UV
   entry offset, PERMW entry offset, 0), dims = (blocksMax, sStride, R, 0), lay, pw). Workgroup memory 1.7 KB.
 - IROWS, (V, 1, R) a size, n / 8 threads: register k of thread tid holds x = tid + k T (unrolled): the disc row's
   entry at u = x (x < n / 2) or u = x - n where the row (pass 2's `rows` uniform: off, count, nonnegative entries,
   umaxN) holds it, conjugated, else zero; the forward kernels (`firstStage`, `laterStages`, the chain twiddles); the
-  row stored conjugated in Y's slot at `r yStride + v n + x` (the C's fft_cols over the block array, focus.c 639).
+  row stored conjugated in Y's slot at `r yStride + v n + x` (the C's fft_cols over the block array, `focus_encode`).
 - IPIC, (n / 4, 1, R) a size, n / 8 threads, pass 1's two exchange buffers: columns (x0, x0 + 1) and (x0 + 2, x0 + 3)
   as two packed inverses, register k at m = tid + k T from turn_pack's rows: m = 0 gives 2 Re A(0) + 2i Re B(0), m < V
   gives A(m) + i B(m) = (ar - bi, ai + br), m > n - V gives conj A + i conj B = (ar + bi, br - ai), zero between
   (A = Y[m][xa], B = Y[m][xb]); conjugated in, the kernels, conjugated out: column a the real part, column b the
   imaginary; clip_row's 0.5 + clamp(v, -lim, lim) 0.5 / lim with lim = 2 clip sqrt(0.5 subch 320) at clip 2, tilt 0
-  (the uniform's f32, focus.c 646); the quad stored as one vec2u of pack2x16float pairs at `r picStride / 8 + (y n +
+  (the uniform's f32, `focus_encode`); the quad stored as one vec2u of pack2x16float pairs at `r picStride / 8 + (y n +
   x0) / 4`. The inverses are unscaled, as the encoder's.
 - Checked by `scripts/gpu/back/test_cancel_paint.mjs` through the test page's "paint" job (the stages the back half wired, on the
   "back" build with cancel): for 12-00 (1024/256 bit map 0), 21-34 (1024/512 bit map 3), 02-36 (1024/256 bit
@@ -1272,7 +1282,7 @@ header { 1, key, count, size }; nothing when no slot was painted.
   gain on a frame with cancelled set. Above the plan's +25% target, so its NREFS_MAX = 3 knob was not tried. The
   iGPU's ms: pass two about 8.3 ms a frame at 1080, the fit most of it.
 
-### 13.5 The bases, means, fit and solve (built, checked: group B, 2026-09-25)
+### 13.5 The bases, means, fit and solve (built and checked 2026-09-25)
 Shaders `wgsl/cancel_blur.mjs` (`blurSource({ n })`, `meansSource({ n })`) and `wgsl/cancel_fit.mjs` (`fitSource({ n,
 B, picture, grid })`, `solveSource({ B })`), host `back/fit.mjs` (`build(device, { B, tables, dims, grid, picUnis, log })`
 giving `lane(ln)`, `bindGrid(ln, gridBuf)`, `bindPicture(ln, { texView, mapsBuf, residBuf })`, `dispatch(p, ln, name,
@@ -1341,7 +1351,7 @@ no stage needs `shader-f16`.
   gave the same numbers to the digit (A within 2.1e-7, solve within 1.4e-5, planes 0.0037, zeros 0.0077) and the
   iGPU (f16 build) the same fit (A within 9.3e-8, solve within 1.1e-5, planes 0.0037, zeros 0.0076) with its bases
   within 4.88e-4 of the f64 blur, one f16 ulp below 1 rather than half: its pack2x16float does not round to
-  nearest; not re-run on the kept fit (the gates phase runs them).
+  nearest; not re-run on the kept fit.
 - Cost, from the shapes: a reference's blur is n^2 / 256 workgroups of 676 loads and 3 x 25 taps a sample; a frame's
   fit is 64 n samples and 189 x 64 n multiply-adds (256 n and 189 x 256 n as built). On the iGPU (f16, 1080,
   `PROFILE=1`, 13.4's runs) a batch's blur costs up to 2.06 ms a frame and bmeans 0.09, the fit as built 3.46 to

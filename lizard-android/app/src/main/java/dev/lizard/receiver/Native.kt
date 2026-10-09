@@ -24,10 +24,8 @@ object Native {
     // ai: then 8 doubles a frame captured after sinceMs, oldest first: ms on the camera's clock, verified blocks, new
     // ai: blocks, found (1 or 0), the pilots' r, its standard error, r2, its standard error (NaN where none was read)]
     @JvmStatic external fun series(h: Long, sinceMs: Double): DoubleArray
-    // ai: results wanted soon (receiver.h soon): the GPU decoder's batches go at 8 frames while on; the C's are
-    // ai: a frame at a time either way
-    @JvmStatic external fun soon(h: Long, on: Boolean)
-    // ai: the most frames a GPU batch waits for, 1 to 32 (receiver.h batchCap; Settings.batch)
+    // ai: the most frames a GPU launch takes, 1 to 32 (receiver.h batchCap; Settings.batch); a launch goes as soon as a
+    // ai: frame is staged and a lane is free whatever this is, never waiting to fill a batch
     @JvmStatic external fun batchCap(h: Long, n: Int)
     @JvmStatic external fun file(h: Long): String
     // ai: the camera's reader closed, every frame of it handed back: the GPU decoder drops its imports of its buffers

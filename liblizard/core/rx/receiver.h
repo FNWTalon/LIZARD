@@ -1,8 +1,8 @@
 // ai: The receiver as the app sees it: the camera's frames in, a file out, a stats
 // ai: snapshot for the page. Everything behind it runs on its own threads: the GPU decoder (dec/, a batch at a time,
-// ai: the web's GpuQueue rules), or the C on the CPU (cpu/: asked for, or where the device has no GPU variant); the
-// ai: transfer (xfer_rx.h) on a thread of its own. This header is the contract between core/ and app/'s JNI glue
-// ai: (lizard-android/app/src/main/cpp/jni.cpp): nothing in it names Java or Vulkan.
+// ai: launched as soon as a frame is staged), or the C on the CPU (cpu/: asked for, or where the device has no GPU
+// ai: variant); the transfer (xfer_rx.h) on a thread of its own. This header is the contract between core/ and app/'s
+// ai: JNI glue (lizard-android/app/src/main/cpp/jni.cpp): nothing in it names Java or Vulkan.
 #pragma once
 #include <cstdint>
 #include <functional>
@@ -51,7 +51,7 @@ class Receiver {
   // ai: The page's snapshot as JSON: state, decoder, fps (camera, processed), goodput, blocks, the transfer's
   // ai: progress and file, the format last read, the GPU's ms a frame; the field names the web receiver's stats row uses
   // ai: where they mean the same (lizard-web/recv.mjs). `windowSecs`: the length of the window the goodput and
-  // ai: the registered share are over; `soon` (the GPU decoder): whether small batches are asked.
+  // ai: the registered share are over; `B` and `cap` (the GPU decoder): the batcher's size and batchCap's n.
   virtual std::string stats() = 0;
   // ai: The newest frames with no JSON, for a reader that asks at every capture (the app's phase lock, Engine.kt):
   // ai: [the version the last read word names, 0 before any, then 8 doubles a frame for every frame of the stats'
@@ -59,13 +59,9 @@ class Receiver {
   // ai: or 0), the pilots' r and its standard error over the even blocks, then over the odd (NaN where the frame read
   // ai: none)]. One lock and a copy; a reader passes the newest ms it has and gets each frame once.
   virtual std::vector<double> series(double sinceMs) = 0;
-  // ai: Whether each frame's result is wanted soon rather than at the least GPU work (the phase lock until its hold
-  // ai: stands, PhaseLock.soon): the GPU decoder then launches a batch at 8 frames where the batcher's size is larger,
-  // ai: so a result is a batch of 8's wait old, not a batch of 32's. The C decodes a frame at a time: nothing changes.
-  virtual void soon(bool on) = 0;
-  // ai: The most frames a batch waits for, 1 to 32 (the app's Settings, "Batch size", 2026-10-02): the GPU decoder
-  // ai: launches a batch once that many frames wait (8 while soon, where that is fewer), the batcher's size above it;
-  // ai: 0 or the batcher's size or more, as before. The C decodes a frame at a time: nothing changes.
+  // ai: The most frames a GPU launch takes, 1 to 32 (the app's Batch size, 2026-10-02; this meaning since 2026-10-08):
+  // ai: a launch still goes as soon as a frame is staged and a lane is free, with every frame then staged up to n; 0,
+  // ai: the batcher's size (32 where memory allows). 1 decodes each frame alone. The C decodes a frame at a time.
   virtual void batchCap(int n) = 0;
   // ai: The received file's path once its root is verified, else empty.
   virtual std::string file() = 0;

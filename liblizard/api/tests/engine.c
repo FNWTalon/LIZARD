@@ -1,11 +1,12 @@
-/* ai: The engines through lizard.h (2026-10-03, the library's P4 check), on a machine with the GPU's assets:
+/* ai: The engines through lizard.h (2026-10-03), on a machine with the GPU's assets:
  * ai:   lizard_engine receive <assets> <run dir> <gpu|cpu|auto> [device]: a run (meta.json {"w", "h", "frames"} and the
  * ai:     frames 0000.gray on, w x h grey bytes each: a recording, or paint's) pushed at 60 frames a second through
  * ai:     liz_receiver, laps over it until its file is whole and verified (the receiver's own BLAKE3 check against the
  * ai:     header's root), or 4 laps;
  * ai:   lizard_engine paint <run dir> [frames] [blocks]: a run made with the library alone (the project's recordings are
- * ai:     not published): a 400 kB file painted by liz_sender on the CPU (64 frames of 40 blocks by default), each frame
- * ai:     on white a quarter taller than it, the code in the centre square, as the C test reads one;
+ * ai:     not published): a 400 kB file painted by liz_sender on the CPU (64 frames at the size 40, LIZARD-320, 38
+ * ai:     blocks a frame, by default), each frame on white a quarter taller than it, the code in the centre square, as
+ * ai:     the C test reads one;
  * ai:   lizard_engine send <assets> <gpu|cpu|auto> [device]: a 3 MB file painted by liz_sender (LIZARD-480, two codes)
  * ai:     and every frame read back by liz_decode into a memory liz_rx: whole, its bytes and root the sender's.
  * ai: Exit 1 on a failure. The lab runs GPU jobs under its scripts/tools/gpulock.sh share. */

@@ -1,7 +1,7 @@
 // The file's fountain, one per transfer, fed the new blocks of every decode worker. Off the page's thread because a
 // solve takes long enough to drop camera frames.
 //
-// A Lizard file is a chunked transfer (sim/xfer.mjs): the header and manifest come in the light, each chunk is its own
+// A LIZARD file is a chunked transfer (sim/xfer.mjs): the header and manifest come in the light, each chunk is its own
 // Wirehair fountain, and each is checked against the file's BLAKE3 root as it completes. Its blocks wait on disk,
 // in the origin private file system (OPFS), where the browser has one: interleaved, every chunk is in flight until the
 // ai: end of the first lap, and the file would otherwise be held in memory twice over. The header comes from the light
@@ -113,7 +113,8 @@ async function offer() {
 
 // ai: The received files (2026-10-01, lizard-web/library.mjs, which reads them): lizard-files/<id>/data and its meta.json, the
 // ai: id the root's first 16 hex digits, so the same file received again replaces its entry. The finished file leaves
-// ai: lizard-xfer (the transfer's scratch folder, emptied at this worker's start and by the page's "Receive again") by a
+// ai: lizard-xfer (the transfer's scratch folder, emptied at this worker's start, and by the page's "Receive again" until
+// ai: 2026-10-05) by a
 // ai: move where the browser has one, else a copy through sync access handles; either way nothing of it is left behind.
 const LIB = "lizard-files", ENC = new TextEncoder();
 async function fileAway(r) {

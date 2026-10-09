@@ -1,4 +1,4 @@
-/* ai: The C API end to end, through lizard.h alone (2026-10-03, the library's P2 check):
+/* ai: The C API end to end, through lizard.h alone (2026-10-03):
  * ai:   1. every format (128 block counts x 4 rings x 1 or 2 codes): an encoder made, its geometry the arithmetic's;
  * ai:   2. the picker and the room against the web's (a table tests/pick_ref.mjs printed from sim/lizard_pick.mjs), when
  * ai:      its path is given;
@@ -8,9 +8,9 @@
  * ai:      liz_layout_rects) into a memory store, and through one code into a directory store: whole, its root the
  * ai:      sender's, its bytes the file's.
  * ai: Usage: lizard_roundtrip [pick table] [store dir]. Exit 1 on any failure.
- * ai: lizard_roundtrip --dump <dir>: the test stream's first frame (first id 1, picture 0) of 26 blocks in every ring, one
- * ai: code and two, painted grey into <dir>/paint-26-<ring>-<codes>.grey (dir made where missing), for the wasm
- * ai: binding's test to hold its own paint to (bindings/wasm/test). */
+ * ai: lizard_roundtrip --dump <dir>: the test stream's first frame (first id 1, picture 0) at the size 26 (LIZARD-208,
+ * ai: 25 blocks a symbol) in every ring, one code and two, painted grey into <dir>/paint-26-<ring>-<codes>.grey (dir
+ * ai: made where missing), for the wasm binding's test to hold its own paint to (bindings/wasm/test). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

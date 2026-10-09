@@ -157,6 +157,8 @@ class SendState {
     // ai: to the rail unless opened there (fullOpen), the compositor bypassed
     var full by mutableStateOf(false)
     var fullOpen by mutableStateOf(false)
+    // ai: the window maximized, as a title bar's double click does (Main.kt sets it; the test hook's `max` step)
+    var maximize: (() -> Unit)? = null
     var areaW by mutableStateOf(0)
     var areaH by mutableStateOf(0)
     var fmt by mutableStateOf<Format?>(null)
@@ -199,8 +201,8 @@ class SendState {
         val hz = present?.num("hz") ?: 0.0
         return f.codes * sentBlocks * 469.0 * (if (hz > 0) min(f.fps.toDouble(), hz) else f.fps.toDouble()) / 1000
     }
-    // ai: the blocks a code of the painted format carries, from the sender's stats (a rate profile, LIZ_TIERS, paints its
-    // ai: own count whatever the slider: 2026-10-07), the configured format's before the first stats; its profile, "" none
+    // ai: the blocks a code of the painted format carries, from the sender's stats (a rate profile under test,
+    // ai: LIZ_PROFILE, paints its own count), the configured format's before the first stats; its profile, "" none
     val sentBlocks: Int get() = sender?.num("blocks")?.toInt()?.takeIf { it > 0 } ?: fmt?.let { Native.blocksFor(it.subch) } ?: 0
     val tiers: String get() = sender?.str("tiers").orEmpty()
 
@@ -219,7 +221,8 @@ class SendState {
 
     // ai: Start as the person presses it (the column's Start, the rail's play): before the first send, the brightness tip
     // ai: (2026-10-04; the web sender's the same): the monitor's contrast and brightness are the channel's and no app
-    // ai: sets them (the contrast at its maximum took 2:1 past 2.90 MB/s). Shown until a send goes from it (its Start),
+    // ai: sets them (2026-10-03, the S26 by hand: the contrast at its maximum took 2:1, two LIZARD-416 under one code
+    // ai: rate, past 2.90 MB/s). Shown until a send goes from it (its Start),
     // ai: Cancel leaving it for the next press; the test hook's start() and Resume never show it.
     var askBrightness by mutableStateOf(false)
     // ai: taken in this run, whether or not Prefs keep it (send.mjs seenHere)

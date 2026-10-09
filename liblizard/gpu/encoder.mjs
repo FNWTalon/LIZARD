@@ -62,25 +62,26 @@ const BLOCK_BYTES = 480;
 
 // ai: The paint's TAB (wgsl/send.mjs paintSource) from the codec's codes (back/codes.mjs ruleTables: { codes, bitmap },
 // ai: the codes in CODES' order): word 0 the whitening's offset; 16 words a code at 16 + 16 c, (n, k, m, z, mb, rows,
-// ai: lay, perm, subs); a code's block rows' first entries (mb + 1), its entries (col | shift << 16), its bit map
-// ai: (slot i's codeword bit in the half i & 1 of word i >> 1); the whitening, a bit a slot of the frame over 1024
-// ai: sub-channels and a word past them. The same for every format: gen/sender.mjs bakes it for the native painter.
+// ai: lay, perm, subs, nt); a code's block rows' first entries (mb + 1), its entries (col | shift << 16), its bit map
+// ai: (slot i's codeword bit, np + perm[i], in the half i & 1 of word i >> 1, over the nt sent bits); the whitening, a
+// ai: bit a slot of the frame over 1024 sub-channels and a word past them. The same for every format: gen/sender.mjs
+// ai: bakes it for the native painter.
 export function sendTab({ codes, bitmap }) {
   if (codes.length !== CODES.length) throw new Error(`the paint takes ${CODES.length} codes, got ${codes.length}`);
   let o = 16 + 16 * codes.length;
-  const at = codes.map((c) => { const rows = o; o += c.mb + 1; const lay = o; o += c.slots; const pm = o; o += c.n / 2; return { rows, lay, pm }; });
+  const at = codes.map((c) => { const rows = o; o += c.mb + 1; const lay = o; o += c.slots; const pm = o; o += c.nt / 2; return { rows, lay, pm }; });
   const WHITE = o;
   o += WHITE_SLOTS / 32 + 1;
   const tab = new Uint32Array(o);
   tab[0] = WHITE;
   codes.forEach((c, q) => {
     const a = at[q];
-    if (c.n % 2 || 640 * CODES[q].subs < c.n || c.n / 32 > 240) throw new Error(`the ${CODES[q].name} code's n ${c.n} does not fit the paint`);
-    tab.set([c.n, c.k, c.m, c.z, c.mb, a.rows, a.lay, a.pm, CODES[q].subs], 16 + 16 * q);
+    if (c.nt % 2 || 640 * CODES[q].subs < c.nt || c.n / 32 > 240) throw new Error(`the ${CODES[q].name} code's n ${c.n} (${c.nt} sent) does not fit the paint`);
+    tab.set([c.n, c.k, c.m, c.z, c.mb, a.rows, a.lay, a.pm, CODES[q].subs, c.nt], 16 + 16 * q);
     for (let r = 0; r <= c.mb; r++) tab[a.rows + r] = c.lay[r];
     for (let e = 0; e < c.slots; e++) tab[a.lay + e] = c.lay[c.mb + 1 + 2 * e] | (c.lay[c.mb + 2 + 2 * e] << 16);
-    const p = perm(c.n, c.k, bitmap);
-    for (let i = 0; i < c.n; i++) tab[a.pm + (i >> 1)] |= p[i] << (16 * (i & 1));
+    const p = perm(c.nt, c.k - c.np, bitmap);
+    for (let i = 0; i < c.nt; i++) tab[a.pm + (i >> 1)] |= (c.np + p[i]) << (16 * (i & 1));
   });
   if (bitmap) { const w = whiten(WHITE_SLOTS); for (let i = 0; i < WHITE_SLOTS; i++) if (w[i]) tab[WHITE + (i >> 5)] |= 1 << (i & 31); }
   return tab;

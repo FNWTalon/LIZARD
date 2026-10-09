@@ -1,13 +1,13 @@
 // Test rig for the PHY candidates: a sender page for the laptop and a receiver page for a phone.
 //   node lizard-web/server.mjs      (from the project's root)
 // Needs openssl (the https certificate, made once); python3's qrcode module, where installed, prints a QR of the
-// phone's address. RIG_HTTP, RIG_HTTPS: other ports (8080, 8443); RIG_UPLOADS=1: take /api/run and /api/file posts.
+// phone's address. RIG_HTTP, RIG_HTTPS: other ports (8080, 8443); RIG_UPLOADS=1: take /api/file posts.
 // It serves the repository to the LAN but no dot folder (its key) and none of research/rig/.
 // Serves the repository over http (localhost) and https (LAN, self-signed: a phone's camera
 // ai: needs a secure origin), and takes the pages' development logs, the only thing a page sends it (2026-09-26):
 // ai: nothing it answers is read by a
 // ai: page to decode or paint. POSTs: /api/stats (the receiver's row a second, appended to research/rig/stats.jsonl with the
-// ai: sender's last line beside it), /api/sender (the sender's line and config), /api/selftest, /api/fft, /api/run,
+// ai: sender's last line beside it), /api/sender (the sender's line and config), /api/selftest, /api/fft,
 // ai: /api/file. GETs for node scripts: /api/info, /api/stats (the last row, for lizard-web/check_rates.mjs).
 import { createServer as http } from "node:http";
 import { createServer as https } from "node:https";
@@ -71,20 +71,9 @@ async function handle(req, res) {
   }
   // scripts/pages/fft.html's table, printed here so the phone's numbers do not have to be transcribed off its screen.
   if (p === "/api/fft" && req.method === "POST") { console.log(`\n--- transform bench from the phone ---\n${await body(req)}\n`); return json({ ok: true }); }
-  // A whole recorded run, as the one tar the page built: frames, meta and the stats either side of them. The
-  // phone normally just downloads that file, since a run is 700 MB at the 1080 crop and its wifi is the slowest
-  // thing in the rig; this is here for a scripted run (recv.html?rec=post), and it is ONE request either way.
-  // ai: Uploads (a scripted run's tar, a received file) only where asked for, RIG_UPLOADS=1 (rig.sh, the checks that
-  // ai: post): a rig on the LAN otherwise takes no writes.
-  if ((p === "/api/run" || p === "/api/file") && req.method === "POST" && process.env.RIG_UPLOADS !== "1") { res.writeHead(403); return res.end("uploads off (RIG_UPLOADS=1)"); }
-  if (p === "/api/run" && req.method === "POST") {
-    const run = (url.searchParams.get("name") ?? "run").replace(/[^\w-]/g, ""), dir = join(root, "research/captures/v0.3");   // ai: new recordings (scripts/exp/recordings.mjs CURRENT)
-    mkdirSync(dir, { recursive: true });
-    const bytes = await body(req);
-    writeFileSync(join(dir, `${run}.tar`), bytes);
-    console.log(`run ${run}.tar, ${(bytes.length / 1e6).toFixed(0)} MB`);
-    return json({ saved: `${run}.tar`, bytes: bytes.length });
-  }
+  // ai: Uploads (a received file) only where asked for, RIG_UPLOADS=1 (rig.sh, the checks that post): a rig on the LAN
+  // ai: otherwise takes no writes. The pages record no replays since 2026-10-09 (the Android app's Save replays does).
+  if (p === "/api/file" && req.method === "POST" && process.env.RIG_UPLOADS !== "1") { res.writeHead(403); return res.end("uploads off (RIG_UPLOADS=1)"); }
   // A file a receiver finished (recv.html?save=post), for a scripted run to check against what was sent
   // (lizard-web/check_rates.mjs). Into RIG_FILES, or research/rig/received.
   if (p === "/api/file" && req.method === "POST") {

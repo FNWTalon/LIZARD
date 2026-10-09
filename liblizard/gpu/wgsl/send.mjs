@@ -26,7 +26,7 @@
 // ai: The tolerance: the square within one grey level of the C's (its FFT's rounding differs), the border equal.
 
 import { CRC_SPLIT, PARAMS_STRUCT } from "./back_ldpc.mjs";
-import { KNOWN } from "./back_tiers.mjs";
+import { KNOWN, NC } from "./back_tiers.mjs";
 
 export const TPOSE_TILE = 16;
 export const RSV_THREADS = 64;
@@ -35,7 +35,7 @@ export const RSH_THREADS = 64;
 // ai: G: a = (n, q, sq, W): the picture, the square's pixels, its first pixel in a symbol (margin included), the
 // ai: symbol's width; c = (whole, f0, gap, 0): the present's whole canvas px a frame px, an encode's first frame, and the gap
 // ai: between two codes in px (gpu/encoder.mjs GAP_MODULES modules, 2026-09-30); b = (codes, FW, RW, FS): symbols a frame, the frame's width in pixels, a row's in u32 and a frame's
-// ai: in a batch's FRAME (RW W, padded to 256 B so PRESENT binds a frame at its offset); c = (whole, f0, 0, 0): canvas
+// ai: in a batch's FRAME (RW W, padded to 256 B so PRESENT binds a frame at its offset); c = (whole, f0, gap, 0): canvas
 // ai: pixels a frame pixel (PRESENT) and the frame of FRAME the dispatch's first writes (RSH). TAPS: idx (6 q u32, a
 // ai: tap's sample mod n), then w (6 q f32, bitcast), both passes alike. A dispatch is frames x codes symbols of
 // ai: scratch, symbol r = frame codes + code, a workgroup z each (RSH: a frame, written to frame f0 + z of FRAME).
@@ -50,10 +50,10 @@ struct G { a: vec4u, b: vec4u, c: vec4u }
 // ai: codeword bit its code's bit map names, a slot past the codeword a bit of its frame's count: the pilots; each
 // ai: XOR the whitening at its slot of the frame) and the QPSK coefficients (+-a a bit, a = 0.70710678, amp 1 at
 // ai: tilt 0) into the symbol's disc in S at the UV entries. A block's code and first sub-channel come from its tier
-// ai: (src/focus.h focus_tiers_for: 7/8 blocks of 7 sub-channels, 3/4 of 8, 1/2 of 12, from the lowest frequencies
+// ai: (src/focus.h focus_tiers_for: 7/8 blocks of 7 sub-channels, 3/4 of 8, 2/3 of 9, 1/2 of 12, from the lowest frequencies
 // ai: out), the codes' shapes and tables from TAB, so the shader holds no code of its own.
 // ai: Bindings: BLOCKS (ro, 120 words a block, block b of symbol r at (r blocks + b) 120), TAB (ro, gpu/encoder.mjs
-// ai: sendTab: word 0 the whitening's offset, then 16 words a code at 16 + 16 c, (n, k, m, z, mb, rows, lay, perm,
+// ai: sendTab: word 0 the whitening's offset, then 16 words a code at 16 + 16 c, (n, k, m, z, mb, rows, lay, perm, subs, nt,
 // ai: subs), its block rows' first entries, its entries (col | shift << 16), its bit map two slots a word; the
 // ai: whitening a bit a slot), UV (ro, a coefficient's S entry), S (rw, the disc), P (uniform, wgsl/back_ldpc.mjs
 // ai: PARAMS_AT): sizes[0] = (blocks, UV offset, 0, 0), sizes[1 + c] = (first block, first sub-channel, blocks, 0) of
@@ -96,7 +96,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
   if (b >= P.sizes[0].x) { return; }
   // ai: the block's tier: its code, and its first sub-channel
   var c: u32 = 0u;
-  for (var q: u32 = 0u; q < 3u; q = q + 1u) {
+  for (var q: u32 = 0u; q < ${NC}u; q = q + 1u) {
     let t = P.sizes[1u + q];
     if (b >= t.x && b < t.x + t.z) { c = q; }
   }
@@ -111,6 +111,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
   let layAt: u32 = TAB[h + 6u];
   let permAt: u32 = TAB[h + 7u];
   let subs: u32 = TAB[h + 8u];
+  let nt: u32 = TAB[h + 9u];   // ai: the bits sent, n less the code's first np (the 7/8 code's 93): the slots the codeword fills
   let cpl: u32 = (m + TH - 1u) / TH;
   let sub0: u32 = tt.y + (b - tt.x) * subs;
   // ai: this block's bit of its symbol's frame's count: the pilots' flip
@@ -177,8 +178,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
     }
   }
   workgroupBarrier();
-  // ai: Slots 2 cc and 2 cc + 1 of coefficient cc (every code's n is even: a pair is inside the codeword or past it),
-  // ai: one bit map word the pair; the whitening at the frame's slot.
+  // ai: Slots 2 cc and 2 cc + 1 of coefficient cc (every code's nt is even: a pair is inside the sent bits or past them),
+  // ai: one bit map word the pair (each entry a codeword bit, the never-sent np already added); the whitening at the frame's slot.
   let slot0: u32 = 640u * sub0;
   let uvBase: u32 = P.sizes[0].y + 320u * sub0;
   let sBase: u32 = r * P.dims.y;
@@ -186,7 +187,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
     let i0: u32 = 2u * cc;
     var b0: u32 = pq;
     var b1: u32 = pq;
-    if (i0 < n) {
+    if (i0 < nt) {
       let pe = TAB[permAt + cc];
       b0 = cwBit(pe & 0xffffu);
       b1 = cwBit(pe >> 16u);

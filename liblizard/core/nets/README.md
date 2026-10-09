@@ -11,7 +11,7 @@ What is here (2026-09-30):
 - Set aside: the large classifier (cnn-v1: its f16 form already costs 0.108 ms a frame) and the proposer's network
   (`archive/stash/coopmat-proposer/`: exact, 5.4 times slower than the web's kernel).
 
-## State at the end (07:15)
+## State on 2026-09-30 (07:15)
 
 - The kernel: `core/nets/cls.glsl` (compile unit `cls_v3.comp`), generator `gen/nets_cls.mjs`. cnn-v3 only; cnn-v1
   dropped (its f16 form costs 0.108 ms a frame), `cls_v1.comp` deleted. One arm a build, chosen by the FAST

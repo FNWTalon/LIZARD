@@ -14,6 +14,16 @@ export const SPEC = "ldpc-stop-mlp-v1";
 export const FEATURES = ["bad", "low", "first", "fall", "it", "est"];   // ai: the training form's inputs (scripts/gpu/back/stop/net.py)
 export const INPUTS = ["bad", "low", "first", "prev", "t", "est"];       // ai: the kernel's raw inputs
 export const RULE_URL = new URL("./stop.safetensors", import.meta.url);
+// ai: Each code's file by its checks m (2026-10-07): the 3/4 code's (RULE_URL, the first, trained 2026-09-28) and the rate
+// ai: profile's 7/8 and 1/2 codes', trained on the same recipe and budget against their own codes; the 2/3 code's
+// ai: (1920 checks, 2026-10-08, the format's since its profile took four rates), trained the same way.
+export const RULE_URLS = Object.freeze({ 1272: RULE_URL, 651: new URL("./stop_78.safetensors", import.meta.url), 1920: new URL("./stop_23.safetensors", import.meta.url), 3840: new URL("./stop_12.safetensors", import.meta.url) });
+export const hasRule = (m) => m in RULE_URLS;
+export function ruleUrlFor(m) {
+  const url = RULE_URLS[m];
+  if (!url) throw new Error(`stop rule: no file for a code of ${m} checks`);
+  return url;
+}
 
 // ai: The kernel form from a weights file's bytes: { hidden, W1 (H x 6, row-major), b1, W2 (H x H), b2, w3, T } as
 // ai: Float32Arrays (T a number holding a float32 value), with the file's metadata (arch, budget, provenance, val).
@@ -36,7 +46,7 @@ export function readStop(bytes) {
     b1[j] = b[j] - shift;
   }
   return { hidden: H, W1, b1, W2: Float32Array.from(v("fc2.weight")), b2: Float32Array.from(v("fc2.bias")), w3: Float32Array.from(v("out.weight")),
-    T: Math.fround(v("theta")[0] - v("out.bias")[0]), arch, budget: +meta["lizard.budget"], meta, h1: new Float64Array(H), h2: new Float64Array(H) };
+    T: Math.fround(v("theta")[0] - v("out.bias")[0]), arch, m, code: meta["lizard.code"] ?? "3/4", budget: +meta["lizard.budget"], meta, h1: new Float64Array(H), h2: new Float64Array(H) };
 }
 
 // ai: The installed rule (RULE_URL) unless another file is named; read once a URL.

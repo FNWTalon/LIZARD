@@ -16,7 +16,8 @@ export declare function abi(): number;
 export declare function simd(): boolean;
 
 export interface Format {
-  /** Blocks a symbol, 1 to 128 (LIZARD-8 to LIZARD-1024). */
+  /** The format's size, 1 to 128 (LIZARD-8 to LIZARD-1024); a symbol carries the rate profile's blocks
+   *  (frameBlocks over codes). */
   blocks: number;
   /** 0 to 3 (the 32, 64, 96 or 128 ring), -1 the default (the 128). */
   ring?: number;
@@ -62,7 +63,7 @@ export interface ImageLike { data: Uint8Array | Uint8ClampedArray; width: number
 export declare class Decoder {
   constructor(nmax?: number);
   readonly maxBlocks: number;
-  /** The held word: blocks a symbol of the last word read (0 none). */
+  /** The held word: the size (Format.blocks) the last word read names (0 none). */
   held: number;
   decode(px: Uint8Array | Uint8ClampedArray | ImageLike, w?: number, h?: number,
          options?: { fmt?: PixelFormat; stride?: number; held?: { held: number } }): Decoded;

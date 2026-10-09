@@ -11,10 +11,10 @@ typedef struct cpu_dec cpu_dec_t;
 
 // ai: What a frame's decode found. ring: the ring that registered (0 to 3), -1 none. n: the picture it was finished
 // ai: at, 0 not finished. held: the caller's held word stood in for the frame's own. word: the frame's own word read
-// ai: (version = sub-channels / 8, fps the display rate it states). total: the blocks the finished picture's top
-// ai: carries (ok[] and blocks[] hold that many). quad: the symbol's corners in the image, TL TR BR BL. pilot_*: what
-// ai: the block tails read (liblizard/src/any.h focus_any_pilot: r of the even blocks and of the odd, their standard
-// ai: errors, the blocks read, 0 none).
+// ai: (version = sub-channels / 8, fps the display rate it states). total: the blocks the version it was finished at
+// ai: carries under the rate profile (ok[] and blocks[] hold that many). quad: the symbol's corners in the image, TL
+// ai: TR BR BL. pilot_*: what the block tails read (liblizard/src/any.h focus_any_pilot: r of the even blocks and of
+// ai: the odd, their standard errors, the blocks read, 0 none).
 typedef struct {
   int found, ring, n, held, word, version, fps, total;
   float quad[8];
@@ -23,7 +23,7 @@ typedef struct {
   float ms_detect, ms_sample, ms_decode;
 } cpu_frame_t;
 
-// ai: nmax: the largest picture decoded (1024; 1536 for an industrial rig). NULL where the codec refuses.
+// ai: nmax: the largest picture decoded (1536 for every format; smaller saves memory). NULL where the codec refuses.
 cpu_dec_t *cpu_dec_new(int nmax);
 void cpu_dec_free(cpu_dec_t *d);
 // ai: The most blocks a frame can carry (the size of ok[], and of blocks[] in cpu_dec_block_bytes each).

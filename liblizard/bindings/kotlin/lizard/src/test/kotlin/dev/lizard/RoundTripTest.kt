@@ -1,4 +1,4 @@
-// ai: The Kotlin binding end to end on the JVM (2026-10-03, the library's P5 check): the arithmetic, the test stream in
+// ai: The Kotlin binding end to end on the JVM (2026-10-03): the arithmetic, the test stream in
 // ai: every ring, one code and two (on white, read by the layouts' regions), a file through two codes into memory (its
 // ai: root the sender's, its bytes), a file through one code into a directory, and the exceptions a bad call throws.
 package dev.lizard

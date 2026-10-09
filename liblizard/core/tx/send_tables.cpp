@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
@@ -15,7 +16,7 @@ std::string SendConsts::load(const std::string& manifest, const std::vector<uint
   try { j = nlohmann::json::parse(manifest); } catch (const std::exception& e) { return std::string("the sender's manifest: ") + e.what(); }
   if (!j.contains("tab") || !j.contains("codes")) return "the sender's manifest predates the rate profile (no tab or codes): regenerate liblizard/out";
   slots = j["slots"]; tposeTile = j["tposeTile"]; rsvThreads = j["rsvThreads"]; rshThreads = j["rshThreads"];
-  blockBytes = j["blockBytes"]; clip = j["clip"]; bitmap = j["bitmap"];
+  blockBytes = j["blockBytes"]; bitmap = j["bitmap"];
   const auto& p = j["paramsAt"];
   paramsSizes = p["sizes"]; paramsDims = p["dims"]; paramsPw = p["pw"]; paramsWords = p["words"];
   pw = j["pw"].get<std::vector<uint32_t>>();
@@ -41,6 +42,15 @@ void uvOf(int p, int n, int bw, int& u, int& v) {
 }
 uint32_t bitsOf(float x) { uint32_t b; std::memcpy(&b, &x, 4); return b; }
 }  // namespace
+
+float txClip() {
+  static const float c = [] {
+    const char* e = getenv("LIZ_CLIP");
+    const float v = e ? strtof(e, nullptr) : 2.0f;
+    return v >= 1.0f && v <= 4.0f ? v : 2.0f;
+  }();
+  return c;
+}
 
 std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTables& t, int codes, int gap) {
   t = SendTables{};
@@ -79,8 +89,9 @@ std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTa
   // ai: the twiddles as the web computes them, in double, kept as f32
   t.tw.resize(2 * n);
   for (int m = 0; m < n; m++) { const double th = -2 * M_PI * m / n; t.tw[2 * m] = static_cast<float>(std::cos(th)); t.tw[2 * m + 1] = static_cast<float>(std::sin(th)); }
-  // ai: gpu/back/paint.mjs clipLimit: fround(fround(2 clip) x fround(sqrt(fround(0.5 subch 320)))); its reciprocal halved in double
-  const float lim = static_cast<float>(2 * k.clip) * std::sqrt(static_cast<float>(0.5 * f.subch * 320));
+  // ai: gpu/back/paint.mjs clipLimit at the codec's clip (src/focus.c's level at tilt 0): fround(fround(2 clip) x
+  // ai: fround(sqrt(fround(0.5 subch 320)))); its reciprocal halved in double
+  const float lim = 2.0f * f.clip * std::sqrt(static_cast<float>(0.5 * f.subch * 320));
   t.su = {static_cast<uint32_t>(n), static_cast<uint32_t>(t.Vr), static_cast<uint32_t>(t.Vr * n), static_cast<uint32_t>(t.npos),
           static_cast<uint32_t>(n * n / 4), 0, 0, 0, bitsOf(lim), bitsOf(static_cast<float>(0.5 / lim)), 0, 0};
   // ai: the resampler (the C's taps): q pixels from the square's first, six taps each from i0, wrapped mod n

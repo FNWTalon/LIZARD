@@ -27,8 +27,8 @@ typedef struct {
   int version;             // ai: the version it was finished at (its word's, or the held one), 0 none
 } focus_any_t;
 
-// ai: a: zeroed, or a receiver to set up again. nmax: the largest picture it decodes (1024 by default, 1536 for an
-// ai: industrial rig). Returns the block bytes (473), or -1.
+// ai: a: zeroed, or a receiver to set up again. nmax: the largest picture it decodes (1536, the ladder's top, in every
+// ai: receiver since 2026-09-29; 1024 before). Returns the block bytes (473), or -1.
 int focus_any_init(focus_any_t *a, int nmax);
 void focus_any_free(focus_any_t *a);
 // ai: One frame. blocks and ok hold focus_any_top(a) blocks. held: the sub-channel count / 8 of the last word the

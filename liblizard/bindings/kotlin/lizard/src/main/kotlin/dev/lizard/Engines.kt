@@ -43,7 +43,8 @@ class Receiver(
   val stats: String get() = Native.receiverStats(live())
   // ai: [the held word's version, then 8 doubles a frame decoded since sinceMs]: lizard.h liz_receiver_series
   fun series(sinceMs: Double): DoubleArray = Native.receiverSeries(live(), sinceMs)
-  fun soon(on: Boolean) = Native.receiverSoon(live(), on)
+  // ai: the most frames a GPU launch takes, 1 to 32 (0: the batcher's size), a launch going as soon as a frame waits:
+  // ai: lizard.h liz_receiver_batch_cap
   fun batchCap(frames: Int) = Native.receiverBatchCap(live(), frames)
   // ai: the received file's path once whole and verified, else null
   val file: String? get() = Native.receiverFile(live()).ifEmpty { null }

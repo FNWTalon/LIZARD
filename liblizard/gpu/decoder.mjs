@@ -75,7 +75,7 @@ class Slot {
     if (ring !== undefined) this.ring = ring;
   }
 }
-// B "auto": the device memory the decoder may hold, and the submit time a batch is kept under. 128 MiB is a budget of
+// B "auto": the device memory the decoder may hold, and the submit time a batch is kept under. 128 MiB (BUDGET_MIN) is a budget of
 // about 100 MB with margin. 400 ms is a fifth of the ~2 s submit that lost the iGPU's device (a batch of eight 2160
 // frames, 2026-09-24): room for thermal throttling to double a batch's time, and a batch heavier than the ones before
 // it, before the watch can shrink it.
@@ -97,8 +97,9 @@ class Slot {
 // ai: their standard errors; 1 - 2 f on a tear f of whose samples came from pictures of the other bit ((1 - 2 f) /
 // ai: sqrt(1 - 2 f + 2 f^2) on a blend of every sample). { r, sd, r2, sd2, blocks }, or null for none.
 export function pilotOf(pilots, blocks) {
-  // ai: the even blocks (bit 0 of the painted count) and the odd (bit 1), each its own mean and standard error
-  const out = { r: 0, sd: 0, r2: 0, sd2: 0, blocks: 0 };
+  // ai: the even blocks (bit 0 of the painted count) and the odd (bit 1), each its own mean and standard error; a
+  // ai: parity with no blocks NaN (version 1: one block, an even one), as src/focus.c focus_pilot reads it
+  const out = { r: NaN, sd: NaN, r2: NaN, sd2: NaN, blocks: 0 };
   for (let g = 0; g < 2; g++) {
     let s = 0, s2 = 0, k = 0;
     for (let b = g; b < Math.min(blocks, pilots.length); b += 2) { const v = pilots[b]; if (Number.isFinite(v)) { s += v; s2 += v * v; k++; } }
@@ -568,7 +569,7 @@ export class FrontHalf {
     ln.W = 0; ln.H = 0; ln.gridStride = 0;
     ln.tex = null; ln.rawBuf = null; ln.accBuf = null; ln.gridBuf = null; ln.gridUni = null; ln.readBuf = null; ln.sampleGroup = null; ln.backLane = null; ln.backPicture = null;
     // The back half's gate reads a frame record in each of the B slots it was compiled for, so the frame and sel
-    // records cover those (16 and 8 bytes a slot) even where the lane holds fewer frames.
+    // records cover those (16 bytes a slot each) even where the lane holds fewer frames.
     ln.slotsG = Math.max(B, this.bh?.B ?? 0);
     ln.peaksBuf = d.createBuffer({ size: 16 * cap * B, usage: U.STORAGE | U.COPY_SRC | U.COPY_DST });
     ln.selUni = d.createBuffer({ size: 16, usage: U.UNIFORM | U.COPY_DST });

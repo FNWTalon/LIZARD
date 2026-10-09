@@ -54,7 +54,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     data class CamInfo(val id: String, val format: String, val size: Size, val preview: Size, val fps: Range<Int>,
                        val offered: List<Range<Int>>, val minFrameMs: Double, val sensorOrientation: Int, val note: String)
 
-    // ai: what the rear camera offers, read once at start-up for Advanced's choices
+    // ai: what the rear camera offers, read once at start-up for Settings' choices
     // ai: zoom: the camera's CONTROL_ZOOM_RATIO_RANGE (Android 11 and up), null where it has none (the lens's focus
     // ai: range and calibration, for the Focus slider of 2026-10-04, went with it 2026-10-05)
     data class Caps(val id: String?, val sizes: Set<String>, val lenses: List<Lens>, val zoom: Range<Float>? = null)
@@ -93,8 +93,8 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     }
     fun phaseState(): PhaseLock.State? = phase.state
 
-    // ai: The camera's pipeline slowing (2026-10-07, owner: "give the throttling warning if frames drop after being at
-    // ai: max"): once its rate a second (its own timestamps) has stood within 5% of the rate asked, a second under 90%
+    // ai: The camera's pipeline slowing (2026-10-07): once
+    // ai: its rate a second (its own timestamps) has stood within 5% of the rate asked, a second under 90%
     // ai: of that peak, twice running, is the camera completing fewer frames (the phone warm: the 4K run of 2026-10-01,
     // ai: the 2:1 sessions of 2026-10-06 at 106 to 114 halves a second), and the heat warning says so with the figure
     // ai: (Parts.kt HeatWarning); back at 95% of the peak twice running clears it. Null while nothing is slow; read by
@@ -259,13 +259,12 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         val hnd = handle
         if (hnd == 0L) return
         synchronized(lock) { handle = 0L }
-        soonFor = 0L   // ai: the next receiver may be made at this one's address
         Native.destroy(hnd)
         Native.closeAll(this)   // ai: a receiver's destructor releases what it holds; anything of this engine's left is closed here
     }
 
     private var zoom = 1f
-    // ai: The running session's zoom (Advanced's slider, 2026-10-01): the repeating
+    // ai: The running session's zoom (Settings' slider, 2026-10-01): the repeating
     // ai: request issued again with the new ratio, the camera kept open (a restart cost half a second and the phase
     // ai: lock's footing). Null with no session. A drag posts many values: the engine thread takes the newest once.
     private var rezoom: ((Float) -> Unit)? = null
@@ -382,8 +381,8 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                     // ai: asked) and the statistics maps. Measured for edge and hot pixel in 2:1 (two LIZARD-480 painted
                     // ai: 60, the S26 by hand, the same minutes): 51.7 blocks of 60 a clean capture and 2.8 MB/s off
                     // ai: against 34.5 to 39.5 and 1.6 to 2.2 MB/s with the record template's FAST (STATUS "The ISP's
-                    // ai: enhancements off"). Three stay the camera's, since all three off together read worse by the
-                    // ai: owner's hand the same evening (which of them is not known): its tone curve (the sRGB preset, or
+                    // ai: enhancements off"). Three stay the camera's, since all three off together read worse by
+                    // ai: hand the same evening (which of them is not known): its tone curve (the sRGB preset, or
                     // ai: an sRGB contrast curve, is the off form here), lens shading correction and distortion
                     // ai: correction. The `capture:` line reports what the camera did. test: `adb shell setprop
                     // ai: debug.lizard.camx <name,...>` (read at open): a name leaves that one as the template has it
@@ -587,7 +586,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         val painted = w?.optInt("fps") ?: 0
         if (version == 0 || blocks.size < 8 || 2 * blocks.size < all) return null
         blocks.sortDescending()
-        val least = maxOf(1, (blocks[minOf(2, blocks.size - 1)] + 1) / 2, (version + 7) / 8)
+        val least = maxOf(1, (blocks[minOf(2, blocks.size - 1)] + 1) / 2, (Native.blocksFor(8 * version) + 7) / 8)
         val clean = blocks.filter { it >= least }
         val each = if (clean.isEmpty()) 0.0 else clean.average()
         val camera = if (all > 1 && newest > first) (all - 1) * 1000.0 / (newest - first) else 0.0
@@ -598,26 +597,22 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         // ai: of 52 blocks a clean capture, later runs 38 to 44 with timing, heat and leaks the same)
         val crop = wanted?.resolution?.split("x")?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == 2 }?.let { (w, h) ->
             if (wanted?.layout == "2:1") minOf(maxOf(w, h) / 2, minOf(w, h)) else minOf(w, h) } ?: 0
-        return "rx: %s, LIZARD-%d painted %d, goodput %.0f KB/s, %d of %d captures clean, %.1f of %d blocks a clean capture, ceiling %.0f KB/s, %d frames a second, symbol %.0f px of a %d crop, found %.0f%%".format(
-            j.optString("state"), 8 * version, painted, j.optDouble("goodputKBs", 0.0), clean.size, blocks.size, each, version, each * 469 * rate / 1000, j.optInt("processedFps"),
+        return "rx: %s, LIZARD-%d painted %d, goodput %.0f KB/s, %d of %d captures clean, %.1f blocks a clean capture, ceiling %.0f KB/s, %d frames a second, symbol %.0f px of a %d crop, found %.0f%%".format(
+            j.optString("state"), 8 * version, painted, j.optDouble("goodputKBs", 0.0), clean.size, blocks.size, each, each * 469 * rate / 1000, j.optInt("processedFps"),
             j.optDouble("side", 0.0), crop, 100 * j.optDouble("foundShare", 0.0))
     }
 
     // ai: The receiver's frames since the last call (Native.series: ms on the camera's clock, verified blocks, new
     // ai: blocks, registered, the pilots' r and its standard error over the even blocks, then over the odd, NaN
-    // ai: where none) and the word's blocks a frame, to the phase's scan or track; and the lock's
-    // ai: wish for them soon to the receiver (PhaseLock.soon: batches of 8 until its hold first stands). Called at
+    // ai: where none) and the word's blocks a frame, to the phase's scan or track (each frame's a launch after its
+    // ai: capture: since 2026-10-08 the GPU receiver launches as soon as a frame is staged and a lane is free, never
+    // ai: waiting to fill a batch). Called at
     // ai: every capture result on the camera's thread since 2026-10-01: one JNI call and no JSON, so a call with
     // ai: nothing new costs microseconds.
     private var fedMs = -1.0     // ai: the newest frame already fed, ms on the camera's clock
-    private var soonOn = false   // ai: what the receiver was last told, and which receiver (a new one starts untold)
-    private var soonFor = 0L
     private fun feed(p: PhaseLock) {
         val hnd = handle
         if (hnd == 0L) return
-        if (hnd != soonFor) { soonFor = hnd; soonOn = false }
-        val want = p.soon
-        if (want != soonOn) { soonOn = want; try { Native.soon(hnd, want) } catch (_: Throwable) {} }
         if (p.mode != PhaseLock.Mode.Scan && p.mode != PhaseLock.Mode.Track) return
         val t0 = System.nanoTime()
         val a = try { Native.series(hnd, fedMs) } catch (_: Throwable) { return }
@@ -713,7 +708,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     companion object {
         const val TAG = "lizard"
         // ai: The reader's pool. A camera buffer is held until the GPU has read it (zero copy), and the GPU reads it
-        // ai: only after the batch ahead of it: up to the batch cap's 400 ms, 24 frames at 60 a second. With 16, a
+        // ai: only after the batch ahead of it: up to the batcher's 400 ms cap, 24 frames at 60 a second. With 16, a
         // ai: throttled GPU (batches of 250 ms) left the camera no buffer and it delivered 45 to 52 frames a second
         // ai: (S26, 2026-09-30).
         const val MAX_IMAGES = 32

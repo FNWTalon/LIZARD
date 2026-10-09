@@ -63,13 +63,14 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.foundation.interaction.MutableInteractionSource
 
-// ai: Send (2026-10-01): the web sender's job on the phone, the C on the CPU painting (liblizard/core/tx/sender.h). A
-// ai: file chosen here or shared to Lizard from another app is copied into the cache and mapped by the sender; the
-// ai: format is the largest the code's square holds (Pick, the web's pickVersion), in the default ring, at Advanced's
-// ai: rate (60 unless set; until 2026-10-02 "Receiving with" named it, the app 60, a browser 24); frames go onto a
+// ai: Send (2026-10-01): the web sender's job on the phone, the C on the CPU or the GPU painting (`painter` below;
+// ai: liblizard/core/tx/sender.h). A file chosen here or shared to LIZARD from another app is copied into the cache and
+// ai: mapped by the sender; the
+// ai: format is the largest the code's square holds (Pick, the web's pickVersion), in the default ring, at Settings'
+// ai: FPS (60 unless set; until 2026-10-02 "Receiving with" named it, the app 60, a browser 24); frames go onto a
 // ai: SurfaceView at that pace (a Choreographer callback each vsync posting the next painted frame when one is due; the
-// ai: surface asks the display for that rate, the switch always made), the screen kept on, at full brightness, its bars
-// ai: hidden. The test stream is Advanced's. Vsync-locked since 2026-10-02: on
+// ai: surface asks the display for that rate, the switch always made), the screen kept on, at the Brightness set, its
+// ai: bars hidden. The test stream is Developer Tools' (Payload). Vsync-locked since 2026-10-02: on
 // ai: Android 13 and up each frame is due by its frame timeline's expected presentation time and posted for that vsync
 // ai: (jni.cpp Ring), not into the window's queue at whatever refresh it is latched for; `adb shell setprop
 // ai: debug.lizard.sendvsync 0` before Start takes the window's queue, for an A/B.
@@ -80,7 +81,7 @@ class SendState(private val a: MainActivity) {
                      // ai: the GPU ring's tally over the last second (2026-10-07, jni.cpp txPostStats): posted, held by
                      // ai: vsyncs, late, behind, buffers filled of the ring's
                      val gpuRing: Boolean = false, val posted: Long = 0, val held: String = "", val late: Long = 0, val behind: Long = 0, val filled: Int = 0, val slots: Int = 0,
-                     // ai: the blocks a code carries and its rate profile (2026-10-07: LIZ_TIERS in debug.lizard.env paints its own count)
+                     // ai: the blocks a code carries and its rate profile (2026-10-07; LIZ_PROFILE in debug.lizard.env paints its profile's count)
                      val blocks: Int = 0, val tiers: String = "")
 
     private val prefs = a.getSharedPreferences("lizard", Context.MODE_PRIVATE)
@@ -248,7 +249,7 @@ class SendState(private val a: MainActivity) {
         }
         pollStats(t)
     }
-    // ai: The vsync path's schedule (2026-10-07: "present on an exact fixed-refresh schedule"): the display's period
+    // ai: The vsync path's schedule (2026-10-07: a fixed schedule, every picture on its due refresh): the display's period
     // ai: from the frame timelines' spacing; a picture every round(period / asked) vsyncs where that is whole within
     // ai: 1%, else on the asked rate's grid (the web's due rule); for every timeline the Choreographer offers (the
     // ai: preferred one and the ones after it) not yet passed, the next filled buffer is posted for it where a picture
@@ -310,7 +311,7 @@ class SendState(private val a: MainActivity) {
         }
     }
 
-    // ai: while sending: the screen on, at full brightness, its bars hidden; all put back after
+    // ai: while sending: the screen on, at the Brightness set, its bars hidden; all put back after
     private fun screenFor(on: Boolean) {
         val w = a.window
         val c = WindowCompat.getInsetsController(w, w.decorView)
@@ -486,11 +487,13 @@ private fun MainActivity.SendPanel(onFull: () -> Unit) {
     Spacer(Modifier.height(8.dp))
 }
 
-// ai: The rail's squares: play to start (or to resume), pause while sending, and the code's capacity while it is shown
+// ai: The rail's squares: play to start (or to resume), pause while sending, and the code's capacity while it is shown;
+// ai: above the play or pause, the heat warning's red triangle while the phone throttles (2026-10-08, as Receive's)
 @Composable
 private fun MainActivity.SendRail() {
     val s = send
     val on = s.phase == SendState.Phase.On
+    heatText(heat, clocks)?.let { HeatSquare(it) }
     Square {
         IconBtn(if (on && !s.paused) R.drawable.ic_pause else R.drawable.ic_play, if (!on) "Start" else if (s.paused) "Resume" else "Pause",
             enabled = if (on) true else s.phase != SendState.Phase.Preparing && (s.test || s.uri != null)) { if (on) s.pause(!s.paused) else s.start() }
@@ -512,7 +515,7 @@ private fun sendLab(s: SendState): String {
 }
 
 // ai: Blocks a frame (send.html #blocks and #subchAuto), 0 for auto: the slider's leftmost step is auto (2026-10-05; an
-// ai: Auto chip at the title row's end until then), its title "Auto, 60 blocks, 28.1 KB" while what auto takes is known
+// ai: Auto chip at the title row's end until then), its value "Auto, 60, 28.1 KB" while what auto takes is known
 // ai: ("Auto" before the first configure), every step right of it a count by hand. value the setting, shown what auto
 // ai: takes now (0 while unknown), range the counts.
 @Composable

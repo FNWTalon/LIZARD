@@ -68,7 +68,8 @@ export class BackHalf {
     const tables = await transformTables(want);
     const bsizes = tables.map((tb) => (tb ? { n: tb.n, subch: tb.subch, blocks: tb.blocks, bitmap: tb.bitmap } : null));
     const dims = derived(bsizes, { B, cap });
-    // One LDPC code for every format (DESIGN section 1); the tables say so or the build stops.
+    // One LDPC code, the 3/4, for every size the one-rate stages serve (DESIGN section 1; the rate profile's codes
+    // are tiers.mjs's); the tables say so or the build stops.
     const codes = tables.filter(Boolean).map((tb) => tb.code), key = (c) => JSON.stringify([c.n, c.k, c.m, c.z, c.mb, c.norm, Array.from(c.lay)]);
     if (codes.some((c) => key(c) !== key(codes[0]))) throw new Error("the built sizes do not share one LDPC code");
     const bh = new BackHalf();

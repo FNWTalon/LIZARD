@@ -5,7 +5,7 @@
 // lower half-plane is the conjugate reflection, the inverse FFT is real, and it is clipped to
 // tame the peak-to-average ratio and shown as grey levels.
 //   FOCUS_RS    the paper: 64-byte fragment + 16 RS parity bytes per sub-channel, hard QPSK
-//   FOCUS_LDPC  same modulator; per-coefficient LLRs into the QC-IRA LDPC, 8 sub-channels a block
+//   FOCUS_LDPC  same modulator; per-coefficient LLRs into the QC-IRA LDPC, 7, 8, 9 or 12 sub-channels a block by its rate
 // What the paper leaves open and this file chooses: image size n (the paper says "e.g. 512"),
 // the clipping ratio, equal magnitude on every used coefficient, and a CRC per fragment (the
 // paper says "e.g. by using a checksum"). The paper's 16 circle markers and calibrated lens
@@ -16,15 +16,16 @@
 #include "ob.h"
 #include "fmt.h"
 
-// The code rate follows the frequency (the format's rate profile): a frame's sub-channels carry LDPC blocks at three
+// The code rate follows the frequency (the format's rate profile): a frame's sub-channels carry LDPC blocks at four
 // rates from the lowest frequencies outwards, 7/8 on about the inner FOCUS_TIER_IN percent of them (7 sub-channels a
-// block), 1/2 on about the outer FOCUS_TIER_OUT percent (12 a block) and 3/4 between (8 a block), because a capture's
-// signal-to-noise ratio falls with the frequency: the low sub-channels carry more than 3/4 needs and the high ones
-// less. Every block is the same 473 B whatever its rate, so a profile moves a frame's capacity by its block count.
-// The profile is a function of the sub-channel count alone (focus_tiers_for), which the format word names, so a
-// receiver told the version knows it; focus_init builds it for FOCUS_LDPC. FOCUS_RATE is the middle tier's rate, and
-// a frame too small to hold the others (up to LIZARD-40) is one tier of it.
-enum { FOCUS_RATE = 4, FOCUS_TIER_IN = 32, FOCUS_TIER_OUT = 30 };
+// block), then 3/4 (8 a block), then 2/3 on about FOCUS_TIER_23 percent (9 a block), and 1/2 on about the outer
+// FOCUS_TIER_OUT percent (12 a block), because a capture's signal-to-noise ratio falls with the frequency: the low
+// sub-channels carry more than 3/4 needs and the high ones less. Every block is the same 473 B whatever its rate, so a
+// profile moves a frame's capacity by its block count. The profile is a function of the sub-channel count alone
+// (focus_tiers_for), which the format word names, so a receiver told the version knows it; focus_init builds it for
+// FOCUS_LDPC. FOCUS_RATE is the 3/4 tier's rate, the one that fills, and a frame too small to hold the others is one
+// tier of it.
+enum { FOCUS_RATE = 4, FOCUS_TIER_IN = 39, FOCUS_TIER_23 = 15, FOCUS_TIER_OUT = 20 };
 
 // ai: THE RINGS (2026-09-27: three ring sizes; that evening 32, 64 and 128, then four: 32, 64, 96 and 128). The
 // ai: dotted band holds FOCUS_RING[r] cells of 2 x 2 modules on a side, the border round it is 15 modules (a 12-module
@@ -46,7 +47,7 @@ enum { FOCUS_RATE = 4, FOCUS_TIER_IN = 32, FOCUS_TIER_OUT = 30 };
 enum { FOCUS_RINGS = 4, FOCUS_RING_DEFAULT = 3 };
 extern const int FOCUS_RING[FOCUS_RINGS];
 
-// How a block's codeword lies on its coefficients (FOCUS_LDPC). A block is 8 sub-channels, a thin ring of the
+// How a block's codeword lies on its coefficients (FOCUS_LDPC). A block is 7 to 12 sub-channels by its rate, a thin ring of the
 // spectrum taken in order of rising frequency, two slots a coefficient. Until 2026-09-23 slot i carried codeword bit
 // i and nothing else: the payload's own bits were the picture's phases, so a payload of runs (a small file padded
 // out to its blocks) painted thousands of coefficients at one phase, a peak the clip flattened, and the frame did
@@ -70,12 +71,12 @@ extern const int FOCUS_RING[FOCUS_RINGS];
 // the simulator cannot make: moire at one spatial frequency lands on consecutive slots of one block.
 enum { FOCUS_BITMAP_NONE = 0, FOCUS_BITMAP_WHITE = 1, FOCUS_BITMAP_SPREAD = 2, FOCUS_BITMAP_LINEAR = 3, FOCUS_BITMAP_INNER = 4,
        FOCUS_BITMAP = FOCUS_BITMAP_LINEAR };
-enum { FOCUS_RS = 0, FOCUS_LDPC = 1, FOCUS_SUB = 320, FOCUS_FRAG = 64, FOCUS_PAR = 16, FOCUS_GROUP = 8, FOCUS_STRIP = 64, FOCUS_TIERS = 3 };
+enum { FOCUS_RS = 0, FOCUS_LDPC = 1, FOCUS_SUB = 320, FOCUS_FRAG = 64, FOCUS_PAR = 16, FOCUS_GROUP = 8, FOCUS_STRIP = 64, FOCUS_TIERS = 4 };
 
 // A run of blocks sent at one code rate (FOCUS_LDPC). Low frequencies survive blur and distance and high ones do
 // not, so a frame can spend a high rate where a capture is nearly always clean and a low one further out
 // (research/10). Every block carries the same payload, because the fountain above wants blocks of one size: a block
-// at a lower rate is a longer codeword and takes more sub-channels, 8 at 3/4, 9 at 2/3, 12 at 1/2.
+// at a lower rate is a longer codeword and takes more sub-channels, 7 at 7/8, 8 at 3/4, 9 at 2/3, 12 at 1/2.
 typedef struct { int rate, blocks, subs; } focus_tier_t;   // LDPC rate index (ldpc.h), how many blocks, sub-channels to a block
 
 // Named, so internal.h can forward-declare it for the two accessors that hand back what focus_acquire is holding.
@@ -132,7 +133,8 @@ int focus_parity(focus_t *f, int c);
 // ai: whose light came from pictures of the other bit: 1 - 2 f where each sample came from one picture or the other
 // ai: (a tear), (1 - 2 f) / sqrt(1 - 2 f + 2 f^2) where every sample is the same blend (the blend lowers m2); either
 // ai: way 0 at an even mix and largest in size unmixed. sd[0], sd[1]: their standard errors, the blocks' spread over
-// ai: the square root of their count. Returns the blocks read (0: none, e.g. soft values made elsewhere).
+// ai: the square root of their count. A parity with no blocks reads NaN, its error too (version 1 has one block, an
+// ai: even one: r[0] alone, no side). Returns the blocks read (0: none, e.g. soft values made elsewhere).
 int focus_pilot(const focus_t *f, int blocks, float r[2], float sd[2]);
 // ai: The grid's shift the last decode read off the pilots and turned back before reading its soft values (focus.c
 // ai: pilot_align): samples along u and v, 0, 0 where the pilots did not tell one from none (or soft values made
@@ -146,11 +148,22 @@ int focus_init(focus_t *f, int n, int subch, int mode, float clip, int span, flo
 // focus_tiers_for's).
 int focus_init_tiers(focus_t *f, int n, const focus_tier_t *tier, int tiers, float clip, int span, float tilt, int corner, int corner_filled, int centre, int edge, int track_alt, int border);
 // The format's rate profile for subch sub-channels (a multiple of 8, 8 to 1024): a 7/8 blocks of 7 sub-channels, m 3/4
-// blocks of 8 and c 1/2 blocks of 12, inner first, with 7 a + 8 m + 12 c = subch and m >= 1, the (a, c) whose 7 a and
-// 12 c are nearest FOCUS_TIER_IN and FOCUS_TIER_OUT percent of subch (least squares, in integers; the first of equals in
-// a, then c rising). LIZARD-432: 7/8 x 20, 3/4 x 20, 1/2 x 11. Writes the tiers present (1 to 3) to tier[] and returns
-// their count, or 0 for a count that is no format's.
+// blocks of 8, t 2/3 blocks of 9 and c 1/2 blocks of 12, inner first, with 7 a + 8 m + 9 t + 12 c = subch and m >= 1,
+// the (a, t, c) whose 7 a, 9 t and 12 c are nearest FOCUS_TIER_IN, FOCUS_TIER_23 and FOCUS_TIER_OUT percent of subch
+// (least squares, in integers; the first of equals in a, then t, then c rising). LIZARD-568: 7/8 x 24, 3/4 x 17,
+// 2/3 x 16, 1/2 x 10. Writes the tiers present (1 to 4) to tier[] and returns their count, or 0 for a count that is no
+// format's.
 int focus_tiers_for(int subch, focus_tier_t tier[FOCUS_TIERS]);
+// ai: A rate profile other than the format's, for a live A/B of rate families (2026-10-07): "6432:30/24/20" names the
+// ai: rates inner first (6 7/8, 4 3/4, 3 2/3, 2 1/2; two to four of them), the second tier filling what the others leave,
+// ai: then each other tier's target percent of the sub-channels in order; focus_tiers_for follows it by the same rule
+// ai: (least squares in integers, the loops in tier order, the first of equals), and a count it cannot fill takes the
+// ai: format's profile ("642:32/30" is the format's of 2026-10-07, which reads the recordings painted then). Not the
+// ai: format: a frame painted under
+// ai: one is read only by a receiver set the same. Set from LIZ_PROFILE where the platform has an environment (read at
+// ai: every call, so a host sets it before making its codecs), or by focus_profile_set, which overrides it ("" or 0
+// ai: back to the environment). Returns the tiers the spec names, 0 for the format's, -1 for a spec it refuses.
+int focus_profile_set(const char *spec);
 // The blocks a frame of subch sub-channels carries under that profile (0 for no format).
 int focus_blocks_for(int subch);
 void focus_free(focus_t *f);

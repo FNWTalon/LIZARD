@@ -181,10 +181,6 @@ extern "C" JNIEXPORT jdoubleArray JNICALL Java_dev_lizard_receiver_Native_series
   return a;   // ai: null only with the VM's OutOfMemoryError pending
 }
 
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_soon(JNIEnv*, jclass, jlong h, jboolean on) {
-  if (h) rx(h)->soon(on == JNI_TRUE);
-}
-
 extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_batchCap(JNIEnv*, jclass, jlong h, jint n) {
   if (h) rx(h)->batchCap(n);
 }
@@ -306,7 +302,7 @@ int64_t fenceSignalledAt(int fd) {
   return t;
 }
 
-// ai: The GPU-filled ring (2026-10-07: "generate ahead, buffer generously, present on an exact fixed-refresh schedule";
+// ai: The GPU-filled ring (2026-10-07: frames generated ahead, buffered generously, presented on a fixed schedule;
 // ai: GPU only). The painter's frames stay on its device (sender.h ring()); a filler thread expands each into one of the
 // ai: ring's AHardwareBuffers (RGBA8, imported into the painter's device as a storage image, core/tx/expand.comp) as
 // ai: soon as one is free, so filled buffers wait ahead of the screen; at a vsync where a picture is due the main

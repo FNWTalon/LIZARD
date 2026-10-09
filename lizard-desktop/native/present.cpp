@@ -172,14 +172,16 @@ Monitor findMonitor(Display* d, const std::string& want) {
 }
 
 // ai: A window over the monitor, full screen and out of the compositor where the window manager agrees; no cursor.
-Window makeWindow(Display* d, const Monitor& m, Atom& del) {
+Window makeWindow(Display* d, const Monitor& m, Atom& del, const std::string& title) {
   const int s = DefaultScreen(d);
   XSetWindowAttributes a{};
   a.background_pixel = WhitePixel(d, s);
   a.event_mask = KeyPressMask | StructureNotifyMask | ExposureMask;
   const Window w = XCreateWindow(d, RootWindow(d, s), m.x, m.y, static_cast<unsigned>(m.w), static_cast<unsigned>(m.h), 0,
                                  CopyFromParent, InputOutput, CopyFromParent, CWBackPixel | CWEventMask, &a);
-  XStoreName(d, w, "Lizard");
+  XStoreName(d, w, title.c_str());
+  XChangeProperty(d, w, XInternAtom(d, "_NET_WM_NAME", False), XInternAtom(d, "UTF8_STRING", False), 8, PropModeReplace,
+                  reinterpret_cast<const unsigned char*>(title.data()), static_cast<int>(title.size()));
   XSizeHints sh{};
   sh.flags = USPosition | USSize;
   sh.x = m.x; sh.y = m.y; sh.width = m.w; sh.height = m.h;
@@ -248,14 +250,14 @@ int main(int argc, char** argv) {
     if (!prep.empty()) throw std::runtime_error("no Vulkan device to present from: " + prep);
     const std::string err = sender.configure(f);
     if (!err.empty()) throw std::runtime_error(err);
-    std::printf("sender: LIZARD-%d%s, n %d in the %d ring, %d a second asked, a frame %d x %d px, painted on the %s%s%s, %s\n",
+    std::printf("sender: LIZARD-%d%s, n %d in the %d ring, %d a second asked, a frame %d x %d px, painted on the %s%s%s, %s, clip %g\n",
                 a.subch, a.codes > 1 ? " x 2" : "", f.n, a.ring, a.fps, sender.width(), sender.side(), sender.painter().c_str(),
                 sender.gpuWhy().empty() ? "" : " (the GPU not: ", sender.gpuWhy().empty() ? "" : (sender.gpuWhy() + ")").c_str(),
-                file ? ("the file " + a.file).c_str() : "the test stream");
+                file ? ("the file " + a.file).c_str() : "the test stream", lizard::txClip());
 
     // ai: the window, until it is mapped and the size the manager gives it has settled
     Atom del = 0;
-    const Window w = makeWindow(d, mon, del);
+    const Window w = makeWindow(d, mon, del, "LIZARD");
     unsigned W = static_cast<unsigned>(mon.w), H = static_cast<unsigned>(mon.h);
     bool mapped = false;
     for (const double t = nowMs(); nowMs() - t < 1500;) {

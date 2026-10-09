@@ -3,8 +3,8 @@
 // ai: encodes and paints the test stream or a file picked from this device with no server. Once a second it posts
 // ai: what it painted and its config to the rig as a development log (devlog.mjs), best effort, never awaited.
 // ai: For a user the page is a file: choose or drop one, Start, Fullscreen, Stop, the version picked from the window over
-// ai: the whole ladder (up to LIZARD-560 until 2026-09-29, APP_TOP). The lab's switches are in the Developer panel, their
-// ai: ids the URL presets.
+// ai: the whole ladder (up to LIZARD-560 until 2026-09-29, APP_TOP). The lab's switches are in Settings and Developer
+// ai: Tools, their ids the URL presets.
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { DEFAULT_LOG2 } from "../liblizard/sim/xfer.mjs";
 import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, versionOf, blocksFor } from "../liblizard/sim/lizard_pick.mjs";
@@ -32,9 +32,9 @@ let running = false, live = false, lap = 0, dataSent = 0, dataWin = 0;
 // ai: painted, the last picture left on screen; a receiver holds what it has, and a resume paints on at once.
 let paused = false, sendingLine = "";
 
-// A plain grey Lizard symbol, the default and the one that gets expensive, is encoded and turned into pixels in a
-// worker (lizard-web/send-worker.mjs), in wasm, a few frames ahead: at LIZARD-1024 that was 45 ms a frame on this thread and
-// ai: is now a putImageData here.
+// A plain grey LIZARD symbol, the default and the one that gets expensive, is encoded and turned into pixels in a
+// worker (lizard-web/send-worker.mjs), in wasm, a few frames ahead: at LIZARD-1024 that was 45 ms a frame on this thread
+// ai: (2026-09-23) and is now a putImageData here.
 const AHEAD = 3;
 // ai: The rejection a stop hands a reply still awaited: not an error, so nothing is said about it.
 const STOPPED = new Error("stopped");
@@ -68,7 +68,7 @@ function swCall(msg, transfer = []) {
   return new Promise((res, rej) => { pending = { type: msg.type === "start" ? "ready" : msg.type, res, rej }; sw.postMessage({ ...msg, gen }, transfer); });
 }
 
-// ai: The GPU encoder (the Developer panel's #enc, 2026-09-29; gpu/encoder.mjs), for a PC with a good GPU: the sender
+// ai: The GPU encoder (Settings' #enc, 2026-09-29; gpu/encoder.mjs), for a PC with a good GPU: the sender
 // ai: had lagged at LIZARD-1024. Its latency matters little and a dropped frame does, so frames go in batches (16, fewer
 // ai: where the device's memory holds fewer: cfg.batch): the worker makes a batch's blocks alone, the page encodes the batch on
 // ai: the device into one of its configuration's two halves as it arrives, and presents a frame's slot on #cg when the
@@ -199,7 +199,7 @@ function gpuGiveUp(e) {
 // ai: menu of 64 versions before stepped by two blocks. #subch holds what the page reads, "auto" or the sub-channels; the
 // ai: slider (#blocks) is a view over it, kept out of the saved settings, its first step (0) auto (2026-10-05; an Auto box
 // ai: beside it before). The slider commits on release (a re-pick for every step dragged would rebuild the encoder each
-// ai: time); under auto its label says what auto took, once known ("Auto, 60 blocks, 28.1 KB").
+// ai: time); under auto its label says what auto took, once known ("Auto, 57, 26.7 KB").
 function showBlocks() {
   const auto = $("subch").value === "auto", b = auto ? (shown ? shown.subch / 8 : 0) : +$("subch").value / 8;
   $("blocks").value = auto ? "0" : String(b);
@@ -231,7 +231,7 @@ function stateFps(force = false) {
   bandFps = v;
 }
 
-// A Lizard file goes as a chunked transfer (sim/xfer.mjs): chunks of 2^chunk bytes (?chunk=10..24, 4 MiB unless
+// A LIZARD file goes as a chunked transfer (sim/xfer.mjs): chunks of 2^chunk bytes (?chunk=10..24, 4 MiB unless
 // ai: asked), a fountain each, the header and manifest in the light, and only there: the receiver reads it blind
 // ai: (2026-09-26).
 const URLP = new URLSearchParams(location.search), CHUNK_LOG2 = +URLP.get("chunk") || DEFAULT_LOG2;
@@ -242,7 +242,7 @@ const FIT = URLP.get("fit") ?? "stretch", SURROUND = URLP.get("bg") ?? "none";
 for (const k of ["fit", "bg"]) try { localStorage.removeItem(`send:${k}`); } catch {}
 
 // Which generator fills a test block (sim/phy.mjs STREAMS). It rides in the spec so the receiver
-// and any later replay of build/captures take it from the same place; a capture recorded before
+// and any later replay of research/captures take it from the same place; a capture recorded before
 // this field existed has no stream and replays against the old walk.
 // ai: The receiver judges it from the light (SPEC 9.3), so it is SHAKE256 and nothing else.
 const STREAM = "shake256";
@@ -251,25 +251,26 @@ function spec() {
   // The 2 x 2 picture split (sim/phy.mjs makeGrid) is gone from this page (2026-09-24): its tiles were
   // n = 128 pictures off the ladder with no format word, a symbol that cannot describe itself. The lab's
   // archive/lizard-2/lizard2.mjs (not published) built them for measurement.
-  // One code rate on every ring, equal power, soft LDPC: rates by ring, the power tilt and RS(80,64) lost (research/10).
+  // ai: The format's rate profile (the codec's, from the sub-channel count: src/focus.c focus_tiers_for, four rates
+  // ai: since 2026-10-08), equal power, soft LDPC: the power tilt and RS(80,64) lost (research/10).
   // n is derived from the version (N_FOR in sim/lizard_pick.mjs) and is never chosen here.
   const subch = $("subch").value === "auto" ? pick(room()).subch : +$("subch").value, n = N_FOR(subch);
   // span written out, not 0, so a recording says which symbol it holds (sim/phy.mjs recordedSpec).
-  // ai: The ring the Developer menu names, or the default ring, the same for every picture (sim/lizard_pick.mjs RING_DEFAULT).
+  // ai: The ring Settings names, or the default ring, the same for every picture (sim/lizard_pick.mjs RING_DEFAULT).
   return { phy: "focus", n, subch, mode: 1, span: SPAN(n, ringChosen() ?? RING_DEFAULT), bitmap: FOCUS_BITMAP,
     variants: [{ name: "rx" }], stream: STREAM };
 }
 
-// How large a Lizard symbol to paint, and how many sub-channels to fill, from the window alone. Nothing comes back
+// How large a LIZARD symbol to paint, and how many sub-channels to fill, from the window alone. Nothing comes back
 // from the receiver: a back channel would make the optical link pointless, so both numbers are the sender's guess.
 //
-// The symbol is n picture samples across plus a 15-module border a side (sim/lizard_pick.mjs OB_MARGIN), so
-// SAMPLES(n) samples, and the margin the codec paints outside that (src/focus.h FOCUS_QUIET, or the optional guard
-// ring and the white inside it), which ROOM_FOR counts. NEVER let the browser
-// squeeze that below one device pixel a sample: downscaling throws the outer rings away, which is the whole payload
-// above the first few. So take the largest n that fits at one device pixel a sample or better, and stretch up to
+// The symbol is the picture resampled into its ring's span (SPAN) plus a 15-module border a side
+// (sim/lizard_pick.mjs OB_MARGIN), so SAMPLES(n) samples, and the margin the codec paints outside that (src/focus.h
+// FOCUS_QUIET), which ROOM_FOR counts. NEVER let the browser
+// squeeze a format below the room it needs: downscaling past it throws the outer rings away, which is the whole payload
+// above the first few. So take the largest format that fits, and stretch up to
 // fill the rest of the room (an upscale only interpolates; research/09 measures smoothed fractional scaling at 2% of
-// the mean and 11% at worst). The largest n that fits always leaves a stretch under 2x, by construction.
+// the mean and 11% at worst).
 //
 // Which format, from the WINDOW alone. There is no camera assumption: the sender cannot see the capture, and a
 // guess at it was a control on this page that nobody could answer. Each format states the room it needs
@@ -292,7 +293,7 @@ function room() {
 // ai: take, so the code sits smaller in the middle with the surround round it; under auto the pick follows the smaller
 // ai: room, as it follows a smaller window. Commits on release, as blocks a frame does.
 const sizeOf = () => Math.max(0.25, Math.min(1, (+$("size").value || 100) / 100));
-// ai: Symbols a frame, the Developer panel's "codes": two side by side for a native receiver reading a 2:1 crop. No
+// ai: Symbols a frame, Settings' "codes": two side by side for a native receiver reading a 2:1 crop. No
 // ai: browser decodes two (the receiver's 2:1 path was archived 2026-09-28 and deleted 2026-09-29, the receiver's side
 // ai: planned as two 960 x 960 frames divided by a line); the option says so.
 const codesOf = () => (+$("codes").value === 2 ? 2 : 1);
@@ -300,13 +301,13 @@ const codesOf = () => (+$("codes").value === 2 ? 2 : 1);
 // ai: The library's pick over the whole ladder, at the first pick and every re-pick (capped at LIZARD-560, APP_TOP, until
 // ai: 2026-09-29).
 function pick(roomPx) { return pickVersion(roomPx, undefined, ringChosen()); }
-// ai: The Developer panel's ring (an index into RINGS), or null for the default ring (RING_DEFAULT): the menu has no auto
+// ai: Settings' ring (an index into RINGS), or null for the default ring (RING_DEFAULT): the menu has no auto
 // ai: since 2026-10-05 (the 128 selected), so null only where it holds no ring at all.
 function ringChosen() { const v = $("ring").value; return v === "" || v === "auto" ? null : +v; }
 const ringOf = (s) => RINGS.indexOf(s.span / 2);
 
 // The canvas laid out for a symbol of n samples a side, quiet zone included, whenever that or the room changed.
-// ai: codes symbols side by side, gap paint px between them (the encoder's, GAP_MODULES modules): the canvas is
+// ai: codes symbols side by side, gap paint px between them (the encoder's, gapOf() modules): the canvas is
 // ai: codes n + (codes - 1) gap wide and n high, stretched as one. gpu: the GPU encoder's canvas (#cg) is the one
 // ai: shown, else #c; canvasWhole is its integer factor, which the GPU's present draws at. #tx dataset.gap is the gap
 // ai: in canvas px, for a check that cuts the halves.
@@ -320,8 +321,8 @@ function layout(n, codes = 1, gpu = false, gap = 0) {
     const dpr = devicePixelRatio || 1, room = Math.min(canvas.parentElement.clientWidth / (codes + (codes - 1) * gap / n), canvas.parentElement.clientHeight) * dpr * sizeOf();
     // Three ways to put a symbol of n samples on screen. "stretch" is the default and what a small screen wants:
     // paint whole device pixels a sample, then let the browser stretch that up to fill the room. Stretching UP only
-    // interpolates, so no ring is lost; squeezing DOWN would throw the outer rings away, which is most of the
-    // payload, and that is the one thing never to do. The largest picture that fits leaves a stretch under 2x.
+    // interpolates, so no ring is lost; squeezing DOWN below the format's room (ROOM_FOR) would throw the outer rings
+    // away, which is most of the payload, and that is the one thing never to do (auto's pick sees to it).
     const mode = FIT, whole = Math.max(1, Math.floor(room / n));
     const scale = mode === "fit" ? 1 : whole, css = mode === "whole" ? n * scale : room;
     cv.width = fw * scale; cv.height = n * scale;
@@ -587,8 +588,8 @@ function stop() {
 
 // A resize, a rotation or going fullscreen changes what fits, and both numbers are picked from it.
 // ai: Re-pick; the receiver reads the new version from the next frame's word.
-// This is safe mid-transfer because block_bytes comes from the code rate alone
-// (src/focus.c: k / 8 - 4, with k from the 8 sub-channels a block and the rate), not from n or the sub-channel
+// This is safe mid-transfer because block_bytes is the same at every rate
+// (src/focus.c: the smallest k / 8 - 4 among the rate profile's codes, held to 473 B), not from n or the sub-channel
 // count, so bytes per block does not move and Wirehair, being rateless, does not mind that a frame now carries a
 // different number of blocks. The check below refuses the change if that ever stops being true.
 //
@@ -780,7 +781,7 @@ function paintSurround() {
 new ResizeObserver(paintSurround).observe(bgc.parentElement);
 // ai: Any control can be preset from the URL: send.html?payload=test&subch=512&fps=30&auto (&bg=noise&bgseed=3 for a
 // ai: surround). The file input is not one: a page cannot be handed a file by its URL.
-// ai: The Developer panel's settings as the user last left them (localStorage, since 2026-09-29), then
+// ai: Settings' controls as the user last left them (localStorage, since 2026-09-29), then
 // ai: the URL's presets over them for this load.
 // ai: and Developer Tools' payload (there since 2026-10-03), under the same keys
 for (const el of document.querySelectorAll("#dev select, #dev input, #logs select")) if (el.type !== "file" && !("view" in el.dataset)) persist(el, `send:${el.id}`);

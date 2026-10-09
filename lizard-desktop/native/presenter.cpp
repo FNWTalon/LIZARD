@@ -689,9 +689,11 @@ void Presenter::Impl::queryDirect() {
 // ai: (_NET_WM_BYPASS_COMPOSITOR, 1 on, 0 the manager's choice), so the code's presents reach the screen as the
 // ai: swapchain makes them, not as the compositor redraws (2026-10-03: Chrome under Cinnamon left 8.6% of pictures one
 // ai: refresh or less), and keeps the window above the others (_NET_WM_STATE_ABOVE, a client message as the EWMH asks
-// ai: for a mapped window): a manager that unredirects only the desktop's topmost window (Mutter, Muffin) then shows
+// ai: for a mapped window): a manager that unredirects only the desktop's topmost window (Mutter, Muffin) can then show
 // ai: the code direct while the user works on another monitor (2026-10-07: composited whenever another window stood
-// ai: above it, it tore 3% of frames and paced by the compositor's monitor). Windows: the window topmost.
+// ai: above it, it tore 3% of frames and paced by the compositor's monitor; with the window above, that Cinnamon
+// ai: session still composited it, `direct` false, its unredirection held off by something outside the window).
+// ai: Windows: the window topmost.
 void Presenter::Impl::applyBypass() {
   const int b = bypass.exchange(-1);
   if (b < 0) return;

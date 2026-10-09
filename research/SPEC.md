@@ -1,4 +1,4 @@
-# Lizard format specification
+# LIZARD format specification
 
 2026-09-24. The C in `liblizard/src/` is normative: the format is what `liblizard/src/enc.c`, `liblizard/src/focus.c`,
 `liblizard/src/layout.c`, `liblizard/src/fmt.c`, `liblizard/src/rs.c`, `liblizard/src/ldpc.c`, `liblizard/src/demap.c`,
@@ -11,11 +11,13 @@ and 5.2, 6.12, 7.4 and 9.3 again on 2026-09-26 after FOCUS's finder frame was de
 rings: three that morning (32, 48, 64), four that evening (32, 64, 96, 128), with the 64 the sender's default
 for every picture. Sections 1 to 6, 10 and 12 to 14 follow the evening's code, with 3.3 to 3.6, 4.3 to 4.10, 5.1 to
 5.4, 6.2, 6.8, 6.9 and 6.12 recomputed from `liblizard/build/ob.wasm` and `liblizard/src/fmt.c`; section 4 is the border the code paints
-(a 12-module corner mark, a 3-module guard). Measured figures cite the record they come from.
+(a 12-module corner mark, a 3-module guard). Updated since for every whole number of blocks and the 128 default ring
+(2026-10-01), the pilots (2026-09-30, signed 2026-10-01), zstd (2026-10-05) and the rate profile (2026-10-07, four
+rates since 2026-10-08). Measured figures cite the record they come from.
 
 ## Contents
 
-1. [What Lizard is](#1-what-lizard-is)
+1. [What LIZARD is](#1-what-lizard-is)
 2. [Constraints](#2-constraints-normative)
 3. [The formats](#3-the-formats)
 4. [The border](#4-the-border)
@@ -30,28 +32,28 @@ for every picture. Sections 1 to 6, 10 and 12 to 14 follow the evening's code, w
 13. [Open questions](#13-open-questions)
 14. [Changes since the 2026-09-22 spec](#14-changes-since-the-2026-09-22-spec)
 
-## 1. What Lizard is
+## 1. What LIZARD is
 
-Lizard is a luminance-only animated 2D barcode for one-way transfer from a screen to a camera, derived from FOCUS
+LIZARD is a luminance-only animated 2D barcode for one-way transfer from a screen to a camera, derived from FOCUS
 (Hermans et al., MobiSys 2016). A generic screen paints a sequence of frames, a generic phone camera films them, and
 nothing comes back. Each frame is one symbol: a square grey picture of n x n samples whose 2D spectrum carries QPSK
 symbols on the coefficients of the upper half-plane, taken in order of rising spatial frequency, inside a black and
 white border 15 modules deep. The border comes in four sizes, the rings, whose band holds 32, 64, 96 or 128 cells a
-side; any ring may carry any picture, and the sender paints the 64 ring unless told otherwise. The ring registers the
+side; any ring may carry any picture, and the sender paints the 128 ring unless told otherwise. The ring registers the
 symbol and carries a format word that says what is inside (the sub-channel count, so the picture size and the blocks,
 and the display rate the sender intends): one Reed-Solomon codeword over every word cell of the border, 8, 16, 24 or 32
 bytes by ring. The
 payload travels in blocks of 473 bytes (a 32-bit block id and 469 payload bytes) with a CRC-32, each coded by a
 QC-LDPC code onto consecutive sub-channels of 320 coefficients at a rate that follows the frequency: 7/8 on 7
-sub-channels a block in the inner tier, 3/4 on 8 in the middle, 1/2 on 12 in the outer (the rate profile, a function of
-the sub-channel count, 3.1). Block 0 holds the lowest frequencies and the
+sub-channels a block in the inner tier, then 3/4 on 8, 2/3 on 9, and 1/2 on 12 in the outer (the rate profile, a
+function of the sub-channel count, 3.1). Block 0 holds the lowest frequencies and the
 blocks run outwards, and blocks from any frame feed a Wirehair fountain, so the receiver needs no particular frame. A
 file travels in chunks, a fountain each, described by a header block and verified chunk by chunk against its BLAKE3
 hash, all in the light (7.5 to 7.10).
 
 The format is built on one property: blur, distance and resampling take the outermost blocks first, so a frame loses
 blocks gradually instead of stopping dead at one resolution the way QR, Aztec and binary grid codes do. That is why
-Lizard was chosen over the binary grid code, which carries more above its cliff (2026-09-20).
+LIZARD was chosen over the binary grid code, which carries more above its cliff (2026-09-20).
 
 ### 1.1 Terms
 
@@ -79,8 +81,8 @@ Lizard was chosen over the binary grid code, which carries more above its cliff 
 | coefficient | one frequency (u, v) of the picture's 2D DFT; it carries one QPSK symbol, two slots |
 | slot | one transmitted bit: the sign of a coefficient's real or imaginary part |
 | sub-channel | 320 consecutive coefficients of the frequency order (6.3) |
-| block | 473 bytes, one codeword on consecutive sub-channels: 7 at rate 7/8, 8 at 3/4, 12 at 1/2 (3.1) |
-| codeword | the LDPC codeword of one block: 4464 bits at 7/8, 5088 at 3/4, 7680 at 1/2 (section 8) |
+| block | 473 bytes, one codeword on consecutive sub-channels: 7 at rate 7/8, 8 at 3/4, 9 at 2/3, 12 at 1/2 (3.1) |
+| codeword | the LDPC codeword of one block: 4557 bits at 7/8 (4464 of them sent), 5088 at 3/4, 5760 at 2/3, 7680 at 1/2 (section 8) |
 | rate profile | the blocks' code rates by frequency, inner first, a function of subch alone (3.1) |
 | subch | the number of sub-channels in a frame; LIZARD-512 has subch = 512 |
 | version | V = subch / 8, the format's size; what the word's second byte carries. A frame of it carries B(V) blocks, the rate profile's count. It says what is inside the ring and nothing about the ring (3.1) |
@@ -144,7 +146,7 @@ cannot state any of them. A receiver told nothing reads a frame of other rate ti
 
 - A power tilt across the sub-channels (`focus_t.tilt`, in dB; 6.5). Sender only: the receiver measures each
   sub-channel's amplitude.
-- Rate tiers other than the profile's (`liblizard/src/focus.c:focus_init_tiers`): up to three runs of blocks at any of the
+- Rate tiers other than the profile's (`liblizard/src/focus.c:focus_init_tiers`): up to four runs of blocks at any of the
   generator's rates, a block taking 7 sub-channels at 7/8, 8 at 3/4, 9 at 2/3 and 12 at 1/2. The format's tiers are the
   rate profile's alone (3.1).
 - `FOCUS_RS`, mode 0 of `liblizard/src/focus.c:focus_init`: the FOCUS paper's RS(80,64) per sub-channel with hard QPSK.
@@ -174,40 +176,56 @@ cannot state any of them. A receiver told nothing reads a frame of other rate ti
 
 - A **sub-channel** is 320 consecutive coefficients of the picture's coefficient order (`liblizard/src/focus.h:FOCUS_SUB`, 6.3).
 - A **block** is 473 bytes coded as one codeword on consecutive sub-channels, as many as its rate needs: 7 at 7/8, 8 at
-  3/4 (`FOCUS_GROUP`), 12 at 1/2. Blocks are laid from sub-channel 0 outwards, each beginning where the one before
+  3/4 (`FOCUS_GROUP`), 9 at 2/3, 12 at 1/2. Blocks are laid from sub-channel 0 outwards, each beginning where the one before
   ended (`liblizard/src/focus.c:init`, `block_sub`).
 - A **format** is named after its sub-channel count subch: LIZARD-512 has subch = 512. Its **version** is
   V = subch / 8, its size. The format word's version byte carries V (`liblizard/src/focus.c:fmt_paint`). A frame of it
   carries B(V) blocks, the rate profile's count (below).
 
-**The rate profile** (2026-10-07). The code rate follows the frequency. A capture's signal-to-noise ratio falls with the
-frequency, so the lowest sub-channels carry more than rate 3/4 needs and the highest less. Inner first, a frame of
-subch sub-channels carries a blocks at 7/8 (7 sub-channels each), m at 3/4 (8 each) and c at 1/2 (12 each), with
-7a + 8m + 12c = subch and m >= 1. Of the (a, c) that fit, the profile is the one with the least
-(700 a - 32 subch)^2 + (1200 c - 30 subch)^2, in integers, the first of equals in rising a, then rising c: 7a near 32%
-of the sub-channels and 12c near 30% (`liblizard/src/focus.c:focus_tiers_for`, `FOCUS_TIER_IN` = 32, `FOCUS_TIER_OUT` =
-30; `liblizard/sim/lizard_pick.mjs:tiersFor`, the same integers). A tier of no blocks is absent: LIZARD-8 to -40 are one
-tier of 3/4, and every larger format has all three. B(V) = a + m + c (`focus_blocks_for`): V up to V = 10, then at most
-7 under V (121 at LIZARD-1024), never falling as V rises. Every block is 473 bytes whatever its rate, so the profile
-moves a frame's capacity by its block count alone. It is a function of subch, which the word names, so a receiver told
-the version knows every block's place and code, and nothing else is signalled.
+**The rate profile** (2026-10-07; four rates since 2026-10-08). The code rate follows the frequency. A capture's
+signal-to-noise ratio falls with the frequency, so the lowest sub-channels carry more than rate 3/4 needs and the
+highest less. Inner first, a frame of subch sub-channels carries a blocks at 7/8 (7 sub-channels each), m at 3/4 (8
+each), t at 2/3 (9 each) and c at 1/2 (12 each), with 7a + 8m + 9t + 12c = subch and m >= 1. Of the (a, t, c) that fit,
+the profile is the one with the least (700 a - 39 subch)^2 + (900 t - 15 subch)^2 + (1200 c - 20 subch)^2, in integers,
+the first of equals in rising a, then rising t, then rising c: 7a near 39% of the sub-channels, 9t near 15% and 12c near
+20%, 3/4 filling the rest (`liblizard/src/focus.c:focus_tiers_for`, `FOCUS_TIER_IN` = 39, `FOCUS_TIER_23` = 15,
+`FOCUS_TIER_OUT` = 20; `liblizard/sim/lizard_pick.mjs:tiersFor`, the same integers). A tier of no blocks is absent:
+LIZARD-8 and -16 are one tier of 3/4, LIZARD-24 to -40 have no 1/2 tier, LIZARD-48 and -56 no 2/3 tier, and every
+larger format has all four. B(V) = a + m + t + c (`focus_blocks_for`) is never above V: equal to it up to V = 15 and at
+V = 20 to 22, at most 4 under it elsewhere (124 at LIZARD-1024), never falling as V rises. Every block is 473 bytes
+whatever its rate, so the profile moves a frame's capacity by its block count alone.
+It is a function of subch, which the word names, so a receiver told the version knows every block's place and code, and
+nothing else is signalled.
 
 | format | tiers, inner first | blocks B(V) |
 |---|---|---|
-| LIZARD-8 to -40 | 3/4 x V | 1 to 5 |
+| LIZARD-8, -16 | 3/4 x V | 1, 2 |
+| LIZARD-24 | 7/8 x 1, 3/4 x 1, 2/3 x 1 | 3 |
 | LIZARD-48 | 7/8 x 4, 3/4 x 1, 1/2 x 1 | 6 |
-| LIZARD-128 | 7/8 x 4, 3/4 x 8, 1/2 x 3 | 15 |
-| LIZARD-256 | 7/8 x 12, 3/4 x 11, 1/2 x 7 | 30 |
-| LIZARD-432 | 7/8 x 20, 3/4 x 20, 1/2 x 11 | 51 |
-| LIZARD-512 | 7/8 x 24, 3/4 x 25, 1/2 x 12 | 61 |
-| LIZARD-568 | 7/8 x 24, 3/4 x 29, 1/2 x 14 | 67 |
-| LIZARD-1024 | 7/8 x 48, 3/4 x 47, 1/2 x 26 | 121 |
+| LIZARD-64 | 7/8 x 5, 3/4 x 1, 2/3 x 1, 1/2 x 1 | 8 |
+| LIZARD-128 | 7/8 x 7, 3/4 x 2, 2/3 x 3, 1/2 x 3 | 15 |
+| LIZARD-256 | 7/8 x 13, 3/4 x 9, 2/3 x 5, 1/2 x 4 | 31 |
+| LIZARD-432 | 7/8 x 24, 3/4 x 12, 2/3 x 8, 1/2 x 8 | 52 |
+| LIZARD-512 | 7/8 x 29, 3/4 x 15, 2/3 x 9, 1/2 x 9 | 62 |
+| LIZARD-568 | 7/8 x 33, 3/4 x 17, 2/3 x 9, 1/2 x 10 | 69 |
+| LIZARD-592 | 7/8 x 34, 3/4 x 18, 2/3 x 10, 1/2 x 10 | 72 |
+| LIZARD-1024 | 7/8 x 57, 3/4 x 32, 2/3 x 17, 1/2 x 18 | 124 |
 
 Why (non-normative). Before 2026-10-07 every block was 3/4 on 8 sub-channels and B(V) = V (section 12). On two
 recorded 2:1 phone captures (one phone at 1080; section 11), each frame's own residuals re-modulated under a profile and
-read by the reference decoder's soft values and LDPC gave +17.5% bytes a frame at LIZARD-432 under this profile and
-+25% at LIZARD-416 under one of its shape (7/8 x 16, 3/4 x 20, 1/2 x 12), against one rate 3/4 at the same sub-channel
-count, though the profile offers 5 to 7% fewer blocks; 7/8 everywhere read a third less.
+read by the reference decoder's soft values and LDPC gave +17.5% bytes a frame at LIZARD-432 under a three-rate profile
+(7/8, 3/4 and 1/2 at 32% and 30%) and +25% at LIZARD-416 under one of its shape, against one rate 3/4 at the same
+sub-channel count, though the profile offers 5 to 7% fewer blocks; 7/8 everywhere read a third less. The same
+re-modulation over rate families on three such captures found only the four-rate gradient gaining on every capture
+against the three-rate profile, and this split by +2.7 to +4.1% over all frames and +2.2 to +3.3% over captures little
+mixed with the neighbouring pictures; families without 7/8 inside or without 1/2 outside lost. Live, on captures all
+little mixed, the two read alike (about 90% of the blocks offered); the four rates hold their margin where captures are
+mixed or noisier. The split was 30/24/20 until the evening of 2026-10-08. A scan of the junctions between the tiers on
+the channel a GPU receiver reads (its own sampling and pilot alignment, which read these captures 16 to 18% above the
+reference decoder's) put more 7/8 inside and less 2/3: at LIZARD-592 the targets 39/15/20 read +1.94% bytes over
+30/24/20 on three captures (7/8 x 34, 3/4 x 18, 2/3 x 10, 1/2 x 10 against 7/8 x 24, 3/4 x 20, 2/3 x 16, 1/2 x 10).
+On the reference decoder's own reading the same scan leaned the other way, so a split is judged on the stronger
+receiver's channel.
 
 **Versions collapse** (2026-09-27). A version names what is inside the symbol, its sub-channel count, and nothing
 else: not a symbol size, not a module count. The symbol's size is its ring's, one of four (3.3), and any ring may carry
@@ -216,11 +234,11 @@ any version. The names stay: LIZARD-k already states the sub-channel count.
 **Every whole number of blocks** (2026-10-01). A sender MAY paint any version from 1 to 128: every multiple of 8 sub-channels
 from 8 to 1024, LIZARD-8, -16, ..., -1024 (`liblizard/sim/lizard_pick.mjs:VERSIONS`, 128 values). One block is the smallest step
 a symbol can take: the word names subch / 8, a step of 8 sub-channels. The reference sender's control is a slider of
-versions, each labelled with the blocks its profile carries, with an automatic pick beside it (`lizard-web/send.html`),
-and its picker reaches all 128. A
+versions, each labelled with the blocks its profile carries, its first step the automatic pick (`lizard-web/send.html`;
+an Auto box beside it until 2026-10-05), and its picker reaches all 128. A
 receiver reads the version the word names with no flag: the word states any version from 1 to 128
 (`liblizard/src/fmt.c:ob_fmt_encode`, `ob_fmt_decode`, `OB_FMT_VERSION_MAX` = 128), and `liblizard/src/focus.c:focus_init` builds any
-positive multiple of 8 sub-channels up to 1024. Checked 2026-10-01: every one of the 128 in each of the four rings
+positive multiple of 8 sub-channels up to 1024. Checked 2026-10-01, under one rate 3/4: every one of the 128 in each of the four rings
 painted and read blind byte for byte by the C (`scripts/exp/ring_pairs.mjs`, 512 of 512) and by the GPU decoder
 (`scripts/exp/gpu_rings.mjs`, 511 of 512: LIZARD-8 in the 128 ring at 2 px a module not found; STATUS "Blocks a frame, a
 slider"). A frame of one block has no diversity (one failed block is an empty frame), which was the reason for the
@@ -323,7 +341,7 @@ ring joined them (section 12).
 **Any ring may carry any picture.** A sender MAY paint a picture of any n in any of the four rings. The reference sender
 paints the 128 ring for every picture since 2026-10-01 (the 64 from 2026-09-27
 evening) (`liblizard/src/focus.h:FOCUS_RING_DEFAULT`, `liblizard/sim/lizard_pick.mjs:RING_DEFAULT`, the Android app's `Pick.kt`); the
-Developer panel's ring menu names another (`lizard-web/send.html`; `lizard-web/send.mjs` paints `SPAN(n, ring)`). No ring follows
+Settings panel's Ring menu names another (`lizard-web/send.html`; `lizard-web/send.mjs` paints `SPAN(n, ring)`). No ring follows
 the version, even by default: the ring is a sync and bootstrap layer, like 5G's sync block, chosen for the channel and
 the room, and what is inside is the word's to say (2026-09-27). Until the evening of 2026-09-27 the default followed n
 (`focus_ring_for`: 32 for 256, 48 for 384 and 512, 64 above). A receiver MUST NOT infer n from the ring: the
@@ -374,16 +392,18 @@ format had before 2026-09-23.
 
 A block (section 7 defines its layout), by its rate (3.1):
 
-| rate | sub-channels | slots | codeword n | z | known slots | information k |
+| rate | sub-channels | slots | codeword n (sent) | z | known slots | information k |
 |---|---|---|---|---|---|---|
-| 7/8 | 7 | 4480 | 4464 | 93 | 16 | 3906 |
+| 7/8 | 7 | 4480 | 4557 (4464) | 93 | 16 | 3906 |
 | 3/4 | 8 | 5120 | 5088 | 106 | 32 | 3816 |
+| 2/3 | 9 | 5760 | 5760 | 120 | 0 | 3840 |
 | 1/2 | 12 | 7680 | 7680 | 160 | 0 | 3840 |
 
 - Slots: the sub-channels x 320 coefficients x 2 bits. The codeword: 48 base columns lifted by z = floor(slots / 48)
-  (`liblizard/src/ldpc.c:ldpc_init`). The slots past it carry known values (7.3).
+  (`liblizard/src/ldpc.c:ldpc_init`); at 7/8 a 49th, whose z bits are never sent (8.6, 2026-10-08), so 48 z bits of
+  every codeword reach the slots. The slots past them carry known values (7.3).
 - The information word's first 3816 bits, 477 bytes, are the 473 bytes the codec is handed for the block, then their
-  CRC-32 (`liblizard/src/focus.c:focus_encode`); at 7/8 and 1/2 the 90 and 24 bits past them are zeros, which a decoder
+  CRC-32 (`liblizard/src/focus.c:focus_encode`); at 7/8, 2/3 and 1/2 the 90, 24 and 24 bits past them are zeros, which a decoder
   knows. `block_bytes` = k / 8 - 4 = 473 for the smallest k of the format's codes, the 3/4 code's, which every format
   has (`liblizard/src/focus.c:init`).
 - The first 4 of those 473 bytes are the block id, a uint32, little-endian (7.5, `liblizard/src/xfer.h`), which leaves 469
@@ -398,20 +418,20 @@ the display rate; goodput, what the receiver's decoded blocks deliver, is lower.
 |---|---|---|---|
 | 256 | 1 to 4 | 1 to 4 | 469 to 1876 |
 | 384 | 5 to 10 | 5 to 10 | 2345 to 4690 |
-| 512 | 11 to 17 | 10 to 16 | 4690 to 7504 |
-| 768 | 18 to 40 | 17 to 38 | 7973 to 17822 |
-| 1024 | 41 to 71 | 39 to 67 | 18291 to 31423 |
-| 1536 | 72 to 128 | 68 to 121 | 31892 to 56749 |
+| 512 | 11 to 17 | 11 to 16 | 5159 to 7504 |
+| 768 | 18 to 40 | 17 to 39 | 7973 to 18291 |
+| 1024 | 41 to 71 | 40 to 69 | 18760 to 32361 |
+| 1536 | 72 to 128 | 70 to 124 | 32830 to 58156 |
 
 **Worked example, LIZARD-512.** subch = 512, V = 64. R = sqrt(5120 x 64 / pi) = 322.96 and 3R = 968.9, so n = 1024
-(768 < 968.9 <= 1024). Its default ring is 64: span = 128, so 158 modules a side and 162 with the margin; pxm =
-ceil(1024 / 128) = 8, an exact copy, so the symbol paints 1264 x 1264 pixels, 1296 x 1296 with the margin. It carries 61
-blocks (7/8 x 24, 3/4 x 25, 1/2 x 12) on 163,840 coefficients (327,680 slots), 28,609 useful bytes a frame, and its
-version byte is 64 (0x40). At 24 frames a second its ceiling is 686,616 B/s (720,384 under one rate).
+(768 < 968.9 <= 1024). In the 64 ring (the default until 2026-10-01): span = 128, so 158 modules a side and 162 with the margin; pxm =
+ceil(1024 / 128) = 8, an exact copy, so the symbol paints 1264 x 1264 pixels, 1296 x 1296 with the margin. It carries 62
+blocks (7/8 x 29, 3/4 x 15, 2/3 x 9, 1/2 x 9) on 163,840 coefficients (327,680 slots), 29,078 useful bytes a frame, and
+its version byte is 64 (0x40). At 24 frames a second its ceiling is 697,872 B/s (720,384 under one rate).
 
-To reproduce, in node with `init()` from `liblizard/sim/ob.mjs`: `M._focus_setup(1024, 512, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0)` returns
-473 (block bytes), then `M._focus_blocks()` gives 61, `M._focus_side()` 1264, `M._focus_cell()` 8 and `M._focus_quiet()`
-2 (2026-09-27). Painting a frame with `M._focus_tx_rgba(blocks, drive, rgba)` gives 1296 x 1296 pixels, the codec's
+To reproduce, in node with `const M = await init()` from `liblizard/sim/ob.mjs`: `M._focus_setup(1024, 512, 1, 2, 128, 0, 0, 0, 0,
+0, 0, 0)` (span 128, the 64 ring) returns 473 (block bytes), then `M._focus_blocks()` gives 62, `M._focus_side()` 1264,
+`M._focus_cell()` 8 and `M._focus_quiet()` 2 (2026-10-08; span 0, the default ring, gives side 1144 and cell 4). Painting a frame with `M._focus_tx_rgba(blocks, drive, rgba)` gives 1296 x 1296 pixels, the codec's
 2-module margin (16 px) included. Every (ring, picture) pair painted this way reads back blind byte-exact
 (`scripts/exp/ring_pairs.mjs` with `SUBCH=16,32,48,80,96,128,144,320,336,560,576,1024`, the first and last format of each
 picture, in each of the four rings: 48 of 48, 2026-09-27 evening). That round trip has no camera in it: it checks the
@@ -437,26 +457,27 @@ automatic pick is a preview (2026-09-23); nothing in the format depends on it.
   2.7 device px a cycle at the top ring (`T_DISPLAY_CYCLE`) is the highest of the floors measured in
   `scripts/exp/display_scale.mjs`, where three formats of 2026-09-20 read their whole payload down to 2.7, 2.2 and 2.0 device
   px a cycle (simulator, nearest-neighbour display).
-- **The pick** is the largest ladder format whose room fits, or LIZARD-16 when none does (flagged `tight`).
+- **The pick** is the largest ladder format whose room fits, or LIZARD-8 when none does (flagged `tight`).
   `pickVersion` walks the whole ladder; in one ring the room rises with the version (below), so the largest that fits
   is also the last before the first that fails. `pickVersion(roomPx, top, ring)` returns the ring and span with the
-  format; a ring left out is the 64.
+  format; a ring left out is the default, the 128.
 - **The cap.** The library picks over the whole ladder and does not cap (`pickVersion`'s `top` defaults to LIZARD-1024).
   An app is strongly advised to stop at LIZARD-560 unless it is a fixed rig: the largest pictures, n = 1536 (2048 until
   2026-09-27), are for industrial use (2026-09-23). A receiver reads every version the word names (the reference
   receiver builds pictures to 1536, `liblizard/sim/phy.mjs` `BLIND_NMAX`, since 2026-09-29; to 1024 by default before). The reference sender capped its automatic pick there from 2026-09-26,
   `pickVersion(room, APP_TOP, ring)` with `APP_TOP` = 560, and picks over the whole ladder since 2026-09-29, once every
-  receiver read it; an app may still name a `top`. In the default ring a cap
-  at LIZARD-560 binds only from 1170.6 device px of room, where LIZARD-576 first fits: a 1080 px room (a fullscreen 1080p
-  monitor, a 412 CSS px phone at 2.625) picks LIZARD-480 (n = 1024 in the 64 ring, 60 blocks) capped and uncapped
-  (`scripts/exp/pick_check.mjs`, 2026-09-27 evening; on the n / 8 + 60 border it picked LIZARD-624 uncapped and -528 capped). In
+  receiver read it; an app may still name a `top`. In the default ring, the 128, a cap
+  at LIZARD-560 binds only from 1040.4 device px of room, where LIZARD-568 first fits: a 1080 px room (a fullscreen 1080p
+  monitor, a 412 CSS px phone at 2.625) picks LIZARD-608 uncapped (n = 1536, 72 blocks) and LIZARD-560 capped (n = 1024,
+  66 blocks), and in the 64 ring LIZARD-488 (58 blocks) either way (`pickVersion` on the ladder by 8, 2026-10-08; LIZARD-480
+  in the 64 ring on the ladder by 16, `scripts/exp/pick_check.mjs`, 2026-09-27 evening; on the n / 8 + 60 border it picked LIZARD-624 uncapped and -528 capped). In
   the simulator a 2048 picture registered nothing at 594 camera px with 1.5 px of defocus, where LIZARD-560 read 3752 B
   a frame (6 frames a test cell, one camera model). On one 1080p monitor and phone the 2048 formats decoded but
   did worse than the 1024 range. Both were seen under the n / 4 + 30 border (542 modules a side at n = 2048) and have
   not been repeated on the rings (158 modules in the 64 ring) or at n = 1536.
 - **How the reference page scales.** `lizard-web/send.mjs:layout` draws the painted image, margin included, onto a canvas at
   `floor(room / side)` canvas pixels a painted pixel, nearest-neighbour (`imageSmoothingEnabled = false`). In its
-  default mode ("stretch", `lizard-web/send.html`) it then sets the canvas's CSS size to the room, a further factor under 2,
+  default mode ("stretch", `?fit=` in `lizard-web/send.mjs`) it then sets the canvas's CSS size to the room, a further factor under 2,
   and sets `canvas.style.imageRendering = "auto"`, which overrides the `image-rendering: pixelated` in
   `lizard-web/send.html`. That last step uses the browser's default filter, which smooths. The record has two simulator
   measurements of smoothing. `scripts/exp/display_bilinear.mjs` held a bilinear display at scale 2.5 and moved only the
@@ -470,15 +491,21 @@ automatic pick is a preview (2026-09-23); nothing in the format depends on it.
   (margin excluded) that give the top ring 2.12 camera px a cycle. 2.12 was fitted by `scripts/exp/focus_sweep.mjs` on five
   resolution-limited simulated test cells (2026-09-20, before the border took its present size).
 
-In the default ring, the 64:
+In the default ring, the 128, and in the 64 (the default from 2026-09-27 to 2026-10-01), over the ladder by 8:
 
 | n | ring | room, device px | camera px |
 |---|---|---|---|
-| 256 | 64 | 195.1 to 275.9 | 149.4 to 211.3 |
-| 384 | 64 | 337.9 to 436.2 | 258.8 to 334.1 |
-| 512 | 64 | 477.9 to 551.8 | 366.0 to 422.6 |
+| 256 | 128 | 123.5 to 247.0 | 95.6 to 191.2 |
+| 384 | 128 | 276.1 to 390.5 | 213.8 to 302.4 |
+| 512 | 128 | 409.5 to 509.1 | 317.1 to 394.2 |
+| 768 | 128 | 523.9 to 780.9 | 405.7 to 604.7 |
+| 1024 | 128 | 790.6 to 1040.4 | 612.2 to 805.7 |
+| 1536 | 128 | 1047.7 to 1397.0 | 811.3 to 1081.8 |
+| 256 | 64 | 138.0 to 275.9 | 105.6 to 211.3 |
+| 384 | 64 | 308.5 to 436.2 | 236.2 to 334.1 |
+| 512 | 64 | 457.5 to 568.8 | 350.4 to 435.6 |
 | 768 | 64 | 585.3 to 872.5 | 448.2 to 668.1 |
-| 1024 | 64 | 894.0 to 1154.2 | 684.6 to 883.9 |
+| 1024 | 64 | 883.3 to 1162.4 | 676.4 to 890.2 |
 | 1536 | 64 | 1170.6 to 1560.8 | 896.4 to 1195.2 |
 
 The room depends on the ring and R only. LIZARD-16 to -128 defaulted to the 32 and 48 rings until the evening of
@@ -487,16 +514,18 @@ The room depends on the ring and R only. LIZARD-16 to -128 defaulted to the 32 a
 
 **The room rises with the version.** In one ring the room is a constant times R: the border's share of the symbol,
 MODULES / SPAN, is 1.469, 1.234, 1.156 and 1.117 in the 32, 64, 96 and 128 rings, and does not change with n. So the
-picker reaches every format (`scripts/exp/pick_check.mjs`: 64 of 64, 2026-09-27 evening), one capped at LIZARD-560, as the
-reference sender's is, all 35 up to 560, and every room of 1170.6 device px or more, and none below, lands on n = 1536.
+picker reaches every format (`scripts/exp/pick_check.mjs`: 128 of 128 in one ring since 2026-10-01; 64 of 64 on the
+ladder by 16, 2026-09-27 evening), a picker capped at LIZARD-560 all 70 up to 560, and in the 128 ring every room of 1047.7
+device px or more, and none below, lands on n = 1536 (1170.6 in the 64).
 While the default ring followed n (2026-09-27 morning), the share fell at n = 768 (48 ring to 64) by more than R rose:
 LIZARD-144 needed 585.3 px against LIZARD-128's 590.4, and the picker never returned LIZARD-128 (63 of 64; 58 on the
 n / 8 + 60 border).
 
 ### 3.6 Every format
 
-The columns from format to n / 2R follow from 3.1 to 3.4 and are normative, except ring, which is the reference
-sender's default (3.3); the last two are the picker's guidance (3.5), taken in that ring.
+The columns from format to n / 2R follow from 3.1 to 3.4 and are normative, except ring, the 64, which was the
+reference sender's default until 2026-10-01 (3.3; 3.5 gives the default 128 ring's rooms); the last two are the
+picker's guidance (3.5), taken in that ring.
 
 | format | V | n | ring | useful B a frame | R | n / 2R | room, device px | camera px |
 |---|---|---|---|---|---|---|---|---|
@@ -712,7 +741,7 @@ differ, so the track alone tells a receiver the rotation and mirroring (8 hypoth
 ### 4.8 Margin
 
 - The margin is the codec's (2026-09-24): `liblizard/src/focus.h:FOCUS_QUIET` = 2 modules of light, `2 * pxm` pixels (4, 6,
-  8, 12, 16 and 24 at n = 256 to 1536 in the default 64 ring; 2 to 48 over every ring and picture, 3.3), outside depth 0
+  8, 12, 16 and 24 at n = 256 to 1536 in the 64 ring, 2, 4, 4, 6, 8 and 12 in the default 128; 2 to 48 over every ring and picture, 3.3), outside depth 0
   on every side. With the rim, that puts 3 modules of light outside the ring, and the page may put anything at the
   canvas's edge. An encoder MUST paint the margin. The painted image, symbol and margin, is `(S + 4) * pxm` pixels a
   side. The margin is outside the module grid, whose origin stays the symbol's outer corner (4.1), so nothing a decoder
@@ -1147,24 +1176,24 @@ n follows from subch by the rule in 3.2, span from the ring (3.3), and pxm and t
 | 32 | 768 | 12 | 12 | 1 (copy) | 840, from 144 |
 | 32 | 1024 | 16 | 16 | 1 (copy) | 1120, from 192 |
 | 32 | 1536 | 24 | 24 | 1 (copy) | 1680, from 288 |
-| 64 | 256 (default) | 2 | 2 | 1 (copy) | 268, from 24 |
-| 64 | 384 (default) | 3 | 3 | 1 (copy) | 402, from 36 |
-| 64 | 512 (default) | 4 | 4 | 1 (copy) | 536, from 48 |
-| 64 | 768 (default) | 6 | 6 | 1 (copy) | 804, from 72 |
-| 64 | 1024 (default) | 8 | 8 | 1 (copy) | 1072, from 96 |
-| 64 | 1536 (default) | 12 | 12 | 1 (copy) | 1608, from 144 |
+| 64 | 256 | 2 | 2 | 1 (copy) | 268, from 24 |
+| 64 | 384 | 3 | 3 | 1 (copy) | 402, from 36 |
+| 64 | 512 | 4 | 4 | 1 (copy) | 536, from 48 |
+| 64 | 768 | 6 | 6 | 1 (copy) | 804, from 72 |
+| 64 | 1024 | 8 | 8 | 1 (copy) | 1072, from 96 |
+| 64 | 1536 | 12 | 12 | 1 (copy) | 1608, from 144 |
 | 96 | 256 | 4/3 = 1.3333 | 2 | 1.5 | 396, from 24 |
 | 96 | 384 | 2 | 2 | 1 (copy) | 396, from 24 |
 | 96 | 512 | 8/3 = 2.6667 | 3 | 1.125 | 594, from 36 |
 | 96 | 768 | 4 | 4 | 1 (copy) | 792, from 48 |
 | 96 | 1024 | 16/3 = 5.3333 | 6 | 1.125 | 1188, from 72 |
 | 96 | 1536 | 8 | 8 | 1 (copy) | 1584, from 96 |
-| 128 | 256 | 1 | 1 | 1 (copy) | 262, from 12 |
-| 128 | 384 | 3/2 = 1.5 | 2 | 4/3 = 1.3333 | 524, from 24 |
-| 128 | 512 | 2 | 2 | 1 (copy) | 524, from 24 |
-| 128 | 768 | 3 | 3 | 1 (copy) | 786, from 36 |
-| 128 | 1024 | 4 | 4 | 1 (copy) | 1048, from 48 |
-| 128 | 1536 | 6 | 6 | 1 (copy) | 1572, from 72 |
+| 128 | 256 (default) | 1 | 1 | 1 (copy) | 262, from 12 |
+| 128 | 384 (default) | 3/2 = 1.5 | 2 | 4/3 = 1.3333 | 524, from 24 |
+| 128 | 512 (default) | 2 | 2 | 1 (copy) | 524, from 24 |
+| 128 | 768 (default) | 3 | 3 | 1 (copy) | 786, from 36 |
+| 128 | 1024 (default) | 4 | 4 | 1 (copy) | 1048, from 48 |
+| 128 | 1536 (default) | 6 | 6 | 1 (copy) | 1572, from 72 |
 
 pxm = ceil(n / span) is the painter's whole number of pixels a module (`focus.c` `init` computes
 `ceilf(scale - 1e-4)`, which is the same on every row; the `1e-4` keeps a scale that is a whole number at that number).
@@ -1412,7 +1441,7 @@ Picture sample (x, y) is at module coordinates
 ( 15 + (x + 0.5) * span / n,   15 + (y + 0.5) * span / n )
 ```
 
-so the grid starts at 15 + 0.5 / scale and steps by 1 / scale modules. In the default ring, the 64 (`_focus_grid_out`,
+so the grid starts at 15 + 0.5 / scale and steps by 1 / scale modules. In the 64 ring, the default when these were read (`_focus_grid_out`,
 float32, 2026-09-27 evening): 15.25 and 0.5 at n = 256, 15.166667 and 0.3333333 (15 + 1/6 and 1/3, rounded) at 384,
 15.125 and 0.25 at 512, 15.083333 and 0.1666667 at 768, 15.0625 and 0.125 at 1024, and 15.041667 and 0.0833333 (15 +
 1/24 and 1/12) at 1536. In the 96 ring: 15.375 and 0.75 at 256, 15.25 and 0.5 at 384, 15.1875 and 0.375 at 512, 15.125
@@ -1490,7 +1519,7 @@ make room for this; whatever part of the picture itself projects onto the five f
   wave 1).
 - **Luminance only** (section 2, item 1). The data stays in luminance; two brand colours, where used, only move where
   that luminance sits. The reference painter in `liblizard/src/` paints neutral grey only.
-- **Dithered black and white** was deleted on 2026-09-26 (section 12): a Lizard picture is grey levels.
+- **Dithered black and white** was deleted on 2026-09-26 (section 12): a LIZARD picture is grey levels.
 
 ### 6.12 Test vectors
 
@@ -1522,32 +1551,33 @@ entries do not: all 44 formats that moved n on 2026-09-27 decode to the same (u,
 **P2, LIZARD-16 (n = 256, 2 blocks) in the 64 ring (span 128), every payload byte zero.**
 
 - slot bits, one byte (0 or 1) a slot, 10,240 bytes: SHA-256
-  `726c1e022ebb8c61cd6ded139be3a029b0102d39f81fdceeb08c70410edea142`
+  `6a1cebe89d813d0cbc345cc590f031e2c0ee48bf09dd15d384bfb12882a69e09`
 - the same packed 8 to a byte, first slot in the most significant bit, first 16 bytes:
-  `00203e010efc0be0f8bfbdce000c0c03`
+  `00203e000ff403e0b8fffdcc001c1c03`
 - sigma = 101.192885, L = 202.385770
 - drive 316 x 316 (S = 158, pxm = 2; scale = pxm, so the picture is copied one pixel a sample). Drive values at row 30,
-  columns 30 to 33 (the picture's first pixel row and column): 0.7166191, 1.0000000, 1.0000000, 1.0000000
-- grey bytes at row 30, columns 30 to 45: `183 255 255 255 255 177 121 120 138 131 96 57 41 61 104 135`
-- grey bytes at row 230, columns 230 to 245: `255 255 119 22 9 42 74 89 93 104 132 176 211 213 182 148`
+  columns 30 to 33 (the picture's first pixel row and column): 0.7305945, 0.9875329, 1.0000000, 1.0000000
+- grey bytes at row 30, columns 30 to 45: `186 252 255 255 255 192 116 96 112 132 139 132 112 96 104 135`
+- grey bytes at row 230, columns 230 to 245: `255 235 152 104 83 65 49 49 68 94 119 145 162 161 143 132`
 - grey bytes of the resampled square, pixels [24, 292) on both axes (modules [12, 146)), row by row, 71,824 bytes:
-  SHA-256 `4b0fece66fb3a1963ae8d322893800afedcd2164914f6c519b75fc2033b76116`; 1619 of them are 0 and 1698 are 255
+  SHA-256 `1eecfb5b7940cf345cf409812c497de7bbcda44a90d143f243b7ad52e410d84d`; 1628 of them are 0 and 1709 are 255
 - grey bytes of the whole drive, border included, 99,856 bytes: SHA-256
-  `49f87e1569ffd094642136cb1025ab20e038f23b8d068a0f2ce774e851ff377a`
+  `5452e1978a3904e014205d8a22c225b9659f4cf70a00ef30630fffe725128432`
 
 **P3, LIZARD-64 (n = 384, 8 blocks) in the 64 ring (span 128), every payload byte zero.** The first 16 packed slot bytes
 are those of P2, since block 0's payload, codeword and whitening are the same.
 
-- slot bits, one byte a slot, 40,960 bytes: SHA-256 `530e72f118c1c3f3b90b6017548c13039b3c9415922ff234a6a10853af28250e`
+- slot bits, one byte a slot, 40,960 bytes: SHA-256 `f93ce4c7107e054bda67f4b2d7d91b024da17dc8af24670c2ed26efc82de4f28`
 - drive 474 x 474 (S = 158, pxm = 3; scale = 3, so the picture is copied one pixel a sample, as in P2); the picture
   starts at pixel 45
-- grey bytes at row 45, columns 45 to 60: `94 159 255 255 196 145 208 229 141 71 91 129 132 127 138 156`
+- grey bytes at row 45, columns 45 to 60: `151 201 220 197 182 222 255 255 191 114 83 101 128 134 136 145`
 - grey bytes of the resampled square, pixels [36, 438) (modules [12, 146)), 161,604 bytes: SHA-256
-  `3da487dd12bb2fd61466373bb6377ff80a1afa2deae35d4ddc21dc36db074a1a`
+  `9cfc1129d286ced2bd750614fd314ac9e2c2f8ea0882515de3893c0a8937d0ca`
 - grey bytes of the whole drive, 474 x 474, 224,676 bytes: SHA-256
-  `ec6c4e4cd91acb3aaaac44e9ab13ce99078a25aed4784d7baa60daaf0ad0593f`. The border holds the RS(16, 3) word (5.2)
+  `025532283ce407bb54fe1b1333d7a33ae0391751f47b144bba0ec26b89c7c91b`. The border holds the RS(16, 3) word (5.2)
 
-P2 and P3 moved to the 64 ring when it became the default for every picture (2026-09-27 evening); that morning they were
+P2, P3 and 7.4 moved with the 3/4 and 7/8 tables of 2026-10-08 (8.3, 8.6; the previous values are those of the vectors
+script's history and of `LIZ_TABLES=1`). P2 and P3 moved to the 64 ring when it became the default for every picture (2026-09-27 evening); that morning they were
 in the 32 and 48 rings, and P3 was at n = 512 before the picture sizes of 3.2. Both are copies, so neither goes through
 the Lanczos taps: in the 64 ring every picture is a copy, and only four (ring, picture) pairs resample (6.8), 384 in
 the 128 ring, the default since 2026-10-01, among them.
@@ -1576,7 +1606,8 @@ frame delivers any subset of them. Block 0 sits at the lowest spatial frequencie
 distance and resampling take the last blocks first.
 
 In this section and in section 8, n, k and m are the block's code's length, information length and parity count (5088,
-3816 and 1272 at 3/4; 4464, 3906 and 558 at 7/8; 7680, 3840 and 3840 at 1/2), not the picture size.
+3816 and 1272 at 3/4; 4557, 3906 and 651 at 7/8, of which 4464 bits are sent; 5760, 3840 and 1920 at 2/3; 7680, 3840 and
+3840 at 1/2), not the picture size.
 
 ### 7.1 The block
 
@@ -1634,27 +1665,30 @@ magnitude.
 
 ### 7.3 The bit map
 
-A codeword has n bits and its block 640 g_b slots: 4464 of 4480 at 7/8, 5088 of 5120 at 3/4, 7680 of 7680 at 1/2. The
-bit map puts the codeword on the slots and whitens it. The format's map is LINEAR (`focus.h:FOCUS_BITMAP`). For block b,
-its codeword c (section 8), the whitening sequence w and the picture's parity q (9.1):
+A codeword has n bits, of which the first np are never sent (np = 93 at 7/8, the 7/8 code's first data column, 8.6;
+0 at the other rates), and its block 640 g_b slots: the nt = n - np sent bits fill 4464 of 4480 at 7/8, 5088 of 5120
+at 3/4, 5760 of 5760 at 2/3, 7680 of 7680 at 1/2. The bit map puts the sent bits on the slots and whitens them. The
+format's map is LINEAR (`focus.h:FOCUS_BITMAP`). For block b, its codeword c (section 8), the whitening sequence w and
+the picture's parity q (9.1):
 
 ```
-slot[i] = (i < n ? c[(st * i) mod n] : q) XOR w[640 s_b + i],    i = 0 .. 640 g_b - 1
+slot[i] = (i < nt ? c[np + ((st * i) mod nt)] : q) XOR w[640 s_b + i],    i = 0 .. 640 g_b - 1
 ```
 
-with st 1709 at 7/8, 1943 at 3/4 and 2933 at 1/2 (below). At 3/4, the one rate before 2026-10-07:
+with st 1709 at 7/8, 1943 at 3/4, 2203 at 2/3 and 2933 at 1/2 (below, over nt). At 3/4, the one rate before 2026-10-07:
 
 ```
 slot[i] = (i < 5088 ? c[(1943 * i) mod 5088] : q) XOR w[640 s_b + i],    i = 0 .. 5119
 ```
 
-**The permutation** (`focus.c:perm_fill`). Slot i carries codeword bit perm(i) = i * st mod n. The stride st is
-floor(0.3819660113 n + 0.5), then raised by 1 until gcd(st, n) = 1 (0.3819660113 is 1/phi^2, phi the golden ratio). For
+**The permutation** (`focus.c:perm_fill`). Slot i carries sent bit perm(i) = i * st mod nt, which is codeword bit np +
+perm(i). The stride st is floor(0.3819660113 nt + 0.5), then raised by 1 until gcd(st, nt) = 1 (0.3819660113 is 1/phi^2,
+phi the golden ratio); n below means nt. For
 n = 5088 the first value, 1943, is already prime to n (1943 = 29 x 67, 5088 = 2^5 x 3 x 53), so st = 1943. Inverse:
 codeword bit t lies on slot 1799 t mod 5088, since 1943 x 1799 = 1 mod 5088. perm(0) to perm(11) are 0, 1943, 3886, 741,
 2684, 4627, 1482, 3425, 280, 2223, 4166, 1021. For n = 4464 (7/8) the first value, 1705, shares 31 with n, and 1706,
-1707 and 1708 share 2, 3 and 4, so st = 1709; codeword bit t lies on slot 3077 t mod 4464, and perm(0) to perm(11) are
-0, 1709, 3418, 663, 2372, 4081, 1326, 3035, 280, 1989, 3698, 943. For n = 7680 (1/2) the first value, 2933, is prime
+1707 and 1708 share 2, 3 and 4, so st = 1709; sent bit t, codeword bit 93 + t, lies on slot 3077 t mod 4464, and perm(0)
+to perm(11) are 0, 1709, 3418, 663, 2372, 4081, 1326, 3035, 280, 1989, 3698, 943; codeword bits 0 to 92 lie on no slot. For n = 7680 (1/2) the first value, 2933, is prime
 to n, so st = 2933; codeword bit t lies on slot 1757 t mod 7680, and perm(0) to perm(11) are 0, 2933, 5866, 1119, 4052,
 6985, 2238, 5171, 424, 3357, 6290, 1543. Every run of the codeword (a circulant's z bits, the parity chain) is spread
 across the block's coefficients.
@@ -1676,7 +1710,9 @@ r_b = (1 / T) sum_i (1 - 2 w[640 s_b + n + i]) y_i / sqrt(m2 / 2)
 ```
 
 and a frame has two readings: r, the mean of r_b over the even blocks its format carries, and r2, the mean over the
-odd ones (every format has both: LIZARD-16 one block of each). A capture of one picture reads r = +1 where bit 0 of its
+odd ones (every format of two blocks or more has both, LIZARD-16 one block of each; version 1, LIZARD-8, has one block,
+an even one, so its captures read r alone, how much of the neighbours they hold and not which, and a decoder reports
+the odd reading as none). A capture of one picture reads r = +1 where bit 0 of its
 count is 0 and -1 where it is 1, and r2 the same by bit 1 (sqrt(A2 / m2) of that at a signal-to-noise ratio A2 / N,
 0.98 to 0.99 at the decoders' usual ones). So the two signs are the count of the picture a capture mostly holds: a
 capture whose count is the one before's saw a picture the screen showed twice, and one whose count is two on saw a
@@ -1693,7 +1729,7 @@ camera's phase needs (10).
 
 A reading's standard error is its blocks' spread of r_b over the square root of their count (0.003 to 0.007 on a clean
 capture at LIZARD-32 to -512, where a reading has half the blocks; 1/sqrt(M) sqrt(N / A2) in general, M its pilots' real
-symbols; LIZARD-16's readings are one block each and have no spread to state). Both reference decoders report the two
+symbols; a one-block reading, version 1's or LIZARD-16's, has no spread to state). Both reference decoders report the two
 (`focus.h:focus_pilot`; the GPU's soft stage, `liblizard/gpu/wgsl/back_soft.mjs` `PILOT`, a value a block, averaged by its host)
 and the Android receiver steers its camera's phase by them (10). A sender that paints c = 0 throughout (every sender
 before 2026-09-30) reads +1 on both, mixed or not: the receiver can tell, since consecutive pictures then never read
@@ -1744,23 +1780,29 @@ Bit strings are hex, four bits a digit, the first bit the most significant.
 |---|---|---|
 | CRC-32 of bytes 0 to 472 | 0x9F59BCE3 | 0x90C7A3FE |
 | codeword bits 3776 to 3815 (last payload byte, CRC) | `d49f59bce3` | `d490c7a3fe` |
-| codeword bits 3816 to 3943 (parity p_0 to p_127) | `689b3806ae2ff8272a67778bebce6096` | `689b47f951d007d8d598887414319f96` |
+| codeword bits 3816 to 3943 (parity p_0 to p_127) | `f12964f535a53be44d911dc9fec63e46` | `f12964f535a53be44d911dc9fec63e46` |
 | whitening under slots 0 to 127 (frame slots 5120b to 5120b + 127) | `00003e000ffc03e0f8ffffce000c1c03` | `79923e97abd8c5a180e323390e8831bf` |
-| slots 0 to 127 | `2a6d2d409722af16f5f2c5ec83cda6fb` | `77df2df63b06611785ae191b9d491b47` |
+| slots 0 to 127 | `0e4d0c60972aa716b5f2c5ae81ddb6fb` | `73db2dd63b0e6957c5ac1b598d499bc7` |
 | slots 5088 to 5119 (the pilots), c = 0 | `a909ab10` | `8afe77aa` |
 | slots 5088 to 5119 (the pilots), c = 1 | `56f654ef` | `8afe77aa` |
 | slots 5088 to 5119 (the pilots), c = 2 | `a909ab10` | `75018855` |
 | slots 5088 to 5119 (the pilots), c = 3 | `56f654ef` | `75018855` |
 
-So block 0's coefficient 0 is sent as (+, +) and its coefficients 1 to 3 as (-, +).
+So block 0's coefficients 0 and 1 are sent as (+, +), its coefficient 2 as (-, -) and its coefficient 3 as (-, +). The
+two blocks' first 128 parity bits are the same: the one data bit the ids differ in (bit 7, column 0) lies in checks
+past 127 under the 3/4 table of 2026-10-08, and the parity bits from check 132 on differ (the codeword digests below).
 
 SHA-256 of block 0's whole codeword, 5088 bits packed most significant bit first (636 bytes):
-`01c4ddf4d95d858e261b9bdc6a02ec9080268cb73bcfc9ce95c613631097d167`. SHA-256 of the frame's 10,240 slots packed the same
-way (1280 bytes), c = 0: `8881113e5edfc7b2c3ac85c58d00b57d4186021e9c3a66a045715263e95cbd1f`. At c = 1, 2 and 3
+`87b5e63c8acf0fe177ea387a1025a751870eb920ae5b3386189af6d04c439b24` (block 1's
+`2062d9b51cdb95cb65ad91967073905b730a6e45029e6f323be8a7f0094b1fa4`). SHA-256 of the frame's 10,240 slots packed the
+same way (1280 bytes), c = 0: `ce4bbd787faaed53466ecabc2b53a065d5eb0fc9c89daa66627d8f442dd1f5d0`. At c = 1, 2 and 3
 (`f.setParity(c)` before the encode below; only the pilot slots of the blocks whose bit is 1 differ):
-`1d78ab5959cafac00fa21f962887172051f365483cf3dd757a0d48316700e3d3`,
-`23b8f121af7afe4541b1b8b3c41e70bebbbab7c74bf50773ecf7ae108fd9cbd4`,
-`d6401b795aaf1d4992cd6cf9e15bfb39f03232261a1fe3400f466acad4676e08`.
+`0553582180f06091f3eb3d13e4c2d28bcb8a9448082eded7cab060962c629d22`,
+`c59837299f58766bcfa9f91741738ed6406a0526e1eb8c96536194d70b1fd484`,
+`5b84bf5505e5252280d574772694bcf7d60787d4ccf96617077ee481cc5b3d10`. The values before the tables of 2026-10-08
+(the same blocks under the 3/4 table of 2026-09-24, `LIZ_TABLES=1`): parity `689b3806ae2ff8272a67778bebce6096` and
+`689b47f951d007d8d598887414319f96`, slots `2a6d2d409722af16f5f2c5ec83cda6fb` and `77df2df63b06611785ae191b9d491b47`,
+the frame at c = 0 `8881113e5edfc7b2c3ac85c58d00b57d4186021e9c3a66a045715263e95cbd1f`.
 
 How it was computed. `liblizard/build/ob.wasm` reports the bit pair it put on every coefficient. From `liblizard/`:
 
@@ -2019,11 +2061,11 @@ prose files (STATUS.md, 2026-10-05).
 Normative except 8.3 and 8.5. Sources: `liblizard/src/ldpc_base.h` `LDPC_BASE`; `liblizard/src/ldpc.h`; `liblizard/src/ldpc.c` `ldpc_init`,
 `ldpc_generate`, `count_cycles`, `ldpc_encode`; `liblizard/src/focus.h` `FOCUS_RATE`; `liblizard/src/focus.c` `init`.
 
-A block's code is one of three quasi-cyclic irregular repeat-accumulate (QC-IRA) codes, H = [Hd | Hp], by its tier
-(3.1): rate 7/8 (z = 93), 3/4 (z = 106) and 1/2 (z = 160). Hd is built from z x z circulant permutation matrices; Hp is
+A block's code is one of four quasi-cyclic irregular repeat-accumulate (QC-IRA) codes, H = [Hd | Hp], by its tier
+(3.1): rate 7/8 (z = 93), 3/4 (z = 106), 2/3 (z = 120) and 1/2 (z = 160). Hd is built from z x z circulant permutation matrices; Hp is
 a bit-level accumulator (a staircase). The rates are the profile's, fixed by the version (`focus.c:focus_tiers_for`;
-indices 6, 4 and 2 of the profile table in `ldpc.c`), and the format word carries none. 8.1 to 8.5 give the 3/4 code,
-the one rate before 2026-10-07; 8.6 gives the 7/8 and 1/2 codes, which are built, encoded and decoded the same way at
+indices 6, 4, 3 and 2 of the profile table in `ldpc.c`), and the format word carries none. 8.1 to 8.5 give the 3/4
+code, the one rate before 2026-10-07; 8.6 gives the 7/8, 2/3 and 1/2 codes, which are built, encoded and decoded the same way at
 their own sizes.
 
 ### 8.1 Parameters
@@ -2035,18 +2077,18 @@ their own sizes.
 | parity bits and checks m | 1272 = 12 z |
 | lifting z | 106 |
 | base graph | 12 block rows by 48 block columns: 36 data columns of circulants (Hd), then the 1272 parity bits as a staircase (Hp) |
-| data column degree | 12 for columns 0 to 7, 3 for columns 8 to 35 |
-| data circulants | 180, 15 in each block row |
-| check degree | 17: 15 data bits and 2 parity bits. Check 0 has 16. |
+| data column degree | 12 for columns 0 to 6, 3 for columns 7 to 35 |
+| data circulants | 171, 14 in rows 0, 1, 3, 4, 5, 7, 9, 10, 11 and 15 in rows 2, 6, 8 |
+| check degree | 16 or 17: 14 or 15 data bits and 2 parity bits. Check 0 has one fewer. |
 | parity bit degree | 2. The last parity bit has 1. |
-| edges | 21,623 |
-| cycles | none of length 4. Every variable node but the last parity bit lies on a cycle of length 6. |
+| edges | 20,669 |
+| cycles | none of length 4 |
 
 The size comes from `ldpc_init(code, n_max, rate, seed)` with n_max = 8 sub-channels x 320 coefficients x 2 = 5120, so
 z = floor(5120 / 48) = 106 and n = 48 z = 5088. The 32 slots left over are the block's tail (7.3). `focus.c:init` passes
 rate index 4 and seed 1, and for z = 106 at rate index 4 and seed 1 `ldpc_init` takes the base matrix from
-`liblizard/src/ldpc_base.h` (`LDPC_BASE_Z`, `LDPC_BASE_RATE`, `LDPC_BASE_SEED`) instead of generating it. The table has the
-3/4 profile's shape (`ldpc.c:PROFILE` row 4): 12 block rows, 8 heavy columns of degree 12, degree 3 for the rest.
+`liblizard/src/ldpc_base.h` (`LDPC_BASE_Z`, `LDPC_BASE_RATE`, `LDPC_BASE_SEED`) instead of generating it. The table has 12
+block rows, 7 heavy columns of degree 12 and degree 3 for the rest (8.3; 8 heavy columns from 2026-09-24 to 2026-10-08).
 
 ### 8.2 The parity-check matrix
 
@@ -2074,46 +2116,53 @@ No profile, seed or score moves it.
 
 ```
 r \ j   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17
-0       3  87  22  87  41  20  44  67   -   -   - 102   -   -   -   7  81   -
-1      80  30  28  45  42  23  37   0   -   -   -  70   -  13   -   -  62   -
-2      58  72  29  92  57  83  53  51   -  56   -   -   -   -  11   -   -   -
-3      91  15  61  49  79  95  88  18   -   -   -  41   -   5   -   -   -  81
-4      77  71  71  77  64  54  46 102   -   -  30   -   -   -   -  50   -   -
-5     100  93  44  43  11  51  63  36   -  86   -   -   -   -   -   9   -   -
-6      41  64  87  31  52  43  19   6  80   -   -   -  48   -   -   -   -   -
-7      46  22  10  41  22  46  49  78   -  63   -   -   -   6   -   -   -  28
-8       9   7  18  25  72  79  60   8   2   -   -   -   -   -  63   -   -   -
-9      71  26  56  38  51  70   4  23  73   -   -   -  36   -   -   -   -   -
-10     85  75  42  51  92  31  47  27   -   -  41   -   -   -  79   -   0   -
-11      9  21   4  48  43  77  67 105   -   - 105   -  66   -   -   -   -  50
+0      70  42  46 102  10  74  17   -   -   -   7  67   -   -   -   -  45   -
+1      31  79  45  79  37  85 104   -   -   -  24   -   -   3   -   -   -   -
+2      59   6  49  97  94  80 103   -   -  46   -   -   - 102   -   -  95   -
+3      63  96   3 104   7  49  37   -   -  20   -   -  51   -   -  55   -   -
+4      29  23 102  68   2  73  49  93   -   -   -   -   -  63   -   -   -   1
+5      86  71  81  59  10   7  42   -  15   -   -   -   -   -  84  89   -   -
+6       9  64  20  20  54  58  65   -   -   -  32  10   -   -   -   -  26   -
+7      28  36  52  55  46  18  16  53   -   -   -   -   -   -  93   -   - 105
+8       5 100  27  23  76  86  66   -   5   -   - 104   -   -   -   -   -   -
+9      77  98  97  76  13  83  77   -   -   6   -   -   1   -   -   6   -   -
+10     27  73  82  62  47  47   4   -  63   -   -   -   -   -  53   -   -   -
+11     19  94  32   3  11  44  50  77   -   -   -   -  66   -   -   -   -  95
 
 r \ j  18  19  20  21  22  23  24  25  26  27  28  29  30  31  32  33  34  35
-0       -   -   -  96   -   -   -  15   -   -  27   -   -   -   7   -   -   -
-1       -   -   -   -  11   -  74   -   -   -   -   -   -  51   -   -   -  68
-2      63   -   -  19   -   -   -  88   -   -   - 100   -   -   -  79   -   -
-3       -   -   -   -   -  67   -   -   -  77   -  68   -   -   -   1   -   -
-4      93   -  19   -   -   -   -   -  27   -   -   -   -  36   -   -  68   -
-5       -  55  67   -   -   -   -   -   -  47  20   -   -   -   -   - 105   -
-6       -  52   -   -   -  88   -   -   -  62   -   -  52   -  16   -   -   -
-7       -   -   -  98   -   -   -   -  51   -   -   - 105   -   -   -   -  96
-8      15   -   -   -  88   -  39   -   -   -   -  21   -   -  46   -   -   -
-9       -  81   -   -   -  28   -   -  31   -  49   -   -   -   -  37   -   -
-10      -   -   -   - 105   -  83   -   -   -   -   -   -  15   -   -  40   -
-11      -   -  90   -   -   -   -  46   -   -   -   -  94   -   -   -   -  50
+0       -   -   7   -   -   -  48   -   -   6   -   -   -   -   -  47   -   -
+1      94 101   -   -   -   -  66   -   -   -   -   -  80   -   -   -  49   -
+2       -   -   -   -  72   -   -   -   5  48   -   -   -   -   - 105   -  52
+3       -  82   -   -   -   -   -  25   -   -   -   -  86   -  79   -   -   -
+4       -   -  87   -   -   -   -   -  55   -   7   -   -  62   -   -   -   -
+5       -   -   -  71   -   -   -   -  72   -  13   -   -  28   -   -   -   -
+6       -  92   -   -   -   -   -  15   -   -   - 101   -   -   -   -  59  72
+7       -   -   -   -  96  14   -   -   - 101   -   -   -  83   -   -   -   -
+8      66   -   -   -  76   -   -  91   -   -  21   -   -   -  27   -   -  66
+9       -   -  32   -   -  23   -   -   -   -   -  47   -   -   -   -  54   -
+10     57   -   -  55   -   -  80   -   -   -   -   -  87   - 103   -   -   -
+11      -   -   -  77   -  81   -   -   -   -   -  14   -   -   -  85   -   -
 ```
 
-### 8.3 How the table was made (non-normative)
+### 8.3 How the tables were made (non-normative)
 
-`liblizard/src/ldpc_base.h` was written out on 2026-09-24 from what the generator made for this code, and the generator stays:
-`ldpc.c:ldpc_generate` builds every code outside the format (the binary code at its layout's z, the rates the
-experiments tier with, `liblizard/test/ldpc_ablate.c`'s profiles), and the format's own when a test sets
-`ldpc_override_heavy`. `liblizard/test/ldpc_table.c` prints the table from the generator and fails if the two differ, or if
-`ldpc_init`'s H is not the one generated before the table existed (FNV-1a over its row pointers and column indices,
-2ca2bc24; 21,623 edges); a table altered in one entry fails it. A change to the generator now moves only codes outside
-the format. `ldpc.c` also has `ldpc_norm`, a test global that changes the decoder's scale and not H.
+The 3/4, 7/8 and 2/3 tables of `liblizard/src/ldpc_base.h` were made on 2026-10-08 (`scripts/exp/ldpc_opt.py`) by the
+construction below with two changes: every shift of 0 to z - 1 is scored, not 12 random ones, and the score counts the
+4- and 6-cycles exactly through the whole base matrix, the staircase's parity circulants included; their degree
+profiles (3/4: 7 columns of degree 12; 7/8: one column of degree 7 never sent and 6 of degree 6; 2/3: 7 of degree 11;
+the rest degree 3) were chosen on the exact int8 decoder's 10%-loss thresholds on BI-AWGN (3/4 4.03 dB against the
+2026-09-24 table's 4.07, 7/8 5.83 against 5.99, 2/3 3.00 against 3.04; no floor to 0.8 dB above at 65,536 codewords).
+The 1/2 table is the generator's own output (seed 1, 2026-10-07), as the three were before that day (the 3/4 table of
+2026-09-24, the 7/8 and 2/3 of 2026-10-07; `LDPC_BASES_V1`, `LIZ_TABLES=1`, for reading what was painted under them). The
+generator stays: `ldpc.c:ldpc_generate` builds every code outside the format (the binary code at its layout's z, the
+rates the experiments tier with, `liblizard/test/ldpc_ablate.c`'s profiles), and the format's own when a test sets
+`ldpc_override_heavy`. `liblizard/test/ldpc_table.c` holds every table to the hash of its H as adopted (FNV-1a over its
+row pointers and column indices: 3/4 5660f26d, 20,669 edges) and `ldpc_init`'s block-row view to the table entry by
+entry; a table altered in one entry fails it. `ldpc.c` also has `ldpc_norm`, a test global that changes the decoder's
+scale and not H.
 
-The construction, as `ldpc.c:ldpc_generate` and `ldpc.c:count_cycles` run it. Columns are filled in order, one edge at
-a time. Each edge goes in the
+The construction, as `ldpc.c:ldpc_generate` and `ldpc.c:count_cycles` run it, which the 1/2 table is the output of.
+Columns are filled in order, one edge at a time. Each edge goes in the
 least-used block row the column is not yet in, and its shift is the best of up to 12 random candidates by a cycle score.
 Arithmetic on s is unsigned 32-bit with logical shifts. md(a) is the remainder of a modulo 106, in 0 to 105.
 
@@ -2175,7 +2224,8 @@ What the reference decoder feeds the code, and how it decodes (`focus.c:focus_fi
 `focus.c:map_in`, `ldpc.c:ldpc_decode_stall`). The format fixes only the sign convention and the bit map. A decoder may
 compute and scale its soft values any way it likes.
 
-**Per sub-channel**, over its 320 received coefficients y, after the transform and the detrend (6.9, 6.10):
+**Per sub-channel**, over its 320 received coefficients y, after the transform and the detrend (6.9, 6.10) and, where
+the pilots' fit stands, the grid's shift turned back (10.1, step 9; since 2026-10-01):
 
 - m2 = mean of |y|^2, m4 = mean of |y|^4.
 - A2 = sqrt(max(0, 2 m2^2 - m4)), the signal power. For constant-modulus QPSK in complex Gaussian noise of power N,
@@ -2189,12 +2239,14 @@ compute and scale its soft values any way it likes.
 - Positive means slot bit 0.
 
 **Per block**, slot order to codeword order: for i < n, L_code[st i mod n] = L_slot[i], negated where
-w[640 s_b + i] = 1 (at 3/4, L_code[1943 i mod 5088]). The tail slots are dropped. At 7/8 and 1/2 the information bits
-past the CRC, 3816 to k - 1, are fed as certain zeros (+127).
+w[640 s_b + i] = 1 (at 3/4, L_code[1943 i mod 5088]; at 7/8 L_code[93 + (1709 i mod 4464)]). The tail slots are dropped.
+At 7/8, 2/3 and 1/2 the information bits past the CRC, 3816 to k - 1, are fed as certain zeros (+127); at 7/8 the 93
+bits never sent, codeword bits 0 to 92, as 0 (nothing known).
 
 **Decline gate.** Each sub-channel's information per coded bit is estimated as J(2 sqrt(A2 / N)), with ten Brink's
 approximation J(sigma) = (1 - 2^(-0.3073 sigma^1.787))^1.1064. A block's estimate is the mean over its sub-channels.
-A block under 0.2 x k / n (`FOCUS_DECLINE`: 0.175 at 7/8, 0.15 at 3/4, 0.10 at 1/2) is not decoded.
+A block under 0.2 x k / nt, nt the bits sent (`FOCUS_DECLINE`: 0.175 at 7/8, 0.15 at 3/4, 0.133 at 2/3, 0.10 at 1/2), is
+not decoded.
 
 **LDPC decoder**, layered normalised min-sum:
 
@@ -2211,62 +2263,114 @@ A block under 0.2 x k / n (`FOCUS_DECLINE`: 0.175 at 7/8, 0.15 at 3/4, 0.10 at 1
 This describes `liblizard/src/ldpc.c` as of 2026-09-22 and `liblizard/src/focus.c` as of 2026-09-23. An LDPC early stop under test in the
 speed round has not landed; if it does, the stopping rule above changes and the format does not.
 
-### 8.6 The 7/8 and 1/2 codes
+### 8.6 The 7/8, 2/3 and 1/2 codes
 
-The rate profile's other two codes (3.1), normative like the 3/4 code. Each is H = [Hd | Hp] as in 8.2, at its own z:
+The rate profile's other three codes (3.1), normative like the 3/4 code. Each is H = [Hd | Hp] as in 8.2, at its own z:
 codeword bit z j + t (t = 0 to z - 1) is bit t of data column j, codeword bit k + c is parity bit c, check c = mb i + r
 (r the block row, 0 to mb - 1, i the position, 0 to z - 1) holds data bit z j + ((i - sh[r][j]) mod z) for each shift
 of block row r, parity bit c - 1 when c > 0, and parity bit c. Encoding is 8.4's accumulator over the m checks.
 
-| | 7/8 | 1/2 |
-|---|---|---|
-| sub-channels a block, slots | 7, 4480 | 12, 7680 |
-| codeword n | 4464 = 48 z | 7680 = 48 z |
-| information k | 3906 = 42 z | 3840 = 24 z |
-| parity bits and checks m | 558 = 6 z | 3840 = 24 z |
-| lifting z | 93 | 160 |
-| base graph | 6 block rows, 42 data columns | 24 block rows, 24 data columns |
-| data column degree | 4 for columns 0 to 5, 3 for 6 to 41 | 8 for columns 0 to 9, 3 for 10 to 23 |
-| data circulants | 132, 22 in each block row | 122, 5 in each block row but rows 4 and 20, which have 6 |
-| check degree | 24: 22 data bits and 2 parity bits (check 0: 23) | 7, 8 in block rows 4 and 20 (check 0 one fewer) |
-| edges | 13,391 | 27,199 |
-| cycles of length 4 | none | none |
-| H, FNV-1a over row pointers and column indices (`liblizard/test/ldpc_table.c`) | d942b2a6 | 83296c5e |
+The 7/8 code is a 49-column base graph: its data column 0 (codeword bits 0 to 92, the first 93 information bits: the
+block's bytes 0 to 11 and bit 0 of byte 12) is never sent. A block's 4464 slots carry codeword bits 93 to 4556 (7.3),
+a 7/8 receiver feeds bits 0 to 92 as nothing known (8.5), and the code recovers them with the rest. The column has
+degree 7, every block row; its checks give the decoder a start it would not have with 48 columns (0.16 dB at the
+10%-loss threshold, against 0.10 for the best 48-column table found).
 
-They were written out on 2026-10-07 from what `ldpc.c:ldpc_generate` made for (z = 93, rate index 6, seed 1) and
-(z = 160, rate index 2, seed 1): 8.3's construction with the profile table's rows 6 (6 block rows, 6 heavy columns of
-degree 4) and 2 (24 block rows, 10 heavy columns of degree 8), s starting at 2654435761 + 6 x 97 + 1 and + 2 x 97 + 1,
-md modulo z, and the loops over each code's own block rows and data columns. The reference ships them as
-`liblizard/src/ldpc_base.h:LDPC_BASE78` and `LDPC_BASE12`, which `ldpc_init` builds from, as it does the 3/4 code from
-`LDPC_BASE`; `liblizard/test/ldpc_table.c` holds all three to the generator and to the hashes above. 8.5 applies at each
-code's own z, mb and decline bar.
+| | 7/8 | 2/3 | 1/2 |
+|---|---|---|---|
+| sub-channels a block, slots | 7, 4480 | 9, 5760 | 12, 7680 |
+| codeword n | 4557 = 49 z, of which 4464 = 48 z sent | 5760 = 48 z | 7680 = 48 z |
+| information k | 3906 = 42 z | 3840 = 32 z | 3840 = 24 z |
+| parity bits and checks m | 651 = 7 z | 1920 = 16 z | 3840 = 24 z |
+| lifting z | 93 | 120 | 160 |
+| base graph | 7 block rows, 42 data columns, column 0 never sent | 16 block rows, 32 data columns | 24 block rows, 24 data columns |
+| data column degree | 7 for column 0, 6 for columns 1 to 6, 3 for 7 to 41 | 11 for columns 0 to 6, 3 for 7 to 31 | 8 for columns 0 to 9, 3 for 10 to 23 |
+| data circulants | 148, 21 in rows 0, 1, 2, 3, 4, 6 and 22 in rows 5 | 152, 9 in rows 0, 2, 4, 6, 7, 11, 12, 13 and 10 in rows 1, 3, 5, 8, 9, 10, 14, 15 | 122, 5 in each block row but rows 4 and 20, which have 6 |
+| check degree | 23 or 24: 21 or 22 data bits and 2 parity bits (check 0 one fewer) | 11 or 12 (check 0 one fewer) | 7, 8 in block rows 4 and 20 (check 0 one fewer) |
+| edges | 15,065 | 22,079 | 27,199 |
+| cycles of length 4 | none | none | none |
+| H, FNV-1a over row pointers and column indices (`liblizard/test/ldpc_table.c`) | 25a3ab92 | 12dad7a2 | 83296c5e |
+
+The 7/8 and 2/3 tables were made on 2026-10-08 as 8.3 says (the 7/8 code's first column its own design, the one idea
+taken from 5G NR's codes, whose tables are not used); the 1/2 table was written out on 2026-10-07 from what
+`ldpc.c:ldpc_generate` made for (z = 160, rate index 2, seed 1): 8.3's construction with the profile table's row 2
+(24 block rows, 10 heavy columns of degree 8), s starting at 2654435761 + 2 x 97 + 1, md modulo z, and the loops over
+the code's own block rows and data columns. The reference ships them as `liblizard/src/ldpc_base.h:LDPC_BASE78`
+(`LDPC_BASE78_NP` 1, the columns never sent), `LDPC_BASE23` and `LDPC_BASE12`, which `ldpc_init` builds from, as it does
+the 3/4 code from `LDPC_BASE`; `liblizard/test/ldpc_table.c` holds all four to the hashes above. 8.5 applies at each
+code's own z, mb and decline bar. The tables before 2026-10-08 (7/8 d942b2a6: 6 block rows, 6 columns of degree 4; 2/3
+94b14b2c: 8 columns of degree 12; the 3/4 table 2ca2bc24 of 8.2's history) are `LDPC_BASES_V1`, built under
+`LIZ_TABLES=1`.
 
 **The 7/8 shift table** (a dash: no circulant):
 
 ```
 r \ j   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17
-0      89  62   -  62   -  76  21   -   -  40  52   -   -  24  69   -   -  89
-1       8   -  62  72   -  32   -  77  71   -   -  54  64   -   -  57  45   -
-2       -  78  40   9  66   -  33   -  14   -  54   -   -  69   -  23   -  72
-3      39   -  64   -  34  53   -  92   -  89  24   -   3   -  72   -  32   -
-4      32  49   -  20  25   -   -  37   -  86   -  27   -  81   -  90  30   -
-5       -  36  25   -  33  28  21   -  45   -   -  34  29   -  27   -   -  82
+0      13  79  28  48   -   4  46   -   0   -  13  59   -   -   -  60   -  84
+1      29   -  30  45  63  90  57   -  73   -   -  76   -   7  13   -   -  43
+2      25  60  50   0  61   -   4   5   -  78   -   -  32   -   -  25   -   -
+3      47   7  76  16   3  64   -  62   -   -   2   -  65   -   -   4   -  90
+4      38  74  31   -  10  53  56   -  19  50   -   -   -   3  80   -  23   -
+5      88  23   -  18  69  33  87  63   -  65   -  47   -   -  63   -  40   -
+6      87  80   8   5  22  81  67   -   -   -  70   -  17  38   -   -  50   -
 
 r \ j  18  19  20  21  22  23  24  25  26  27  28  29  30  31  32  33  34  35
-0      37   -  81   -   0   -  31   -   -   6  83   -  58   -   -  50   -  83
-1       -  43   -  30   6   -   -  35  32   -  11   -  81   -  84   -   -  58
-2      74   -  49   -   -  23   1   -   -  34   -  20  61   -  17   -   -  89
-3      19   -   -  41  18   -   -   3   -  82   0   -   -  11   -  26  42   -
-4       -  60  13   -   -  55   -  91   0   -   -  92   -  82  55   -  19   -
-5       -  51   -  30   -  24  83   -  55   -   -  58   -  78   -  39  57   -
+0       -   3   -   -  84   -  63  39   -   -   -  78   -   -  60  80   -  15
+1       -   -  53  10   -  84   -   -   4   -  52   -   -   2  55   -   -   -
+2      74  27   -  65   -   -  16   -   -  23  61   -  43   -   -  73   -   -
+3       -   -  68   -  78   7   -   -  49   -   -  24   -  81   -   -  31  81
+4       -  82  64   -   -   -   -  81   -  29  37   -   9   -  10   -   -   -
+5      74   -   -   -  88   -  76  11   -  51   -   -  90   -   -   -  82  63
+6      88   -   -   2   -   6   -   -  42   -   -  57   -  45   -  80   8   -
 
 r \ j  36  37  38  39  40  41
-0       -  34  13   -   6   -
-1      31   -   -  51  23   -
-2       -  54  23   -  62   -
-3      47   -  85   -   -  70
-4      74   -   -  42   -  42
-5       -  70   -  89   -  28
+0       -  84   -  34   -   -
+1      12  28   -   -  39   -
+2       3   -  91  89   -   -
+3       -  34   -   -   -  54
+4       7   -   -  11  37   -
+5       -   -  69   -  74  62
+6       -   -  70   -   -  25
+```
+
+**The 2/3 shift table**:
+
+```
+r \ j   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17
+0      17   -  45   -  84  30 114   -  58   -   -   -   -   -   -   -  87   -
+1       3  45   -  74   -  55   -  96   -   -   -  89   -   -   -   -  57   -
+2       -  36  89  18  63   -  57   -   -   - 106   -   -   -   -   -   - 106
+3      37  59  16   -  53  42   -   -   -   -  81   -   -   -   -  71   -   -
+4      99   2   -   -  97  26  49   -   -   -   -   -  17   -   -   -   -  70
+5      48 116   -  69   -  67  93   -   -   -   -   -  15   -   -   -  78   -
+6       -  94  59   6   -   9  94   -   -   -   -   -  89   -  33   -   -   -
+7      61 108   -  74   -  27   -  72   -   -   -   -   -  82   0   -   -   -
+8       -  14 113  91 116   -   -  50   -  27   -   -   -  43   -   -   -   -
+9       -  39  62  81 100   - 116   -   -   - 103   -   -   -   -  12   -   -
+10     65   -  13   -  59 102   6   -   -   -   -  37   -   -  34   -   -   -
+11      -  64  35 115  98   -  49   -  59   -   -   -   -   -   -   -   -   -
+12    114   -  54  61   0  79   -   -   -  55   -   -   -  21   -   -   -   -
+13    112   -  11 104  20   - 118   -   -   2   -   -   -   -   -  15   -   -
+14     50   8   -  43   -  42   2   -  90   -   -   -   -   -   -   -   -   -
+15     90   -  86   -  31  93  93   -   -   -   -  65   -   -   -   -   - 104
+
+r \ j  18  19  20  21  22  23  24  25  26  27  28  29  30  31
+0       -   -  89   -   -   -   -  13   -   -   -   -   -   -
+1       -   -   -   2   -   -   -  24   -   -   -   -  38   -
+2       -  90   -   -   -   -   -   -   - 107   -   -   -   -
+3       -   -   -   -   - 101  84   -   -   -   -   -   -  10
+4       -  51   -   -   -   -   -   -  28   -   -   -   -   -
+5       -   -  37   -   -   -   -   -   -   -  94   -  60   -
+6       -   -  92   -   -   -   -   -   -   -   -  40   -   -
+7     110   -   -   -   -   -   -   -  34   -   -   -   -   -
+8       -   -   -   -   -  26  56   -   -   -   -   -   5   -
+9       -   -   -   -   8   -   -  44   -   -   -   -   -  25
+10      -   -   -   -  75   -   -   -   -   -  93   4   -   -
+11     41   -   -  97   -   -  87   -   -   -   -   -   -   -
+12      -   -   -  20   -   -   -   -   -   -  95   -   -   -
+13      -   -   -   - 100   -   -   -  27   -   -   -   -   -
+14    106   -   -   -   -  66   -   -   - 109   - 114   -   -
+15      -   7   -   -   -   -   -   -   -  69   -   -   -  36
 ```
 
 **The 1/2 shift table**:
@@ -2327,7 +2431,7 @@ r \ j  18  19  20  21  22  23
 
 ## 9. Animation and transport (non-normative)
 
-A Lizard symbol is one frame. This section is how the project's sender and receiver run a stream of them. The display
+A LIZARD symbol is one frame. This section is how the project's sender and receiver run a stream of them. The display
 rate travels in the format word and the transfer's layout in its blocks (7.5 to 7.9); how the rig schedules them lives in
 `liblizard/sim/` and `lizard-web/`, outside `liblizard/src/`.
 
@@ -2351,8 +2455,9 @@ rate travels in the format word and the transfer's layout in its blocks (7.5 to 
   - **Control blocks.** Slot 0 of a frame, block 0, the lowest ring and the last a frame loses, carries a control block
     once `every` data blocks have gone since the last one: the header on even turns and the manifest's blocks in turn
     on odd ones. every = 63 (1.6% of the airtime), or lap / (8 m) data blocks when that is less, m the manifest blocks
-    (at least 1), so a short file gets them more often. At LIZARD-512, 61 blocks a frame, that is a control block every
-    frame and the header every other frame. An empty file's frames are all header.
+    (at least 1), so a short file gets them more often. At LIZARD-512, 62 blocks a frame, that is a control block every
+    other frame and the header every fourth (every frame and every other at 64 blocks a frame, under one rate). An
+    empty file's frames are all header.
   - **Shuffle.** Each frame's data slots are shuffled (Fisher-Yates, xorshift32 seeded from the frame count), because
     slot k is ring k, and a round robin whose chunk count divides the frame's would pin a chunk to rings a distant
     camera never reads.
@@ -2362,7 +2467,8 @@ rate travels in the format word and the transfer's layout in its blocks (7.5 to 
     about 24 MB.
 - **The test stream.** Block b of a frame (b = 0 the lowest-frequency block) carries id base + b, where base is the
   sender's id counter, which starts at a random id under 2^30 at each start (so a receiver takes a restarted stream as
-  new with no signal) and advances by V after each frame (`lizard-web/send.mjs:start`, `nextId`). No id is sent twice, so no
+  new with no signal) and advances by the frame's blocks, B(V) for each code painted, after each frame
+  (`lizard-web/send.mjs:start`, `nextId`). No id is sent twice, so no
   frame repeats. Since block 0 survives longest, blur and distance take a frame's highest ids first. These ids do not
   follow the chunk layout; a receiver tells a test frame from a file's by its blocks' bytes (9.3), and
   `liblizard/sim/phy.mjs:tally` sets a control-range id aside rather than compare it to the stream.
@@ -2372,8 +2478,9 @@ rate travels in the format word and the transfer's layout in its blocks (7.5 to 
   moves; the sender refuses a change that would move it (`lizard-web/send-worker.mjs`, the `respec` message).
 
 Worked example (encoded with `liblizard/sim/phy.mjs:makePhy`, the drive scaled 2x, nearest, on white, decoded by the told
-receiver): LIZARD-16 painted with base 1000 returns ids 1000 and 1001; LIZARD-512 with base 1000 returns 1000 to 1063;
-both 0 bad, their words reading version 2 and version 64 at 24 fps.
+receiver): LIZARD-16 painted with base 1000 returns ids 1000 and 1001; LIZARD-512 (62 blocks) with base 1000 returns
+1000 to 1061; both 0 bad, their words reading version 2 and version 64 at 24 fps (rerun 2026-10-08 under the rate
+profile's 39/15/20 split, in the default ring).
 
 What the id does:
 
@@ -2396,8 +2503,8 @@ What the id does:
 - No decode decision depends on it (`liblizard/src/fmt.c:ob_fmt_decode` takes it unchecked). A receiver uses it to judge its
   capture rate against the display (a camera below the display rate cannot see every frame; the rig's receiver warns
   when that happens) and to tell a repeat from a missed frame.
-- **Throughput.** The ceiling is V x 469 x fps bytes a second (3.4): LIZARD-512 at 24 fps is 64 x 469 x 24 = 720,384
-  B/s. A 60 fps camera sees each 24 fps frame 2.5 times on average, and since blocks count once per id, a receiver gets
+- **Throughput.** The ceiling is B(V) x 469 x fps bytes a second (3.4): LIZARD-512 at 24 fps is 61 x 469 x 24 =
+  686,616 B/s (720,384 under one rate). A 60 fps camera sees each 24 fps frame 2.5 times on average, and since blocks count once per id, a receiver gets
   the union of what its captures of each displayed frame verify.
 
 ### 9.3 The test stream
@@ -2430,7 +2537,7 @@ painted with a bit flipped, its CRC right) is counted bad by both decoders.
 paints, or `"legacy"`, which is also what a missing field means, for a replay of a recording. Legacy (`liblizard/sim/phy.mjs:blockBytesLegacy`) is an xorshift32 walk
 kept for recordings made before 2026-09-21: s = ((id + 1) x 0x9E3779B1 mod 2^32) XOR 0x85EBCA6B, then for each byte
 s ^= s << 13, s ^= s >> 17, s ^= s << 5 (32-bit, logical shifts) and the byte is s & 255; id 12345 gives
-`f278e81edbb4b2a215c9014f630baa69`. All 19 recordings in `research/captures` are SHAKE256.
+`f278e81edbb4b2a215c9014f630baa69`. Every recording in `research/captures` is SHAKE256.
 
 ### 9.4 The fountain: Wirehair as the project uses it
 
@@ -2439,7 +2546,7 @@ s ^= s << 13, s ^= s >> 17, s ^= s << 5 (32-bit, logical shifts) and the byte is
   about the equations with no way to notice, so the shim refuses any other.
 - **Sizes.** Block size 469 bytes. A message must span 2 to 64,000 blocks, so 470 to 30,016,000 bytes; the encoder
   refuses anything else (`InvalidDimensions`). A chunk is at most 16 MiB, 35,773 blocks, and a chunk of one block is
-  not fountained (7.6), so a Lizard file of any length up to 16,383 chunks goes, an empty one as a header alone.
+  not fountained (7.6), so a LIZARD file of any length up to 16,383 chunks goes, an empty one as a header alone.
 - **Seed.** The encoder chooses a `seed_attempt` of 0 to 255 (`liblizard/wirehair/shim.cpp:lizard_wh_encoder_create`). A
   decoder is built from the message length, the block size and that seed alone
   (`liblizard/wirehair/shim.cpp:lizard_wh_decoder_create`). Every chunk's travels in the manifest, a one-chunk file's
@@ -2469,12 +2576,14 @@ s ^= s << 13, s ^= s >> 17, s ^= s << 5 (32-bit, logical shifts) and the byte is
 ## 10. Reference receivers (non-normative)
 
 Two decoders read the format. Neither defines it. Both report each frame's two pilot readings (7.3), and where the
-frames flash the Android app's phase lock holds by what they say a capture holds of its neighbours.
+frames flash the Android app's phase lock holds by what they say a capture holds of its neighbours; frames with one
+reading (version 1) it reads by their blocks, as it does frames that do not flash.
 
 ### 10.1 The C decoder (`liblizard/src/`)
 
 The decoder the phone rig carries: wasm with SIMD128, one thread a worker, a pool of workers that grows only while
-frames are lost to busy ones (`lizard-web/recv.mjs`, `lizard-web/pool.mjs`). The rig's receiver is told nothing (2026-09-26): each
+frames are lost to busy ones (`lizard-web/recv.mjs`, `lizard-web/pool.mjs`); the Android app runs the same C natively on NEON, a
+blind receiver a thread (`liblizard/core/cpu/`, 2026-09-30). The rig's receiver is told nothing (2026-09-26): each
 worker runs `liblizard/sim/phy.mjs:makeBlind` over `liblizard/sim/ob.mjs:FocusAny(nmax)`, the wasm's `focus_any_*` (`liblizard/src/wasm.c`), with
 nmax 1536, the ladder's top (`BLIND_NMAX`, since 2026-09-29; 1024 by default before, 1536 from the receiver's sizes menu,
 which went that day; 2048 until 2026-09-27). Since 2026-09-27 it bootstraps from the ring (5.5):
@@ -2482,9 +2591,10 @@ which went that day; 2048 until 2026-09-27). Since 2026-09-27 it bootstraps from
 - `focus_any_setup(nmax)` builds four ring codecs, one a ring (32, 64, 96, 128), each at n = 256.
 - `focus_any_rx(img, iw, ih, gamma, mesh, blocks, ok, held)` registers the frame against the four rings' layouts
   (`liblizard/src/focus.c:focus_acquire_ring`, a bounded search of 4 inside the finder, like the 8 orientations), and the ring
-  that registered reads the word. Its version names n (3.2); the codec for that (ring, n) pair is built the first time
-  the pair is seen and cached (`ANY_PICS` = 2, the least recently used replaced), each at the top format of its n,
-  since a lower format's blocks are a prefix of it and the rest decline (3.2). The registration is handed to it
+  that registered reads the word. Its version names n (3.2); the codec for that ring and sub-channel count is built the
+  first time the pair is seen and cached (`FOCUS_ANY_PICS` = 2, `liblizard/src/any.h`, the least recently used replaced):
+  each count's rate profile is its own, so a frame decodes on its version's codec (under one rate, before 2026-10-07,
+  one codec at the top format of each n read every lower format as a prefix). The registration is handed to it
   (`focus_hand_over`), which reads the word again and finishes the frame.
 - `held` is the version of the last word the caller read, 0 for none. A frame whose word does not read is finished at
   the held configuration in the ring it registered; with none held it is not decoded (`focus_release`). A picture past
@@ -2495,7 +2605,8 @@ which went that day; 2048 until 2026-09-27). Since 2026-09-27 it bootstraps from
   `_focus_any_blocks` and `_focus_any_max_blocks` the block counts.
 - A frame is read once. The decision-directed shift pass the blind codecs ran from 2026-09-27 (the failed blocks read
   again through the shift the verified blocks' codewords gave) was deleted on 2026-09-28 (section 12): on the two
-  recordings on the rings the C reads 19,960 and 22,266 blocks without it, 20,256 and 23,934 with it, 0 bad either way.
+  recordings on the rings the C read 19,960 and 22,266 blocks without it, 20,256 and 23,934 with it, 0 bad either way
+  (one-rate frames, 2026-09-28). The pilots' fit (step 9) took them to 20,545 and 23,958 (2026-10-01).
 
 Checks (2026-09-27 evening, the four rings): every (ring, picture) pair read blind byte-exact, 48 of 48
 (`scripts/exp/ring_pairs.mjs`: the first and last format of each picture, twelve, in each ring); a wordless frame decoded at
@@ -2538,7 +2649,9 @@ decode of one known codec, is `focus_acquire` then `focus_finish`:
 7. **Detrend** (6.10), fitted while the strips are sampled and subtracted in the spectrum.
 8. **Transform.** Along y a strip at a time, two real columns packed as one complex transform; along x only the kept
    rows, v < n / 2.
-9. **Soft values, decline gate and LDPC** (8.5).
+9. **Pilot alignment, soft values, decline gate and LDPC** (8.5). Since 2026-10-01 the grid's shift is fitted from the
+   pilots' known symbols (7.3) and every coefficient turned back before its soft value, where the fit's chi-square
+   against its residual passes 13.8, one in a thousand for noise (`liblizard/src/focus.c:pilot_align`, `ALIGN_CHI`).
 10. **CRC-32** over the block's 473 bytes (7.1). A block that passes goes to the page, which keeps the new ids and hands
     their payload to the fountain.
 
@@ -2553,8 +2666,9 @@ flow was deleted on 2026-09-23). A batch of frames is one command encoder and on
 trained classifier find the corner marks, votes along the symbol's diagonals find its centre, the timing track scores
 every quad, orientation and ring (`liblizard/gpu/wgsl/finder.mjs` `RING_COUNT` 4, 128 hypotheses: 4 quads x 8 orientations x 4
 rings), PICK picks the ring, the border nodes are refitted against that ring's nodes, the word is read and the picture
-sampled, and a back half on the device does the transform with the detrend, the soft values and the decline gate, the
-LDPC and the CRC-32. The rate profile is one stage there (`liblizard/gpu/back/tiers.mjs`,
+sampled, and a back half on the device does the transform with the detrend, the pilots' grid alignment (10.1, step 9;
+since 2026-10-01), the soft values and the decline gate, the LDPC (its stop a small learned net a code,
+`liblizard/gpu/back/stop/`) and the CRC-32. The rate profile is one stage there (`liblizard/gpu/back/tiers.mjs`,
 `liblizard/gpu/wgsl/back_tiers.mjs`): every version's tiers a row of a table, each block's soft values, estimate,
 decline and pilot over its own sub-channels and code, a dispatch a code. The format's tables come from the wasm codec at start: the rings' borders (built at n = 256 in each
 ring) and the pictures apart (`liblizard/gpu/tables.mjs` `formatTables()` returns `{ rings, pictures }`, the pictures from
@@ -2573,31 +2687,35 @@ batch slots must give nothing), never on parity with the C at any stage. On the 
 synthetic frames, no camera, an RTX 4090): every (ring, picture) pair read told nothing, 24 of 24 at
 each picture's top and 48 of 48 over the twelve formats of 10.1 (`scripts/exp/gpu_rings.mjs`), a wordless frame read at the held
 word and not without one, 5 of 5; `scripts/exp/gpu_front.mjs`, 28 cells, found the right ring and picture on every symbol frame,
-the no-symbol controls 0 blocks and 0 words, 0 wrong, 0 bad. On the desktop's two-CU RDNA-2 iGPU, on the morning's rings
-(f16, 48 synthetic 1080 frames, LIZARD-192 in the 64 ring, then at n = 1024, batches of 32), it took 5.67 ms of compute
-a frame, 0.107 ms of it the word, and verified 1,152 of 1,152 blocks, bad 0; at n = 768, 5.53 ms (section 11). Before
-the rings, on every frame of the 19 recorded phone runs (5,942 frames, the 4090) it verified 93,124 blocks against the
-C's 84,116, 0 bad on either, with the classifier weights installed on the afternoon of 2026-09-24 (STATUS.md,
-2026-09-24), and it decoded live on the S26 Ultra from 2026-09-25. On the one recording on the rings (v0.3
-07-56-38, LIZARD-336 at n = 1024 in the 64 ring, 600 frames, the 4090) it verified 20,133 blocks, bad 0, every frame
-found in its ring and every word right, with the shift stage it ran until 2026-09-28; it has not run on a phone on the
-rings. `liblizard/gpu/README.md` has the shape rules, the stages and how to run it.
+the no-symbol controls 0 blocks and 0 words, 0 wrong, 0 bad. On the desktop's two-CU RDNA-2 iGPU, on the four rings
+(f16, 48 synthetic 1080 frames, LIZARD-192 in the 64 ring, 2026-09-27 evening), it took 5.71 ms of compute a frame and
+verified 1,152 of 1,152 blocks, bad 0; at n = 768 against 1024 that morning, 5.53 against 5.68 ms (section 11). On the
+three recordings on the rings (v0.3, 600 frames at 1080 each, file transfers in one-rate frames; the 4090, bad 0) it
+verified 20,742 and 24,024 blocks on 07-56-38 and 17-59-29 (LIZARD-336 at n = 1024 in the 64 ring), where the blind C
+read 20,545 and 23,958, both aligning the grid from the pilots (2026-10-01), and 19,721 on 17-05-48 (LIZARD-512 at
+n = 1024 in the 128 ring) against the C's 20,274, before the finder's final retrain (2026-10-01). It decodes live on the
+S26 Ultra, in Chrome since 2026-09-25 and natively in the Android app since 2026-09-30, its WGSL compiled to SPIR-V for
+a Vulkan host (`liblizard/core/`). `liblizard/gpu/README.md` has the shape rules, the stages and how to run it.
 
 ## 11. Measured facts (non-normative)
 
-The simulator (`scripts/sim/camera.mjs`, one camera model) is for ranking configurations. The phone figures are one phone
-(Samsung S26 Ultra, Firefox for Android) filming one ordinary 1080p office monitor (an OSU lab display, not a gaming panel), and where they disagree with the simulator the phone wins;
+The simulator (`scripts/sim/camera.mjs`, one camera model) is for ranking configurations. The phone figures are one phone,
+the Samsung S26 Ultra, filming ordinary 1080p monitors, not gaming panels (Firefox for Android in the rows of
+2026-09-20 to 2026-09-23, Chrome for Android or the native Android app in the later ones), and where they disagree with the simulator the phone wins;
 the simulator has been badly wrong once, on dithered black and white. A test cell is one capture condition of a
 simulator sweep. Every figure is from STATUS.md unless its line says it was measured for this document.
 
 | fact | conditions | kind |
 |---|---|---|
+| 2:1, two codes a frame read as two: goodput median 3,783 KB/s, 90th percentile 3,955, max 4,014; 67.5 of 70 blocks a clean capture (96%); 117 halves a second decoded | two LIZARD-592 codes at 60 painted by the desktop sender's GPU painter, the four-rate format; the native Android app, its GPU decoder launching as soon as a frame is staged, with every frame then staged; 150 one-second rows over 13 minutes, aimed by hand, the phone off its charger; one monitor; 2026-10-08 | phone |
+| One code: 1,570 to 1,640 KB/s, 56 to 58 of 60 blocks a clean capture, under 3% of captures short | LIZARD-480 painted 60 in the 128 ring, one rate; a 1920 x 1080 monitor at 60.00 Hz, the code 959 px a side; the native Android app, its phase lock `track`; the minutes with no repeated or skipped picture; 2026-10-01 | phone |
+| Chrome for Android: 700 to 800+ KB/s stable at a 1440 crop, about 550 at 1080 (the camera the limit there); bad 0 over 121,380 blocks judged | LIZARD-560 at 24 painted (788 KB/s offered) in the 64 ring, one rate, a fullscreen 1080p monitor; the GPU decoder in the page; reported, 2026-09-27 | phone |
 | 270 KB/s sustained and not finicky: 48 fully decoded frames a second of 5,628 B | 96 sub-channels (12 blocks) at n = 256, which is not a current format (LIZARD-96 now takes n = 512); 720 x 720 crop; the 286-module border, before the bit map; reported, 2026-09-20 | phone |
 | Decode 13.7 ms a frame; the phone is about 4x the desktop | the same configuration | phone |
 | LIZARD-256: 281 KB/s (13,268 B a frame, 88% of frames found) at a 2160 crop; 269 KB/s (9,955 B, 96%) at 1440 | the 286-module border; 5 to 6 s of stats from an uncontrolled session; 2026-09-23 | phone |
 | LIZARD-16 at about 21 camera px a module: about 21 KB/s, against its 22.5 KB/s ceiling at 24 fps | 2160 crop, the 94-module border, 2026-09-23 | phone |
 | LIZARD-512: the C decoder told the format finds 600 of 600 frames and verifies 42.8 of 64 blocks a frame (20,081 useful B, 67% of 30,016), 0 bad | recording 2026-09-23T21-34-51: 1440 crop, sender at 24 fps, painted on the n / 4 + 30 border (286 modules); replayed on desktop wasm, decision-directed pilots off; measured for this document | phone recording |
-| The GPU decoder verifies 93,124 blocks, the C 84,116, 0 bad on either | all 19 recordings (5,942 frames), every one on a white surround and on a border older than n / 8 + 60; an RTX 4090; the classifier weights installed on the afternoon of 2026-09-24 (93,178 with the weights before them) | phone recording |
+| The GPU decoder verified 20,742 and 24,024 blocks, the blind C 20,545 and 23,958, 0 bad on either; on a third, 19,721 against the C's 20,274 | v0.3 07-56-38 and 17-59-29 (LIZARD-336 at n = 1024 in the 64 ring) and 17-05-48 (LIZARD-512 at n = 1024 in the 128 ring): file transfers, 600 frames at 1080 each, white surround, one-rate frames (which today's decoders do not read); an RTX 4090; both decoders aligning the grid from the pilots, the third before the finder's final retrain; 2026-10-01 | phone recording |
 | Dithered black and white: about 20 KB/s where grey did 270; the simulator had put it at 80 to 100% of grey | 2026-09-20 | phone |
 | The n / 8 + 60 border (2026-09-23 to 2026-09-27): reported to work; 14 recordings of it followed (v0.2, 2026-09-27) | 2026-09-23 | phone |
 | The morning's three rings (32, 48, 64) against the n / 8 + 60 border, told: blocks -0.8% at LIZARD-16, -1.1% at -64 and -128, -6.8% at -256, -3.7% in all (229,108 to 220,724); blind equal to told in bytes in every cell. Under damage (`scripts/exp/fmt_word.mjs DAMAGE=1`, 2,048 frames) payload frames 1,185 to 1,028, the loss at n = 1024 and 2048 in cells set in pixels a module, where the new symbol has 158 modules against 188 and 316; wrong words 0 in both | `scripts/exp/border_scale.mjs FULL=1`, 16 frames a cell, old build against new, 2026-09-27; not repeated on the four rings | simulator |
@@ -2608,12 +2726,14 @@ simulator sweep. Every figure is from STATUS.md unless its line says it was meas
 | Noise painted up to the ring with the margin cut away: LIZARD-256 kept 64 to 388 of 1,446 blocks, LIZARD-64 214 to 496 of 614 | `archive/build-scratch-2026-09/ring_race.mjs`, 18 test cells x 6 frames, three kinds of noise, the n / 4 + 30 border, 2026-09-23 | simulator |
 | The guard ring (1 module of black round 3 of white) with the noise painted up to it: LIZARD-256 1,224 to 1,345 of 1,446; not recovered: what only the line fallback carried (270 px and below, 45 degrees of yaw) and 2.5 px of defocus | the same harness | simulator |
 | A 2048 picture stops dead where a 1024 one degrades: at 594 camera px and 1.5 px of defocus LIZARD-576 and -1024 register nothing, LIZARD-560 reads 3,752 B a frame | the n / 4 + 30 border (542 modules), 6 frames a test cell; not re-run on 316 modules, on the rings (158) or at 1536, the top picture since 2026-09-27 | simulator |
-| Decode by format: LIZARD-256 22.4 ms, -568 (71 blocks, off the ladder) 19.6, -576 40.1, -1024 39.4; heap 20 MB through n = 1024, 38 to 41 MB at 2048 | simulated 2160 capture, clean pose, told, desktop wasm on one thread, 3 frames, the n / 4 + 30 border | simulator |
+| Decode by format: LIZARD-256 22.4 ms, -568 (71 blocks under one rate, off that day's ladder) 19.6, -576 40.1, -1024 39.4; heap 20 MB through n = 1024, 38 to 41 MB at 2048 | simulated 2160 capture, clean pose, told, desktop wasm on one thread, 3 frames, the n / 4 + 30 border | simulator |
 | The picture sizes between the powers of two, each format at its 3 x 2^k size against the power of two above, same ring and pose: 29,461 blocks against 29,714 over eight formats (-0.85%), per format -0.1% (LIZARD-144, 2.24) to -1.4% (LIZARD-80, 1.50); every frame registered in both arms; the C's sampler and transform 0.62 to 0.69 of their time, its whole decode 0.77 to 0.89 | `FULL=1 scripts/exp/focus_nfit.mjs`, 1,536 captures: one camera model, clean poses, told, one physical size, 16 frames a cell, 6 cells (0.8, 0.9, 1.0 and 1.25 of `CAMERA_PX_FOR`, 2.5 with 1.5 px of defocus, 1.25 through the page's smoothing), 2160 px captures (1080 for LIZARD-48 and -80); times from one worker among 30, read as ratios; 2026-09-27 | simulator |
 | The GPU decoder at those sizes: LIZARD-192 at 1080, 5.53 ms of compute a frame at 768 against 5.68 at 1024 (pass 1 0.545 against 0.744), 1,152 of 1,152 blocks in both; LIZARD-1024 at 2160, 16.25 at 1536 against 18.21 at 2048 (pass 1 1.85 against 3.78), 6,024 against 6,035 of 6,144 blocks; bad 0 | the desktop's two-CU RDNA-2 iGPU, f16, 48 synthetic frames a cell, one cell each, batch auto, two rounds interleaved (means), the cancel stage off; tree copies with `PICTURE_SIZES` edited; 2026-09-27 | desktop |
-| Encode: LIZARD-1024 takes 17.5 ms in C (`focus_tx`) and 19.2 ms with the RGBA, so a 60 fps sender misses its frame by about 3 ms | node on the desktop, the n / 8 + 60 border | desktop |
+| Encode: LIZARD-1024 at 60 asked, the C in the sender's worker painted 60.0 of 60 a second at 14.09 ms a frame and the GPU encoder 60.0 of 60 at 5.24 ms of GPU a frame; every canvas read blind by the C, 128 of 128 blocks, bad 0 | n = 1536 in the 64 ring, a 1944 px canvas; the sender page in headless Chrome on the desktop (Ryzen 9 9950X; WebGPU on its two-CU RDNA-2 iGPU), the box's other load not controlled; one rate; `scripts/exp/send_rate.mjs`, 2026-09-29 | desktop |
 | Rate: 7/8 everywhere is +10% where the capture matches the sender's assumption and -42% at 360 px | ten test cells (`liblizard/src/focus.h`, `FOCUS_RATE`) | simulator |
-| The rate profile against one rate 3/4 at the same sub-channel count: +17.5% bytes a frame read at LIZARD-432 under the profile (7/8 x 20, 3/4 x 20, 1/2 x 11), +25% at LIZARD-416 under one of its shape (7/8 x 16, 3/4 x 20, 1/2 x 12), though they offer 5.6 and 7.7% fewer blocks; 7/8 everywhere 33 to 36% less | `scripts/exp/rate_tiers.mjs`: two recorded 2:1 captures of one phone (S26 Ultra at 1080, zoom 1.5, 960 x 960 halves, 236 and 299 frames whose bytes are known), each frame's residuals re-modulated under each profile and read by the C decoder's own soft values and LDPC (the one-rate profile through this path reads the real decode's bytes exactly); one phone, one distance; 2026-10-07 | phone recording |
+| The rate profile against one rate 3/4 at the same sub-channel count: +17.5% bytes a frame read at LIZARD-432 under that day's three-rate profile (7/8 x 20, 3/4 x 20, 1/2 x 11), +25% at LIZARD-416 under one of its shape (7/8 x 16, 3/4 x 20, 1/2 x 12), though they offer 5.6 and 7.7% fewer blocks; 7/8 everywhere 33 to 36% less | `scripts/exp/rate_tiers.mjs`: two recorded 2:1 captures of one phone (S26 Ultra at 1080, zoom 1.5, 960 x 960 halves, 236 and 299 frames whose bytes are known), each frame's residuals re-modulated under each profile and read by the C decoder's own soft values and LDPC (the one-rate profile through this path reads the real decode's bytes exactly); one phone, one distance; 2026-10-07 | phone recording |
+| Four rates against the three-rate profile (7/8, 3/4, 1/2 at 32% and 30%): only the gradient 7/8, 3/4, 2/3, 1/2 gained on every capture; 30/24/20 (the format since 2026-10-08) +2.7 to +4.1% bytes over all frames and +2.2 to +3.3% over captures little mixed with their neighbours; 2/3 outside lost 5 to 8%, no 7/8 or no 3/4 lost on clean frames. Live, two LIZARD-568 at 60 painted on a 1080 monitor, every capture clean: 59.8 against 60.6 blocks a code of 67, inside the spread between runs (58.7 to 62.8) | `scripts/exp/tier_split.mjs` over `rate_tiers.mjs`'s re-modulation: three recorded 2:1 captures of one phone (LIZARD-416, -432, -592), grids of targets per family; the live arms one phone, one monitor, by hand, 2026-10-08 | phone recording, phone live |
+| The split's junctions on the GPU receiver's channel: a sequential scan (1/2 against 2/3, then 2/3 against 3/4 inside it, then 3/4 against 7/8), refined a block at a time, found 7/8 x 33, 3/4 x 17, 2/3 x 11, 1/2 x 10 at LIZARD-592, +1.82% bytes over 30/24/20; the rule's targets nearest it, 39/15/20 (7/8 x 34, 3/4 x 18, 2/3 x 10, 1/2 x 10), +1.94%. The same scan on the reference decoder's reading of the captures preferred less 7/8 | `scripts/exp/tier_scan.mjs` and `tier_spec.mjs` over `tier_eval.mjs`: three recorded 2:1 captures of one phone at LIZARD-592 (17:48, 17:50 and 01:58 of 2026-10-08), each frame's coefficients as the native GPU decoder sampled and aligned them (`scripts/exp/gpu_channel.mjs`, its judge within 0.2% of that decoder's own blocks), re-modulated under each profile and read by the reference demapper and LDPC; 2026-10-08 | phone recording |
 | Bit map: whitening took a frame of 100-byte payloads from 6 of 64 blocks to 64; at 8 px of motion blur LINEAR reads 870 B a frame against 674 in order (LIZARD-64) and 791 against 557 (LIZARD-128) | 48 frames (`liblizard/src/focus.h`, `FOCUS_BITMAP`) | simulator |
 | n / 8 + 60 against n / 4 + 30: useful bytes summed over 17 test cells -1% (LIZARD-16) to -13% (LIZARD-560), the losses where the picture is short of pixels; more frames registered at the far end and at 45 degrees | 6 frames a test cell, told receiver | simulator |
 | A file in chunks through the rig's pages, the header from the light: 98.3% of the one fountain's rate at 10 MB and 98.7% at 600 KB (the control blocks are 1.6% of the airtime); 64 MB, past what one fountain carries, in 16 chunks at 698.3 KB/s, 97.0% of the 720.1 KB/s the display painted; the receiver about 40 MB with the blocks in OPFS, 230 MB with them in memory | `lizard-web/check_rates.mjs`: a clean synthetic clip, display 24 fps, camera 30, headless desktop Chrome, the header kept off the network, the file held to BLAKE3 by two implementations; LIZARD-96 at 1280 x 720, LIZARD-512 at 2560 x 1440; no phone; OPFS tried in Chrome only; 2026-09-24 | desktop |
@@ -2628,10 +2748,10 @@ Each of these was built and measured, or decided. The reason given is the one on
 |---|---|---|
 | The ladder is every multiple of 16 from LIZARD-16 to LIZARD-1024: 64 formats, version = blocks a frame, versions 2 to 128; the names stay under the rings (every whole number of blocks since 2026-10-01, next row) | a symbol a computer paints can afford more versions than QR's 40 (2026-09-23); it replaced the five formats of 2026-09-21; LIZARD-k already states the sub-channel count (2026-09-27) | STATUS "64 formats" |
 | Every whole number of blocks, 1 to 128, a slider on the sender in place of the menu of 64 | one version (8 sub-channels) is the smallest step the word names; the blocks a frame are the rate profile's since 2026-10-07 | 2026-10-01; `liblizard/sim/lizard_pick.mjs:VERSIONS`, `lizard-web/send.html` |
-| The largest picture (LIZARD-576 to -1024; n = 1536 since 2026-09-27, 2048 before) is for fixed rigs; apps are advised to stop at LIZARD-560; the library does not cap | a 2048 picture doubles decode and heap and stops dead under blur where 1024 degrades (both measured on the 542-module border, section 11; neither measured at 1536); the library's picker takes the largest format a room holds, so in the default ring any room of 1,170.6 device px or more gets the largest picture | 2026-09-23; `liblizard/sim/lizard_pick.mjs:ROOM_FOR` |
+| The largest picture (LIZARD-576 to -1024; n = 1536 since 2026-09-27, 2048 before) is for fixed rigs; apps are advised to stop at LIZARD-560; the library does not cap | a 2048 picture doubles decode and heap and stops dead under blur where 1024 degrades (both measured on the 542-module border, section 11; neither measured at 1536); the library's picker takes the largest format a room holds, so in the default ring, the 128, any room of 1,047.7 device px or more (1,170.6 in the 64) gets the largest picture | 2026-09-23; `liblizard/sim/lizard_pick.mjs:ROOM_FOR` |
 | The picture size is the first of 256, 384, 512, 768, 1024 and 1536 with n >= 3R: 2^k and 3 x 2^k, each at most 1.5 times the one before; a 3 x 2^k transform takes one radix-3 stage, and every power of two stays radix 2 | on the powers of two each step gave a format four times the samples for one more block (LIZARD-144 at n / 2R = 2.99); at the smaller sizes the simulator read 0.85% fewer blocks, the C's sampler and transform took 0.62 to 0.69 of their time, and the iGPU 2.6 and 10.8% less compute a frame (section 11); no format moved a coefficient or its ring | 2026-09-27; STATUS "Picture sizes between the powers of two"; 3.2 |
 | Four rings: the band holds B = 32, 64, 96 or 128 cells of 2 x 2 modules a side, a side is 2B + 30 modules (94, 158, 222, 286), the picture spans 2B; any ring may carry any picture | the ring bootstraps what is inside, and versions collapse (the rows below) | 2026-09-27 (three rings that morning, four that evening); STATUS "Three rings: the ring bootstraps what is inside, versions collapse" |
-| The sender's default ring is the 64 for every picture (the 128 since 2026-10-01, next row); no ring follows the version, even by default | unlike QR, whose size is fixed by its version, Lizard decouples the two, closer to 5G than to QR or Aztec: the ring is a sync and bootstrap layer, like 5G's sync block, chosen for the channel and the room; a rule that picks it from the room waits on a measured module-size floor | 2026-09-27 evening; `liblizard/src/focus.h:FOCUS_RING_DEFAULT`, `liblizard/sim/lizard_pick.mjs:RING_DEFAULT` |
+| The sender's default ring is the 64 for every picture (the 128 since 2026-10-01, next row); no ring follows the version, even by default | unlike QR, whose size is fixed by its version, LIZARD decouples the two, closer to 5G than to QR or Aztec: the ring is a sync and bootstrap layer, like 5G's sync block, chosen for the channel and the room; a rule that picks it from the room waits on a measured module-size floor | 2026-09-27 evening; `liblizard/src/focus.h:FOCUS_RING_DEFAULT`, `liblizard/sim/lizard_pick.mjs:RING_DEFAULT` |
 | The sender's default ring is the 128 for every picture | the best phone runs (1,570 to 1,640 KB/s at LIZARD-480) were painted in the 128 ring (the page's `ring=3`) | 2026-10-01; `liblizard/src/focus.h:FOCUS_RING_DEFAULT`, `liblizard/sim/lizard_pick.mjs:RING_DEFAULT` |
 | Versions collapse: the word's second byte, sub-channels / 8, names what is inside the ring and nothing about the ring; n follows from it, and nothing checks it against the ring | the ring only locates the symbol and syncs its grid, and the word it carries says what is inside it | 2026-09-27; `liblizard/src/wasm.c:focus_any_rx` |
 | The ring bootstraps; a failed word is decoded at the last word read, and before any word nothing is decoded | the ring bootstraps the configuration, and a later word that fails to decode leaves it as it was | 2026-09-27; 5.5 |
@@ -2641,18 +2761,19 @@ Each of these was built and measured, or decided. The reason given is the one on
 | The symbol is self-describing through the format word | a receiver told nothing reads it; the version as an anchor count was built and lost (fill 0.3: 2,521 B to 381) and cannot carry error correction | `liblizard/src/fmt.h` |
 | The word carries the display rate | the one property of an animated symbol that no single frame shows | `liblizard/src/fmt.h` |
 | The margin, 2 modules of light, is part of the symbol, and the codec paints it (`FOCUS_QUIET`) | the finder assumes light outside the ring: noise up to the ring cost LIZARD-256 73 to 96% of its blocks; in the codec, every encoder built from `liblizard/src/` paints it and no JS keeps a copy | 2026-09-23 and 2026-09-24; `liblizard/src/focus.h` |
-| Only ladder versions are painted; a receiver reads any version the word states, with no flag; the codec refuses a symbol past LIZARD-1024 | an odd version is unsupported; past version 128 the word cannot name the symbol | 2026-09-24; `liblizard/sim/lizard_pick.mjs:VERSIONS`, `liblizard/src/focus.c:init` |
-| H is the printed shift table, `liblizard/src/ldpc_base.h`, not a construction (the 7/8 and 1/2 codes' too since 2026-10-07) | with H generated at start-up, a change to the profile, the seed or the cycle score would have changed the format without warning | 2026-09-24; 8.2, 8.6 |
+| Only ladder versions are painted; a receiver reads any version the word states, with no flag; the codec refuses a symbol past LIZARD-1024 | an odd version is unsupported; past version 128 the word cannot name the symbol; since 2026-10-01 every version is on the ladder (above) | 2026-09-24; `liblizard/sim/lizard_pick.mjs:VERSIONS`, `liblizard/src/focus.c:init` |
+| The 3/4, 7/8 and 2/3 tables optimised within their structure, the 7/8 code with a first data column never sent (2026-10-08): +0.04, +0.16 and +0.03 dB at the 10%-loss threshold, +0.3 to +0.9% bytes on the 2:1 replays as recorded and up to +2.7% on captures 1 dB worse; on degraded frames the same blocks for 5.3% less GPU a frame; the sent-bit map unchanged but for the 93-bit offset; the previous tables under `LIZ_TABLES=1` | 8.3, 8.6; `scripts/exp/ldpc_opt.py`; the full 5G NR structure (a double-diagonal core, degree-1 extension parities) not taken: another 0.3 dB at 7/8 for a different encoder in every painter and under 1% as recorded |
+| H is the printed shift table, `liblizard/src/ldpc_base.h`, not a construction (the 7/8 and 1/2 codes' too since 2026-10-07, the 2/3 code's since 2026-10-08) | with H generated at start-up, a change to the profile, the seed or the cycle score would have changed the format without warning | 2026-09-24; 8.2, 8.6 |
 | The transfer is in the light: the block id as 14 bits of chunk over 18 of fountain symbol, a header block, manifest blocks, and chunks of 2^10 to 2^24 bytes each verified by BLAKE3 against the file's root | a camera alone recovers a file; a chunk aligned at its own size is a subtree of BLAKE3's tree, so each is checked on arrival, as Bao and iroh stream; one fountain stops at 30 MB | 2026-09-24; `liblizard/src/xfer.h` |
 | The rig's sender interleaves every chunk over the whole file, laps with fresh repair ids, not chunks in turn | in turn needs a budget per chunk a lap, since nothing says a chunk arrived: counted over 64 MB at LIZARD-512, 15% random loss took 1.18 laps interleaved against 1.25 to 2.18 in turn, and nothing lost 1.001 against 1.10 to 1.49 | STATUS 2026-09-24; a count, not a camera |
 | No guard ring: the symbol ends at its 2-module margin | the ring round the margin was a sender option (2026-09-23) that recovered part of what noise at the ring cost, not the line fallback's cells; judged useless | 2026-09-26 |
 | Luminance only: grey levels, never colour; two brand colours are allowed as a luma ramp under the palette rule | colour is what made cimbar unreliable | project rules |
-| The code rate follows the frequency: the rate profile, 7/8 inner, 3/4 between, 1/2 outer, a function of the sub-channel count (3.1) | a capture's signal-to-noise ratio falls with the frequency, and on recorded phone captures re-modulated under each profile it read +17.5 and +25% bytes a frame over one rate (section 11). One rate 3/4 was the format before 2026-10-07: the rate a bet on a capture the sender cannot see, after profiles set on the simulator lost 4 to 16% where the capture did not match them; the recorded channel's own noise settled it the other way | 2026-10-07; `liblizard/src/focus.c:focus_tiers_for` |
+| The code rate follows the frequency: the rate profile, 7/8 inner, then 3/4 and 2/3, 1/2 outer (four rates since 2026-10-08; 7/8, 3/4 and 1/2 from 2026-10-07), a function of the sub-channel count (3.1) | a capture's signal-to-noise ratio falls with the frequency, and on recorded phone captures re-modulated under each profile it read +17.5 and +25% bytes a frame over one rate (section 11); the four rates read +2.7 to +4.1% over the three on three such captures and alike live on clean ones, and were taken for their margin on mixed and noisier captures. One rate 3/4 was the format before 2026-10-07: the rate a bet on a capture the sender cannot see, after profiles set on the simulator lost 4 to 16% where the capture did not match them; the recorded channel's own noise settled it the other way | 2026-10-07, 2026-10-08; `liblizard/src/focus.c:focus_tiers_for` |
 | The bit map is LINEAR, whitened, and the only one, so the word names none | whitening fixes small payloads; LINEAR spreads every run of the code across the block; the word has no free bit for a mode, and the other modes are lab settings | `liblizard/src/focus.h:FOCUS_BITMAP`; 2026-09-24 |
 | The format is never gated on a decoder | a weak decoder is fixed; it never decides or reverts a format choice | 2026-09-23; section 2 |
-| Lizard over the binary grid code | not throughput (the binary code is ahead above its cliff): Lizard degrades where the binary code stops dead; no further work on the binary code, which `scripts/exp/` still reaches through `liblizard/sim/phy.mjs`; the rig has no path for it since 2026-09-26 (its receiver was told by the server) | 2026-09-20 and 2026-09-26 |
-| The receiver is blind and the sender stands alone: a page talks to a server only to send it development logs, and nothing comes back into decoding or painting | Lizard's format, geometry and file header come from the light, the test stream's bad blocks are judged from the light (9.3), and Aztec and QR describe themselves | 2026-09-26; STATUS "The whole receiver blind" |
-| QR and Aztec are archived, not baselines: Lizard is compared against other apps | the research had settled that a beefier QR is not the option; the baselines dated from when a new format was in doubt, and FOCUS showed that OFDM, in luma only, does better and accelerates well on a GPU | 2026-09-26; `archive/qr-aztec/README.md` |
+| LIZARD over the binary grid code | not throughput (the binary code is ahead above its cliff): LIZARD degrades where the binary code stops dead; no further work on the binary code, which `scripts/exp/` still reaches through `liblizard/sim/phy.mjs`; the rig has no path for it since 2026-09-26 (its receiver was told by the server) | 2026-09-20 and 2026-09-26 |
+| The receiver is blind and the sender stands alone: a page talks to a server only to send it development logs, and nothing comes back into decoding or painting | LIZARD's format, geometry and file header come from the light, the test stream's bad blocks are judged from the light (9.3), and Aztec and QR describe themselves | 2026-09-26; STATUS "The whole receiver blind" |
+| QR and Aztec are archived, not baselines: LIZARD is compared against other apps | the research had settled that a beefier QR is not the option; the baselines dated from when a new format was in doubt, and FOCUS showed that OFDM, in luma only, does better and accelerates well on a GPU | 2026-09-26; `archive/qr-aztec/README.md` |
 | Wirehair and zstd are fixed and out of scope (LZMA on paper until 2026-10-05, never applied; zstd chosen over it and GDeflate: ratio within 5 to 10% of xz at level 19 at compressors a phone keeps ahead of the channel with, where GDeflate keeps DEFLATE's ratio for a GPU decode speed the channel cannot use) | the scope is the 2D code | project rules; STATUS "zstd, a chunk at a time" |
 | No SharedArrayBuffer, so no wasm threads | workers cannot share a heap, and per-worker memory is the number that matters on a phone | project rules |
 
@@ -2667,7 +2788,7 @@ Each of these was built and measured, or decided. The reason given is the one on
 | The receiver's size check: a word whose version implied another picture size than the module count registered was dropped, and the frame registered again at the other counts | the module count no longer says anything about the picture | 2026-09-27 |
 | Straddle cancellation, out for good | too complicated for its gain, on one phone's evidence; restored as a receiver menu, it spiked the phone's lag (2026-09-23) | `archive/straddle-cancel/README.md` |
 | Dithered black and white as the default | about 20 KB/s on the phone against 270 for grey; a sender option with no further work | STATUS 2026-09-20 |
-| Dithered black and white Lizard, the sender option, deleted | it ruins the range and the pixel scaling; it was also decoded told at gamma 2.2, which no blind receiver is | 2026-09-26 |
+| Dithered black and white LIZARD, the sender option, deleted | it ruins the range and the pixel scaling; it was also decoded told at gamma 2.2, which no blind receiver is | 2026-09-26 |
 | Reed-Solomon in place of the LDPC | 70 to 81% of the LDPC's payload on the mean, since it cannot use grey values; RS stays for small fixed fields such as the word | `research/08` |
 | 16-QAM | the SNR floor is about 10 dB of distortion | `research/10` |
 | A sender-side power tilt as the default | the +12 and +15% on the mean came from profiles that joined a 9 dB tilt to 320 sub-channels in place of 192, or to rate tiers, and every profile that added payload lost 4 to 16% in the 720, phone and fill 0.4 test cells; the tilt stays an option | `research/10` |
@@ -2677,7 +2798,7 @@ Each of these was built and measured, or decided. The reason given is the one on
 | A centre mark | wherever it goes it is in the picture | STATUS 2026-09-20 |
 | A 4 x 4 border cell | blur limits the mesh's sampling, not the band, and a coarser band made the mesh worse | STATUS 2026-09-21 |
 | Bursts as the way to run a stream, and then the receiver option itself | with a fountain, more distinct frames beat better frames; the rig never used it, and the codec's option (summed soft values of several captures of one frame) was deleted on 2026-09-28 | `research/07`; 2026-09-28; `archive/bursts/` |
-| The decision-directed shift pass: a frame's failed blocks read again through the registration shift its verified blocks' codewords give, in both decoders, and the shift carried between frames | an opaque filter patching a problem, where what had helped was the basic design, the rings among it; the loss is accepted until the registration bias it corrected is fixed at its source: on the two recordings on the rings (v0.3 07-56-38 and 17-59-29, 600 frames each) the blind C reads 19,960 and 22,266 blocks without it against 20,256 and 23,934 with it (-4.4%), 0 bad either way, 11.2 ms a frame against 12.0 (`scripts/exp/capture_check.mjs ARM=blind`, this desktop's CPU, one thread, both runs beside the GPU jobs). The carry had gone from the receiver on 2026-09-26 (the blind rule) | 2026-09-28; `archive/shift-pass/` |
+| The decision-directed shift pass: a frame's failed blocks read again through the registration shift its verified blocks' codewords give, in both decoders, and the shift carried between frames | an opaque filter patching a problem, where what had helped was the basic design, the rings among it; the loss is accepted until the registration bias it corrected is fixed at its source: on the two recordings on the rings (v0.3 07-56-38 and 17-59-29, 600 frames each) the blind C read 19,960 and 22,266 blocks without it against 20,256 and 23,934 with it (-4.4%), 0 bad either way, 11.2 ms a frame against 12.0 (`scripts/exp/capture_check.mjs ARM=blind`, this desktop's CPU, one thread, both runs beside the GPU jobs). The carry had gone from the receiver on 2026-09-26 (the blind rule) | 2026-09-28; `archive/shift-pass/` |
 | A faster CPU transform (radix 4, radix 8) | radix 2 is the better all-rounder on the CPU (2026-09-23); better FFTs belong to a GPU decoder; the kernels are in `archive/stash/fft-gen2/`. The one radix-3 stage of a 3 x 2^k size (2026-09-27) is a size, not a faster transform: every power of two stays radix 2 | STATUS 2026-09-23 |
 | The first WebGPU decoder, a port of the C | the wrong shape: it copied the CPU's control flow; deleted 2026-09-23 | STATUS 2026-09-23 |
 | Polar codes; the 5G NR base graphs and shift tables | patents (CRC-aided SC list decoding to 2035, NR shift tables to about 2036 to 2038); polar is also weaker than LDPC at 4k to 16k bits with soft input | `research/01` |
@@ -2696,7 +2817,8 @@ number so references to the others hold.
 **Where `liblizard/src/` and the decisions differ, or the code leaves a choice open**
 
 1. **Versions off the ladder. Closed (2026-09-24): unsupported.** A sender never paints one, and a receiver
-   reads one as it reads the ladder, with no flag (3.1, 5.1).
+   reads one as it reads the ladder, with no flag (3.1, 5.1). Since 2026-10-01 every version, 1 to 128, is on the
+   ladder (3.1).
 2. **A symbol with no word. Closed (2026-09-24): refused.** `liblizard/src/focus.c:init` refuses a symbol past
    LIZARD-1024, whose version the word cannot state (3.1). The wordless tiles of the 2 x 2 split are gone from the
    sender page (section 2).
@@ -2760,12 +2882,12 @@ number so references to the others hold.
       the core's true centre; the second is 6.0, as the code gives; 4.5 follows the code.
     - `liblizard/src/layout.h` (the thin-frame comment) and the 2026-09-22 spec say no run in the band is longer than 4 modules.
       That holds for the track only (4.6).
-    - `liblizard/sim/lizard_pick.mjs` comments still give n = 2048 as 542 modules and old room figures (LIZARD-16 needs 226 px;
-      camera 178, 299, 423); `scripts/exp/pick_check.mjs` says LIZARD-1024 needs 1305 px (1560.8 in the 64 ring).
+    - `liblizard/sim/lizard_pick.mjs`'s header still says LIZARD-16 needs 226 device px of room (195.1 in the 64 ring,
+      174.6 in the 128).
     - STATUS.md's "64 formats" table (94, 158, 286, 542 modules; rooms 226 to 1305 px) and its never-picked list (128,
-      528, 544, 560) predate both later borders. In the default ring every format is picked by some room, and the
-      largest picture (1536 since 2026-09-27, 2048 before) starts at 1170.6 px of room (1034.8 on the n / 8 + 60
-      border, 979 before).
+      528, 544, 560) predate both later borders. In one ring every format is picked by some room, and the
+      largest picture (1536 since 2026-09-27, 2048 before) starts at 1047.7 px of room in the default 128 ring (1170.6
+      in the 64; 1034.8 on the n / 8 + 60 border, 979 before).
     - `liblizard/test/fmt_test.c` tests the four rings' codes since 2026-10-04 (5.2's seven words; all passed, its exact
       garbage rates 5.4's). 5.4's measured row still comes from the scratch harnesses of 2026-09-27; `build/fmt_test
       2000000` remakes it (about 10 minutes).
@@ -2779,10 +2901,12 @@ number so references to the others hold.
 
 **Not yet measured**
 
-20. The rings on a phone. One recording exists, in the 64 ring (`research/captures/v0.3` 07-56-38, LIZARD-336 at
-    n = 1024, 600 frames at a 1080 crop, the S26 Ultra; 10.1, 10.2), none in the 32, 96 or 128 ring. The recordings of
+20. The 32 and 96 rings on a phone. The recordings on the rings (`research/captures/v0.3`, the S26 Ultra) are in the
+    64 ring (07-56-38 and 17-59-29, LIZARD-336 at n = 1024, 600 frames at a 1080 crop; 10.1, 10.2) and the 128 ring
+    (17-05-48, LIZARD-512, and the Android app's 2:1 replays since 2026-10-03), none in the 32 or 96 ring, and every
+    one holds frames painted before the four-rate profile. The recordings of
     the borders before (v0.1, 19 runs and more to 2026-09-26; v0.2, 14 runs on n / 8 + 60, 2026-09-27) do not register
-    on today's decoders; the build before (`archive/before-copies/rings/before/`) still reads them. Nor a transfer at speed, or heat.
+    on today's decoders; the build before (`archive/before-copies/rings/before/`) still reads them. Heat is open.
 21. The largest pictures under blur in the 64 ring (158 modules): 1536 since 2026-09-27, 2048 before. The dead stop
     was measured at 2048 on 542 modules, and whether the border or the decoder caused it was not separated. The advice
     to cap apps at LIZARD-560 (3.5) rests on it. In the simulator the rings cost payload frames under damage only at
@@ -2791,24 +2915,30 @@ number so references to the others hold.
     the S26 capture a frame change (a capture straddling two frames reads nothing, since every block spans the whole
     picture's spectrum). Measured on the S26 against a 60.00 Hz monitor on 2026-09-30 (STATUS "The phase lock on the
     S26, and track"): at 60 captures and 60 painted a second, 8 ms of the 16.7 ms refresh read at 8.33 ms of
-    exposure, and the Android receiver holds the camera there by delaying frames (its two arms, `auto` and `track`,
-    both kept). A per-frame reading of the phase from the light: the pilots (7.3, 9.1), built 2026-09-30 (STATUS "The
+    exposure, and the Android receiver holds the camera there by delaying frames (`track`; the `auto` arm deleted
+    2026-10-01). A per-frame reading of the phase from the light: the pilots (7.3, 9.1), built 2026-09-30 (STATUS "The
     pilots"), signed 2026-10-01 so a capture reads which neighbour it holds (STATUS "Signed
-    pilots"); the Android receiver's `track` holds by them. Open: the two readings on a real display (the first night's
-    single reading read 0.76 at the best phase of this desk's monitor, about 6% of each neighbour; the simulator's
-    model of the leaks is arithmetic).
-23. The GPU decoder on a phone on the rings. It ran on the S26 Ultra on the n / 8 + 60 border from 2026-09-25 (10.2).
-24. A recording with a noisy surround. Every recording has a white one; the sender's surround menu (`lizard-web/send.html`,
-    `?bg=`) exists for it.
-25. The C decoder's block total on the 19 recordings depends on the harness: `scripts/exp/capture_check.mjs` reads 81,390
-    (0 bad, 2026-09-24) where the C column of `scripts/exp/gpu_captures.mjs` reads 84,116. The settings differ and were not
-    reconciled. Section 11 cites 84,116 beside the GPU's 93,124, as STATUS.md does.
-26. The transfer on a phone. Every figure for it is desktop Chrome on a clean synthetic clip (section 11): not a real
-    camera's loss against the interleaved schedule, OPFS in Firefox or Safari, or a phone's BLAKE3 and Wirehair
-    solve times. The sender holds every chunk's encoder, about 1.75 times the file in Wirehair's heap, which puts its
-    limit at a few hundred MB; not measured on a phone either.
-27. The rate profile beyond one phone at 1080. Its split (about 32% of the sub-channels at 7/8 inside, 30% at 1/2
-    outside) was set on two recorded captures of one phone at one distance and zoom (section 11). At 720p or at range
+    pilots"); the Android receiver's `track` holds by them. On the phone (2026-10-01, LIZARD-480 painted 60 by Chrome,
+    a 60 Hz monitor) the two readings separate, 7% of the picture before and 6% of the one after at the hold, which
+    reads 0.8% of captures short. Open: phones other than the S26.
+23. The GPU decoder on a phone on the rings. Measured: on the S26 Ultra in Chrome (2026-09-29, LIZARD-512 in the 128
+    ring at 24 painted, the test stream: goodput median 467 KB/s, bad 0) and natively in the Android app since
+    2026-09-30 (section 11). It ran on the n / 8 + 60 border from 2026-09-25 (10.2).
+24. A recording with a noisy surround. Every recording has a white one; the sender's surround parameter (`?bg=`,
+    `lizard-web/send.mjs`) exists for it.
+25. The C decoder's block total on the 19 recordings. Reconciled (2026-09-24): `scripts/exp/capture_check.mjs` read 81,390
+    at the frames' stated sizes; at their recorded sizes it reads 84,116, as the C column of `scripts/exp/gpu_captures.mjs`
+    does, and 84,118 after that day's C decoder fixes. Those recordings (v0.1) are no longer in the tree.
+26. The transfer on a phone. On the S26 Ultra: five 3.9 MB files through Chrome and the C, 392 to 486 KB/s end to
+    end, every chunk verified (2026-09-29); a 12.9 MB file in the Android app in 7.6 to 8.2 s at LIZARD-480 painted 60
+    (2026-10-01, one rate); the native transfer chain, no camera, 0.56 s for a 9 MB file of 3 chunks with 20% of its
+    blocks lost (2026-09-30). Not measured: OPFS in Firefox or Safari. The sender holds every chunk's encoder, about 1.75 times the
+    file in Wirehair's heap, which puts its limit at a few hundred MB; not measured on a phone.
+27. The rate profile beyond one phone at 1080. Its split (about 39% of the sub-channels at 7/8 inside, 15% at 2/3
+    and 20% at 1/2 outside; 30%, 24% and 20% earlier on 2026-10-08; 32% and 30% at 7/8 and 1/2 under the three rates
+    of 2026-10-07) was set on recorded captures of one phone at one distance and zoom, two and then three (section
+    11), the last split on three captures of one size, LIZARD-592, and one live session against it (+2.5%, every capture
+    clean). At 720p or at range
     the outer sub-channels read worse and the knee moves inward; a profile set for one capture lost 4 to 16% where the
     capture did not match it on the simulator (research/10). A second phone and a capture at range are owed.
 
@@ -2816,13 +2946,15 @@ number so references to the others hold.
 
 The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
 
-- **The rate profile** (2026-10-07). Every block was coded at rate 3/4 on 8 sub-channels, and a frame of version V
-  carried V blocks. The rate now follows the frequency: 7/8 on 7 sub-channels a block in the inner tier, 3/4 on 8 in the
-  middle, 1/2 on 12 in the outer, by the sub-channel count alone (3.1), so a frame carries B(V) blocks: V up to LIZARD-80,
-  at most 7 fewer above (121 at LIZARD-1024). The word is unchanged: the version names the size, and the profile follows
-  from it. The 7/8 and 1/2 codes are printed tables as the 3/4 code is (8.6). The pilots ride in the 7/8 and 3/4
-  blocks' tails; a 1/2 block has none (7.3). A one-rate frame of LIZARD-48 or more, painted before, reads as the profile
-  today and decodes nothing; LIZARD-8 to -40 are unchanged.
+- **The rate profile** (2026-10-07; four rates since 2026-10-08). Every block was coded at rate 3/4 on 8 sub-channels,
+  and a frame of version V carried V blocks. The rate now follows the frequency: 7/8 on 7 sub-channels a block in the
+  inner tier, then 3/4 on 8, 2/3 on 9, and 1/2 on 12 in the outer, by the sub-channel count alone (3.1), so a frame
+  carries B(V) blocks: V up to LIZARD-120, at most 4 fewer above (124 at LIZARD-1024). From 2026-10-07 to 2026-10-08 the
+  profile had three rates, 7/8, 3/4 and 1/2, at 32% and 30% of the sub-channels; the four rates' split was 30/24/20
+  until the evening of 2026-10-08, 39/15/20 since. The word is unchanged: the version
+  names the size, and the profile follows from it. The 7/8, 2/3 and 1/2 codes are printed tables as the 3/4 code is
+  (8.6). The pilots ride in the 7/8 and 3/4 blocks' tails; a 2/3 or 1/2 block has none (7.3). A one-rate frame of
+  LIZARD-24 or more, painted before, reads as the profile today and decodes nothing; LIZARD-8 and -16 are unchanged.
 - **Every whole number of blocks** (2026-10-01). The 64 formats by 16 became 128 by 8, versions 1 to 128, all of which the word
   already named and every receiver already read; the reference sender sets blocks a frame on a slider (3.1, 5.1). Tables
   below that list 64 formats list the ladder as it was.
@@ -2852,7 +2984,8 @@ The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
   identified n. Since 2026-09-27 a side is its ring's (below).
 - **Rings** (2026-09-27). The border is one of four rings, B = 32, 64, 96 or 128 band cells a side, S = 2B + 30
   modules (94, 158, 222, 286), the picture spanning 2B. Any ring carries any picture, and the word, one code a ring,
-  says what is inside (3.3, 5.1 to 5.5). The sender paints the 64 ring for every picture. That morning there were three
+  says what is inside (3.3, 5.1 to 5.5). The sender paints the 64 ring for every picture (the 128 since 2026-10-01,
+  above). That morning there were three
   (32, 48, 64), the default following n; that evening 32, 64 and 128, then the four. The receivers register against
   every ring, read the word in the ring that registered, and decode a wordless frame at the last word read (5.5, 10).
   The border is the code's, a 12-module corner mark and a 3-module guard (section 4); an even border (13 and 2) was
@@ -2889,7 +3022,7 @@ The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
   9.4).
 - **LDPC.** "Both ends derive H from (n_max, rate, seed). No matrix is stored or shipped" became: H is the printed shift
   table, shipped as `liblizard/src/ldpc_base.h` (2026-09-24), and the generator that made it builds only codes outside
-  the format (8.2, 8.3). The profile table for the six rates the format does not use is dropped.
+  the format (8.2, 8.3). The profile table's rows for the rates the format does not use are dropped.
 - **Coefficient order.** The old text claimed the order was identical for n = 256 and 512 over the first 80.4
   sub-channels. It is independent of n for every format, and every format's coefficients are a prefix of
   LIZARD-1024's (3.2, 6.3).
@@ -2914,7 +3047,7 @@ The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
   rig's server; it is now blind: bad test blocks are judged from the light (9.3), and the network header's fallback
   and the binary grid code's receiver path are gone. The sender stands alone. A page sends the server development logs
   only (12).
-- **QR and Aztec archived** (2026-09-26), with `lib/`: Lizard is compared against other apps, no longer against
+- **QR and Aztec archived** (2026-09-26), with `lib/`: LIZARD is compared against other apps, no longer against
   them (12).
 - **Left out.** The 2026-09-22 research questions on LDPC decode speed (int8 posteriors, the degree profile, base-graph
   width, rotations, batching blocks across lanes), which concern a decoder; its bit-mapping question is answered by

@@ -4,7 +4,7 @@
 // ai: only a comment goes, a trailing comment leaves its code. A bang comment (/*! ... */) stays, as a licence's does.
 // ai:   strip(text, ext)                      ext ".mjs", ".js", ".css", ".html" or ".svg"; throws StripError on a
 // ai:                                         construct it cannot scan (the build then keeps the file whole and fails)
-// ai:   node lizard-web/pwa/strip.mjs --self-test   the tokenizer fixtures (the ported stripper's, and Lizard's own hazards)
+// ai:   node lizard-web/pwa/strip.mjs --self-test   the tokenizer fixtures (the ported stripper's, and LIZARD's own hazards)
 // ai: The one judgement it makes is whether a "/" opens a regex literal (regexAllowedAfter): wrong there, it would desync
 // ai: and eat live code, which is why build.mjs parses every stripped module again (node --check).
 
@@ -213,7 +213,7 @@ export function strip(text, ext) {
 
 // --- self-test --------------------------------------------------------------------
 
-// ai: The ported stripper's fixtures, then Lizard's: a WGSL comment inside a template literal is the shader's, not the module's;
+// ai: The ported stripper's fixtures, then LIZARD's: a WGSL comment inside a template literal is the shader's, not the module's;
 // ai: a URL in a string; a division after a closing paren and one after an index; a regex after "return".
 const FIXTURES = [
   ['const re = /[\\\\/:*?"<>|]/g; // gone', 'const re = /[\\\\/:*?"<>|]/g;'],

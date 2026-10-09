@@ -14,7 +14,6 @@ LIZ_API int liz_receiver_push_hardware_buffer(liz_receiver*, void*, int, int, in
 LIZ_API int liz_receiver_wants_luma(liz_receiver*) { return none(); }
 LIZ_API const char* liz_receiver_stats(liz_receiver*) { none(); return ""; }
 LIZ_API int liz_receiver_series(liz_receiver*, double, double*, int) { return none(); }
-LIZ_API void liz_receiver_soon(liz_receiver*, int) { none(); }
 LIZ_API void liz_receiver_batch_cap(liz_receiver*, int) { none(); }
 LIZ_API const char* liz_receiver_file(liz_receiver*) { none(); return ""; }
 LIZ_API void liz_receiver_clear(liz_receiver*) { none(); }

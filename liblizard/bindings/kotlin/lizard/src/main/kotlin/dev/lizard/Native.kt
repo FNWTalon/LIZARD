@@ -73,7 +73,6 @@ internal object Native {
   @JvmStatic external fun receiverWantsLuma(h: Long): Boolean
   @JvmStatic external fun receiverStats(h: Long): String
   @JvmStatic external fun receiverSeries(h: Long, since: Double): DoubleArray
-  @JvmStatic external fun receiverSoon(h: Long, on: Boolean)
   @JvmStatic external fun receiverBatchCap(h: Long, n: Int)
   @JvmStatic external fun receiverFile(h: Long): String
   @JvmStatic external fun receiverClear(h: Long)

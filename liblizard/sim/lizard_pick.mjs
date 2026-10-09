@@ -1,11 +1,12 @@
-// Which Lizard code to show, from the room available and nothing else. No DOM: lizard-web/send.mjs
+// Which LIZARD code to show, from the room available and nothing else. No DOM: lizard-web/send.mjs
 // reads its controls and calls this, scripts/exp/pick_check.mjs exercises it exhaustively.
 //
-// A VERSION IS ITS SUB-CHANNEL COUNT and nothing else, and the natural unit is the BLOCK: src/focus.c:144 builds
-// one tier of subch / FOCUS_GROUP blocks of 8 sub-channels each, and :143 rejects anything that is not a multiple
-// of 8. So version k = k blocks a frame = 8k sub-channels, and the payload is k * (block_bytes - 4), which at rate
-// 3/4 is k * 469 B. Version 12 is the 96 sub-channels the phone runs at 270 KB/s.
+// A VERSION IS ITS SUB-CHANNEL COUNT and nothing else, and the natural unit is the BLOCK of 8 sub-channels
+// (src/focus.h FOCUS_GROUP): the codec rejects a count that is not a multiple of 8. So version k = 8k sub-channels;
+// the blocks a frame are the rate profile's (tiersFor below), k of them to LIZARD-56 and at most 7 under k above,
+// each 469 B of payload.
 //
+// THE FIRST LADDER (2026-09-20, one code rate; the history of the decision, not the rule: VERSIONS below is).
 // Versions 2 to 32, so 16 to 256 sub-channels in steps of 8. The version number IS the block count, which is worth
 // keeping even though it means the ladder starts at 2: version 12 says 12 blocks and 5628 B without a lookup.
 // The top is 256 and not the 408 the picture could hold because everything above it only wins on a clean 1080 or
@@ -24,12 +25,13 @@
 // The picture size n is DERIVED (N_FOR): it decides only how finely the same coefficients are sampled. It is
 // derived from the version, never the other way round. The density rule's target radius is
 // CAMERA_PX_FOR / (SAMPLES(n) / n * T). That ratio used to be one constant for every format, because every format
-// was 286 modules; since the border became independent of the picture it is MODULES(n) / SPAN(n), the border's share of
-// a smaller picture being larger, so it is taken at the format's own n.
+// was 286 modules; since the rings (2026-09-27) it is MODULES / SPAN of the ring the format is painted in, the same for
+// every picture in one ring, so it is taken at the format's own ring.
 //
-// FIVE FORMATS, not a ladder (2026-09-21; replaced by the 64-format ladder at VERSIONS on 2026-09-23, so this is the
+// FIVE FORMATS, not a ladder (2026-09-21; replaced by the 64-format ladder on 2026-09-23, and that by VERSIONS on
+// 2026-10-01, so this is the
 // history of the decision, not the rule). A rung was only ever worth having if a symbol could not simply be SCALED to
-// the room instead, and Lizard scales fractionally without penalty: scripts/exp/display_scale.mjs reads a version's
+// the room instead, and LIZARD scales fractionally without penalty: scripts/exp/display_scale.mjs reads a version's
 // whole payload down to about 2.2 device px a cycle at the top ring whatever the scale, and
 // scripts/exp/display_bilinear.mjs says the only way to spoil it is to smooth while resampling. So the thirty-one rungs
 // bought nothing a resampler does not, and they cost a format that nobody can hold in their head.
@@ -63,34 +65,34 @@ export const PAINTED_MARGIN = () => {
   if (QUIET === undefined) throw new Error("the codec's margin is not known yet: await sim/ob.mjs init() first (or this ob.wasm predates src/focus.h FOCUS_QUIET)");
   return QUIET;
 };
-// Every multiple of 16 from 16 to 1024: 64 formats (2026-09-23: even QR, whose ECC must be harsher for paper, has 40
-// versions, and a computer-generated symbol can allow more). 16 is for televisions and far away, 1024 for 4K capture,
-// top-end phones and GPU decoding. The word still carries blocks a frame, so these are versions 2, 4, ... 128. A
-// version off the ladder (LIZARD-8, -24, every odd version) is unsupported (2026-09-24): a receiver reads it exactly as
-// it reads the ladder, with no flag, and the sender never exposes it, in its menu, its presets, this picker or any mode
-// that paints a picture. Past LIZARD-1024 the codec refuses to build a symbol at all (src/focus.c init), since the word
-// cannot name its version.
-// This replaced LIZARD-16 / 64 / 128 / 192 / 256 (2026-09-21), whose reasoning is below and in STATUS.md.
+// Until 2026-10-01 every multiple of 16 from 16 to 1024: 64 formats (2026-09-23: even QR, whose ECC must be harsher for
+// paper, has 40 versions, and a computer-generated symbol can allow more). 16 is for televisions and far away, 1024 for
+// 4K capture, top-end phones and GPU decoding. The word carries the version, subch / 8, so these were versions 2, 4,
+// ... 128, and a version off that ladder (LIZARD-8, -24, every odd version) was the sender's to refuse (2026-09-24): a
+// receiver reads any version exactly as it reads the ladder, with no flag. Past LIZARD-1024 the codec refuses to build
+// a symbol at all (src/focus.c init), since the word cannot name its version.
+// This replaced LIZARD-16 / 64 / 128 / 192 / 256 (2026-09-21), whose reasoning is above and in STATUS.md.
 // ai: Every whole number of blocks from 1 to 128 since 2026-10-01 (the sender's slider takes the smallest step that
-// ai: works): a block is 8 sub-channels (src/focus.h FOCUS_GROUP), the word names blocks a frame, so 8 is the smallest
+// ai: works): a block is 8 sub-channels (src/focus.h FOCUS_GROUP), the word names subch / 8, so 8 is the smallest
 // ai: step a symbol can take; the 64 of 16 to 1024 by 16 before.
 export const VERSIONS = Array.from({ length: 128 }, (_, i) => 8 * (i + 1));
 export const NAME = (subch) => `LIZARD-${subch}`;
 export const versionOf = (subch) => subch / 8;   // what the format word carries; the blocks a frame are blocksFor's
-// ai: The format's rate profile (2026-10-07; src/focus.c focus_tiers_for, the same integers): [[rate, blocks, subs],
-// ai: ...] inner first, 7/8 blocks of 7 sub-channels on about TIER_IN percent of them, 1/2 blocks of 12 on about the
-// ai: outer TIER_OUT percent, 3/4 blocks of 8 between; [] for a count that is no format's. blocksFor: the blocks a
-// ai: frame carries, each 473 B.
-export const TIER_IN = 32, TIER_OUT = 30;
+// ai: The format's rate profile (2026-10-07, four rates since 2026-10-08; src/focus.c focus_tiers_for, the same
+// ai: integers and order of search): [[rate, blocks, subs], ...] inner first, 7/8 blocks of 7 sub-channels on about
+// ai: TIER_IN percent of them, 3/4 blocks of 8 filling, 2/3 blocks of 9 on about TIER_23 percent, 1/2 blocks of 12 on
+// ai: about the outer TIER_OUT percent; the tiers with blocks only; [] for a count that is no format's. blocksFor:
+// ai: the blocks a frame carries, each 473 B.
+export const TIER_IN = 39, TIER_23 = 15, TIER_OUT = 20;
 export function tiersFor(subch) {
   if (subch < 8 || subch % 8 || subch > 1024) return [];
-  let best = -1, ba = 0, bc = 0;
-  for (let a = 0; 7 * a <= subch - 8; a++) for (let c = 0; 7 * a + 12 * c <= subch - 8; c++) {
-    if ((subch - 7 * a - 12 * c) % 8) continue;
-    const d7 = 700 * a - TIER_IN * subch, d2 = 1200 * c - TIER_OUT * subch, cost = d7 * d7 + d2 * d2;
-    if (best < 0 || cost < best) { best = cost; ba = a; bc = c; }
+  let best = -1, ba = 0, bt = 0, bc = 0;
+  for (let a = 0; 7 * a <= subch - 8; a++) for (let t = 0; 7 * a + 9 * t <= subch - 8; t++) for (let c = 0; 7 * a + 9 * t + 12 * c <= subch - 8; c++) {
+    if ((subch - 7 * a - 9 * t - 12 * c) % 8) continue;
+    const d7 = 700 * a - TIER_IN * subch, d3 = 900 * t - TIER_23 * subch, d2 = 1200 * c - TIER_OUT * subch, cost = d7 * d7 + d3 * d3 + d2 * d2;
+    if (best < 0 || cost < best) { best = cost; ba = a; bt = t; bc = c; }
   }
-  return [...(ba ? [[6, ba, 7]] : []), [4, (subch - 7 * ba - 12 * bc) / 8, 8], ...(bc ? [[2, bc, 12]] : [])];
+  return [...(ba ? [[6, ba, 7]] : []), [4, (subch - 7 * ba - 9 * bt - 12 * bc) / 8, 8], ...(bt ? [[3, bt, 9]] : []), ...(bc ? [[2, bc, 12]] : [])];
 }
 export const blocksFor = (subch) => tiersFor(subch).reduce((n, [, b]) => n + b, 0);
 // The border in modules a side, which src/focus.c sets as the corner mark's own size plus the guard interval,
@@ -135,9 +137,9 @@ export const SUBCH_CAP = (n) => Math.floor(Math.PI * n * n / (8 * 320));
 // a smaller one paints at twice the device pixels a sample for a quarter of the transform.
 //
 // What stopped it was discovery: when every format was one module count, a receiver set up for 268 modules read 0
-// of 30 n = 128 captures. The module count is now read off the symbol (it is MODULES(n)), so that is gone, and
-// what stops it now is size: n = 128 at CELL 4 is 62 modules, whose band holds 17 cells a side where the format
-// word needs 16 of its own beside the track's, so it has no word.
+// of 30 n = 128 captures. The module count came to be read off the symbol, so that went, and what stopped it before
+// the rings (2026-09-27) was size: n = 128 at CELL 4 was 62 modules, whose band held 17 cells a side where the format
+// word needs 16 of its own beside the track's, so it had no word.
 // The picture size, DERIVED and not chosen. n decides only how finely the same half-disc of coefficients is
 // sampled: the top ring's period is n / R samples, so the whole of what n means is the oversampling ratio
 // n / (2R). scripts/exp/focus_nfit.mjs sweeps n against the version with the symbol held at one physical size, and the
@@ -185,9 +187,11 @@ export const CAMERA_PX_FOR = (subch, ring) => SYMBOL_OVER_PICTURE(subch, ring) *
 //
 // This is why the picture size is NOT a scaling axis. Device px across the symbol is
 // (SAMPLES(n) / n) * T_DISPLAY_CYCLE * R(subch), and n is N_FOR(subch), so the room a version needs depends on
-// the SUB-CHANNELS alone. At that room every format's border module lands at 2.1 to 3.4 device px, where the
-// 286-module LIZARD-16 put it at 0.6. The rule used to ask for 1.5 device px a SAMPLE, which made a big picture
-// expensive for no reason: version 2 asked for 429 px of room where it reads perfectly in 168.
+// the SUB-CHANNELS alone. At that room every format's border module landed at 2.1 to 3.4 device px while the border
+// scaled with n (until the rings, 2026-09-27), where the 286-module LIZARD-16 put it at 0.6; in one ring for every
+// picture a small format's modules are small again (LIZARD-16's room in the 64 ring is 1.2 px a module). The rule
+// used to ask for 1.5 device px a SAMPLE, which made a big picture expensive for no reason: version 2 asked for 429 px
+// of room where it reads perfectly in 168.
 //
 // A page must still not upscale with SMOOTHING on: at any fractional scale that modulates the picture rather
 // than blurring it, and it takes 38% at scale 2.5 (scripts/exp/display_bilinear.mjs).
@@ -202,7 +206,7 @@ export const ROOM_FOR = (subch, ring = RING_DEFAULT) =>
 //
 // It used to be scaled by the symbol's share of the screen's short side, on the reasoning that a viewer stands
 // where they stand, so a symbol in a half-width window subtends half the angle. That is right for a code someone
-// GLANCES at, a poster or a label. Lizard is for optical TRANSFER: the receiver is pointed at the symbol on
+// GLANCES at, a poster or a label. LIZARD is for optical TRANSFER: the receiver is pointed at the symbol on
 // purpose and framed on it, so the operator moves or zooms until it fills the viewfinder and the pixels across it
 // barely depend on its size on screen. Scaling by the share also made the top format unreachable, since
 // LIZARD-256 would have needed the symbol to take 91% of the screen's short side and no window with any chrome
@@ -233,7 +237,7 @@ export function pickVersion(roomPx, top = VERSIONS.at(-1), ring = null) {
   const r = ring ?? RING_DEFAULT;
   for (const v of VERSIONS) if (v <= top && ROOM_FOR(v, r) <= roomPx && v > subch) subch = v;
   const n = N_FOR(subch), samples = SAMPLES(n, r);
-  // ai: `tight` is a room too small even for the fallback (195 px in the default ring, which no real device is). `squeezed` is a room
+  // ai: `tight` is a room too small even for the fallback (LIZARD-8, 123 px in the default ring, which no real device is). `squeezed` is a room
   // that cannot hold the picture's samples at all, which only matters to a page that paints nearest: an
   // oversampled picture survives being shown smaller than its sample count, and LIZARD-16 reads whole at 0.3
   // device px a sample. Both reported, never silent.
