@@ -131,7 +131,7 @@ check(await evaluate(s, `!!document.getElementById("send") && !!document.getElem
 // ai: a page by its own name, no query: the stored response itself answers, and the host redirected it on install
 await navigate(s, `${BASE}send.html`).catch(() => {});
 check(await evaluate(s, `!!document.getElementById("go")`).catch(() => false), `offline: send.html loads by its own name (stored without the redirect that brought it)`);
-await navigate(s, `${BASE}recv.html?auto`);
+await navigate(s, `${BASE}recv.html?auto&seen`);
 const read = await until(s, `document.getElementById("state").textContent === "Reading the test stream" && /LIZARD-96/.test(document.getElementById("lab").textContent)`, 40000, "offline: the test stream read").catch((e) => (console.log(`     ${e.message}`), false));
 check(read, `offline: the receiver reads the test stream off the camera (the codec, the workers, every file from the cache)`);
 await navigate(s, `${BASE}send?subch=auto&fps=24&payload=test&auto`);

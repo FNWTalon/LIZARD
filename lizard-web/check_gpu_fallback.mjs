@@ -16,7 +16,7 @@ const server = spawn("node", [fileURLToPath(new URL("./server.mjs", import.meta.
 process.on("exit", () => { server.kill(); rmSync(root, { recursive: true, force: true }); });
 const api = (p, body) => fetch(`http://localhost:${PORT}${p}`, body ? { method: "POST", body: JSON.stringify(body) } : undefined).then((r) => r.json());
 for (let i = 0; i < 40; i++) { try { await api("/api/info"); break; } catch { await new Promise((r) => setTimeout(r, 250)); } }
-const url = `http://localhost:${PORT}/lizard-web/recv.html?auto&dec=gpu`;
+const url = `http://localhost:${PORT}/lizard-web/recv.html?auto&seen&dec=gpu`;
 
 function open(browser, prof) {
   if (browser === "chrome") return spawn("google-chrome", ["--headless=new", "--no-sandbox", "--disable-gpu", "--enable-unsafe-swiftshader", "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", `--user-data-dir=${prof}`, url], { stdio: "ignore", detached: true });

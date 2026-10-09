@@ -195,6 +195,14 @@ const SIZES = [
   for (const [k, z] of SIZES.entries()) {
     await size(s, z);
     await navigate(s, `${BASE}?auto`);
+    // ai: the browser's limit (#first, 2026-10-09) before the first start on a fresh profile, Home's ?auto included;
+    // ai: its Start camera starts the camera and is kept, so the later sizes' loads go straight to the camera
+    if (k === 0) {
+      await until(s, `document.getElementById("first").open`, 10000, "the browser's limit before the first start");
+      check(!(await evaluate(s, `document.getElementById("v").videoWidth > 0`)), `${z.name}: no camera before the browser's limit is answered`);
+      await screenshot(s, `${OUT}/recv-${z.name}-limit.png`);
+      await evaluate(s, `document.getElementById("firstStart").click()`);
+    } else check(!(await evaluate(s, `document.getElementById("first").open`)), `${z.name}: the browser's limit shown once`);
     await until(s, `document.getElementById("v").videoWidth > 0 && !document.getElementById("go").disabled && document.getElementById("lab").textContent !== ""`, 20000, "the camera and a stats tick");
     if (k === 0) check(!(await evaluate(s, `document.getElementById("dev").open`)), `${z.name}: Advanced is closed on a fresh profile`);
     for (const openPanel of [false, true]) {
@@ -235,7 +243,7 @@ const SIZES = [
   ];
   for (const [name, source, want] of cases) {
     const { identifier } = await s.send("Page.addScriptToEvaluateOnNewDocument", { source });
-    await navigate(s, BASE);
+    await navigate(s, `${BASE}?seen`);
     await evaluate(s, `document.getElementById("go").click()`);
     await sleep(600);
     const r = await evaluate(s, `(() => { const e = document.getElementById("state"); return { text: e.textContent, bad: e.classList.contains("bad"), color: getComputedStyle(e).color, go: document.getElementById("go").disabled }; })()`);
@@ -282,7 +290,7 @@ const SIZES = [
 
   const t = await chrome("test", [`--use-file-for-fake-video-capture=${testPath}`]);
   await size(t, SIZES[0]);
-  await navigate(t, `${BASE}?auto`);
+  await navigate(t, `${BASE}?auto&seen`);
   await until(t, `document.getElementById("state").textContent === "Reading the test stream" && document.getElementById("lab").textContent.includes("% registered, LIZARD")`, 30000, "the test stream read");
   await sleep(1200);
   const ts = await evaluate(t, `(() => { const $ = (id) => document.getElementById(id); return { state: $("state").textContent, nums: $("nums").textContent, lab: $("lab").textContent, why: $("why").textContent, meter: !$("meter").hidden }; })()`);
@@ -307,7 +315,7 @@ const SIZES = [
     closeSync(fd);
     const f = await chrome("fast", [`--use-file-for-fake-video-capture=${fastPath}`]);
     await size(f, SIZES[0]);
-    await navigate(f, `${BASE}?auto`);
+    await navigate(f, `${BASE}?auto&seen`);
     await until(f, `/at 30\\sfps/.test(document.getElementById("lab").textContent)`, 30000, "the 30 fps test stream read");
     await sleep(1200);
     const fw = await evaluate(f, `document.getElementById("why").textContent`);
@@ -324,7 +332,7 @@ const SIZES = [
 
   const s = await chrome("file", [`--use-file-for-fake-video-capture=${path}`]);
   await size(s, SIZES[0]);
-  await navigate(s, `${BASE}?auto`);
+  await navigate(s, `${BASE}?auto&seen`);
   const STATE = `(() => { const $ = (id) => document.getElementById(id), m = $("meter"); return { state: $("state").textContent, good: $("state").classList.contains("good"), nums: $("nums").textContent, why: $("why").textContent, meter: m.hidden ? null : m.firstElementChild?.style.width, deliver: !$("deliver").hidden, clear: !!$("clear"), open: !$("open").hidden && $("open").classList.contains("primary"), go: $("go").textContent, goSolid: $("go").classList.contains("primary"), save: $("save").textContent, href: $("save").href, download: $("save").download,  railRate: $("railRate").textContent, railDone: !$("railDone").hidden && !$("railOpen").hidden && !$("railSave").hidden, railOff: $("railCam").classList.contains("off") }; })()`;
   await until(s, `/^Receiving/.test(document.getElementById("state").textContent) && parseFloat(document.getElementById("meter").firstElementChild?.style.width) > 40`, 60000, "Receiving, two fifths of the way");
   const a = await evaluate(s, STATE);
