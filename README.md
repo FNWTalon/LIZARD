@@ -78,7 +78,7 @@ own word is unreadable is decoded at that held word.
 ### Receiving on the CPU (`liblizard/src/`)
 
 The reference decoder, in C. It runs as WebAssembly with SIMD in a pool of web workers, and natively in the Android
-app on NEON with a pool of threads. It decides by hand-built rules:
+app on NEON with a pool of threads:
 
 1. **Find.** The image goes to luma, and a local threshold makes a black and white copy for the finder alone. The
    corner marks are searched for at full, half and quarter scale. Each candidate quad is scored by reading the timing
@@ -95,11 +95,10 @@ app on NEON with a pool of threads. It decides by hand-built rules:
 
 ### Receiving on the GPU (`liblizard/gpu/`)
 
-Designed from the format for the GPU, not ported from the C. It finds the code with small trained networks where the
-C uses hand-built rules. It is written in WGSL and runs on WebGPU in a browser. Natively, the same WGSL is
-compiled to SPIR-V by naga and run by a C++ Vulkan host (`liblizard/core/`), which in the Android app takes camera
-frames with no copy. Frames go in batches: one batch is one submission and one readback. The nets and kernels run
-in int8 where a device supports it, else f16, else f32.
+Designed from the format for the GPU, not ported from the C. It is written in WGSL and runs on WebGPU in a browser.
+Natively, the same WGSL is compiled to SPIR-V by naga and run by a C++ Vulkan host (`liblizard/core/`), which in the
+Android app takes camera frames with no copy. Frames go in batches: one batch is one submission and one readback. The
+nets and kernels run in int8 where a device supports it, else f16, else f32.
 
 1. **Front half: find and register.**
    - A pyramid of each frame feeds a trained fully convolutional proposer, which marks likely corner marks.
@@ -113,8 +112,7 @@ in int8 where a device supports it, else f16, else f32.
    from the pilots, and make soft values for each code rate's blocks. Then run layered min-sum LDPC, one dispatch per
    code, each stopping a hopeless codeword early by a small trained net, and check the CRC-32.
 
-Both decoders count a block only when every parity check holds and its CRC passes. A trained net may decide where
-to look or when to stop, never whether a block is right.
+Both decoders count a block only when every parity check holds and its CRC passes.
 
 ### Sending
 
