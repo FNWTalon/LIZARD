@@ -20,6 +20,116 @@ Design choices:
 - **GPU first.** A WebGPU decoder (also compiled to Vulkan for Android) does the whole decode on the device, with a
   small learned finder; a C decoder is the reference and the CPU fallback.
 
+## How it works
+
+**A frame is a picture of its spectrum.** The sender writes the data as QPSK symbols (two bits each) onto the 2D
+Fourier coefficients of an n x n picture, taken in order of rising spatial frequency, and an inverse transform turns
+them into a grey picture. The picture is 256 to 1536 samples a side, depending on how much the frame carries.
+
+**Low frequencies survive the most.** Blur, distance, a small camera and resampling all eat the high frequencies
+first. So the coefficients are grouped into sub-channels of 320, and blocks are laid out from the centre of the
+spectrum outwards. Each block is 473 bytes: a 4-byte id and 469 bytes of payload, with a CRC-32. Each block is
+LDPC-coded over whole sub-channels at a rate that follows the frequency: 7/8 on the innermost, then 3/4 and 2/3, and
+1/2 on the outermost. A poor capture loses blocks from the outside in, and every block that reads is checked on its
+own.
+
+**The border says what is inside.** Round the picture sits a black and white border 15 modules deep: a corner mark
+at each corner, a dark ring, and a band of cells. The band carries a timing track and the format word, which names
+the version and the display rate under a Reed-Solomon code. The border comes in four sizes (rings of 32, 64, 96 or
+128 band cells a side), and any ring can carry any picture. A receiver finds the border, reads the word, and from it
+knows the picture size, the blocks and their code rates. It needs no settings and no server.
+
+**A file is a fountain.** A file is cut into chunks of 4 MiB. Each chunk is compressed with zstd where that makes it
+shorter and sent as a Wirehair fountain, so any large enough set of its blocks rebuilds it, from any frames in any
+order. Header and manifest blocks in the same stream describe the file, and each chunk is checked against the file's
+BLAKE3 root. Nothing comes back from the receiver.
+
+**Pilots tie a frame to its time.** Spare slots at the end of the 7/8 and 3/4 blocks carry a known pattern that
+flips with the frame's count. A receiver uses them to correct the grid's alignment, and to tell which neighbouring
+picture leaked into a capture. The Android app uses that to hold its camera in phase with the display.
+
+## The format
+
+[research/SPEC.md](research/SPEC.md) is the specification. The C codec in `liblizard/src/` is the reference: the
+spec describes what it paints, and where the two disagree the code wins. The spec's test vectors are that code's own
+regression check. Another encoder conforms by painting a symbol that decodes: the border exactly, the picture by the
+format's arithmetic. Its sections:
+
+| section | covers |
+|---|---|
+| 1 to 2 | what LIZARD is, its terms, its fixed constraints (luminance only, generic screens and cameras, a border that grows outwards only, a self-describing symbol), and what conformance means |
+| 3. The formats | the 128 versions (LIZARD-8 to LIZARD-1024: sub-channels in steps of 8), the rate profile that sets each block's code rate, the picture size each version takes, the four rings, capacity, and how a sender picks a version for a screen |
+| 4. The border | module by module: rim, ring, gap, band, guard, the corner marks, the timing track and the margin |
+| 5. The format word | its fields (magic, version, display rate), its Reed-Solomon code and where its cells sit in each ring |
+| 6. The picture | the coefficient order, QPSK, the transform, clipping to grey, resampling onto the painted grid and where a receiver samples |
+| 7. Blocks and the transfer | the block, its bit map and whitening, the pilots, the block id, chunks and their fountains, the header and manifest blocks, and when a file is accepted |
+| 8. The LDPC code | the four quasi-cyclic codes (7/8, 3/4, 2/3, 1/2) as printed base matrices, their encoding, and soft-decision decoding |
+| 9 to 10 | frames over time (the display rate, the test stream, the fountain) and the two reference receivers |
+| 11 to 14 | measured facts, what was settled or rejected and why, open questions, and the changes over time |
+
+The format is not frozen: a sender and a receiver need the same release.
+
+## The pipelines
+
+Two decoders read the format, one on the CPU and one on the GPU, and each sender paints on either. Every frame is
+decoded on its own. The one thing a receiver carries between frames is the last format word it read: a frame whose
+own word is unreadable is decoded at that held word.
+
+### Receiving on the CPU (`liblizard/src/`)
+
+The reference decoder, in C. It runs as WebAssembly with SIMD in a pool of web workers, and natively in the Android
+app on NEON with a pool of threads. It decides by hand-built rules:
+
+1. **Find.** The image goes to luma, and a local threshold makes a black and white copy for the finder alone. The
+   corner marks are searched for at full, half and quarter scale. Each candidate quad is scored by reading the timing
+   track against every ring and orientation. The fallbacks are fitting the border's lines, then cropping round a mark
+   that was seen.
+2. **Register.** A homography from the quad, then every border node refined by correlation against the border as
+   painted. Each side's nodes are smoothed along it, which absorbs a display's fractional scaling. The interior is
+   filled from the border alone.
+3. **Read the word** in the ring that registered, and take the picture size, blocks and rates it names.
+4. **Sample and transform.** The n x n picture is sampled through the registration and detrended, then goes through
+   a 2D FFT (radix 2, with one radix-3 stage for the 3 x 2^k sizes).
+5. **Decode.** Align the grid from the pilots, make soft values for each block's sub-channels, skip blocks too weak to
+   try, run layered min-sum LDPC, and check the CRC-32.
+
+### Receiving on the GPU (`liblizard/gpu/`)
+
+Designed from the format for the GPU, not ported from the C. It finds the code with small trained networks where the
+C uses hand-built rules. It is written in WGSL and runs on WebGPU in a browser. Natively, the same WGSL is
+compiled to SPIR-V by naga and run by a C++ Vulkan host (`liblizard/core/`), which in the Android app takes camera
+frames with no copy. Frames go in batches: one batch is one submission and one readback. The nets and kernels run
+in int8 where a device supports it, else f16, else f32.
+
+1. **Front half: find and register.**
+   - A pyramid of each frame feeds a trained fully convolutional proposer, which marks likely corner marks.
+   - Two trained classifiers in a cascade say, for each candidate, whether it is a mark, which way is out, and how
+     big a module is.
+   - Votes along the symbol's diagonals find each centre.
+   - Every quad, orientation and ring is scored against the timing track.
+   - The border nodes are fitted to the ring that won, each side's curve chosen by its own evidence.
+   - The format word is read.
+2. **Back half: decode, per picture size.** Sample the picture and take its 2D DFT on the device, align the grid
+   from the pilots, and make soft values for each code rate's blocks. Then run layered min-sum LDPC, one dispatch per
+   code, each stopping a hopeless codeword early by a small trained net, and check the CRC-32.
+
+Both decoders count a block only when every parity check holds and its CRC passes. A trained net may decide where
+to look or when to stop, never whether a block is right.
+
+### Sending
+
+A sender turns a file into each frame's blocks: chunks, zstd, the fountain, the header and the manifest. It then
+paints each frame:
+- Encode each block with LDPC and spread its bits over its slots, with whitening and pilots.
+- Place them as QPSK on the picture's coefficients and take the inverse transform.
+- Clip to grey and resample onto whole pixels per module.
+- Put the border round it.
+
+The C paints on the CPU: in a web worker, or on threads in the native senders. The GPU encoder paints the same
+symbol in WebGPU on the web page, and as the same kernels on Vulkan in the Android app and the desktop sender. The
+native senders paint about a second of frames ahead on the GPU and present them on a fixed schedule. A symbol from
+either painter decodes the same; the GPU's picture is within a grey level of the C's.
+
 ## Status
 
 A research project, not a released product, and the format still changes. Measured on one phone (Samsung S26 Ultra)
