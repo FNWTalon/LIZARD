@@ -1,5 +1,5 @@
-// Registration: find the four finders, fix orientation, hang a mesh on the alignment marks.
-// The binarizer here only serves the finder search; data cells are never thresholded.
+// Registration: find the border (its corner marks, or its line), fix orientation by the timing track, hang a mesh on
+// the border's nodes. The binarizer serves the border's search alone; data cells are never thresholded.
 #include "internal.h"
 #include "fmt.h"
 #include <stdlib.h>
@@ -161,36 +161,7 @@ static void box_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r,
 typedef struct { float x, y, unit; int hits; } cand_t;
 enum { MAX_CAND = 1024 };
 
-static int ratio_ok(const int *r, float *unit_out) {
-  int total = r[0] + r[1] + r[2] + r[3] + r[4];
-  if (total < 12) return 0;
-  float unit = total / 7.0f, tol = unit * 0.7f + 0.5f;
-  if (fabsf(r[0] - unit) > tol || fabsf(r[1] - unit) > tol || fabsf(r[3] - unit) > tol || fabsf(r[4] - unit) > tol) return 0;
-  if (fabsf(r[2] - 3 * unit) > 1.5f * tol) return 0;
-  *unit_out = unit;
-  return 1;
-}
-
-// Walk outwards from a point inside the centre run along (dx, dy); fills the five runs and
-// the centre coordinate along that axis.
-static int cross_check(const uint8_t *bin, int w, int h, int x, int y, int dx, int dy, int maxrun, float *centre, float *unit) {
-  int r[5] = { 0 }, i;
-  #define AT(k) bin[(y + (k) * dy) * w + x + (k) * dx]
-  #define IN(k) (x + (k) * dx >= 0 && x + (k) * dx < w && y + (k) * dy >= 0 && y + (k) * dy < h)
-  if (!bin[y * w + x]) return 0;
-  for (i = 0; IN(-i) && AT(-i); i++) if (++r[2] > maxrun) return 0;
-  for (; IN(-i) && !AT(-i); i++) if (++r[1] > maxrun) return 0;
-  for (; IN(-i) && AT(-i); i++) if (++r[0] > maxrun) return 0;
-  int j;
-  for (j = 1; IN(j) && AT(j); j++) if (++r[2] > maxrun) return 0;
-  for (; IN(j) && !AT(j); j++) if (++r[3] > maxrun) return 0;
-  for (; IN(j) && AT(j); j++) if (++r[4] > maxrun) return 0;
-  #undef AT
-  #undef IN
-  if (!ratio_ok(r, unit)) return 0;
-  *centre = (dx ? x : y) + j - r[4] - r[3] - r[2] / 2.0f;
-  return 1;
-}
+static float cross2(const cand_t *a, const cand_t *b, const cand_t *c) { return (b->x - a->x) * (c->y - a->y) - (b->y - a->y) * (c->x - a->x); }
 
 // Run boundaries of one row, sixteen pixels to a compare: pos[2k] is where dark run k starts and
 // pos[2k + 1] where it ends. The pixel left of the row counts as light, and a dark run that reaches
@@ -207,80 +178,6 @@ static int run_edges(const uint8_t *row, int w, int *pos) {
   for (; x < w; x++) if (row[x] != row[x - 1]) pos[np++] = x;
   if (np & 1) pos[np++] = w;
   return np;
-}
-
-// Every dark run that has two dark runs before it on its row closes a window of five runs; a window
-// in the finder's 1:1:3:1:1 is cross-checked down and across. Rows are first turned into run
-// boundaries, sixteen pixels to a compare, so the work follows the number of edges, not of pixels.
-static int find_candidates(const uint8_t *bin, int w, int h, cand_t *out) {
-  int n = 0;
-  int *pos = malloc(((size_t)w + 2) * sizeof(int));
-  if (!pos) return 0;
-  for (int y = 1; y < h; y += 2) {
-    int np = run_edges(bin + y * w, w, pos), x;
-    for (int k = 2; 2 * k + 1 < np; k++) {
-      const int *q = pos + 2 * k - 4;
-      int r[5] = { q[1] - q[0], q[2] - q[1], q[3] - q[2], q[4] - q[3], q[5] - q[4] };
-      x = q[5];
-      float unit;
-      if (!ratio_ok(r, &unit)) continue;
-      int cx = x - r[4] - r[3] - r[2] / 2;
-      float fy, fx, uv, uh;
-      if (!cross_check(bin, w, h, cx, y, 0, 1, r[2] * 3, &fy, &uv) || !cross_check(bin, w, h, cx, (int)fy, 1, 0, r[2] * 2, &fx, &uh)) continue;
-      float u = 0.5f * (uv + uh);
-      // A screen seen from the side is squeezed along one axis (by cos of the angle), so the
-      // two crossings of a real finder can differ a lot. 2.5 admits about 65 degrees.
-      if (uv > 2.5f * uh || uh > 2.5f * uv) continue;
-      int c;
-      for (c = 0; c < n; c++) if (fabsf(out[c].x - fx) < u * 2 && fabsf(out[c].y - fy) < u * 2) break;
-      if (c < n) {
-        out[c].x = (out[c].x * out[c].hits + fx) / (out[c].hits + 1);
-        out[c].y = (out[c].y * out[c].hits + fy) / (out[c].hits + 1);
-        out[c].unit = (out[c].unit * out[c].hits + u) / (out[c].hits + 1);
-        out[c].hits++;
-      } else if (n < MAX_CAND) out[n++] = (cand_t){ fx, fy, u, 1 };
-    }
-  }
-  free(pos);
-  return n;
-}
-
-static float cross2(const cand_t *a, const cand_t *b, const cand_t *c) { return (b->x - a->x) * (c->y - a->y) - (b->y - a->y) * (c->x - a->x); }
-
-// The four true finders are the largest-unit candidates (data can mimic the ratio only at
-// half the ring width) and span the widest convex quad. Output is clockwise in the image.
-static int pick_quad(cand_t *c, int n, cand_t *q) {
-  int m = 0;
-  float umax = 0;
-  for (int i = 0; i < n; i++) if (c[i].hits >= 2 && c[i].unit > umax) umax = c[i].unit;
-  // Perspective and a steep angle together put a factor of two between the near and far
-  // finder, so the size gate is loose; the widest convex quad does the real selection.
-  for (int i = 0; i < n; i++) if (c[i].hits >= 2 && c[i].unit >= 0.4f * umax) c[m++] = c[i];
-  if (m < 4) return 0;
-  // A real finder is crossed by many scan rows; a data cell that mimics the ratio by two or
-  // three. Keep the best-supported dozen.
-  for (int i = 1; i < m; i++) { cand_t t = c[i]; int j = i; while (j > 0 && c[j - 1].hits * c[j - 1].unit < t.hits * t.unit) { c[j] = c[j - 1]; j--; } c[j] = t; }
-  if (m > 12) m = 12;
-  float best = 0;
-  int bi[4] = { 0 };
-  for (int a = 0; a < m; a++) for (int b = a + 1; b < m; b++) for (int d = b + 1; d < m; d++) for (int e = d + 1; e < m; e++) {
-    int id[4] = { a, b, d, e };
-    float gx = 0, gy = 0;
-    for (int k = 0; k < 4; k++) { gx += c[id[k]].x / 4; gy += c[id[k]].y / 4; }
-    for (int i = 0; i < 4; i++) for (int j = i + 1; j < 4; j++)
-      if (atan2f(c[id[j]].y - gy, c[id[j]].x - gx) < atan2f(c[id[i]].y - gy, c[id[i]].x - gx)) { int t = id[i]; id[i] = id[j]; id[j] = t; }
-    float area = 0;
-    int convex = 1;
-    for (int k = 0; k < 4; k++) {
-      float z = cross2(&c[id[k]], &c[id[(k + 1) & 3]], &c[id[(k + 2) & 3]]);
-      if (z <= 0) convex = 0;
-      area += z;
-    }
-    if (convex && area > best) { best = area; memcpy(bi, id, sizeof bi); }
-  }
-  if (best <= 0) return 0;
-  for (int k = 0; k < 4; k++) q[k] = c[bi[k]];
-  return 1;
 }
 
 // ---------------------------------------------------------------- geometry
@@ -320,28 +217,6 @@ static void corner_coords(const ob_layout_t *L, float *src) {
   memcpy(src, s, sizeof s);
 }
 
-static float orient_score(const ob_layout_t *L, const image_t *im, const homo_t *H) {
-  float score = 0;
-  for (int c = 0; c < 4; c++) {
-    float fx = (c == 1 || c == 2) ? L->w - OB_FB / 2.0f : OB_FB / 2.0f, fy = c >= 2 ? L->h - OB_FB / 2.0f : OB_FB / 2.0f;
-    float u, v, dark, light = 0;
-    project(H, fx, fy, &u, &v); dark = sample(im, u, v);
-    for (int k = 0; k < 4; k++) { project(H, fx + (k == 0 ? 4 : k == 1 ? -4 : 0), fy + (k == 2 ? 4 : k == 3 ? -4 : 0), &u, &v); light += sample(im, u, v) / 4; }
-    float ref = 0.5f * (dark + light), con = light - dark;
-    if (con < 1e-4f) return -1e9f;
-    int sx, sy;
-    ob_orient_rect(L, c, &sx, &sy);
-    for (int b = 0; b < 3; b++) {
-      float s = 0;
-      for (int q = 0; q < 4; q++) { project(H, sx + 2 * b + (q & 1) + 0.5f, sy + (q >> 1) + 0.5f, &u, &v); s += sample(im, u, v) / 4; }
-      float d = (ref - s) / con;
-      if (d > 0.5f) d = 0.5f; else if (d < -0.5f) d = -0.5f;
-      score += ((OB_ORIENT[c] >> (2 - b)) & 1) ? d : -d;
-    }
-  }
-  return score;
-}
-
 // ---------------------------------------------------------------- registration mesh
 
 // Normalized correlation of a node's known cells against the image, with the node shifted by
@@ -376,7 +251,7 @@ static float node_ncc(const ob_layout_t *L, const image_t *im, int cx0, int cy0,
   }
   for (int dy = ylo; dy < yhi; dy++) for (int dx = lo; dx < hi; dx++) {
     int kind = L->kind[(cy0 + dy) * L->w + cx0 + dx];
-    if (L->thin && kind == CELL_DATA) continue;   // the picture inside a thin frame: not the frame's to know
+    if (kind == CELL_DATA) continue;   // the picture inside the border: not the border's to know
     if (kind & CELL_WORD) continue;               // nor the format word, whose bits this end did not choose (layout.h)
     float t = (kind & 3) == CELL_DARK ? -1.0f : 1.0f, s = S[(dy - ylo) * side + dx - lo];
     st += t; ss += s; stt += t * t; sss += s * s; sts += t * s; n++;
@@ -388,21 +263,12 @@ static float node_ncc(const ob_layout_t *L, const image_t *im, int cx0, int cy0,
 
 
 static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H, int i, int j, node_t *nodes) {
-  int finder = !L->thin && (i == 0 || i == L->nx - 1) && (j == 0 || j == L->ny - 1);
-  float mcx, mcy;
-  int cx0, cy0, half;
-  if (finder) {
-    mcx = i ? L->w - OB_FB / 2.0f : OB_FB / 2.0f; mcy = j ? L->h - OB_FB / 2.0f : OB_FB / 2.0f;
-    cx0 = (int)mcx; cy0 = (int)mcy; half = OB_FB / 2;
-  } else {
-    cx0 = L->thin ? (int)L->node_x[i] : i == 0 ? OB_FB / 2 : i == L->nx - 1 ? L->w - OB_FB / 2 - 1 : (int)L->node_x[i];
-    cy0 = L->thin ? (int)L->node_y[j] : j == 0 ? OB_FB / 2 : j == L->ny - 1 ? L->h - OB_FB / 2 - 1 : (int)L->node_y[j];
-    mcx = cx0 + 0.5f; mcy = cy0 + 0.5f; half = 2;
-  }
+  const int cx0 = (int)L->node_x[i], cy0 = (int)L->node_y[j];
+  const float mcx = cx0 + 0.5f, mcy = cy0 + 0.5f;
   // A thin frame's template is as long as the border lets it be: thirteen modules along, the border's
   // five across, and an L of both at a corner. Small symbols need the area; 5 x 5 is 8 px there.
-  int rect[4] = { -half, half + (half == 2), -half, half + (half == 2) };
-  if (L->thin) {
+  int rect[4];
+  {
     int ex = (j == 0 || j == L->ny - 1) ? 6 : 2, ey = (i == 0 || i == L->nx - 1) ? 6 : 2;
     // A corner that carries a mark is a different thing to match. Six modules either way stays INSIDE a 12-module
     // mark, so the template is a dark block with one module of light rim, and once blur has closed the mark's gap
@@ -453,7 +319,7 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
   float st = 0, stt = 0;
   for (int dy = 0; dy < tall; dy++) for (int dx = 0; dx < side; dx++) {
     int kind = L->kind[(cy0 + ylo + dy) * L->w + cx0 + lo + dx];
-    if (L->thin && kind == CELL_DATA) continue;   // the picture inside a thin frame: not the frame's to know
+    if (kind == CELL_DATA) continue;   // the picture inside the border: not the border's to know
     if (kind & CELL_WORD) continue;               // nor the format word, whose bits this end did not choose (layout.h)
     tv[cells] = (kind & 3) == CELL_DARK ? -1.0f : 1.0f; at[cells] = (2 * dy + 3) * GW + 2 * dx + 3;
     st += tv[cells]; stt += tv[cells] * tv[cells]; cells++;
@@ -559,7 +425,7 @@ static void smooth_along(const ob_layout_t *L, const homo_t *H, node_t *nodes) {
   for (int side = 0; side < 4; side++) {
     const int horiz = side == 0 || side == 2, cnt = horiz ? nx : ny;
     double ux[OB_MAX_NODES], uy[OB_MAX_NODES], mod[OB_MAX_NODES], t[OB_MAX_NODES], a[OB_MAX_NODES];
-    float px[OB_MAX_NODES], py[OB_MAX_NODES];
+    float px[OB_MAX_NODES] = { 0 }, py[OB_MAX_NODES] = { 0 };   // ai: every side has two nodes or more; GCC cannot see it once inlined
     int use[OB_MAX_NODES], idx[OB_MAX_NODES];
     for (int k = 0; k < cnt; k++) {
       const int i = horiz ? k : (side == 1 ? nx - 1 : 0), j = horiz ? (side == 0 ? 0 : ny - 1) : k;
@@ -2395,59 +2261,27 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
   const uint8_t *img = im.px;
   int iw = im.w, ih = im.h;
   reg->nodes = NULL;
-  // Full size first, then halved twice: the local-mean window is 40 px, so a finder whose dark
-  // centre outgrows it (a close or small symbol) only resolves once the image is shrunk.
-  static cand_t cand[MAX_CAND];
-  cand_t q[4];
-  uint8_t *bin = in_quad ? NULL : malloc((size_t)iw * ih), *small = NULL;
+  uint8_t *bin = in_quad ? NULL : malloc((size_t)iw * ih);
   int got = 0, thin_orient = -1;
   float thin_quad[8], thin_sc = 0;
   if (in_quad) { memcpy(thin_quad, in_quad, sizeof thin_quad); thin_orient = in_orient; thin_sc = in_score; got = 1; }
-  else if (L->thin) {
+  else {
     PROF(PROF_BINARIZE, binarize(img, iw, ih, bin));
     PROF(PROF_FINDERS, got = find_frame(Ls, nL, &im, bin, thin_quad, &thin_orient, &thin_sc, res->mark, which));
     if (!got && res->mark[2] > 0) { PROF(PROF_FINDERS, got = mark_crop(Ls, nL, &im, thin_quad, &thin_orient, &thin_sc, res->mark, which)); if (got) ob_finder_info[4] = 2; }
     L = Ls[*which];
   }
-  for (int scale = 1; !in_quad && !L->thin && scale <= 4 && !got; scale *= 2) {
-    int sw = iw / scale, sh = ih / scale;
-    const uint8_t *src_img = img;
-    double td = ob_now_ms();
-    if (scale > 1) {
-      if (!small) small = malloc((size_t)(iw / 2) * (ih / 2));
-      for (int y = 0; y < sh; y++) for (int x = 0; x < sw; x++) {
-        int a = 0;
-        for (int dy = 0; dy < scale; dy++) for (int dx = 0; dx < scale; dx++) a += img[(y * scale + dy) * iw + x * scale + dx];
-        small[y * sw + x] = (uint8_t)(a / (scale * scale));
-      }
-      src_img = small;
-    }
-    ob_prof_ms[PROF_BINARIZE] += ob_now_ms() - td;
-    PROF(PROF_BINARIZE, binarize(src_img, sw, sh, bin));
-    int nc;
-    PROF(PROF_FINDERS, nc = find_candidates(bin, sw, sh, cand); got = pick_quad(cand, nc, q));
-    res->finders = nc;
-    for (int k = 0; got && k < 4; k++) { q[k].x *= scale; q[k].y *= scale; q[k].unit *= scale; }
-  }
-  free(bin); free(small);
+  free(bin);
   if (!got) return 0;
 
   double tm = ob_now_ms();
-  float src[8], dst[8];
+  float src[8];
   corner_coords(L, src);
   homo_t H, best_h;
   float best = -1e9f;
   int best_o = -1;
   // The thin frame's finder has already settled rotation: it scores the coded track under every hypothesis.
-  if (L->thin && homography(src, thin_quad, &best_h)) { best = 2.0f + thin_sc; best_o = thin_orient; memcpy(res->quad, thin_quad, sizeof thin_quad); }
-  for (int hyp = 0; !L->thin && hyp < 8; hyp++) {
-    int rot = hyp & 3, mir = hyp >> 2;
-    for (int k = 0; k < 4; k++) { const cand_t *c = &q[(rot + (mir ? 4 - k : k)) & 3]; dst[2 * k] = c->x; dst[2 * k + 1] = c->y; }
-    // A rectangular symbol only fits the rotations that keep its long side on the long side.
-    if (!homography(src, dst, &H)) continue;
-    float s = orient_score(L, &im, &H);
-    if (s > best) { best = s; best_o = hyp; best_h = H; memcpy(res->quad, dst, sizeof dst); }
-  }
+  if (homography(src, thin_quad, &best_h)) { best = 2.0f + thin_sc; best_o = thin_orient; memcpy(res->quad, thin_quad, sizeof thin_quad); }
   if (best_o < 0 || best < 2.0f) return 0;
   res->orient = best_o;
   memcpy(ob_raw_quad, res->quad, sizeof ob_raw_quad);
@@ -2463,7 +2297,7 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
     mpx += hypotf(res->quad[2 * k1] - res->quad[2 * k], res->quad[2 * k1 + 1] - res->quad[2 * k + 1]) / hypotf(src[2 * k1] - src[2 * k], src[2 * k1 + 1] - src[2 * k + 1]) / 4;
   }
   // ai: a box radius of at least one pixel, tested before the conversion (a NaN mpx blurs nothing, as before)
-  if (L->thin && mpx / 2 >= 1 && (blurred = border_blur(L, &best_h, img, iw, ih, (int)(mpx / 2)))) rim.px = blurred;
+  if (mpx / 2 >= 1 && (blurred = border_blur(L, &best_h, img, iw, ih, (int)(mpx / 2)))) rim.px = blurred;
   // Finders first, so the homography the marks are measured against is as good as four
   // points can make it.
   int nn = L->nx * L->ny;
@@ -2485,7 +2319,7 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
     refine_node(L, &rim, &H, i, j, nodes);
   }
   free(blurred);
-  if (mesh == 2 || (mesh && L->thin)) { smooth_along(L, &H, nodes); border_fill(L, &H, iw, ih, nodes); }   // a thin frame has nothing but its border
+  if (mesh) { smooth_along(L, &H, nodes); border_fill(L, &H, iw, ih, nodes); }   // the border is all there is to hang the mesh on
   float msum = 0;
   int mcount = 0;
   for (int k = 0; k < nn; k++) if (nodes[k].done) { msum += nodes[k].score; mcount++; }
@@ -2587,8 +2421,6 @@ void ob_sample_grid(const ob_layout_t *L, const image_t *pim, const ob_reg_t *re
     }
   }
 }
-
-void ob_sample_cells(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float *s) { ob_sample_grid(L, pim, reg, 0.5f, 0.5f, 1.0f, 0, L->w, 0, L->h, s, L->w); }
 
 // The line anchor's scan on its own, for the first WebGPU port (since deleted) to be held to candidate for
 // candidate. No layout: the scan is geometry-free, it only needs the grey image and

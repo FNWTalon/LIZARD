@@ -43,7 +43,7 @@ struct focus_ws {
   image_t hold_im; ob_reg_t hold_reg; int hold_valid;
 };
 
-extern uint32_t ob_debug_hash;   // dec.c: armed by a test, which then reads back a hash of the floats and soft values behind the decision
+extern uint32_t ob_debug_hash;   // the host's (wasm.c, core/cpu/codec.c): armed by a test, which then reads back a hash of the floats and soft values behind the decision
 static uint32_t fnv(uint32_t h, const void *p, size_t n) { const uint8_t *b = p; for (size_t i = 0; i < n; i++) h = (h ^ b[i]) * 16777619u; return h; }
 
 // Information a soft QPSK axis carries at signal to noise g (amplitude squared over noise variance, per axis), bits:
@@ -356,7 +356,7 @@ static int init(focus_t *f, int n, int subch, int mode, const focus_tier_t *tier
   f->margin = margin;
   int side = span + 2 * f->margin;
   f->px = side * f->pxm;
-  ob_cfg_t cfg = { .w = side, .h = side, .rate = 4, .thin = 1, .border = f->margin, .corner = mark, .corner_filled = corner_filled,
+  ob_cfg_t cfg = { .w = side, .h = side, .thin = 1, .border = f->margin, .corner = mark, .corner_filled = corner_filled,
                    .edge = edge > 0 ? edge : 0, .track_alt = track_alt, .centre = centre };
   if (ob_layout_init(&f->frame, &cfg)) { focus_free(f); return -1; }
   fmt_paint(f);

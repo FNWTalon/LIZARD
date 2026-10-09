@@ -1,8 +1,8 @@
 # LIZARD format specification
 
-2026-09-24. The C in `liblizard/src/` is normative: the format is what `liblizard/src/enc.c`, `liblizard/src/focus.c`,
-`liblizard/src/layout.c`, `liblizard/src/fmt.c`, `liblizard/src/rs.c`, `liblizard/src/ldpc.c`, `liblizard/src/demap.c`,
-`liblizard/src/dec.c`, `liblizard/src/shake.c`, `liblizard/src/xfer.c` and their headers do, with the official BLAKE3 C
+2026-09-24. The C in `liblizard/src/` is normative: the format is what `liblizard/src/focus.c`,
+`liblizard/src/layout.c`, `liblizard/src/fmt.c`, `liblizard/src/rs.c`, `liblizard/src/ldpc.c`,
+`liblizard/src/shake.c`, `liblizard/src/xfer.c` and their headers do, with the official BLAKE3 C
 1.8.7 (`liblizard/vendor/blake3/`) under `liblizard/src/xfer.c`. Where this text
 and the code disagree, the code defines the format. Decisions that the code does not yet carry are
 stated as decisions and listed in section 13. Definitions cite their source as `file:function`. The arithmetic and the
@@ -2154,7 +2154,7 @@ the rest degree 3) were chosen on the exact int8 decoder's 10%-loss thresholds o
 2026-09-24 table's 4.07, 7/8 5.83 against 5.99, 2/3 3.00 against 3.04; no floor to 0.8 dB above at 65,536 codewords).
 The 1/2 table is the generator's own output (seed 1, 2026-10-07), as the three were before that day (the 3/4 table of
 2026-09-24, the 7/8 and 2/3 of 2026-10-07; `LDPC_BASES_V1`, `LIZ_TABLES=1`, for reading what was painted under them). The
-generator stays: `ldpc.c:ldpc_generate` builds every code outside the format (the binary code at its layout's z, the
+generator stays: `ldpc.c:ldpc_generate` builds every code outside the format (the
 rates the experiments tier with, `liblizard/test/ldpc_ablate.c`'s profiles), and the format's own when a test sets
 `ldpc_override_heavy`. `liblizard/test/ldpc_table.c` holds every table to the hash of its H as adopted (FNV-1a over its
 row pointers and column indices: 3/4 5660f26d, 20,669 edges) and `ldpc_init`'s block-row view to the table entry by
@@ -2771,9 +2771,9 @@ Each of these was built and measured, or decided. The reason given is the one on
 | The code rate follows the frequency: the rate profile, 7/8 inner, then 3/4 and 2/3, 1/2 outer (four rates since 2026-10-08; 7/8, 3/4 and 1/2 from 2026-10-07), a function of the sub-channel count (3.1) | a capture's signal-to-noise ratio falls with the frequency, and on recorded phone captures re-modulated under each profile it read +17.5 and +25% bytes a frame over one rate (section 11); the four rates read +2.7 to +4.1% over the three on three such captures and alike live on clean ones, and were taken for their margin on mixed and noisier captures. One rate 3/4 was the format before 2026-10-07: the rate a bet on a capture the sender cannot see, after profiles set on the simulator lost 4 to 16% where the capture did not match them; the recorded channel's own noise settled it the other way | 2026-10-07, 2026-10-08; `liblizard/src/focus.c:focus_tiers_for` |
 | The bit map is LINEAR, whitened, and the only one, so the word names none | whitening fixes small payloads; LINEAR spreads every run of the code across the block; the word has no free bit for a mode, and the other modes are lab settings | `liblizard/src/focus.h:FOCUS_BITMAP`; 2026-09-24 |
 | The format is never gated on a decoder | a weak decoder is fixed; it never decides or reverts a format choice | 2026-09-23; section 2 |
-| LIZARD over the binary grid code | not throughput (the binary code is ahead above its cliff): LIZARD degrades where the binary code stops dead; no further work on the binary code, which `scripts/exp/` still reaches through `liblizard/sim/phy.mjs`; the rig has no path for it since 2026-09-26 (its receiver was told by the server) | 2026-09-20 and 2026-09-26 |
+| LIZARD over the binary grid code | not throughput (the binary code is ahead above its cliff): LIZARD degrades where the binary code stops dead; the binary code deleted from the codec (2026-10-09) | 2026-09-20, 2026-10-09 |
 | The receiver is blind and the sender stands alone: a page talks to a server only to send it development logs, and nothing comes back into decoding or painting | LIZARD's format, geometry and file header come from the light, the test stream's bad blocks are judged from the light (9.3), and Aztec and QR describe themselves | 2026-09-26; STATUS "The whole receiver blind" |
-| QR and Aztec are archived, not baselines: LIZARD is compared against other apps | the research had settled that a beefier QR is not the option; the baselines dated from when a new format was in doubt, and FOCUS showed that OFDM, in luma only, does better and accelerates well on a GPU | 2026-09-26; `archive/qr-aztec/README.md` |
+| QR and Aztec are not baselines, and their code is deleted: LIZARD is compared against other apps | the research had settled that a beefier QR is not the option; the baselines dated from when a new format was in doubt, and FOCUS showed that OFDM, in luma only, does better and accelerates well on a GPU | 2026-09-26, deleted 2026-10-09; `research/01`, `04`, `09` |
 | Wirehair and zstd are fixed and out of scope (LZMA on paper until 2026-10-05, never applied; zstd chosen over it and GDeflate: ratio within 5 to 10% of xz at level 19 at compressors a phone keeps ahead of the channel with, where GDeflate keeps DEFLATE's ratio for a GPU decode speed the channel cannot use) | the scope is the 2D code | project rules; STATUS "zstd, a chunk at a time" |
 | No SharedArrayBuffer, so no wasm threads | workers cannot share a heap, and per-worker memory is the number that matters on a phone | project rules |
 

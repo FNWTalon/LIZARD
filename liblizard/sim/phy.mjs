@@ -11,7 +11,7 @@
 // A variant is a decoder setting applied to the same capture, which is how ablations stay
 // paired. `fresh` counts fountain blocks not seen before, `seen` every valid block in the
 // capture. usefulBytes is what one block hands the fountain: headers and ids are not payload.
-import { init as initOb, Codec, Focus, FocusAny, prof, streamBlock } from "./ob.mjs";
+import { init as initOb, Focus, FocusAny, prof, streamBlock } from "./ob.mjs";
 import { isControlId, PAYLOAD } from "./xfer.mjs";
 import { PICTURE_SIZES } from "./lizard_pick.mjs";
 
@@ -76,54 +76,6 @@ export const sourceFor = (stream) => {
   if (!gen) throw new Error(`unknown test stream ${stream}`);
   return (id, out) => gen(id, out.length, out);
 };
-
-// variants: [{ name, eq, taps, regions, mesh, gamma, gain, clip }]
-async function makeOb(spec) {
-  await initOb();
-  const { W, H = W, tiles = 3, rate = 4, map = 0, pilotStep = 0, variants = [{ name: "blind3", eq: 1 }] } = spec;
-  // source(id, out): what block id holds. The default is a function of the id; an end-to-end
-  // run swaps in the fountain encoder.
-  let source = sourceFor(spec.stream);
-  const codec = new Codec(W, H, tiles, tiles, rate, { map, pilotStep });
-  const B = codec.blockBytes, T = codec.tiles, seen = variants.map(() => new Set()), buf = new Uint8Array(T * B), want = new Uint8Array(B - 4);
-  return {
-    label: `ob ${W}${H === W ? "" : "x" + H} r${RATE[rate]} ${tiles}x${tiles} ${map ? "interleaved" : "tiled"}${pilotStep ? " pilot/" + pilotStep : ""}`,
-    family: "ob", variants: variants.map((v) => v.name), usefulBytes: B - 4, blocksPerFrame: T, modules: W, codeN: codec.n, codeK: codec.k,
-    frame(seq, baseId = seq * T) {
-      for (let t = 0; t < T; t++) {
-        const id = baseId + t, o = t * B;
-        buf[o] = id & 255; buf[o + 1] = (id >>> 8) & 255; buf[o + 2] = (id >>> 16) & 255; buf[o + 3] = id >>> 24;
-        source(id, buf.subarray(o + 4, o + B));
-      }
-      const dark = codec.encode(buf);
-      return { w: W, h: H, quiet: 0, dark, truth: dark };
-    },
-    decode(img, iw, ih, truth, rgba = false) {
-      return variants.map((v, vi) => {
-        codec.opts(v);
-        const t = performance.now(), r = codec.decode(img, iw, ih, truth, rgba), total = performance.now() - t;
-        let fresh = 0, n = 0, bad = 0;
-        const got = [];
-        for (let k = 0; k < T; k++) {
-          if (!r.ok[k]) continue;
-          const o = k * B, id = (r.blocks[o] | (r.blocks[o + 1] << 8) | (r.blocks[o + 2] << 16) | (r.blocks[o + 3] << 24)) >>> 0;
-          // With no source to compare against (the receiving end of a file), the block's own CRC,
-          // checked in the decoder, is the only judge.
-          let same = true;
-          if (source) { source(id, want); for (let q = 0; q < B - 4; q++) if (r.blocks[o + 4 + q] !== want[q]) { same = false; break; } }
-          if (!same) { bad++; continue; }
-          n++;
-          if (!seen[vi].has(id)) { seen[vi].add(id); fresh++; got.push({ id, bytes: r.blocks.slice(o + 4, o + B) }); }
-        }
-        return { got, fresh, seen: n, bad, found: r.found, ber: truth && r.found ? r.ber : NaN, mi: truth && r.found ? r.gmi : NaN, ms: { detect: r.msDetect, sample: r.msSample, fec: r.msDecode, total } };
-      });
-    },
-    reset() { seen.forEach((s) => s.clear()); },
-    seenCount: () => seen.reduce((t, x) => t + x.size, 0),
-    setSource(fn) { source = fn; },
-    prof, free() {},
-  };
-}
 
 // ai: A blind receiver's judge of a frame's verified blocks, laid out as the codec lays them (the 4-byte id, then the
 // ai: payload), from the light alone (the whole receiver blind since 2026-09-26). The test stream's payload
@@ -392,6 +344,5 @@ async function makeGrid(spec) {
 
 export async function makePhy(spec) {
   if (spec.phy === "focus") return spec.blind ? makeBlind(spec) : spec.grid > 1 ? makeGrid(spec) : makeFocus(spec);
-  if (spec.phy === "ob") return makeOb(spec);
   throw new Error(`unknown phy ${spec.phy}`);
 }

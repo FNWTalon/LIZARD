@@ -67,7 +67,8 @@ typedef struct { homo_t H; node_t *nodes; } ob_reg_t;
 // ai: a thread (any.h). The wasm build has one thread, where this is a plain global.
 #define OB_TLS _Thread_local
 double ob_now_ms(void);
-// Stage timers for the bench (scripts/exp/simd_bench.mjs). A handful of clock reads per frame, left in.
+// Stage timers for the benches (scripts/exp/focus_bench.mjs). A handful of clock reads per frame, left in. The slots
+// before PROF_F_SAMPLE were the binary grid code's (deleted 2026-10-09), kept so the JS readers' indices hold.
 enum { PROF_LUMA, PROF_BINARIZE, PROF_FINDERS, PROF_MESH, PROF_SAMPLE, PROF_DEMAP, PROF_LDPC, PROF_PACK, PROF_D_STATS, PROF_D_NORM, PROF_D_FIT, PROF_D_APPLY, PROF_D_LLR,
        PROF_F_SAMPLE, PROF_F_DETREND, PROF_F_FFT, PROF_F_LLR, PROF_F_LDPC, PROF_F_ENC_FFT, PROF_F_ENC_REST,   // F: the FOCUS decoder and encoder (scripts/exp/focus_bench.mjs)
        PROF_FF_POINTS, PROF_FF_TURN, PROF_FF_FIT, PROF_FF_SCORE,   // FF: inside the thin frame's finder (slots 20..23)
@@ -108,7 +109,6 @@ void ob_map_point(const ob_layout_t *L, const ob_reg_t *reg, float mx, float my,
 // The thin frame's format word as soft values, q[side * cells + i] in -0.5 .. 0.5, positive for
 // dark. Returns 0 where the border has no contrast. See fmt.h.
 int ob_thin_read_fmt(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float *q, int cells);
-void ob_sample_cells(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float *s);
 // A block of a regular grid in module coordinates: see acquire.c.
 void ob_sample_grid(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch);
 // What focus_acquire left for focus_finish (focus.h), for a caller that has to sample somewhere else. Valid
@@ -116,9 +116,6 @@ void ob_sample_grid(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg
 struct focus_s;
 const image_t *focus_held_image(const struct focus_s *f);
 const ob_reg_t *focus_held_reg(const struct focus_s *f);
-
-// Samples to per-cell LLRs (x8, int8, > 0 = light). e_out (optional) gets the equalized values.
-void ob_demap(const ob_layout_t *L, const float *s, const ob_opts_t *o, const uint8_t *truth, int8_t *llr_cell, ob_result_t *res);
 
 // The block tail of focus_finish_bits, for a second implementation to be measured against (src/focus.c).
 int ob_test_crc_pack(const uint8_t *bits, int B, uint8_t *dst, uint32_t *out);
