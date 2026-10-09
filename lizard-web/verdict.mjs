@@ -12,14 +12,14 @@
 // Every result increments exactly one of withNew, repeat and empty (recv.mjs onResult), so
 // decodedFps + repeatFps + emptyFps === processedFps and the shares below are exact.
 //
-// Pure, and takes only a stats row, so it runs over recorded research/rig/stats.jsonl rows in a test.
+// Pure, and takes only a stats row, so it runs over recorded rows in a test (scripts/exp/verdict_check.mjs).
 
 // Treated as stalled below this share of processed frames carrying something new. A 5 s window at
 // 30 fps holds ~150 frames, so this still allows a few genuine new frames before it speaks up.
 const STALLED = 0.05;
 
 // ai: The receiver hears nothing from the sender but its light (2026-09-26), so which end stopped is not said
-// ai: here: the sender's own line in the same research/rig/stats.jsonl row says whether it was painting.
+// ai: here: the sender's own line beside the row says whether it was painting.
 /**
  * @param {object} stats   the row recv.mjs builds each second
  * @returns {{ level: "ok"|"warn", text: string } | null}  null when nothing is wrong

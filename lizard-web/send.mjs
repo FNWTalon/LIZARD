@@ -472,7 +472,7 @@ async function start() {
     gcfg = c;
   }
   // ai: What is painted, for the development log only: nothing reads it to decode. transfer tells one start from the
-  // ai: next in research/rig/stats.jsonl; a re-pick keeps it.
+  // ai: next in the development log; a re-pick keeps it.
   cfg = { spec: s, label: made.label, mode: bytes ? "file" : "test", usefulBytes: made.usefulBytes, blocksPerFrame: made.blocksPerFrame, codes, gap, fps: +$("fps").value, encoder: gcfg ? "gpu" : "wasm", transfer: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, ...(bytes ? { fileBytes: bytes.length, name: file.name } : {}) };
   shown = s; lap = made.xfer?.lap ?? 0; dataSent = 0; dataWin = 0; fileBytes = bytes?.length ?? 0; sentBytes = made.xfer?.sent ?? 0;
   showEnc();
