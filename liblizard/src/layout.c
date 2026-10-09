@@ -3,8 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-const uint8_t OB_ORIENT[4] = { 5, 6, 3, 4 };
-
 uint32_t ob_crc32(const uint8_t *p, int n) {
   uint32_t c = 0xffffffffu;
   for (int i = 0; i < n; i++) {
@@ -12,27 +10,6 @@ uint32_t ob_crc32(const uint8_t *p, int n) {
     for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1)));
   }
   return ~c;
-}
-
-void ob_orient_rect(const ob_layout_t *L, int corner, int *x0, int *y0) {
-  int right = corner == 1 || corner == 2, bottom = corner >= 2;
-  *x0 = right ? L->w - OB_FB - 6 : OB_FB;
-  *y0 = bottom ? L->h - 2 : 0;
-}
-
-static int gcd(int a, int b) { while (b) { int t = a % b; a = b; b = t; } return a; }
-
-static int axis_nodes(int len, float *pos) {
-  int n = 0;
-  pos[n++] = OB_FB / 2;
-  for (int c = OB_FB / 2 + OB_PITCH; c + 0.5f <= len - OB_FB / 2 - OB_PITCH / 2 && n < OB_MAX_NODES - 1; c += OB_PITCH) pos[n++] = c + 0.5f;
-  pos[n++] = len - OB_FB / 2;
-  return n;
-}
-
-// Centre cell of the mark at lattice index i along an axis of the given length.
-static int mark_cell(const float *pos, int n, int i, int len) {
-  return i == 0 ? OB_FB / 2 : i == n - 1 ? len - OB_FB / 2 - 1 : (int)pos[i];
 }
 
 // j is the TRACK cell's index, not a module: the track takes every second run of OB_BAND_RUN cells of the band, the word the rest.
@@ -155,12 +132,13 @@ static int thin_init(ob_layout_t *L, int w, int h) {
   return 0;
 }
 
+// ai: LIZARD's border is the only frame there is (thin); a configuration without it is refused.
 int ob_layout_init(ob_layout_t *L, const ob_cfg_t *cfg) {
-  int w = cfg->w, h = cfg->h, tx = cfg->tx, ty = cfg->ty, rate = cfg->rate;
+  int w = cfg->w, h = cfg->h;
   memset(L, 0, sizeof *L);
   if (cfg->thin) {
     if (w < 64 || h < 64) return -1;
-    L->w = w; L->h = h; L->tx = L->ty = 1; L->rate = rate;
+    L->w = w; L->h = h;
     // A mark wider than a quarter of the side would leave the coded band nothing, and one under 5
     // has no light ring on both faces of a dark core, so neither is a mark.
     L->margin = cfg->border > OB_THIN ? cfg->border : OB_THIN;
@@ -179,110 +157,10 @@ int ob_layout_init(ob_layout_t *L, const ob_cfg_t *cfg) {
     L->kind = calloc((size_t)w * h, 1);
     return L->kind ? thin_init(L, w, h) : -1;
   }
-  if (w < 96 || h < 96 || (w & 7) || (h & 7) || tx < 1 || ty < 1 || tx * ty > OB_MAX_TILES) return -1;
-  L->w = w; L->h = h; L->tx = tx; L->ty = ty; L->rate = rate; L->tiles = tx * ty; L->map = cfg->map;
-  L->kind = calloc((size_t)w * h, 1);
-  if (!L->kind) return -1;
-  L->nx = axis_nodes(w, L->node_x);
-  L->ny = axis_nodes(h, L->node_y);
-
-  for (int c = 0; c < 4; c++) {
-    int ox = (c == 1 || c == 2) ? w - OB_FB : 0, oy = c >= 2 ? h - OB_FB : 0;
-    for (int j = 0; j < OB_FB; j++) for (int i = 0; i < OB_FB; i++) {
-      int a = i < j ? i : j, b = OB_FB - 1 - (i > j ? i : j), ring = (a < b ? a : b) / OB_FW;
-      L->kind[(oy + j) * w + ox + i] = (ring == 1 || ring >= 3) ? CELL_DARK : CELL_LIGHT;
-    }
-    int sx, sy;
-    ob_orient_rect(L, c, &sx, &sy);
-    for (int b = 0; b < 3; b++) for (int q = 0; q < 4; q++)
-      L->kind[(sy + (q >> 1)) * w + sx + 2 * b + (q & 1)] = (OB_ORIENT[c] >> (2 - b)) & 1 ? CELL_DARK : CELL_LIGHT;
-  }
-  // Format word beside the TL and BR orientation strips: 16 bits of 2 x 2 cells, two copies.
-  uint32_t fmt = (uint32_t)rate << 13 | (uint32_t)(tx - 1) << 10 | (uint32_t)(ty - 1) << 7;
-  uint8_t fb[2] = { (uint8_t)(fmt >> 8), (uint8_t)fmt };
-  fmt |= ob_crc32(fb, 2) & 0x7f;
-  for (int copy = 0; copy < 2; copy++) {
-    int sx = copy ? w - OB_FB - 6 - 32 : OB_FB + 6, sy = copy ? h - 2 : 0;
-    for (int b = 0; b < 16; b++) for (int q = 0; q < 4; q++)
-      L->kind[(sy + (q >> 1)) * w + sx + 2 * b + (q & 1)] = (fmt >> (15 - b)) & 1 ? CELL_DARK : CELL_LIGHT;
-  }
-  for (int j = 0; j < L->ny; j++) for (int i = 0; i < L->nx; i++) {
-    if ((i == 0 || i == L->nx - 1) && (j == 0 || j == L->ny - 1)) continue;
-    L->node_mark[j * L->nx + i] = 1;
-    int cx = mark_cell(L->node_x, L->nx, i, w), cy = mark_cell(L->node_y, L->ny, j, h);
-    for (int dy = -2; dy <= 2; dy++) for (int dx = -2; dx <= 2; dx++) {
-      int r = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
-      L->kind[(cy + dy) * w + cx + dx] = r == 1 ? CELL_LIGHT : CELL_DARK;
-    }
-  }
-
-  // Scattered pilots: one known cell per step x step block, at a position and with a value
-  // fixed by the block's index. Their neighbours are data, which is the point: an equalizer
-  // trained on them sees the statistics it will be applied to.
-  if (cfg->pilot_step > 1) for (int by = 0; by < h; by += cfg->pilot_step) for (int bx = 0; bx < w; bx += cfg->pilot_step) {
-    uint32_t v = (uint32_t)(by * w + bx) * 2654435761u + 12345u;
-    v ^= v >> 15; v *= 2246822519u; v ^= v >> 13;
-    int x = bx + (int)(v % (uint32_t)cfg->pilot_step), y = by + (int)((v >> 8) % (uint32_t)cfg->pilot_step);
-    if (x >= w || y >= h || L->kind[y * w + x] != CELL_DATA) continue;
-    L->kind[y * w + x] = (uint8_t)(((v >> 20) & 1 ? CELL_DARK : CELL_LIGHT) | CELL_PILOT);
-    L->pilots++;
-  }
-
-  int count[OB_MAX_TILES] = { 0 }, minc = 1 << 30, total = 0;
-  int *tile_of = malloc((size_t)w * h * sizeof(int));
-  if (!tile_of) { ob_layout_free(L); return -1; }
-  for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
-    int t = (y * ty / h) * tx + x * tx / w;
-    tile_of[y * w + x] = t;
-    if (L->kind[y * w + x] == CELL_DATA) { count[t]++; total++; }
-  }
-  for (int t = 0; t < L->tiles; t++) if (count[t] < minc) minc = count[t];
-  // Both maps use the code the smallest tile allows, so they differ in placement alone.
-  if (ldpc_init(&L->code, minc, rate, 1)) { free(tile_of); ob_layout_free(L); return -1; }
-  int n = L->code.n;
-  L->block_bytes = L->code.k / 8 - 4;
-  if (cfg->map == OB_MAP_INTERLEAVED) {
-    int *cells = malloc((size_t)total * sizeof(int)), c = 0, g = (int)(total * 0.6180339887) | 1;
-    if (!cells) { free(tile_of); ob_layout_free(L); return -1; }
-    for (int i = 0; i < w * h; i++) if (L->kind[i] == CELL_DATA) cells[c++] = i;
-    while (gcd(g, total) != 1) g += 2;
-    int used = L->tiles * n;
-    for (int t = 0; t < L->tiles; t++) {
-      L->tile_cells[t] = malloc((size_t)n * sizeof(int));
-      L->tile_pad[t] = malloc(((size_t)(t ? 0 : total - used) + 1) * sizeof(int));
-      L->tile_npad[t] = t ? 0 : total - used;
-      if (!L->tile_cells[t] || !L->tile_pad[t]) { free(cells); free(tile_of); ob_layout_free(L); return -1; }
-      // Consecutive bits of a block land a golden-ratio stride apart in raster order, and the
-      // blocks take turns, so every block samples the whole frame.
-      for (int b = 0; b < n; b++) L->tile_cells[t][b] = cells[(int)(((int64_t)b * L->tiles + t) * g % total)];
-    }
-    for (int i = used; i < total; i++) L->tile_pad[0][i - used] = cells[(int)((int64_t)i * g % total)];
-    free(cells);
-  } else {
-    int g = (int)(n * 0.6180339887) | 1;
-    while (gcd(g, n) != 1) g += 2;
-    for (int t = 0; t < L->tiles; t++) {
-      int *cells = malloc((size_t)count[t] * sizeof(int));
-      L->tile_cells[t] = malloc((size_t)n * sizeof(int));
-      L->tile_npad[t] = count[t] - n;
-      L->tile_pad[t] = malloc((size_t)(count[t] - n + 1) * sizeof(int));
-      if (!cells || !L->tile_cells[t] || !L->tile_pad[t]) { free(cells); free(tile_of); ob_layout_free(L); return -1; }
-      int c = 0;
-      for (int i = 0; i < w * h; i++) if (tile_of[i] == t && L->kind[i] == CELL_DATA) cells[c++] = i;
-      // Neighbouring code bits land far apart, so a local smear does not erase a run of the
-      // parity chain.
-      for (int b = 0; b < n; b++) L->tile_cells[t][b] = cells[(int)((int64_t)b * g % n)];
-      for (int i = n; i < c; i++) L->tile_pad[t][i - n] = cells[i];
-      free(cells);
-    }
-  }
-  free(tile_of);
-  return 0;
+  return -1;
 }
 
 void ob_layout_free(ob_layout_t *L) {
   free(L->kind);
-  for (int t = 0; t < OB_MAX_TILES; t++) { free(L->tile_cells[t]); free(L->tile_pad[t]); }
-  ldpc_free(&L->code);
   memset(L, 0, sizeof *L);
 }

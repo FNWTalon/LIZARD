@@ -1,21 +1,13 @@
-// Symbol geometry. Everything that is not data is static from frame to frame, so a receiver
-// can register on it even in a frame whose data is torn between two display updates.
-//
-//   finder block  18 x 18 at each corner: a 1:1:3:1:1 bullseye with rings two modules wide,
-//                 inside its own light ring, so no quiet zone is asked of the surround
-//   orient strip  3 bits of 2 x 2 cells beside each finder; tells rotation and mirroring
-//   marks         5 x 5 alignment marks every 32 modules, border included; the registration
-//                 mesh hangs on these, which is what absorbs lens distortion and jello
-//   tiles         tx x ty rectangles; each tile's data cells carry one LDPC codeword and one
-//                 fountain block. Damage stays local: a glare blob or a rolling-shutter band
-//                 costs the tiles it touches and nothing else.
+// Symbol geometry: LIZARD's border (the thin frame, below) round the picture focus.c owns. Everything that is not
+// the picture is static from frame to frame, so a receiver can register on it even in a frame whose picture is torn
+// between two display updates.
 #ifndef OB_LAYOUT_H
 #define OB_LAYOUT_H
 #include <stdint.h>
 #include "ldpc.h"
 
-enum { OB_FW = 2, OB_FB = 9 * OB_FW, OB_PITCH = 32, OB_MARK = 5, OB_MAX_TILES = 64, OB_MAX_NODES = 40 };
-// CELL_PILOT is a flag on a light or dark cell: a scattered known cell among the data.
+// ai: OB_FB bounds a node template's side in modules (acquire.c node_ncc, refine_node); OB_MAX_NODES a side's nodes
+enum { OB_FW = 2, OB_FB = 9 * OB_FW, OB_MAX_NODES = 40 };
 // CELL_WORD is a flag on the format word's cells (fmt.h). They are painted light or dark like any other cell, so
 // every painter reads them through `& 3` and does not care; what the flag says is that a DECODER cannot predict
 // them. The word carries a rate the sender chose, so a receiver standing anywhere has the wrong bits for those
@@ -23,8 +15,7 @@ enum { OB_FW = 2, OB_FB = 9 * OB_FW, OB_PITCH = 32, OB_MARK = 5, OB_MAX_TILES = 
 // the rate mis-stated by one, a symbol that gave 22 blocks of 24 gave 6. So the mesh skips them (acquire.c
 // node_ncc, refine_node) and registration does not depend on the word at all, which is what layout.c's
 // ob_layout_set_fmt has always claimed.
-enum { CELL_DATA = 0, CELL_LIGHT = 1, CELL_DARK = 2, CELL_PILOT = 4, CELL_WORD = 8 };
-enum { OB_MAP_TILED = 0, OB_MAP_INTERLEAVED = 1 };
+enum { CELL_DATA = 0, CELL_LIGHT = 1, CELL_DARK = 2, CELL_WORD = 8 };
 // Thin frame, from the outside in: one light module, a solid dark line two modules deep, a light
 // gap, and one coded band. The solid line is what a receiver finds (four long curves) and what
 // gives the displacement across the border; the band is the timing track and gives it along the
@@ -147,11 +138,9 @@ int ob_track_cells(int side, int reserve);   // of those, the timing track's
 int ob_thin_reserve(int corner);            // modules kept clear at each end of a side, so a mark never meets a read cell
 
 typedef struct {
-  int w, h, tx, ty, rate;
-  int map;          // OB_MAP_*: a block's cells stay inside its tile, or spread over the frame
-  int pilot_step;   // 0 = none, else one pilot cell per pilot_step x pilot_step cells
+  int w, h;
   int thin;         // ai: 1, what focus.c always builds: LIZARD's border, the anchor itself, OB_THIN modules deep at
-                    // ai: least, no tiles and no code (focus.c owns the picture). 0: the binary code's finders and tiles.
+                    // ai: least (focus.c owns the picture); ob_layout_init refuses 0.
   int border;       // thin only: modules of border, at least OB_THIN. Depths 0 to 6 are the line, the gap and
                     // the band (track and word) whatever this is; the rest is light, and it is where a mark can
                     // live without touching the picture. Eating picture costs about eight times its area in payload; a wider
@@ -174,18 +163,12 @@ typedef struct {
 } ob_cfg_t;
 
 typedef struct {
-  int w, h, tx, ty, rate, map, pilots, thin;
+  int w, h, thin;
   int corner, corner_filled, centre, edge, track_alt, reserve, margin;   // reserve: ob_thin_reserve(corner), carried so every reader agrees
   int nx, ny;                     // mesh nodes per axis, finders included
   float node_x[OB_MAX_NODES], node_y[OB_MAX_NODES];   // module coordinates of node centres
   uint8_t node_mark[OB_MAX_NODES * OB_MAX_NODES];     // 1 where a lattice point carries a mark
   uint8_t *kind;                  // w * h, CELL_*
-  int tiles;
-  int *tile_cells[OB_MAX_TILES];  // cell index (y * w + x) of each code bit, permuted
-  int *tile_pad[OB_MAX_TILES];    // data cells left over after the codeword
-  int tile_npad[OB_MAX_TILES];
-  ldpc_t code;
-  int block_bytes;                // payload bytes per tile, CRC excluded
 } ob_layout_t;
 
 int ob_layout_init(ob_layout_t *L, const ob_cfg_t *cfg);
@@ -193,18 +176,6 @@ void ob_layout_free(ob_layout_t *L);
 // Repaint the thin frame's format word from an encoded codeword (fmt.h). Nothing else in the frame
 // moves, so a sender may change it between the frames of a running transfer.
 void ob_layout_set_fmt(ob_layout_t *L, const uint8_t *cw);
-
-// 1 where the scrambler flips a cell. A fixed function of position.
-static inline int ob_scramble(int cell) {
-  uint32_t v = (uint32_t)cell * 2654435761u;
-  v ^= v >> 15; v *= 2246822519u; v ^= v >> 13;
-  return (int)(v & 1);
-}
-
-extern const uint8_t OB_ORIENT[4];   // 3-bit strip codes for TL, TR, BR, BL
-
-// Strip i's cell rectangle (module coordinates, 6 x 2).
-void ob_orient_rect(const ob_layout_t *L, int corner, int *x0, int *y0);
 
 uint32_t ob_crc32(const uint8_t *p, int n);
 

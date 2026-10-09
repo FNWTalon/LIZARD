@@ -12,7 +12,7 @@
 // ai:                                      wasm's own instructions.
 // ai:   neon_check synth                   digests of the vector sites no blind decode reaches (the transform at
 // ai:                                      radix 4, RGBA to luma, the binarizer's ragged sizes, the interleaved RS
-// ai:                                      syndromes, the encoder and its painter, the binary grid code), and every
+// ai:                                      syndromes, the encoder and its painter), and every
 // ai:                                      ring with every picture size painted, read blind and compared byte for
 // ai:                                      byte. No input files.
 // ai:   neon_check frames <list> [passes]  every frame of the list through focus_any_frame (one focus_any_t, nmax
@@ -33,7 +33,7 @@
 // ai: No timing is in any of them. Exit 1 on a unit failure, a synth round trip that did not come back, or a build
 // ai: that contracts a multiply and an add (-ffp-contract=off is missing).
 // ai: From liblizard/ (C = the NDK's aarch64-linux-android29-clang; S = src/focus.c src/acquire.c src/layout.c src/fmt.c
-// ai: src/rs.c src/ldpc.c src/fft.c src/any.c src/dec.c src/demap.c src/enc.c):
+// ai: src/rs.c src/ldpc.c src/fft.c src/any.c):
 // ai:   $C -O3 -ffp-contract=off -DNDEBUG -Isrc -o build/neon/neon_check.neon test/neon_check.c $S -lm
 // ai:   $C -O3 -ffp-contract=off -DNDEBUG -Isrc -DOB_SCALAR -o build/neon/neon_check.scalar test/neon_check.c $S -lm
 // ai: It also builds with emcc (add -msimd128 or not, and -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH=1 -sEXIT_RUNTIME=1, run
@@ -53,7 +53,7 @@
 #include <sched.h>
 #endif
 
-extern uint32_t ob_debug_hash;                                            // ai: dec.c, read by focus.c
+uint32_t ob_debug_hash;                                                   // ai: the host's, read by focus.c (as wasm.c and core/cpu/codec.c)
 void ob_test_binarize(const uint8_t *img, int w, int h, uint8_t *bin);    // ai: acquire.c
 
 #if defined(__wasm_simd128__)
@@ -691,52 +691,6 @@ static int synth_lab(void) {
   return fails;
 }
 
-// ai: The binary grid code (no further work, but its demapper and finder carry vector paths that must run): modules
-// ai: four pixels wide, blurred, shaded and noised in integers, read under the option sets scripts/exp/simd_check.mjs uses.
-static int synth_binary(void) {
-  static const struct { int w, tiles, rate; } LAY[] = { { 320, 3, 4 }, { 256, 2, 3 } };
-  static const struct { const char *name; float gamma; int eq, taps, regions, mesh, iters, pilot; } OPT[] = {
-    { "blind 3x3", 1, OB_EQ_BLIND, 3, 1, 1, 50, 0 }, { "blind 5x5, 3x3 regions", 1, OB_EQ_BLIND, 5, 3, 1, 50, 0 },
-    { "pilot 5x5", 1, OB_EQ_PILOT, 5, 1, 1, 50, 8 }, { "no equalizer, no mesh, gamma 2.2", 2.2f, OB_EQ_NONE, 3, 1, 0, 30, 0 } };
-  int fails = 0;
-  for (size_t l = 0; l < sizeof LAY / sizeof *LAY; l++) for (size_t q = 0; q < sizeof OPT / sizeof *OPT; q++) {
-    ob_layout_t L;
-    const ob_cfg_t cfg = { .w = LAY[l].w, .h = LAY[l].w, .tx = LAY[l].tiles, .ty = LAY[l].tiles, .rate = LAY[l].rate, .map = 0, .pilot_step = OPT[q].pilot };
-    if (ob_layout_init(&L, &cfg)) { printf("synth binary: layout failed\n"); fails++; continue; }
-    const int K = 4, P = 40, W = L.w * K + 2 * P, H = L.h * K + 2 * P, B = L.block_bytes;
-    uint8_t *blocks = malloc((size_t)L.tiles * B), *got = calloc((size_t)L.tiles * B, 1), *mod = malloc((size_t)L.w * L.h), *a = malloc((size_t)W * H), *img = malloc((size_t)W * H);
-    rnd_seed(500 + l * 10 + q);
-    for (int i = 0; i < L.tiles * B; i++) blocks[i] = (uint8_t)rnd();
-    ob_encode(&L, blocks, mod);
-    memset(a, 225, (size_t)W * H);
-    for (int y = 0; y < L.h * K; y++) for (int x = 0; x < L.w * K; x++) a[(size_t)(y + P) * W + x + P] = mod[(y / K) * L.w + x / K] ? 35 : 225;
-    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
-      int s = 0;
-      for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) { const int yy = clampi(y + dy, 0, H - 1), xx = clampi(x + dx, 0, W - 1); s += a[(size_t)yy * W + xx]; }
-      int v = (s + 4) / 9;
-      v = v * (1024 - 180 * y / H) >> 10;
-      v += (int)(rnd() % 9) - 4;
-      img[(size_t)y * W + x] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
-    }
-    ob_opts_t o;
-    ob_default_opts(&o);
-    o.gamma = OPT[q].gamma; o.eq_mode = OPT[q].eq; o.eq_taps = OPT[q].taps; o.eq_regions = OPT[q].regions; o.mesh = OPT[q].mesh; o.max_iter = OPT[q].iters; o.llr_gain = 0.7f; o.llr_clip = 10;
-    ob_result_t res;
-    ob_debug_hash = 1;
-    const int n = ob_decode(&L, img, W, H, &o, got, &res, NULL);
-    const uint32_t hsh = ob_debug_hash; ob_debug_hash = 0;
-    dig_t d = DIG0;
-    d = dig_int(d, n); d = dig(d, &hsh, sizeof hsh); d = dig_int(d, res.found); d = dig_int(d, res.finders); d = dig(d, res.quad, sizeof res.quad); d = dig_int(d, res.orient);
-    d = dig(d, &res.mark_score, sizeof res.mark_score); d = dig(d, res.ok, sizeof res.ok); d = dig(d, res.iters, sizeof res.iters); d = dig(d, got, (size_t)L.tiles * B);
-    int back = 0;
-    for (int t = 0; t < L.tiles; t++) back += res.ok[t] && !memcmp(got + (size_t)t * B, blocks + (size_t)t * B, (size_t)B);
-    if (back != L.tiles) fails++;
-    printf("synth binary %d modules, %s: %016llx, %d of %d tiles back%s\n", L.w, OPT[q].name, (unsigned long long)d, back, L.tiles, back == L.tiles ? "" : "  FAILED");
-    free(blocks); free(got); free(mod); free(a); free(img); ob_layout_free(&L);
-  }
-  return fails;
-}
-
 static int synth(void) {
   int fails = 0;
   synth_fft();
@@ -744,7 +698,6 @@ static int synth(void) {
   synth_binarize();
   synth_rs();
   fails += synth_lab();
-  fails += synth_binary();
   fails += synth_pairs();
   printf("synth: %s\n", fails ? "FAILED" : "every round trip came back");
   return fails != 0;

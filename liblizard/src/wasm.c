@@ -10,29 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static ob_layout_t L;
 static ob_result_t R;
-static ob_opts_t O;
-static int ready;
-
-int ob_setup(int w, int h, int tx, int ty, int rate, int map, int pilot_step) {
-  if (ready) { ob_layout_free(&L); ready = 0; }
-  ob_cfg_t cfg = { .w = w, .h = h, .tx = tx, .ty = ty, .rate = rate, .map = map, .pilot_step = pilot_step };
-  if (ob_layout_init(&L, &cfg)) return -1;
-  ob_default_opts(&O);
-  ready = 1;
-  return L.block_bytes;
-}
-int ob_tiles(void) { return L.tiles; }
-int ob_code_n(void) { return L.code.n; }
-int ob_code_k(void) { return L.code.k; }
-void ob_set_opts(float gamma, int eq_mode, int eq_taps, int eq_regions, int mesh, int max_iter, float gain, float clip) {
-  O.gamma = gamma; O.eq_mode = eq_mode; O.eq_taps = eq_taps; O.eq_regions = eq_regions; O.mesh = mesh;
-  O.max_iter = max_iter; O.llr_gain = gain; O.llr_clip = clip;
-}
-int ob_pilots(void) { return L.pilots; }
-void ob_tx(const uint8_t *blocks, uint8_t *modules) { ob_encode(&L, blocks, modules); }
-int ob_rx(const uint8_t *img, int iw, int ih, uint8_t *blocks, const uint8_t *truth) { return ob_decode(&L, img, iw, ih, &O, blocks, &R, truth); }
 // Camera frames arrive as RGBA. Converting here keeps the 4 bytes a pixel out of JS loops.
 static uint8_t *lum; static int lum_cap;
 static const uint8_t *to_luma(const uint8_t *rgba, int n) {
@@ -49,14 +27,11 @@ const uint8_t *ob_luma_strip(const uint8_t *rgba, int n, int offset, int total) 
   PROF(PROF_LUMA, ob_luma(rgba, n, lum + offset));
   return lum;
 }
-int ob_rx_rgba(const uint8_t *rgba, int iw, int ih, uint8_t *blocks, const uint8_t *truth) { const uint8_t *y = to_luma(rgba, iw * ih); return y ? ob_decode(&L, y, iw, ih, &O, blocks, &R, truth) : 0; }
 const uint8_t *ob_luma_of(const uint8_t *rgba, int n) { return to_luma(rgba, n); }
 const ob_result_t *ob_last(void) { return &R; }
-extern uint32_t ob_debug_hash;
-extern int8_t *ob_debug_llr;
-// Test hooks: a buffer of w * h bytes to receive each decode's per-cell LLRs (0 to stop), and the layout's cell kinds.
-void ob_dbg_llr(int8_t *buf) { ob_debug_llr = buf; }
-const uint8_t *ob_kind(void) { return L.kind; }
+// Test hook (scripts/exp/simd_check.mjs, focus_bench.mjs): nonzero asks a decode to leave a hash of its floats and soft
+// values here (focus.c). The host defines it: here for the wasm, core/cpu/codec.c natively.
+uint32_t ob_debug_hash;
 uint32_t ob_dbg_hash(int arm) { uint32_t v = ob_debug_hash; ob_debug_hash = (uint32_t)arm; return v; }
 double ob_prof(int i) { return i >= 0 && i < PROF_N ? ob_prof_ms[i] : 0; }
 void ob_prof_reset(void) { for (int i = 0; i < PROF_N; i++) ob_prof_ms[i] = 0; }

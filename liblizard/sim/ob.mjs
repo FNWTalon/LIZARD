@@ -95,41 +95,6 @@ export function streamBlock(id, len) {
   return M.HEAPU8.subarray(pStream, pStream + len);   // afresh every call: the heap may have grown
 }
 
-export class Codec {
-  // map: 0 tiled, 1 interleaved. pilotStep: 0 or one known cell per pilotStep x pilotStep.
-  constructor(w, h, tx, ty, rate, { map = 0, pilotStep = 0 } = {}) {
-    this.blockBytes = M._ob_setup(w, h, tx, ty, rate, map, pilotStep);
-    if (this.blockBytes < 0) throw new Error(`layout ${w}x${h} ${tx}x${ty} rate ${rate} rejected`);
-    Object.assign(this, { w, h, tiles: M._ob_tiles(), n: M._ob_code_n(), k: M._ob_code_k() });
-    this.pBlocks = M._malloc(this.tiles * this.blockBytes);
-    this.pMods = M._malloc(w * h);
-    this.pTruth = M._malloc(w * h);
-    this.pImg = 0; this.imgCap = 0;
-  }
-  // eq: 0 none, 1 blind, 2 pilot, 3 genie (needs truth). taps 3 or 5. regions n = n x n local filters.
-  opts({ gamma = 1, eq = 1, taps = 3, regions = 1, mesh = 1, maxIter = 50, gain = 0.7, clip = 10 } = {}) { M._ob_set_opts(gamma, eq, taps, regions, mesh, maxIter, gain, clip); }
-  encode(blocks) {
-    M.HEAPU8.set(blocks, this.pBlocks);
-    M._ob_tx(this.pBlocks, this.pMods);
-    return M.HEAPU8.slice(this.pMods, this.pMods + this.w * this.h);
-  }
-  // rgba: img is a canvas RGBA buffer, and the luma conversion happens in wasm (vectorized) instead of a JS loop.
-  decode(img, iw, ih, truth = null, rgba = false) {
-    let pLuma = 0;
-    if (rgba) pLuma = lumaOf(img, iw * ih);
-    else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
-    if (truth) M.HEAPU8.set(truth, this.pTruth);
-    const ok = M._ob_rx(pLuma, iw, ih, this.pBlocks, truth ? this.pTruth : 0);
-    const r = M._ob_last(), i32 = (o) => M.HEAP32[(r + o) >> 2], f32 = (o) => M.HEAPF32[(r + o) >> 2];
-    return {
-      tilesOk: ok, found: i32(0), finders: i32(4), quad: Array.from({ length: 8 }, (_, k) => f32(8 + 4 * k)), orient: i32(40), markScore: f32(44),
-      ok: M.HEAPU8.slice(r + 52, r + 52 + this.tiles), iters: Array.from(new Int8Array(M.HEAPU8.buffer, r + 116, this.tiles)),
-      msDetect: f32(180), msSample: f32(184), msDecode: f32(188), ber: f32(192), gmi: f32(196),
-      blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.tiles * this.blockBytes),
-    };
-  }
-}
-
 // ai: A receiver told nothing (src/focus.h focus_acquire_ring, src/wasm.c focus_any_rx): it registers against the
 // ai: rings (src/focus.h FOCUS_RING), reads the word there, and finishes the frame at the picture the word names, in whichever ring it was
 // ai: painted (any ring may carry any picture). nmax: the largest picture it decodes (sim/phy.mjs BLIND_NMAX). Its
