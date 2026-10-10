@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- ai: LIZARD's mark (2026-10-01), lizard-web/icon.svg drawn again: the symbol's corner marks, its dark ring between
-     them and a grey picture, on white. The bar's mark and the shortcut's icon. -->
+     them and a grey picture, on white. The bar's mark and the shortcut's icon. Its ink spans 70% of the square (2026-10-10,
+     the standard icon.svg states). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="28dp" android:height="28dp" android:viewportWidth="64" android:viewportHeight="64">
     <path android:fillColor="#FFFFFF" android:pathData="M0 0h64v64h-64z" />
-    <path android:fillColor="#111111" android:pathData="M14 14h9v9h-9zM41 14h9v9h-9zM14 41h9v9h-9zM41 41h9v9h-9zM25 16h14v3H25zM25 45h14v3H25zM16 25h3v14h-3zM45 25h3v14h-3z" />
-    <path android:fillColor="#777777" android:pathData="M25 25h7v7h-7zM32 32h7v7h-7z" />
-    <path android:fillColor="#BBBBBB" android:pathData="M32 25h7v7h-7zM25 32h7v7h-7z" />
+    <group android:pivotX="32" android:pivotY="32" android:scaleX="1.24444" android:scaleY="1.24444">
+        <path android:fillColor="#111111" android:pathData="M14 14h9v9h-9zM41 14h9v9h-9zM14 41h9v9h-9zM41 41h9v9h-9zM25 16h14v3H25zM25 45h14v3H25zM16 25h3v14h-3zM45 25h3v14h-3z" />
+        <path android:fillColor="#777777" android:pathData="M25 25h7v7h-7zM32 32h7v7h-7z" />
+        <path android:fillColor="#BBBBBB" android:pathData="M32 25h7v7h-7zM25 32h7v7h-7z" />
+    </group>
 </vector>

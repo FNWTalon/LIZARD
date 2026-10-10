@@ -1,10 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <!-- ai: Lizard's mark (2026-10-01): the symbol's four corner marks, its dark ring between them and a grey picture inside,
-       on white. The mark keeps inside the central 80% circle, so the one file serves as the favicon and the app's
-       maskable icon (lizard-web/pwa/manifest.webmanifest); lizard-android/app/src/main/res/drawable/ic_launcher_foreground.xml is
-       the same drawing. -->
+       on white. The standard (2026-10-10): the mark's ink, corner mark to corner mark, spans 70% of the icon's square,
+       centred (the 36-unit drawing scaled 1.24444 about the centre, 9.6 to 54.4 of 64). The one file is the favicon and
+       the app's icon (lizard-web/pwa/manifest.webmanifest); the Android app's mark.xml and ic_launcher_foreground.xml, the
+       desktop sender's Icons.mark and packaging/lizard.png are the same drawing at the same share. As a maskable icon
+       its corner marks reach 31.7 units from the centre along the diagonal, past the 25.6 of the spec's safe circle: a
+       mask that tight cuts their outer corners; a squircle or rounded square does not. -->
   <rect width="64" height="64" fill="#fff"/>
+  <g transform="matrix(1.24444 0 0 1.24444 -7.82222 -7.82222)">
   <path fill="#111" d="M14 14h9v9h-9zM41 14h9v9h-9zM14 41h9v9h-9zM41 41h9v9h-9zM25 16h14v3H25zM25 45h14v3H25zM16 25h3v14h-3zM45 25h3v14h-3z"/>
   <path fill="#777" d="M25 25h7v7h-7zM32 32h7v7h-7z"/>
   <path fill="#bbb" d="M32 25h7v7h-7zM25 32h7v7h-7z"/>
+  </g>
 </svg>
