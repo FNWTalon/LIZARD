@@ -1,11 +1,7 @@
 package dev.lizard.receiver
 
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
@@ -15,7 +11,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import android.util.Range
 import java.util.Locale
@@ -61,24 +56,33 @@ internal fun MainActivity.ReceiveSettings() {
 @Composable
 internal fun MainActivity.ReceiveAdvanced() {
     val s = settings
-    Select("Save replays", s.replays, listOf("off" to "Off", "on" to "On")) { change(s.copy(replays = it), false) }
-    // ai: the runs in the order begun: the newest finished, then those still recording or saving
-    for (rp in MainActivity.runs) {
-        CodeBlock(when (rp.state) {
-            MainActivity.ReplayState.Recording -> "${rp.run}: recording"
-            MainActivity.ReplayState.Ending -> "${rp.run}: saving"
-            MainActivity.ReplayState.Ready -> "${rp.run}: ${rp.frames} frames, ${"%.0f".format(Locale.ROOT, rp.bytes / 1e6)} MB" +
-                if (rp.why.isEmpty()) "" else " (${rp.why})"
-            MainActivity.ReplayState.Failed -> "${rp.run}: ${rp.why}"
-        }, size = 12)
-        if (rp.state == MainActivity.ReplayState.Ready)
-            Btn(if (MainActivity.exporting == rp.run) "Downloading" else "Download", enabled = MainActivity.exporting.isEmpty(),
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp)) { downloadReplay(rp) }
+    // ai: one rhythm, Settings' (Fields: 16 dp between every part, 2026-10-10; the two menus touched and the readouts and
+    // ai: Download carried 6 dp of their own until then); Show statistics first, then Save replays and its runs
+    Fields {
+        Select("Show statistics", s.stats, listOf("off" to "Off", "on" to "On")) { change(s.copy(stats = it), false) }
+        Select("Save replays", s.replays, listOf("off" to "Off", "on" to "On")) { change(s.copy(replays = it), false) }
+        // ai: the runs in the order begun: the newest finished, then those still recording or saving
+        for (rp in MainActivity.runs) {
+            if (s.stats == "on") CodeBlock(when (rp.state) {
+                MainActivity.ReplayState.Recording -> "${rp.run}: recording"
+                MainActivity.ReplayState.Ending -> "${rp.run}: saving"
+                MainActivity.ReplayState.Ready -> "${rp.run}: ${rp.frames} frames, ${"%.0f".format(Locale.ROOT, rp.bytes / 1e6)} MB" +
+                    if (rp.why.isEmpty()) "" else " (${rp.why})"
+                MainActivity.ReplayState.Failed -> "${rp.run}: ${rp.why}"
+            }, size = 12)
+            if (rp.state == MainActivity.ReplayState.Ready)
+                Btn(if (MainActivity.exporting == rp.run) "Downloading" else "Download", enabled = MainActivity.exporting.isEmpty(),
+                    modifier = Modifier.fillMaxWidth()) { downloadReplay(rp) }
+        }
+        if (s.stats == "on" && MainActivity.replayNote.isNotEmpty()) CodeBlock(MainActivity.replayNote, size = 12)
+        // ai: the statistics (the lab line and the readout), like every monospace line here (a replay's line, the note after a
+        // ai: download), only under Show statistics (2026-10-10), as Receive's green line; the switches and Download stay
+        if (s.stats == "on") {
+            val lab = Readout.lab(phase == Engine.Phase.On, rx)
+            if (lab.isNotEmpty()) CodeBlock(lab)
+            CodeBlock(devReadout(), size = 12)
+        }
     }
-    if (MainActivity.replayNote.isNotEmpty()) CodeBlock(MainActivity.replayNote, size = 12)
-    val lab = Readout.lab(phase == Engine.Phase.On, rx)
-    if (lab.isNotEmpty()) CodeBlock(lab)
-    CodeBlock(devReadout(), size = 12)
 }
 
 // ai: The readout, a labelled line or two a part, from the receiver's stats JSON (receiver.cpp stats), the camera

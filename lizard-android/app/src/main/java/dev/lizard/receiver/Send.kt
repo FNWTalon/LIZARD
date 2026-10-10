@@ -381,8 +381,8 @@ internal fun MainActivity.SendScreen() {
         Fold("Developer Tools", isOpen("sendAdvanced"), { toggle("sendAdvanced") }) {
             Fields {
                 Select("Payload", s.test, listOf(false to "File", true to "Test stream"), enabled = s.phase != SendState.Phase.On && s.phase != SendState.Phase.Preparing) { s.test = it }
+                sendLab(s).let { if (it.isNotEmpty()) CodeBlock(it) }
             }
-            sendLab(s).let { if (it.isNotEmpty()) CodeBlock(it) }
         }
         About()
         Spacer(Modifier.height(24.dp))

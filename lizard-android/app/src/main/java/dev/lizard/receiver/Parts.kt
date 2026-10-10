@@ -319,11 +319,12 @@ fun ListRow(title: String, sub: String? = null, lead: Int? = null, divider: Bool
 fun SectionLabel(text: String, modifier: Modifier = Modifier) =
     Text(text, style = MaterialTheme.typography.titleSmall, color = Muted, modifier = modifier.padding(top = 24.dp, bottom = 4.dp))
 
-// ai: The lab's text (the web's .lab and pre.readout): JetBrains Mono on the card fill.
+// ai: The lab's text (the web's .lab and pre.readout): JetBrains Mono on the card fill. No space of its own around it
+// ai: (2026-10-10; 6 dp above and below until then): the fold's Fields spaces it as any field.
 @Composable
 fun CodeBlock(text: String, size: Int = 13) =
     Text(text, fontFamily = Mono, fontSize = size.sp, lineHeight = (size + 5).sp, color = if (size < 13) Fg else Muted,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(8.dp)).background(Card).padding(horizontal = 12.dp, vertical = 8.dp))
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Card).padding(horizontal = 12.dp, vertical = 8.dp))
 
 // ai: The heat warning (2026-10-01): a red triangle and the line "Thermal throttling. Speeds may slow down." Since
 // ai: 2026-10-03 it shows when the phone has lowered the GPU's clock ceiling (Clocks.kt, under its top; the CPU's not)
@@ -386,7 +387,7 @@ fun Fold(title: String, open: Boolean, onToggle: () -> Unit, content: @Composabl
 }
 
 // ai: Settings' fields one rhythm (2026-10-02): 16 dp apart
-// ai: (Fields), each its title over its control (14 sp, the web's label, 2026-10-06), the title row 36 dp whatever is
+// ai: (Fields; every fold's whole content since 2026-10-10, its readouts and buttons too, none spaced on its own), each its title over its control (14 sp, the web's label, 2026-10-06), the title row 36 dp whatever is
 // ai: in it (the value on the right, `end` at its end), a group's heading (Group) 8 dp over its first
 // ai: field.
 @Composable

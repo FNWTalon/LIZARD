@@ -152,7 +152,9 @@ internal fun MainActivity.TransferPanel() {
     val running = on || phase == Engine.Phase.Starting || phase == Engine.Phase.Loading
     val ln = if (!granted) Readout.Line(if (denied) "The camera is off for LIZARD. Allow it in Android's settings to receive." else "LIZARD needs the camera to read the code on the other screen.")
         else Readout.line(on, phase == Engine.Phase.Starting, phase == Engine.Phase.Loading, (phase as? Engine.Phase.Error)?.why, rx)
-    if (ln.text.isNotEmpty()) Text(ln.text, style = MaterialTheme.typography.titleMedium, color = toneColour(ln.tone), modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
+    // ai: Show statistics off (Developer Tools, 2026-10-10): no green line once a file is in, the meter and buttons as before
+    val shown = ln.text.isNotEmpty() && !(ln.tone == Readout.Tone.Good && settings.stats == "off")
+    if (shown) Text(ln.text, style = MaterialTheme.typography.titleMedium, color = toneColour(ln.tone), modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
     Meter(ln.frac)
     if (ln.nums.isNotEmpty()) Text(ln.nums, style = MaterialTheme.typography.bodyMedium, color = Muted)
     HeatWarning(heat, clocks, engine.cameraSlow, Modifier.padding(top = 8.dp))

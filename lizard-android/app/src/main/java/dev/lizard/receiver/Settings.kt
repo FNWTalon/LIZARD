@@ -30,6 +30,9 @@ import android.content.Context
 // ai:               decoder is handed kept while the camera runs; off by default, to spare storage. Since 2026-10-05 the
 // ai:               switch is the session's alone, never saved (a recording left on costs every later run its lag):
 // ai:               every start begins off, and a stored "on" from before is removed at the next save
+// ai:   stats       on | off: Show statistics (Developer Tools, 2026-10-10): off hides Receive's green line once a file
+// ai:               is in ("Received <name>, <size> in <s>, <speed>"; Receive.kt TransferPanel) and Developer Tools' lab
+// ai:               line and readout (SettingsPanel.kt ReceiveAdvanced); off by default, kept
 // ai: The camera's rate is no switch since 2026-10-01: [60,60], else the highest fixed range (Engine.pickFps).
 // ai: Resolution and zoom are a lens's (2026-10-04): each is kept as "<key>@<camera id>" for the back camera the
 // ai: camera switch resolves to (Engine.rearId: auto is the closest-focusing lens, so auto and that lens share one set),
@@ -46,6 +49,7 @@ data class Settings(
     val zoom: String = "1.5",
     val batch: String = "32",
     val replays: String = "off",
+    val stats: String = "off",
 ) {
     val frames get() = batch.toIntOrNull()?.coerceIn(1, 32) ?: 32
     // ai: cam: the id the camera switch resolves to (Engine.rearId), null where the phone has no back camera (the
@@ -54,6 +58,7 @@ data class Settings(
         val e = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("decoder", decoder).putString("precision", precision).putString("layout", layout).putString("camera", camera)
             .remove("fps").remove("devlog").remove("phase").putString("batch", batch).remove("replays")
+            .putString("stats", stats)
         for ((k, v) in lens()) { e.putString(key(k, cam), v); if (cam != null) e.remove(k) }
         e.remove("focus"); if (cam != null) e.remove(key("focus", cam))   // ai: the focus of 2026-10-04, stored until 2026-10-05
         e.apply()
@@ -85,7 +90,7 @@ data class Settings(
             val d = Settings()
             val s = Settings(p.getString("decoder", d.decoder)!!, p.getString("precision", d.precision)!!,
                 p.getString("layout", d.layout)!!, p.getString("camera", d.camera)!!, d.resolution, d.zoom,
-                p.getString("batch", d.batch)!!, d.replays)
+                p.getString("batch", d.batch)!!, d.replays, p.getString("stats", d.stats)!!)
             val cam = rearId(s.camera)
             return s.copy(camera = cam ?: s.camera).forCamera(ctx, cam)
         }
