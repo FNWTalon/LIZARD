@@ -9,7 +9,7 @@ compressed with zstd where that makes it smaller and each verified by BLAKE3 aga
 
 - **Demo:** [fosslabs.dev](https://fosslabs.dev)
 - **How it works:** [an example on video](https://www.youtube.com/watch?v=F-Mie4m9gBQ)
-- **Android app:** [0.1 (alpha)](https://github.com/FNWTalon/lizard/releases/tag/v0.1)
+- **Android app:** [0.2 (alpha)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.2)
 
 Design choices:
 - **Luminance only.** Grey levels, never colour, so any screen and any camera read it the same way.
