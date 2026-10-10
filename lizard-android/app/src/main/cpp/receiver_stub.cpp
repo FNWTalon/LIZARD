@@ -14,9 +14,10 @@
 // ai:   blocks       CRC-verified blocks since the start
 // ai:   foundShare   share of the last second's frames registered, 0 to 1
 // ai:   bandVersion  the version the last read word names (sub-channels / 8), 0 before any
-// ai:   file         null before a transfer's header, else {name, size, received, verified, root, type, sent, sentIn}
-// ai:                (bytes, bytes, bool, the BLAKE3 root in hex, the header's media type, the bytes as sent and those
-// ai:                of them in, 2026-10-05)
+// ai:   file         null before a transfer's header, else {name, size, received, verified, root, type, sent, sentIn,
+// ai:                secs} (bytes, bytes, bool, the BLAKE3 root in hex, the header's media type, the bytes as sent and
+// ai:                those of them in, 2026-10-05; the transfer's own seconds, its first data block to verified,
+// ai:                XferProgress.secs, 2026-10-10)
 // ai:   word         the last word read: version, fps (the rate it states)
 // ai: and, for the Developer Tools readout only: frames, dropped, res, input (hb or luma), gpuMs.
 #include <chrono>

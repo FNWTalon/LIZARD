@@ -51,13 +51,15 @@ object Readout {
         // ai: the file's bytes as sent (every chunk's zstd frame or its own; 0 until the manifest has said them) and
         // ai: how many are in: what the light carries, which the rate and the time left count (2026-10-05)
         val sent: Long = 0, val sentIn: Long = 0,
+        // ai: the transfer's own seconds, its first data block to its last chunk verified (the receiver's clock,
+        // ai: XferProgress.secs, 2026-10-10; the screen's poll clock until then carried one file's start into the next)
+        val secs: Double = 0.0,
     )
 
     // ai: One state at a time, the first that holds, as recv.mjs showState: error, starting, getting ready (no answer
     // ai: from the receiver yet), receiving, received, camera off, the test stream, or looking (a word read with no file
     // ai: yet says "Looking" too since 2026-10-05: the receiver's "found" is its held word, which stays once read, so
-    // ai: "Found the code, waiting for the file" stood after the code had left the view). on: the camera runs; ready: the receiver has planned (its state past "starting"); secs: the
-    // ai: transfer's own clock, for the received line.
+    // ai: "Found the code, waiting for the file" stood after the code had left the view). on: the camera runs; ready: the receiver has planned (its state past "starting").
     // ai: no answer from the receiver yet: the line's "Getting ready", and the preview's cover with its spinner (Receive.kt)
     fun gettingReady(on: Boolean, starting: Boolean, loading: Boolean, rx: Rx) =
         starting || loading || (on && (rx.state.isEmpty() || rx.state == "starting" || rx.state == "loading"))
@@ -68,7 +70,7 @@ object Readout {
         val got = if (rx.sent > 0) rx.sentIn else rx.received
         return if (total > 0) (got.toDouble() / total).coerceIn(0.0, 1.0) else 0.0
     }
-    fun line(on: Boolean, starting: Boolean, loading: Boolean, error: String?, rx: Rx, secs: Double): Line = when {
+    fun line(on: Boolean, starting: Boolean, loading: Boolean, error: String?, rx: Rx): Line = when {
         error != null -> Line(error, Tone.Bad)
         starting -> Line("Starting the camera")
         gettingReady(on, false, loading, rx) -> Line("Getting ready")
@@ -86,11 +88,21 @@ object Readout {
             val leftNow = if (now > 0) ", ${left((total - got) / (now * 1000))}" else ""
             Line("Receiving ${rx.name}", nums = "${floor(100 * frac).toInt()}%, ${partOf(got.toDouble(), total)}$leftNow", frac = frac)
         }
-        rx.hasFile && rx.verified -> Line("Received ${rx.name}, ${bytes(rx.size)} in ${String.format(Locale.ROOT, "%.1f", secs)}${NB}s${if (rx.sent in 1 until rx.size) ", ${bytes(rx.sent)} sent" else ""}", Tone.Good, frac = 1.0)
+        rx.hasFile && rx.verified -> Line("Received ${rx.name}, ${bytes(rx.size)} in ${String.format(Locale.ROOT, "%.1f", rx.secs)}${NB}s${received(rx)}" +
+            (if (rx.sent in 1 until rx.size) ", ${bytes(rx.sent)} sent" else ""), Tone.Good, frac = 1.0)
         // ai: nothing while the camera is off (2026-10-02); the screen draws no empty line
         !on -> Line("")
         // ai: nothing while looking (2026-10-05: "Looking for a code" until then; the rate under the buttons says it)
         else -> Line("")
+    }
+
+    // ai: The received line's speed (2026-10-10): the bytes the light carried (as sent where the manifest said them, the
+    // ai: file's own until then) over the transfer's own time, ", 3.17 MB/s". A file in under a second ends before the
+    // ai: receiver's one-second window closes, so the live rate never showed it. None where the time reads 0.0 s (a file
+    // ai: inside a frame or two).
+    private fun received(rx: Rx): String {
+        val bytes = if (rx.sent > 0) rx.sent else rx.size
+        return if (rx.secs >= 0.05 && bytes > 0) ", ${rate(bytes / rx.secs / 1000)}" else ""
     }
 
     // ai: The lab line (Developer Tools): the last second's rate, the registered share and, while a word is read, the format,

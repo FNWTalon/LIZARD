@@ -203,7 +203,10 @@ function showState() {
     nums = `${Math.floor(100 * frac)}%, ${partOf(got, total)}${now > 0 ? `, ${left((total - got) / (now * 1000))}` : ""}`;
   } else if (ui.received && (!on || offered)) {
     const r = ui.received;
-    line = `Received ${r.name}, ${nb(bytes(r.n))} in ${nb(`${r.secs.toFixed(1)} s`)}${r.sent && r.sent < r.n ? `, ${nb(bytes(r.sent))} sent` : ""}`; tone = "good"; frac = 1;
+    // ai: the speed the transfer ran at (2026-10-10, the Android app's Readout.received): the bytes the light carried over
+    // ai: its time, none where the time reads 0.0 s
+    const speed = r.secs >= 0.05 ? `, ${nb(rate((r.sent || r.n) / r.secs / 1000))}` : "";
+    line = `Received ${r.name}, ${nb(bytes(r.n))} in ${nb(`${r.secs.toFixed(1)} s`)}${speed}${r.sent && r.sent < r.n ? `, ${nb(bytes(r.sent))} sent` : ""}`; tone = "good"; frac = 1;
   } else if (!on) line = "";   // ai: idle says nothing (2026-10-02: an instruction that obvious only takes space)
   else line = "Looking for a code";   // ai: a word read with no file yet says this too (2026-10-05; "Found the code, waiting for the file" before)
   // ai: rewritten only when it changes: #state is a live region, and a screen reader reads out every rewrite

@@ -50,6 +50,11 @@ struct XferProgress {
   std::string path;           // ai: the verified file, once done (a file store's; "" for memory)
   std::string error;          // ai: the store's failure in this transfer (store.h), "" none
   bool failed = false;        // ai: the store could not keep the file: the transfer ended there, never done
+  // ai: the transfer's own clock, s: from its first data block taken (the blocks held for its header count from that
+  // ai: header) to its last chunk verified, or to this snapshot while it runs; 0 before a data block (2026-10-10; an
+  // ai: app's own poll clock carried one file's start into the next file's time). Time with no blocks coming (a camera
+  // ai: stopped mid-transfer) counts.
+  double secs = 0;
   // ai: counts, the web's names: rejected chunks, manifests rejected, headers refused, chunks Wirehair wanted a block
   // ai: more than K for, solve ms; forwarded blocks handed to the worker (control ones in), doneAt how many had been
   // ai: when the file finished (0 before), held the blocks waiting for a header, queued those not yet taken, lost those

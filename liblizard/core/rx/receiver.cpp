@@ -481,7 +481,7 @@ std::string GpuReceiver::stats() {
     {"totals", {{"frames", totalFrames}, {"blocks", totalBlocks}}}, {"series", stamps.series},
     // ai: a file only once a header named one: the page reads a file's presence as a transfer under way; type, the
     // ai: header's media type, is what the app opens and shares the file as (2026-10-01)
-    {"file", p.header ? json{{"name", p.name}, {"size", p.length}, {"received", p.bytesIn}, {"sent", p.sent}, {"sentIn", p.sentIn}, {"fraction", p.fraction}, {"verified", p.done}, {"chunks", p.chunks}, {"chunksVerified", p.verified}, {"root", p.root}, {"type", p.type}} : json()},
+    {"file", p.header ? json{{"name", p.name}, {"size", p.length}, {"received", p.bytesIn}, {"sent", p.sent}, {"sentIn", p.sentIn}, {"fraction", p.fraction}, {"verified", p.done}, {"secs", p.secs}, {"chunks", p.chunks}, {"chunksVerified", p.verified}, {"root", p.root}, {"type", p.type}} : json()},
     {"test", last.test > 0},
   };
   return j.dump();
@@ -653,7 +653,7 @@ std::string CpuReceiver::stats() {
     {"cpuMs", lastMsFrames ? last.ms / lastMsFrames : 0}, {"gpuMs", 0}, {"B", 0},
     {"bandVersion", lastWord.is_null() ? json() : lastWord["version"]}, {"word", lastWord},
     {"totals", {{"frames", totalFrames}, {"blocks", totalBlocks}}}, {"series", stamps.series},
-    {"file", p.header ? json{{"name", p.name}, {"size", p.length}, {"received", p.bytesIn}, {"sent", p.sent}, {"sentIn", p.sentIn}, {"fraction", p.fraction}, {"verified", p.done}, {"chunks", p.chunks}, {"chunksVerified", p.verified}, {"root", p.root}, {"type", p.type}} : json()},
+    {"file", p.header ? json{{"name", p.name}, {"size", p.length}, {"received", p.bytesIn}, {"sent", p.sent}, {"sentIn", p.sentIn}, {"fraction", p.fraction}, {"verified", p.done}, {"secs", p.secs}, {"chunks", p.chunks}, {"chunksVerified", p.verified}, {"root", p.root}, {"type", p.type}} : json()},
     {"test", last.test > 0},
   };
   return j.dump();

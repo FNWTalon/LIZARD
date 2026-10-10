@@ -351,7 +351,7 @@ const SIZES = [
   await screenshot(s, `${OUT}/recv-phone-portrait-received.png`);
   const got = await evaluate(s, `fetch(document.getElementById("save").href).then((r) => r.arrayBuffer()).then((x) => { const u = new Uint8Array(x); let v = 7, same = u.length === ${LEN}; for (let i = 0; same && i < u.length; i++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; same = u[i] === ((v >>> 16) & 255); } return { n: u.length, same }; })`);
   console.log(`     received: "${b.state}" / "${b.nums}", meter ${b.meter}, "${b.save}" ${b.href.slice(0, 5)}... as ${b.download}`);
-  check(new RegExp(`^Received ${NAME.replace(".", "\\.")}, 300\\sKB in [\\d.]+\\ss$`).test(b.state) && b.good && b.meter === "100%" && b.deliver && b.download === NAME && b.href.startsWith("blob:"), `received: green, the meter full, Save offered as ${b.download}`);
+  check(new RegExp(`^Received ${NAME.replace(".", "\\.")}, 300\\sKB in [\\d.]+\\ss(, [\\d.]+\\s[KM]B/s)?$`).test(b.state) && b.good && b.meter === "100%" && b.deliver && b.download === NAME && b.href.startsWith("blob:"), `received: green, the meter full, Save offered as ${b.download}`);
   check(b.open && !b.goSolid && !b.clear, `received: Open the one solid button, "${b.go}" outlined, no Receive again`);
   // ai: the camera off by itself once the file is in (2026-10-01, to save heat)
   check(b.go === "Start camera" && b.nums === "" && b.why === "", `received: the camera stopped by itself ("${b.go}")`);

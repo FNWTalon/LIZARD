@@ -151,7 +151,7 @@ internal fun MainActivity.TransferPanel() {
     val on = phase == Engine.Phase.On
     val running = on || phase == Engine.Phase.Starting || phase == Engine.Phase.Loading
     val ln = if (!granted) Readout.Line(if (denied) "The camera is off for LIZARD. Allow it in Android's settings to receive." else "LIZARD needs the camera to read the code on the other screen.")
-        else Readout.line(on, phase == Engine.Phase.Starting, phase == Engine.Phase.Loading, (phase as? Engine.Phase.Error)?.why, rx, secs)
+        else Readout.line(on, phase == Engine.Phase.Starting, phase == Engine.Phase.Loading, (phase as? Engine.Phase.Error)?.why, rx)
     if (ln.text.isNotEmpty()) Text(ln.text, style = MaterialTheme.typography.titleMedium, color = toneColour(ln.tone), modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
     Meter(ln.frac)
     if (ln.nums.isNotEmpty()) Text(ln.nums, style = MaterialTheme.typography.bodyMedium, color = Muted)

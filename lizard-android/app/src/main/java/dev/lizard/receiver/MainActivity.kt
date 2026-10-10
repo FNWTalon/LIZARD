@@ -110,8 +110,6 @@ class MainActivity : ComponentActivity() {
     internal var raw by mutableStateOf("")                 // ai: the stats JSON as it came, for Developer Tools
     internal var rx by mutableStateOf(Readout.Rx())
     internal var root by mutableStateOf("")                // ai: the transfer in hand's BLAKE3 root, hex
-    internal var secs by mutableStateOf(0.0)
-    private var t0 = 0L
     private var filing = ""      // ai: the root whose keep is under way (Engine.keep), until its answer
     private var unfiled = ""     // ai: a root whose keep failed: not tried again in this run of the app
     private var ended = ""       // ai: the root whose arrival stopped the camera (once a root)
@@ -490,13 +488,6 @@ class MainActivity : ComponentActivity() {
                 val r = rxOf(j)
                 rx = r
                 if (settings.decoder == "auto" && phase == Engine.Phase.On) j?.optString("decoder").orEmpty().let { if (it.isNotEmpty()) autoRan = if (it.startsWith("gpu")) "GPU" else "CPU" }
-                // ai: the transfer's clock, the screen's own: from the first poll with bytes received (the web's avgAt, the
-                // ai: first decode, so a decoder's start is not in it) to the first with the root verified. It times the
-                // ai: "Received ..., in S s" line and the log's average (avgKBs, the log's alone since 2026-09-30, as a
-                // ai: wait in the transfer skews it)
-                if (!r.hasFile || r.received == 0L) { t0 = 0; secs = 0.0 }
-                else if (t0 == 0L) t0 = System.nanoTime()
-                else if (!r.verified) secs = (System.nanoTime() - t0) / 1e9
                 val f = j?.optJSONObject("file")
                 root = f?.optString("root").orEmpty()
                 var last = false   // ai: this poll stopped the camera: its row posted now, the last a stopped camera sends
@@ -550,7 +541,7 @@ class MainActivity : ComponentActivity() {
                         if (cn != null) { put("exposureMs", cn.exposureMs); put("iso", cn.iso); put("readoutMs", cn.readoutMs); put("frameMs", cn.frameMs) }
                         if (ph != null) put("phase", JSONObject().put("arm", ph.arm).put("state", ph.what).put("a", nz(ph.a)).put("b", nz(ph.b)).put("k", nz(ph.k))
                             .put("se", nz(ph.se)).put("n", ph.n).put("gain", ph.gain).put("pace", ph.pace).put("stood", ph.stood).put("edge", ph.edge).put("flatMs", ph.flatMs).put("delays", ph.delays))
-                        if (j != null && r.hasFile && !r.verified && secs >= 1) put("avgKBs", r.received / secs / 1000) }.toString() }.getOrDefault(s)
+                        if (j != null && r.hasFile && !r.verified && r.secs >= 1) put("avgKBs", r.received / r.secs / 1000) }.toString() }.getOrDefault(s)
                     statsRows.addLast(body)
                     while (statsRows.size > REPLAY_LOG) statsRows.removeFirst()
                 }
@@ -585,6 +576,6 @@ internal fun rxOf(j: JSONObject?): Readout.Rx {
         foundShare = j.optDouble("foundShare", 0.0), bandVersion = j.optInt("bandVersion", 0), fps = j.optJSONObject("word")?.optInt("fps", 0) ?: 0,
         hasFile = f != null, name = f?.optString("name").orEmpty().ifEmpty { "a file" }, size = f?.optLong("size", 0) ?: 0,
         received = f?.optLong("received", 0) ?: 0, verified = f?.optBoolean("verified", false) ?: false,
-        sent = f?.optLong("sent", 0) ?: 0, sentIn = f?.optLong("sentIn", 0) ?: 0,
+        sent = f?.optLong("sent", 0) ?: 0, sentIn = f?.optLong("sentIn", 0) ?: 0, secs = f?.optDouble("secs", 0.0) ?: 0.0,
     )
 }

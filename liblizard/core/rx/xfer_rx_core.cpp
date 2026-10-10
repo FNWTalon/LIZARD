@@ -95,6 +95,7 @@ struct XferRxCore::Rx {
   std::map<uint32_t, std::array<uint8_t, XFER_PAYLOAD>> raw;
   uint32_t verified = 0, rejected = 0, manifestRejected = 0, refused = 0, over = 0;
   double ms = 0;
+  double firstMs = 0, doneMs = 0;   // ai: XferProgress.secs: this transfer's first data block taken, its finish (nowMs)
   bool done = false;
   // ai: the store could not keep this transfer (store.h: over the memory cap, a write refused): it ends here, never
   // ai: done, its blocks no longer taken; the store's error says why. A new header begins afresh.
@@ -153,7 +154,7 @@ struct XferRxCore::Rx {
   void reset() {
     ch.clear(); raw.clear(); hdr.reset();
     verified = rejected = manifestRejected = over = 0;
-    ms = 0; done = false; failed = false; path.clear();
+    ms = 0; firstMs = doneMs = 0; done = false; failed = false; path.clear();
     store->clear();
   }
 
@@ -168,6 +169,7 @@ struct XferRxCore::Rx {
       return;   // ai: reserved: this version ignores it
     }
     if (done || failed || (hdr && c >= hdr->h.chunks)) return;
+    if (!firstMs) firstMs = nowMs();
     Ch& s = state(c);
     if (s.state == VERIFIED || s.have.has(sym) || s.ban.has(sym)) return;
     s.have.add(sym);
@@ -324,6 +326,8 @@ struct XferRxCore::Rx {
     path = store->finish(hdr->name);
     if (!store->error.empty()) { path.clear(); return stop(); }
     done = true;
+    doneMs = nowMs();
+    if (!firstMs) firstMs = doneMs;   // ai: an empty file: no data block, no time
     say("xfer: " + hdr->name + " verified, " + path);
   }
 
@@ -339,6 +343,7 @@ struct XferRxCore::Rx {
     p.verified = verified; p.manifest = h.mcount; p.manifestHave = h.mhave;
     p.rejected = rejected; p.manifestRejected = manifestRejected; p.over = over; p.solveMs = ms;
     p.done = done; p.failed = failed; p.path = path;
+    p.secs = firstMs ? ((done ? doneMs : nowMs()) - firstMs) / 1000 : 0;
     p.per.resize(h.h.chunks);
     double got = 0;
     for (uint32_t c = 0; c < h.h.chunks; c++) {
