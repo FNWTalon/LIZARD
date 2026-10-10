@@ -23,10 +23,9 @@ import android.content.Context
 // ai:   batch       1 to 32, the most frames a GPU launch takes (Receive's Settings, 2026-10-02; since 2026-10-08 a
 // ai:               launch goes as soon as a frame waits and takes every frame then waiting up to this, where it
 // ai:               waited for this many before); 32 by default (receiver.h batchCap); set live
-// ai:   phase       off | track: the camera's phase against the display (PhaseLock.kt; track by default since
-// ai:               2026-10-01, the night it read 93 to 95% of a sender at 60
-// ai:               painted; a sender that paints slower loses nothing to it; a stored "auto", the arm deleted that
-// ai:               day, loads as track). `debug.lizard.phase`, when set, overrides it (the tools set it).
+// ai:   (phase      gone 2026-10-10: the camera's phase lock always runs track, PhaseLock.kt; it was off | track,
+// ai:               track by default since 2026-10-01, and a stored value is removed at the next save. A sender that
+// ai:               paints slower loses nothing to it. `debug.lizard.phase`, when set, overrides it for the tools.)
 // ai:   replays     off | on: Save replays (Developer Tools, 2026-10-03; MainActivity's replay): the newest frames the
 // ai:               decoder is handed kept while the camera runs; off by default, to spare storage. Since 2026-10-05 the
 // ai:               switch is the session's alone, never saved (a recording left on costs every later run its lag):
@@ -45,7 +44,6 @@ data class Settings(
     val camera: String = "",
     val resolution: String = "1920x1080",
     val zoom: String = "1.5",
-    val phase: String = "track",
     val batch: String = "32",
     val replays: String = "off",
 ) {
@@ -55,7 +53,7 @@ data class Settings(
     fun save(ctx: Context, cam: String?) {
         val e = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("decoder", decoder).putString("precision", precision).putString("layout", layout).putString("camera", camera)
-            .remove("fps").remove("devlog").putString("phase", phase).putString("batch", batch).remove("replays")
+            .remove("fps").remove("devlog").remove("phase").putString("batch", batch).remove("replays")
         for ((k, v) in lens()) { e.putString(key(k, cam), v); if (cam != null) e.remove(k) }
         e.remove("focus"); if (cam != null) e.remove(key("focus", cam))   // ai: the focus of 2026-10-04, stored until 2026-10-05
         e.apply()
@@ -77,7 +75,6 @@ data class Settings(
         val PRECISIONS = listOf("auto", "int8", "f16", "f32")
         val LAYOUTS = listOf("1:1", "2:1")
         val RESOLUTIONS = listOf("1280x720", "1920x1080", "2560x1440", "3840x2160")
-        val PHASES = listOf("off", "track")
 
         private fun key(k: String, cam: String?) = if (cam == null) k else "$k@$cam"
 
@@ -88,7 +85,7 @@ data class Settings(
             val d = Settings()
             val s = Settings(p.getString("decoder", d.decoder)!!, p.getString("precision", d.precision)!!,
                 p.getString("layout", d.layout)!!, p.getString("camera", d.camera)!!, d.resolution, d.zoom,
-                p.getString("phase", d.phase)!!.let { if (it == "auto") "track" else it }, p.getString("batch", d.batch)!!, d.replays)
+                p.getString("batch", d.batch)!!, d.replays)
             val cam = rearId(s.camera)
             return s.copy(camera = cam ?: s.camera).forCamera(ctx, cam)
         }

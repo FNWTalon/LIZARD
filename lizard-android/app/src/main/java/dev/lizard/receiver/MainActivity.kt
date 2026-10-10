@@ -289,7 +289,6 @@ class MainActivity : ComponentActivity() {
         val s = if (s0.camera != settings.camera) s0.forCamera(this, cam) else s0
         settings = s
         s.save(this, cam)
-        engine.phaseLock(s.phase)
         engine.batch(s.frames)
         if (restart && screen == Screen.Receive && phase != Engine.Phase.Idle && granted) startCamera()
     }
@@ -417,7 +416,7 @@ class MainActivity : ComponentActivity() {
             if (c != null) put("camera", JSONObject().put("id", c.id).put("format", c.format).put("size", "${c.size.width}x${c.size.height}")
                 .put("fps", "[${c.fps.lower},${c.fps.upper}]").put("minFrameMs", c.minFrameMs).put("sensorOrientation", c.sensorOrientation).put("note", c.note)
                 .apply { if (cn != null) put("exposureMs", cn.exposureMs).put("iso", cn.iso).put("readoutMs", cn.readoutMs) })
-            put("zoom", settings.zoom); put("phase", settings.phase); put("batch", settings.batch); put("thermal", heat); put("app", aboutLine())
+            put("zoom", settings.zoom); put("batch", settings.batch); put("thermal", heat); put("app", aboutLine())
         }.toString()
         engine.replayEnd(r.handle, raw, statsRows.joinToString("\n"), more) { res ->
             busyRuns.remove(r.run)

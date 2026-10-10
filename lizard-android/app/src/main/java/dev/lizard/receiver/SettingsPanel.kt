@@ -52,7 +52,6 @@ internal fun MainActivity.ReceiveSettings() {
         Select("Resolution", s.resolution, Settings.RESOLUTIONS.map { it to it }, enabledFor = { caps == null || it in caps.sizes }) { change(s.copy(resolution = it), true) }
         ZoomField(caps?.zoom)
         Select("Crop", s.layout, Settings.LAYOUTS.map { it to if (it == "2:1") "2:1 (experimental)" else it }) { change(s.copy(layout = it), true) }
-        Select("Phase lock", s.phase, Settings.PHASES.map { it to it.replaceFirstChar { c -> c.uppercase() } }) { change(s.copy(phase = it), false) }
     }
 }
 
@@ -122,7 +121,7 @@ private fun MainActivity.devReadout(): String {
     }
     engine.phaseState()?.let { p ->
         val pct = { x: Double -> if (x.isNaN()) "-" else "${f(100 * x, 0)}%" }
-        put("lock", "${settings.phase}, ${p.arm} ${p.what}: ${pct(p.a)} before, ${pct(p.b)} after; gain ${f(p.gain, 2)}, pace ${f(p.pace, 0)} us a second, ${p.delays} delays")
+        put("lock", "${p.arm} ${p.what}: ${pct(p.a)} before, ${pct(p.b)} after; gain ${f(p.gain, 2)}, pace ${f(p.pace, 0)} us a second, ${p.delays} delays")
     }
     put("heat", "thermal $heat" + (clocks?.let { ", GPU ${it.mhz} of ${it.top} MHz" } ?: "") + (powerW?.let { ", ${f(it, 1)} W" } ?: "") +
         (if (batteryC > 0) ", battery ${f(batteryC, 1)} C" else ""))

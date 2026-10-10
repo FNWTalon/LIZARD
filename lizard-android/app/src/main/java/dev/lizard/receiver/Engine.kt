@@ -144,10 +144,8 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     }
 
     private var wanted: Settings? = null   // ai: the settings the camera was last started with, until it is stopped
-    private var locking = "off"            // ai: Settings.phase, as last set (engine thread); `debug.lizard.phase` overrides it
     private var opening = false            // ai: an open under way (it waits for the surface itself)
-    fun start(s: Settings) = h.post { wanted = s; locking = s.phase; try { open(s) } catch (e: Exception) { fail("The camera could not start: ${e.message}", e) } }
-    fun phaseLock(m: String) = h.post { locking = m }
+    fun start(s: Settings) = h.post { wanted = s; try { open(s) } catch (e: Exception) { fail("The camera could not start: ${e.message}", e) } }
     // ai: Batch size (Settings.batch), set live on the running receiver and kept for the next one
     fun batch(n: Int) = h.post {
         wanted = wanted?.copy(batch = n.toString())
@@ -466,7 +464,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                         // ai: learned of the two clocks outlives a camera opened again), by `adb shell setprop
                         // ai: debug.lizard.phase <us> | scan | track` (read twice a second): a hold at that
                         // ai: point of a 60 Hz grid, a scan of every point with a line each, or track's automatic
-                        // ai: hold; unset, the Developer panel's Phase lock (Settings.phase). Anything else: off.
+                        // ai: hold; unset, track (always on since 2026-10-10: the Phase lock setting went). Anything else: off.
                         init { phase.reopened() }
                         override fun onCaptureCompleted(s: CameraCaptureSession, q: CaptureRequest, r: android.hardware.camera2.TotalCaptureResult) {
                             val ts = r.get(android.hardware.camera2.CaptureResult.SENSOR_TIMESTAMP) ?: 0L
@@ -503,7 +501,9 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                                 // ai: flash (the A/B's other arm); unset or anything else, where they flash it holds
                                 // ai: by the pilots' leaks (PhaseLock.kt)
                                 phase.usePilots = Native.prop("debug.lizard.pilots") != "0"
-                                when (val want = Native.prop("debug.lizard.phase").ifEmpty { locking }) {
+                                // ai: track always (2026-10-10: the setting and its off went); `debug.lizard.phase` the tools' override
+                                // ai: (scan, track, off, or a hold at that many us)
+                                when (val want = Native.prop("debug.lizard.phase").ifEmpty { "track" }) {
                                     "scan" -> phase.set(PhaseLock.Mode.Scan)
                                     "track" -> phase.set(PhaseLock.Mode.Track)
                                     else -> want.toLongOrNull()?.let { phase.set(PhaseLock.Mode.Hold, it) } ?: phase.set(PhaseLock.Mode.Off)
