@@ -1,6 +1,6 @@
 // The format word as a linear code, for the GPU reader (wgsl/word.mjs). The word is [0x4C, version, fps] and
-// ai: bytes - 3 Reed-Solomon parity bytes, one code a ring over every word cell: RS(8,3), (16,3), (24,3), (32,3) at W =
-// ai: 16, 32, 48, 64 word cells a side (src/fmt.c, src/rs.c: GF(256), polynomial 0x11D, roots alpha^0 upward, data first).
+// ai: bytes - 3 Reed-Solomon parity bytes, one code a ring over every word cell: RS(8,3), (16,3), (32,3), (64,3) at W =
+// ai: 16, 32, 64, 128 word cells a side (the 96 ring's RS(24,3) at 48 until 2026-10-10) (src/fmt.c, src/rs.c: GF(256), polynomial 0x11D, roots alpha^0 upward, data first).
 // Reed-Solomon is linear over GF(2), so every valid word is BASE xor the rows of its version's and its fps's set bits,
 // ai: and there are VERSION_MAX x 256 of them a ring (any ring may carry any version since 2026-09-27): the reader
 // ai: scores them all against the soft bits and keeps the best, where the reference decodes hard bytes with erasures.
@@ -13,7 +13,7 @@ const EXP = new Uint8Array(512), LOG = new Uint8Array(256);
 { let x = 1; for (let i = 0; i < 255; i++) { EXP[i] = x; LOG[x] = i; x <<= 1; if (x & 256) x ^= 0x11d; } for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255]; }
 const mul = (a, b) => (a && b ? EXP[LOG[a] + LOG[b]] : 0);
 
-export const BYTES_MAX = 36;
+export const BYTES_MAX = 64;
 // ai: The largest version a word states (src/fmt.h OB_FMT_VERSION_MAX: LIZARD-1024's 128 blocks).
 export const VERSION_MAX = 128;
 // The codeword's length for W word cells a side (src/fmt.c ob_fmt_bytes).

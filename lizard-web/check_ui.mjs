@@ -167,7 +167,7 @@ const SIZES = [
       // ai: load event
       await until(s, `document.getElementById("fpsOut").textContent !== ""`, 10000, "send.mjs run");
       check(await evaluate(s, `document.getElementById("dev").open`), `send ${z.name}: Advanced's open state remembered over a reload`);
-      await remembered(s, SEND, "ring", "3", "1", `send ${z.name}`);
+      await remembered(s, SEND, "ring", "256", "64", `send ${z.name}`);   // ai: the options are the rings' cells since 2026-10-10
       // ai: the page's defaults, LIZARD-480 at 60 (2026-10-01); "Receiving with", a preset view over them, went 2026-10-02
       const defaults = await evaluate(s, `[document.getElementById("subch").value, document.getElementById("fps").value, !document.getElementById("target")].join()`);
       check(defaults === "480,60,true", `send ${z.name}: the defaults LIZARD-480 at 60, no "Receiving with" (${defaults})`);

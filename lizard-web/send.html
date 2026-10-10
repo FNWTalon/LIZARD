@@ -95,7 +95,7 @@
           <!-- ai: the space between two codes, 0 to 64 modules (send.mjs gapOf), shown with two codes only -->
           <div class="blocks" id="gapRow" hidden><span class="row"><span>Gap</span><span id="gapOut">12 modules</span></span><input id="gap" type="range" min="0" max="64" step="1" value="12" aria-label="gap"></div>
           <!-- ai: the ring, the 128 by default (sim/lizard_pick.mjs RING_DEFAULT; an Auto option, the same ring, until 2026-10-05) -->
-          <label>Ring <select id="ring"><option value="0">32</option><option value="1">64</option><option value="2">96</option><option value="3" selected>128</option></select></label>
+          <label>Ring <select id="ring"><option value="32">32</option><option value="64">64</option><option value="128" selected>128</option><option value="256">256</option></select></label>
           <!-- ai: two codes side by side for the app's 2:1 crop (2026-09-28); "(browsers cannot decode 2 codes)" after Two until
                2026-10-05, when it went for being wider than the menu -->
           <label>Codes <select id="codes"><option value="1" selected>One</option><option value="2">Two</option></select></label>

@@ -333,9 +333,13 @@ static int init(focus_t *f, int n, int subch, int mode, const focus_tier_t *tier
   f->tilt = tilt > 0 ? tilt : 0;   // also turns a NaN (an argument a JS caller left out) into none
   // span: frame modules across the image, which names the ring (focus.h FOCUS_RING: span = 2 B). 0 is the sender's
   // ai: default ring (FOCUS_RING_DEFAULT, the same for every picture); another ring's span puts this picture in that
-  // ai: ring; any other value is an experiment's, and one out of range falls back to the 128 ring's span, or n.
+  // ai: ring at any n (the 256 ring's span, 512, is wider than a 256 or 384 picture, which is then resampled up into
+  // ai: it at one pixel a module, 2026-10-10); any other value is an experiment's, and one out of 32 to n falls back
+  // ai: to the 128 ring's span, or n.
   if (!span) span = 2 * FOCUS_RING[FOCUS_RING_DEFAULT];
-  if (span < 32 || span > n) span = n > 256 ? 256 : n;
+  int ring_span = 0;
+  for (int r = 0; r < FOCUS_RINGS; r++) ring_span |= span == 2 * FOCUS_RING[r];
+  if (!ring_span && (span < 32 || span > n)) span = n > 256 ? 256 : n;
   f->scale = (float)n / span;
   f->pxm = (int)ceilf(f->scale - 1e-4f);   // whole pixels a module, never fewer than the picture's samples
   // corner: 0 asks for the default mark, negative asks for none, positive is a size of the caller's own.
@@ -382,7 +386,7 @@ static int init(focus_t *f, int n, int subch, int mode, const focus_tier_t *tier
   return 0;
 }
 
-const int FOCUS_RING[FOCUS_RINGS] = { 32, 64, 96, 128 };
+const int FOCUS_RING[FOCUS_RINGS] = { 32, 64, 128, 256 };
 
 // ai: The rate profile under test, if any (focus_profile_set, else LIZ_PROFILE): its rates, sub-channels a block and
 // ai: target percents, tier by tier inner first; prof_tiers 0 for the format's own.

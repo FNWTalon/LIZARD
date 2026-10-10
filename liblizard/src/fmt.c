@@ -69,12 +69,12 @@ int ob_fmt_decode(const float *q, int cells, int bytes, int vlo, int vhi, ob_fmt
   if (rs_decode(got, bytes, nroots) >= 0 && accept(got, vlo, vhi, f)) return 0;
   // ai: Then the soft values: the least confident bytes go in as erasures, 2 more a step. rs_decode_er refuses any
   // ai: result past 2e + f <= nroots (rs.c solve), which the garbage figures below assume. The last step leaves three
-  // ai: roots over its erasures (nroots - 3; every nroots here is odd: 5, 13, 21, 29 in the four rings), except at
+  // ai: roots over its erasures (nroots - 3; every nroots here is odd: 5, 13, 29, 61 in the four rings), except at
   // ai: RS(8, 3), the 32 ring, which goes on to nroots - 1 = 4 and leaves one (2026-09-24): stopping at 2 there
   // ai: lost the reads of two lost sides. Garbage (soft values uniform in -0.5 to 0.5) passes the magic and the
   // ai: version at 1.8e-7 a read with three roots left and 7.8e-6 with one (test/fmt_test.c, exact). A faded side
-  // ai: reads near 0 confidence and the steps erase its bytes: two faded sides read in every ring, three in the 96 and
-  // ai: 128. Two glared sides are erased the same way (SPEC.md 5.3).
+  // ai: reads near 0 confidence and the steps erase its bytes: two faded sides read in every ring, three in the 128 and
+  // ai: 256. Two glared sides are erased the same way (SPEC.md 5.3).
   int order[OB_FMT_BYTES_MAX];
   uint8_t used[OB_FMT_BYTES_MAX] = { 0 };
   for (int ne = 0; ne < bytes; ne++) {

@@ -9,8 +9,9 @@ import kotlin.math.sqrt
 // ai: over two and the gap's share (lizard-web/send.mjs gapFrac: the gap in modules, GAP_DEFAULT unless set), against the height.
 object Pick {
     val VERSIONS = (1..128).map { 8 * it }
-    val RINGS = intArrayOf(32, 64, 96, 128)
-    const val RING_DEFAULT = 3
+    // ai: liblizard/src/focus.c FOCUS_RING (32, 64, 128, 256 since 2026-10-10, the 96 before in the 256's place)
+    val RINGS = intArrayOf(32, 64, 128, 256)
+    const val RING_DEFAULT = 2
     // ai: the gap between two codes, modules (liblizard/gpu/encoder.mjs GAP_MODULES; liblizard/core/tx/send_tables.h the same)
     const val GAP_DEFAULT = 12
     private const val OB_MARGIN = 15

@@ -27,10 +27,11 @@
 // tier of it.
 enum { FOCUS_RATE = 4, FOCUS_TIER_IN = 39, FOCUS_TIER_23 = 15, FOCUS_TIER_OUT = 20 };
 
-// ai: THE RINGS (2026-09-27: three ring sizes; that evening 32, 64 and 128, then four: 32, 64, 96 and 128). The
+// ai: THE RINGS (2026-09-27: three ring sizes; that evening 32, 64 and 128, then four: 32, 64, 96 and 128; since
+// ai: 2026-10-10 32, 64, 128 and 256, the 256 in the 96's place). The
 // ai: dotted band holds FOCUS_RING[r] cells of 2 x 2 modules on a side, the border round it is 15 modules (a 12-module
-// ai: mark, a 3-module guard) and the corner clearance 15, so a side is S = 2 B + 30 modules (94, 158, 222, 286) and
-// ai: the picture spans 2 B (64, 128, 192, 256). The ring only locates the symbol and syncs its grid, as 5G's sync block
+// ai: mark, a 3-module guard) and the corner clearance 15, so a side is S = 2 B + 30 modules (94, 158, 286, 542) and
+// ai: the picture spans 2 B (64, 128, 256, 512). The ring only locates the symbol and syncs its grid, as 5G's sync block
 // ai: does; which picture is inside is the format word's to say (sub-channels, so n), and any ring may
 // ai: carry any picture: a caller names a ring by its span. With none named the ring is FOCUS_RING_DEFAULT, the 128
 // ai: since 2026-10-01 (the 64 before), whatever the picture: no ring follows the version, even by default. Until that evening the default followed n
@@ -42,9 +43,10 @@ enum { FOCUS_RATE = 4, FOCUS_TIER_IN = 39, FOCUS_TIER_23 = 15, FOCUS_TIER_OUT = 
 // modules (focus_encode, Lanczos-3), never shrunk. The decoder reads the picture on its own n-sample grid in module
 // coordinates, a step of 1 / scale modules, and never sees the painter's pixels.
 // ai: A span that divides n has scale == pxm and the resampling is an exact copy (which ones, below).
-// ai: The 32 and 64 rings' spans (64, 128) divide every picture size, so their pictures are exact copies; the 96
-// ai: ring's (192) divides 384, 768 and 1536 and resamples 256, 512 and 1024; the 128 ring's (256) divides all but 384.
-enum { FOCUS_RINGS = 4, FOCUS_RING_DEFAULT = 3 };
+// ai: The 32 and 64 rings' spans (64, 128) divide every picture size, so their pictures are exact copies; the 128
+// ai: ring's (256) divides all but 384; the 256 ring's (512) divides 512, 1024 and 1536 and resamples 256, 384 and 768
+// ai: (scale under 1 at 256 and 384: one pixel a module, the picture resampled up).
+enum { FOCUS_RINGS = 4, FOCUS_RING_DEFAULT = 2 };
 extern const int FOCUS_RING[FOCUS_RINGS];
 
 // How a block's codeword lies on its coefficients (FOCUS_LDPC). A block is 7 to 12 sub-channels by its rate, a thin ring of the

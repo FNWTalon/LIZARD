@@ -10,8 +10,9 @@ import kotlin.math.sqrt
 object Pick {
     // ai: every whole number of blocks, 1 to 128 (8 sub-channels each), since 2026-10-01 as the web's VERSIONS; 16 to 1024 by 16 before
     val VERSIONS = (1..128).map { 8 * it }
-    private val RINGS = intArrayOf(32, 64, 96, 128)
-    const val RING_DEFAULT = 3
+    // ai: liblizard/src/focus.c FOCUS_RING (32, 64, 128, 256 since 2026-10-10, the 96 before in the 256's place)
+    private val RINGS = intArrayOf(32, 64, 128, 256)
+    const val RING_DEFAULT = 2
     private const val OB_MARGIN = 15
     private const val QUIET = 2
     private const val T_DISPLAY_CYCLE = 2.7

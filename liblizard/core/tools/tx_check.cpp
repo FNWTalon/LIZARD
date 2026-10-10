@@ -10,7 +10,7 @@
 // ai: The GPU's painter (2026-10-02, tx/gpu_painter.h), its kernels and manifest from LIZ_ASSETS (out, liblizard/out run from liblizard/, by default):
 // ai:   tx_check gputables <dir>   tx/send_tables.cpp's tables against gen/send_tables_ref.mjs's, every format in its
 // ai:       index, section by section (exact; the twiddles to a float's last bit)
-// ai:   tx_check gpucheck <subch> [ring 0-3, the 128's 3] [frames]   the GPU's frames of the test stream's blocks against
+// ai:   tx_check gpucheck <subch> [ring 0-3, the 128's 2] [frames]   the GPU's frames of the test stream's blocks against
 // ai:       the C's paint at the same counts (the border to the byte, the square within a grey level: the web's auto
 // ai:       rule), then its GPU ms a frame over encodes of its most
 // ai:   LIZ_PAINTER=gpu|auto tx_check paint ...   the Sender painting on the GPU (or auto), every frame read blind as before
@@ -18,6 +18,7 @@
 // ai:       (2026-10-04, TxFormat.gap; GAP_MODULES unset), each read blind at its own offset
 // ai:   LIZ_RUN_OUT=<dir> tx_check paint ...   every symbol read written as a recording too (<dir>/NNNN.gray, W x W luma,
 // ai:       a code a frame, and meta.json), which lizard_gpu_check replay reads (2026-10-07, the GPU's rate profile)
+// ai:   LIZ_SPAN=<2 B> tx_check paint ...   the symbols in ring B (2026-10-10; 128, the 64 ring's, unset): 512 the 256 ring
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -78,7 +79,7 @@ std::vector<uint8_t> slurp(const std::string& path) {
   fclose(f);
   return b;
 }
-constexpr int RINGS[4] = {32, 64, 96, 128};
+constexpr int RINGS[4] = {32, 64, 128, 256};   // ai: src/focus.c FOCUS_RING (the 96 in the 256's place until 2026-10-10)
 // ai: count frames of the test stream's blocks from id 0, blocks x 473 B each (id then SHAKE256 of it)
 std::vector<uint8_t> testBlocks(int count, int blocks) {
   std::vector<uint8_t> b(static_cast<size_t>(count) * blocks * 473);
@@ -144,7 +145,7 @@ int main(int argc, char** argv) {
     const std::string store = argc > 6 ? argv[6] : "/tmp/tx_check_store";
     Sender s(test ? nullptr : m->p, test ? 0 : m->n, test ? "" : std::filesystem::path(argv[2]).filename().string(), "");
     TxFormat f;
-    f.n = nFor(subch); f.subch = subch; f.span = 128; f.fps = 60; f.threads = threads;
+    f.n = nFor(subch); f.subch = subch; f.span = getenv("LIZ_SPAN") ? atoi(getenv("LIZ_SPAN")) : 128; f.fps = 60; f.threads = threads;
     // ai: LIZ_CODES=2: two codes a frame, each read blind on its own (the desktop sender's 2:1, 2026-10-03)
     f.codes = getenv("LIZ_CODES") ? atoi(getenv("LIZ_CODES")) : 1;
     f.gap = getenv("LIZ_GAP") ? atoi(getenv("LIZ_GAP")) : GAP_MODULES;
@@ -259,7 +260,7 @@ int main(int argc, char** argv) {
     return bad ? 1 : 0;
   }
   if (mode == "gpucheck" && argc >= 3) {
-    const int subch = atoi(argv[2]), ring = argc > 3 ? atoi(argv[3]) : 3, frames = argc > 4 ? atoi(argv[4]) : 8, codes = argc > 5 ? atoi(argv[5]) : 1;
+    const int subch = atoi(argv[2]), ring = argc > 3 ? atoi(argv[3]) : 2, frames = argc > 4 ? atoi(argv[4]) : 8, codes = argc > 5 ? atoi(argv[5]) : 1;
     std::unique_ptr<GpuPainter> g;
     try { g = GpuPainter::create(assets(), [](const std::string& m) { printf("%s\n", m.c_str()); }); }
     catch (const std::exception& e) { printf("FAIL no GPU painter: %s\n", e.what()); return 1; }

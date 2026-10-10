@@ -68,7 +68,7 @@ enum {
   LIZ_ID_BYTES = 4,        /* ai: the id, little-endian */
   LIZ_PAYLOAD = 469,
   LIZ_MAX_BLOCKS = 128,    /* ai: the largest format's size (LIZARD-1024; its symbol carries liz_blocks_for(128)) */
-  LIZ_RINGS = 4,           /* ai: the borders: rings of 32, 64, 96 or 128 cells a side */
+  LIZ_RINGS = 4,           /* ai: the borders: rings of 32, 64, 128 or 256 cells a side */
   LIZ_RING_DEFAULT = -1,   /* ai: the senders' default ring, the 128 */
   LIZ_GAP_MODULES = 12,    /* ai: two codes side by side are this many modules apart */
   LIZ_QUIET = 2            /* ai: the margin painted round a symbol, in modules */

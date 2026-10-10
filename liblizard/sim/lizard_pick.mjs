@@ -98,9 +98,10 @@ export const blocksFor = (subch) => tiersFor(subch).reduce((n, [, b]) => n + b, 
 // The border in modules a side, which src/focus.c sets as the corner mark's own size plus the guard interval,
 // because the border grows OUTWARDS to hold its marks and nothing ever reaches into the picture.
 export const OB_MARGIN = 12 + 3;
-// ai: THE RINGS (src/focus.h FOCUS_RING; three sizes on 2026-09-27, that evening 32, 64, 128, then 32, 64, 96, 128).
-// ai: The dotted band holds RINGS[r] cells of 2 x 2 modules a side, so a side is 2 B + 30 modules (94 / 158 / 222 /
-// ai: 286) and the picture spans 2 B (64 / 128 / 192 / 256). The ring only locates the symbol and syncs its grid, like
+// ai: THE RINGS (src/focus.h FOCUS_RING; three sizes on 2026-09-27, that evening 32, 64, 128, then 32, 64, 96, 128;
+// ai: since 2026-10-10 32, 64, 128, 256, the 256 in the 96's place). The dotted band holds RINGS[r] cells of 2 x 2
+// ai: modules a side, so a side is 2 B + 30 modules (94 / 158 / 286 / 542) and the picture spans 2 B (64 / 128 / 256 /
+// ai: 512). The ring only locates the symbol and syncs its grid, like
 // ai: 5G's sync block; the format word says what is inside, and any ring may carry any picture. RING_DEFAULT is the
 // ai: sender's ring for every picture unless one is named (src/focus.h FOCUS_RING_DEFAULT): the 128 since 2026-10-01
 // ai: (the 64 from the evening of 2026-09-27). No ring follows the version, even by default. Until that evening the
@@ -108,8 +109,8 @@ export const OB_MARGIN = 12 + 3;
 // ai: equal to the C.
 // The ring and the picture are separate grids: the ring is painted at CELL_OF whole pixels a module and the
 // picture's n samples are resampled to fill its span, so a module is n / span picture samples.
-export const RINGS = [32, 64, 96, 128];
-export const RING_DEFAULT = 3;
+export const RINGS = [32, 64, 128, 256];
+export const RING_DEFAULT = 2;
 // ai: The ring helpers take (n, ring) alike; SPAN and MODULES do not depend on n, CELL_OF and SAMPLES do.
 // ai: A picture's span, modules, in ring `ring` (the default unless named).
 export const SPAN = (n, ring = RING_DEFAULT) => 2 * RINGS[ring];

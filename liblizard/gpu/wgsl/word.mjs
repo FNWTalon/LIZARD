@@ -2,8 +2,8 @@
 // ai: a frame, after F7 and before the back half (gpu/decoder.mjs). The reads are the format's (gpu/tables.mjs word
 // ai: plan, the reference codec's own): the solid line and the gap every 16 modules give the contrast; each word cell
 // ai: is read at its planned centre against the mean of the Manchester pairs of the track near it (a pair is one dark
-// ai: and one light cell, so its mean is the local grey). One code a ring over every word cell, W = 16, 32, 48, 64 a
-// ai: side (src/fmt.h), so 4 W soft bits, one cell each. Then every valid word is scored against them and the best
+// ai: and one light cell, so its mean is the local grey). One code a ring over every word cell, W = 16, 32, 64, 128 a
+// ai: side (src/fmt.h; 48 for the 96 ring until 2026-10-10), so 4 W soft bits, one cell each. Then every valid word is scored against them and the best
 // ai: kept (gpu/wordcode.mjs): maximum likelihood over VERSION_MAX x 256 words a ring (any ring carries any version
 // ai: since 2026-09-27), where the reference decodes hard bytes. A word is taken if the contrast reads (CON_MIN, as
 // ai: src/acquire.c) and the best word disagrees with at most DMAX[W] of the hard bits.
@@ -26,14 +26,15 @@ export const CON_MIN = 0.08;
 // ai: The most hard bits the best word may disagree with, by word cells a side (so by ring): 3/16 of the bits, or
 // ai: fewer where the union bound on a random cell set taking a word (every one of the ring's 32,768 words within DMAX
 // ai: of a random hard word) would pass 1e-6 a frame. 64 bits: 6 (1.5e-7; 7 gives 1.3e-6); 128 bits: 24, 3/16
-// ai: (7.5e-9); 192 bits: 36, 3/16 (8.6e-15); 256 bits: 48, 3/16 (1.1e-20). Until the evening of 2026-09-27 the rings
+// ai: (7.5e-9); 192 bits: 36, 3/16 (8.6e-15); 256 bits: 48, 3/16 (1.1e-20); 512 bits (the 256 ring, 2026-10-10): 96, 3/16. Until the evening of 2026-09-27 the rings
 // ai: were 32, 48, 64 and 96 bits took 16 (3.4e-7); until that morning each picture size scored only its own versions
 // ai: (1,024 to 14,592 words): 2/16 at n = 256 (2.9e-7), 3/16 elsewhere. scripts/gpu/word_check.mjs prints the bounds and a
 // ai: garbage trial.
-export const DMAX = { 16: 6, 32: 24, 48: 36, 64: 48 };
-// ai: WMAX: word cells a side at most (the 128 ring), so a word's 4 WMAX bits fill VECS vec4u (a Cw); ROWS: BASE and
-// ai: the 16 rows a ring; MIDS_MAX: track pairs a frame, one an invocation.
-export const WMAX = 64, ROWS = 17, MIDS_MAX = 256;
+export const DMAX = { 16: 6, 32: 24, 48: 36, 64: 48, 128: 96 };
+// ai: WMAX: word cells a side at most (the 256 ring; the 128's 64 until 2026-10-10), so a word's 4 WMAX bits fill VECS
+// ai: vec4u (a Cw); ROWS: BASE and the 16 rows a ring; MIDS_MAX: track pairs a frame (the 256 ring's 512), each
+// ai: invocation taking every 256th.
+export const WMAX = 128, ROWS = 17, MIDS_MAX = 512;
 export const VECS = (4 * WMAX) / 128;
 // ai: vec4u the pictures' last versions take, four a vec4u.
 const TOPS = Math.ceil(SLOTS / 4);
@@ -227,7 +228,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   let con = (red[0].y - red[0].x) / f32(max(P.y, 1u));
   // The track pairs' means: the local grey each word cell is read against.
   let mp = P.x + 2u * P.y;
-  if (li < P.z) { mids[li] = 0.5 * (look(l, f, imgAt(f, M, L, pts[mp + 2u * li].xy)) + look(l, f, imgAt(f, M, L, pts[mp + 2u * li + 1u].xy))); }
+  for (var k = li; k < P.z; k += 256u) { mids[k] = 0.5 * (look(l, f, imgAt(f, M, L, pts[mp + 2u * k].xy)) + look(l, f, imgAt(f, M, L, pts[mp + 2u * k + 1u].xy))); }
   workgroupBarrier();
   // ai: One cell a bit, up to 4 WMAX bits: its local grey less the cell, positive dark, over the contrast and clamped
   // ai: to half of it either way.

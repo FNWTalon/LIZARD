@@ -7,7 +7,8 @@
 // ai: line continued at depths 1-2, a light gap at 3-4, a 6 x 6 dark core at [5, 11) and a light edge 1 module wide
 // ai: inside it, centre 8 modules in from each edge. Blurred until the gap
 // ai: fuses it is a solid 10 x 10 square, centre 6 in. Adjacent centres are M - 16 (or M - 12) modules apart on a
-// ai: symbol M modules a side: M = 94, 158, 222 or 286 (the rings of 32, 64, 96 and 128 band cells).
+// ai: symbol M modules a side: M = 94, 158, 286 or 542 (the rings of 32, 64, 128 and 256 band cells; 222, the 96's,
+// ai: until 2026-10-10).
 import { DIMS } from "./common.mjs";
 import { RINGS as RING_CELLS } from "../../sim/lizard_pick.mjs";
 
@@ -265,7 +266,7 @@ fn support(f: u32, i: u32, c: vec4f) -> bool {
   let r2 = readings[o + 2u];
   if (r2.w == 0.0 || readings[o + 1u].x < ${SMIN}) { return false; }
   // ai: From RAY_LO times the smallest ring's reach to RAY_HI times the largest's: every ring's range, one piece (a
-  // ai: ring's spans 4.9 times its reach, the next ring's reach is under 1.9 times it). With the peak's ring's range
+  // ai: ring's spans 4.9 times its reach, the next ring's reach is under 2 times it: 1.95 from the 128 ring to the 256). With the peak's ring's range
   // ai: alone, a 64-ring symbol's peak, labelled by the 128 ring's taller accumulator, lost its near corner at 45
   // ai: degrees (gpu_front's 45 deg cell, 2026-09-27).
   let edge = CENTRE[u32(r2.x)];
