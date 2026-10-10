@@ -155,7 +155,9 @@ class GpuReceiver : public Receiver {
   std::deque<Rel> toRelease;
   // ai: the stats window (a second), and totals
   Stamps stamps;
-  struct Win { int arrived = 0, dropped = 0, processed = 0, found = 0, words = 0, test = 0; long blocks = 0, fresh = 0; double gpuMs = 0, gpuFrames = 0, side = 0, held = 0, heldMax = 0; int heldN = 0; } win, last;
+  // ai: fresh: data ids new to the dedupe (the series' and the lock's); useful: what goodputKBs counts (rateFold)
+  struct Win { int arrived = 0, dropped = 0, processed = 0, found = 0, words = 0, test = 0; long blocks = 0, fresh = 0, useful = 0; double gpuMs = 0, gpuFrames = 0, side = 0, held = 0, heldMax = 0; int heldN = 0; } win, last;
+  uint64_t takenSeen = 0;   // ai: the transfer's taken() at the last window's close
   double winStart = 0;
   long totalBlocks = 0, totalFrames = 0;
   json lastWord;
@@ -447,6 +449,7 @@ void GpuReceiver::deliver(BatchOut& out, const Kept& k) {
     if (fo.finder.found == 1) win.side += sideOf(fo.finder.corners.data());
     win.blocks += (long)fo.records.size();
     win.fresh += v.fresh;
+    if (v.test) win.useful += v.fresh;
     stamps.frame(fo.tag, fo.records.size(), v.fresh, fo.finder.found == 1, fo.pilotBlocks, fo.pilotR, fo.pilotSd, fo.pilotR2, fo.pilotSd2);
     if (v.test) win.test++;
     totalBlocks += (long)fo.records.size();
@@ -461,8 +464,15 @@ void GpuReceiver::deliver(BatchOut& out, const Kept& k) {
   rollWindow(fh->now());
 }
 
+// ai: The window's rate (goodputKBs, 2026-10-10): the test stream's new blocks, and a file's blocks as the transfer took
+// ai: them (XferRx::taken), not the ids new to the dedupe, which also counted a file's blocks held while its header was
+// ai: not being read (and dropped there) and blocks of a chunk already verified: a stalled transfer read the light's full
+// ai: rate. mu held.
+static long rateFold(XferRx& x, uint64_t& seen) { const uint64_t t = x.taken(); const long d = (long)(t - seen); seen = t; return d; }
+
 void GpuReceiver::rollWindow(double now) {
   if (now - winStart < 1000) return;
+  win.useful += rateFold(*xfer, takenSeen);
   last = win;
   const double dt = (now - winStart) / 1000;
   lastSecs = dt; lastFrames = win.processed;
@@ -482,7 +492,7 @@ std::string GpuReceiver::stats() {
     {"error", error}, {"decoder", "gpu " + variant}, {"zeroCopy", !!ci}, {"layout", cfg.layout},
     {"capturedFps", last.arrived}, {"processedFps", last.processed}, {"dropped", last.dropped},
     {"foundShare", last.found / n}, {"side", last.found ? last.side / last.found : 0},
-    {"heldMs", last.heldN ? last.held / last.heldN : 0}, {"heldMaxMs", last.heldMax}, {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.fresh * 469 / 1000.0 / lastSecs},
+    {"heldMs", last.heldN ? last.held / last.heldN : 0}, {"heldMaxMs", last.heldMax}, {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.useful * 469 / 1000.0 / lastSecs},
     {"gpuMs", last.gpuFrames ? last.gpuMs / last.gpuFrames : 0}, {"B", fh ? batchSize : 0}, {"cap", cap.load()},
     {"bandVersion", lastWord.is_null() ? json() : lastWord["version"]}, {"word", lastWord},
     {"totals", {{"frames", totalFrames}, {"blocks", totalBlocks}}}, {"series", stamps.series},
@@ -549,7 +559,8 @@ class CpuReceiver : public Receiver {
   // ai: the stats window (a second), and totals; repeat: frames that decoded blocks, none of them new; skips: frames
   // ai: lost to busy workers
   Stamps stamps;
-  struct Win { int arrived = 0, dropped = 0, processed = 0, found = 0, words = 0, test = 0, repeat = 0, skips = 0; long blocks = 0, fresh = 0; double ms = 0, side = 0; } win, last;
+  struct Win { int arrived = 0, dropped = 0, processed = 0, found = 0, words = 0, test = 0, repeat = 0, skips = 0; long blocks = 0, fresh = 0, useful = 0; double ms = 0, side = 0; } win, last;
+  uint64_t takenSeen = 0;   // ai: the transfer's taken() at the last window's close
   double winStart = 0, repeatShare = 0;
   int lastMsFrames = 0;    // ai: the frames last.ms is summed over (last.processed is a rate)
   double lastSecs = 1;     // ai: the last window's length: what a count over it is a rate of (GpuReceiver's note)
@@ -621,6 +632,7 @@ void CpuReceiver::done(CpuFrameOut&& out) {
   if (out.found) win.side += sideOf(out.quad);
   win.blocks += (long)blocks.size();
   win.fresh += v.fresh;
+  if (v.test) win.useful += v.fresh;
   ready.emplace(out.tag, stamps.row(out.tag, blocks.size(), v.fresh, out.found, out.pilotBlocks, out.pilotR, out.pilotSd, out.pilotR2, out.pilotSd2));
   flushRows();
   win.ms += out.ms;
@@ -636,6 +648,7 @@ void CpuReceiver::done(CpuFrameOut&& out) {
 void CpuReceiver::rollWindow(double t) {
   if (t - winStart < 1000) return;
   const double dt = (t - winStart) / 1000;
+  win.useful += rateFold(*xfer, takenSeen);
   last = win;
   lastMsFrames = win.processed; lastSecs = dt;
   last.arrived = (int)std::lround(win.arrived / dt); last.processed = (int)std::lround(win.processed / dt);
@@ -656,7 +669,7 @@ std::string CpuReceiver::stats() {
     {"threads", pool->size()}, {"threadsReady", pool->ready()}, {"threadsMax", pool->ceiling()}, {"simd", cpu_simd() != 0}, {"gpuWhy", gpuWhy},
     {"capturedFps", last.arrived}, {"processedFps", last.processed}, {"dropped", last.dropped},
     {"foundShare", last.found / n}, {"side", last.found ? last.side / last.found : 0},
-    {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.fresh * 469 / 1000.0 / lastSecs}, {"repeatShare", repeatShare},
+    {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.useful * 469 / 1000.0 / lastSecs}, {"repeatShare", repeatShare},
     {"cpuMs", lastMsFrames ? last.ms / lastMsFrames : 0}, {"gpuMs", 0}, {"B", 0},
     {"bandVersion", lastWord.is_null() ? json() : lastWord["version"]}, {"word", lastWord},
     {"totals", {{"frames", totalFrames}, {"blocks", totalBlocks}}}, {"series", stamps.series},

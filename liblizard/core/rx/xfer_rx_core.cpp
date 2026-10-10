@@ -88,6 +88,7 @@ struct XferRxCore::Rx {
   std::unique_ptr<Store> store;
   std::function<void(const std::string&)> log;
   std::atomic<uint64_t> gen{0};   // ai: headers of another root read (a judge's dedupe clears on a change)
+  std::atomic<uint64_t> taken{0};   // ai: XferRxCore::taken: data blocks added to a chunk still collecting, ever
   std::string lastRoot;   // ai: lizard-web/recv.mjs xferRoot: the root the dedupe was last cleared for
   std::unique_ptr<Hdr> hdr;
   // ai: ordered where the JS Map is in insertion order: only the order of solves within one block's take differs
@@ -173,6 +174,7 @@ struct XferRxCore::Rx {
     Ch& s = state(c);
     if (s.state == VERIFIED || s.have.has(sym) || s.ban.has(sym)) return;
     s.have.add(sym);
+    taken.fetch_add(1, std::memory_order_relaxed);
     if (s.dec) {
       const int rc = s.dec->add(sym, p);
       if (rc < 0) say("xfer: wirehair decode " + std::to_string(rc) + " on chunk " + std::to_string(c));
@@ -369,6 +371,7 @@ void XferRxCore::block(const uint8_t* b) { rx_->block(b); }
 void XferRxCore::clearAll() { rx_->clearAll(); }
 void XferRxCore::progress(XferProgress& p) const { rx_->progress(p); }
 const std::atomic<uint64_t>& XferRxCore::rootGen() const { return rx_->gen; }
+const std::atomic<uint64_t>& XferRxCore::taken() const { return rx_->taken; }
 const std::vector<uint8_t>* XferRxCore::data() const { return rx_->done ? rx_->store->data() : nullptr; }
 
 void XferJudge::remember(uint32_t id) {

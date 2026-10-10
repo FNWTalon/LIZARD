@@ -79,6 +79,10 @@ class XferRxCore {
   void progress(XferProgress& p) const;
   // ai: Counts the headers of another root read (a new transfer), which clears a judge's dedupe.
   const std::atomic<uint64_t>& rootGen() const;
+  // ai: Data blocks added to a chunk still collecting since this was made, never reset (2026-10-10): what a transfer
+  // ai: actually took, a block held for a header counted once its header lets it in, none of a chunk already verified
+  // ai: or of a symbol refused. Any thread may read it; a receiver's rate is its change over a window.
+  const std::atomic<uint64_t>& taken() const;
   // ai: The finished file's bytes where the store keeps them in memory, else null.
   const std::vector<uint8_t>* data() const;
 

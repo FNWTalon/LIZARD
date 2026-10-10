@@ -36,6 +36,8 @@ class XferRx {
   bool take(const uint8_t* block473);
   FrameVerdict frame(const std::vector<Block>& verified);
   XferProgress progress();
+  // ai: XferRxCore::taken, read from any thread: the blocks the transfer took, ever (a receiver's file rate)
+  uint64_t taken() const { return rx_->taken().load(std::memory_order_relaxed); }
   // ai: The page's Clear: the ids, the transfer in hand and every file received let go, so the same file still in the
   // ai: light is received again.
   void clear();

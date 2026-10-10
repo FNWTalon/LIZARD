@@ -10,7 +10,8 @@
 // ai:   decoder      what decodes: gpu:<variant>, cpu, stub
 // ai:   capturedFps  frames pushed a second, over the last second
 // ai:   processedFps frames decoded a second (the stub: the frames it released)
-// ai:   goodputKBs   new blocks' bytes a second (1 KB = 1000 B), the rate now
+// ai:   goodputKBs   bytes a second (1 KB = 1000 B), the rate now: a file's blocks as its transfer took them, the
+// ai:                test stream's new blocks (2026-10-10; every new block before, a stalled file's too)
 // ai:   blocks       CRC-verified blocks since the start
 // ai:   foundShare   share of the last second's frames registered, 0 to 1
 // ai:   bandVersion  the version the last read word names (sub-channels / 8), 0 before any
