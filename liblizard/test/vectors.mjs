@@ -55,8 +55,8 @@ const greySquare = (e, a, b) => { const o = new Uint8Array((b - a) * (b - a)); l
     [1024, 64, 240, "4c80f01a03b06a272bf125d409be9dd9"],
     [576, 64, 30, "4c481e8a5889b2ffdc13581b53702083"],
     [16, 64, 0, "4c0200bf8a272653d9ff5f11927947ed"],
-    [256, 96, 120, "4c20782d28b496c17b9c80f73a2b385db0ea9d6286a4bf2e"],
     [64, 128, 60, "4c083c787c7c416d2b6b3fc18075004ad5cd92b1945ab6165f18ed021c053ff6"],
+    [256, 256, 120, "4c2078c9d4c6572e79e041b1f59cf0bf61b4d51a391c456426ff193c5616df3bfa872faddf956cda9ffb1371b5bfca1460e86e4f278c5a2c1e79b982387ef7f7"],
   ]) {
     if (setup(nFor(subch), subch, 2 * B) < 0 || M._focus_fmt_fps_set(fps)) throw new Error(`setup LIZARD-${subch} ring ${B}`);
     M._ob_test_mesh_tables_out(pDims, 0, 0, 0, 0);

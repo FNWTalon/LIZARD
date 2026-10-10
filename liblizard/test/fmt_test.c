@@ -20,7 +20,7 @@ static int fails;
 
 // The four rings: B band cells a side, modules a side S = 2B + 30 (src/focus.h), band reserve 15
 // (ob_thin_reserve(OB_THIN_CORNER)); W word cells a side, RS(BS, 3). Any ring carries any version (SPEC 5.2).
-static const int RB[4] = { 32, 64, 96, 128 }, WS[4] = { 16, 32, 48, 64 }, BS[4] = { 8, 16, 24, 32 };
+static const int RB[4] = { 32, 64, 128, 256 }, WS[4] = { 16, 32, 64, 128 }, BS[4] = { 8, 16, 32, 64 };   // ai: the 96 ring (48, 24) until 2026-10-10
 
 // SPEC.md 5.2's seven words, a the ring's index (test/vectors.mjs holds the wasm build to the same words). A change
 // here is a change to the format.
@@ -30,8 +30,8 @@ static const struct { int a, version, fps; const char *hex; } VEC[] = {
   { 1, 128, 240, "4c80f01a03b06a272bf125d409be9dd9" },
   { 1, 72, 30, "4c481e8a5889b2ffdc13581b53702083" },
   { 1, 2, 0, "4c0200bf8a272653d9ff5f11927947ed" },
-  { 2, 32, 120, "4c20782d28b496c17b9c80f73a2b385db0ea9d6286a4bf2e" },
-  { 3, 8, 60, "4c083c787c7c416d2b6b3fc18075004ad5cd92b1945ab6165f18ed021c053ff6" },
+  { 2, 8, 60, "4c083c787c7c416d2b6b3fc18075004ad5cd92b1945ab6165f18ed021c053ff6" },
+  { 3, 32, 120, "4c2078c9d4c6572e79e041b1f59cf0bf61b4d51a391c456426ff193c5616df3bfa872faddf956cda9ffb1371b5bfca1460e86e4f278c5a2c1e79b982387ef7f7" },
 };
 
 // Soft values as the reader lays them out, q[side * cells + i]: +mag for a dark cell, -mag for a light one.
@@ -63,8 +63,8 @@ static double p_pass(int n, int f) {
 
 int main(int argc, char **argv) {
   const long NG = argc > 1 ? atol(argv[1]) : 20000;
-  float q[4 * 80];
-  uint8_t cw[OB_FMT_BYTES_MAX];
+  float q[4 * 160];
+  uint8_t cw[OB_FMT_BYTES_MAX + 1];
 
   // Lengths from the layout, as a receiver takes them from the module count it registered.
   const int r = ob_thin_reserve(OB_THIN_CORNER);
@@ -73,7 +73,7 @@ int main(int argc, char **argv) {
     CHECK(ob_fmt_side_cells(S, r) == WS[a] && ob_fmt_bytes(S, r) == BS[a], "ring %d: W %d, %d bytes", RB[a], ob_fmt_side_cells(S, r), ob_fmt_bytes(S, r));
   }
   CHECK(ob_fmt_bytes(90, r) == 0 && ob_fmt_side_cells(90, r) == 0, "a side too short for the shortest word");
-  CHECK(ob_fmt_bytes(400, r) == OB_FMT_BYTES_MAX, "a band past the longest word");
+  CHECK(ob_fmt_bytes(700, r) == OB_FMT_BYTES_MAX, "a band past the longest word");
 
   // The vectors, and the encoder's range.
   for (size_t v = 0; v < sizeof VEC / sizeof VEC[0]; v++) {
@@ -85,7 +85,7 @@ int main(int argc, char **argv) {
     CHECK(!strcmp(hex, VEC[v].hex), "vector ring %d version %d fps %d: %s", RB[a], f.version, f.fps, hex);
   }
   { const ob_fmt_t f = { 2, 0 }, v0 = { 0, 0 }, v129 = { 129, 0 }, fps = { 2, 256 };
-    CHECK(ob_fmt_encode(&f, cw, 16) == 0 && ob_fmt_encode(&f, cw, 7) < 0 && ob_fmt_encode(&f, cw, 40) < 0, "encode lengths");
+    CHECK(ob_fmt_encode(&f, cw, 16) == 0 && ob_fmt_encode(&f, cw, 7) < 0 && ob_fmt_encode(&f, cw, OB_FMT_BYTES_MAX + 1) < 0, "encode lengths");
     CHECK(ob_fmt_encode(&v0, cw, 8) < 0 && ob_fmt_encode(&v129, cw, 8) < 0 && ob_fmt_encode(&fps, cw, 8) < 0, "encode fields"); }
 
   for (int a = 0; a < 4; a++) {

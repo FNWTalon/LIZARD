@@ -14,7 +14,7 @@ class LizardException(val code: Int, message: String) : RuntimeException(message
 enum class PixelFormat(internal val code: Int, val bytes: Int) { GREY(1, 1), RGBX(2, 4), RGBA(3, 4), BGRA(4, 4) }
 
 // ai: blocks, the format's size (1 to 128: LIZARD-8 to -1024; a symbol carries the rate profile's blocks, the
-// ai: geometry's frameBlocks over codes); ring 0 to 3 (the 32, 64, 96 or 128 ring) or RING_DEFAULT; the
+// ai: geometry's frameBlocks over codes); ring 0 to 3 (the 32, 64, 128 or 256 ring) or RING_DEFAULT; the
 // ai: display rate its word states; codes, 1 or 2 symbols side by side
 data class Format(val blocks: Int, val ring: Int = Lizard.RING_DEFAULT, val fps: Int = 60, val codes: Int = 1)
 

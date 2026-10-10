@@ -6,7 +6,7 @@ import kotlin.math.roundToInt
 
 // ai: What the sender keeps between runs (the web's send:<id> keys): the encoder (auto, gpu, cpu), the payload (file,
 // ai: test), the blocks a frame (0 auto, else 1 to 128), pictures a second, the code's size (25 to 100%), the gap between
-// ai: two codes (0 to 64 modules), the ring (-1 the default, else 0 to 3), the codes, the folds and the rail, and
+// ai: two codes (0 to 64 modules), the ring (-1 the default, else 0 to 3, kept as its cells since 2026-10-10), the codes, the folds and the rail, and
 // ai: whether the brightness tip was taken before a first send (SendState.requestStart). forget():
 // ai: a run that neither reads nor keeps them, every setting at its default (the test hook's, SenderTest.kt).
 object Prefs {
@@ -24,7 +24,11 @@ object Prefs {
     var fps: Int get() = int("fps", 60); set(v) { p?.putInt("fps", v) }
     var size: Int get() = int("size", 100); set(v) { p?.putInt("size", v) }
     var gap: Int get() = int("gap", Pick.GAP_DEFAULT); set(v) { p?.putInt("gap", v) }
-    var ring: Int get() = int("ring", -1); set(v) { p?.putInt("ring", v) }
+    // ai: an index into Pick.RINGS, kept by its cells (ringCells, 2026-10-10: the 96 ring's place went to the 256, so an
+    // ai: index alone would move a saved choice); a key "ring" from before is an index into 32, 64, 96, 128, its 96 the default now
+    var ring: Int
+        get() = when (val c = int("ringCells", 0)) { 0 -> when (int("ring", -1)) { 0 -> 0; 1 -> 1; 3 -> 2; else -> -1 }; else -> Pick.RINGS.indexOf(c) }
+        set(v) { p?.putInt("ringCells", if (v in Pick.RINGS.indices) Pick.RINGS[v] else -1) }
     var codes: Int get() = int("codes", 1); set(v) { p?.putInt("codes", v) }
     var settingsOpen: Boolean get() = bool("dev", false); set(v) { p?.putBoolean("dev", v) }
     var toolsOpen: Boolean get() = bool("logs", false); set(v) { p?.putBoolean("logs", v) }

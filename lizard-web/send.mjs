@@ -302,8 +302,9 @@ const codesOf = () => (+$("codes").value === 2 ? 2 : 1);
 // ai: 2026-09-29).
 function pick(roomPx) { return pickVersion(roomPx, undefined, ringChosen()); }
 // ai: Settings' ring (an index into RINGS), or null for the default ring (RING_DEFAULT): the menu has no auto
-// ai: since 2026-10-05 (the 128 selected), so null only where it holds no ring at all.
-function ringChosen() { const v = $("ring").value; return v === "" || v === "auto" ? null : +v; }
+// ai: since 2026-10-05 (the 128 selected), so null only where it holds no ring at all. Its options are the rings'
+// ai: cells since 2026-10-10 (indices before, when the 96 was the third), so a saved index no longer matches one.
+function ringChosen() { const v = $("ring").value, i = RINGS.indexOf(+v); return v === "" || v === "auto" || i < 0 ? null : i; }
 const ringOf = (s) => RINGS.indexOf(s.span / 2);
 
 // The canvas laid out for a symbol of n samples a side, quiet zone included, whenever that or the room changed.
