@@ -29,7 +29,7 @@ const HERE = dirname(fileURLToPath(import.meta.url)), WEB = resolve(HERE, ".."),
 const OUT = resolve(WEB, process.argv[2] ?? "app");
 const PAGES = ["lizard-web/index.html", "lizard-web/send.html", "lizard-web/recv.html"];
 // ai: what ships: the pages' own kinds of file, the codec's wasm and the nets
-const SHIP = new Set([".html", ".css", ".mjs", ".js", ".svg", ".wasm", ".safetensors", ".json"]);
+const SHIP = new Set([".html", ".css", ".mjs", ".js", ".svg", ".wasm", ".safetensors", ".json", ".woff2"]);
 const SCAN = new Set([".html", ".css", ".mjs", ".js", ".svg"]);
 // ai: emscripten's output (-O3): no comments, and its own string literals are the bare names it loads
 const GLUE = new Set(["liblizard/build/ob.mjs", "liblizard/build/wirehair.mjs", "liblizard/build/zstd.mjs"]);
@@ -137,7 +137,9 @@ writeFileSync(join(OUT, "_headers"), "/assets/*\n  Cache-Control: public, max-ag
 // ai: carries the codec, BLAKE3 and Wirehair (whose BSD 3-Clause asks for its notice with a binary), and the build
 // ai: strips every comment.
 const NOTICES = [["", "LICENSE"], ["", "NOTICE"], ["Wirehair (liblizard/vendor/wirehair)", "liblizard/vendor/wirehair/LICENSE"],
-  ["BLAKE3 (liblizard/vendor/blake3), under its Apache License 2.0 option", "liblizard/vendor/blake3/LICENSE_A2"]];
+  ["BLAKE3 (liblizard/vendor/blake3), under its Apache License 2.0 option", "liblizard/vendor/blake3/LICENSE_A2"],
+  ["Inter (liblizard/vendor/fonts/inter), under the SIL Open Font License 1.1", "liblizard/vendor/fonts/inter/LICENSE.txt"],
+  ["JetBrains Mono (liblizard/vendor/fonts/jetbrains-mono), under the SIL Open Font License 1.1", "liblizard/vendor/fonts/jetbrains-mono/OFL.txt"]];
 writeFileSync(join(OUT, "LICENSES.txt"), NOTICES.map(([t, f]) => (t ? `${t}\n\n` : "") + readFileSync(join(ROOT, f), "utf8").trimEnd()).join(`\n\n${"-".repeat(78)}\n\n`) + "\n");
 
 // --- 6. verify ------------------------------------------------------------------------------------

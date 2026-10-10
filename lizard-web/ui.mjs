@@ -29,7 +29,9 @@ export function sideResizer(key, floor) {
   edge.className = "side-edge";
   edge.setAttribute("role", "separator"); edge.setAttribute("aria-orientation", "vertical"); edge.setAttribute("aria-label", "Sidebar width");
   document.body.append(edge);
-  try { const v = +localStorage.getItem(key); if (v > 0) root.style.setProperty("--side", `${sideClamp(v, lo())}px`); } catch {}
+  const restore = () => { try { const v = +localStorage.getItem(key); if (v > 0) root.style.setProperty("--side", `${sideClamp(v, lo())}px`); } catch {} };
+  restore();
+  document.fonts?.ready.then(restore);   // ai: a floor measured in the page's font: again once it is loaded (ui.css, Inter)
   edge.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     edge.setPointerCapture(e.pointerId);

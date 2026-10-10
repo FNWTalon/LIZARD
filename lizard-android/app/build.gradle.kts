@@ -88,8 +88,30 @@ abstract class LizardAssets : DefaultTask() {
 val lizardAssets = tasks.register<LizardAssets>("lizardAssets") {
     out.set(rootProject.layout.projectDirectory.dir("../liblizard/out"))
 }
+// ai: The type (2026-10-10): the web's faces from liblizard/vendor/fonts, as res/font (Inter's variable file, every weight
+// ai: by its axis; JetBrains Mono Regular), named as resources must be. Parts.kt Inter and Mono.
+abstract class LizardFonts : DefaultTask() {
+    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val vendor: DirectoryProperty
+    @get:OutputDirectory abstract val output: DirectoryProperty
+    @get:Inject abstract val fs: FileSystemOperations
+
+    @TaskAction fun run() {
+        fs.sync {
+            from(vendor.file("inter/InterVariable.ttf")) { rename { "inter_variable.ttf" } }
+            from(vendor.file("jetbrains-mono/JetBrainsMono-Regular.ttf")) { rename { "jetbrains_mono_regular.ttf" } }
+            into(output.dir("font"))
+        }
+    }
+}
+
+val lizardFonts = tasks.register<LizardFonts>("lizardFonts") {
+    vendor.set(rootProject.layout.projectDirectory.dir("../liblizard/vendor/fonts"))
+}
 androidComponents {
-    onVariants { v -> v.sources.assets?.addGeneratedSourceDirectory(lizardAssets, LizardAssets::output) }
+    onVariants { v ->
+        v.sources.assets?.addGeneratedSourceDirectory(lizardAssets, LizardAssets::output)
+        v.sources.res?.addGeneratedSourceDirectory(lizardFonts, LizardFonts::output)
+    }
 }
 
 dependencies {

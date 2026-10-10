@@ -4,11 +4,16 @@
 /* ai: of rows for files and settings; cards on a soft fill. Colour is for two things only: an error (--bad) and a */
 /* ai: finished transfer (--good). A page keeps its own layout inline; this file holds the tokens and the parts. The */
 /* ai: Android app draws the same tokens and parts (lizard-android/app/src/main/java/dev/lizard/receiver/Parts.kt). */
+/* ai: The type (2026-10-10): Inter for the text, JetBrains Mono for the readouts, both from liblizard/vendor/fonts (the */
+/* ai: Android app and the desktop sender carry the same files). Inter is one variable file for every weight; each page */
+/* ai: preloads it, and block keeps the first paint off the fallback face (no swap after it). */
+@font-face{font-family:"Inter";src:url("../liblizard/vendor/fonts/inter/InterVariable.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:block}
+@font-face{font-family:"JetBrains Mono";src:url("../liblizard/vendor/fonts/jetbrains-mono/JetBrainsMono-Regular.woff2") format("woff2");font-weight:400;font-style:normal;font-display:block}
 :root{--fg:#111;--bg:#fff;--muted:#666;--line:#e4e4e4;--soft:#f1f1f1;--soft-2:#e6e6e6;--card:#f6f6f6;--bad:#b00020;
   --good:#0a7a2f;color-scheme:light}
 *,*::before,*::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 /* ai: the hidden attribute always wins, so a .btn's display never shows a button a page has hidden */
 [hidden]{display:none !important}
 a{color:var(--fg)}
@@ -52,7 +57,7 @@ select:disabled,input:disabled{color:rgba(17,17,17,.38)}
    hints when there are any. */
 .status{font-size:18px;font-weight:600;line-height:1.35;margin:4px 0}
 .nums{font-size:14px;font-variant-numeric:tabular-nums;color:var(--muted);margin:2px 0}
-.lab,pre.readout{font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted);background:var(--card);
+.lab,pre.readout{font:13px/1.45 "JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--muted);background:var(--card);
   border-radius:8px;padding:8px 12px;margin:8px 0;white-space:pre-wrap;word-break:break-word}
 pre.readout{font-size:12px;color:var(--fg)}
 .lab:empty,pre.readout:empty{display:none}

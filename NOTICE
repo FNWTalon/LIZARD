@@ -19,6 +19,10 @@ This product includes third-party software, each under its own license, kept bes
   (json.LICENSE.MIT).
 - Vulkan headers (liblizard/core/third_party/vulkan-headers, v1.3.275), Copyright 2015-2023 The Khronos Group Inc.:
   Apache License 2.0 (LICENSE.md, LICENSES/Apache-2.0.txt).
+- Inter (liblizard/vendor/fonts/inter, version 4.1), Copyright (c) 2016 The Inter Project Authors: SIL Open Font
+  License 1.1 (LICENSE.txt).
+- JetBrains Mono (liblizard/vendor/fonts/jetbrains-mono, version 2.304), Copyright 2020 The JetBrains Mono Project
+  Authors: SIL Open Font License 1.1 (OFL.txt).
 
 Built packages also carry what their build fetches, under its own license: the desktop sender's Debian package
 includes a Java runtime from OpenJDK (GPLv2 with the Classpath Exception; its notices are in the package under

@@ -73,7 +73,16 @@ val buildInfo by tasks.registering {
             .writeText(Instant.now().truncatedTo(ChronoUnit.SECONDS).toString())
     }
 }
-sourceSets.main { resources.srcDir(bundle); resources.srcDir(buildInfo) }
+// ai: the type (2026-10-10): the web's faces from liblizard/vendor/fonts, outside the bundle as buildInfo is (Parts.kt
+// ai: Inter and Mono read them by their resource paths, fonts/...)
+val fonts by tasks.registering(Sync::class) {
+    into(layout.buildDirectory.dir("fonts"))
+    from(rootDir.resolve("../liblizard/vendor/fonts")) {
+        include("inter/InterVariable.ttf", "jetbrains-mono/JetBrainsMono-Regular.ttf")
+        into("fonts")
+    }
+}
+sourceSets.main { resources.srcDir(bundle); resources.srcDir(buildInfo); resources.srcDir(fonts) }
 
 // ai: after packageDeb: the native library's own Depends added (packaging/deb-deps.sh says which and why)
 val debDeps by tasks.registering(Exec::class) {
@@ -82,7 +91,7 @@ val debDeps by tasks.registering(Exec::class) {
 tasks.matching { it.name == "packageDeb" }.configureEach { finalizedBy(debDeps) }
 
 // ai: The packages' license text: the repository's LICENSE and NOTICE, then the licenses of the vendored code compiled into
-// ai: the native library, each under its name (Wirehair's BSD 3-Clause asks for its notice wherever binaries go)
+// ai: the native library and of the fonts the window draws in, each under its name (Wirehair's BSD 3-Clause asks for its notice wherever binaries go)
 abstract class LicenseText : DefaultTask() {
     @get:Input abstract val titles: ListProperty<String>
     @get:InputFiles @get:PathSensitive(PathSensitivity.NONE) abstract val parts: ConfigurableFileCollection
@@ -97,10 +106,11 @@ val licenseText by tasks.registering(LicenseText::class) {
     val lib = rootDir.resolve("../liblizard")
     titles.set(listOf("", "", "Wirehair (liblizard/vendor/wirehair)", "volk (liblizard/core/third_party/volk)",
         "JSON for Modern C++ (liblizard/core/third_party/json.hpp)", "BLAKE3 (liblizard/vendor/blake3), under its Apache License 2.0 option",
-        "Skia (in Compose's skiko, which draws the window)"))
+        "Skia (in Compose's skiko, which draws the window)", "Inter (liblizard/vendor/fonts/inter), under the SIL Open Font License 1.1",
+        "JetBrains Mono (liblizard/vendor/fonts/jetbrains-mono), under the SIL Open Font License 1.1"))
     parts.from(rootDir.resolve("../LICENSE"), rootDir.resolve("../NOTICE"), lib.resolve("vendor/wirehair/LICENSE"),
         lib.resolve("core/third_party/volk/LICENSE.md"), lib.resolve("core/third_party/json.LICENSE.MIT"), lib.resolve("vendor/blake3/LICENSE_A2"),
-        project.file("packaging/skia.LICENSE"))
+        project.file("packaging/skia.LICENSE"), lib.resolve("vendor/fonts/inter/LICENSE.txt"), lib.resolve("vendor/fonts/jetbrains-mono/OFL.txt"))
     out.set(layout.buildDirectory.file("license/copyright.txt"))
 }
 

@@ -51,9 +51,12 @@ import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.platform.Font
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -72,22 +75,29 @@ val Soft = Color(0xFFF1F1F1)
 val Card = Color(0xFFF6F6F6)
 val Bad = Color(0xFFB00020)
 
-// ai: The type: the web's sizes in sp, and no letter spacing (Material's default runs 0.1 to 0.5 sp).
-private fun TextStyle.flat() = copy(letterSpacing = 0.sp)
+// ai: The faces (2026-10-10): the web's, from liblizard/vendor/fonts (build.gradle.kts fonts): Inter, one variable file
+// ai: read at each weight the app sets by its axis, and JetBrains Mono for the readouts.
+@OptIn(ExperimentalTextApi::class)
+private fun inter(w: FontWeight) = Font("fonts/inter/InterVariable.ttf", w, variationSettings = FontVariation.Settings(FontVariation.weight(w.weight)))
+val Inter = FontFamily(listOf(FontWeight.Normal, FontWeight.Medium, FontWeight.SemiBold, FontWeight.Bold).map(::inter))
+val Mono = FontFamily(Font("fonts/jetbrains-mono/JetBrainsMono-Regular.ttf"))
+
+// ai: The type: the web's sizes in sp, in Inter, and no letter spacing (Material's default runs 0.1 to 0.5 sp).
+private fun TextStyle.flat() = copy(letterSpacing = 0.sp, fontFamily = Inter)
 private val base = Typography()
 val LizardType = Typography(
     displayLarge = base.displayLarge.flat(), displayMedium = base.displayMedium.flat(), displaySmall = base.displaySmall.flat(),
     headlineLarge = base.headlineLarge.flat(), headlineMedium = base.headlineMedium.flat(),
-    headlineSmall = TextStyle(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold),
-    titleLarge = TextStyle(fontSize = 20.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold),
-    titleMedium = TextStyle(fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold),
-    titleSmall = TextStyle(fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold),
-    bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 24.sp),
-    bodyMedium = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
-    bodySmall = TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
-    labelLarge = TextStyle(fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold),
-    labelMedium = TextStyle(fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium),
-    labelSmall = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium),
+    headlineSmall = TextStyle(fontSize = 22.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold).flat(),
+    titleLarge = TextStyle(fontSize = 20.sp, lineHeight = 28.sp, fontWeight = FontWeight.SemiBold).flat(),
+    titleMedium = TextStyle(fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold).flat(),
+    titleSmall = TextStyle(fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold).flat(),
+    bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 24.sp).flat(),
+    bodyMedium = TextStyle(fontSize = 14.sp, lineHeight = 20.sp).flat(),
+    bodySmall = TextStyle(fontSize = 13.sp, lineHeight = 18.sp).flat(),
+    labelLarge = TextStyle(fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.SemiBold).flat(),
+    labelMedium = TextStyle(fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium).flat(),
+    labelSmall = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium).flat(),
 )
 // ai: Material's surfaces all white (menus float on a hairline, not a tint)
 val LizardColours = lightColorScheme(primary = Fg, onPrimary = Bg, background = Bg, onBackground = Fg, surface = Bg, onSurface = Fg,
@@ -218,10 +228,10 @@ fun ListRow(title: String, sub: String? = null, lead: ImageVector? = null, onCli
     }
 }
 
-// ai: The lab's text (the web's pre.readout): monospace on the card fill.
+// ai: The lab's text (the web's pre.readout): JetBrains Mono on the card fill.
 @Composable
 fun CodeBlock(text: String) =
-    Text(text, fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 17.sp, color = Fg,
+    Text(text, fontFamily = Mono, fontSize = 12.sp, lineHeight = 17.sp, color = Fg,
         modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(8.dp)).background(Card).padding(horizontal = 12.dp, vertical = 8.dp))
 
 // ai: A row that opens (the web's details.dev): a hairline over it, its title, a chevron that turns, and what it holds

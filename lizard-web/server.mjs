@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 
 const here = fileURLToPath(new URL(".", import.meta.url)), root = resolve(here, ".."), RIG = resolve(root, "research/rig"), HTTP = +process.env.RIG_HTTP || 8080, HTTPS = +process.env.RIG_HTTPS || 8443;   // the self-check runs its own instance on other ports
 const lan = Object.values(networkInterfaces()).flat().find((a) => a.family === "IPv4" && !a.internal)?.address ?? "127.0.0.1";
-const MIME = { ".html": "text/html; charset=utf-8", ".mjs": "text/javascript", ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".svg": "image/svg+xml", ".css": "text/css", ".webmanifest": "application/manifest+json" };   // ai: the installed app's manifest (lizard-web/app/, 2026-10-01)
+const MIME = { ".html": "text/html; charset=utf-8", ".mjs": "text/javascript", ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".svg": "image/svg+xml", ".css": "text/css", ".webmanifest": "application/manifest+json", ".woff2": "font/woff2" };   // ai: the installed app's manifest (lizard-web/app/, 2026-10-01); the pages' fonts (2026-10-10)
 
 const certDir = join(here, ".cert");
 if (!existsSync(join(certDir, `${lan}.pem`))) {
