@@ -126,11 +126,15 @@ void XferTx::frameIds(uint32_t* out, int n) {
   }
   for (int k = first; k < n; k++) out[k] = next();
   if (since_ != UINT32_MAX) since_ += static_cast<uint32_t>(n - first);
-  // ai: Fisher-Yates over the data slots, from a generator seeded by the frame count (xorshift32)
+  // ai: Fisher-Yates over every slot, the control block's too, from a generator seeded by the frame count (xorshift32).
+  // ai: Until 2026-10-10 the control block kept slot 0 and only the data slots were shuffled: slot 0 is block 0, on
+  // ai: the innermost sub-channel, which since the rate profile carries the 7/8 code and decodes for some contents
+  // ai: never (the header among them), so a file's header stopped arriving and its transfer starved (STATUS
+  // ai: "A file's header pinned to slot 0").
   uint32_t s = ((frame_ + 1) * 0x9e3779b1u) ^ 0x5bd1e995u;
-  for (int i = n - 1; i > first; i--) {
+  for (int i = n - 1; i > 0; i--) {
     s ^= s << 13; s ^= s >> 17; s ^= s << 5;
-    const int j = first + static_cast<int>(s % static_cast<uint32_t>(i - first + 1));
+    const int j = static_cast<int>(s % static_cast<uint32_t>(i + 1));
     std::swap(out[i], out[j]);
   }
   frame_++;

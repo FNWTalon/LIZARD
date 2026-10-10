@@ -19,6 +19,7 @@
 // ai:   LIZ_RUN_OUT=<dir> tx_check paint ...   every symbol read written as a recording too (<dir>/NNNN.gray, W x W luma,
 // ai:       a code a frame, and meta.json), which lizard_gpu_check replay reads (2026-10-07, the GPU's rate profile)
 // ai:   LIZ_SPAN=<2 B> tx_check paint ...   the symbols in ring B (2026-10-10; 128, the 64 ring's, unset): 512 the 256 ring
+// ai:   LIZ_TYPE=<media type> tx_check paint <file> ...   the header carries that type, as the apps' files do (2026-10-10)
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -143,7 +144,8 @@ int main(int argc, char** argv) {
     if (!test) m = std::make_unique<Mapped>(argv[2]);
     const int subch = atoi(argv[3]), frames = argc > 4 ? atoi(argv[4]) : 64, threads = argc > 5 ? atoi(argv[5]) : 3;
     const std::string store = argc > 6 ? argv[6] : "/tmp/tx_check_store";
-    Sender s(test ? nullptr : m->p, test ? 0 : m->n, test ? "" : std::filesystem::path(argv[2]).filename().string(), "");
+    // ai: LIZ_TYPE=<media type>: the header's type, as the apps send a file's (2026-10-10; "" before, so no check painted one)
+    Sender s(test ? nullptr : m->p, test ? 0 : m->n, test ? "" : std::filesystem::path(argv[2]).filename().string(), getenv("LIZ_TYPE") ? getenv("LIZ_TYPE") : "");
     TxFormat f;
     f.n = nFor(subch); f.subch = subch; f.span = getenv("LIZ_SPAN") ? atoi(getenv("LIZ_SPAN")) : 128; f.fps = 60; f.threads = threads;
     // ai: LIZ_CODES=2: two codes a frame, each read blind on its own (the desktop sender's 2:1, 2026-10-03)

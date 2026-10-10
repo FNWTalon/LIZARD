@@ -2470,15 +2470,17 @@ rate travels in the format word and the transfer's layout in its blocks (7.5 to 
     K + ceil(2 sqrt(K)) visits a lap, at least 64 and at most a full chunk's K, spread over the rounds by an
     accumulator: its count received wanders more than a big chunk's, and the file waits on whichever chunk is last. A
     chunk of one block sends symbol 0 at every visit.
-  - **Control blocks.** Slot 0 of a frame, block 0, the lowest ring and the last a frame loses, carries a control block
-    once `every` data blocks have gone since the last one: the header on even turns and the manifest's blocks in turn
-    on odd ones. every = 63 (1.6% of the airtime), or lap / (8 m) data blocks when that is less, m the manifest blocks
+  - **Control blocks.** A frame carries a control block once `every` data blocks have gone since the last one: the
+    header on even turns and the manifest's blocks in turn on odd ones, in a slot the shuffle below picks, never a
+    fixed one. every = 63 (1.6% of the airtime), or lap / (8 m) data blocks when that is less, m the manifest blocks
     (at least 1), so a short file gets them more often. At LIZARD-512, 62 blocks a frame, that is a control block every
     other frame and the header every fourth (every frame and every other at 64 blocks a frame, under one rate). An
     empty file's frames are all header.
-  - **Shuffle.** Each frame's data slots are shuffled (Fisher-Yates, xorshift32 seeded from the frame count), because
-    slot k is ring k, and a round robin whose chunk count divides the frame's would pin a chunk to rings a distant
-    camera never reads.
+  - **Shuffle.** Each frame's slots, the control block's among them, are shuffled (Fisher-Yates, xorshift32 seeded
+    from the frame count), because slot k is ring k, and a round robin whose chunk count divides the frame's would pin
+    a chunk to rings a distant camera never reads. The control block was not shuffled before 2026-10-10 (it took slot
+    0): one slot that fails for a block's content, as block 0 on the innermost sub-channel does under the 7/8 code,
+    then held every header back.
   - **Chunk size.** 4 MiB unless `send.html?chunk=10..24` says otherwise. Interleaved, the chunk size does not move the
     rate (Wirehair costs 7 to 9 ns a byte from 1 to 16 MiB in this wasm), so the receiver's memory sets it: a 4 MiB
     solve fits the fountain worker's heaps as they start (Wirehair 16 MB, codec 8 MB), where a 16 MiB decoder alone is

@@ -330,7 +330,9 @@ class MainActivity : ComponentActivity() {
     // ai: "Received" clears at the next poll, and the file in the light is received anew
     internal fun delete(e: Library.Entry) { if (e.root.isNotEmpty() && e.root == root) forgetReceived(); library.delete(e); files = library.list() }
     internal fun deleteAll() { if (files.any { it.root.isNotEmpty() && it.root == root }) forgetReceived(); library.deleteAll(); files = library.list() }
-    private fun forgetReceived() { engine.clear(); root = ""; unfiled = "" }
+    // ai: the receiver forgets the file whole (its transfer, ids and held word, Engine.clear), and so does the screen: ended
+    // ai: too since 2026-10-10, so the same file received again stops the camera again
+    private fun forgetReceived() { engine.clear(); root = ""; unfiled = ""; ended = "" }
     internal fun installed(): String = try {
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT).format(Date(packageManager.getPackageInfo(packageName, 0).lastUpdateTime))
     } catch (_: Exception) { "" }

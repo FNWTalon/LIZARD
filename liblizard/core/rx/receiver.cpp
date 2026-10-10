@@ -160,6 +160,9 @@ class GpuReceiver : public Receiver {
   long totalBlocks = 0, totalFrames = 0;
   json lastWord;
   std::shared_ptr<Replay> rec;   // ai: Save replays (record), under mu
+  // ai: the transfer's one producer (XferRx): the decoder thread's frames and clear(), which the app calls from another
+  // ai: thread (a received file deleted, 2026-10-10: the dedupe was cleared unlocked while a batch was delivered)
+  std::mutex deliverMu;
   void decoderLoop();
   void releaserLoop();
   void drop(uint64_t tag) { releaseFn(tag); }
@@ -433,7 +436,11 @@ void GpuReceiver::deliver(BatchOut& out, const Kept& k) {
     if (fo.empty) continue;
     std::vector<Block> blocks;
     for (auto& r : fo.records) { Block b; memcpy(b.bytes.data(), r.payload.data(), b.bytes.size()); blocks.push_back(b); }
-    auto v = xfer->frame(blocks);
+    FrameVerdict v;
+    {
+      std::lock_guard<std::mutex> d(deliverMu);
+      v = xfer->frame(blocks);
+    }
     std::lock_guard<std::mutex> l(mu);
     win.processed++;
     win.found += fo.finder.found == 1;
@@ -488,7 +495,7 @@ std::string GpuReceiver::stats() {
 }
 
 std::string GpuReceiver::file() { auto p = xfer->progress(); return p.done ? p.path : ""; }
-void GpuReceiver::clear() { xfer->clear(); std::lock_guard<std::mutex> l(mu); lastWord = nullptr; held = 0; }
+void GpuReceiver::clear() { { std::lock_guard<std::mutex> d(deliverMu); xfer->clear(); } std::lock_guard<std::mutex> l(mu); lastWord = nullptr; held = 0; }
 
 // ai: The C on the CPU (cpu/pool.h: the web's worker pool natively): a frame's crop is copied to an idle worker or the
 // ai: frame is lost, never queued; each worker decodes blind on its own decoder; the held word is the last word any
@@ -508,7 +515,7 @@ class CpuReceiver : public Receiver {
   std::vector<double> series(double sinceMs) override { std::lock_guard<std::mutex> l(mu); return stamps.since(held.load(), sinceMs); }
   void batchCap(int) override {}   // ai: a frame at a time already
   std::string file() override { auto p = xfer->progress(); return p.done ? p.path : ""; }
-  void clear() override { xfer->clear(); std::lock_guard<std::mutex> l(mu); lastWord = nullptr; held = 0; }
+  void clear() override { { std::lock_guard<std::mutex> d(deliverMu); xfer->clear(); } std::lock_guard<std::mutex> l(mu); lastWord = nullptr; held = 0; }
   bool wantsLuma() const override { return true; }
   void record(std::shared_ptr<Replay> r) override { std::lock_guard<std::mutex> l(mu); rec = std::move(r); }
 

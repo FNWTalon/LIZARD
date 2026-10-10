@@ -34,7 +34,9 @@
 // Blocks are spread over a frame's slots by a shuffle drawn from the frame count: slot k of a LIZARD frame is ring k,
 // the outer ones the first to go, and a plain round robin would pin chunk c to the same slots whenever the chunk count
 // divides the frame's (every chunk on a ring that a distant camera never reads). Control blocks (the header, then the
-// manifest) take slot 0, the lowest ring, the one read first and lost last.
+// manifest) are shuffled with the data, so no one slot carries them: until 2026-10-10 they took slot 0, the lowest
+// ring, thought the one read first and lost last, which under the rate profile carries the 7/8 code on the
+// innermost sub-channel and for some contents never decodes, the header's among them.
 
 // src/xfer.h, held against the codec's xfer_layout whenever a wasm is handed in. The receiver page has no codec and
 // needs the id test anyway.
@@ -184,11 +186,12 @@ export class XferSender {
     }
     for (let k = first; k < B; k++) out[k] = this.sched.next();
     this.since += B - first;
-    // Fisher-Yates over the data slots, from a generator seeded by the frame count.
+    // Fisher-Yates over every slot, the control block's too, from a generator seeded by the frame count (the native
+    // sender's, core/tx/xfer_tx.cpp, byte for byte).
     let s = (Math.imul(this.frame + 1, 0x9e3779b1) ^ 0x5bd1e995) >>> 0;
-    for (let i = B - 1; i > first; i--) {
+    for (let i = B - 1; i > 0; i--) {
       s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0;
-      const j = first + (s % (i - first + 1)), t = out[i];
+      const j = s % (i + 1), t = out[i];
       out[i] = out[j]; out[j] = t;
     }
     this.frame++;
