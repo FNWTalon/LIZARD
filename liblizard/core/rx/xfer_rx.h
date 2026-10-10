@@ -39,7 +39,9 @@ class XferRx {
   // ai: XferRxCore::taken, read from any thread: the blocks the transfer took, ever (a receiver's file rate)
   uint64_t taken() const { return rx_->taken().load(std::memory_order_relaxed); }
   // ai: The page's Clear: the ids, the transfer in hand and every file received let go, so the same file still in the
-  // ai: light is received again.
+  // ai: light is received again. Done when it returns (2026-10-10): it waits for the worker to clear (after whatever was
+  // ai: queued before it), so progress() read after it never shows the transfer let go. It queued the clear and returned
+  // ai: until then, and an app's poll in between read the file it had just forgotten as still received.
   void clear();
   // ai: Waits until the worker has taken everything queued (tools and tests; the app never needs it).
   void drain();
@@ -55,6 +57,7 @@ class XferRx {
   std::condition_variable cv_, idle_;
   std::deque<Item> queue_;
   bool stop_ = false, busy_ = false;
+  uint64_t clearsAsked_ = 0, clearsDone_ = 0;   // ai: clear()'s tickets, the worker's count of clears done
   uint64_t lost_ = 0;
   std::mutex pmu_;
   XferProgress snap_;

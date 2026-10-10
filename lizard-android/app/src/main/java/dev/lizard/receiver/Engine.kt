@@ -161,7 +161,11 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     fun stats(): String = synchronized(lock) { if (handle != 0L) Native.stats(handle) else "" }
     // ai: the transfer in hand forgotten (2026-10-07, the received file deleted on Home): the receiver no longer reports
     // ai: the file, so the state line's "Received" goes, and the same file in the light is received and kept anew
-    fun clear() = h.post { synchronized(lock) { if (handle != 0L) Native.clear(handle) } }
+    // ai: The receiver forgets its transfer, ids and held word (Native.clear), on the caller's thread and done when it
+    // ai: returns, so a stats read after it never shows what it forgot (2026-10-10: posted to the engine's thread until
+    // ai: then, and a poll in between filed the forgotten file again, MainActivity.forgetReceived). Never on the main
+    // ai: thread: it waits for the transfer's worker (XferRx::clear).
+    fun clear() = synchronized(lock) { if (handle != 0L) Native.clear(handle) }
     // ai: Save replays (2026-10-03, MainActivity's replay): the replay (Native.replayNew) handed to the receiver, and to
     // ai: one made while it runs, which hands it each frame it decodes; replayEnd takes replay r back where it is the
     // ai: one handed over, then ends its run on a thread of its own (the frames the decoder still holds for it first,

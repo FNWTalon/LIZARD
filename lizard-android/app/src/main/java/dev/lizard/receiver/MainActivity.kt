@@ -331,8 +331,12 @@ class MainActivity : ComponentActivity() {
     internal fun delete(e: Library.Entry) { if (e.root.isNotEmpty() && e.root == root) forgetReceived(); library.delete(e); files = library.list() }
     internal fun deleteAll() { if (files.any { it.root.isNotEmpty() && it.root == root }) forgetReceived(); library.deleteAll(); files = library.list() }
     // ai: the receiver forgets the file whole (its transfer, ids and held word, Engine.clear), and so does the screen: ended
-    // ai: too since 2026-10-10, so the same file received again stops the camera again
-    private fun forgetReceived() { engine.clear(); root = ""; unfiled = ""; ended = "" }
+    // ai: too since 2026-10-10, so the same file received again stops the camera again. The clear runs in the poll, before
+    // ai: its next stats read (2026-10-10): asked from here, a poll that read the receiver before the clear reached it saw
+    // ai: the deleted file still received and not kept, kept it again from a store it had already left, failed, and so
+    // ai: marked the root unfiled, so the same file received after it was never kept (the S26, 18:46:59).
+    private fun forgetReceived() { clearAsked = true; root = ""; unfiled = ""; ended = "" }
+    private var clearAsked = false   // ai: main thread only: the poll takes it
     internal fun installed(): String = try {
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT).format(Date(packageManager.getPackageInfo(packageName, 0).lastUpdateTime))
     } catch (_: Exception) { "" }
@@ -484,7 +488,8 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(Unit) {
             var tick = 0
             while (true) {
-                val s = withContext(Dispatchers.Default) { engine.stats() }
+                val clearing = clearAsked.also { clearAsked = false }
+                val s = withContext(Dispatchers.Default) { if (clearing) engine.clear(); engine.stats() }
                 raw = s
                 val j = if (s.isEmpty()) null else runCatching { JSONObject(s) }.getOrNull()
                 val r = rxOf(j)

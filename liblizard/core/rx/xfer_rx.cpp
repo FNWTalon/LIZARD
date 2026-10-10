@@ -21,6 +21,7 @@ XferRx::XferRx(const std::string& storeDir, std::function<void(const std::string
 XferRx::~XferRx() {
   { std::lock_guard<std::mutex> lk(mu_); stop_ = true; }
   cv_.notify_all();
+  idle_.notify_all();
   worker_.join();
 }
 
@@ -47,7 +48,14 @@ void XferRx::run() {
       busy_ = true;
     }
     for (size_t k = 0; k < batch.size(); k++) {
-      if (batch[k].kind == 1) rx_->clearAll(); else rx_->block(batch[k].b.data());
+      if (batch[k].kind == 1) {
+        rx_->clearAll();
+        { std::lock_guard<std::mutex> lk(pmu_); rx_->progress(snap_); }
+        { std::lock_guard<std::mutex> lk(mu_); clearsDone_++; }
+        idle_.notify_all();
+        continue;
+      }
+      rx_->block(batch[k].b.data());
       // ai: a snapshot every 256 blocks as well as at the end, so progress moves through a long backlog
       if ((k & 255) == 255) { std::lock_guard<std::mutex> lk(pmu_); rx_->progress(snap_); }
     }
@@ -74,7 +82,11 @@ XferProgress XferRx::progress() {
 
 void XferRx::clear() {
   judge_->clear();
-  push(1, nullptr);
+  std::unique_lock<std::mutex> lk(mu_);
+  queue_.push_back(Item{1, {}});
+  const uint64_t ticket = ++clearsAsked_;
+  cv_.notify_one();
+  idle_.wait(lk, [&] { return clearsDone_ >= ticket || stop_; });
 }
 
 void XferRx::drain() {

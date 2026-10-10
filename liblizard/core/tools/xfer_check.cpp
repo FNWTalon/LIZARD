@@ -109,11 +109,11 @@ int main(int argc, char** argv) {
     fileChecks(r.p, file, root);
     const std::string first = r.p.path;
     // ai: Clear, then the same light again: the dedupe and the worker start over, the finished file goes, and the file
-    // ai: comes back at the same block
+    // ai: comes back at the same block. Progress is read straight after clear(), with no drain: clear() returns once the
+    // ai: worker has cleared (2026-10-10), the app's poll reads it so.
     rx.clear();
-    rx.drain();
     auto p0 = rx.progress();
-    expect(!p0.header && !p0.done && !std::filesystem::exists(first), "clear(): no header, the finished file removed");
+    expect(!p0.header && !p0.done && !std::filesystem::exists(first), "clear(): no header, the finished file removed, read straight after it");
     printf("file stream again, after clear():\n");
     Run r2 = feed(rx, stream);
     fileChecks(r2.p, file, root);
