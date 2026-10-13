@@ -1,52 +1,179 @@
 # LIZARD
 
-LIZARD is an animated 2D code for moving files from a screen to a phone camera: a sender shows a stream of grey
-pictures, and a receiver films them and rebuilds the file. Each frame is a grey picture whose spectrum carries the
-data (an OFDM-style design derived from Focus, Hermans et al., MobiSys 2016), inside a self-describing border. Blocks
-are protected by a soft-decision LDPC code whose rate follows the frequency (7/8 on the lowest, where a capture holds
-the most, 1/2 on the highest) and a CRC, and a file goes as chunks of a fountain code, each chunk
-compressed with zstd where that makes it smaller and each verified by BLAKE3 against the file's root.
+LIZARD moves files from a screen to a phone camera, one way, with no network between them. The sending screen plays
+a stream of grey pictures; the phone films them and rebuilds the file. From a 1080p monitor to a recent phone it has
+carried up to about 4 MB/s (see [Status](#status)).
 
 - **Demo:** [fosslabs.dev](https://fosslabs.dev)
 - **How it works:** [an example on video](https://www.youtube.com/watch?v=F-Mie4m9gBQ)
 - **Android app:** [0.2 (alpha)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.2)
 
-Design choices:
-- **Luminance only.** Grey levels, never colour, so any screen and any camera read it the same way.
-- **Degrades instead of failing.** Each frame carries many independently checked blocks. Blur, glare or distance cost
-  some blocks, not the whole frame, where a QR code either decodes or does not.
-- **Self-describing.** A border around the picture names the format, so a receiver reads any stream with no settings
-  and no server; every frame decodes on its own.
-- **GPU first.** A WebGPU decoder (also compiled to Vulkan for Android) does the whole decode on the device, with a
-  small learned finder; a C decoder is the reference and the CPU fallback.
+## The idea
 
-## How it works
+Most screen-to-camera codes (animated QR codes, colour-cell codes) store bits in small squares. The camera has to
+see every square clearly: once the squares blur into each other, through distance, focus or a small camera, the
+whole frame fails at once.
 
-**A frame is a picture of its spectrum.** The sender writes the data as QPSK symbols (two bits each) onto the 2D
-Fourier coefficients of an n x n picture, taken in order of rising spatial frequency, and an inverse transform turns
-them into a grey picture. The picture is 256 to 1536 samples a side, depending on how much the frame carries.
+LIZARD stores bits in the picture's **spatial frequencies** instead. Think of the picture as many striped wave
+patterns added together, from broad, smooth gradients to very fine grain. Where each wave's stripes sit (its phase)
+carries two bits. Blur and distance wipe out fine detail first and leave the broad patterns alone, so a poor capture
+loses only the data on the finest waves and keeps the rest. The code degrades gradually instead of failing all at
+once.
 
-**Low frequencies survive the most.** Blur, distance, a small camera and resampling all eat the high frequencies
-first. So the coefficients are grouped into sub-channels of 320, and blocks are laid out from the centre of the
-spectrum outwards. Each block is 473 bytes: a 4-byte id and 469 bytes of payload, with a CRC-32. Each block is
-LDPC-coded over whole sub-channels at a rate that follows the frequency: 7/8 on the innermost, then 3/4 and 2/3, and
-1/2 on the outermost. A poor capture loses blocks from the outside in, and every block that reads is checked on its
-own.
+Around the picture sits a black and white border. It lets the receiver find the code, work out exactly where it is
+and at what angle, and read a small header that says how the picture is laid out. Every frame decodes on its own,
+and a file is spread across frames with a fountain code, so it does not matter which frames the camera happens to
+catch. Everything is checked: a block counts only if its error correction and its CRC pass, and the file only if its
+BLAKE3 hash matches.
 
-**The border says what is inside.** Round the picture sits a black and white border 15 modules deep: a corner mark
-at each corner, a dark ring, and a band of cells. The band carries a timing track and the format word, which names
-the version and the display rate under a Reed-Solomon code. The border comes in four sizes (rings of 32, 64, 96 or
-128 band cells a side), and any ring can carry any picture. A receiver finds the border, reads the word, and from it
-knows the picture size, the blocks and their code rates. It needs no settings and no server.
+In signal-processing terms this is OFDM, the modulation used by Wi-Fi and 4G/5G, applied to a picture (see
+[Prior work](#prior-work)).
 
-**A file is a fountain.** A file is cut into chunks of 4 MiB. Each chunk is compressed with zstd where that makes it
-shorter and sent as a Wirehair fountain, so any large enough set of its blocks rebuilds it, from any frames in any
-order. Header and manifest blocks in the same stream describe the file, and each chunk is checked against the file's
-BLAKE3 root. Nothing comes back from the receiver.
+## What a frame looks like
 
-**Pilots tie a frame to its time.** Spare slots at the end of the 7/8 and 3/4 blocks carry a known pattern that
-flips with the frame's count. A receiver uses them to correct the grid's alignment, and to tell which neighbouring
-picture leaked into a capture. The Android app uses that to hold its camera in phase with the display.
+```
++--------------------------------------------------------+
+| [#]  corner marks, a dark ring, a band of cells    [#] |   the border: finds the code,
+|    +----------------------------------------------+    |   fixes its geometry, says
+|    |                                              |    |   what is inside
+|    |   the picture: grey, looks like noise.       |    |
+|    |   Its spatial frequencies carry the data:    |    |   the data
+|    |   coarse patterns hold the first blocks,     |    |
+|    |   finer and finer ones the later blocks.     |    |
+|    |                                              |    |
+|    +----------------------------------------------+    |
+| [#]                                                [#] |
++--------------------------------------------------------+
+```
+
+- **The picture** is n x n samples (256 to 1536 a side, depending on how much the frame carries), drawn on the
+  screen at whole pixels. Only data is ever painted inside it.
+- **The border** is 15 modules deep, a module being the border's unit square, as in QR codes. Going inwards:
+  - a **corner mark** at each corner, for finding the code and fixing its perspective;
+  - a **dark ring** all the way round, the line the receiver aligns to;
+  - a **band of cells** holding a **timing track** (a known pattern, different on each side, which tells the
+    receiver which way up the code is and which border size it is looking at) and the **format word** (a 3-byte
+    header under Reed-Solomon protection naming the version, meaning how much data the picture holds, and the
+    sender's frame rate);
+  - a **guard**: the picture's own edges wrapped round it, so that blur affects every part of the picture the same
+    way. In OFDM this is called a cyclic prefix.
+
+## Sending, step by step
+
+1. **Split the file** into 4 MiB chunks, each compressed with zstd where that makes it smaller.
+2. **Fountain-code each chunk** (Wirehair). The encoder can produce as many 469-byte pieces as needed, and any set
+   slightly larger than the chunk rebuilds it, whichever pieces they are. A missed frame costs only time, and nothing
+   ever has to go back to the sender.
+3. **Describe the file** in a header block (name, size, BLAKE3 hash) and manifest blocks (each chunk's hash and
+   size), sent in the same stream as the data.
+4. **Make blocks.** A block is a 4-byte id (which chunk, which piece), 469 bytes of payload and a CRC-32.
+5. **Add error correction.** Each block becomes one LDPC codeword. How much protection it gets depends on where it
+   will sit in the spectrum:
+
+   | where in the spectrum | what it looks like in the picture | survives blur and distance | code rate |
+   |---|---|---|---|
+   | lowest frequencies | broad, smooth shading | best | 7/8 (1 bit in 8 is protection) |
+   | lower middle | | | 3/4 |
+   | upper middle | | | 2/3 |
+   | highest frequencies | the finest grain | worst | 1/2 (half the bits are protection) |
+
+   The code rate is the share of the sent bits that is data. About 39% of the frequencies get 7/8, 15% get 2/3,
+   20% get 1/2, and the rest 3/4.
+6. **Interleave and scramble.** Each codeword's bits are spread over all of its frequencies by a fixed permutation,
+   then XORed with a pseudo-random sequence, so that neither a burst of damage nor repetitive data lines up.
+7. **Turn bits into waves.** Each pair of bits picks one of four phases (QPSK) for one frequency, the lowest
+   frequencies first. A few known symbols, the **pilots**, fill each block's spare slots.
+8. **Make the picture.** An inverse 2D FFT adds all the waves into one grey image; the rare extremes are clipped, and
+   the image is scaled onto the screen's pixels.
+9. **Add the border and show the frame**, typically 60 pictures a second on a steady schedule.
+
+## Receiving, step by step
+
+1. **Take brightness only:** the camera's luma (Y) plane, read straight from its buffer. The phone's image
+   enhancements (sharpening, noise reduction and the like) are switched off, since each one is a filter over the code.
+2. **Find the code.** Locate the corner marks, then test each candidate against the timing track in every
+   orientation and border size.
+3. **Register (deskew).** Work out exactly where every point of the code falls in the camera image, allowing for
+   perspective, lens distortion and the display's own scaling, to about a tenth of a module.
+4. **Read the format word.** It gives the version, and from that where every block lies and which code rate it uses.
+   If a frame's word cannot be read, the last word that was read is used.
+5. **Sample and transform.** Read the picture at the sender's sample positions and take a 2D FFT, back to
+   frequencies. Remove the screen's uneven brightness, and use the pilots to correct any offset of a fraction of a
+   sample that registration left behind.
+6. **Estimate confidence.** For each group of 320 frequencies (a sub-channel), estimate the signal and the noise, and
+   turn each received bit into a confidence value rather than a bare 0 or 1 (a soft decision).
+7. **Decode.** Undo the scrambling and the interleaving, run the LDPC decoder, and keep a block only if every parity
+   check holds and its CRC matches.
+8. **Rebuild the file.** Blocks go to their chunk's fountain decoder, in any order and from any frames. Each rebuilt
+   chunk is decompressed and checked against its hash; the file is handed over only when every chunk checks.
+9. **Stay in step with the screen** (Android app). The camera and the screen both run near 60 Hz but drift apart, and
+   a capture taken across a change of picture sees two pictures blended. The pilots show how much of the previous and
+   of the next picture leaked into each capture, and the app delays one camera frame now and then to keep its
+   captures in the middle of each picture.
+
+## Why it is built this way
+
+- **Grey only, never colour.** Colour passes through the camera's colour filter mosaic, demosaicing and colour
+  processing, and every screen shows colours differently. Brightness is what any camera reports most reliably.
+- **Frequencies rather than cells.** In the frequency domain, blur simply weakens each frequency by some amount,
+  which the receiver measures and allows for, and it takes the finest frequencies first. A code made of cells needs
+  every cell resolved, and below that resolution it reads nothing. Measured side by side, a cell code carried more
+  while every cell was sharp and nothing past that point; LIZARD keeps reading, with fewer blocks.
+- **Code rate by frequency.** The lower frequencies arrive cleaner than the higher ones, so they carry more data and
+  less protection, and the higher ones the reverse.
+- **Soft-decision LDPC.** The decoder uses how sure it is of each bit, not just its value, which lets the same parity
+  correct far more errors.
+- **One large code with many blocks**, rather than many small codes side by side: each small code would need its own
+  finder marks and quiet zone, while one code spends its border once.
+- **Everything in the border, nothing inside.** The picture is a sum of waves that each span all of it, so cutting a
+  hole in it for an alignment mark costs much more than the hole's area (about eight times, measured). Finding and
+  deskewing use the border alone.
+- **A fountain and hashes, no back channel.** The camera can miss any frames; the file still arrives, and it is
+  verified end to end.
+- **The decoder on the GPU.** Each frame needs finding, registering, a 2D FFT of up to 1536 x 1536 samples and LDPC
+  decoding, up to 120 frames a second on a phone; a phone's GPU does that in a few milliseconds a frame. A C decoder
+  is the reference and runs where there is no suitable GPU.
+
+## Words used here
+
+| term | meaning | usual name elsewhere |
+|---|---|---|
+| frame | one picture shown on the screen | symbol |
+| module | the border's unit square | module (as in QR) |
+| picture | the grey square inside the border | data area |
+| coefficient | one 2D spatial frequency of the picture, carrying two bits as one of four phases | subcarrier carrying a QPSK symbol |
+| sub-channel | 320 consecutive coefficients, ordered from coarse to fine | group of subcarriers |
+| block | 473 bytes (a 4-byte id and 469 of payload) plus a CRC-32, sent as one LDPC codeword over 7 to 12 sub-channels | codeword, packet |
+| code rate | the share of the sent bits that is data | code rate |
+| rate profile | which code rate each block gets, by its frequencies | unequal error protection |
+| version, LIZARD-k | how much a frame holds: LIZARD-k has k sub-channels and is version k / 8. LIZARD-592 holds 72 blocks, about 33.8 KB | QR version (capacity) |
+| ring | the border's size: 32, 64, 128 or 256 band cells a side, 128 by default. It does not depend on the version: any ring can carry any picture. A larger ring gives the picture more of the screen but asks for a steadier camera | none (a QR code's size follows its version) |
+| format word | the short Reed-Solomon-coded header in the border, naming the version and the frame rate | format information |
+| timing track | the known pattern in the border's band | timing pattern |
+| corner mark | the square at each corner of the border | finder pattern |
+| guard | the picture's edges wrapped round it | cyclic prefix |
+| pilots | known symbols in each block's spare slots, flipped by the picture's count | pilot symbols |
+| bit map, whitening | the fixed permutation and the scrambling of a codeword's bits | interleaver, scrambler |
+| registration | working out where each point of the code falls in the camera image | deskewing, geometric correction |
+| soft values | how confident the receiver is of each bit | log-likelihood ratios (LLRs) |
+| chunk | a 4 MiB piece of the file, with its own fountain and hash | |
+| fountain | an erasure code that rebuilds a chunk from any set of pieces slightly larger than it | fountain (rateless) code |
+| header, manifest | the blocks that describe the file and each chunk | |
+| held word | the last format word read, used for a frame whose own word cannot be read | |
+| 2:1 | two codes side by side, read as the two halves of each camera frame | |
+| test stream | frames of known content, used for measuring | |
+
+## Prior work
+
+- **PixNet** (Perli, Ahmed and Katabi, MobiCom 2010) sent OFDM from an LCD to a camera: many small codes tiled across
+  the screen, each with a cyclic prefix, and error correction set by how strongly blur weakens each frequency. It
+  used DSLR cameras with optical zoom.
+- **FOCUS** (Hermans et al., MobiSys 2016) made one OFDM code whose spectrum is split into sub-channels ordered by
+  frequency, so a weaker camera decodes the inner ones; each sub-channel carried its own Reed-Solomon-coded fragment.
+
+LIZARD keeps FOCUS's modulation (frequency-ordered sub-channels of QPSK) and adds the self-describing border, soft
+LDPC with a code rate that follows the frequency, the interleaving, the pilots and the camera's phase lock, the
+transfer in the light, and the GPU decoder.
 
 ## The format
 
@@ -71,9 +198,9 @@ The format is not frozen: a sender and a receiver need the same release.
 
 ## The pipelines
 
-Two decoders read the format, one on the CPU and one on the GPU, and each sender paints on either. Every frame is
-decoded on its own. The one thing a receiver carries between frames is the last format word it read: a frame whose
-own word is unreadable is decoded at that held word.
+The technical detail behind the two step-by-step lists above. Two decoders read the format, one on the CPU and one
+on the GPU, and each sender paints on either. Every frame is decoded on its own. The one thing a receiver carries
+between frames is the last format word it read: a frame whose own word is unreadable is decoded at that held word.
 
 ### Receiving on the CPU (`liblizard/src/`)
 
