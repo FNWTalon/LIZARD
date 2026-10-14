@@ -5,7 +5,7 @@ a stream of grey pictures; the phone films them and rebuilds the file. From a 10
 carried up to about 4 MB/s (see [Status](#status)).
 
 - **Demo:** [fosslabs.dev](https://fosslabs.dev)
-- **How it works:** [an example on video](https://www.youtube.com/watch?v=F-Mie4m9gBQ)
+- **How it works:** [an example on video](https://www.youtube.com/watch?v=BsEVOV1swhI)
 - **Android app:** [0.2 (alpha)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.2)
 
 ## The idea
