@@ -32,18 +32,33 @@ In signal-processing terms this is OFDM, the modulation used by Wi-Fi and 4G/5G,
 ## What a frame looks like
 
 ```
-+--------------------------------------------------------+
-| [#]  corner marks, a dark ring, a band of cells    [#] |   the border: finds the code,
-|    +----------------------------------------------+    |   fixes its geometry, says
-|    |                                              |    |   what is inside
-|    |   the picture: grey, looks like noise.       |    |
-|    |   Its spatial frequencies carry the data:    |    |   the data
-|    |   coarse patterns hold the first blocks,     |    |
-|    |   finer and finer ones the later blocks.     |    |
-|    |                                              |    |
-|    +----------------------------------------------+    |
-| [#]                                                [#] |
-+--------------------------------------------------------+
+██████ ████████████████████████████████████████ ██████
+██████                                          ██████
+██████ █ ██ █  █ █ ██  █ █  ██ █ █ ██ █  █ █ ██ ██████
+██                                                  ██
+██  █    ┌──────────────────────────────────┐    █  ██
+██       │                                  │       ██
+██  █    │                                  │    █  ██
+██  █    │                                  │       ██
+██       │                                  │       ██
+██  █    │           the picture            │    █  ██
+██       │                                  │       ██
+██       │     grey, looks like noise;      │    █  ██
+██  █    │     its spatial frequencies      │       ██
+██       │          carry the data          │    █  ██
+██  █    │                                  │    █  ██
+██       │                                  │       ██
+██  █    │                                  │       ██
+██  █    │                                  │    █  ██
+██       └──────────────────────────────────┘       ██
+██                                                  ██
+██████  █ █ ██  █ █  ██ █ █ ██ █  █ █ ███ ██ █  ██████
+██████                                          ██████
+██████ ████████████████████████████████████████ ██████
+
+██████  corner mark (one at each corner)
+██      dark ring, all the way round
+█ ██ █  band of cells: timing track and format word
 ```
 
 - **The picture** is n x n samples (256 to 1536 a side, depending on how much the frame carries), drawn on the
