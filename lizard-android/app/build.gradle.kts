@@ -16,11 +16,11 @@ android {
     compileSdk = 36
     ndkVersion = "27.1.12297006"
     defaultConfig {
-        applicationId = "dev.lizard.receiver"
+        applicationId = "dev.fosslabs.lizard"
         minSdk = 29
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2"
+        versionCode = 3
+        versionName = "0.3"
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {
             cmake {

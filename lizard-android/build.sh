@@ -59,7 +59,7 @@ case $step in
   install)
     adb get-state >/dev/null || { echo "no phone on adb (plug it in, USB debugging on)" >&2; exit 1; }
     ./gradlew installDebug "$@"
-    adb shell pm grant dev.lizard.receiver android.permission.CAMERA
+    adb shell pm grant dev.fosslabs.lizard android.permission.CAMERA
     ;;
   *)
     sed -n 2,16p ./build.sh; exit 2   # ai: the script's own folder, where it has changed to
