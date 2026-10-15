@@ -1,12 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- ai: The receiver app. configChanges: a rotation keeps the activity, the camera session
-     and the receiver; Compose relays out. INTERNET: the rig's dev log only (Settings devlog). singleTop: the launcher
+     and the receiver; Compose relays out. singleTop: the launcher
      shortcut (dynamic, MainActivity.publishShortcut: a static one is started with FLAG_ACTIVITY_CLEAR_TASK) and am
      start with the extra screen=receive reach the running activity (onNewIntent). The FileProvider hands the received
      files (filesDir/library, Library.kt) to the app that opens or shares one. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.hardware.camera" android:required="true" />
     <application
         android:label="LIZARD"

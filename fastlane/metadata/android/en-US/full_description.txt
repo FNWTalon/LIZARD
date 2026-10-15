@@ -1,0 +1,18 @@
+<p>LIZARD moves files from a screen to a phone's camera, one way, with no network between them. The sending screen plays a stream of grey pictures and the phone films them and rebuilds the file. It can send too: the phone's own screen shows the code for another device to read.</p>
+
+<p>Each picture stores its data in its spatial frequencies, so blur and distance cost some of a frame's blocks rather than the whole frame, and a file is spread over many frames with a fountain code, so it does not matter which frames the camera catches.</p>
+
+<ul>
+<li>Receive files with the camera, and send files from the phone's screen.</li>
+<li>No network, no account, no tracking: everything travels through the light.</li>
+<li>Every block is checked by its error correction and a CRC, and every file by its BLAKE3 hash.</li>
+<li>Decodes on the GPU through Vulkan where the phone supports it, and on the CPU otherwise.</li>
+<li>Keeps the camera in step with the sending screen using the code's own pilot symbols.</li>
+<li>Grey levels only, so any screen and any camera read it the same way.</li>
+</ul>
+
+<p>Senders: the web page at https://fosslabs.dev, the LIZARD desktop sender, or this app on another phone. From an ordinary monitor it reads about 1 to 1.6 MB/s; with two codes side by side on a recent phone, up to about 4 MB/s.</p>
+
+<p>Requirements: Android 10 or later, a 64-bit ARM phone and a back camera.</p>
+
+<p>The format, its specification and all the code are open: https://github.com/FNWTalon/LIZARD</p>
