@@ -82,7 +82,7 @@ val fonts by tasks.registering(Sync::class) {
         into("fonts")
     }
 }
-sourceSets.main { resources.srcDir(bundle); resources.srcDir(buildInfo); resources.srcDir(fonts) }
+sourceSets.main { resources.srcDir(bundle); resources.srcDir(buildInfo); resources.srcDir(fonts); kotlin.srcDir(layout.projectDirectory.dir("../liblizard/kotlin")) }
 
 // ai: after packageDeb: the native library's own Depends added (packaging/deb-deps.sh says which and why)
 val debDeps by tasks.registering(Exec::class) {

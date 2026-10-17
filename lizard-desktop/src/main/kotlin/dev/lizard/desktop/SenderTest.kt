@@ -10,7 +10,8 @@ import kotlin.system.exitProcess
 // ai: printed to stdout as one JSON line {"present": {...}, "sender": {...}} and the app exits 0. Any failure prints
 // ai: "FAIL <why>" and exits 1. Keys: secs; codes 1 or 2; enc auto, gpu or cpu; blocks 0 (auto) to 128; fps 1 to 60;
 // ai: size 25 to 100 (%); gap 0 to 64 (modules); ring auto, 32, 64, 96 or 128; full 0 or 1 (the window full screen, the
-// ai: compositor bypassed); file=<path> (a file in place of the test stream, as the file row's pick gives it); steps
+// ai: compositor bypassed); file=<path>[:<path>...] (files or folders in place of the test stream, as a pick or a drop
+// ai: gives them: one file as itself, else one tar, 2026-10-16); steps
 // ai: (2026-10-04, the app's own controls, which only a hand had moved): comma separated <seconds>:<action>, from when
 // ai: the presenter first presents, each as the control does it: full (Fullscreen, F11), max (the window maximized), pause, resume, stop, start,
 // ai: size=N, gap=N, codes=N, blocks=N (0 auto), fps=N (each a slider's release), enc=auto|gpu|cpu, rail, press (Start as
@@ -54,11 +55,12 @@ class SenderTest private constructor(private val secs: Double, private val kv: M
     // ai: the settings named
     fun apply(s: SendState) {
         s.test = true
-        kv["file"]?.let { path ->
-            val f = java.io.File(path)
-            if (!f.isFile) fail("LIZ_SENDER_TEST: file=$path is no file")
+        kv["file"]?.let { paths ->
+            val fs = paths.split(':').filter { it.isNotEmpty() }.map { java.io.File(it) }
+            fs.firstOrNull { !it.exists() }?.let { fail("LIZ_SENDER_TEST: file=$it is not there") }
+            if (fs.isEmpty()) fail("LIZ_SENDER_TEST: file= names nothing")
             s.test = false
-            s.pick(f)
+            s.pick(fs)
         }
         int("codes", 1..2)?.let { s.codes = it }
         kv["enc"]?.let { if (it in setOf("auto", "gpu", "cpu")) s.enc = it else fail("LIZ_SENDER_TEST: enc=$it") }
@@ -74,8 +76,11 @@ class SenderTest private constructor(private val secs: Double, private val kv: M
         running = s
         if (s.loadError.isNotEmpty()) fail(s.loadError)
         if (int("full", 0..1) == 1) s.toggleFull()
-        s.start()
+        // ai: a pick is walked off the UI thread (SendState.pick): Start once it is in
         val t0 = System.nanoTime()
+        while (s.reading) { if (System.nanoTime() - t0 > START_SECS * 1e9) fail("the files were not read in ${START_SECS.toInt()} s"); delay(50) }
+        (s.phase as? SendState.Phase.Error)?.let { fail(it.why) }
+        s.start()
         while (!s.presenting) {
             (s.phase as? SendState.Phase.Error)?.let { fail(it.why) }
             if (s.phase == SendState.Phase.Idle) fail("the sender did not start")

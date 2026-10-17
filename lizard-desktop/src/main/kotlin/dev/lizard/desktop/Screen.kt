@@ -100,7 +100,7 @@ private fun BrightnessTip(s: SendState, owner: ComposeWindow) {
 private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
     val idle = !s.sending
     // ai: the code area's idle look follows the file, the payload and the run
-    LaunchedEffect(s.file, s.test, s.phase, s.full) { s.canvas.idleLook() }
+    LaunchedEffect(s.choice, s.reading, s.test, s.phase, s.full) { s.canvas.idleLook() }
     Spacer(Modifier.height(12.dp))
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (idle) Btn("Start", Kind.Primary, enabled = s.canStart, modifier = Modifier.weight(1f)) { s.requestStart() }

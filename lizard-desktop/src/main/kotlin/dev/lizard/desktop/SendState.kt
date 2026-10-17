@@ -3,6 +3,9 @@ package dev.lizard.desktop
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.lizard.tar.Bundle
+import dev.lizard.tar.TAR_TYPE
+import dev.lizard.tar.TarEntry
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -23,11 +26,13 @@ import java.awt.dnd.DropTarget
 import java.awt.dnd.DropTargetAdapter
 import java.awt.dnd.DropTargetDropEvent
 import java.awt.geom.Path2D
+import javax.swing.JFileChooser
 import javax.swing.SwingUtilities
 import java.awt.Cursor
 import java.awt.EventQueue
 import java.awt.Graphics
 import java.awt.Point
+import java.awt.Rectangle
 import java.awt.Toolkit
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
@@ -49,9 +54,10 @@ import kotlin.math.roundToInt
 // ai: it has a window (addNotify), is shown or resized, and, before that window goes (removeNotify: a dispose, a window
 // ai: made again), stops the presenter on it. A click on it leaves full screen, as a tap on the web's code does; the
 // ai: Idle (2026-10-07, the web's hint in the middle of its page and the app's code box) it
-// ai: is the file's area: the soft fill, the file icon and "Choose a file", or the file's name once one is chosen, or
-// ai: "Test stream"; a click opens the file dialog and a file dropped on it is taken (the test stream off). AWT paints
-// ai: that itself, since nothing of Compose can be drawn over a heavyweight canvas.
+// ai: is the file's area: the soft fill, the file icon and "Choose files" over the link "or a folder", or the choice's
+// ai: name once one is chosen, or "Test stream"; a click opens the file dialog (the link, the folder chooser), and files
+// ai: and folders dropped on it are taken (the test stream off; several, or a folder, one tar since 2026-10-16). AWT
+// ai: paints that itself, since nothing of Compose can be drawn over a heavyweight canvas.
 class CodeCanvas(private val s: SendState) : Canvas() {
     @Volatile var presenting = false
 
@@ -61,7 +67,9 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         addComponentListener(object : ComponentAdapter() { override fun componentResized(e: ComponentEvent) = s.areaChanged() })
         // ai: shown or hidden with its parents (Compose's SwingPanel sizes it before it shows it)
         addHierarchyListener { e -> if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) s.areaChanged() }
-        addMouseListener(object : MouseAdapter() { override fun mouseClicked(e: MouseEvent) { if (s.full) s.toggleFull() else if (chooses()) s.chooseFile() } })
+        addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) { if (s.full) s.toggleFull() else if (chooses()) { if (folderLink?.contains(e.point) == true) s.chooseFolder() else s.chooseFile() } }
+        })
         dropTarget = DropTarget(this, object : DropTargetAdapter() {
             override fun drop(e: DropTargetDropEvent) {
                 if (s.sending) { e.rejectDrop(); return }
@@ -69,7 +77,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
                 val taken = runCatching {
                     @Suppress("UNCHECKED_CAST")
                     val files = e.transferable.getTransferData(DataFlavor.javaFileListFlavor) as List<File>
-                    files.firstOrNull { it.isFile }?.let { if (s.test) s.chooseTest(false); s.pick(it); true } ?: false
+                    if (files.isEmpty()) false else { if (s.test) s.chooseTest(false); s.pick(files); true }
                 }.getOrDefault(false)
                 e.dropComplete(taken)
             }
@@ -77,6 +85,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     }
 
     private fun chooses() = !s.sending && !s.test
+    private var folderLink: Rectangle? = null   // ai: where "or a folder" was painted, while it shows
 
     // ai: the look for the state: a hand over the file's area, the default cursor otherwise (shown in full screen too,
     // ai: 2026-10-07)
@@ -104,10 +113,21 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         g2.stroke = BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
         val t = g2.transform
         g2.translate(cx - 12, cy - 12); g2.draw(icon); g2.transform = t
-        val text = if (s.test) "Test stream" else s.file?.name ?: "Choose a file"
+        val text = if (s.test) "Test stream" else if (s.reading) "Reading the files" else s.choice?.name ?: "Choose files"
         g2.font = Font(Font.SANS_SERIF, Font.PLAIN, 14)
         val fm = g2.fontMetrics
         g2.drawString(text, (cx - fm.stringWidth(text) / 2.0).toFloat(), (cy + 12 + 8 + fm.ascent).toFloat())
+        // ai: a folder instead (the web's hint link), underlined in the text's colour under the line
+        folderLink = null
+        if (chooses() && !s.reading) {
+            val link = "or a folder"; val w = fm.stringWidth(link)
+            val x = (cx - w / 2.0).toInt(); val base = (cy + 12 + 8 + fm.ascent + fm.height + 4).toInt()
+            g2.color = java.awt.Color(0x11, 0x11, 0x11)
+            g2.drawString(link, x, base)
+            g2.stroke = BasicStroke(1f)
+            g2.drawLine(x, base + 2, x + w, base + 2)
+            folderLink = Rectangle(x - 8, base - fm.ascent - 4, w + 16, fm.height + 8)
+        }
     }
     override fun addNotify() { super.addNotify(); EventQueue.invokeLater { s.areaChanged() } }
     override fun removeNotify() { s.canvasGone(); super.removeNotify() }
@@ -133,7 +153,11 @@ class SendState {
     // ai: what is painted: the format configured
     data class Format(val n: Int, val subch: Int, val span: Int, val fps: Int, val codes: Int, val gap: Int, val painter: Int)
 
-    var file by mutableStateOf<File?>(null)
+    // ai: What Start sends (2026-10-16): one file as itself, or several files or a folder as one tar
+    // ai: (../liblizard/kotlin/Tar.kt Bundle, the web sender's rule), the items as picked; `reading` while they are walked
+    var choice by mutableStateOf<Bundle?>(null)
+    private var picks: List<File> = emptyList()
+    var reading by mutableStateOf(false)
     var fileSize by mutableStateOf(0L)
     // ai: the file's bytes as they go, every chunk's zstd frame or its own (the sender's stats, 2026-10-05); 0 before a send
     val sentBytes: Long get() = sender?.num("sentBytes")?.toLong() ?: 0L
@@ -186,7 +210,7 @@ class SendState {
 
     val presenting get() = p != 0L
     val sending get() = phase == Phase.On || phase == Phase.Preparing
-    val canStart get() = loadError.isEmpty() && !sending && (test || file != null)
+    val canStart get() = loadError.isEmpty() && !sending && (test || (choice != null && !reading))
     val railShown get() = if (full) !fullOpen else collapsed
     val ringIndex get() = if (ring in 0..3) ring else Pick.RING_DEFAULT
     // ai: a symbol's room in the area, device px, the Size slider's share of it (send.mjs room)
@@ -206,18 +230,50 @@ class SendState {
     val sentBlocks: Int get() = sender?.num("blocks")?.toInt()?.takeIf { it > 0 } ?: fmt?.let { Native.blocksFor(it.subch) } ?: 0
     val tiers: String get() = sender?.str("tiers").orEmpty()
 
-    // ai: the platform's own file dialog (GTK's on Linux), one file, over the sender's window (the canvas's frame)
+    // ai: the platform's own file dialog (GTK's on Linux), one file or several, over the sender's window (the canvas's
+    // ai: frame); a folder through Swing's chooser, which AWT's dialog cannot pick
     fun chooseFile() {
-        val d = FileDialog(SwingUtilities.getWindowAncestor(canvas) as? Frame, "Choose a file", FileDialog.LOAD)
-        d.isMultipleMode = false
+        val d = FileDialog(SwingUtilities.getWindowAncestor(canvas) as? Frame, "Choose files", FileDialog.LOAD)
+        d.isMultipleMode = true
         d.isVisible = true
-        d.files.firstOrNull()?.let { pick(it) }
+        if (d.files.isNotEmpty()) pick(d.files.toList())
+    }
+    fun chooseFolder() {
+        val c = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY; dialogTitle = "Choose a folder" }
+        if (c.showOpenDialog(SwingUtilities.getWindowAncestor(canvas)) == JFileChooser.APPROVE_OPTION) c.selectedFile?.let { pick(listOf(it)) }
     }
 
-    fun pick(f: File) {
-        file = f; fileSize = f.length()
+    // ai: Files and folders as picked, walked off the UI thread: each folder's tree under its own name, links skipped
+    // ai: (never followed, so a loop of them cannot make a bundle without end).
+    fun pick(items: List<File>) {
+        val my = ++picking
+        reading = true; choice = null; picks = items; fileSize = 0
         if (phase is Phase.Error) phase = Phase.Idle
+        canvas.idleLook()
+        thread(name = "lizard-send-pick", isDaemon = true) {
+            val b = runCatching { entriesOf(items).takeIf { it.isNotEmpty() }?.let { Bundle(it) } }
+            EventQueue.invokeLater {
+                if (my != picking) return@invokeLater
+                reading = false
+                b.onSuccess { choice = it; fileSize = it?.size ?: 0 }.onFailure { phase = Phase.Error("The files could not be read: ${it.message}") }
+                canvas.idleLook()
+            }
+        }
     }
+    private var picking = 0
+    private fun entriesOf(items: List<File>): List<TarEntry> {
+        val out = ArrayList<TarEntry>()
+        fun walk(f: File, rel: String) {
+            if (Files.isSymbolicLink(f.toPath())) return
+            if (f.isDirectory) { out.add(TarEntry(rel, mtimeSec = f.lastModified() / 1000)); f.listFiles()?.sortedBy { it.name }?.forEach { walk(it, "$rel/${it.name}") } }
+            else if (f.isFile) out.add(TarEntry(rel, f.length(), f.lastModified() / 1000) { f.inputStream() })
+        }
+        for (i in items) walk(i, i.name)
+        return out
+    }
+    // ai: a bundle's tar, written for the sender to map (txCreate maps a file) and deleted when the run ends
+    private var tarFile: File? = null
+    private fun dropTar() { tarFile?.delete(); tarFile = null }
 
     // ai: Start as the person presses it (the column's Start, the rail's play): before the first send, the brightness tip
     // ai: (2026-10-04; the web sender's the same): the monitor's contrast and brightness are the channel's and no app
@@ -238,23 +294,31 @@ class SendState {
 
     fun start() {
         if (!canStart) return
-        val f = file
+        val b = choice
         runTest = test
-        runName = if (test) "the test stream" else f!!.name
-        val path = if (test) "" else f!!.path
-        val type = if (test) "" else runCatching { Files.probeContentType(f!!.toPath()) }.getOrNull() ?: ""
+        runName = if (test) "the test stream" else b!!.name
+        val one = if (test || b!!.single == null) null else picks[0]
+        dropTar()
+        val tar = if (test || one != null) null else File(System.getProperty("user.home"), ".cache/lizard-sender/send-${ProcessHandle.current().pid()}-${gen + 1}.tar").also { tarFile = it }
+        val path = one?.path ?: tar?.path ?: ""
+        val type = if (test) "" else if (one == null) TAR_TYPE else runCatching { Files.probeContentType(one.toPath()) }.getOrNull() ?: ""
         // ai: the device is made whatever the encoder (the presenter shows the code from it, 2026-10-07); the GPU
         // ai: painter's pipelines come with it
         val prepare = true
         val my = ++gen
         phase = Phase.Preparing; paused = false
         thread(name = "lizard-send-prep", isDaemon = true) {
+            val wrote = if (tar == null) null else runCatching {
+                tar.parentFile.mkdirs(); tar.deleteOnExit()
+                tar.outputStream().buffered(1 shl 20).use { b!!.write(it) }
+            }.exceptionOrNull()
+            if (wrote != null) { tar?.delete(); EventQueue.invokeLater { if (my == gen) phase = Phase.Error("The files could not be read: ${wrote.message}") }; return@thread }
             val hnd = Native.txCreate(path, if (runTest) "" else runName, type)
             val err = if (hnd == 0L) Native.txError() else ""
             // ai: the GPU painter's device and pipelines made here, off the UI thread that configures
             val why = if (hnd != 0L && prepare) Native.txPrepare(hnd, Native.assets) else ""
             EventQueue.invokeLater {
-                if (my != gen) { if (hnd != 0L) Native.txDestroy(hnd); return@invokeLater }   // ai: stopped meanwhile
+                if (my != gen) { if (hnd != 0L) Native.txDestroy(hnd); tar?.delete(); return@invokeLater }   // ai: stopped meanwhile
                 if (hnd == 0L) { phase = Phase.Error("This file cannot be sent: $err"); return@invokeLater }
                 h = hnd; gpuWhy = why; prepared = prepare; fmt = null; phase = Phase.On
                 if (why.isNotEmpty()) System.err.println("send: no GPU painter: $why")
@@ -272,6 +336,7 @@ class SendState {
         canvas.repaint()
         if (h != 0L && h != preparing) Native.txDestroy(h)
         h = 0L
+        dropTar()
         if (sending) phase = Phase.Idle
         paused = false; fmt = null; present = null; sender = null
     }
@@ -401,7 +466,8 @@ class SendState {
         Phase.Preparing -> "Preparing $runName"
         Phase.On -> if (paused) "Paused" else "Sending $runName"
         // ai: idle, the web's "<name>, <size>" (the bytes that go, once the sender says) or the app's "The test stream"
-        Phase.Idle -> loadError.ifEmpty { if (test) "The test stream" else file?.let { "${it.name}, ${Fmt.bytes(if (sentBytes > 0) sentBytes else fileSize)}" } ?: "" }
+        Phase.Idle -> loadError.ifEmpty { if (test) "The test stream" else if (reading) "Reading the files" else choice?.let {
+            "${it.name}, ${if (it.single == null) "${it.files} ${if (it.files == 1) "file" else "files"}, " else ""}${Fmt.bytes(if (sentBytes > 0) sentBytes else fileSize)}" } ?: "" }
     }
 
     // ai: The figures (the web's #nums): the rate the pictures actually presented carry (the presenter's fresh pictures a

@@ -2,7 +2,8 @@
 // ai: Standalone (2026-09-26): it picks its format,
 // ai: encodes and paints the test stream or a file picked from this device with no server. Once a second it posts
 // ai: what it painted and its config to the rig as a development log (devlog.mjs), best effort, never awaited.
-// ai: For a user the page is a file: choose or drop one, Start, Fullscreen, Stop, the version picked from the window over
+// ai: For a user the page is a file, several or a folder (bundled as one tar, tar.mjs): choose or drop them, Start,
+// ai: Fullscreen, Stop, the version picked from the window over
 // ai: the whole ladder (up to LIZARD-560 until 2026-09-29, APP_TOP). The lab's switches are in Settings and Developer
 // ai: Tools, their ids the URL presets.
 import { init as initOb } from "../liblizard/sim/ob.mjs";
@@ -10,6 +11,7 @@ import { DEFAULT_LOG2 } from "../liblizard/sim/xfer.mjs";
 import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, versionOf, blocksFor } from "../liblizard/sim/lizard_pick.mjs";
 import { GAP_MODULES } from "../liblizard/gpu/encoder.mjs";
 import { logPost } from "./devlog.mjs";
+import { bundle } from "./tar.mjs";
 import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, collapser, sideResizer } from "./ui.mjs";
 
 // The room a format needs holds the codec's margin (src/focus.h FOCUS_QUIET), and only the codec knows it.
@@ -358,17 +360,19 @@ function paintGPU(fr) {
   return true;
 }
 
-// ai: What Start sends: the file in #file (the one source: a drop lands there too), or the test stream.
-const isTest = () => $("payload").value === "test", fileOf = () => $("file").files[0] ?? null;
+// ai: What Start sends: the payload chosen (tar.mjs bundle: one file as itself, several files or a folder as one tar),
+// ai: or the test stream. A pick through #file or #folder, or a drop, sets it; nothing else does.
+let chosen = null;
+const isTest = () => $("payload").value === "test";
 
 // ai: The states, few on purpose: idle (nothing to send) and ready (Start offered), then preparing and sending (Stop
 // ai: offered in Start's place, the same slot, so the controls keep their height), and an error (red, until the next
 // ai: start or pick).
 function showReady() {
-  const f = fileOf();
+  const f = chosen;
   $("go").hidden = false; $("go").disabled = !isTest() && !f; $("stop").hidden = true;
   $("hint").hidden = isTest(); $("nums").textContent = "";
-  say($("state"), isTest() ? "The test stream" : f ? `${f.name}, ${bytes(f.size)}` : "");
+  say($("state"), isTest() ? "The test stream" : f ? `${f.name}, ${f.bundled ? `${f.files} ${f.files === 1 ? "file" : "files"}, ` : ""}${bytes(f.size)}` : "");
   showRail();
 }
 // ai: Pause and resume (the rail's button, and Resume beside Stop while paused, so the open column has it too).
@@ -437,7 +441,7 @@ document.addEventListener("visibilitychange", () => {
 
 async function start() {
   stop();
-  const test = isTest(), file = test ? null : fileOf();
+  const test = isTest(), file = test ? null : chosen;
   if (!test && !file) { showReady(); return; }
   const what = test ? "the test stream" : file.name, my = gen;
   running = true;
@@ -446,8 +450,8 @@ async function start() {
   // ai: A browser reads a chosen file only as it was when chosen: once it has been saved again, moved or replaced
   // ai: on disk the read is refused (NotReadableError, in the browser's own words "permission problems that have
   // ai: occurred after a reference to a file was acquired"). The page says what to do about it.
-  const bytes = test ? null : new Uint8Array(await file.arrayBuffer().catch((e) => {
-    throw e?.name === "NotReadableError" || e?.name === "NotFoundError" ? new Error(`${file.name} has changed, moved or gone since it was chosen: choose it again`) : e;
+  const bytes = test ? null : new Uint8Array(await file.blob.arrayBuffer().catch((e) => {
+    throw e?.name === "NotReadableError" || e?.name === "NotFoundError" ? new Error(`${file.bundled ? `A file in ${file.name}` : file.name} has changed, moved or gone since it was chosen: choose it again`) : e;
   }));
   if (my !== gen) return;   // ai: stopped, or started again, while the file was read
   // ai: The spec after the read, so the room is the one the preparing controls left.
@@ -474,7 +478,7 @@ async function start() {
   }
   // ai: What is painted, for the development log only: nothing reads it to decode. transfer tells one start from the
   // ai: next in the development log; a re-pick keeps it.
-  cfg = { spec: s, label: made.label, mode: bytes ? "file" : "test", usefulBytes: made.usefulBytes, blocksPerFrame: made.blocksPerFrame, codes, gap, fps: +$("fps").value, encoder: gcfg ? "gpu" : "wasm", transfer: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, ...(bytes ? { fileBytes: bytes.length, name: file.name } : {}) };
+  cfg = { spec: s, label: made.label, mode: bytes ? "file" : "test", usefulBytes: made.usefulBytes, blocksPerFrame: made.blocksPerFrame, codes, gap, fps: +$("fps").value, encoder: gcfg ? "gpu" : "wasm", transfer: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, ...(bytes ? { fileBytes: bytes.length, name: file.name, ...(file.bundled ? { files: file.files } : {}) } : {}) };
   shown = s; lap = made.xfer?.lap ?? 0; dataSent = 0; dataWin = 0; fileBytes = bytes?.length ?? 0; sentBytes = made.xfer?.sent ?? 0;
   showEnc();
   showBlocks();
@@ -665,17 +669,28 @@ $("firstCancel").onclick = () => $("first").close();
 $("go").onclick = go;
 $("stop").onclick = () => { stop(); showReady(); };
 $("railSend").onclick = () => (running ? setPaused(!paused) : go());
-// ai: A new file, picked or dropped, is what Start sends next; one picked while sending stops that first.
-function picked() {
-  if (!fileOf()) { if (!running) showReady(); return; }   // ai: a cancelled picker leaves a running stream alone
+// ai: A new payload, picked or dropped, is what Start sends next; one picked while sending stops that first.
+function picked(p) {
+  if (!p) { if (!running) showReady(); return; }   // ai: a cancelled picker leaves a running stream alone
   if (running) stop();
+  chosen = p;
   $("payload").value = "file";
   showReady();
 }
-$("file").onchange = picked;
+// ai: An input's files are taken as they are picked and the input emptied, so the same pick again is a new pick. A
+// ai: folder's files carry their path under it (webkitRelativePath); a browser lists no empty folder there.
+const pickedFrom = (input, pathOf) => () => {
+  const fs = [...input.files];
+  input.value = "";
+  picked(fs.length ? bundle(fs.map((f) => ({ path: pathOf(f), blob: f, mtime: f.lastModified / 1000 }))) : null);
+};
+$("file").onchange = pickedFrom($("file"), (f) => f.name);
+$("folder").onchange = pickedFrom($("folder"), (f) => f.webkitRelativePath || f.name);
+$("folderBtn").hidden = !("webkitdirectory" in $("folder"));
+$("folderBtn").onclick = (e) => { e.stopPropagation(); $("folder").click(); };
 $("payload").onchange = () => { if (running) stop(); showReady(); };
-// ai: A file dropped anywhere on the page goes into #file, so the input stays the one source Start reads. The counter
-// ai: pairs enter with leave across child elements, so the outline goes only when the drag leaves the page.
+// ai: Files and folders dropped anywhere on the page are the payload, as a pick is. The counter pairs enter with leave
+// ai: across child elements, so the outline goes only when the drag leaves the page.
 const main = canvas.parentElement, hasFiles = (e) => [...(e.dataTransfer?.types ?? [])].includes("Files");
 let drags = 0;
 document.addEventListener("dragenter", (e) => { if (!hasFiles(e)) return; e.preventDefault(); drags++; main.classList.add("drop"); });
@@ -683,11 +698,28 @@ document.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault
 document.addEventListener("dragleave", (e) => { if (hasFiles(e) && --drags <= 0) { drags = 0; main.classList.remove("drop"); } });
 document.addEventListener("drop", (e) => {
   e.preventDefault(); drags = 0; main.classList.remove("drop");
-  const f = e.dataTransfer?.files?.[0];
-  if (!f) return;
-  try { const dt = new DataTransfer(); dt.items.add(f); $("file").files = dt.files; } catch (err) { fail("This browser cannot take a dropped file, tap the middle of the page to choose it", err); return; }
-  picked();
+  // ai: the entries are taken inside the event: the drop's items are gone once it returns
+  const roots = [...(e.dataTransfer?.items ?? [])].filter((i) => i.kind === "file").map((i) => i.webkitGetAsEntry?.() ?? null);
+  const flat = [...(e.dataTransfer?.files ?? [])];
+  if (!flat.length && !roots.length) return;
+  const walked = roots.length && roots.every(Boolean) ? walkDrop(roots) : Promise.resolve(flat.map((f) => ({ path: f.name, blob: f, mtime: f.lastModified / 1000 })));
+  walked.then((entries) => picked(entries.length ? bundle(entries) : null), (err) => fail("The dropped files could not be read: choose them instead", err));
 });
+// ai: A drop's entries with every folder walked, folders included (an empty one survives), each under its dropped
+// ai: item's name. readEntries hands a folder's listing over in pieces, so it is asked until it hands none.
+async function walkDrop(roots) {
+  const out = [];
+  const listAll = async (dir) => {
+    const r = dir.createReader(), all = [];
+    for (;;) { const got = await new Promise((ok, no) => r.readEntries(ok, no)); if (!got.length) return all; all.push(...got); }
+  };
+  const walk = async (en, path) => {
+    if (en.isFile) { const f = await new Promise((ok, no) => en.file(ok, no)); out.push({ path, blob: f, mtime: f.lastModified / 1000 }); }
+    else if (en.isDirectory) { out.push({ path, dir: true }); for (const c of await listAll(en)) await walk(c, `${path}/${c.name}`); }
+  };
+  for (const r of roots) await walk(r, r.name);
+  return out;
+}
 
 // ai: Fullscreen: body.full shows <main> alone (the room grows, the ResizeObserver re-picks), and the page asks for
 // ai: real fullscreen where there is one. Its end, by Escape or the browser, clears body.full through fullscreenchange

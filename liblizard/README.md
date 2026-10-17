@@ -15,6 +15,9 @@ One C API (`include/lizard.h`), three bindings over it:
 
 macOS has no preset and has never been built.
 
+Beside them, `kotlin/` holds plain-JVM code the Android app and the desktop sender compile into themselves: `Tar.kt`,
+how several files or a folder become one transfer (a tar, `research/SPEC.md` 9.6) and how a receiver unpacks one.
+
 ## Layers
 
 1. **Format arithmetic.** A format is its size (1 to 128: LIZARD-8 to -1024; a symbol of it carries `liz_blocks_for`

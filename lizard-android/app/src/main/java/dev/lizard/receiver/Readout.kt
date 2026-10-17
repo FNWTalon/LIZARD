@@ -70,7 +70,8 @@ object Readout {
         val got = if (rx.sent > 0) rx.sentIn else rx.received
         return if (total > 0) (got.toDouble() / total).coerceIn(0.0, 1.0) else 0.0
     }
-    fun line(on: Boolean, starting: Boolean, loading: Boolean, error: String?, rx: Rx): Line = when {
+    // ai: files: a received bundle's count once it is unpacked (2026-10-16), named in the received line
+    fun line(on: Boolean, starting: Boolean, loading: Boolean, error: String?, rx: Rx, files: Int = 0): Line = when {
         error != null -> Line(error, Tone.Bad)
         starting -> Line("Starting the camera")
         gettingReady(on, false, loading, rx) -> Line("Getting ready")
@@ -88,7 +89,7 @@ object Readout {
             val leftNow = if (now > 0) ", ${left((total - got) / (now * 1000))}" else ""
             Line("Receiving ${rx.name}", nums = "${floor(100 * frac).toInt()}%, ${partOf(got.toDouble(), total)}$leftNow", frac = frac)
         }
-        rx.hasFile && rx.verified -> Line("Received ${rx.name}, ${bytes(rx.size)} in ${String.format(Locale.ROOT, "%.1f", rx.secs)}${NB}s${received(rx)}" +
+        rx.hasFile && rx.verified -> Line("Received ${rx.name}, ${if (files > 0) "$files ${if (files == 1) "file" else "files"}, " else ""}${bytes(rx.size)} in ${String.format(Locale.ROOT, "%.1f", rx.secs)}${NB}s${received(rx)}" +
             (if (rx.sent in 1 until rx.size) ", ${bytes(rx.sent)} sent" else ""), Tone.Good, frac = 1.0)
         // ai: nothing while the camera is off (2026-10-02); the screen draws no empty line
         !on -> Line("")

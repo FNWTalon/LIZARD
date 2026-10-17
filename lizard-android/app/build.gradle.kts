@@ -49,6 +49,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures { compose = true }
+    // ai: the plain-JVM code the desktop sender shares (liblizard/kotlin: Tar.kt, the bundles' tar)
+    sourceSets.getByName("main").kotlin.srcDir(rootProject.layout.projectDirectory.dir("../liblizard/kotlin"))
     // ai: the setup's tables, blobs and SPIR-V stored, not deflated: copied out once, and a stored entry streams
     androidResources { noCompress += listOf("spv", "bin", "json") }
     // ai: native libs uncompressed and 16 KB aligned in the APK

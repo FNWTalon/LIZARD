@@ -46,6 +46,9 @@
 // ai: LIZARD-416 on 1,296 px frames still read no word), which the case's twenty-odd grabs could meet: a grab on the
 // ai: way with no word is decoded told at the old and new versions, and read so it is printed as missed, not failed; a frame no decoder reads still fails. The first five
 // ai: cases judge one grab each blind, a missed one read told and grabbed again (below).
+// ai: Bundles (2026-10-16, tar.mjs): two files through the file input (one transfer, "check-send.bin and 1 more.tar")
+// ai: and a folder of two, one in a subfolder, through the folder input (check-folder.tar), each case's header the
+// ai: name, application/x-tar, length and root of the tar tar.mjs makes in node of the same files and times.
 // ai: The gap between two codes (2026-10-03, send.html's Gap slider): two codes again at gap 0 and at 40 modules
 // ai: (&gap=), each canvas's gap the modules asked within half a module and both halves read blind; then the gap moved
 // ai: to 4 while it runs (the slider's change event), grabbed until the canvas's gap is 4 (5 s at most), both halves
@@ -54,7 +57,7 @@
 // ai:   ENC=gpu node lizard-web/check_send.mjs
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
-import { readFileSync, existsSync, statSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync, existsSync, statSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,6 +67,7 @@ import { init as initWh, Decoder } from "../liblizard/sim/fountain.mjs";
 import { XferReceiver, MemoryStore, ID_HEADER, blake3, hex } from "../liblizard/sim/xfer.mjs";
 import { N_FOR, NAME, SPAN, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor } from "../liblizard/sim/lizard_pick.mjs";
 import { tabs, open, evaluate, navigate } from "./phone.mjs";
+import { bundle } from "./tar.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("./..", import.meta.url))), PAD = 32, FPS = 24, FILE_BYTES = 50000, GRABS = 60, GPU = process.env.ENC === "gpu";
 const MIME = { ".html": "text/html; charset=utf-8", ".mjs": "text/javascript", ".js": "text/javascript", ".wasm": "application/wasm", ".json": "application/json", ".svg": "image/svg+xml", ".css": "text/css" };
@@ -90,6 +94,18 @@ const scratch = mkdtempSync(join(tmpdir(), "lizard-send-")), filePath = join(scr
 const fileBytes = new Uint8Array(FILE_BYTES);
 for (let i = 0, v = 7; i < fileBytes.length; i++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; fileBytes[i] = v >>> 16; }
 writeFileSync(filePath, fileBytes);
+// ai: the bundles' files: a second one beside it, and a folder of the file and a text one level down
+const twoPath = join(scratch, "check-two.txt"), dirPath = join(scratch, "check-folder");
+writeFileSync(twoPath, "the second file\n");
+mkdirSync(join(dirPath, "sub"), { recursive: true });
+writeFileSync(join(dirPath, "a.bin"), fileBytes);
+writeFileSync(join(dirPath, "sub", "b.txt"), "one level down\n");
+const entryOf = (path, disk) => ({ path, blob: new Blob([readFileSync(disk)]), mtime: Math.floor(statSync(disk).mtimeMs) / 1000 });
+const BUNDLES = {
+  files: { input: "#file", paths: [filePath, twoPath], made: bundle([entryOf("check-send.bin", filePath), entryOf("check-two.txt", twoPath)]) },
+  folder: { input: "#folder", paths: [dirPath], made: bundle([entryOf("check-folder/a.bin", join(dirPath, "a.bin")), entryOf("check-folder/sub/b.txt", join(dirPath, "sub", "b.txt"))]) },
+};
+for (const b of Object.values(BUNDLES)) b.bytes = new Uint8Array(await b.made.blob.arrayBuffer());
 const flags = GPU ? ["--enable-unsafe-webgpu", "--enable-unsafe-swiftshader", "--use-angle=vulkan", "--use-vulkan=swiftshader", "--enable-features=Vulkan"] : ["--disable-gpu", "--enable-unsafe-swiftshader"];
 const chrome = spawn("google-chrome", ["--headless=new", "--no-sandbox", ...flags, `--remote-debugging-port=${DEVTOOLS}`, `--user-data-dir=${join(scratch, "profile")}`, "--window-size=1920,1080", "about:blank"], { stdio: "ignore", detached: true });
 let cleaned = false;
@@ -157,23 +173,33 @@ const decoded = (g, r) => `canvas ${g.w} x ${g.h}, picture n = ${r.n}, word ${r.
 const pageLine = (g) => `  page: ${g.state} | ${g.nums} | ${g.tx.split("\n").slice(0, 3).join(" | ")} | ${g.tx.split("\n").find((l) => l.startsWith("painted ")) ?? "no painted line"} | ${encoderOf(g).line} (#${g.which})`;
 
 const faults = [];
+let tipSeen = false;
 // ai: 488 (version 61, 58 blocks under the rate profile; 2026-10-01): a version the 16-step ladder never offered, set as
 // ai: the slider sets it
-for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file: true }, { subch: "auto" }, { subch: "auto", codes: 2 }, { subch: "auto", codes: 2, gap: 0 }, { subch: "auto", codes: 2, gap: 40, regap: 4 }, { subch: "auto", midStream: true }]) {
+for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file: true }, { subch: 96, file: true, bundle: "files" }, { subch: 96, file: true, bundle: "folder" }, { subch: "auto" }, { subch: "auto", codes: 2 }, { subch: "auto", codes: 2, gap: 0 }, { subch: "auto", codes: 2, gap: 40, regap: 4 }, { subch: "auto", midStream: true }]) {
   const codes = c.codes ?? 1;
-  let name = `LIZARD-${c.subch}${c.file ? `, a ${FILE_BYTES} B file` : ", test stream"}${c.gap !== undefined ? `, gap ${c.gap}` : ""}`;
+  const bun = c.bundle ? BUNDLES[c.bundle] : null;
+  let name = `LIZARD-${c.subch}${bun ? `, ${bun.made.name} (${bun.made.files} files, ${bun.bytes.length} B)` : c.file ? `, a ${FILE_BYTES} B file` : ", test stream"}${c.gap !== undefined ? `, gap ${c.gap}` : ""}`;
   // ai: The window's frame takes rows even headless (1920 x 937 of 1920 x 1080), so the auto case sets the page's viewport.
   if (c.subch === "auto") await s.send("Emulation.setDeviceMetricsOverride", { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false });
   await navigate(s, `http://127.0.0.1:${HTTP}/lizard-web/${process.env.APP ? "app/" : ""}send.html?${c.subch === "auto" ? `subch=auto&fps=${FPS}&payload=test&auto` : `subch=${c.subch}&fps=${FPS}${c.file ? "&payload=file" : "&payload=test&auto"}`}${codes > 1 ? `&codes=${codes}` : ""}${c.gap !== undefined ? `&gap=${c.gap}` : ""}${GPU ? "&enc=gpu" : ""}`);
   if (c.file) {
     // ai: The file picked as a user picks one: into the file input, then the start button.
-    const doc = await s.send("DOM.getDocument"), { nodeId } = await s.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: "#file" });
-    await s.send("DOM.setFileInputFiles", { nodeId, files: [filePath] });
+    const doc = await s.send("DOM.getDocument"), { nodeId } = await s.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: bun?.input ?? "#file" });
+    await s.send("DOM.setFileInputFiles", { nodeId, files: bun?.paths ?? [filePath] });
+    // ai: the pick's ready line, a bundle's naming its files (a folder's change event comes once Chrome has listed it)
+    const wantReady = bun ? `${bun.made.name}, ${bun.made.files} files, ` : "check-send.bin, ";
+    let ready = "";
+    for (let t = 0; t < 50 && !ready.startsWith(wantReady); t++) { ready = await evaluate(s, `document.getElementById("state").textContent`); if (!ready.startsWith(wantReady)) await new Promise((ok) => setTimeout(ok, 100)); }
+    if (!ready.startsWith(wantReady)) faults.push(`${name}: the ready line says "${ready}"`);
     await evaluate(s, `document.getElementById("go").click()`);
     // ai: the first Start on a fresh profile asks about the display's brightness first (send.mjs go): it must, and its
-    // ai: Start sends
-    if (!(await evaluate(s, `document.getElementById("first").open`))) faults.push(`${name}: no brightness tip before the first send`);
-    await evaluate(s, `document.getElementById("firstStart").click()`);
+    // ai: Start sends; once seen it is not asked again
+    const tip = await evaluate(s, `document.getElementById("first").open`);
+    if (!tipSeen && !tip) faults.push(`${name}: no brightness tip before the first send`);
+    if (tipSeen && tip) faults.push(`${name}: the brightness tip again after it was seen`);
+    if (tip) await evaluate(s, `document.getElementById("firstStart").click()`);
+    tipSeen = true;
   }
   if (!(await waitPainted())) { faults.push(`${name}: the page never said it painted: ${await evaluate(s, `document.getElementById("tx").textContent`)}`); continue; }
   // ai: The auto case's version: the library's pick for the room the page measured, as send.mjs room() measures it.
@@ -203,8 +229,9 @@ for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file
   }
   const { g, r } = out, v = subch / 8, wordOk = r.fmt?.version === v && r.fmt?.fps === FPS, blocksOk = r.seen > 0 && r.bad === 0;
   // ai: a file's line carries its size, and what it was compressed to where zstd shrank it (2026-10-05): random bytes do not shrink
-  const stateOk = g.state === (c.file ? "Sending check-send.bin, 50 KB" : "Sending the test stream");
-  const root = hex(blake3(M, fileBytes)), headerOk = !c.file || (header && header.name === "check-send.bin" && header.length === FILE_BYTES && header.root === root);
+  const stateOk = bun ? g.state.startsWith(`Sending ${bun.made.name}, `) : g.state === (c.file ? "Sending check-send.bin, 50 KB" : "Sending the test stream");
+  const want = bun ? { name: bun.made.name, type: "application/x-tar", bytes: bun.bytes } : { name: "check-send.bin", bytes: fileBytes };
+  const root = hex(blake3(M, want.bytes)), headerOk = !c.file || (header && header.name === want.name && header.length === want.bytes.length && header.root === root && (!want.type || header.type === want.type));
   console.log(`${name}: canvas ${g.w} x ${g.h}, picture n = ${r.n} (want ${N_FOR(subch)}), word ${r.fmt ? `version ${r.fmt.version} at ${r.fmt.fps} fps` : "not read"}, ${r.seen} blocks verified, ${r.bad} bad${c.file ? `; ${frames} frames read, ${blocks} blocks, header ${header ? `${header.name}, ${header.length} B, root ${header.root.slice(0, 16)}...` : "not read"}` : ""}`);
   const enc = encoderOf(g);
   console.log(pageLine(g));
@@ -213,7 +240,7 @@ for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file
   if (!blocksOk) faults.push(`${name}: ${r.seen} blocks, ${r.bad} bad`);
   if (r.n !== N_FOR(subch)) faults.push(`${name}: registered at n = ${r.n}`);
   if (!stateOk) faults.push(`${name}: the state line says "${g.state}"`);
-  if (!headerOk) faults.push(`${name}: the header read is not the file's (want ${FILE_BYTES} B, root ${root.slice(0, 16)}...)`);
+  if (!headerOk) faults.push(`${name}: the header read is not the file's (want ${want.name}, ${want.bytes.length} B, root ${root.slice(0, 16)}...${want.type ? `, ${want.type}` : ""})`);
   // ai: Two codes: the right half read on its own as well, its word the same, its blocks verified and none of its ids
   // ai: the left's (the page gives the second symbol the frame's next blocksPerFrame ids).
   if (codes > 1) {
