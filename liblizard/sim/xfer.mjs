@@ -85,7 +85,7 @@ function nameBytes(name) {
   while (n < b.length && n > 0 && (b[n] & 0xc0) === 0x80) n--;
   return b.subarray(0, n);
 }
-const typeBytes = (t) => (/^[\x20-\x7e]{0,162}$/.test(t ?? "") ? new TextEncoder().encode(t ?? "") : new Uint8Array(0));
+const typeBytes = (t) => (/^[\x20-\x7e]{0,158}$/.test(t ?? "") ? new TextEncoder().encode(t ?? "") : new Uint8Array(0));
 
 // Which chunk the next data block is for, and its symbol. A round visits every chunk of the most blocks once; a chunk
 // of fewer is visited in proportion to its blocks by an accumulator, plus 2 sqrt(K) visits a lap and at least 64: a

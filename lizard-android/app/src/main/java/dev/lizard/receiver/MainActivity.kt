@@ -19,6 +19,7 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.Settings as AndroidSettings
 import android.util.Log
@@ -68,6 +69,8 @@ class MainActivity : ComponentActivity() {
     // ai: the folds' keys, and the two collapsers' (Receive's column, the sending screen's panel; landscape)
     companion object {
         val FOLDS = listOf("recvSettings", "recvAdvanced", "sendSettings", "sendAdvanced", "recvCollapsed", "sendCollapsed")
+        // ai: the received tars' unpacking (keep), one at a time, off the main thread and the engine's
+        private val unpacker = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "lizard-unpack") }
         // ai: Save replays: the frames a replay keeps, and the seconds of stats rows its stats.jsonl holds (the web's
         // ai: REC_FRAMES and REC_LOG, recv.mjs)
         const val REPLAY_FRAMES = 300
@@ -84,7 +87,7 @@ class MainActivity : ComponentActivity() {
         internal var replayNote by mutableStateOf("")
         private var adopted = false
     }
-    enum class Screen { Home, Receive, Send }
+    enum class Screen { Home, Receive, Send, Files }
 
     internal lateinit var engine: Engine
     internal lateinit var library: Library
@@ -114,6 +117,8 @@ class MainActivity : ComponentActivity() {
     private var unfiled = ""     // ai: a root whose keep failed: not tried again in this run of the app
     private var ended = ""       // ai: the root whose arrival stopped the camera (once a root)
     private var saving: Library.Entry? = null
+    private var savingTree: Library.Entry? = null
+    internal var shownBundle by mutableStateOf<Library.Entry?>(null)   // ai: the bundle the Files screen lists
     private var asked = false
     // ai: Save replays (Developer Tools, 2026-10-03; the web's Record 300 frames, recv.mjs saveRun, as a rolling
     // ai: window): while the switch is on and the camera runs, the newest REPLAY_FRAMES frames the decoder is handed
@@ -134,14 +139,22 @@ class MainActivity : ComponentActivity() {
         denied = !ok && !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
         if (ok && wantsCamera() && resumed()) startCamera()
     }
-    // ai: the app's sender (Send.kt) and the file chooser it opens
+    // ai: the app's sender (Send.kt) and the choosers it opens: files, one or several, or a folder (2026-10-16)
     internal val send by lazy { SendState(this) }
-    private val choose = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> if (uri != null) send.pick(uri) }
+    private val choose = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { us -> if (us.isNotEmpty()) send.pick(us) }
     internal fun pickFile() { try { choose.launch(arrayOf("*/*")) } catch (_: ActivityNotFoundException) {} }
+    private val chooseTree = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { u -> if (u != null) send.pickTree(u) }
+    internal fun pickFolder() { try { chooseTree.launch(null) } catch (_: ActivityNotFoundException) {} }
     private val save = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         val e = saving
         saving = null
         if (uri != null && e != null) saveTo(uri, e)
+    }
+    // ai: a bundle's Save: the folder where the user picks, made again there file by file (saveTreeTo)
+    private val saveTree = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        val e = savingTree
+        savingTree = null
+        if (uri != null && e != null) saveTreeTo(uri, e)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -181,11 +194,13 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); handle(intent) }
-    // ai: Receive from the shortcut or ab.sh; Send from its shortcut, or with a file another app shared to LIZARD
+    // ai: Receive from the shortcut or ab.sh; Send from its shortcut, or with files another app shared to LIZARD (one,
+    // ai: or several since 2026-10-16: one transfer, as the sender bundles them)
     private fun handle(i: Intent?) {
-        if (i?.action == Intent.ACTION_SEND) {
-            @Suppress("DEPRECATION") val u = i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
-            if (u != null) send.pick(u)
+        if (i?.action == Intent.ACTION_SEND || i?.action == Intent.ACTION_SEND_MULTIPLE) {
+            @Suppress("DEPRECATION") val us = if (i.action == Intent.ACTION_SEND) listOfNotNull(i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
+                else i.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
+            if (us.isNotEmpty()) send.pick(us)
             go(Screen.Send)
             return
         }
@@ -304,19 +319,60 @@ class MainActivity : ComponentActivity() {
 
     // ai: Receive again (Clear until 2026-10-01) went 2026-10-05: a second Start camera; a receiver tests with the test stream.
 
-    // ai: The received file's actions, through the FileProvider (AndroidManifest.xml), as the header's media type.
-    private fun uriOf(e: Library.Entry): Uri = FileProvider.getUriForFile(this, "$packageName.files", e.file)
-    internal fun open(e: Library.Entry) {
-        val i = Intent(Intent.ACTION_VIEW).setDataAndType(uriOf(e), e.mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        try { startActivity(i) } catch (_: ActivityNotFoundException) { note = "No app on this phone opens ${e.mime} files: share it, or save a copy." }
+    // ai: The received file's actions, through the FileProvider (AndroidManifest.xml), as the header's media type. A
+    // ai: bundle's (2026-10-16): Open lists its files (the Files screen), Share hands them all over at once, Save makes
+    // ai: its folder again where the user picks; a file in it opens and shares as one alone, by its extension's type.
+    private fun uriOf(f: File): Uri = FileProvider.getUriForFile(this, "$packageName.files", f)
+    internal fun open(e: Library.Entry) { if (e.bundle) openBundle(e) else openFile(e.file, e.mime) }
+    internal fun openFile(f: File, mime: String = Library.mimeOf(f.name)) {
+        val i = Intent(Intent.ACTION_VIEW).setDataAndType(uriOf(f), mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try { startActivity(i) } catch (_: ActivityNotFoundException) { note = "No app on this phone opens $mime files: share it, or save a copy." }
     }
-    internal fun share(e: Library.Entry) {
-        val uri = uriOf(e)
-        val i = Intent(Intent.ACTION_SEND).setType(e.mime).putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        i.clipData = ClipData.newRawUri(e.name, uri)
+    internal fun openBundle(e: Library.Entry) { shownBundle = e; go(Screen.Files) }
+    internal fun share(e: Library.Entry) { if (e.bundle) shareAll(e) else shareFile(e.file, e.name, e.mime) }
+    internal fun shareFile(f: File, name: String = f.name, mime: String = Library.mimeOf(f.name)) {
+        val uri = uriOf(f)
+        val i = Intent(Intent.ACTION_SEND).setType(mime).putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        i.clipData = ClipData.newRawUri(name, uri)
         try { startActivity(Intent.createChooser(i, null)) } catch (_: ActivityNotFoundException) {}
     }
-    internal fun saveCopy(e: Library.Entry) { saving = e; note = ""; save.launch(e.name) }   // ai: the Save buttons (a copy where the user picks)
+    // ai: every file of a bundle in one share, the type they have in common ("image/*", else any); a share too large
+    // ai: for Android's binder (thousands of files) is said, and Save does it
+    private fun shareAll(e: Library.Entry) {
+        val fs = e.contents().map { it.second }
+        if (fs.isEmpty()) { note = "${e.name} holds no files."; return }
+        val uris = ArrayList(fs.map { uriOf(it) })
+        val types = fs.map { Library.mimeOf(it.name) }.distinct()
+        val kinds = types.map { it.substringBefore('/') }.distinct()
+        val type = types.singleOrNull() ?: kinds.singleOrNull()?.let { "$it/*" } ?: "*/*"
+        val i = Intent(Intent.ACTION_SEND_MULTIPLE).setType(type).putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        i.clipData = ClipData.newRawUri(e.name, uris[0]).apply { for (u in uris.drop(1)) addItem(ClipData.Item(u)) }
+        try { startActivity(Intent.createChooser(i, null)) } catch (_: ActivityNotFoundException) {} catch (_: RuntimeException) { note = "Too many files to share at once: save the folder instead." }
+    }
+    internal fun saveCopy(e: Library.Entry) {   // ai: the Save buttons (a copy where the user picks; a bundle's folder into a folder picked)
+        note = ""
+        if (e.bundle) { savingTree = e; try { saveTree.launch(null) } catch (_: ActivityNotFoundException) {} }
+        else { saving = e; save.launch(e.name) }
+    }
+    private fun saveTreeTo(tree: Uri, e: Library.Entry) {
+        Thread {
+            val n = try {
+                val cr = contentResolver
+                fun copy(f: File, into: Uri) {
+                    if (f.isDirectory) {
+                        val d = DocumentsContract.createDocument(cr, into, DocumentsContract.Document.MIME_TYPE_DIR, f.name) ?: throw IOException("${f.name} could not be made")
+                        f.listFiles()?.sortedBy { it.name }?.forEach { copy(it, d) }
+                    } else {
+                        val d = DocumentsContract.createDocument(cr, into, Library.mimeOf(f.name), f.name) ?: throw IOException("${f.name} could not be made")
+                        (cr.openOutputStream(d) ?: throw IOException("${f.name} could not be written")).use { o -> f.inputStream().use { it.copyTo(o, 1 shl 16) } }
+                    }
+                }
+                copy(e.file, DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree)))
+                "Saved ${e.name}"
+            } catch (x: Exception) { "The folder could not be saved: ${x.message}" }
+            runOnUiThread { note = n }
+        }.start()
+    }
     private fun saveTo(uri: Uri, e: Library.Entry) {
         Thread {
             val n = try {
@@ -346,14 +402,24 @@ class MainActivity : ComponentActivity() {
     // ai: a receiver's rebuild no longer takes it. A root already kept is not moved again, and none is begun while one
     // ai: is under way: Library.dest empties the root's folder, which a second keep of the same root (a poll seeing it
     // ai: still verified) would have done under the first's file.
+    // ai: A tar (several files or a folder sent as one, 2026-10-16) is unpacked into its folder there (Library.unpack, on
+    // ai: a thread of its own), the root filing until it ends so no second keep begins; one that does not unpack whole is
+    // ai: kept as the file it is.
     private fun keep(r: Readout.Rx, root: String, type: String) {
         if (filing.isNotEmpty() || root == unfiled || files.any { it.root == root }) return
         filing = root
         val dest = library.dest(root, r.name)
         engine.keep(dest) { ok ->
-            filing = ""
-            if (ok) { library.kept(dest, r.name, type, r.size, root); files = library.list() }
-            else { unfiled = root; dest.parentFile?.deleteRecursively() }
+            if (!ok) { filing = ""; unfiled = root; dest.parentFile?.deleteRecursively() }
+            else if (type == Library.TAR_MEDIA) unpacker.execute {
+                val e = library.unpack(dest, r.name, root)
+                main.post {
+                    filing = ""
+                    if (e == null) runCatching { library.kept(dest, r.name, type, r.size, root) }
+                    files = library.list()
+                }
+            }
+            else { filing = ""; library.kept(dest, r.name, type, r.size, root); files = library.list() }
         }
     }
 
@@ -570,6 +636,7 @@ class MainActivity : ComponentActivity() {
             Screen.Home -> HomeScreen()
             Screen.Receive -> ReceiveScreen()
             Screen.Send -> SendScreen()
+            Screen.Files -> FilesScreen()
         }
     }
 }

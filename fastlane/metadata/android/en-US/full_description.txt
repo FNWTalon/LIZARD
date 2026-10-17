@@ -3,7 +3,7 @@
 <p>Each picture stores its data in its spatial frequencies, so blur and distance cost some of a frame's blocks rather than the whole frame, and a file is spread over many frames with a fountain code, so it does not matter which frames the camera catches.</p>
 
 <ul>
-<li>Receive files with the camera, and send files from the phone's screen.</li>
+<li>Receive files with the camera, and send files or whole folders from the phone's screen.</li>
 <li>No network, no account, no tracking: everything travels through the light.</li>
 <li>Every block is checked by its error correction and a CRC, and every file by its BLAKE3 hash.</li>
 <li>Decodes on the GPU through Vulkan where the phone supports it, and on the CPU otherwise.</li>

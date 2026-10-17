@@ -99,6 +99,9 @@ sides.
 
 ## Sending, step by step
 
+Several files or a folder are first packed into one tar archive and sent as that file; the Android app unpacks a
+received archive into a folder, and the web receiver offers it as the `.tar` it is.
+
 1. **Split the file** into 4 MiB chunks, each compressed with zstd where that makes it smaller.
 2. **Fountain-code each chunk** (Wirehair). The encoder can produce as many 469-byte pieces as needed, and any set
    slightly larger than the chunk rebuilds it, whichever pieces they are. A missed frame costs only time, and nothing

@@ -24,9 +24,11 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- ai: a file shared to LIZARD from another app opens Send with it (2026-10-01, MainActivity.handle) -->
+            <!-- ai: files shared to LIZARD from another app open Send with them (2026-10-01, MainActivity.handle; several
+                 since 2026-10-16, bundled as one transfer) -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="*/*" />
             </intent-filter>

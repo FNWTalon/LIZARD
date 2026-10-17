@@ -38,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.unit.dp
+import java.io.File
 import java.text.DateFormat
 import java.util.Date
 
@@ -107,18 +108,22 @@ private const val EXAMPLE_URL = "https://www.youtube.com/watch?v=BsEVOV1swhI"
 
 private fun whenOf(at: Long) = if (at > 0) DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(at)) else ""
 
+private fun count(n: Int) = "$n ${if (n == 1) "file" else "files"}"
+
+// ai: A received file's row, or a bundle's (several files or a folder sent as one, 2026-10-16): a folder, its files'
+// ai: count beside the size, a tap listing them (FilesScreen), Share all of them, Save the folder into one picked.
 @Composable
 internal fun MainActivity.FileRow(e: Library.Entry, last: Boolean) {
     var menu by remember { mutableStateOf(false) }
     var asking by remember { mutableStateOf(false) }
-    ListRow(e.name, listOf(Readout.bytes(e.size), whenOf(e.at)).filter { it.isNotEmpty() }.joinToString(" · "), lead = R.drawable.ic_file,
-        divider = !last, onClick = { open(e) }) {
+    ListRow(e.name, listOf(if (e.bundle) count(e.files) else "", Readout.bytes(e.size), whenOf(e.at)).filter { it.isNotEmpty() }.joinToString(" · "),
+        lead = if (e.bundle) R.drawable.ic_folder else R.drawable.ic_file, divider = !last, onClick = { open(e) }) {
         Box {
             IconBtn(R.drawable.ic_more, "More for ${e.name}") { menu = true }
             DropdownMenu(menu, { menu = false }) {
                 DropdownMenuItem({ Text("Open") }, { menu = false; open(e) })
                 DropdownMenuItem({ Text("Share") }, { menu = false; share(e) })
-                DropdownMenuItem({ Text("Save a copy") }, { menu = false; saveCopy(e) })
+                DropdownMenuItem({ Text(if (e.bundle) "Save to a folder" else "Save a copy") }, { menu = false; saveCopy(e) })
                 DropdownMenuItem({ Text("Delete", color = Bad) }, { menu = false; asking = true })
             }
         }
@@ -129,4 +134,35 @@ internal fun MainActivity.FileRow(e: Library.Entry, last: Boolean) {
         title = { Text("Delete ${e.name}?") },
         text = { Text("It goes from this phone. A copy saved elsewhere stays.") },
         containerColor = Bg)
+}
+
+// ai: A bundle's files (2026-10-16): its count and size, Share (all of them) and Save (the folder into one picked), then
+// ai: a row a file, its path in the folder and its size, a tap opening it, its menu Open and Share.
+@Composable
+internal fun MainActivity.FilesScreen() {
+    val e = shownBundle ?: return
+    val list = remember(e) { e.contents() }
+    Page(e.name, { go(MainActivity.Screen.Home) }) {
+        Text("${count(e.files)} · ${Readout.bytes(e.size)}", style = MaterialTheme.typography.bodyMedium, color = Muted, modifier = Modifier.padding(top = 8.dp))
+        Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Btn("Share", modifier = Modifier.weight(1f)) { share(e) }
+            Btn("Save", modifier = Modifier.weight(1f)) { saveCopy(e) }
+        }
+        if (note.isNotEmpty()) Text(note, style = MaterialTheme.typography.bodyMedium, color = if (note.startsWith("Saved")) Muted else Bad, modifier = Modifier.padding(bottom = 8.dp))
+        list.forEachIndexed { i, (path, f) -> key(path) { BundleRow(path, f, last = i == list.lastIndex) } }
+    }
+}
+
+@Composable
+private fun MainActivity.BundleRow(path: String, f: File, last: Boolean) {
+    var menu by remember { mutableStateOf(false) }
+    ListRow(path, Readout.bytes(f.length()), lead = R.drawable.ic_file, divider = !last, onClick = { openFile(f) }) {
+        Box {
+            IconBtn(R.drawable.ic_more, "More for $path") { menu = true }
+            DropdownMenu(menu, { menu = false }) {
+                DropdownMenuItem({ Text("Open") }, { menu = false; openFile(f) })
+                DropdownMenuItem({ Text("Share") }, { menu = false; shareFile(f) })
+            }
+        }
+    }
 }

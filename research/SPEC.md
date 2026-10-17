@@ -2604,6 +2604,28 @@ at whole pixels a module (3.3) and then scale to the room: the web page by the b
 the desktop sender by a bilinear blit to its window, or nearest at whole multiples when asked
 (`lizard-desktop/native/presenter.cpp`). What that second scale costs is a sender's measurement.
 
+### 9.6 Several files and folders
+
+A transfer carries one file (7.5 to 7.9). Several files or a folder go as one: the sender packs them into a POSIX tar
+and sends the tar as that file, with the media type `application/x-tar`, so the format and every receiver are
+unchanged and the transfer's zstd (7.6) takes the archive's headers and padding to almost nothing.
+
+- **One file alone** is sent as itself, never as a tar.
+- **The archive** (`lizard-web/tar.mjs`, `liblizard/kotlin/Tar.kt`, one rule in both): ustar headers, the name and
+  prefix fields where a path fits them, a pax extended header (typeflag `x`) with `path` where it fits neither or is
+  not plain ASCII and `size` past 8 GiB; folders as entries of their own (typeflag `5`, so an empty folder survives),
+  files mode 644, folders 755, owner 0; every entry in the order of its path, folders before what they hold; two zero
+  blocks at the end. Links are skipped, not followed.
+- **The name.** One folder: `<folder>.tar`, its entries under `<folder>/`. Several items: `<first> and <N - 1>
+  more.tar`, the items at the archive's top. A second file of the same path is numbered (`b (2).txt`). The name is cut
+  on a character so it and its `.tar` fit the header's 255 bytes.
+- **Times.** A file's modification time; a folder's where the platform gives one, else the newest of what it holds,
+  else the newest of the choice, so the same choice makes the same archive and so the same transfer.
+- **A receiver** may offer the tar as it is (the web receiver does) or unpack it (the Android app does, into a folder
+  of its received files: one folder alone at the archive's top is that folder). An unpacker makes only plain files and
+  folders, refuses an absolute path, a path through `..` and any other entry type, and on a refusal keeps the tar as
+  the file it is.
+
 ## 10. Reference receivers (non-normative)
 
 Two decoders read the format. Neither defines it. Both report each frame's two pilot readings (7.3), and where the

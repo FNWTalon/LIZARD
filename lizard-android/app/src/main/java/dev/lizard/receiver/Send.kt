@@ -14,9 +14,14 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import android.net.Uri
 import android.os.Build
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import dev.lizard.tar.Bundle
+import dev.lizard.tar.TAR_TYPE
+import dev.lizard.tar.TarEntry
 import android.util.Log
 import android.view.Choreographer
 import android.view.Surface
@@ -85,10 +90,14 @@ class SendState(private val a: MainActivity) {
                      val blocks: Int = 0, val tiers: String = "")
 
     private val prefs = a.getSharedPreferences("lizard", Context.MODE_PRIVATE)
-    var uri by mutableStateOf<Uri?>(null)
+    // ai: What Start sends (2026-10-16): one file as itself, or several files or a folder as one tar
+    // ai: (liblizard/kotlin/Tar.kt Bundle, the web sender's rule); `reading` while a pick is walked and sized
+    var choice by mutableStateOf<Bundle?>(null)
+    var reading by mutableStateOf(false)
     var name by mutableStateOf("")
     var size by mutableStateOf(0L)
     var type by mutableStateOf("")
+    val ready get() = choice != null && !reading
     var test by mutableStateOf(false)
     // ai: Blocks a frame (2026-10-02), the web sender's
     // ai: slider (send.html #blocks and #subchAuto): 0 for auto, the largest the code's square holds (Pick.pick), else 1
@@ -134,16 +143,70 @@ class SendState(private val a: MainActivity) {
     private var vh = 0
     val fps get() = rate
 
-    fun pick(u: Uri) {
-        uri = u; test = false
-        name = "a file"; size = 0; type = a.contentResolver.getType(u) ?: ""
-        runCatching {
-            a.contentResolver.query(u, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
-                if (c.moveToFirst()) { name = c.getString(0) ?: name; size = if (c.isNull(1)) 0 else c.getLong(1) }
+    // ai: Files picked or shared (one or several), or a folder's tree: walked and sized off the main thread, then the
+    // ai: choice. A pick while sending stops that first, as the web's does.
+    fun pick(us: List<Uri>) = choose { us.map { fileEntry(it) } }
+    fun pickTree(tree: Uri) = choose { treeEntries(tree) }
+    private fun choose(walk: () -> List<TarEntry>) {
+        if (phase == Phase.On || phase == Phase.Preparing) stop()
+        test = false; reading = true; choice = null; name = ""; size = 0; type = ""; typeOf.clear()
+        if (phase is Phase.Error) phase = Phase.Idle
+        thread(name = "lizard-send-pick") {
+            val b = try { walk().takeIf { it.isNotEmpty() }?.let { Bundle(it) } } catch (e: Exception) { a.runOnUiThread { reading = false; phase = Phase.Error("The files could not be read: ${e.message}") }; return@thread }
+            a.runOnUiThread {
+                reading = false; choice = b
+                if (b != null) { name = b.name; size = b.size; type = b.single?.let { typeOf[it] } ?: TAR_TYPE }
             }
         }
-        if (phase is Phase.Error) phase = Phase.Idle
     }
+    private val typeOf = HashMap<TarEntry, String>()   // ai: a single file's own media type, the header's
+    // ai: A document's name, size and time; a provider that says no size is read through once to count it (a tar
+    // ai: header needs the exact size before the bytes).
+    private fun fileEntry(u: Uri): TarEntry {
+        val cr = a.contentResolver
+        var nm = "file"; var sz = -1L; var t: Long? = null
+        cr.query(u, null, null, null, null)?.use { c ->
+            if (c.moveToFirst()) {
+                c.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 && !c.isNull(it) }?.let { nm = c.getString(it) }
+                c.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 && !c.isNull(it) }?.let { sz = c.getLong(it) }
+                c.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED).takeIf { it >= 0 && !c.isNull(it) }?.let { t = c.getLong(it) / 1000 }
+            }
+        }
+        if (sz < 0) sz = cr.openInputStream(u)!!.use { i -> var n = 0L; val b = ByteArray(1 shl 16); while (true) { val k = i.read(b); if (k < 0) break; n += k }; n }
+        return TarEntry(plainName(nm), sz, t) { cr.openInputStream(u) ?: throw java.io.IOException("$nm could not be opened") }.also { typeOf[it] = cr.getType(u) ?: "" }
+    }
+    // ai: A folder chosen through the system's tree picker, walked by DocumentsContract's child queries: its folders
+    // ai: (an empty one too) and files under its own name. 64 levels at most, so a provider's loop cannot run on.
+    private fun treeEntries(tree: Uri): List<TarEntry> {
+        val cr = a.contentResolver
+        val cols = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE, DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+        val out = ArrayList<TarEntry>()
+        fun time(c: android.database.Cursor) = if (c.isNull(4)) null else c.getLong(4) / 1000
+        fun walk(id: String, path: String, t: Long?, depth: Int) {
+            if (depth > 64) throw java.io.IOException("$path is nested past 64 folders")
+            out.add(TarEntry(path, mtimeSec = t))
+            val dirs = ArrayList<Triple<String, String, Long?>>()
+            cr.query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, id), cols, null, null, null)?.use { c ->
+                while (c.moveToNext()) {
+                    val kid = c.getString(0); val nm = plainName(c.getString(1) ?: kid)
+                    if (c.getString(2) == DocumentsContract.Document.MIME_TYPE_DIR) { dirs.add(Triple(kid, nm, time(c))); continue }
+                    val u = DocumentsContract.buildDocumentUriUsingTree(tree, kid)
+                    val sz = if (c.isNull(3)) -1L else c.getLong(3)
+                    out.add(if (sz >= 0) TarEntry("$path/$nm", sz, time(c)) { cr.openInputStream(u) ?: throw java.io.IOException("$nm could not be opened") }
+                            else fileEntry(u).let { TarEntry("$path/$nm", it.size, time(c), it.open) })
+                }
+            }
+            for ((kid, nm, kt) in dirs) walk(kid, "$path/$nm", kt, depth + 1)
+        }
+        val rootId = DocumentsContract.getTreeDocumentId(tree)
+        cr.query(DocumentsContract.buildDocumentUriUsingTree(tree, rootId), cols, null, null, null)?.use { c ->
+            if (c.moveToFirst()) walk(rootId, plainName(c.getString(1) ?: "folder"), time(c), 0)
+        }
+        return out
+    }
+    // ai: a provider's name as one part of a path: no separator, none empty
+    private fun plainName(n: String) = n.replace('/', '_').ifEmpty { "file" }
     fun chooseBlocks(b: Int) { blocks = b.coerceIn(0, 128); prefs.edit().putInt("sendBlocks", blocks).apply(); if (phase == Phase.On) reconfigure() }
     fun chooseRate(r: Int) { rate = r.coerceIn(1, 60); prefs.edit().putInt("sendFps", rate).apply(); if (phase == Phase.On) reconfigure() }
     fun chooseBrightness(b: Int) { brightness = b.coerceIn(1, 100) }
@@ -158,18 +221,21 @@ class SendState(private val a: MainActivity) {
     // ai: the column's edge let go (2026-10-05): the format re-picked for the box it left
     fun resized() { if (phase == Phase.On && roomOf() != configured) reconfigure() }
 
-    // ai: the file into the cache (a document is a stream; the sender maps a file), then the sender and its format
+    // ai: the file into the cache (a document is a stream; the sender maps a file), or the bundle's tar written there
+    // ai: from each document in turn, then the sender and its format
     fun start() {
         if (phase == Phase.Preparing || phase == Phase.On) return
-        val u = uri
-        if (!test && u == null) return
+        val b = choice
+        if (!test && (b == null || reading)) return
         phase = Phase.Preparing
         shown = false
         thread(name = "lizard-send-prep") {
             val dir = File(a.cacheDir, "send").apply { deleteRecursively(); mkdirs() }
             val path = if (test) "" else try {
                 val f = File(dir, "file")
-                a.contentResolver.openInputStream(u!!)!!.use { i -> f.outputStream().use { o -> i.copyTo(o, 1 shl 20) } }
+                val one = b!!.single
+                if (one != null) one.open!!().use { i -> f.outputStream().use { o -> i.copyTo(o, 1 shl 20) } }
+                else f.outputStream().buffered(1 shl 20).use { o -> b.write(o) }
                 f.path
             } catch (e: Exception) { a.runOnUiThread { phase = Phase.Error("The file could not be read: ${e.message}") }; return@thread }
             val hnd = Native.txCreate(path, if (test) "" else name, if (test) "" else type)
@@ -433,8 +499,11 @@ private fun MainActivity.CodeBox(modifier: Modifier) {
         if (!shown) Column(Modifier.fillMaxSize().background(Soft).clickable(enabled = !s.test && !sending) { pickFile() }, verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(painterResource(R.drawable.ic_file), contentDescription = null, Modifier.size(24.dp), tint = Muted)
-            Text(if (s.test) "Test stream" else if (s.uri == null) "Choose a file" else s.name, style = MaterialTheme.typography.bodyMedium, color = Muted,
+            Text(if (s.test) "Test stream" else if (s.reading) "Reading the files" else if (s.choice == null) "Choose files" else s.name, style = MaterialTheme.typography.bodyMedium, color = Muted,
                 textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 16.dp))
+            // ai: a folder instead (the web's hint link): its own tap, the box's tap the files
+            if (!s.test && !sending && !s.reading) Text("or a folder", style = MaterialTheme.typography.bodyMedium, color = Fg, textDecoration = TextDecoration.Underline,
+                modifier = Modifier.clickable { pickFolder() }.padding(horizontal = 16.dp, vertical = 4.dp))
         }
     }
 }
@@ -451,7 +520,8 @@ private fun MainActivity.SendPanel(onFull: () -> Unit) {
     val what = if (s.test) "the test stream" else s.name
     // ai: the bytes that go, what compression left of the file once the sender says (its own size before); the file's
     // ai: own size and the pass are Developer Tools' (sendLab, 2026-10-05)
-    val sized = if (s.test || s.size <= 0) what else "$what, ${Readout.bytes(if (st.sentBytes > 0) st.sentBytes else s.size)}"
+    val count = s.choice?.takeIf { it.single == null }?.files?.let { "$it ${if (it == 1) "file" else "files"}, " } ?: ""
+    val sized = if (s.test || s.size <= 0) what else "$what, ${if (on) "" else count}${Readout.bytes(if (st.sentBytes > 0) st.sentBytes else s.size)}"
     val err = (s.phase as? SendState.Phase.Error)?.why
     val line = when {
         err != null -> err
@@ -459,7 +529,8 @@ private fun MainActivity.SendPanel(onFull: () -> Unit) {
         on && s.paused -> "Paused"
         on -> "Sending $sized"
         s.test -> "The test stream"
-        s.uri != null -> sized
+        s.reading -> "Reading the files"
+        s.choice != null -> sized
         else -> ""
     }
     // ai: the web sender's order (2026-10-06): the buttons first (Start or Stop beside Fullscreen; paused, Resume and
@@ -468,7 +539,7 @@ private fun MainActivity.SendPanel(onFull: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val fs: @Composable (Modifier) -> Unit = { m -> Btn("Fullscreen", modifier = m, onClick = onFull) }
         if (!busy) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Btn("Start", Kind.Primary, enabled = s.test || s.uri != null, modifier = Modifier.weight(1f)) { s.start() }
+            Btn("Start", Kind.Primary, enabled = s.test || s.ready, modifier = Modifier.weight(1f)) { s.start() }
             fs(Modifier.weight(1f))
         } else if (s.paused) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -496,7 +567,7 @@ private fun MainActivity.SendRail() {
     heatText(heat, clocks)?.let { HeatSquare(it) }
     Square {
         IconBtn(if (on && !s.paused) R.drawable.ic_pause else R.drawable.ic_play, if (!on) "Start" else if (s.paused) "Resume" else "Pause",
-            enabled = if (on) true else s.phase != SendState.Phase.Preparing && (s.test || s.uri != null)) { if (on) s.pause(!s.paused) else s.start() }
+            enabled = if (on) true else s.phase != SendState.Phase.Preparing && (s.test || s.ready)) { if (on) s.pause(!s.paused) else s.start() }
     }
     RateSquare(if (on) s.capacityKBs else null)
 }
