@@ -25,14 +25,19 @@ OB_TLS float ob_finder_info[8];
 // ai: The lens's axis in the next image this thread decodes (focus_set_axis), image px; NaN for the image's centre.
 static OB_TLS float ob_axis[2] = { NAN, NAN };
 void focus_set_axis(float x, float y) { ob_axis[0] = x; ob_axis[1] = y; }
-// ai: The lens model's lab switch (focus_lens_set): 0 or 1 as set, or -1, LIZ_LENS read at each frame ("old": the
-// ai: model before 2026-10-17), since the Android app sets its env as each receiver is made.
+// ai: The camera's report of its lens for the next image (focus_set_lens): k1, k2, k3, f in image px; f 0 none.
+static OB_TLS float ob_lens[4] = { 0, 0, 0, 0 };
+void focus_set_lens(float k1, float k2, float k3, float f) { ob_lens[0] = k1; ob_lens[1] = k2; ob_lens[2] = k3; ob_lens[3] = f; }
+// ai: The lens model's lab switch (focus_lens_set): 0, 1 or 2 as set, or -1, LIZ_LENS read at each frame ("old": the
+// ai: model before 2026-10-17, 1; "axis": the axis model without the camera's report, 2; else 0, both), since the
+// ai: Android app sets its env as each receiver is made.
 static int lens_legacy = -1;
-void focus_lens_set(int legacy) { lens_legacy = legacy < 0 ? -1 : !!legacy; }
-static int ob_lens_legacy(void) {
-  if (lens_legacy < 0) { const char *e = getenv("LIZ_LENS"); return e && !strcmp(e, "old"); }
+void focus_lens_set(int legacy) { lens_legacy = legacy < 0 ? -1 : legacy > 2 ? 0 : legacy; }
+static int ob_lens_arm(void) {
+  if (lens_legacy < 0) { const char *e = getenv("LIZ_LENS"); return !e ? 0 : !strcmp(e, "old") ? 1 : !strcmp(e, "axis") ? 2 : 0; }
   return lens_legacy;
 }
+static int ob_lens_legacy(void) { return ob_lens_arm() == 1; }
 
 void ob_image_init(image_t *im, const uint8_t *px, int w, int h, float gamma) {
   im->px = px; im->w = w; im->h = h;
@@ -544,9 +549,18 @@ static void border_fill(const ob_layout_t *L, const homo_t *H, int iw, int ih, n
 // ai:   fit alone cost 20 to 43% of the blocks. So K is at most 1 there, which the patch carries anyway: the model
 // ai:   before, in effect.
 // ai: - Within that, the K the evidence pays for, by AICc (below).
+// ai: - Beside them, where the camera reports its lens (focus_set_lens, 2026-10-17): its radial shape about the axis as
+// ai:   one column, its strength fitted (one number the border can measure, where three terms it cannot), a candidate
+// ai:   of its own for AICc. Inside a 1:1 crop it is what carries the lens's higher terms to the middle; where the
+// ai:   report is wrong or the stream already corrected, AICc passes it by. On the simulator, a 1:1 crop through the
+// ai:   S26's main lens at 1.0x read 5.5 blocks a frame without it and 53.2 with it, and the same with the report 15%
+// ai:   strong; a report of a lens the stream does not have cost nothing. A report that is wrong in shape (k2 0.8 and k3
+// ai:   1.25 times) read 9.9. On the S26's own 2:1 replays AICc took it on no frame but the main camera's, and there
+// ai:   the report alone recovered under half of what the free terms do: its shape is the phone's, not exact.
+// ai:   A free k1 beside the report rescued a wrong shape and lost 6 to 14% on a stream with no lens: not taken.
 // ai: The axis is the image's centre unless the caller says where the camera's axis falls in this crop
 // ai: (focus_set_axis). What the fit leaves is carried inward by the same Coons patch.
-enum { LENS_TERMS = 3, LENS_P = 8 + LENS_TERMS };
+enum { LENS_TERMS = 3, LENS_P = 9 + LENS_TERMS };
 static int solve_lens(double A[LENS_P][LENS_P + 1], int n) {
   for (int c = 0; c < n; c++) {
     int p = c;
@@ -561,24 +575,28 @@ static int solve_lens(double A[LENS_P][LENS_P + 1], int n) {
   }
   return 1;
 }
-// ai: a node's rows of the model at q = (x, y): x, y, the shift, the two perspective terms, then the K radial terms
-static void lens_rows(double x, double y, int K, double *rx, double *ry) {
+// ai: a node's rows of the model at q = (x, y): x, y, the shift, the two perspective terms, then the camera's reported
+// ai: shape where `pr` gives it (q (c1 s + c2 s^2 + c3 s^3), s = |q|^2, c_j = k_j (R / f)^2j), then the K radial terms
+static void lens_rows(double x, double y, int K, const double *pr, double *rx, double *ry) {
   const double ex[8] = { x, y, 0, 0, 1, 0, -x * x, -x * y }, ey[8] = { 0, 0, x, y, 0, 1, -x * y, -y * y };
   for (int a = 0; a < 8; a++) { rx[a] = ex[a]; ry[a] = ey[a]; }
   const double s = x * x + y * y;
+  int c = 8;
+  if (pr) { const double g = s * (pr[0] + s * (pr[1] + s * pr[2])); rx[c] = g * x; ry[c] = g * y; c++; }
   double sk = s;
-  for (int k = 0; k < K; k++, sk *= s) { rx[8 + k] = sk * x; ry[8 + k] = sk * y; }
+  for (int k = 0; k < K; k++, sk *= s) { rx[c + k] = sk * x; ry[c + k] = sk * y; }
 }
-// ai: the model with K radial terms fitted by least squares on the used nodes; its coefficients in t
-static int lens_fit(int K, int nn, const int *use, const float *qx, const float *qy, const node_t *nodes, double *t) {
-  const int p = 8 + K;
+// ai: the model with K radial terms (and the reported shape, pr) fitted by least squares on the used nodes; its
+// ai: coefficients in t
+static int lens_fit(int K, const double *pr, int nn, const int *use, const float *qx, const float *qy, const node_t *nodes, double *t) {
+  const int p = 8 + (pr ? 1 : 0) + K;
   double A[LENS_P][LENS_P + 1], rx[LENS_P], ry[LENS_P];
   memset(A, 0, sizeof A);
   int n = 0;
   for (int m = 0; m < nn; m++) {
     if (!use[m]) continue;
     n++;
-    lens_rows(qx[m], qy[m], K, rx, ry);
+    lens_rows(qx[m], qy[m], K, pr, rx, ry);
     for (int a = 0; a < p; a++) { for (int b = 0; b < p; b++) A[a][b] += rx[a] * rx[b] + ry[a] * ry[b]; A[a][LENS_P] += rx[a] * nodes[m].dx + ry[a] * nodes[m].dy; }
   }
   for (int a = 0; a < p; a++) A[a][a] += 1e-12;
@@ -615,35 +633,47 @@ static void border_fill_axis(const ob_layout_t *L, const homo_t *H, int iw, int 
     pos += cr > 0; neg += cr < 0;
   }
   const int kmax = (pos == 4 || neg == 4) ? 1 : LENS_TERMS;
-  // ai: K by AICc over the used nodes' 2n residuals (a node's dx and dy each), then H's fit kept as it is where none
-  // ai: fits. Beside it a fit on three sides scored on the fourth chose as often on the simulator and less well on every
-  // ai: 2:1 replay (up to 2.5 blocks a half; STATUS "The lens about its axis").
+  // ai: the camera's reported shape in q's units, where it gave one and the arm takes it (LIZ_LENS=axis leaves it out)
+  double prior[3];
+  const int hasPrior = ob_lens[3] > 0 && (ob_lens[0] != 0 || ob_lens[1] != 0 || ob_lens[2] != 0) && ob_lens_arm() != 2;
+  if (hasPrior) {
+    const double rho2 = (R / ob_lens[3]) * (R / ob_lens[3]);
+    prior[0] = ob_lens[0] * rho2; prior[1] = ob_lens[1] * rho2 * rho2; prior[2] = ob_lens[2] * rho2 * rho2 * rho2;
+  }
+  // ai: The model by AICc over the used nodes' 2n residuals (a node's dx and dy each): K = 0 to kmax free radial
+  // ai: terms, or the reported shape alone (cand kmax + 1); H's fit kept as it is where none fits. Beside it a fit on
+  // ai: three sides scored on the fourth chose as often on the simulator and less well on every 2:1 replay (up to 2.5
+  // ai: blocks a half; STATUS "The lens about its axis").
   double rx[LENS_P], ry[LENS_P];
-  int K = -1;
+  int K = -1, P = 0;
   double best = INFINITY;
-  for (int k = 0; k <= kmax; k++) {
-    const int p = 8 + k;
+  for (int cand = 0; cand <= kmax + 1; cand++) {
+    const int pk = cand <= kmax ? 0 : 1, k = cand <= kmax ? cand : 0;
+    if (pk && !hasPrior) continue;
+    const double *pr = pk ? prior : 0;
+    const int p = 8 + pk + k;
     double t[LENS_P] = { 0 }, rss = 0;
     int n = 0;
-    if (!lens_fit(k, nn, use, qx, qy, nodes, t)) continue;
+    if (!lens_fit(k, pr, nn, use, qx, qy, nodes, t)) continue;
     for (int m = 0; m < nn; m++) {
       if (!use[m]) continue;
       n += 2;
-      lens_rows(qx[m], qy[m], k, rx, ry);
+      lens_rows(qx[m], qy[m], k, pr, rx, ry);
       double fx = 0, fy = 0;
       for (int a = 0; a < p; a++) { fx += t[a] * rx[a]; fy += t[a] * ry[a]; }
       rss += (nodes[m].dx - fx) * (nodes[m].dx - fx) + (nodes[m].dy - fy) * (nodes[m].dy - fy);
     }
     if (n - p - 1 <= 0) continue;
     const double aicc = n * log(rss / n + 1e-30) + 2.0 * p + 2.0 * p * (p + 1) / (n - p - 1);
-    if (aicc < best) { best = aicc; K = k; }
+    if (aicc < best) { best = aicc; K = k; P = pk; }
   }
+  const double *pr = P ? prior : 0;
   double th[LENS_P] = { 0 };
-  if (K >= 0 && !lens_fit(K, nn, use, qx, qy, nodes, th)) K = -1;
+  if (K >= 0 && !lens_fit(K, pr, nn, use, qx, qy, nodes, th)) K = -1;
   float *mx = malloc((size_t)nn * sizeof(float)), *my = malloc((size_t)nn * sizeof(float));
   for (int k = 0; k < nn; k++) {
     double X = 0, Y = 0;
-    if (K >= 0) { lens_rows(qx[k], qy[k], K, rx, ry); for (int a = 0; a < 8 + K; a++) { X += th[a] * rx[a]; Y += th[a] * ry[a]; } }
+    if (K >= 0) { lens_rows(qx[k], qy[k], K, pr, rx, ry); for (int a = 0; a < 8 + P + K; a++) { X += th[a] * rx[a]; Y += th[a] * ry[a]; } }
     mx[k] = (float)X; my[k] = (float)Y;
   }
   #define EX(i, j) (nodes[(j) * nx + (i)].dx - mx[(j) * nx + (i)])

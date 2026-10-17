@@ -36,6 +36,9 @@ int cpu_dec_frame(cpu_dec_t *d, const uint8_t *img, int iw, int ih, int held, ui
 // ai: Where the camera's optical axis falls in the next image this thread decodes (NaN: its centre), the lens
 // ai: model's (src/focus.h focus_set_axis); it stays for the thread's later frames until set again.
 void cpu_dec_set_axis(float x, float y);
+// ai: The camera's report of its lens for the same images (src/focus.h focus_set_lens): k1, k2, k3, f in the image's
+// ai: px; f 0 none. It stays for the thread's later frames until set again.
+void cpu_dec_set_lens(float k1, float k2, float k3, float f);
 // ai: The last frame's per-block LDPC iterations and information estimates (out->total of each), for a check.
 void cpu_dec_block_stats(const cpu_dec_t *d, const int8_t **its, const float **est);
 // ai: The codec's own digest of a frame's decode: arm before cpu_dec_frame, take after (a hash of the floats and soft

@@ -159,6 +159,7 @@ class GpuReceiver : public Receiver {
   std::deque<Rel> toRelease;
   // ai: the stats window (a second), and totals
   Stamps stamps;
+  float lensNow[4] = {0, 0, 0, 0};   // ai: the newest frame's lens report (CameraFrame::lens), for the replay's GPU-kept frames; under mu
   // ai: fresh: data ids new to the dedupe (the series' and the lock's); useful: what goodputKBs counts (rateFold)
   struct Win { int arrived = 0, dropped = 0, processed = 0, found = 0, words = 0, test = 0; long blocks = 0, fresh = 0, useful = 0; double gpuMs = 0, gpuFrames = 0, side = 0, held = 0, heldMax = 0; int heldN = 0; } win, last;
   uint64_t takenSeen = 0;   // ai: the transfer's taken() at the last window's close
@@ -253,6 +254,7 @@ void GpuReceiver::push(const CameraFrame& f) {
     std::lock_guard<std::mutex> l(mu);
     win.arrived++;
     stamps.put(f.tag, f.timestampNs);
+    for (int i = 0; i < 4; i++) lensNow[i] = f.lens[i];
     if (side == failedW) dropped = true;
     else {
       if (side > shapeW) { shapeW = side; planned = false; failedW = 0; }
@@ -439,7 +441,9 @@ void GpuReceiver::deliver(BatchOut& out, const Kept& k) {
         }
         // ai: the axis word back to pixels for the replay's meta (0, the centre, as none)
         const float ax = fo.axis ? 0.5f * ((float)(fo.axis & 0xffffu) - 32768) : NAN, ay = fo.axis ? 0.5f * ((float)(fo.axis >> 16) - 32768) : NAN;
-        k.replay->frame(fo.luma.data(), fo.w, fo.h, fo.w, ms, true, ax, ay);
+        float ln[4];
+        { std::lock_guard<std::mutex> l(mu); for (int i = 0; i < 4; i++) ln[i] = lensNow[i]; }
+        k.replay->frame(fo.luma.data(), fo.w, fo.h, fo.w, ms, true, ax, ay, ln);
       }
     }
     if (fo.empty) continue;
@@ -604,9 +608,9 @@ void CpuReceiver::push(const CameraFrame& f) {
       { std::lock_guard<std::mutex> l(mu); flight.push_back(f.tag); }
       float a[2];
       axisOf(f, c, k, a);
-      if (pool->offer(f.luma, f.stride, c.x[k], c.y[k], c.side, c.side, f.tag, held.load(), t, a[0], a[1])) {
+      if (pool->offer(f.luma, f.stride, c.x[k], c.y[k], c.side, c.side, f.tag, held.load(), t, a[0], a[1], f.lens)) {
         // ai: Save replays: the crop a worker took, as it took it
-        if (r) r->frame(f.luma + (size_t)c.y[k] * f.stride + c.x[k], c.side, c.side, f.stride, f.timestampNs / 1e6, false, a[0], a[1]);
+        if (r) r->frame(f.luma + (size_t)c.y[k] * f.stride + c.x[k], c.side, c.side, f.stride, f.timestampNs / 1e6, false, a[0], a[1], f.lens);
         continue;
       }
       lost++;

@@ -33,7 +33,7 @@ export async function init() {
     if (codes && M._focus_codes_set) M._focus_codes_set(+codes);
     // ai: the lens model's lab switch (LIZ_LENS=old, src/focus.h focus_lens_set: the model before 2026-10-17), the same way
     const lens = typeof process !== "undefined" && process.env ? process.env.LIZ_LENS : null;
-    if (lens && M._focus_lens_set) M._focus_lens_set(lens === "old" ? 1 : 0);
+    if (lens && M._focus_lens_set) M._focus_lens_set(lens === "old" ? 1 : lens === "axis" ? 2 : 0);
   }
   QUIET ??= M._focus_quiet?.();
   return M;
@@ -48,11 +48,16 @@ export function setProfile(spec) {
   return n;
 }
 
-// ai: The lens model's A/B switch (src/focus.h focus_lens_set): true the model before 2026-10-17, false the axis model.
-export function setLens(legacy) { M._focus_lens_set(legacy ? 1 : 0); }
+// ai: The lens model's A/B switch (src/focus.h focus_lens_set): true or "old" the model before 2026-10-17, "axis" the
+// ai: axis model without the camera's report, false or anything else both.
+export function setLens(arm) { M._focus_lens_set(arm === true || arm === "old" ? 1 : arm === "axis" ? 2 : 0); }
 // ai: Where the camera's axis falls in the next image decoded (src/focus.h focus_set_axis): [x, y] image px, or null
 // ai: for the image's centre. Every decode sets it, so one frame's axis never stays for the next.
-const setAxis = (axis) => M._focus_set_axis?.(axis ? axis[0] : NaN, axis ? axis[1] : NaN);
+const setAxis = (axis, lens) => {
+  M._focus_set_axis?.(axis ? axis[0] : NaN, axis ? axis[1] : NaN);
+  // ai: the camera's report of its lens for the same image (src/focus.h focus_set_lens): { k: [k1, k2, k3], f } px, or none
+  M._focus_set_lens?.(lens ? lens.k[0] : 0, lens ? lens.k[1] : 0, lens ? lens.k[2] : 0, lens ? lens.f : 0);
+};
 
 // Stage times since the last call, ms, summed over the decodes in between (slots: PROF_* in src/internal.h).
 // Both codes share one table: a stage one of them does not have stays at 0.
@@ -123,8 +128,8 @@ export class FocusAny {
   // ai: frame read, or null), builds (pictures built since the setup), ok and blocks (as many as the finished version's own codec carries,
   // ai: its rate profile's blocks), pilot (what the pilots read: { r, sd, r2, sd2, blocks }, or null). rgba: img is a
   // ai: canvas's RGBA, made luma in wasm as Focus.decode does.
-  decode(img, iw, ih, { gamma = 1, mesh = 2, held = 0, rgba = false, axis = null } = {}) {
-    setAxis(axis);
+  decode(img, iw, ih, { gamma = 1, mesh = 2, held = 0, rgba = false, axis = null, lens = null } = {}) {
+    setAxis(axis, lens);
     let pLuma;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
@@ -246,8 +251,8 @@ export class Focus {
   blockStats() { const pi = M._focus_blk_its(), pe = M._focus_blk_est() >> 2; return { its: Array.from(new Int8Array(M.HEAPU8.buffer, pi, this.blocks)), est: Array.from(M.HEAPF32.subarray(pe, pe + this.blocks)) }; }
   read() { const p = M._focus_dbg_coef() >> 2; return M.HEAPF32.slice(p, p + 2 * 320 * this.subch); }
   // mesh: 0 off, 1 interior by neighbour average, 2 interior from the border model (research/06). 2 is never worse.
-  decode(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null } = {}) {
-    setAxis(axis);
+  decode(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null, lens = null } = {}) {
+    setAxis(axis, lens);
     let pLuma = 0;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
@@ -269,8 +274,8 @@ export class Focus {
   //
   // The image buffer must stay put until rxFinish: src/focus.c holds a pointer to it, not a copy. Since it is
   // this object's own pImg, the only way to break that is to call rxAcquire twice.
-  rxAcquire(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null } = {}) {
-    setAxis(axis);
+  rxAcquire(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null, lens = null } = {}) {
+    setAxis(axis, lens);
     let pLuma = 0;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
@@ -306,8 +311,8 @@ export class Focus {
   // The same registration from a quad found somewhere else.
   // The image is still needed: ob_acquire_quad reads the border for the track score, refines the corner nodes
   // and fills the mesh, so a GPU finder removes the SEARCH from the CPU and not the pixels.
-  rxAcquireQuad(img, iw, ih, quad, orient = 0, score = 1, { gamma = 1, mesh = 2, rgba = false, axis = null } = {}) {
-    setAxis(axis);
+  rxAcquireQuad(img, iw, ih, quad, orient = 0, score = 1, { gamma = 1, mesh = 2, rgba = false, axis = null, lens = null } = {}) {
+    setAxis(axis, lens);
     let pLuma = 0;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
