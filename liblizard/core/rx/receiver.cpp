@@ -42,6 +42,10 @@ constexpr int STAGE_BATCHES = 2;
 // ai: baseRect); 2:1 the centre region twice as long as it is high along the frame's long side, its two halves (each a
 // ai: square, each submitted as a frame).
 struct Crops { int n; uint32_t side, x[2], y[2]; };
+// ai: Where the camera's optical axis falls in crop k: the frame's centre less the crop's corner (the lens's own
+// ai: centre is the array's within a few pixels on the S26's calibration). A 2:1 half's is the middle of its inner
+// ai: edge, a 1:1 square's its centre; both decoders fit the lens about it (liblizard/src/acquire.c, register.mjs LENS).
+inline void axisOf(const CameraFrame& f, const Crops& c, int k, float* a) { a[0] = 0.5f * f.width - c.x[k]; a[1] = 0.5f * f.height - c.y[k]; }
 Crops cropsOf(const CameraFrame& f, const std::string& layout) {
   Crops c{};
   const bool two = layout == "2:1", wide = f.width >= f.height;
@@ -270,6 +274,7 @@ void GpuReceiver::push(const CameraFrame& f) {
     try {
       if (f.hb && ci) got[k] = fh->enqueueCamera(*ci, f.hb, cx[k], cy[k], side, side, f.tag);
       else if (f.luma) got[k] = fh->enqueueLuma(f.luma + (size_t)cy[k] * f.stride + cx[k], side, side, f.stride, f.tag);
+      if (got[k]) { float a[2]; axisOf(f, cr, k, a); got[k]->axis = axisWord(a[0], a[1]); }
     } catch (const std::exception& e) {
       std::lock_guard<std::mutex> l(mu);
       error = std::string("ingest: ") + e.what();
@@ -432,7 +437,9 @@ void GpuReceiver::deliver(BatchOut& out, const Kept& k) {
           auto it = stamps.ns.find(fo.tag);
           if (it != stamps.ns.end()) ms = it->second / 1e6;
         }
-        k.replay->frame(fo.luma.data(), fo.w, fo.h, fo.w, ms, true);
+        // ai: the axis word back to pixels for the replay's meta (0, the centre, as none)
+        const float ax = fo.axis ? 0.5f * ((float)(fo.axis & 0xffffu) - 32768) : NAN, ay = fo.axis ? 0.5f * ((float)(fo.axis >> 16) - 32768) : NAN;
+        k.replay->frame(fo.luma.data(), fo.w, fo.h, fo.w, ms, true, ax, ay);
       }
     }
     if (fo.empty) continue;
@@ -595,9 +602,11 @@ void CpuReceiver::push(const CameraFrame& f) {
     const Crops c = cropsOf(f, cfg.layout);
     for (int k = 0; k < c.n; k++) {
       { std::lock_guard<std::mutex> l(mu); flight.push_back(f.tag); }
-      if (pool->offer(f.luma, f.stride, c.x[k], c.y[k], c.side, c.side, f.tag, held.load(), t)) {
+      float a[2];
+      axisOf(f, c, k, a);
+      if (pool->offer(f.luma, f.stride, c.x[k], c.y[k], c.side, c.side, f.tag, held.load(), t, a[0], a[1])) {
         // ai: Save replays: the crop a worker took, as it took it
-        if (r) r->frame(f.luma + (size_t)c.y[k] * f.stride + c.x[k], c.side, c.side, f.stride, f.timestampNs / 1e6);
+        if (r) r->frame(f.luma + (size_t)c.y[k] * f.stride + c.x[k], c.side, c.side, f.stride, f.timestampNs / 1e6, false, a[0], a[1]);
         continue;
       }
       lost++;

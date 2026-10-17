@@ -2672,8 +2672,12 @@ decode of one known codec, is `focus_acquire` then `focus_finish`:
    part and the corners kept as measured (`smooth_along`, since 2026-09-27): a display that scales the symbol by a
    fraction moves the border's sharp cells along each side in a ripple of period 1 / frac(device px a module)
    modules that the picture does not share, and nodes 16 modules apart alias it. The interior comes from the border
-   alone (`border_fill`): a radial k |q|^2 q plus affine fit to the border residuals, then a Coons patch of what the
-   fit leaves.
+   alone (`border_fill_axis`): the border residuals are fitted by least squares as the first-order change of a
+   homography (affine, shift and the two perspective terms) beside K = 0 to 3 radial terms k |q|^2k q about the
+   camera's optical axis (q a node's place about the axis over the farthest image corner's distance; the axis the
+   receiver's, `focus_set_axis`, the image's centre by default), K chosen by AICc and at most 1 where the axis lies
+   inside the symbol's quad, since the border then spans no radius near the axis; then a Coons patch of what the fit
+   leaves. Non-normative: a receiver may model the lens otherwise.
 5. **Format word**, before anything is sampled (5.4), in the ring that registered. The blind receiver hands the
    registration over to the picture the word names, or the held one (5.5).
 6. **Sample** (`liblizard/src/acquire.c:ob_sample_grid`). The n x n picture at the points of 6.9, through the homography plus the

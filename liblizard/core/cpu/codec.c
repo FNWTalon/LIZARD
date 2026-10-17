@@ -21,6 +21,7 @@ void cpu_dec_free(cpu_dec_t *d) {
   focus_any_free(&d->any);
   free(d);
 }
+void cpu_dec_set_axis(float x, float y) { focus_set_axis(x, y); }
 int cpu_dec_top(const cpu_dec_t *d) { return focus_any_top(&d->any); }
 int cpu_dec_block_bytes(const cpu_dec_t *d) { return d->block_bytes; }
 

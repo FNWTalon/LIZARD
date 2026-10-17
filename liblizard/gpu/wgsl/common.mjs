@@ -10,12 +10,22 @@ export const SIZES = PICTURE_SIZES;
 export const SLOTS = SIZES.length;
 //
 // Frame f of a batch is layer f of the level-0 texture (r8unorm, the capture as it came) and a slice of each
-// ai: pyramid buffer. dims[f] = (w, h, 0, valid), the third word unread since the rings (2026-09-27: a frame's ring
-// ai: and picture ride in sel): frames in one batch may differ in size, and a slot with
-// valid = 0 is empty and does nothing.
+// ai: pyramid buffer. dims[f] = (w, h, axis, valid): frames in one batch may differ in size, and a slot with
+// valid = 0 is empty and does nothing. ai: The third word (unread from the rings, 2026-09-27, to 2026-10-17) is where
+// ai: the camera's optical axis falls in the frame, axisWord's: F7's lens is fitted about it (register.mjs LENS).
 export const DIMS = /* wgsl */ `
 struct Frame { w: u32, h: u32, size: u32, valid: u32 }
 `;
+// ai: The axis word: 0 the frame's centre (a centred crop's axis), 0xffffffff no lens fit (the model before
+// ai: 2026-10-17, LIZ_LENS=old, for A/Bs), else x and y in half pixels, each + 32768 in 16 bits (x low): a 2:1 half's
+// ai: axis is the middle of its inner edge, (w, h / 2) on the left, (0, h / 2) on the right (core/rx/receiver.cpp).
+export const AXIS_CENTRE = 0, AXIS_OLD = 0xffffffff;
+export function axisWord(axis, old = false) {
+  if (old) return AXIS_OLD;
+  if (!axis) return AXIS_CENTRE;
+  const h = (v) => Math.max(0, Math.min(65535, Math.round(2 * v) + 32768));
+  return (h(axis[0]) | (h(axis[1]) << 16)) >>> 0;
+}
 
 // Level 0: bilinear, pixel centres at i + 0.5, clamped to the frame's own edge (src/internal.h sample()).
 export const LUM0 = /* wgsl */ `

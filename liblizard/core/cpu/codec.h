@@ -33,6 +33,9 @@ int cpu_dec_block_bytes(const cpu_dec_t *d);
 // ai: caller read, 0 none (a frame whose own word does not read is decoded at it, and with none held is not decoded).
 // ai: Returns the blocks that verified; block b is good where ok[b] is 1.
 int cpu_dec_frame(cpu_dec_t *d, const uint8_t *img, int iw, int ih, int held, uint8_t *blocks, uint8_t *ok, cpu_frame_t *out);
+// ai: Where the camera's optical axis falls in the next image this thread decodes (NaN: its centre), the lens
+// ai: model's (src/focus.h focus_set_axis); it stays for the thread's later frames until set again.
+void cpu_dec_set_axis(float x, float y);
 // ai: The last frame's per-block LDPC iterations and information estimates (out->total of each), for a check.
 void cpu_dec_block_stats(const cpu_dec_t *d, const int8_t **its, const float **est);
 // ai: The codec's own digest of a frame's decode: arm before cpu_dec_frame, take after (a hash of the floats and soft

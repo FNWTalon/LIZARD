@@ -166,6 +166,15 @@ int focus_tiers_for(int subch, focus_tier_t tier[FOCUS_TIERS]);
 // ai: every call, so a host sets it before making its codecs), or by focus_profile_set, which overrides it ("" or 0
 // ai: back to the environment). Returns the tiers the spec names, 0 for the format's, -1 for a spec it refuses.
 int focus_profile_set(const char *spec);
+// ai: Where the camera's optical axis falls in the image the calling thread decodes next, image px (2026-10-17): the
+// ai: border mesh fits the lens's radial field about it (acquire.c border_fill_axis). NaN, the default, is the image's
+// ai: centre, right for a crop centred on the camera's frame; a 2:1 half's axis is the middle of its inner edge. Kept
+// ai: for the thread's later decodes until set again.
+void focus_set_axis(float x, float y);
+// ai: The lens model's A/B switch (2026-10-17, a lab arm until its A/B is read): 1 the model before, one radial term
+// ai: about the image's centre; 0 the axis model; -1 back to the environment (LIZ_LENS=old for the model before).
+// ai: Process-wide: set it from one thread with no decode running.
+void focus_lens_set(int legacy);
 // The blocks a frame of subch sub-channels carries under that profile (0 for no format).
 int focus_blocks_for(int subch);
 void focus_free(focus_t *f);

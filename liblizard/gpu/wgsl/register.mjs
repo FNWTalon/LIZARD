@@ -17,6 +17,9 @@ export const SUB = 2;       // template samples a module, each way
 // ai: Room for 2 nx + 2 ny - 4 nodes; the rings take 20, 36, 52 and 68 (6, 10, 14 and 18 a side at 94, 158, 222 and
 // ai: 286 modules), and the buffers keep the 136 of the 542-module border before the rings (2026-09-27).
 export const NODES_MAX = 136;
+// ai: resid's record a frame: the nodes' residuals, then LENS_SLOTS vec4f of the lens about the camera's axis that
+// ai: REFIT fitted to them (COONS's Lens; 2026-10-17), which every sampler adds back.
+export const LENS_SLOTS = 5, RESID = NODES_MAX + LENS_SLOTS;
 const TMPL_MAX = WINDOW * WINDOW * SUB * SUB;   // every point of the window, the bound on a node's template
 // The coarse round's sample-offset positions all lie on one lattice (samples a module apart, offsets half a module),
 // (WINDOW - 1) * 2 + 2 * 6 + 1 points a side; a round whose lattice is larger measures each position directly.
@@ -353,7 +356,7 @@ const sideCount = (D) => `
         var rss = 0.0;
         for (var k = 0u; k < nn; k++) {
           let n = (sd * (nn - 1u) + k) % count;
-          let r = resid[f * ${NODES_MAX}u + n];
+          let r = resid[f * ${RESID}u + n];
           let done = (k == 0u && sd > 0u) || (k == nn - 1u && sd == 3u);
           let w = select(r.z, 1.0, done);
           if (w <= 0.0) { continue; }
@@ -369,6 +372,226 @@ const sideCount = (D) => `
         if (score < best) { best = score; ${unroll(SIDE_MAX, (i) => `cxB[${i}] = cx[${i}]; cyB[${i}] = cy[${i}];`)} }
       }`;
 
+
+// ai: The lens about the camera's axis (2026-10-17; liblizard/src/acquire.c border_fill_axis is the same model, in
+// ai: double): what the refit's map leaves at the border nodes, fitted as the first-order change of a homography (an
+// ai: affine map and the two perspective terms -(g . d) d) beside K = 0 to 3 radial terms about the axis, k |q|^2k q,
+// ai: K by AICc on the nodes' own evidence; with the axis inside the code's quad K is at most 1, since the interior's
+// ai: radii then run below the border's and higher terms would extrapolate (the C's comment says more). In single
+// ai: precision the same space is written in better conditioned terms: the homography's in d, a node's place about
+// ai: the nodes' box centre over its half extent, and the radial ones as t^k q with t = |q|^2 mapped onto [-1, 1] over
+// ai: the nodes' range (span{q, |q|^2 q, ...} = span{q, t q, ...}, nested by K alike; q, about the axis over the
+// ai: farthest frame corner's distance, is affine in d). Held as 5 vec4f a frame after the nodes in resid: (box
+// ai: centre, 1 / half extent, the range's middle), (axis, 1 / R, 2 / the range), the 11 coefficients in pixels;
+// ai: all zero is no lens. dims[f].z names the axis (common.mjs axisWord).
+export const LENS = /* wgsl */ `
+struct Lens { c: vec4f, a: vec4f, t0: vec4f, t1: vec4f, t2: vec4f }
+fn lensOf(f: u32) -> Lens {
+  let b = f * ${RESID}u + ${NODES_MAX}u;
+  return Lens(resid[b], resid[b + 1u], resid[b + 2u], resid[b + 3u], resid[b + 4u]);
+}
+// ai: The lens's displacement at p, an image point through the frame's map (toImage), in pixels.
+fn lensAt(L: Lens, p: vec2f) -> vec2f {
+  let d = (p - L.c.xy) * L.c.z;
+  let q = (p - L.a.xy) * L.a.z;
+  let t = (dot(q, q) - L.c.w) * L.a.w;
+  return vec2f(L.t0.x * d.x + L.t0.y * d.y + L.t1.x, L.t0.z * d.x + L.t0.w * d.y + L.t1.y)
+    - (L.t1.z * d.x + L.t1.w * d.y) * d + (t * (L.t2.x + t * (L.t2.y + t * L.t2.z))) * q;
+}
+`;
+const LENS_P = 11;
+// ai: A node's two rows of the lens model (its dx's and its dy's), null where a column is 0 there.
+const lensRows = () => {
+  const rx = ["d.x", "d.y", null, null, "1.0", null, "(-d.x * d.x)", "(-d.y * d.x)", "(t * q.x)", "(t2 * q.x)", "(t3 * q.x)"];
+  const ry = [null, null, "d.x", "d.y", null, "1.0", "(-d.x * d.y)", "(-d.y * d.y)", "(t * q.y)", "(t2 * q.y)", "(t3 * q.y)"];
+  return { rx, ry };
+};
+const lensIdx = (a, b) => a * LENS_P - (a * (a - 1)) / 2 + (b - a);   // ai: packed upper triangle, 66 entries
+const lensNode = /* wgsl */ `let d = (p - LF.ctr) * LF.sig;
+        let q = (p - LA) * lir;
+        let t = (dot(q, q) - LF.smid) * LF.ish;
+        let t2 = t * t;
+        let t3 = t2 * t;`;
+const lensAccumulate = (() => {
+  const { rx, ry } = lensRows(), s = [];
+  for (let a = 0; a < LENS_P; a++) for (let b = a; b < LENS_P; b++) {
+    const t = [];
+    if (rx[a] && rx[b]) t.push(`${rx[a]} * ${rx[b]}`);
+    if (ry[a] && ry[b]) t.push(`${ry[a]} * ${ry[b]}`);
+    if (t.length) s.push(`acc[${lensIdx(a, b)}] += w * (${t.join(" + ")});`);
+  }
+  for (let a = 0; a < LENS_P; a++) {
+    const t = [];
+    if (rx[a]) t.push(`${rx[a]} * r.x`);
+    if (ry[a]) t.push(`${ry[a]} * r.y`);
+    s.push(`acc[${66 + a}] += w * (${t.join(" + ")});`);
+  }
+  return s.join("\n        ");
+})();
+// ai: The model with K radial terms at a node, from LT[K] (the coefficients in pixels).
+const lensModel = (K) => {
+  const { rx, ry } = lensRows(), x = [], y = [];
+  for (let a = 0; a < 8 + K; a++) {
+    if (rx[a]) x.push(`LT[${K}][${a}] * ${rx[a]}`);
+    if (ry[a]) y.push(`LT[${K}][${a}] * ${ry[a]}`);
+  }
+  return `vec2f(${x.join(" + ")}, ${y.join(" + ")})`;
+};
+// ai: Cholesky of the unit-diagonal 11 x 11 (Ln lower), its first failing pivot in okD (11 if none): the leading
+// ai: D x D block's factor is the factor's leading block, so one factorisation serves every K, and so does the
+// ai: forward substitution (z); each K's back substitution is its own. Literal indices only (Invariants).
+const lensSolve = (() => {
+  const s = [];
+  for (let j = 0; j < LENS_P; j++) {
+    let sum = `Ns[${j}][${j}]`;
+    for (let k = 0; k < j; k++) sum += ` - Ln[${j}][${k}] * Ln[${j}][${k}]`;
+    s.push(`{ let v = ${sum}; okD = select(okD, min(okD, ${j}u), !(v > 1e-7)); Ln[${j}][${j}] = sqrt(max(v, 1e-7)); }`);
+    for (let i = j + 1; i < LENS_P; i++) {
+      let e = `Ns[${i}][${j}]`;
+      for (let k = 0; k < j; k++) e += ` - Ln[${i}][${k}] * Ln[${j}][${k}]`;
+      s.push(`Ln[${i}][${j}] = (${e}) / Ln[${j}][${j}];`);
+    }
+  }
+  for (let i = 0; i < LENS_P; i++) {
+    let e = `bs[${i}]`;
+    for (let k = 0; k < i; k++) e += ` - Ln[${i}][${k}] * z[${k}]`;
+    s.push(`z[${i}] = (${e}) / Ln[${i}][${i}];`);
+  }
+  for (let K = 0; K <= 3; K++) {
+    const D = 8 + K;
+    s.push(`if (${D}u <= okD && ${K}u <= LF.kmax) {`, `  var y = array<f32, ${D}>();`);
+    for (let i = D - 1; i >= 0; i--) {
+      let e = `z[${i}]`;
+      for (let k = i + 1; k < D; k++) e += ` - Ln[${k}][${i}] * y[${k}]`;
+      s.push(`  y[${i}] = (${e}) / Ln[${i}][${i}];`);
+    }
+    for (let a = 0; a < LENS_P; a++) s.push(`  LT[${K}][${a}] = ${a < D ? `Dg[${a}] * y[${a}]` : "0.0"};`);
+    s.push(`  LK[${K}] = 1u;`, "}");
+  }
+  return s.join("\n      ");
+})();
+const lensFit = /* wgsl */ `
+  // ai: The lens about the camera's axis (LENS above): fitted to the nodes' residuals, kept after them, taken off them.
+  {
+    let aw = F.size;
+    var LA = vec2f(0.5 * f32(F.w), 0.5 * f32(F.h));
+    if (aw != 0u && aw != 0xffffffffu) { LA = vec2f(0.5 * f32(aw & 0xffffu) - 16384.0, 0.5 * f32(aw >> 16u) - 16384.0); }
+    let fwh = vec2f(f32(F.w), f32(F.h));
+    let lR = max(max(length(LA), length(vec2f(fwh.x, 0.0) - LA)), max(length(vec2f(0.0, fwh.y) - LA), length(fwh - LA)));
+    let lir = 1.0 / max(lR, 1.0);
+    if (li == 0u) {
+      // ai: the fit's frame: the weighted nodes' box and their range of |q|^2; the axis inside the corners' quad or not
+      var lo = vec2f(3.0e38);
+      var hi = vec2f(-3.0e38);
+      var smin = 3.0e38;
+      var smax = 0.0;
+      var nw = 0u;
+      for (var n = 0u; n < count; n++) {
+        if (!(resid[f * ${RESID}u + n].z > 0.0)) { continue; }
+        let p = pn[n];
+        lo = min(lo, p);
+        hi = max(hi, p);
+        let q = (p - LA) * lir;
+        let s = dot(q, q);
+        smin = min(smin, s);
+        smax = max(smax, s);
+        nw += 1u;
+      }
+      let nq = (count + 4u) / 4u;
+      var pos = 0u;
+      var neg = 0u;
+      for (var c = 0u; c < 4u; c++) {
+        let a = pn[(c * (nq - 1u)) % count] - LA;
+        let b = pn[(((c + 1u) % 4u) * (nq - 1u)) % count] - LA;
+        let cr = a.x * b.y - a.y * b.x;
+        pos += select(0u, 1u, cr > 0.0);
+        neg += select(0u, 1u, cr < 0.0);
+      }
+      LF = LensFrame(0.5 * (lo + hi), 2.0 / max(max(hi.x - lo.x, hi.y - lo.y), 1.0), 0.5 * (smin + smax),
+        2.0 / max(smax - smin, 1e-6), select(3u, 1u, pos == 4u || neg == 4u), nw, select(0u, 1u, aw != 0xffffffffu && nw > 0u));
+      for (var k = 0u; k < 4u; k++) { LK[k] = 0u; }
+    }
+    workgroupBarrier();
+    // ai: the normal equations, 16 lanes a share of the nodes
+    if (li < 16u && LF.on != 0u) {
+      var acc = array<f32, 77>();
+      for (var n = li; n < count; n += 16u) {
+        let r = resid[f * ${RESID}u + n];
+        let w = r.z;
+        if (!(w > 0.0)) { continue; }
+        let p = pn[n];
+        ${lensNode}
+        ${lensAccumulate}
+      }
+      LS[li] = acc;
+    }
+    workgroupBarrier();
+    if (li == 0u && LF.on != 0u) {
+      var Ns = array<array<f32, ${LENS_P}>, ${LENS_P}>();
+      var bs = array<f32, ${LENS_P}>();
+      var Dg = array<f32, ${LENS_P}>();
+      var Ln = array<array<f32, ${LENS_P}>, ${LENS_P}>();
+      var z = array<f32, ${LENS_P}>();
+      var Ap = array<f32, 77>();
+      for (var s = 0u; s < 16u; s++) { let row = LS[s]; ${Array.from({ length: 77 }, (_, i) => `Ap[${i}] += row[${i}];`).join(" ")} }
+      ${(() => { const s = []; for (let a = 0; a < LENS_P; a++) for (let b = a; b < LENS_P; b++) s.push(`Ns[${a}][${b}] = Ap[${lensIdx(a, b)}]; Ns[${b}][${a}] = Ap[${lensIdx(a, b)}];`); return s.join("\n      "); })()}
+      ${Array.from({ length: LENS_P }, (_, a) => `Dg[${a}] = 1.0 / sqrt(max(Ns[${a}][${a}], 1e-30));`).join("\n      ")}
+      ${Array.from({ length: LENS_P }, (_, a) => `${Array.from({ length: LENS_P }, (_, b) => `Ns[${a}][${b}] *= Dg[${a}] * Dg[${b}];`).join(" ")}\n      Ns[${a}][${a}] = Ns[${a}][${a}] * 1.0001 + 1e-9; bs[${a}] = Ap[${66 + a}] * Dg[${a}];`).join("\n      ")}
+      var okD = ${LENS_P}u;
+      ${lensSolve}
+    }
+    workgroupBarrier();
+    // ai: each K's weighted residual sum over the nodes, every lane a share
+    {
+      var rs = vec4f(0.0);
+      if (LF.on != 0u) {
+        for (var n = li; n < count; n += 64u) {
+          let r = resid[f * ${RESID}u + n];
+          let w = r.z;
+          if (!(w > 0.0)) { continue; }
+          let p = pn[n];
+          ${lensNode}
+          ${[0, 1, 2, 3].map((K) => `if (LK[${K}] != 0u) { let e = r.xy - ${lensModel(K)}; rs[${K}] += w * dot(e, e); }`).join("\n          ")}
+        }
+      }
+      LR[li] = rs;
+    }
+    workgroupBarrier();
+    if (li == 0u) {
+      var rss = vec4f(0.0);
+      for (var s = 0u; s < 64u; s++) { rss += LR[s]; }
+      var kb = 4u;
+      var best = 3.0e38;
+      let nobs = 2.0 * f32(LF.nw);
+      for (var k = 0u; k < 4u; k++) {
+        let pk = 8.0 + f32(k);
+        if (LK[k] == 0u || nobs - pk - 1.0 <= 0.0) { continue; }
+        let score = nobs * log(max(rss[k], 1e-30) / nobs) + 2.0 * pk + 2.0 * pk * (pk + 1.0) / (nobs - pk - 1.0);
+        if (score < best) { best = score; kb = k; }
+      }
+      var tk = array<f32, ${LENS_P}>();
+      ${[0, 1, 2, 3].map((K) => `if (kb == ${K}u) { ${Array.from({ length: LENS_P }, (_, a) => `tk[${a}] = LT[${K}][${a}];`).join(" ")} }`).join("\n      ")}
+      let on = kb < 4u;
+      LZ = Lens(select(vec4f(0.0), vec4f(LF.ctr, LF.sig, LF.smid), on), select(vec4f(0.0), vec4f(LA, lir, LF.ish), on),
+        vec4f(tk[0], tk[1], tk[2], tk[3]), vec4f(tk[4], tk[5], tk[6], tk[7]), vec4f(tk[8], tk[9], tk[10], 0.0));
+      let b = f * ${RESID}u + ${NODES_MAX}u;
+      resid[b] = LZ.c;
+      resid[b + 1u] = LZ.a;
+      resid[b + 2u] = LZ.t0;
+      resid[b + 3u] = LZ.t1;
+      resid[b + 4u] = LZ.t2;
+    }
+    workgroupBarrier();
+    let lz = LZ;
+    for (var n = li; n < count; n += 64u) {
+      let r = resid[f * ${RESID}u + n];
+      resid[f * ${RESID}u + n] = vec4f(r.xy - lensAt(lz, pn[n]), r.zw);
+    }
+    storageBarrier();
+    workgroupBarrier();
+  }
+`;
+
 export const REFIT = DIMS + MAP + /* wgsl */ `
 struct Fit { count: vec4u, base: vec4u, modules: vec4f }
 @group(0) @binding(0) var<storage, read> frames: array<Frame>;
@@ -380,11 +603,22 @@ struct Fit { count: vec4u, base: vec4u, modules: vec4f }
 @group(0) @binding(6) var<uniform> P: Fit;
 // ai: Debug, REFIT_DBG words a frame: the first iteration of the first refit's th (0-8), A (9-53) and g (54-62).
 @group(0) @binding(7) var<storage, read_write> dbg: array<f32>;
+` + LENS + /* wgsl */ `
 var<workgroup> JJ: array<array<f32, 45>, 64>;
 var<workgroup> Jr: array<array<f32, 9>, 64>;
 var<workgroup> Ag: array<f32, 54>;
 var<workgroup> th: array<f32, 9>;
 var<workgroup> lastStep: f32;
+// ai: the lens fit's working (LENS): each node's place through the map, the fit's frame, the lanes' sums, each K's
+// ai: coefficients and whether it solved, the lanes' residual sums, and the model kept.
+struct LensFrame { ctr: vec2f, sig: f32, smid: f32, ish: f32, kmax: u32, nw: u32, on: u32 }
+var<workgroup> pn: array<vec2f, ${NODES_MAX}>;
+var<workgroup> LF: LensFrame;
+var<workgroup> LS: array<array<f32, 77>, 16>;
+var<workgroup> LT: array<array<f32, ${LENS_P}>, 4>;
+var<workgroup> LK: array<u32, 4>;
+var<workgroup> LR: array<vec4f, 64>;
+var<workgroup> LZ: Lens;
 const ITERS = ${ITERS};
 // Normalised map: m in [0, 1], homography th[0..7] (th[8] = 1 implied) to u about the centre / S, then the lens.
 fn fwd(t: array<f32, 9>, m: vec2f, c: vec2f, S: f32, inv: f32) -> vec2f {
@@ -492,10 +726,14 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   for (var n = li; n < count; n += 64u) {
     let e = meas[f * ${NODES_MAX}u + n];
     let ok = e.w != 0.0 && e.z >= ${WMIN};
-    let r = select(vec2f(0.0), e.xy - toImage(mf, nodes[base + n].xy), ok);
-    resid[f * ${NODES_MAX}u + n] = vec4f(r, select(0.0, e.z, ok), 0.0);
+    let p = toImage(mf, nodes[base + n].xy);
+    pn[n] = p;
+    let r = select(vec2f(0.0), e.xy - p, ok);
+    resid[f * ${RESID}u + n] = vec4f(r, select(0.0, e.z, ok), 0.0);
   }
+  storageBarrier();
   workgroupBarrier();
+` + lensFit + /* wgsl */ `
   // What the fit leaves at the nodes is rolling-shutter wobble and lens the model missed, smooth along a side,
   // plus the measurement's own noise, which is not: on the simulator the map alone was 0.06 samples from the
   // truth and the raw residuals put it at 0.27. So each side's residual is replaced by a weighted polynomial fit
@@ -517,7 +755,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
       var nw = 0u;
       for (var k = 0u; k < nn; k++) {
         let n = (sd * (nn - 1u) + k) % count;
-        let r = resid[f * ${NODES_MAX}u + n];
+        let r = resid[f * ${RESID}u + n];
         // ai: a corner the side before has already replaced counts with weight 1 (its zw hold the measured residual)
         let done = (k == 0u && sd > 0u) || (k == nn - 1u && sd == 3u);
         let w = select(r.z, 1.0, done);
@@ -539,7 +777,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
         let n = (sd * (nn - 1u) + k) % count;
         let x = 2.0 * f32(k) / f32(nn - 1u) - 1.0;
         // A corner belongs to two sides; it takes the mean of the two fits.
-        let prev = resid[f * ${NODES_MAX}u + n];
+        let prev = resid[f * ${RESID}u + n];
         var fitted = vec2f(0.0);
         var xq = 1.0;
         ${unroll(SIDE_MAX, (i) => `fitted += vec2f(cxB[${i}], cyB[${i}]) * xq; xq *= x;`)}
@@ -547,7 +785,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
         let done = twoSided || (k == nn - 1u && sd == 3u);
         // ai: zw keeps the node's measured residual (already moved there by the side before, at a corner): nothing
         // ai: downstream reads it (sample.mjs takes xy), the probe does.
-        resid[f * ${NODES_MAX}u + n] = vec4f(select(fitted, 0.5 * (prev.xy + fitted), twoSided), select(prev.xy, prev.zw, done));
+        resid[f * ${RESID}u + n] = vec4f(select(fitted, 0.5 * (prev.xy + fitted), twoSided), select(prev.xy, prev.zw, done));
       }
     }
     // The last corner (left side's end) is the first node: it ends up with the left side's fit alone.

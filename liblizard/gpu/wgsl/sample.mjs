@@ -3,20 +3,21 @@
 // order the reference back half reads (src/focus.c focus_finish_ext): element (x, y) at (x / 64) n 64 + y 64 + x % 64.
 // ai: g0 and step are the frame's (ring, picture) pair's since 2026-09-27: any ring may carry any picture.
 //
-// The map is common.mjs MAP (a homography and radial distortion) plus what F7 measured it to miss at the border
-// nodes, spread over the picture as a Coons patch: the four sides' residual curves blended across, less the
+// The map is common.mjs MAP (a homography and radial distortion), then the lens about the camera's axis F7 fitted
+// (register.mjs LENS), plus what those miss at the border nodes, spread over the picture as a Coons patch: the four sides' residual curves blended across, less the
 // corners counted twice. Residuals are zero when the host hands the map over, so the patch then adds nothing.
 //
 // With the GPU back half and no grids asked for, this stage does not run: the back half's pass 1 samples each
 // column itself through COONS below and the same map and bilinear read (wgsl/back_transform.mjs, fused).
 import { DIMS, LUM0, MAP, SLOTS } from "./common.mjs";
-import { RING, NODES_MAX } from "./register.mjs";
+import { RING, RESID, LENS } from "./register.mjs";
 
 // The Coons patch in pieces, shared with the fused pass 1: a side's curve depends on one coordinate only, so that
 // pass takes the top and bottom once a column and the left and right once a row, through this same arithmetic.
 // ai: A shader including it binds `resid` and defines latAt(i), lattice coordinate i (a ring's nodes from `first`).
-export const COONS = RING + /* wgsl */ `
-fn res(f: u32, n: u32) -> vec2f { return resid[f * ${NODES_MAX}u + n].xy; }
+// ai: It carries LENS (wgsl/register.mjs) too: a sample is toImage(M, m), plus the lens there, plus the patch.
+export const COONS = RING + LENS + /* wgsl */ `
+fn res(f: u32, n: u32) -> vec2f { return resid[f * ${RESID}u + n].xy; }
 // The residual curve along one side at coordinate t (0 top, 1 right, 2 bottom, 3 left).
 fn curve(f: u32, side: u32, t: f32, first: u32, nn: u32) -> vec2f {
   let x0 = latAt(first);
@@ -85,7 +86,8 @@ fn main(@builtin(global_invocation_id) g: vec3u, @builtin(local_invocation_index
   if (live) {
     let m = vec2f(S.g0 + f32(g.x) * S.step, S.g0 + f32(g.y) * S.step);
     let at = LT.at[pick.x];
-    let p = toImage(maps[f], m) + coons(f, at.x, at.y, m);
+    let p0 = toImage(maps[f], m);
+    let p = p0 + lensAt(lensOf(f), p0) + coons(f, at.x, at.y, m);
     grid[f * G.stride + (g.x / 64u) * S.n * 64u + g.y * 64u + (g.x % 64u)] = bilin0(f, p, i32(F.w), i32(F.h));
     atomicAdd(&wrote, 1u);
   }

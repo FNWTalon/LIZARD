@@ -29,6 +29,7 @@
 #include "front.h"
 #include "receiver.h"
 #include "replay.h"
+#include "axes.h"
 #include <algorithm>
 #include <atomic>
 #include <thread>
@@ -504,6 +505,9 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
   const auto sizes = frameSizes(meta, frames);
   uint32_t W = meta["w"], H = meta["h"];
   for (auto& wh : sizes) { W = std::max(W, wh.first); H = std::max(H, wh.second); }
+  std::vector<std::pair<int, int>> dims;
+  for (auto& wh : sizes) dims.push_back({(int)wh.first, (int)wh.second});
+  const auto axes = replayAxes(meta, dims);
   fh->plan(W, H);
   std::deque<std::unique_ptr<InFlight>> flight;
   int held = 0, found = 0, words = 0, heldFrames = 0, next = 0;
@@ -546,6 +550,7 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
         Slot* s = fh->enqueueLuma(p.data(), w, h, w, (uint64_t)next);
         for (int t = 0; !s && t < 20000; t++) { std::this_thread::sleep_for(std::chrono::microseconds(250)); s = fh->enqueueLuma(p.data(), w, h, w, (uint64_t)next); }
         if (!s) throw wg::Error("the ring is full");
+        if (!std::isnan(axes[next][0])) s->axis = axisWord(axes[next][0], axes[next][1]);
         slots.push_back(s);
       }
       flight.push_back(fh->run(slots, held, env("PROFILE") == "1"));

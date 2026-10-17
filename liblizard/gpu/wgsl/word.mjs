@@ -195,7 +195,7 @@ fn slotOf(v: u32) -> u32 {
   return 0u${Array.from({ length: SLOTS - 1 }, (_, k) => ` + select(0u, 1u, v > W.tops[${k >> 2}].${WORDS[k & 3]})`).join("")};
 }
 // ai: The image point of a plan point, through the map and the Coons patch of the ring's lattice.
-fn imgAt(f: u32, M: array<f32, 16>, L: vec4u, m: vec2f) -> vec2f { return toImage(M, m) + coons(f, L.x, L.y, m); }
+fn imgAt(f: u32, M: array<f32, 16>, L: vec4u, m: vec2f) -> vec2f { let p = toImage(M, m); return p + lensAt(lensOf(f), p) + coons(f, L.x, L.y, m); }
 // ai: The workgroup's red[] summed into red[0] (every invocation calls it; red[li] written before).
 fn reduce(li: u32) {
   workgroupBarrier();

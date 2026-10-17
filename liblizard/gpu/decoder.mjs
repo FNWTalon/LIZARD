@@ -23,10 +23,10 @@
 // carries, and a slot left empty exits at once.
 import { PYRAMID, PYRAMID_BLOCK, HIST_BINS } from "./wgsl/pyramid.mjs";
 import { SAMPLE } from "./wgsl/sample.mjs";
-import { SLOTS } from "./wgsl/common.mjs";
+import { SLOTS, axisWord } from "./wgsl/common.mjs";
 import { SELECT } from "./wgsl/bank.mjs";
 import { VOTE, GATHER, SCORE, PICK, K, CELL, HYP, RING_COUNT } from "./wgsl/finder.mjs";
-import { NODES, REFIT, NODES_MAX, WINDOW, SUB, REFIT_DBG, ringOrder } from "./wgsl/register.mjs";
+import { NODES, REFIT, NODES_MAX, RESID, WINDOW, SUB, REFIT_DBG, ringOrder } from "./wgsl/register.mjs";
 import { WORD, wordUniform, wordPoints, wordLattice, heldUniform } from "./wgsl/word.mjs";
 import { gridOf, slotOf } from "./tables.mjs";
 import { VERSION_MAX } from "./wordcode.mjs";
@@ -70,8 +70,8 @@ const MiB = 1 << 20;
 // ai: performance.now() at enqueue (the queue's launch deadline runs from it); f0: a VideoFrame's crop, whose ingest
 // ai: pass wrote the slot's timestamp pair; ring: the ring the frame was told, when it was (maps given).
 class Slot {
-  constructor(id, w, h, f0, ring) {
-    Object.assign(this, { id, w, h, at: performance.now(), f0 });
+  constructor(id, w, h, f0, ring, axis) {
+    Object.assign(this, { id, w, h, at: performance.now(), f0, axis: axis ?? null });
     if (ring !== undefined) this.ring = ring;
   }
 }
@@ -202,7 +202,7 @@ export class FrontHalf {
   // ai: fh.nets says what each net runs in.
   // ai: fh.boot: what create spent, ms: the device, the int8 twins fetched, the front half's pipelines (build), the
   // ai: probe kit and the back half (under B "auto" built here at B_CEIL, 2026-09-29), and the total.
-  static async create(adapter, tables, { B = "auto", budget = budgetFor(adapter?.limits), capMs = CAP_MS, restart = 0, cap = CAP, register = true, log = () => {}, weights = null, precision = "f32", bank = "fcn2", cascade = null, inflight = "auto", back = "gpu", backN = 1024, fuse = true, subgroups = true, probe = false, cancel = false, twins = null } = {}) {
+  static async create(adapter, tables, { B = "auto", budget = budgetFor(adapter?.limits), capMs = CAP_MS, restart = 0, cap = CAP, register = true, log = () => {}, weights = null, precision = "f32", bank = "fcn2", cascade = null, inflight = "auto", back = "gpu", backN = 1024, fuse = true, subgroups = true, probe = false, cancel = false, twins = null, lensOld = false } = {}) {
     if (back !== "wasm" && back !== "gpu") throw new Error(`back ${back}`);
     if (tables?.rings?.length !== RING_COUNT || tables.pictures?.length !== SLOTS) throw new Error(`tables: gpu/tables.mjs formatTables(), ${RING_COUNT} rings and ${SLOTS} pictures`);
     const whole = (v) => v >= 1 && v === Math.floor(v);
@@ -236,6 +236,7 @@ export class FrontHalf {
       device.addEventListener("uncapturederror", (e) => log(`uncaptured: ${e.error.message}`));
       lapBoot("device");
       const fh = new FrontHalf(device, tables, auto ? 0 : B, want, log, cap);
+      fh.lensOld = !!lensOld;
       // A caller that finds its batch failed asks here whether the device went with it (the page then makes a new one).
       fh.lost = null;
       device.lost.then((info) => { fh.lost = info; });
@@ -587,7 +588,7 @@ export class FrontHalf {
     ln.p5Uni = d.createBuffer({ size: 32, usage: U.UNIFORM | U.COPY_DST });
     ln.ldUni = d.createBuffer({ size: 80, usage: U.UNIFORM | U.COPY_DST });
     ln.measBuf = d.createBuffer({ size: 16 * NODES_MAX * B, usage: U.STORAGE | U.COPY_DST | U.COPY_SRC });
-    ln.residBuf = d.createBuffer({ size: 16 * NODES_MAX * B, usage: U.STORAGE | U.COPY_DST | U.COPY_SRC });
+    ln.residBuf = d.createBuffer({ size: 16 * RESID * B, usage: U.STORAGE | U.COPY_DST | U.COPY_SRC });
     ln.refitDbg = d.createBuffer({ size: 4 * REFIT_DBG * B, usage: U.STORAGE | U.COPY_SRC | U.COPY_DST });
     ln.histBuf = d.createBuffer({ size: 4 * HIST_BINS * B, usage: U.STORAGE | U.COPY_DST | U.COPY_SRC });
     if (this.cascade) {
@@ -959,7 +960,8 @@ export class FrontHalf {
 
   // ai: A frame onto the ring: { w, h, bytes } (w * h luma, writeTexture) or { w, h, source, x, y } (F0: the crop
   // ai: (x, y, w, h) of source, a VideoFrame, to luma on the device, ingest.mjs), with `ring` (an index into
-  // ai: tables.rings) when told. On the device before this returns (its pass or write is submitted), so the caller closes
+  // ai: tables.rings) when told, and `axis` ([x, y] px: where the camera's optical axis falls in the frame; none, its
+  // ai: centre). On the device before this returns (its pass or write is submitted), so the caller closes
   // ai: the VideoFrame at once. Returns the slot, or null when every slot is staged (the caller chooses what to
   // ai: drop). Throws on a crop outside its source, bytes not w x h, a frame the ring is too small for (ready()
   // ai: plans a larger one), or no ring yet (ready() first).
@@ -983,7 +985,7 @@ export class FrontHalf {
         d.queue.submit([enc.finish()]);
       } finally { d.popErrorScope().then((e) => { if (e) this.log(`enqueue: ${e.message}`); }, () => {}); }
     } else d.queue.writeTexture({ texture: r.tex, origin: [0, 0, id] }, bytes, { bytesPerRow: w, rowsPerImage: h }, [w, h, 1]);
-    const slot = new Slot(id, w, h, !!source, frame.ring);
+    const slot = new Slot(id, w, h, !!source, frame.ring, frame.axis);
     r.slots[id] = slot; r.staged++;
     return slot;
   }
@@ -1087,7 +1089,7 @@ export class FrontHalf {
     const dims = new Uint32Array(4 * G), mp = new Float32Array(16 * B), sel = new Uint32Array(SEL_WORDS * G);
     slots.forEach((s, i) => {
       if (!s) return;
-      dims.set([s.w, s.h, 0, 1], 4 * i);
+      dims.set([s.w, s.h, axisWord(s.axis, this.lensOld), 1], 4 * i);
       if (!find && maps[i]) { mp.set(maps[i], 16 * i); sel.set([s.ring, 1, 0, 0], SEL_WORDS * i); }
     });
     d.queue.writeBuffer(this.framesBuf, 0, dims);
