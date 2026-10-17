@@ -5,6 +5,7 @@
 // ai: the decoder reads: the GPU decoder's off its ring as the camera's ingest left them (FrontHalf::run's keep), the
 // ai: C's as a worker takes them; in 2:1 each half is a frame of its own. Any thread (the locks: below).
 #pragma once
+#include <cmath>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -29,12 +30,13 @@ class Replay {
   // ai: will not come (dropped before their batch, a batch that failed). finish waits for the held ones.
   bool hold(int n);
   void release(int n);
-  // ai: a frame: w x h bytes, rows `stride` apart; ms, its capture's time on the camera's clock; held, one hold()'s.
-  // ai: Written as it comes, and the oldest past `keep` deleted.
-  void frame(const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride, double ms, bool held = false);
+  // ai: a frame: w x h bytes, rows `stride` apart; ms, its capture's time on the camera's clock; held, one hold()'s;
+  // ai: ax, ay where the camera's optical axis fell in it (NaN: its centre). Written as it comes, and the oldest past
+  // ai: `keep` deleted.
+  void frame(const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride, double ms, bool held = false, float ax = NAN, float ay = NAN);
   // ai: The run's end, once the held frames have come (or a few seconds have passed): the frames kept renamed
   // ai: 0000.gray on, oldest first; meta.json (run, w, h, frames, of, sizes as the web's; ms, each frame's capture
-  // ai: time; taken, the frames the run saw; config, the format the light last named, from the receiver's stats JSON
+  // ai: time; axes, each frame's camera axis ([x, y], null the centre); taken, the frames the run saw; config, the format the light last named, from the receiver's stats JSON
   // ai: `rxStats` (its word) as the web names it; decoder and layout from the same; error, where a write failed and
   // ai: ended the frames early; then the fields of the object `more`); stats.jsonl (`rows`, a row a line). The frames
   // ai: kept, or -1 when the folder, a rename or the meta failed (error() says why).
@@ -44,7 +46,7 @@ class Replay {
   std::string error();
 
  private:
-  struct Kept { uint64_t i; uint32_t w, h; double ms; };
+  struct Kept { uint64_t i; uint32_t w, h; double ms; float ax, ay; };
   // ai: Two locks: hm guards the holds alone (a push holds a frame under the receiver's lock, which must never wait on
   // ai: a frame's write), mu the files and the window.
   std::mutex hm, mu;

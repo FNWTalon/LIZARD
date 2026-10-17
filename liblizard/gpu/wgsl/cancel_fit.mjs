@@ -78,8 +78,9 @@ export function fitSource({ n, B, picture = "grid", grid = "f32" }) {
 @group(0) @binding(7) var<storage, read> maps: array<array<f32, 16>>;
 @group(0) @binding(8) var<storage, read> resid: array<vec4f>;
 ` + PICTURE + MAP + LUM0 + COONS + /* wgsl */ `
-fn sampleAt(f: u32, M: array<f32, 16>, m: vec2f, u: f32, v: f32, top: vec2f, bot: vec2f, lft: vec2f, rgt: vec2f, cn: Corners, fw: i32, fh: i32) -> f32 {
-  return bilin0(f, toImage(M, m) + coonsMix(u, v, top, bot, lft, rgt, cn), fw, fh);
+fn sampleAt(f: u32, M: array<f32, 16>, lz: Lens, m: vec2f, u: f32, v: f32, top: vec2f, bot: vec2f, lft: vec2f, rgt: vec2f, cn: Corners, fw: i32, fh: i32) -> f32 {
+  let p = toImage(M, m);
+  return bilin0(f, p + lensAt(lz, p) + coonsMix(u, v, top, bot, lft, rgt, cn), fw, fh);
 }
 ` : /* wgsl */ `
 @group(0) @binding(0) var<storage, read> grid: array<${g16 ? "u32" : "f32"}>;
@@ -89,7 +90,7 @@ fn sampleAt(f: u32, M: array<f32, 16>, m: vec2f, u: f32, v: f32, top: vec2f, bot
   // ai: One sample of the frame at picture (x, y): fused pass 1's arithmetic exactly, the column's and the row's
   // ai: curves taken here a sample, since a thread's column changes with the row.
   const sample = fused
-    ? `      let mx: f32 = g0 + f32(x) * gstep;\n      let my: f32 = g0 + f32(y) * gstep;\n      let cu: f32 = coonsT(mx, first, nn);\n      let cv: f32 = coonsT(my, first, nn);\n      let tp: vec2f = curve(f, 0u, mx, first, nn);\n      let bt: vec2f = curve(f, 2u, mx, first, nn);\n      let lf: vec2f = curve(f, 3u, my, first, nn);\n      let rg: vec2f = curve(f, 1u, my, first, nn);\n      z = sampleAt(f, M, vec2f(mx, my), cu, cv, tp, bt, lf, rg, cn, fw, fh);\n`
+    ? `      let mx: f32 = g0 + f32(x) * gstep;\n      let my: f32 = g0 + f32(y) * gstep;\n      let cu: f32 = coonsT(mx, first, nn);\n      let cv: f32 = coonsT(my, first, nn);\n      let tp: vec2f = curve(f, 0u, mx, first, nn);\n      let bt: vec2f = curve(f, 2u, mx, first, nn);\n      let lf: vec2f = curve(f, 3u, my, first, nn);\n      let rg: vec2f = curve(f, 1u, my, first, nn);\n      z = sampleAt(f, M, lz, vec2f(mx, my), cu, cv, tp, bt, lf, rg, cn, fw, fh);\n`
     : g16
       ? `      let e: u32 = gbase + (x >> 6u) * N * 64u + y * 64u + (x & 63u);\n      let gw: vec2f = unpack2x16float(grid[e >> 1u]);\n      z = select(gw.x, gw.y, (e & 1u) == 1u);\n`
       : `      z = grid[gbase + (x >> 6u) * N * 64u + y * 64u + (x & 63u)];\n`;

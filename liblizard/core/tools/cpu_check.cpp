@@ -14,6 +14,7 @@
 // ai: Env: LIZ_BARCODE (../research), LIZ_PASSES (1: timing passes over the frames), LIZ_NMAX (1024).
 #include "codec.h"
 #include "json.hpp"
+#include "axes.h"
 
 #include <algorithm>
 #include <atomic>
@@ -94,6 +95,7 @@ static int replay(const std::string& run, int want, int threads, std::string mod
   if (!frames) { fprintf(stderr, "no frames in %s\n", dir.c_str()); return 2; }
   if (mode.empty()) mode = threads == 1 ? "seq" : "none";
   if (mode == "seq" && threads != 1) { fprintf(stderr, "seq carries the held word in frame order: one thread\n"); return 2; }
+  const auto axes = replayAxes(mj, dims);
   const int passes = std::max(1, atoi(envOr("LIZ_PASSES", "1").c_str())), nmax = atoi(envOr("LIZ_NMAX", "1024").c_str());
   std::vector<FrameResult> res(frames);
   std::vector<double> passMs;
@@ -113,6 +115,7 @@ static int replay(const std::string& run, int want, int threads, std::string mod
         FrameResult r;
         if (threads == 1) cpu_hash_arm();
         const double a = nowMs();
+        cpu_dec_set_axis(axes[i][0], axes[i][1]);
         r.got = cpu_dec_frame(d, px[i].data(), dims[i].first, dims[i].second, mode == "seq" ? held : 0, blocks.data(), ok.data(), &r.fr);
         r.ms = nowMs() - a;
         if (r.fr.word) held = r.fr.version;

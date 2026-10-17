@@ -88,7 +88,7 @@ std::string Replay::error() {
   return err;
 }
 
-void Replay::frame(const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride, double ms, bool isHeld) {
+void Replay::frame(const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride, double ms, bool isHeld, float ax, float ay) {
   // ai: a held frame's hold goes once it is written or refused, after mu is let go (the guard outlives the lock): let go
   // ai: first, the run's end could overtake the newest frame (2026-10-03)
   struct Done { Replay* r; bool on; ~Done() { if (on) r->release(1); } } done{this, isHeld};
@@ -103,7 +103,7 @@ void Replay::frame(const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride, d
     b = rowsBuf.data();
   }
   if (!put(path(taken), b, (size_t)w * h)) { dead = true; return; }
-  kept.push_back({taken++, w, h, ms});
+  kept.push_back({taken++, w, h, ms, ax, ay});
   held += (int64_t)w * h;
   while ((int)kept.size() > keep) {
     std::error_code ec;
@@ -142,10 +142,10 @@ int Replay::finish(const std::string& rxStats, const std::string& rows, const st
   // ai: on, the kept ones in order). On a full disk the oldest frames make room for it, one at a time, up to 8 (9 MB
   // ai: at the 1080 crop), since 2026-10-03 (a full disk failed the run at its end, and the app deleted every frame).
   for (int tries = 0;; tries++) {
-    ojson sizes = ojson::array(), ms = ojson::array();
-    for (auto& f : kept) { sizes.push_back({f.w, f.h}); ms.push_back(f.ms); }
+    ojson sizes = ojson::array(), ms = ojson::array(), axes = ojson::array();
+    for (auto& f : kept) { sizes.push_back({f.w, f.h}); ms.push_back(f.ms); axes.push_back(std::isnan(f.ax) || std::isnan(f.ay) ? ojson() : ojson({f.ax, f.ay})); }
     ojson meta = {{"run", run}, {"w", kept.empty() ? 0 : kept[0].w}, {"h", kept.empty() ? 0 : kept[0].h}, {"frames", kept.size()}, {"of", keep},
-                  {"sizes", sizes}, {"ms", ms}, {"taken", taken}, {"config", config},
+                  {"sizes", sizes}, {"ms", ms}, {"axes", axes}, {"taken", taken}, {"config", config},
                   {"decoder", st.is_object() ? st.value("decoder", "") : ""}, {"layout", st.is_object() ? st.value("layout", "") : ""}};
     if (!stopped.empty()) meta["error"] = stopped;
     if (extra.is_object()) for (auto& [k, val] : extra.items()) meta[k] = val;

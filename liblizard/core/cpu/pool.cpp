@@ -38,6 +38,7 @@ struct CpuPool::Worker {
   uint64_t tag = 0;
   int held = 0;
   double at = 0;
+  float ax = NAN, ay = NAN;   // ai: the frame's camera axis (offer)
   bool go = false;
 };
 
@@ -79,7 +80,7 @@ int CpuPool::ready() const {
   return r;
 }
 
-bool CpuPool::offer(const uint8_t* plane, uint32_t stride, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t tag, int held, double at) {
+bool CpuPool::offer(const uint8_t* plane, uint32_t stride, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t tag, int held, double at, float ax, float ay) {
   Worker* got = nullptr;
   {
     std::lock_guard<std::mutex> l(mu_);
@@ -90,7 +91,7 @@ bool CpuPool::offer(const uint8_t* plane, uint32_t stride, uint32_t x, uint32_t 
   // ai: the worker is this caller's until go: the copy runs outside the lock
   got->luma.resize((size_t)w * h);
   for (uint32_t r = 0; r < h; r++) memcpy(got->luma.data() + (size_t)r * w, plane + (size_t)(y + r) * stride + x, w);
-  got->w = w; got->h = h; got->tag = tag; got->held = held; got->at = at;
+  got->w = w; got->h = h; got->tag = tag; got->held = held; got->at = at; got->ax = ax; got->ay = ay;
   {
     std::lock_guard<std::mutex> l(mu_);
     got->go = true;
@@ -141,6 +142,7 @@ void CpuPool::run(Worker* w) {
     out.tag = w->tag; out.at = w->at; out.blockBytes = bb;
     cpu_frame_t fr;
     const double t0 = nowMs();
+    cpu_dec_set_axis(w->ax, w->ay);
     cpu_dec_frame(dec, w->luma.data(), (int)w->w, (int)w->h, w->held, blocks.data(), ok.data(), &fr);
     out.ms = nowMs() - t0;
     out.found = fr.found != 0; out.ring = fr.ring; out.n = fr.n; out.held = fr.held != 0;

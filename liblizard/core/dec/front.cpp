@@ -22,7 +22,7 @@ Consts Consts::of(const json& c) {
   Consts k;
   k.LEVELS = c["LEVELS"]; k.COUNTERS = c["COUNTERS"]; k.RESULT = c["RESULT"]; k.SEL_WORDS = c["SEL_WORDS"]; k.TS_MAX = c["TS_MAX"]; k.TS_PLAIN = c["TS_PLAIN"];
   k.TS_INGEST = c["TS_INGEST"]; k.RING_SLACK = c["RING_SLACK"]; k.K = c["K"]; k.CELL = c["CELL"]; k.HYP = c["HYP"]; k.RING_COUNT = c["RING_COUNT"];
-  k.NODES_MAX = c["NODES_MAX"]; k.REFIT_DBG = c["REFIT_DBG"]; k.HIST_BINS = c["HIST_BINS"]; k.PYRAMID_BLOCK = c["PYRAMID_BLOCK"];
+  k.NODES_MAX = c["NODES_MAX"]; k.RESID = c["RESID"]; k.REFIT_DBG = c["REFIT_DBG"]; k.HIST_BINS = c["HIST_BINS"]; k.PYRAMID_BLOCK = c["PYRAMID_BLOCK"];
   k.TAU = c["TAU"]; k.EPS = c["EPS"]; k.TAU_TRACK = c["TAU_TRACK"];
   k.TILE = c["TILE"]; k.KEEP = c["KEEP"]; k.B_CEIL = c["B_CEIL"]; k.CAP_MS = c["CAP_MS"];
   k.TWIN_FRAMES = c["TWIN_FRAMES"]; k.TWIN_ROUNDS = c["TWIN_ROUNDS"]; k.VERSION_MAX = c["VERSION_MAX"]; k.SLOTS = c["SLOTS"];
@@ -143,7 +143,7 @@ std::unique_ptr<Lane> FrontHalf::lane(int Bl) {
   ln->p5Uni = mk(32, UNIFORM | COPY_DST, "p5Uni");
   ln->ldUni = mk(80, UNIFORM | COPY_DST, "ldUni");
   ln->measBuf = mk(16ull * C.NODES_MAX * B, STORAGE | COPY_DST | COPY_SRC, "measBuf");
-  ln->residBuf = mk(16ull * C.NODES_MAX * B, STORAGE | COPY_DST | COPY_SRC, "residBuf");
+  ln->residBuf = mk(16ull * C.RESID * B, STORAGE | COPY_DST | COPY_SRC, "residBuf");
   ln->refitDbg = mk(4ull * C.REFIT_DBG * B, STORAGE | COPY_SRC | COPY_DST, "refitDbg");
   ln->histBuf = mk(4ull * C.HIST_BINS * B, STORAGE | COPY_DST | COPY_SRC, "histBuf");
   if (!cascade.is_null()) {
@@ -498,7 +498,7 @@ Slot* FrontHalf::enqueueLuma(const uint8_t* bytes, uint32_t w, uint32_t h, uint3
   auto& st = *r.staging[id];
   for (uint32_t y = 0; y < h; y++) memcpy(st.mapped + (uint64_t)y * w, bytes + (uint64_t)y * stride, w);
   s->luma = true;
-  s->id = id; s->w = w; s->h = h; s->at = now(); s->tag = tag; s->ready = 0;
+  s->id = id; s->w = w; s->h = h; s->at = now(); s->tag = tag; s->ready = 0; s->axis = 0;
   r.slots[id] = s;
   r.staged++;
   return s;
@@ -513,7 +513,7 @@ Slot* FrontHalf::enqueueCamera(CameraIngest& ci, AHardwareBuffer* hb, uint32_t x
   if (id < 0) return nullptr;
   Slot* s = r.store[id].get();
   s->ready = ci.ingest(hb, x, y, w, h, *r.tex, (uint32_t)id);
-  s->id = id; s->w = w; s->h = h; s->at = now(); s->tag = tag; s->luma = false;
+  s->id = id; s->w = w; s->h = h; s->at = now(); s->tag = tag; s->luma = false; s->axis = 0;
   r.slots[id] = s;
   r.staged++;
   return s;
@@ -589,7 +589,11 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   { uint32_t hu[4] = {(uint32_t)held, 0, 0, 0}; dev.writeBuffer(*ln.heldUni, 0, hu, 16); }
   {
     std::vector<uint32_t> dims(4 * ln.slotsG, 0);
-    for (int i = 0; i < nb; i++) if (slots[i]) { dims[4 * i] = slots[i]->w; dims[4 * i + 1] = slots[i]->h; dims[4 * i + 3] = 1; }
+    // ai: LIZ_LENS=old: every frame without the lens about its axis (the model before 2026-10-17), for A/Bs; read a
+    // ai: batch, since the Android app sets its env as each receiver is made
+    const char* lensEnv = getenv("LIZ_LENS");
+    const bool lensOld = lensEnv && !strcmp(lensEnv, "old");
+    for (int i = 0; i < nb; i++) if (slots[i]) { dims[4 * i] = slots[i]->w; dims[4 * i + 1] = slots[i]->h; dims[4 * i + 2] = lensOld ? AXIS_OLD : slots[i]->axis; dims[4 * i + 3] = 1; }
     dev.writeBuffer(*ln.framesBuf, 0, dims.data(), dims.size() * 4);
   }
   // ai: keep (Save replays, 2026-10-03) and LIZ_DUMP=<dir> (a debugging look, 2026-10-01: the S26 at 3840x2160
@@ -747,7 +751,7 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   }
   f->readBytes = f->tsOff + 8ull * f->nq;
   f->ticket = dev.submit(e);
-  for (auto* s : slots) if (s) { f->tags.push_back(s->tag); release(s); } else f->tags.push_back(0);
+  for (auto* s : slots) if (s) { f->tags.push_back(s->tag); f->axes.push_back(s->axis); release(s); } else { f->tags.push_back(0); f->axes.push_back(0); }
   f->slots = slots;
   f->submitted = now();
   f->host["encode"] = f->submitted - f->t0 - f->host["upload"];
@@ -835,6 +839,7 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
     fo.backCounts.assign(bcounts + C.COUNTS * i, bcounts + C.COUNTS * (i + 1));
     for (uint64_t b = 0; b < blocksMax; b++) fo.verdicts[std::min<uint32_t>(V[i * blocksMax + b], 4)]++;
     fo.tag = f->tags[i];
+    fo.axis = f->axes[i];
     if (!f->slots[i]) { fo.empty = true; continue; }
     const float* r = res + C.RESULT * i;
     fo.ring = r[0] == 1 ? (int)r[2] : -1;

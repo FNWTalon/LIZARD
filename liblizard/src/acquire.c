@@ -22,6 +22,17 @@ OB_TLS float ob_raw_quad[8];
 // score and orient, then which form and which mark quad won, the source of the final quad (0 marks, 1 lines,
 // 2 mark_crop, -1 none), whether the marks alone settled it, the mark stage's best, and form 0's quad count.
 OB_TLS float ob_finder_info[8];
+// ai: The lens's axis in the next image this thread decodes (focus_set_axis), image px; NaN for the image's centre.
+static OB_TLS float ob_axis[2] = { NAN, NAN };
+void focus_set_axis(float x, float y) { ob_axis[0] = x; ob_axis[1] = y; }
+// ai: The lens model's lab switch (focus_lens_set): 0 or 1 as set, or -1, LIZ_LENS read at each frame ("old": the
+// ai: model before 2026-10-17), since the Android app sets its env as each receiver is made.
+static int lens_legacy = -1;
+void focus_lens_set(int legacy) { lens_legacy = legacy < 0 ? -1 : !!legacy; }
+static int ob_lens_legacy(void) {
+  if (lens_legacy < 0) { const char *e = getenv("LIZ_LENS"); return e && !strcmp(e, "old"); }
+  return lens_legacy;
+}
 
 void ob_image_init(image_t *im, const uint8_t *px, int w, int h, float gamma) {
   im->px = px; im->w = w; im->h = h;
@@ -513,6 +524,143 @@ static void border_fill(const ob_layout_t *L, const homo_t *H, int iw, int ih, n
   #undef EX
   #undef EY
   free(qx); free(qy);
+}
+
+// ai: The lens about its axis (2026-10-17; STATUS "The lens about its axis"). What the border nodes say H
+// ai: missed, fitted as the radial terms k1 to kK about the camera's optical axis, k |q|^(2k) q (the radial part of
+// ai: Android's lens form, linearised about H), beside the first-order change of the homography itself (an affine map,
+// ai: a shift and the two perspective terms -(g . q) q, which H's four corners, distorted points, leave), q a node's
+// ai: place about the axis over the farthest image corner's distance from it. The Coons patch below carries inward
+// ai: exactly every term but the higher radial ones' (any cubic in the lattice's coordinates is affine in one of them
+// ai: for each value of the other, so k1's |q|^2 q and the homography's terms are its own), so those are what the fit
+// ai: is for: a lens about an axis off the code's middle (a 2:1 half's is the middle of its inner edge) bent the main
+// ai: camera's picture 2.3 samples off in the middle of the code, where one term about the image's centre left it.
+// ai: Two rules decide K (0 to 3), each frame on its own evidence:
+// ai: - The border vouches only for the radii it spans. With the axis outside the code's quad (a 2:1 half's), every
+// ai:   interior point's distance from it lies between the border's least and greatest (a distance's extremes over a
+// ai:   convex region not holding the point are on its boundary), so the radial terms interpolate. With the axis inside
+// ai:   (a 1:1 crop's), the interior's radii run down to 0, below the band from a side's middle to a corner that the
+// ai:   border sees, and higher terms fitted there extrapolate: on the three 1:1 recordings of 2026-09, K chosen by the
+// ai:   fit alone cost 20 to 43% of the blocks. So K is at most 1 there, which the patch carries anyway: the model
+// ai:   before, in effect.
+// ai: - Within that, the K the evidence pays for, by AICc (below).
+// ai: The axis is the image's centre unless the caller says where the camera's axis falls in this crop
+// ai: (focus_set_axis). What the fit leaves is carried inward by the same Coons patch.
+enum { LENS_TERMS = 3, LENS_P = 8 + LENS_TERMS };
+static int solve_lens(double A[LENS_P][LENS_P + 1], int n) {
+  for (int c = 0; c < n; c++) {
+    int p = c;
+    for (int r = c + 1; r < n; r++) if (fabs(A[r][c]) > fabs(A[p][c])) p = r;
+    if (fabs(A[p][c]) < 1e-14) return 0;
+    for (int k = 0; k <= LENS_P; k++) { double t = A[c][k]; A[c][k] = A[p][k]; A[p][k] = t; }
+    for (int r = 0; r < n; r++) {
+      if (r == c) continue;
+      const double f = A[r][c] / A[c][c];
+      for (int k = c; k <= LENS_P; k++) A[r][k] -= f * A[c][k];
+    }
+  }
+  return 1;
+}
+// ai: a node's rows of the model at q = (x, y): x, y, the shift, the two perspective terms, then the K radial terms
+static void lens_rows(double x, double y, int K, double *rx, double *ry) {
+  const double ex[8] = { x, y, 0, 0, 1, 0, -x * x, -x * y }, ey[8] = { 0, 0, x, y, 0, 1, -x * y, -y * y };
+  for (int a = 0; a < 8; a++) { rx[a] = ex[a]; ry[a] = ey[a]; }
+  const double s = x * x + y * y;
+  double sk = s;
+  for (int k = 0; k < K; k++, sk *= s) { rx[8 + k] = sk * x; ry[8 + k] = sk * y; }
+}
+// ai: the model with K radial terms fitted by least squares on the used nodes; its coefficients in t
+static int lens_fit(int K, int nn, const int *use, const float *qx, const float *qy, const node_t *nodes, double *t) {
+  const int p = 8 + K;
+  double A[LENS_P][LENS_P + 1], rx[LENS_P], ry[LENS_P];
+  memset(A, 0, sizeof A);
+  int n = 0;
+  for (int m = 0; m < nn; m++) {
+    if (!use[m]) continue;
+    n++;
+    lens_rows(qx[m], qy[m], K, rx, ry);
+    for (int a = 0; a < p; a++) { for (int b = 0; b < p; b++) A[a][b] += rx[a] * rx[b] + ry[a] * ry[b]; A[a][LENS_P] += rx[a] * nodes[m].dx + ry[a] * nodes[m].dy; }
+  }
+  for (int a = 0; a < p; a++) A[a][a] += 1e-12;
+  // ai: the right-hand side sits in column LENS_P whatever p is; the solve reads only the first p rows and columns
+  if (2 * n <= p || !solve_lens(A, p)) return 0;
+  for (int a = 0; a < p; a++) t[a] = A[a][LENS_P] / A[a][a];
+  return 1;
+}
+static void border_fill_axis(const ob_layout_t *L, const homo_t *H, int iw, int ih, node_t *nodes) {
+  const int nx = L->nx, ny = L->ny, nn = nx * ny;
+  float ax = ob_axis[0], ay = ob_axis[1];
+  if (!(ax == ax) || !(ay == ay)) { ax = iw * 0.5f; ay = ih * 0.5f; }
+  double R = 0;
+  for (int c = 0; c < 4; c++) { const double d = hypot((c & 1 ? iw : 0) - (double)ax, (c & 2 ? ih : 0) - (double)ay); if (d > R) R = d; }
+  if (!(R > 0)) R = 1;
+  float *qx = malloc((size_t)nn * sizeof(float)), *qy = malloc((size_t)nn * sizeof(float));
+  int *use = malloc((size_t)nn * sizeof(int));
+  for (int j = 0; j < ny; j++) for (int i = 0; i < nx; i++) {
+    float u, v;
+    project(H, L->node_x[i], L->node_y[j], &u, &v);
+    const int k = j * nx + i;
+    qx[k] = (float)((u - ax) / R); qy[k] = (float)((v - ay) / R);
+    const node_t *nd = &nodes[k];
+    const int corner = (i == 0 || i == nx - 1) && (j == 0 || j == ny - 1);
+    use[k] = nd->done && (corner || (L->node_mark[k] && nd->score >= 0.35f));
+  }
+  // ai: is the axis (q = 0) inside the code's quad? Its corners in ring order; the axis is inside where it sits on the
+  // ai: same side of all four edges.
+  const int cn[4] = { 0, nx - 1, nn - 1, nn - nx };
+  int pos = 0, neg = 0;
+  for (int c = 0; c < 4; c++) {
+    const int a = cn[c], b = cn[(c + 1) & 3];
+    const double cr = (double)qx[a] * qy[b] - (double)qy[a] * qx[b];   // ai: (corner a - 0) x (corner b - 0)
+    pos += cr > 0; neg += cr < 0;
+  }
+  const int kmax = (pos == 4 || neg == 4) ? 1 : LENS_TERMS;
+  // ai: K by AICc over the used nodes' 2n residuals (a node's dx and dy each), then H's fit kept as it is where none
+  // ai: fits. Beside it a fit on three sides scored on the fourth chose as often on the simulator and less well on every
+  // ai: 2:1 replay (up to 2.5 blocks a half; STATUS "The lens about its axis").
+  double rx[LENS_P], ry[LENS_P];
+  int K = -1;
+  double best = INFINITY;
+  for (int k = 0; k <= kmax; k++) {
+    const int p = 8 + k;
+    double t[LENS_P] = { 0 }, rss = 0;
+    int n = 0;
+    if (!lens_fit(k, nn, use, qx, qy, nodes, t)) continue;
+    for (int m = 0; m < nn; m++) {
+      if (!use[m]) continue;
+      n += 2;
+      lens_rows(qx[m], qy[m], k, rx, ry);
+      double fx = 0, fy = 0;
+      for (int a = 0; a < p; a++) { fx += t[a] * rx[a]; fy += t[a] * ry[a]; }
+      rss += (nodes[m].dx - fx) * (nodes[m].dx - fx) + (nodes[m].dy - fy) * (nodes[m].dy - fy);
+    }
+    if (n - p - 1 <= 0) continue;
+    const double aicc = n * log(rss / n + 1e-30) + 2.0 * p + 2.0 * p * (p + 1) / (n - p - 1);
+    if (aicc < best) { best = aicc; K = k; }
+  }
+  double th[LENS_P] = { 0 };
+  if (K >= 0 && !lens_fit(K, nn, use, qx, qy, nodes, th)) K = -1;
+  float *mx = malloc((size_t)nn * sizeof(float)), *my = malloc((size_t)nn * sizeof(float));
+  for (int k = 0; k < nn; k++) {
+    double X = 0, Y = 0;
+    if (K >= 0) { lens_rows(qx[k], qy[k], K, rx, ry); for (int a = 0; a < 8 + K; a++) { X += th[a] * rx[a]; Y += th[a] * ry[a]; } }
+    mx[k] = (float)X; my[k] = (float)Y;
+  }
+  #define EX(i, j) (nodes[(j) * nx + (i)].dx - mx[(j) * nx + (i)])
+  #define EY(i, j) (nodes[(j) * nx + (i)].dy - my[(j) * nx + (i)])
+  for (int j = 1; j < ny - 1; j++) for (int i = 1; i < nx - 1; i++) {
+    node_t *nd = &nodes[j * nx + i];
+    if (L->node_mark[j * nx + i]) continue;
+    float u = (L->node_x[i] - L->node_x[0]) / (L->node_x[nx - 1] - L->node_x[0]), v = (L->node_y[j] - L->node_y[0]) / (L->node_y[ny - 1] - L->node_y[0]);
+    float fx = (1 - u) * EX(0, j) + u * EX(nx - 1, j) + (1 - v) * EX(i, 0) + v * EX(i, ny - 1)
+             - ((1 - u) * (1 - v) * EX(0, 0) + u * (1 - v) * EX(nx - 1, 0) + (1 - u) * v * EX(0, ny - 1) + u * v * EX(nx - 1, ny - 1));
+    float fy = (1 - u) * EY(0, j) + u * EY(nx - 1, j) + (1 - v) * EY(i, 0) + v * EY(i, ny - 1)
+             - ((1 - u) * (1 - v) * EY(0, 0) + u * (1 - v) * EY(nx - 1, 0) + (1 - u) * v * EY(0, ny - 1) + u * v * EY(nx - 1, ny - 1));
+    nd->dx = mx[j * nx + i] + fx; nd->dy = my[j * nx + i] + fy; nd->done = 1; nd->score = 1;
+  }
+  #undef EX
+  #undef EY
+  free(qx); free(qy); free(use); free(mx); free(my);
 }
 
 // ---------------------------------------------------------------- thin frame: four lines
@@ -2319,7 +2467,8 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
     refine_node(L, &rim, &H, i, j, nodes);
   }
   free(blurred);
-  if (mesh) { smooth_along(L, &H, nodes); border_fill(L, &H, iw, ih, nodes); }   // the border is all there is to hang the mesh on
+  // the border is all there is to hang the mesh on
+  if (mesh) { smooth_along(L, &H, nodes); if (ob_lens_legacy()) border_fill(L, &H, iw, ih, nodes); else border_fill_axis(L, &H, iw, ih, nodes); }
   float msum = 0;
   int mcount = 0;
   for (int k = 0; k < nn; k++) if (nodes[k].done) { msum += nodes[k].score; mcount++; }

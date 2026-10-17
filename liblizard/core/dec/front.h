@@ -10,6 +10,7 @@
 #pragma once
 #include "setup.h"
 
+#include <cmath>
 #include <array>
 #include <chrono>
 #include <deque>
@@ -22,7 +23,7 @@ namespace lizard {
 
 // ai: The constants the web host states (gen.mjs exports them with the setup).
 struct Consts {
-  uint32_t LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, TS_INGEST, RING_SLACK, K, CELL, HYP, RING_COUNT, NODES_MAX, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK;
+  uint32_t LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, TS_INGEST, RING_SLACK, K, CELL, HYP, RING_COUNT, NODES_MAX, RESID, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK;
   float TAU, EPS, TAU_TRACK;
   uint32_t TILE, KEEP, B_CEIL;
   double CAP_MS;
@@ -87,7 +88,18 @@ struct Slot {
   std::shared_ptr<wg::Ticket> reading;
   uint64_t ready = 0;     // ai: the camera ingest's timeline value (0: a luma upload, ordered on the queue)
   uint64_t tag = 0;       // ai: the caller's
+  // ai: where the camera's optical axis falls in the frame, axisWord's (0: its centre); enqueue sets 0, the caller
+  // ai: after it (core/rx/receiver.cpp: each crop's)
+  uint32_t axis = 0;
 };
+
+// ai: The axis word (gpu/wgsl/common.mjs axisWord): x and y in half pixels, each + 32768 in 16 bits, x low; 0 the
+// ai: frame's centre, AXIS_OLD no lens fit (LIZ_LENS=old: the model before 2026-10-17, for A/Bs).
+constexpr uint32_t AXIS_OLD = 0xffffffffu;
+inline uint32_t axisWord(double x, double y) {
+  auto h = [](double v) { const double t = std::floor(2 * v + 0.5) + 32768; return (uint32_t)(t < 0 ? 0 : t > 65535 ? 65535 : t); };
+  return h(x) | (h(y) << 16);
+}
 
 struct Record { int frame, block, its; uint32_t id; std::array<uint8_t, 473> payload; };
 
@@ -112,6 +124,7 @@ struct FrameOut {
   // ai: the frame as the ring held it, w x h bytes in rows of w, where its batch kept it (run's keep: Save replays)
   std::vector<uint8_t> luma;
   uint32_t w = 0, h = 0;
+  uint32_t axis = 0;   // ai: the slot's axis word (Slot::axis), for the replay's meta
 };
 
 struct BatchOut {
@@ -153,6 +166,7 @@ struct InFlight {
   std::shared_ptr<wg::Ticket> ticket;
   std::vector<Slot*> slots;   // ai: freed at submit already; kept for their shapes and tags
   std::vector<uint64_t> tags;
+  std::vector<uint32_t> axes;   // ai: each slot's axis word, as the batch ran it
   int nb = 0;
   uint32_t W = 0, H = 0;
   uint64_t cntOff = 0, resOff = 0, histOff = 0, backOff = 0, tsOff = 0, readBytes = 0;

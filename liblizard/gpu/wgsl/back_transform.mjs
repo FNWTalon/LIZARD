@@ -277,7 +277,7 @@ struct Picture { ring: array<vec4f, ${RING_COUNT}>, lat: array<vec4f, ${(RING_CO
 fn latAt(i: u32) -> f32 { return PIC.lat[i >> 2u][i & 3u]; }
 `;
 // ai: A fused sampler's head for frame f listed in `lists` (LISTS or LISTS2): its edge, map, ring's grid and lattice.
-export const pictureHead = (lists, B) => `  let fw: i32 = i32(${lists}[${listsHead(B)}u + 2u * f]);\n  let fh: i32 = i32(${lists}[${listsHead(B)}u + 2u * f + 1u]);\n  let M: array<f32, 16> = maps[f];\n  let pr: vec4f = PIC.ring[${lists}[${listsRing(B)}u + f]];\n  let g0: f32 = pr.x;\n  let gstep: f32 = pr.y;\n  let nn: u32 = u32(pr.z);\n  let first: u32 = u32(pr.w);\n  let cn: Corners = corners(f, nn);\n`;
+export const pictureHead = (lists, B) => `  let fw: i32 = i32(${lists}[${listsHead(B)}u + 2u * f]);\n  let fh: i32 = i32(${lists}[${listsHead(B)}u + 2u * f + 1u]);\n  let M: array<f32, 16> = maps[f];\n  let pr: vec4f = PIC.ring[${lists}[${listsRing(B)}u + f]];\n  let g0: f32 = pr.x;\n  let gstep: f32 = pr.y;\n  let nn: u32 = u32(pr.z);\n  let first: u32 = u32(pr.w);\n  let cn: Corners = corners(f, nn);\n  let lz: Lens = lensOf(f);\n`;
 // Workgroup memory pass 1 declares for a size: the two exchange buffers and 48 B a thread of partials.
 export const pass1WorkgroupBytes = (n, prec) => 2 * n * (prec === "f16" ? 4 : 8) + 48 * (n / 8);
 // ai: keep: either picture variant also keeps every sample it read, as unorm16, in KEEP (binding 10, read_write:
@@ -322,7 +322,7 @@ export function pass1Source({ n, prec, B, cpw = CPW, tw = "chain", grid = "f32",
       if (fused) {
         // The left and right curves and the weight down, once a row for the quad's four samples.
         body += `      let my: f32 = g0 + f32(y) * gstep;\n      let v: f32 = coonsT(my, first, nn);\n      let lf: vec2f = curve(f, 3u, my, first, nn);\n      let rg: vec2f = curve(f, 1u, my, first, nn);\n`;
-        body += `      var zz: vec4f = vec4f(${[0, 1, 2, 3].map((k) => `sampleAt(f, M, vec2f(mx${k}, my), u${k}, v, tp${k}, bt${k}, lf, rg, cn, fw, fh)`).join(",\n        ")});\n`;
+        body += `      var zz: vec4f = vec4f(${[0, 1, 2, 3].map((k) => `sampleAt(f, M, lz, vec2f(mx${k}, my), u${k}, v, tp${k}, bt${k}, lf, rg, cn, fw, fh)`).join(",\n        ")});\n`;
       } else if (cancel) body += `      let kw: vec2u = KEEP[kq + y];\n      var zz: vec4f = vec4f(unpack2x16unorm(kw.x), unpack2x16unorm(kw.y));\n`;
       else body += g16 ? `      let gw: vec2u = grid[gq + y * 16u];\n      var zz: vec4f = vec4f(unpack2x16float(gw.x), unpack2x16float(gw.y));\n` : `      var zz: vec4f = grid[gq + y * 16u];\n`;
       // ai: unorm16, not f16: a sample is luma in [0, 1] (the r8unorm texture, the C's lut), and unorm16 holds it to
@@ -371,8 +371,9 @@ export function pass1Source({ n, prec, B, cpw = CPW, tw = "chain", grid = "f32",
 @group(0) @binding(7) var<storage, read> maps: array<array<f32, 16>>;
 @group(0) @binding(8) var<storage, read> resid: array<vec4f>;
 ` + PICTURE + MAP + LUM0 + COONS + /* wgsl */ `
-fn sampleAt(f: u32, M: array<f32, 16>, m: vec2f, u: f32, v: f32, top: vec2f, bot: vec2f, lft: vec2f, rgt: vec2f, cn: Corners, fw: i32, fh: i32) -> f32 {
-  return bilin0(f, toImage(M, m) + coonsMix(u, v, top, bot, lft, rgt, cn), fw, fh);
+fn sampleAt(f: u32, M: array<f32, 16>, lz: Lens, m: vec2f, u: f32, v: f32, top: vec2f, bot: vec2f, lft: vec2f, rgt: vec2f, cn: Corners, fw: i32, fh: i32) -> f32 {
+  let p = toImage(M, m);
+  return bilin0(f, p + lensAt(lz, p) + coonsMix(u, v, top, bot, lft, rgt, cn), fw, fh);
 }
 ` : cancel ? /* wgsl */ `
 @group(0) @binding(0) var<storage, read> KEEP: array<vec2u>;

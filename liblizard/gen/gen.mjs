@@ -69,7 +69,7 @@ const { formatTables, PICTURES } = await imp("gpu/tables.mjs");
 const { loadNet } = await imp("gpu/cnn/netfile.mjs");
 const { CASCADE } = await imp("gpu/wgsl/classify.mjs");
 const { K, CELL, HYP, RING_COUNT } = await imp("gpu/wgsl/finder.mjs");
-const { NODES_MAX, REFIT_DBG } = await imp("gpu/wgsl/register.mjs");
+const { NODES_MAX, RESID, REFIT_DBG } = await imp("gpu/wgsl/register.mjs");
 const { HIST_BINS, PYRAMID_BLOCK } = await imp("gpu/wgsl/pyramid.mjs");
 const { KEEP } = await imp("gpu/wgsl/bank.mjs");
 const { TILE } = await imp("gpu/wgsl/bank_fcn2.mjs");
@@ -177,7 +177,7 @@ function exportTree(fh, v, tables) {
   const f = fh.fcn2Form;
   return {
     variant: v.name, precision: fh.precision, floatPrecision: fh.floatPrecision, subgroups: v.subgroups, features: fh.features, nets: fh.nets,
-    consts: { LEVELS, COUNTERS, RESULT: 32, SEL_WORDS: 4, TS_MAX: 80, TS_PLAIN: 2, TS_INGEST: 2, RING_SLACK: 4, K, CELL, HYP, RING_COUNT, NODES_MAX, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK, TAU, EPS, TAU_TRACK,
+    consts: { LEVELS, COUNTERS, RESULT: 32, SEL_WORDS: 4, TS_MAX: 80, TS_PLAIN: 2, TS_INGEST: 2, RING_SLACK: 4, K, CELL, HYP, RING_COUNT, NODES_MAX, RESID, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK, TAU, EPS, TAU_TRACK,
       TILE, KEEP, B_CEIL, CAP_MS, TWIN_FRAMES: 2, TWIN_ROUNDS: 3, VERSION_MAX, SLOTS, ARGS_WORDS, ARGS_SLOT, argsLdpc, argsWords, COUNTS, REC_BYTES, PAYLOAD },
     cap: fh.cap, register: fh.register, nodesMax: fh.nodesMax, modules: Array.from(fh.modules), bankKeep: fh.bank.KEEP,
     cascade: fh.cascade ? { keep: fh.cascade.keep, rest: fh.cascade.rest, precision: fh.cascade.weights.precision } : null, weightsPrecision: fh.weights.precision,
