@@ -171,10 +171,14 @@ int focus_profile_set(const char *spec);
 // ai: centre, right for a crop centred on the camera's frame; a 2:1 half's axis is the middle of its inner edge. Kept
 // ai: for the thread's later decodes until set again.
 void focus_set_axis(float x, float y);
+// ai: The camera's own report of its lens for the next image this thread decodes (Android's LENS_DISTORTION form,
+// ai: distorted = ideal (1 + k1 r^2 + k2 r^4 + k3 r^6), r over the focal length f, in this image's px, about the axis
+// ai: focus_set_axis gives); f = 0 or every k 0 for none. The lens model takes its shape and fits its strength.
+void focus_set_lens(float k1, float k2, float k3, float f);
 // ai: The lens model's A/B switch (2026-10-17, a lab arm until its A/B is read): 1 the model before, one radial term
 // ai: about the image's centre; 0 the axis model; -1 back to the environment (LIZ_LENS=old for the model before).
 // ai: Process-wide: set it from one thread with no decode running.
-void focus_lens_set(int legacy);
+void focus_lens_set(int legacy);   // ai: 2 the axis model without the camera's report (LIZ_LENS=axis)
 // The blocks a frame of subch sub-channels carries under that profile (0 for no format).
 int focus_blocks_for(int subch);
 void focus_free(focus_t *f);

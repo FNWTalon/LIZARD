@@ -138,7 +138,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_lizard_receiver_Native_create(JNIEnv
 // ai: Throws (IllegalArgumentException) only before the receiver has the frame, so the caller closes the Image at once;
 // ai: once pushed, the frame is the receiver's until its release(tag), even when it drops it.
 extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_push(JNIEnv* e, jclass, jlong h, jobject hb,
-    jobject luma, jint width, jint height, jint stride, jlong timestampNs, jlong tag) {
+    jobject luma, jint width, jint height, jint stride, jlong timestampNs, jlong tag, jfloatArray lens) {
   lizard::CameraFrame f;
   if (hb) f.hb = AHardwareBuffer_fromHardwareBuffer(e, hb);
   if (luma) f.luma = static_cast<const uint8_t*>(e->GetDirectBufferAddress(luma));
@@ -151,6 +151,7 @@ extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_push(JNIEnv* e
   f.stride = static_cast<uint32_t>(stride);
   f.timestampNs = timestampNs;
   f.tag = static_cast<uint64_t>(tag);
+  if (lens && e->GetArrayLength(lens) >= 4) e->GetFloatArrayRegion(lens, 0, 4, f.lens);
   rx(h)->push(f);
 }
 

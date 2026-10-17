@@ -83,6 +83,26 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     // ai: was next set, and a pace learned to its bound (5 ms a second) in 2:1 was given back to every run after it
     // ai: (STATUS "The lock's saved pace").
     @Volatile private var last: android.hardware.camera2.TotalCaptureResult? = null   // ai: the newest result of a frame that was not a delayed one (delay)
+    // ai: The camera's own report of its lens in the stream's pixels, [k1, k2, k3, f] (Android's LENS_DISTORTION form, f
+    // ai: LENS_INTRINSIC_CALIBRATION's focal length through the zoom's crop to the stream), sent with every frame for the
+    // ai: decoders' lens model (liblizard/src/acquire.c focus_set_lens) and a replay's meta (2026-10-17). Null where the
+    // ai: camera reports none (every coefficient 0, as the S26's front camera does) or the stream is corrected already
+    // ai: (DISTORTION_CORRECTION_MODE not off). Its principal point is not taken: on the S26's main camera at 2.2x the
+    // ai: frame's centre read 14% more blocks as the axis (research/STATUS.md "The camera's report of its lens").
+    @Volatile private var lensReport: FloatArray? = null
+    private fun lensOf(ch: CameraCharacteristics, r: android.hardware.camera2.CaptureResult, w: Int, h: Int): FloatArray? {
+        if (Build.VERSION.SDK_INT < 28) return null
+        val mode = r.get(android.hardware.camera2.CaptureResult.DISTORTION_CORRECTION_MODE)
+        if (mode != null && mode != CameraMetadata.DISTORTION_CORRECTION_MODE_OFF) return null
+        val k = r.get(android.hardware.camera2.CaptureResult.LENS_DISTORTION) ?: ch.get(CameraCharacteristics.LENS_DISTORTION) ?: return null
+        val cal = r.get(android.hardware.camera2.CaptureResult.LENS_INTRINSIC_CALIBRATION) ?: ch.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION) ?: return null
+        val pre = ch.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE) ?: return null
+        if (k.size < 3 || cal.size < 2 || (k[0] == 0f && k[1] == 0f && k[2] == 0f) || pre.width() <= 0 || pre.height() <= 0 || w <= 0 || h <= 0) return null
+        val z = if (Build.VERSION.SDK_INT >= 30) r.get(android.hardware.camera2.CaptureResult.CONTROL_ZOOM_RATIO) ?: 1f else 1f
+        // ai: the stream is the zoomed field's largest centred part of its shape, scaled: stream px a sensor px
+        val scale = maxOf(w * z / pre.width(), h * z / pre.height())
+        return floatArrayOf(k[0], k[1], k[2], 0.5f * (cal[0] + cal[1]) * scale)
+    }
     // ai: The newest capture's exposure, sensitivity, frame and readout (the `capture:` line's keys) and the
     // ai: phase lock's snapshot: for the stats row and a replay's meta (MainActivity, 2026-10-04), read from any thread
     data class CameraNow(val exposureMs: Double, val iso: Int, val frameMs: Double, val readoutMs: Double)
@@ -452,6 +472,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                     // ai: around it, the delayed frame's marked *
                     val told = object : CameraCaptureSession.CaptureCallback() {
                         var n = 0
+                        var lensAt = 0
                         var t = 0L
                         var seen = 0L
                         var prevTs = 0L
@@ -472,6 +493,12 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                         init { phase.reopened() }
                         override fun onCaptureCompleted(s: CameraCaptureSession, q: CaptureRequest, r: android.hardware.camera2.TotalCaptureResult) {
                             val ts = r.get(android.hardware.camera2.CaptureResult.SENSOR_TIMESTAMP) ?: 0L
+                            // ai: the lens's report a half-second (a zoom moves it; nothing else does on the S26)
+                            if (lensAt++ % 30 == 0) {
+                                val was = lensReport
+                                lensReport = lensOf(ch, r, size.width, size.height)
+                                if (!(lensReport contentEquals was)) Log.i(TAG, "lens: " + (lensReport?.let { "k %.5f %.5f %.5f, f %.1f px".format(it[0], it[1], it[2], it[3]) } ?: "no report"))
+                            }
                             val delayed = q.get(CaptureRequest.CONTROL_AE_MODE) == CameraMetadata.CONTROL_AE_MODE_OFF
                             // ai: a delay is asked from the camera's own frame: a delayed frame's duration is not it
                             if (!delayed) last = r
@@ -669,7 +696,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
             val plane = if (hb == null) img.planes.firstOrNull() else null
             val tag = Native.hold(img, hb, this)
             try {
-                Native.push(hnd, hb, plane?.buffer, img.width, img.height, plane?.rowStride ?: img.width, img.timestamp, tag)
+                Native.push(hnd, hb, plane?.buffer, img.width, img.height, plane?.rowStride ?: img.width, img.timestamp, tag, lensReport)
             } catch (e: IllegalArgumentException) {
                 Log.w(TAG, "push: ${e.message}")
                 Native.release(tag)

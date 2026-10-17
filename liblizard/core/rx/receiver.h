@@ -40,6 +40,9 @@ struct CameraFrame {
   uint32_t width = 0, height = 0, stride = 0;
   int64_t timestampNs = 0;
   uint64_t tag = 0;
+  // ai: the camera's report of its lens in this frame's px: k1, k2, k3 (Android's LENS_DISTORTION form) and the focal
+  // ai: length f; f 0 none. The C's lens model takes it (src/focus.h focus_set_lens); a replay's meta records it.
+  float lens[4] = {0, 0, 0, 0};
 };
 
 class Receiver {

@@ -14,9 +14,10 @@ object Native {
 
     @JvmStatic external fun create(assets: String, cacheDir: String, storeDir: String, decoder: String, precision: String, layout: String): Long
     // ai: hb (zero copy) or luma (a direct buffer of the Y plane); throws IllegalArgumentException only before the
-    // ai: receiver has the frame, and the caller then closes it itself
+    // ai: receiver has the frame, and the caller then closes it itself. lens: the camera's report of its lens in the
+    // ai: frame's px, [k1, k2, k3, f], or null (Engine.lensOf)
     @JvmStatic external fun push(h: Long, hb: HardwareBuffer?, luma: ByteBuffer?, width: Int, height: Int, stride: Int,
-                                 timestampNs: Long, tag: Long)
+                                 timestampNs: Long, tag: Long, lens: FloatArray?)
     // ai: whether this receiver reads luma bytes (the C on the CPU) rather than the camera's buffer in place
     @JvmStatic external fun wantsLuma(h: Long): Boolean
     @JvmStatic external fun stats(h: Long): String

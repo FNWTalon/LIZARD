@@ -62,7 +62,8 @@ class CpuPool {
   // ai: before the call returns; false when every worker is busy (the frame is lost and the caller counts it).
   // ai: held: the version of the last word read, 0 none. ax, ay: where the camera's optical axis falls in the crop
   // ai: (NaN: its centre), the C's lens model's (codec.h cpu_dec_set_axis).
-  bool offer(const uint8_t* plane, uint32_t stride, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t tag, int held, double at, float ax = NAN, float ay = NAN);
+  // ai: lens: the camera's report of its lens (k1, k2, k3, f px; codec.h cpu_dec_set_lens), null none.
+  bool offer(const uint8_t* plane, uint32_t stride, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t tag, int held, double at, float ax = NAN, float ay = NAN, const float* lens = nullptr);
   // ai: The policy's two hooks, the receiver's to call: a frame was lost to busy workers (repeatShare: the share of
   // ai: the last second's decoded frames that carried nothing new); a second passed with busySkips frames lost.
   void lost(double repeatShare);
