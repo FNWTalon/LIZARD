@@ -296,10 +296,10 @@ class MainActivity : ComponentActivity() {
     // ai: (Settings.forCamera, 2026-10-04); null where the phone has none or the camera service fails
     private fun camId(camera: String): String? = runCatching { engine.rearId(camera) }.getOrNull()
     // ai: A Settings or Developer Tools switch: kept, and the camera started again where the switch needs it. Another lens
-    // ai: chosen brings its own resolution and zoom (as last kept for it, else the defaults).
+    // ai: chosen brings its own resolution and zoom, another crop its own zoom (as last kept for it, else the defaults).
     internal fun change(s0: Settings, restart: Boolean) {
         val cam = camId(s0.camera)
-        val s = if (s0.camera != settings.camera) s0.forCamera(this, cam) else s0
+        val s = if (s0.camera != settings.camera || s0.layout != settings.layout) s0.forCamera(this, cam) else s0
         settings = s
         s.save(this, cam)
         engine.batch(s.frames)
