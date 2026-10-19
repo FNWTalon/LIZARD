@@ -15,7 +15,7 @@ import android.content.Context
 // ai:   zoom        the camera's zoom ratio, 0.1 apart over its range up to 4 (Settings' slider since 2026-10-01; chips
 // ai:               of 1, 1.4 and 2 before); 1.5 by default since 2026-10-02 (the zoom of the 2:1 runs at 2.2+ MB/s;
 // ai:               1.4 before, the 2026-09-30 sweep's best, 1.7 next): the code in the middle of the lens's field, not
-// ai:               out to its soft corners (Engine.session; set live, Engine.zoom)
+// ai:               out to its soft corners (Engine.session; set live, Engine.zoom); a lens's in each crop (below)
 // ai:   (focus      auto | dioptres, Receive's Focus of 2026-10-04, went 2026-10-05: autofocus, the camera's continuous
 // ai:               video mode, always, Engine.applyFocus; a stored one is removed at the next save)
 // ai:   (devlog     the rig's address for the stats rows, went 2026-10-09: rows are logged only in a replay; a stored
@@ -34,12 +34,14 @@ import android.content.Context
 // ai:               is in ("Received <name>, <size> in <s>, <speed>"; Receive.kt TransferPanel) and Developer Tools' lab
 // ai:               line and readout (SettingsPanel.kt ReceiveAdvanced); off by default, kept
 // ai: The camera's rate is no switch since 2026-10-01: [60,60], else the highest fixed range (Engine.pickFps).
-// ai: Resolution and zoom are a lens's (2026-10-04): each is kept as "<key>@<camera id>" for the back camera the
-// ai: camera switch resolves to (Engine.rearId: auto is the closest-focusing lens, so auto and that lens share one set),
-// ai: and choosing another lens brings that lens's own two back (MainActivity.change). A lens with none saved reads
-// ai: the plain key (the one value every lens shared before), else the default; a save writes the lens's keys and drops
-// ai: the plain ones, so tools/phone/ab.sh, which cannot name the lens, writes the plain zoom and removes the "zoom@"
-// ai: entries, and the app adopts it for the lens it opens. The other switches are the app's, under their plain keys.
+// ai: Resolution is a lens's and zoom a lens's in each crop (2026-10-04; the crop too since 2026-10-18): resolution is
+// ai: kept as "resolution@<camera id>" and zoom as "zoom@<camera id>/<layout>" for the back camera the camera switch
+// ai: resolves to (Engine.rearId), and choosing another lens or crop brings its own back (MainActivity.change). Where
+// ai: none is saved, zoom reads the lens's one zoom of before ("zoom@<camera id>"), then the plain key (the one value
+// ai: every lens shared before 2026-10-04), else the default; resolution the plain key, else the default. A save writes
+// ai: the lens's and crop's keys, gives the other crop the zoom it read until then where it has none of its own, and
+// ai: drops the older keys. Where the phone has no back camera they stay under plain keys ("zoom/<layout>"). The other
+// ai: switches are the app's, under their plain keys.
 data class Settings(
     val decoder: String = "auto",
     val precision: String = "auto",
@@ -55,24 +57,25 @@ data class Settings(
     // ai: cam: the id the camera switch resolves to (Engine.rearId), null where the phone has no back camera (the
     // ai: lens's values then stay under the plain keys)
     fun save(ctx: Context, cam: String?) {
-        val e = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val e = p.edit()
             .putString("decoder", decoder).putString("precision", precision).putString("layout", layout).putString("camera", camera)
             .remove("fps").remove("devlog").remove("phase").putString("batch", batch).remove("replays")
             .putString("stats", stats)
-        for ((k, v) in lens()) { e.putString(key(k, cam), v); if (cam != null) e.remove(k) }
+        e.putString(key("resolution", cam), resolution); if (cam != null) e.remove("resolution")
+        for (l in LAYOUTS) if (l != layout && !p.contains(zoomKey(cam, l))) e.putString(zoomKey(cam, l), zoomOf(p, cam, l))
+        e.putString(zoomKey(cam, layout), zoom).remove(key("zoom", cam)).remove("zoom")
         e.remove("focus"); if (cam != null) e.remove(key("focus", cam))   // ai: the focus of 2026-10-04, stored until 2026-10-05
         e.apply()
     }
 
-    // ai: this, with the lens's two as saved for cam (else the plain key's, else the defaults)
+    // ai: this, with the lens's resolution and the lens's zoom in this crop as saved for cam (else the older keys', else
+    // ai: the defaults)
     fun forCamera(ctx: Context, cam: String?): Settings {
         val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val d = Settings()
-        fun g(k: String, dflt: String) = p.getString(key(k, cam), null) ?: p.getString(k, null) ?: dflt
-        return copy(resolution = g("resolution", d.resolution), zoom = g("zoom", d.zoom))
+        return copy(resolution = p.getString(key("resolution", cam), null) ?: p.getString("resolution", null) ?: Settings().resolution,
+            zoom = zoomOf(p, cam, layout))
     }
-
-    private fun lens() = listOf("resolution" to resolution, "zoom" to zoom)
 
     companion object {
         const val PREFS = "lizard"
@@ -82,6 +85,10 @@ data class Settings(
         val RESOLUTIONS = listOf("1280x720", "1920x1080", "2560x1440", "3840x2160")
 
         private fun key(k: String, cam: String?) = if (cam == null) k else "$k@$cam"
+        private fun zoomKey(cam: String?, layout: String) = "${key("zoom", cam)}/$layout"
+        // ai: the zoom kept for cam in a crop: its own, else the lens's one zoom of before, else the plain one, else the default
+        private fun zoomOf(p: android.content.SharedPreferences, cam: String?, layout: String) =
+            p.getString(zoomKey(cam, layout), null) ?: p.getString(key("zoom", cam), null) ?: p.getString("zoom", null) ?: Settings().zoom
 
         // ai: rearId: the camera switch's value to the back camera it opens (Engine.rearId); the switch then holds that
         // ai: id (none where the phone has no back camera)
