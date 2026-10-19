@@ -4,9 +4,15 @@
 // ai: them, Sender (a file to painted frames) and Receiver (camera frames to a file). Everything is synchronous: a
 // ai: page runs a Receiver in a worker of its own (several, for several decoders). Call init() once first.
 // ai: Handles hold wasm memory: free() each, or let the module go.
-import create from "./dist/lizard.mjs";
+// ai: Two builds of the same API: dist/lizard.mjs (the "wasm" preset, the vector paths on WebAssembly SIMD) and
+// ai: dist/lizard-mvp.mjs (the "wasm-mvp" preset, WebAssembly 1.0 with no extension, the scalar paths: the same blocks
+// ai: from the same frames, slower), loaded where the engine has no SIMD.
 
 let M = null;
+
+// ai: a module whose one function returns a v128 (i8x16.splat, i8x16.popcnt), valid only where the engine has SIMD
+const SIMD_PROBE = Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11);
+export const hasSimd = () => WebAssembly.validate(SIMD_PROBE);
 
 // ai: Thrown for a failed call: code, one of lizard.h's LIZ_E_* (negative), and the library's message.
 export class LizardError extends Error {
@@ -17,8 +23,15 @@ export class LizardError extends Error {
   }
 }
 
-export async function init(moduleOptions) {
-  M ??= await create(moduleOptions);
+// ai: build: "auto" (the SIMD build where the engine has SIMD, else the MVP build), "simd" or "mvp". The first call
+// ai: decides; later calls return the same module.
+export async function init(moduleOptions, { build = "auto" } = {}) {
+  if (!M) {
+    if (!["auto", "simd", "mvp"].includes(build)) throw new Error(`lizard: build auto, simd or mvp, not ${build}`);
+    const mvp = build === "mvp" || (build === "auto" && !hasSimd());
+    const create = (await (mvp ? import("./dist/lizard-mvp.mjs") : import("./dist/lizard.mjs"))).default;
+    M = await create(moduleOptions);
+  }
   return M;
 }
 const mod = () => {

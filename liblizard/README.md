@@ -10,7 +10,7 @@ One C API (`include/lizard.h`), three bindings over it:
 | | what | where |
 |---|---|---|
 | C | the shared library: `liblizard.so` (Linux, Android), `lizard.dll` (Windows: cross-built from Linux, not yet run) | `include/`, `api/` |
-| WebAssembly | an ES module and its `.wasm`, no threads, no GPU | `bindings/wasm/` |
+| WebAssembly | an ES module and its `.wasm`, no threads, no GPU; beside it a WebAssembly 1.0 (MVP) build for engines without SIMD | `bindings/wasm/` |
 | Kotlin | a JVM library (desktops; its natives Linux x86-64 only), and an AAR (Android, arm64, the GPU files in it) | `bindings/kotlin/` |
 
 macOS has no preset and has never been built.
@@ -21,11 +21,12 @@ how several files or a folder become one transfer (a tar, `research/SPEC.md` 9.6
 ## Layers
 
 1. **Format arithmetic.** A format is its size (1 to 128: LIZARD-8 to -1024; a symbol of it carries `liz_blocks_for`
-   blocks, the rate profile's count), a ring (the border: 32, 64, 96 or 128 cells, the 128 by default), the display
+   blocks, the rate profile's count), a ring (the border: 32, 64, 128 or 256 cells, the 128 by default), the display
    rate its word states, and one code or two side by side.
    `liz_geometry_of` gives what it paints; `liz_room_for` and `liz_pick` the room a symbol needs on a display and the
    most blocks that fit a room.
-2. **The per-frame codec**, on the CPU (NEON on arm64, WebAssembly SIMD in the wasm build, scalar elsewhere).
+2. **The per-frame codec**, on the CPU (NEON on arm64, WebAssembly SIMD in the wasm build, scalar elsewhere and in the
+   wasm MVP build).
    `liz_encoder_paint`: a frame's blocks to its picture, grey or four bytes a pixel, the frame's count for the pilots.
    `liz_decode`: a captured image, or one region of it (`liz_layout_rects`: the centre square, or the two halves of a
    2:1 region), to its verified blocks; the caller keeps the held word (the last word read), the one thing carried from
@@ -51,6 +52,7 @@ cmake --preset linux && cmake --build --preset linux && ctest --preset linux    
 cmake --preset linux-asan ...                                                    # the codec, transfer and API under ASan and UBSan (no engines)
 cmake --preset jvm && cmake --build --preset jvm                                 # with the Kotlin binding's JNI (JAVA_HOME a JDK)
 source <emsdk>/emsdk_env.sh && cmake --preset wasm && cmake --build --preset wasm   # bindings/wasm/dist/
+cmake --preset wasm-mvp && cmake --build --preset wasm-mvp                       # bindings/wasm/dist/lizard-mvp.*, WebAssembly 1.0
 cmake --preset windows && cmake --build --preset windows                         # lizard.dll, cross-built with MinGW-w64 (posix threads)
 cmake --preset android-arm64 && cmake --build --preset android-arm64             # the NDK at ANDROID_NDK_HOME, else $ANDROID_HOME/ndk/27.1.12297006, else ~/Android/Sdk/ndk/27.1.12297006
 ```
@@ -60,7 +62,8 @@ making them; the configure says what it left out): ctest's `pick_table`, which h
 needs Node and `build/ob.mjs` (`./build.sh`: the codec's own wasm, with emsdk); the GPU files installed under
 `share/lizard` are the generated tree `out/` (`../lizard-android/build.sh tools`, then `gen`).
 
-Options: `LIZ_GPU` (the Vulkan engines; off in wasm), `LIZ_JNI`, `LIZ_TESTS`, `LIZ_SAN`, `LIZ_GPU_TREE` (the generated GPU
+Options: `LIZ_GPU` (the Vulkan engines; off in wasm), `LIZ_JNI`, `LIZ_TESTS`, `LIZ_SAN`, `LIZ_WASM_MVP` (the wasm build as
+WebAssembly 1.0, the `wasm-mvp` preset), `LIZ_GPU_TREE` (the generated GPU
 files) and `LIZ_GPU_VARIANTS` (the decoder variants installed: all six by default, 21 MB; one alone 10 MB for `f32-sg`
 to 14 MB for `int8-sg`, the sender's files included). The receiver decodes with the best variant the device runs of
 those its assets hold; where they hold none it runs, `auto` decodes on the CPU (the log says why) and `gpu` fails.
@@ -73,9 +76,18 @@ The bindings:
 
 ```
 cd bindings/wasm && npm test                                    # after the wasm preset; LIZ_NATIVE_DUMP=<dir> to hold its paint to native's
+cd bindings/wasm && npm run test:mvp                            # the same on the MVP build, after the wasm-mvp preset
 cd bindings/kotlin && ./gradlew :lizard:test                    # after the jvm preset
 cd bindings/kotlin && ./gradlew :lizard-android:assembleRelease # the AAR
 ```
+
+The wasm package holds two builds of the same API. `dist/lizard.mjs` runs the codec's vector paths on WebAssembly
+SIMD; `dist/lizard-mvp.mjs` is WebAssembly 1.0 with no extension (the codec's scalar paths, exceptions through JS;
+emscripten's libc has its sign extension, bulk memory and saturating float-to-int lowered by binaryen, and the module
+is validated against the MVP feature set), for an engine without SIMD. `init()` loads the SIMD build where
+`hasSimd()` says the engine has SIMD and the MVP build otherwise; `init(options, { build: "simd" | "mvp" })` names one.
+Both decode the same blocks from the same frames; the MVP build is about four times slower (one core of a Ryzen 9
+9950X under Node 22, the 2:1 halves of two LIZARD-616 at 960 and 1280 px: 92.8 ms a frame against 24.4).
 
 `npm test`'s comparison with the web sender's picker also needs `build/ob.mjs` (`./build.sh`); without it that test is
 skipped, saying why. The AAR needs the Android SDK (`ANDROID_HOME`, or `sdk.dir` in `bindings/kotlin/local.properties`)

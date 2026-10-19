@@ -1,6 +1,10 @@
 // ai: Types for index.mjs, liblizard's WebAssembly binding (the C API in ../../include/lizard.h says what each does).
 
-export declare function init(moduleOptions?: object): Promise<unknown>;
+/** Loads the module once. build: "auto" (the SIMD build where the engine has WebAssembly SIMD, else the MVP build),
+ *  "simd" or "mvp". The first call decides. */
+export declare function init(moduleOptions?: object, options?: { build?: "auto" | "simd" | "mvp" }): Promise<unknown>;
+/** Whether this engine has WebAssembly SIMD, which the default build needs (else init loads the MVP build). */
+export declare function hasSimd(): boolean;
 export declare class LizardError extends Error {
   readonly name: "LizardError";
   /** One of lizard.h's LIZ_E_* codes (negative). */
@@ -12,7 +16,7 @@ export type PixelFormat = "grey" | "rgbx" | "rgba" | "bgra";
 
 export declare function version(): string;
 export declare function abi(): number;
-/** Whether the codec's vector paths (WebAssembly SIMD) are in this build. */
+/** Whether the codec's vector paths (WebAssembly SIMD) are in the loaded build: false in the MVP build. */
 export declare function simd(): boolean;
 
 export interface Format {
