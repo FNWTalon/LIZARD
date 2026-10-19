@@ -30,6 +30,17 @@
       }
     },
     {
+      "name": "wasm-mvp",
+      "displayName": "WebAssembly 1.0 (MVP), no SIMD, for old engines (emsdk sourced first)",
+      "binaryDir": "${sourceDir}/build-native/wasm-mvp",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LIZ_TESTS": "OFF",
+        "LIZ_WASM_MVP": "ON"
+      }
+    },
+    {
       "name": "jvm",
       "displayName": "Linux with the Kotlin binding's JNI (JAVA_HOME a JDK)",
       "binaryDir": "${sourceDir}/build-native/jvm",
@@ -74,6 +85,10 @@
     {
       "name": "wasm",
       "configurePreset": "wasm"
+    },
+    {
+      "name": "wasm-mvp",
+      "configurePreset": "wasm-mvp"
     },
     {
       "name": "jvm",

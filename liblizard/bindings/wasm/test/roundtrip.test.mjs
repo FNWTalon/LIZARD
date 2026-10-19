@@ -11,12 +11,14 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import * as liz from "../index.mjs";
 
-await liz.init();
+// ai: LIZ_WASM_BUILD=mvp runs every test on the MVP build (npm run test:mvp); unset, the SIMD build
+const BUILD = process.env.LIZ_WASM_BUILD ?? "simd";
+await liz.init(undefined, { build: BUILD });
 
 test("version and vector paths", () => {
   assert.equal(liz.abi(), 1);
   assert.match(liz.version(), /^\d+\.\d+\.\d+$/);
-  assert.equal(liz.simd(), true, "the codec's vector paths in the wasm build");
+  assert.equal(liz.simd(), BUILD !== "mvp", BUILD === "mvp" ? "the MVP build's scalar paths" : "the codec's vector paths in the wasm build");
 });
 
 // ai: the web sender's arithmetic is liblizard/sim's, over the codec's own wasm (build/ob.mjs, liblizard/build.sh's), not

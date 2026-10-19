@@ -26,9 +26,20 @@ endif()
 # ai: The wasm build (bindings/wasm; emcmake, the "wasm" preset): no threads and no GPU (the core leaves them out under
 # ai: emscripten), the codec's vector paths on WebAssembly SIMD, C++ exceptions as wasm's own (XferTx throws; every
 # ai: entry point catches), one ES module with its .wasm.
+# ai: LIZ_WASM_MVP (the "wasm-mvp" preset): the same API as WebAssembly 1.0 with no extension, for an engine without
+# ai: SIMD (bindings/wasm loads it there): the codec's scalar paths (no -msimd128, so src/simd.h defines no OB_SIMD),
+# ai: exceptions through JS, dist/lizard-mvp.mjs and its .wasm. Emscripten's libc carries sign extension, bulk memory
+# ai: and saturating float-to-int, which every browser it supports has: binaryen lowers those three after the link, and
+# ai: the module is validated against the MVP feature set.
+option(LIZ_WASM_MVP "the wasm build as WebAssembly 1.0 (MVP): no SIMD, JS exceptions" OFF)
 if(EMSCRIPTEN)
-  add_compile_options(-fwasm-exceptions -msimd128)
-  add_link_options(-fwasm-exceptions)
+  if(LIZ_WASM_MVP)
+    add_compile_options(-fexceptions -mcpu=mvp)
+    add_link_options(-fexceptions)
+  else()
+    add_compile_options(-fwasm-exceptions -msimd128)
+    add_link_options(-fwasm-exceptions)
+  endif()
 endif()
 
 # ai: the engine built for a shared library and hidden in it
@@ -56,6 +67,18 @@ if(EMSCRIPTEN)
   target_link_options(lizard PRIVATE -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,worker,node -sALLOW_MEMORY_GROWTH=1
       -sINITIAL_MEMORY=33554432 -sEXPORTED_FUNCTIONS=${LIZ_WASM_EXPORTS}
       -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPU32,HEAP32,HEAPF32,HEAPF64,UTF8ToString,stringToUTF8,lengthBytesUTF8)
+  if(LIZ_WASM_MVP)
+    set_target_properties(lizard PROPERTIES OUTPUT_NAME lizard-mvp)
+    find_program(LIZ_WASM_OPT wasm-opt HINTS "${EMSCRIPTEN_ROOT_PATH}/../bin" REQUIRED)
+    set(LIZ_MVP_WASM ${CMAKE_CURRENT_SOURCE_DIR}/bindings/wasm/dist/lizard-mvp.wasm)
+    add_custom_command(TARGET lizard POST_BUILD
+      COMMAND ${LIZ_WASM_OPT} ${LIZ_MVP_WASM} --enable-bulk-memory --enable-sign-ext --enable-nontrapping-float-to-int
+              --enable-mutable-globals --llvm-memory-copy-fill-lowering --signext-lowering --llvm-nontrapping-fptoint-lowering
+              -o ${LIZ_MVP_WASM}
+      COMMAND ${LIZ_WASM_OPT} -q --mvp-features ${LIZ_MVP_WASM} -o ${CMAKE_CURRENT_BINARY_DIR}/mvp-validated.wasm
+      COMMENT "lizard-mvp.wasm: sign extension, bulk memory and saturating float-to-int lowered; validated as MVP"
+      VERBATIM)
+  endif()
 else()
   add_library(lizard SHARED ${LIZ_API_SOURCES})
   if(LIZ_JNI)
