@@ -104,7 +104,7 @@ internal fun Steps(vararg steps: String) {
 }
 
 // ai: the example on video, the README's
-private const val EXAMPLE_URL = "https://www.youtube.com/watch?v=BsEVOV1swhI"
+private const val EXAMPLE_URL = "https://www.youtube.com/shorts/pjcAtQ7GcVQ"
 
 private fun whenOf(at: Long) = if (at > 0) DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(at)) else ""
 
