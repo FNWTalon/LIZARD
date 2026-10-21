@@ -16,7 +16,7 @@
 // ai: encodeCancel(target, ln, { fused, frames }). The readback then holds both passes: REC pass one's records and
 // ai: pass two's after them, V and ITS the last verdict a block, BCOUNTS pass one's counters, and BCOUNTS2 and CANCEL
 // ai: pass two's (a frame's references, its fit, the blocks gained).
-import { Transform, transformTables } from "./transform.mjs";
+import { Transform, transformTables, TRANSFORM_DOWN } from "./transform.mjs";
 import { build as buildSoft } from "./soft.mjs";
 import { build as buildLdpc, unpackRecords, REC_BYTES } from "./ldpc.mjs";
 import { Cancel, PASSES2, SECOND, parseCancel } from "./cancel.mjs";
@@ -59,9 +59,12 @@ export class BackHalf {
     for (let s = 0; s < SLOTS; s++) {
       const z = sizes[s] ?? null;
       if (!z) { want.push(null); continue; }
-      const need = pass1WorkgroupBytes(z.n, precision);
+      // ai: the fused pass 1 reads a picture at the size below its own (transform.mjs TRANSFORM_DOWN); the grid it would
+      // ai: read otherwise, and the cancel stage's paint, are the picture's own size
+      const nt = picture && !cancel ? TRANSFORM_DOWN[z.n] ?? z.n : z.n;
+      const need = pass1WorkgroupBytes(nt, precision);
       if (need > limit) { log(`size ${s} (${z.n}/${z.subch}) not built: pass 1 needs ${need} B of workgroup memory, the device offers ${limit}`); want.push(null); continue; }
-      want.push({ n: z.n, subch: z.subch, bitmap: z.bitmap });
+      want.push({ n: z.n, subch: z.subch, bitmap: z.bitmap, nt });
     }
     const ldpcNeed = variant.startsWith("i16") ? WG_BYTES_I16 : WG_BYTES;
     if (ldpcNeed > limit) throw new Error(`the LDPC (${variant}) needs ${ldpcNeed} B of workgroup memory, the device offers ${limit}`);
