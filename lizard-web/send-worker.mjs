@@ -8,7 +8,8 @@
 // the new code and one asked for before it with the old: the page's block ids stay right across the change.
 //
 // A file goes as a chunked transfer (sim/xfer.mjs): its header and manifest in the light, a fountain per chunk, and the
-// block ids chosen here by the transfer's schedule, so the page's baseId only counts blocks.
+// block ids chosen here by the transfer's schedule, so the page's baseId only counts blocks. It is made when the page's
+// file is picked ("prepare"), and a start names it by its pick; a start with bytes makes one there, as before.
 // ai: codes: symbols a frame, 1 or 2 (the page's "codes"). Two are painted side by side in one buffer, a gap of
 // ai: gapModules modules between them (the page's slider since 2026-10-03, GAP_MODULES unless given;
 // ai: 2026-09-30: widened by about 2 modules, then 2 more: 4; then 12, as the 8
@@ -26,6 +27,14 @@ import { init as initZstd, Z } from "../liblizard/sim/zstd.mjs";
 import { XferSender, isControlId } from "../liblizard/sim/xfer.mjs";
 
 let phy = null, xs = null, fps = 0, codes = 1, chain = Promise.resolve();
+// ai: The transfer made at the page's pick (2026-10-19; "prepare"): every chunk compressed and its fountain set up before
+// ai: Start, so the page can say what goes and Start begins at once. made: { pick, xs } while no run sends it; a run takes
+// ai: it (xsPick its pick) and a stop gives it back, so the next Start sends the same transfer on, with nothing made again.
+let made = null, xsPick = null;
+function dropRun() {
+  if (xs) { if (xsPick !== null && !made) made = { pick: xsPick, xs }; else xs.free(); }
+  xs = null; xsPick = null;
+}
 const source = () => (id, out) => xs.block(id, out);
 // ai: the gap between two codes, in modules (the page's slider, start and respec's gap; GAP_MODULES unless given), and
 // ai: in the paint's pixels for this codec (phy.cell samples a module)
@@ -34,10 +43,23 @@ let gapModules = GAP_MODULES;
 const gapOf = (p) => gapModules * (p.cell || 0);
 
 async function handle(m) {
-  if (m.type === "start") {
-    phy?.free(); xs?.free(); phy = null; xs = null;
+  if (m.type === "prepare") {
+    // ai: its own reply ("prepared", by pick, outside the runs' gen), a failure in it too
+    made?.xs.free(); made = null;
+    try {
+      await Promise.all([initFountain(), initZstd()]);
+      const x = new XferSender(new Uint8Array(m.bytes), { ...m.xfer, M: await initOb(), Encoder, Z });
+      made = { pick: m.pick, xs: x };
+      postMessage({ type: "prepared", pick: m.pick, sent: x.sentBytes });
+    } catch (e) { postMessage({ type: "prepared", pick: m.pick, error: String(e?.message ?? e) }); }
+  } else if (m.type === "start") {
+    phy?.free(); phy = null; dropRun();
     phy = await makePhy(m.spec);
-    if (m.bytes) {
+    if (m.pick != null) {
+      if (made?.pick !== m.pick) throw new Error("the file's transfer was not made: choose it again");
+      xs = made.xs; xsPick = m.pick; made = null;
+      phy.setSource(source());
+    } else if (m.bytes) {
       await Promise.all([initFountain(), initZstd()]);
       // ai: every chunk zstd-compressed where that is shorter (sim/xfer.mjs, 2026-10-05), before the first frame
       xs = new XferSender(new Uint8Array(m.bytes), { ...m.xfer, M: await initOb(), Encoder, Z });
@@ -56,7 +78,7 @@ async function handle(m) {
   } else if (m.type === "fps") {
     fps = m.fps; phy?.setFps?.(fps);
   } else if (m.type === "stop") {
-    phy?.free(); xs?.free(); phy = null; xs = null;
+    phy?.free(); phy = null; dropRun();
   } else if (m.type === "frame") {
     if (!phy) return;
     const t = performance.now(), V = phy.blocksPerFrame, ids = xs ? xs.frameIds(V * codes) : null;

@@ -98,6 +98,17 @@ class SendState(private val a: MainActivity) {
     var size by mutableStateOf(0L)
     var type by mutableStateOf("")
     val ready get() = choice != null && !reading
+    // ai: The transfer made at the pick (2026-10-19): the file copied (or the bundle's tar written) into the cache and
+    // ai: every chunk compressed (txCreate) on a thread of its own once the choice is read, so the ready line says what
+    // ai: goes, "<compressed> (<raw> raw)", and Start takes it at once (or waits for one still being made). compressed:
+    // ai: its bytes as they go, 0 until made, kept through a run; a stop makes the next one while the app is in front.
+    var compressed by mutableStateOf(0L)
+    private var made = 0L                 // ai: the transfer made for the choice, not yet sending (0: none)
+    private var madeFile: File? = null    // ai: the cache file it maps
+    private var runFile: File? = null     // ai: the one the run's transfer maps
+    private var making = 0                // ai: the make under way's number: a newer make or pick orphans it
+    private var makingNow = false
+    private var startWhenMade = false     // ai: Start pressed while the transfer was being made
     var test by mutableStateOf(false)
     // ai: Blocks a frame (2026-10-02), the web sender's
     // ai: slider (send.html #blocks and #subchAuto): 0 for auto, the largest the code's square holds (Pick.pick), else 1
@@ -149,13 +160,14 @@ class SendState(private val a: MainActivity) {
     fun pickTree(tree: Uri) = choose { treeEntries(tree) }
     private fun choose(walk: () -> List<TarEntry>) {
         if (phase == Phase.On || phase == Phase.Preparing) stop()
-        test = false; reading = true; choice = null; name = ""; size = 0; type = ""; typeOf.clear()
+        test = false; reading = true; choice = null; name = ""; size = 0; type = ""; typeOf.clear(); compressed = 0
+        dropMade()
         if (phase is Phase.Error) phase = Phase.Idle
         thread(name = "lizard-send-pick") {
             val b = try { walk().takeIf { it.isNotEmpty() }?.let { Bundle(it) } } catch (e: Exception) { a.runOnUiThread { reading = false; phase = Phase.Error("The files could not be read: ${e.message}") }; return@thread }
             a.runOnUiThread {
                 reading = false; choice = b
-                if (b != null) { name = b.name; size = b.size; type = b.single?.let { typeOf[it] } ?: TAR_TYPE }
+                if (b != null) { name = b.name; size = b.size; type = b.single?.let { typeOf[it] } ?: TAR_TYPE; make() }
             }
         }
     }
@@ -221,24 +233,63 @@ class SendState(private val a: MainActivity) {
     // ai: the column's edge let go (2026-10-05): the format re-picked for the box it left
     fun resized() { if (phase == Phase.On && roomOf() != configured) reconfigure() }
 
-    // ai: the file into the cache (a document is a stream; the sender maps a file), or the bundle's tar written there
-    // ai: from each document in turn, then the sender and its format
+    // ai: The choice's transfer made off the main thread: the file into the cache (a document is a stream; the sender maps
+    // ai: a file), or the bundle's tar written there from each document in turn, then txCreate (each chunk compressed,
+    // ai: its fountain set up) and its bytes as sent from the stats. The cache keeps the made one's file and the run's.
+    private fun make() {
+        val b = choice ?: return
+        dropMade()
+        val my = making
+        makingNow = true
+        val nm = name; val ty = type
+        val keep = runFile?.name
+        thread(name = "lizard-send-make") {
+            val dir = File(a.cacheDir, "send").apply { mkdirs() }
+            dir.listFiles()?.forEach { if (it.name != keep) it.delete() }
+            val f = File(dir, "file-$my")
+            val wrote = try {
+                val one = b.single
+                if (one != null) one.open!!().use { i -> f.outputStream().use { o -> i.copyTo(o, 1 shl 20) } }
+                else f.outputStream().buffered(1 shl 20).use { o -> b.write(o) }
+                null
+            } catch (e: Exception) { e }
+            val hnd = if (wrote != null) 0L else Native.txCreate(f.path, nm, ty)
+            val err = if (wrote != null) "The file could not be read: ${wrote.message}" else if (hnd == 0L) "This file cannot be sent: ${Native.txError()}" else ""
+            val sent = if (hnd != 0L) runCatching { JSONObject(Native.txStats(hnd)).optLong("sentBytes", 0) }.getOrDefault(0L) else 0L
+            a.runOnUiThread {
+                if (my != making) { if (hnd != 0L) Native.txDestroy(hnd); f.delete(); return@runOnUiThread }   // ai: let go meanwhile
+                makingNow = false
+                if (hnd == 0L) { f.delete(); startWhenMade = false; phase = Phase.Error(err); return@runOnUiThread }
+                made = hnd; madeFile = f; compressed = sent
+                if (startWhenMade) { startWhenMade = false; go() }
+            }
+        }
+    }
+    // ai: the made transfer let go, and any make under way orphaned
+    private fun dropMade() {
+        making++; makingNow = false; startWhenMade = false
+        if (made != 0L) { Native.txDestroy(made); made = 0L }
+        madeFile?.delete(); madeFile = null
+    }
+
     fun start() {
         if (phase == Phase.Preparing || phase == Phase.On) return
         val b = choice
         if (!test && (b == null || reading)) return
         phase = Phase.Preparing
         shown = false
+        // ai: the file's transfer still being made (or its make let go): Start waits for it
+        if (!test && made == 0L) { if (!makingNow) make(); startWhenMade = true; return }
+        go()
+    }
+    // ai: Sending begins: the made transfer taken (the test stream's made here), the GPU painter's device and pipelines
+    // ai: made off the main thread, then the format and the posting
+    private fun go() {
+        val pre = if (test) 0L else made
+        if (!test) { made = 0L; runFile = madeFile; madeFile = null }
+        val my = making
         thread(name = "lizard-send-prep") {
-            val dir = File(a.cacheDir, "send").apply { deleteRecursively(); mkdirs() }
-            val path = if (test) "" else try {
-                val f = File(dir, "file")
-                val one = b!!.single
-                if (one != null) one.open!!().use { i -> f.outputStream().use { o -> i.copyTo(o, 1 shl 20) } }
-                else f.outputStream().buffered(1 shl 20).use { o -> b.write(o) }
-                f.path
-            } catch (e: Exception) { a.runOnUiThread { phase = Phase.Error("The file could not be read: ${e.message}") }; return@thread }
-            val hnd = Native.txCreate(path, if (test) "" else name, if (test) "" else type)
+            val hnd = if (pre != 0L) pre else Native.txCreate("", "", "")
             val err = if (hnd == 0L) Native.txError() else ""
             // ai: the GPU painter's device and pipelines made here, off the main thread that configures
             if (hnd != 0L && painter != "cpu") {
@@ -248,7 +299,7 @@ class SendState(private val a: MainActivity) {
             }
             a.runOnUiThread {
                 if (hnd == 0L) { phase = Phase.Error("This file cannot be sent: $err"); return@runOnUiThread }
-                if (phase != Phase.Preparing) { Native.txDestroy(hnd); return@runOnUiThread }   // ai: stopped meanwhile
+                if (phase != Phase.Preparing || my != making) { Native.txDestroy(hnd); return@runOnUiThread }   // ai: stopped meanwhile
                 h = hnd; configured = 0; phase = Phase.On
                 vsynced = Build.VERSION.SDK_INT >= 33 && Native.prop("debug.lizard.sendvsync") != "0"
                 screenFor(true)
@@ -265,10 +316,16 @@ class SendState(private val a: MainActivity) {
         Choreographer.getInstance().removeFrameCallback(frame)
         if (Build.VERSION.SDK_INT >= 33) Choreographer.getInstance().removeVsyncCallback(vsync)
         if (h != 0L) { Native.txDestroy(h); h = 0 }
+        runFile?.delete(); runFile = null
+        startWhenMade = false
         if (phase == Phase.On || phase == Phase.Preparing) phase = Phase.Idle
         shown = false
         stats = Stats(); paused = false
         screenFor(false)
+        // ai: the next Start's transfer, made afresh while the app is in front (a stop from onPause makes none: Start does)
+        if (choice != null && made == 0L && !makingNow) a.window.decorView.post {
+            if (a.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) && phase !is Phase.Preparing && phase != Phase.On && choice != null && made == 0L && !makingNow) make()
+        }
     }
 
     // ai: the format the code's square holds now (a turn of the phone re-picks it; the transfer goes on)
@@ -518,10 +575,11 @@ private fun MainActivity.SendPanel(onFull: () -> Unit) {
     val busy = on || s.phase == SendState.Phase.Preparing
     val st = s.stats
     val what = if (s.test) "the test stream" else s.name
-    // ai: the bytes that go, what compression left of the file once the sender says (its own size before); the file's
-    // ai: own size and the pass are Developer Tools' (sendLab, 2026-10-05)
+    // ai: what goes, "<compressed> (<raw> raw)" once the transfer is made, "<raw> raw" while it is being made (2026-10-19,
+    // ai: the web's and the desktop's the same); the pass is Developer Tools' (sendLab, 2026-10-05)
     val count = s.choice?.takeIf { it.single == null }?.files?.let { "$it ${if (it == 1) "file" else "files"}, " } ?: ""
-    val sized = if (s.test || s.size <= 0) what else "$what, ${if (on) "" else count}${Readout.bytes(if (st.sentBytes > 0) st.sentBytes else s.size)}"
+    val sizeText = if (s.compressed > 0) "${Readout.bytes(s.compressed)} (${Readout.bytes(s.size)} raw)" else "${Readout.bytes(s.size)} raw"
+    val sized = if (s.test || s.size <= 0) what else "$what, ${if (on) "" else count}$sizeText"
     val err = (s.phase as? SendState.Phase.Error)?.why
     val line = when {
         err != null -> err

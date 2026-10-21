@@ -37,7 +37,7 @@ fun main() {
     application {
         val ws = rememberWindowState(width = 1280.dp, height = 800.dp)
         var before by remember { mutableStateOf(WindowPlacement.Floating) }
-        Window(onCloseRequest = { s.stop(); exitApplication() }, state = ws, title = "LIZARD sender", icon = rememberVectorPainter(Icons.mark)) {
+        Window(onCloseRequest = { s.close(); exitApplication() }, state = ws, title = "LIZARD sender", icon = rememberVectorPainter(Icons.mark)) {
             // ai: the frame white before Compose's first frame (2026-10-07): AWT's default grey showed until Skia drew
             remember { window.background = java.awt.Color.WHITE; window.contentPane.background = java.awt.Color.WHITE }
             // ai: F11 full screen and back, Escape out of it, wherever the focus is (the canvas takes none)
