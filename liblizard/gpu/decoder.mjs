@@ -25,7 +25,7 @@ import { PYRAMID, PYRAMID_BLOCK, HIST_BINS } from "./wgsl/pyramid.mjs";
 import { SAMPLE } from "./wgsl/sample.mjs";
 import { SLOTS, axisWord } from "./wgsl/common.mjs";
 import { SELECT } from "./wgsl/bank.mjs";
-import { VOTE, GATHER, SCORE, PICK, K, CELL, HYP, RING_COUNT } from "./wgsl/finder.mjs";
+import { VOTE, GATHER, SCORE, PICK, REDO, K, CELL, HYP, RING_COUNT } from "./wgsl/finder.mjs";
 import { NODES, REFIT, NODES_MAX, LIGHT_MAX, RESID, WINDOW, SUB, REFIT_DBG, ringOrder } from "./wgsl/register.mjs";
 import { WORD, wordUniform, wordPoints, wordLattice, heldUniform } from "./wgsl/word.mjs";
 import { gridOf, slotOf } from "./tables.mjs";
@@ -403,9 +403,10 @@ export class FrontHalf {
 
   // ai: A classifier's bind group on this lane (called on a lane, after ensure()): its kernel pipe over weights buf,
   // ai: small (the cascade's first net: the logits) or the large net (the cascade's list, when there is one).
-  netGroup(pipe, buf, small) {
+  // ai: second: over the finder's second round's frame records (wgsl/finder.mjs REDO).
+  netGroup(pipe, buf, small, second = false) {
     const extra = small ? [this.logitBuf] : this.cascade ? [this.listBuf] : [];
-    return this.device.createBindGroup({ layout: pipe.bgl, entries: [...this.lvEntries, ...[this.peaksBuf, this.countsBuf, this.readingsBuf, this.p4Uni, buf, ...extra].map((buffer, k) => ({ binding: 7 + k, resource: { buffer } }))] });
+    return this.device.createBindGroup({ layout: pipe.bgl, entries: [...(second ? this.lvEntries2 : this.lvEntries), ...[this.peaksBuf, this.countsBuf, this.readingsBuf, this.p4Uni, buf, ...extra].map((buffer, k) => ({ binding: 7 + k, resource: { buffer } }))] });
   }
 
   // ai: The lane's classifier bind groups over the nets' current forms: made by ensure(), and again once
@@ -413,6 +414,8 @@ export class FrontHalf {
   bindNets() {
     this.classifyGroup = this.netGroup(this.classify, this.weightsBuf, false);
     if (this.cascade) this.classify0Group = this.netGroup(this.classify0, this.weightsBuf0, true);
+    this.classifyGroup2 = this.netGroup(this.classify, this.weightsBuf, false, true);
+    if (this.cascade) this.classify0Group2 = this.netGroup(this.classify0, this.weightsBuf0, true, true);
   }
 
   async build() {
@@ -428,7 +431,7 @@ export class FrontHalf {
     // ai: The default, v2, by a literal, so the installed app carries it under its hashed name (lizard-web/pwa/hash.mjs rewrites
     // ai: literal references only); another bank by its name, from the source tree alone (a harness's choice).
     const bank = (async () => { this.bank = await (this.bankName === "fcn2" ? import("./bank_fcn2.mjs") : import(`./bank_${this.bankName}.mjs`)); await this.bank.build(this); })();
-    const [ingest, pyramid, sampler, large, small, rank, twinLarge, twinSmall, vote, gather, score, pick, nodesP, refit, wordP, select] = await Promise.all([
+    const [ingest, pyramid, sampler, large, small, rank, twinLarge, twinSmall, vote, gather, score, pick, redo, nodesP, refit, wordP, select] = await Promise.all([
       Ingest.create(this.device),
       // ai: The pyramid and each frame's grey levels in one kernel (wgsl/pyramid.mjs): the layer, the frame records,
       // ai: levels 1 to 4, the histogram (read back with the batch for the receiver's stats row), the levels' dims.
@@ -447,6 +450,8 @@ export class FrontHalf {
       P(GATHER, ["ro", "ro", "ro", "rw", "rw", "uniform"]),
       P(SCORE, [...LV, "ro", "ro", "rw", "uniform"]),
       P(PICK, ["ro", "ro", "ro", "rw", "rw", "rw", "uniform"]),
+      // ai: The second round's frame records and its frames' resets: frames, sel, frames2, acc, readings, cand, quads.
+      P(REDO, ["ro", "ro", "rw", "rw", "rw", "rw", "rw", "uniform"]),
       P(NODES, [...LV, "ro", "ro", "ro", "ro", "rw", "uniform"]),
       P(REFIT, ["ro", "ro", "ro", "ro", "rw", "rw", "uniform", "rw"]),
       // ai: F8 (wgsl/word.mjs): the levels, then maps, sel (read-write: sel.y = 1 + the version the frame decodes at, sel.z
@@ -456,7 +461,7 @@ export class FrontHalf {
       P(SELECT, ["ro", "ro", "rw", "rw", "uniform"]),
       bank,
     ]);
-    Object.assign(this, { ingest, pyramid, sampler, vote, gather, score, pick, nodesP, refit, wordP, select });
+    Object.assign(this, { ingest, pyramid, sampler, vote, gather, score, pick, redo, nodesP, refit, wordP, select });
     this.classify = large.pipe;
     this.weightsBuf = large.buf;
     this.arch = large.plan.name;
@@ -580,6 +585,8 @@ export class FrontHalf {
     ln.peaksBuf = d.createBuffer({ size: 16 * cap * B, usage: U.STORAGE | U.COPY_SRC | U.COPY_DST });
     ln.selUni = d.createBuffer({ size: 16, usage: U.UNIFORM | U.COPY_DST });
     ln.framesBuf = d.createBuffer({ size: 16 * ln.slotsG, usage: U.STORAGE | U.COPY_DST });
+    // ai: The finder's second round's frame records (wgsl/finder.mjs REDO writes them each batch).
+    ln.frames2Buf = d.createBuffer({ size: 16 * B, usage: U.STORAGE });
     ln.mapsBuf = d.createBuffer({ size: 64 * B, usage: U.STORAGE | U.COPY_DST | U.COPY_SRC });
     ln.countsBuf = d.createBuffer({ size: 4 * COUNTERS * B, usage: U.STORAGE | U.COPY_DST | U.COPY_SRC });
     ln.readingsBuf = d.createBuffer({ size: 48 * cap * B, usage: U.STORAGE | U.COPY_DST | U.COPY_SRC });
@@ -603,8 +610,10 @@ export class FrontHalf {
     }
     ln.refitGroup = d.createBindGroup({ layout: this.refit.bgl, entries: [ln.framesBuf, this.nodesBuf, ln.selBuf, ln.measBuf, ln.mapsBuf, ln.residBuf, this.fitUni, ln.refitDbg]
       .map((buffer, binding) => ({ binding, resource: { buffer } })) });
-    ln.pickGroup = d.createBindGroup({ layout: this.pick.bgl, entries: [ln.framesBuf, ln.quadsBuf, ln.scoreBuf, ln.mapsBuf, ln.selBuf, ln.resultBuf, ln.pickUni]
+    const pickGroup = (frames) => d.createBindGroup({ layout: this.pick.bgl, entries: [frames, ln.quadsBuf, ln.scoreBuf, ln.mapsBuf, ln.selBuf, ln.resultBuf, ln.pickUni]
       .map((buffer, binding) => ({ binding, resource: { buffer } })) });
+    ln.pickGroup = pickGroup(ln.framesBuf);
+    ln.pickGroup2 = pickGroup(ln.frames2Buf);
     ln.qs = null; ln.qsBuf = null;
     if (this.features.includes("timestamp-query")) {
       ln.qs = d.createQuerySet({ type: "timestamp", count: TS_PLAIN });
@@ -652,9 +661,11 @@ export class FrontHalf {
       const su0 = new ArrayBuffer(16);
       new Uint32Array(su0).set([slots, this.cap]); new Float32Array(su0)[2] = TAU;
       d.queue.writeBuffer(this.selUni, 0, su0);
-    this.selGroup = d.createBindGroup({ layout: this.select.bgl, entries: [
-      { binding: 0, resource: { buffer: this.framesBuf } }, { binding: 1, resource: { buffer: this.rawBuf } },
+    const selGroup = (frames) => d.createBindGroup({ layout: this.select.bgl, entries: [
+      { binding: 0, resource: { buffer: frames } }, { binding: 1, resource: { buffer: this.rawBuf } },
       { binding: 2, resource: { buffer: this.peaksBuf } }, { binding: 3, resource: { buffer: this.countsBuf } }, { binding: 4, resource: { buffer: this.selUni } }] });
+    this.selGroup = selGroup(this.framesBuf);
+    this.selGroup2 = selGroup(this.frames2Buf);
       this.bank.ensure(this, dimsAt, bases, slots);
       // ai: The finder reads every level; its accumulator, one a ring, covers the largest frame in CELL-pixel cells.
       const ld = new Uint32Array(20);
@@ -666,14 +677,22 @@ export class FrontHalf {
       const p5 = new ArrayBuffer(32);
       new Uint32Array(p5).set([this.cap, this.gx, this.gy, 0]); new Float32Array(p5).set(this.modules, 4);
       d.queue.writeBuffer(this.p5Uni, 0, p5);
-      const lvEntries = this.lvEntries = [{ binding: 0, resource: this.texView }, ...this.level.map((lv, i) => ({ binding: 1 + i, resource: { buffer: lv.buf } })),
-        { binding: 5, resource: { buffer: this.framesBuf } }, { binding: 6, resource: { buffer: this.ldUni } }];
-      const group = (pl, extra, first = 0) => d.createBindGroup({ layout: pl.bgl, entries: [...(first ? lvEntries : []), ...extra.map((buffer, k) => ({ binding: first + k, resource: { buffer } }))] });
+      const lvOf = (frames) => [{ binding: 0, resource: this.texView }, ...this.level.map((lv, i) => ({ binding: 1 + i, resource: { buffer: lv.buf } })),
+        { binding: 5, resource: { buffer: frames } }, { binding: 6, resource: { buffer: this.ldUni } }];
+      const lvEntries = this.lvEntries = lvOf(this.framesBuf);
+      this.lvEntries2 = lvOf(this.frames2Buf);
+      const group = (pl, extra, first = 0, lv = lvEntries) => d.createBindGroup({ layout: pl.bgl, entries: [...(first ? lv : []), ...extra.map((buffer, k) => ({ binding: first + k, resource: { buffer } }))] });
       this.bindNets();
       if (this.cascade) this.rankGroup = group(this.rank, [this.framesBuf, this.logitBuf, this.countsBuf, this.listBuf]);
       this.scoreGroup = group(this.score, [this.quadsBuf, this.planBuf, this.scoreBuf, this.planUni], 7);
       this.voteGroup = group(this.vote, [this.framesBuf, this.readingsBuf, this.accBuf, this.p5Uni]);
       this.gatherGroup = group(this.gather, [this.framesBuf, this.readingsBuf, this.accBuf, this.candBuf, this.quadsBuf, this.p5Uni]);
+      // ai: The finder's second round: the same stages over its frame records, and REDO, which writes them.
+      if (this.cascade) this.rankGroup2 = group(this.rank, [this.frames2Buf, this.logitBuf, this.countsBuf, this.listBuf]);
+      this.scoreGroup2 = group(this.score, [this.quadsBuf, this.planBuf, this.scoreBuf, this.planUni], 7, this.lvEntries2);
+      this.voteGroup2 = group(this.vote, [this.frames2Buf, this.readingsBuf, this.accBuf, this.p5Uni]);
+      this.gatherGroup2 = group(this.gather, [this.frames2Buf, this.readingsBuf, this.accBuf, this.candBuf, this.quadsBuf, this.p5Uni]);
+      this.redoGroup = group(this.redo, [this.framesBuf, this.selBuf, this.frames2Buf, this.accBuf, this.readingsBuf, this.candBuf, this.quadsBuf, this.p5Uni]);
       this.nodesGroups = this.rounds.map((r) => group(this.nodesP, [this.nodesBuf, this.tmplBuf, this.mapsBuf, this.selBuf, this.measBuf, r], 7));
       this.wordGroup = group(this.wordP, [this.mapsBuf, this.selBuf, this.residBuf, this.wordPtsBuf, this.resultBuf, this.wordUni, this.wordLatUni, this.heldUni], 7);
       this.pyrGroup = d.createBindGroup({ layout: this.pyramid.bgl, entries: [{ binding: 0, resource: this.texView }, { binding: 1, resource: { buffer: this.framesBuf } },
@@ -1117,7 +1136,10 @@ export class FrontHalf {
     if (this.cancel) this.bh.prepareCancel(enc, this.backLane);
     // Stage groups for the profile: each gets its own pass and timestamp pair; otherwise one pass, one pair.
     // F7 is timed a dispatch at a time (nodes and refit, each round), so the split is on record with every profile.
-    const STAGES = ["pyramid", "bank", "select", "describe", "vote", "score", ...this.rounds.flatMap((_, r) => [`nodes${r + 1}`, `refit${r + 1}`]), "word", ...(fused ? [] : ["sample"]), ...(this.bh ? [...BACK_PASSES, ...(this.cancel ? CANCEL_PASSES : [])] : [])];
+    // ai: The finder's second round (wgsl/finder.mjs REDO) wherever it runs: the bank's levels below COARSE_FROM for the
+    // ai: frames the first round did not find, and the finder again on those frames.
+    const second = find && !inject && this.bank.COARSE_FROM != null;
+    const STAGES = ["pyramid", "bank", "select", "describe", "vote", "score", ...(second ? ["find2"] : []), ...this.rounds.flatMap((_, r) => [`nodes${r + 1}`, `refit${r + 1}`]), "word", ...(fused ? [] : ["sample"]), ...(this.bh ? [...BACK_PASSES, ...(this.cancel ? CANCEL_PASSES : [])] : [])];
     if (profile && this.qs && this.qs.count < 2 * STAGES.length) { this.qs.destroy(); this.qs = d.createQuerySet({ type: "timestamp", count: 2 * STAGES.length }); this.qsBuf.destroy(); this.qsBuf = d.createBuffer({ size: 8 * 2 * STAGES.length, usage: U.QUERY_RESOLVE | U.COPY_SRC }); }
     const pair = (k) => (this.qs ? { timestampWrites: { querySet: this.qs, beginningOfPassWriteIndex: 2 * k, endOfPassWriteIndex: 2 * k + 1 } } : {});
     // ai: Each slot's crop from its ring layer into the lane's layer i (1.2 MB at 1080, about 0.1 ms a batch): no
@@ -1150,7 +1172,7 @@ export class FrontHalf {
     // F2 on every level, then F3 once a frame.
     if (!inject) {
       begin("bank");
-      this.bank.dispatch(pass, this, nb);
+      this.bank.dispatch(pass, this, nb, second ? 1 : 0);
       begin("select");
       pass.setPipeline(this.select.p);
       pass.setBindGroup(0, this.selGroup);
@@ -1173,6 +1195,18 @@ export class FrontHalf {
       begin("score");
       step(this.score, this.scoreGroup, HYP * nb);
       step(this.pick, this.pickGroup, nb);
+      if (second) {
+        begin("find2");
+        step(this.redo, this.redoGroup, nb);
+        this.bank.dispatch(pass, this, nb, 2);
+        step(this.select, this.selGroup2, nb);
+        if (this.cascade) { net(this.classify0, this.classify0Group2, this.cap); step(this.rank, this.rankGroup2, nb); net(this.classify, this.classifyGroup2, this.cascade.keep); }
+        else net(this.classify, this.classifyGroup2, this.cap);
+        step(this.vote, this.voteGroup2, ceilDiv(this.cap, 64), nb);
+        step(this.gather, this.gatherGroup2, nb);
+        step(this.score, this.scoreGroup2, HYP * nb);
+        step(this.pick, this.pickGroup2, nb);
+      }
       if (this.register) {
         // ai: One workgroup a node of the largest ring; a frame's own ring's nodes past its count return at once.
         this.nodesGroups.forEach((g, r) => {

@@ -57,6 +57,9 @@ struct Lane {
   uint64_t gridStride = 0;
   BufP peaksBuf, selUni, framesBuf, mapsBuf, countsBuf, readingsBuf, candBuf, quadsBuf, scoreBuf, selBuf, resultBuf, heldUni, p5Uni, ldUni, measBuf, residBuf, refitDbg, histBuf, logitBuf, listBuf;
   GroupP refitGroup, pickGroup;
+  // ai: the finder's second round (decoder.mjs, gpu/wgsl/finder.mjs REDO): its frame records and its groups over them
+  BufP frames2Buf;
+  GroupP pickGroup2, redoGroup, selGroup2, classifyGroup2, classify0Group2, rankGroup2, scoreGroup2, voteGroup2, gatherGroup2;
   std::shared_ptr<wg::QuerySet> qs, qsProfile;
   BufP qsBuf, qsProfileBuf;
   // ai: ensure()'s, at the lane's W x H
@@ -67,14 +70,14 @@ struct Lane {
   BufP rawBuf, accBuf;
   GroupP selGroup, classifyGroup, classify0Group, rankGroup, scoreGroup, voteGroup, gatherGroup, wordGroup, pyrGroup;
   std::vector<GroupP> nodesGroups;
-  struct Fcn2Level { uint32_t w, h; GroupP group, xgroup; BufP plane, uni; };
+  struct Fcn2Level { uint32_t l, w, h; GroupP group, xgroup, group2, xgroup2; BufP plane, uni; };   // ai: group2, xgroup2: a level below coarseFrom's
   std::vector<Fcn2Level> fcn2Levels;
   BufP readBuf;
   BufP keepBuf;   // ai: run's keep: the kept frames' bytes, read back with the batch; let go by a batch that keeps none
   std::unique_ptr<BackLane> back;
   uint64_t backBytes = 0;   // ai: the back lane's device bytes (plan prices them a frame of bh.B)
   uint64_t laneBytes = 0;
-  std::vector<wg::Resource> lvEntries() const;
+  std::vector<wg::Resource> lvEntries(bool second = false) const;
 };
 
 // ai: A frame staged on the ring (decoder.mjs Slot): layer `id` holds its w x h at the origin until a batch copies it.
@@ -199,6 +202,7 @@ class FrontHalf {
   std::string precision, floatPrecision, variant;
   json nets;
   int cap = 256, nodesMax = 0, bankKeep = 4;
+  uint32_t coarseFrom = 0;   // ai: the tree's front.coarseFrom: the bank's first round from this level, 0 one round
   bool reg = true;
   std::array<float, 4> modules{};
   json cascade;   // ai: { keep, rest, precision } or null
@@ -264,7 +268,7 @@ class FrontHalf {
   std::unique_ptr<Lane> lane(int B);
   void ensure(Lane& ln, uint32_t W, uint32_t H, uint32_t nmax);
   void bindNets(Lane& ln);
-  GroupP netGroup(Lane& ln, const Pipe& pipe, wg::Buffer& buf, bool small);
+  GroupP netGroup(Lane& ln, const Pipe& pipe, wg::Buffer& buf, bool small, bool second = false);
   void backLane(Lane& ln);
   void bindPicture(Lane& ln);
   void encodeBack(wg::Encoder& e, Lane& ln, int frames, const std::function<void(const char*)>& begin);

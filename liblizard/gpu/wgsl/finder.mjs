@@ -125,7 +125,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   if (li == 0u) { atomicStore(&vcount, 0u); }
   workgroupBarrier();
   let i0 = wg.x * 64u + li;
-  if (i0 < P.cap && frames[f].valid != 0u) {
+  if (i0 < P.cap && frames[f].valid == 1u) {
     let o0 = 3u * (f * P.cap + i0);
     // ai: as the lane a reading did: none where r2.w is 0 or p under SMIN (a NaN in either votes)
     if (!(readings[o0 + 2u].w == 0.0 || readings[o0 + 1u].x < ${SMIN})) { vlist[atomicAdd(&vcount, 1u)] = i0; }
@@ -417,6 +417,8 @@ fn gather(f: u32, pk: u32, c: vec4f, lane: u32) {
 @compute @workgroup_size(256, 1, 1)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
   let f = wg.x;
+  // ai: a frame the first round found keeps its quads (common.mjs DIMS: valid 2); uniform, before any barrier
+  if (frames[f].valid > 1u) { return; }
   let gw = i32((frames[f].w + ${CELL - 1}u) / ${CELL}u);
   let gh = i32((frames[f].h + ${CELL - 1}u) / ${CELL}u);
   let cells = u32(gw * gh);
@@ -548,6 +550,8 @@ var<workgroup> ok: u32;
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
   let f = wg.x / ${HYP}u;
+  // ai: a frame the first round found keeps its scores (valid 2); uniform, before any barrier
+  if (frames[f].valid > 1u) { return; }
   let hyp = wg.x % ${HYP}u;
   let qk = hyp / ${ORIENT * RING_COUNT}u;
   let o = (hyp / ${RING_COUNT}u) % ${ORIENT}u;
@@ -628,6 +632,7 @@ struct Pick { tau: f32, p0: u32, p1: u32, p2: u32, modules: vec4f }
 @compute @workgroup_size(1, 1, 1)
 fn main(@builtin(workgroup_id) wg: vec3u) {
   let f = wg.x;
+  if (frames[f].valid > 1u) { return; }   // ai: a frame the first round found keeps what it picked (valid 2)
   var best = -2.0;
   var bh = 0u;
   for (var h = 0u; h < ${HYP}u; h++) {
@@ -660,5 +665,37 @@ fn main(@builtin(workgroup_id) wg: vec3u) {
     result[f][4] = f32(qk);
   }
   sel[f] = vec4u(rg, select(0u, 1u, found), 0u, 0u);
+}
+`;
+
+// ai: The finder's second round (2026-10-21): the first runs the proposer on levels 2 to 4 (bank_fcn2.mjs COARSE_FROM);
+// ai: a frame it did not find is found again with level 1's peaks beside those, by the same stages on a second
+// ai: frame record (frames2), which says which frames: valid 1 for a frame of the batch PICK did not find, 2 for one
+// ai: it found (left as it is: common.mjs DIMS), 0 for an empty slot. A frame to run again gets back what the batch's
+// ai: clears gave its first round: its accumulator (VOTE adds into it), readings (a list slot the cascade's large net
+// ai: wrote in the first round may hold none in the second), centre peaks and quads. A workgroup a frame.
+export const REDO = DIMS + /* wgsl */ `
+struct P5 { cap: u32, gx: u32, gy: u32, p0: u32, modules: vec4f }
+@group(0) @binding(0) var<storage, read> frames: array<Frame>;
+@group(0) @binding(1) var<storage, read> sel: array<vec4u>;
+@group(0) @binding(2) var<storage, read_write> frames2: array<Frame>;
+@group(0) @binding(3) var<storage, read_write> acc: array<u32>;
+@group(0) @binding(4) var<storage, read_write> readings: array<vec4f>;
+@group(0) @binding(5) var<storage, read_write> cand: array<vec4f>;
+@group(0) @binding(6) var<storage, read_write> quads: array<vec4f>;
+@group(0) @binding(7) var<uniform> P: P5;
+@compute @workgroup_size(256, 1, 1)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let f = wg.x;
+  let F = frames[f];
+  let again = F.valid == 1u && sel[f].y == 0u;
+  if (li == 0u) { frames2[f] = Frame(F.w, F.h, F.size, select(select(0u, 2u, F.valid != 0u), 1u, again)); }
+  if (!again) { return; }
+  let na = ${RING_COUNT}u * P.gx * P.gy;
+  for (var i = li; i < na; i += 256u) { acc[f * na + i] = 0u; }
+  let nr = 3u * P.cap;
+  for (var i = li; i < nr; i += 256u) { readings[f * nr + i] = vec4f(0.0); }
+  if (li < ${K}u) { cand[f * ${K}u + li] = vec4f(0.0); }
+  if (li < ${5 * K}u) { quads[f * ${5 * K}u + li] = vec4f(0.0); }
 }
 `;

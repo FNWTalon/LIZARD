@@ -198,10 +198,10 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   let f = wg.y;
   // Uniform over the workgroup (workgroup id and read-only storage), so the whole group returns before any barrier.
   ${role === "second"
-    ? /* wgsl */ `if (frames[f].valid == 0u || wg.x >= counts[f * 16u + 3u]) { return; }
+    ? /* wgsl */ `if (frames[f].valid != 1u || wg.x >= counts[f * 16u + 3u]) { return; }
   let i = list[f * ${keep}u + wg.x];`
     : /* wgsl */ `let i = wg.x;
-  if (frames[f].valid == 0u || i >= counts[f * 16u + 2u]) { return; }`}
+  if (frames[f].valid != 1u || i >= counts[f * 16u + 2u]) { return; }`}
   let pk = peaks[f * P.cap + i];
   let u = pk.z / KAPPA;
   let l = levelFor(u);
@@ -269,7 +269,7 @@ fn key(x: f32) -> u32 {
 @compute @workgroup_size(256, 1, 1)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
   let f = wg.x;
-  if (frames[f].valid == 0u) { return; }
+  if (frames[f].valid != 1u) { return; }
   let n = min(counts[f * 16u + 2u], CAP);
   for (var i = li; i < n; i += 256u) { z[i] = key(score[f * CAP + i]); }
   workgroupBarrier();

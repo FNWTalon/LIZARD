@@ -184,6 +184,8 @@ function exportTree(fh, v, tables) {
     front: {
       pyramid: pb(fh.pyramid), classify: pbNet(fh.classify), classify0: pbNet(fh.classify0), rank: pb(fh.rank),
       vote: pb(fh.vote), gather: pb(fh.gather), score: pb(fh.score), pick: pb(fh.pick), nodesP: pb(fh.nodesP), refit: pb(fh.refit), wordP: pb(fh.wordP), select: pb(fh.select),
+      // ai: the finder's second round (gpu/wgsl/finder.mjs REDO; gpu/bank_fcn2.mjs COARSE_FROM, 0: one round)
+      redo: pb(fh.redo), coarseFrom: fh.bank.COARSE_FROM ?? 0,
       fcn2: pb(fh.fcn2), fcn2X: pb(fh.fcn2X), fcn2Form: { TX: f.TX, TY: f.TY, XB: f.XB, walk: f.walk, xplane: f.xplane, int8: f.int8, store: f.store, name: f.name },
       buffers: Object.fromEntries(["sizesBuf", "planBuf", "planUni", "p4Uni", "pickUni", "nodesBuf", "tmplBuf", "latticeBuf", "latUni", "wordPtsBuf", "wordUni", "wordLatUni", "fitUni", "weightsBuf", "weightsBuf0"].map((k) => [k, idOf(fh[k])])),
       rounds: fh.rounds.map(idOf),

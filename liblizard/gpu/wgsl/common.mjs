@@ -13,6 +13,8 @@ export const SLOTS = SIZES.length;
 // ai: pyramid buffer. dims[f] = (w, h, axis, valid): frames in one batch may differ in size, and a slot with
 // valid = 0 is empty and does nothing. ai: The third word (unread from the rings, 2026-09-27, to 2026-10-17) is where
 // ai: the camera's optical axis falls in the frame, axisWord's: F7's lens is fitted about it (register.mjs LENS).
+// ai: valid = 2 is only in the finder's second round's records (finder.mjs REDO): a frame its first round found, which
+// ai: every stage of the second round leaves as it is (the stages that run on a frame take valid = 1 alone).
 export const DIMS = /* wgsl */ `
 struct Frame { w: u32, h: u32, size: u32, valid: u32 }
 `;

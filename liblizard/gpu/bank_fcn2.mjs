@@ -78,8 +78,15 @@ export async function build(fh) {
   fh.log(`fcn2 bank ${json.spec ?? ""} (${file}) ${form.name}: ${plan.macs} MACs a map pixel, box ${plan.K}, floor ${plan.floor}, ${form.bytes} bytes of workgroup memory (network ${fcn2Bytes(src)}; the device gives ${limit}), levels 1 to ${LEVELS - 1}`);
 }
 
+// ai: The finder's first round runs levels COARSE_FROM up on every frame; levels below it run in its second round
+// ai: (decoder.mjs batch, wgsl/finder.mjs REDO), on the frames the first did not find. On the S26's 2:1 replays level 1
+// ai: was 72% of this stage's time; without it the 128 ring's replay read every frame as before and the 256 ring's
+// ai: found 165 of 192 (2026-10-21).
+export const COARSE_FROM = 2;
+
 // dimsAt(l): the level's (w, h) at the current capacity; bases[l]: where its slots start; slots: a frame's total.
 // With the plane, each level has one per lane: B frames of rows x stride rounded up to even, halves in pairs or f32.
+// ai: A level below COARSE_FROM also has group2 and xgroup2, the same over the second round's frame records.
 export function ensure(fh, dimsAt, bases, slots) {
   const d = fh.device, form = fh.fcn2Form;
   for (const lv of fh.fcn2Levels ?? []) lv.plane?.destroy();
@@ -91,23 +98,26 @@ export function ensure(fh, dimsAt, bases, slots) {
     d.queue.writeBuffer(uni, 0, ab);
     // ai: int8: Xq, a byte a pixel at a row stride rounded up to four (a word never straddles two rows).
     const plane = !form.xplane ? null : d.createBuffer({ size: form.int8 ? ((w + 3) & ~3) * h * fh.B : (form.store === "f32" ? 4 : 2) * (w + (w & 1)) * h * fh.B, usage: U.STORAGE });
-    const group = d.createBindGroup({ layout: fh.fcn2.bgl, entries: [
-      { binding: 0, resource: { buffer: plane ?? fh.level[l - 1].buf } }, { binding: 1, resource: { buffer: fh.framesBuf } }, { binding: 2, resource: { buffer: fh.rawBuf } },
+    const group = (frames) => d.createBindGroup({ layout: fh.fcn2.bgl, entries: [
+      { binding: 0, resource: { buffer: plane ?? fh.level[l - 1].buf } }, { binding: 1, resource: { buffer: frames } }, { binding: 2, resource: { buffer: fh.rawBuf } },
       { binding: 3, resource: { buffer: fh.countsBuf } }, { binding: 4, resource: { buffer: uni } }] });
-    const xgroup = plane ? d.createBindGroup({ layout: fh.fcn2X.bgl, entries: [fh.level[l - 1].buf, fh.framesBuf, plane, uni].map((buffer, binding) => ({ binding, resource: { buffer } })) }) : null;
-    fh.fcn2Levels.push({ w, h, group, xgroup, plane });
+    const xgroup = (frames) => (plane ? d.createBindGroup({ layout: fh.fcn2X.bgl, entries: [fh.level[l - 1].buf, frames, plane, uni].map((buffer, binding) => ({ binding, resource: { buffer } })) }) : null);
+    const fine = l < COARSE_FROM;
+    fh.fcn2Levels.push({ l, w, h, group: group(fh.framesBuf), xgroup: xgroup(fh.framesBuf), group2: fine ? group(fh.frames2Buf) : null, xgroup2: fine ? xgroup(fh.frames2Buf) : null, plane });
   }
 }
 
-export function dispatch(pass, fh, B) {
+// ai: round 0: every level (a batch with no second round); 1: the first round's levels; 2: the second round's.
+export function dispatch(pass, fh, B, round = 0) {
   const { TX, TY } = fh.fcn2Form;
+  const levels = round === 0 ? fh.fcn2Levels : fh.fcn2Levels.filter((lv) => (lv.l < COARSE_FROM) === (round === 2));
   if (fh.fcn2X) {
     pass.setPipeline(fh.fcn2X.p);
-    for (const lv of fh.fcn2Levels) { pass.setBindGroup(0, lv.xgroup); pass.dispatchWorkgroups(ceilDiv(lv.w, fh.fcn2Form.XB[0]), ceilDiv(lv.h, fh.fcn2Form.XB[1]), B); }
+    for (const lv of levels) { pass.setBindGroup(0, round === 2 ? lv.xgroup2 : lv.xgroup); pass.dispatchWorkgroups(ceilDiv(lv.w, fh.fcn2Form.XB[0]), ceilDiv(lv.h, fh.fcn2Form.XB[1]), B); }
   }
   pass.setPipeline(fh.fcn2.p);
-  for (const lv of fh.fcn2Levels) {
-    pass.setBindGroup(0, lv.group);
+  for (const lv of levels) {
+    pass.setBindGroup(0, round === 2 ? lv.group2 : lv.group);
     pass.dispatchWorkgroups(ceilDiv(ceilDiv(lv.w, TILE * TX), fh.fcn2Form.walk), ceilDiv(lv.h, TILE * TY), B);
   }
 }

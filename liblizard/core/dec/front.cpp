@@ -31,10 +31,16 @@ Consts Consts::of(const json& c) {
   return k;
 }
 
-std::vector<wg::Resource> Lane::lvEntries() const {
+// ai: decoder.mjs STAGES, the profile's stage groups, a timestamp pair each. Every pair a batch resolves is written: a
+// ai: query never written is waited on until the device is lost (the iGPU, 2026-10-21), where WebGPU reads it as 0. So
+// ai: find2, the finder's second round, is listed only where the tree runs that round (coarseFrom).
+static const std::vector<std::string> STAGES_ONE = {"pyramid", "bank", "select", "describe", "vote", "score", "nodes1", "refit1", "nodes2", "refit2", "word", "gate", "pass1", "reduce", "pass2", "soft", "ldpc"};
+static const std::vector<std::string> STAGES_TWO = {"pyramid", "bank", "select", "describe", "vote", "score", "find2", "nodes1", "refit1", "nodes2", "refit2", "word", "gate", "pass1", "reduce", "pass2", "soft", "ldpc"};
+
+std::vector<wg::Resource> Lane::lvEntries(bool second) const {
   std::vector<wg::Resource> e{tex.get()};
   for (auto& l : level) e.push_back(l.buf);
-  e.push_back(framesBuf);
+  e.push_back(second ? frames2Buf : framesBuf);
   e.push_back(ldUni);
   return e;
 }
@@ -56,6 +62,7 @@ std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const
   fh->reg = T["register"];
   fh->nodesMax = T["nodesMax"];
   fh->bankKeep = T["bankKeep"];
+  fh->coarseFrom = T["front"].contains("redo") && !T["front"]["redo"].is_null() ? T["front"]["coarseFrom"].get<uint32_t>() : 0;
   for (int i = 0; i < 4; i++) fh->modules[i] = T["modules"][i];
   fh->cascade = T["cascade"];
   fh->S->build(fh->C.B_CEIL);
@@ -153,6 +160,10 @@ std::unique_ptr<Lane> FrontHalf::lane(int Bl) {
   auto refit = P("refit"), pick = P("pick");
   ln->refitGroup = dev.createBindGroup(refit.bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni"), ln->refitDbg});
   ln->pickGroup = dev.createBindGroup(pick.bgl, {ln->framesBuf, ln->quadsBuf, ln->scoreBuf, ln->mapsBuf, ln->selBuf, ln->resultBuf, FBP("pickUni")});
+  if (coarseFrom) {
+    ln->frames2Buf = mk(16 * B, STORAGE, "frames2Buf");
+    ln->pickGroup2 = dev.createBindGroup(pick.bgl, {ln->frames2Buf, ln->quadsBuf, ln->scoreBuf, ln->mapsBuf, ln->selBuf, ln->resultBuf, FBP("pickUni")});
+  }
   if (dev.features.timestamps) {
     ln->qs = dev.createQuerySet(C.TS_PLAIN);
     ln->qsBuf = mk(8ull * C.TS_PLAIN, QUERY_RESOLVE | COPY_SRC, "qsBuf");
@@ -163,8 +174,8 @@ std::unique_ptr<Lane> FrontHalf::lane(int Bl) {
 
 // ai: decoder.mjs netGroup: a classifier's group over the lane's levels, peaks, counts and readings, and its
 // ai: weights; the cascade's small net writes its logits, the large one reads the list.
-GroupP FrontHalf::netGroup(Lane& ln, const Pipe& pipe, wg::Buffer& buf, bool small) {
-  auto e = ln.lvEntries();
+GroupP FrontHalf::netGroup(Lane& ln, const Pipe& pipe, wg::Buffer& buf, bool small, bool second) {
+  auto e = ln.lvEntries(second);
   e.insert(e.end(), {ln.peaksBuf, ln.countsBuf, ln.readingsBuf, FBP("p4Uni"), &buf});
   if (small) e.push_back(ln.logitBuf);
   else if (!cascade.is_null()) e.push_back(ln.listBuf);
@@ -174,6 +185,9 @@ GroupP FrontHalf::netGroup(Lane& ln, const Pipe& pipe, wg::Buffer& buf, bool sma
 void FrontHalf::bindNets(Lane& ln) {
   ln.classifyGroup = netGroup(ln, classify, *weightsBuf, false);
   if (!cascade.is_null()) ln.classify0Group = netGroup(ln, classify0, *weightsBuf0, true);
+  if (!coarseFrom) return;
+  ln.classifyGroup2 = netGroup(ln, classify, *weightsBuf, false, true);
+  if (!cascade.is_null()) ln.classify0Group2 = netGroup(ln, classify0, *weightsBuf0, true, true);
 }
 
 // ai: back.mjs lane: transform.lane, soft.lane, ldpc.lane, then transform.bindGate (the gate zeroes the counters,
@@ -288,6 +302,7 @@ void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H, uint32_t nmax) {
     }
     auto sel = P("select");
     ln.selGroup = dev.createBindGroup(sel.bgl, {ln.framesBuf, ln.rawBuf, ln.peaksBuf, ln.countsBuf, ln.selUni});
+    if (coarseFrom) ln.selGroup2 = dev.createBindGroup(sel.bgl, {ln.frames2Buf, ln.rawBuf, ln.peaksBuf, ln.countsBuf, ln.selUni});
     // ai: bank_fcn2.mjs ensure: a uniform and (with the X plane) a plane a level, and its groups.
     const json& form = S->tree["front"]["fcn2Form"];
     const bool xplane = form["xplane"], int8 = form["int8"];
@@ -303,9 +318,10 @@ void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H, uint32_t nmax) {
       dev.writeBuffer(*uni, 0, u, 32);
       BufP plane;
       if (xplane) plane = mk(int8 ? (uint64_t)((w + 3) & ~3u) * h * B : (uint64_t)(store == "f32" ? 4 : 2) * (w + (w & 1)) * h * B, STORAGE, "fcn2Plane");
-      auto group = dev.createBindGroup(fcn2.bgl, {plane ? plane : ln.level[l - 1].buf, ln.framesBuf, ln.rawBuf, ln.countsBuf, uni});
-      GroupP xgroup = plane ? dev.createBindGroup(fcn2X.bgl, {ln.level[l - 1].buf, ln.framesBuf, plane, uni}) : nullptr;
-      ln.fcn2Levels.push_back({w, h, group, xgroup, plane, uni});
+      auto group = [&](const BufP& frames) { return dev.createBindGroup(fcn2.bgl, {plane ? plane : ln.level[l - 1].buf, frames, ln.rawBuf, ln.countsBuf, uni}); };
+      auto xgroup = [&](const BufP& frames) { return plane ? dev.createBindGroup(fcn2X.bgl, {ln.level[l - 1].buf, frames, plane, uni}) : GroupP(); };
+      const bool fine = l < coarseFrom;
+      ln.fcn2Levels.push_back({l, w, h, group(ln.framesBuf), xgroup(ln.framesBuf), fine ? group(ln.frames2Buf) : GroupP(), fine ? xgroup(ln.frames2Buf) : GroupP(), plane, uni});
     }
     {
       uint32_t ld[20] = {};
@@ -332,6 +348,16 @@ void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H, uint32_t nmax) {
     ln.scoreGroup = group(P("score"), {ln.quadsBuf, FBP("planBuf"), ln.scoreBuf, FBP("planUni")}, true);
     ln.voteGroup = group(P("vote"), {ln.framesBuf, ln.readingsBuf, ln.accBuf, ln.p5Uni}, false);
     ln.gatherGroup = group(P("gather"), {ln.framesBuf, ln.readingsBuf, ln.accBuf, ln.candBuf, ln.quadsBuf, ln.p5Uni}, false);
+    if (coarseFrom) {
+      // ai: decoder.mjs ensure: the finder's second round, the same stages over its frame records, and REDO
+      if (!cascade.is_null()) ln.rankGroup2 = group(P("rank"), {ln.frames2Buf, ln.logitBuf, ln.countsBuf, ln.listBuf}, false);
+      auto lv2 = ln.lvEntries(true);
+      lv2.insert(lv2.end(), {ln.quadsBuf, FBP("planBuf"), ln.scoreBuf, FBP("planUni")});
+      ln.scoreGroup2 = dev.createBindGroup(P("score").bgl, lv2);
+      ln.voteGroup2 = group(P("vote"), {ln.frames2Buf, ln.readingsBuf, ln.accBuf, ln.p5Uni}, false);
+      ln.gatherGroup2 = group(P("gather"), {ln.frames2Buf, ln.readingsBuf, ln.accBuf, ln.candBuf, ln.quadsBuf, ln.p5Uni}, false);
+      ln.redoGroup = group(P("redo"), {ln.framesBuf, ln.selBuf, ln.frames2Buf, ln.accBuf, ln.readingsBuf, ln.candBuf, ln.quadsBuf, ln.p5Uni}, false);
+    }
     ln.nodesGroups.clear();
     for (auto& r : S->tree["front"]["rounds"]) ln.nodesGroups.push_back(group(P("nodesP"), {FBP("nodesBuf"), FBP("tmplBuf"), ln.mapsBuf, ln.selBuf, ln.measBuf, S->bufPtr(r)}, true));
     ln.wordGroup = group(P("wordP"), {ln.mapsBuf, ln.selBuf, ln.residBuf, FBP("wordPtsBuf"), ln.resultBuf, FBP("wordUni"), FBP("wordLatUni"), ln.heldUni}, true);
@@ -649,7 +675,7 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   for (auto& b : {ln.readingsBuf, ln.accBuf, ln.candBuf, ln.quadsBuf, ln.scoreBuf, ln.mapsBuf, ln.measBuf}) clear(b);
   e.clearBuffer(*ln.selBuf);
   // ai: decoder.mjs STAGES: unprofiled one pass (its pair at 0, 1); profiled a pass a stage group.
-  static const std::vector<std::string> STAGES = {"pyramid", "bank", "select", "describe", "vote", "score", "nodes1", "refit1", "nodes2", "refit2", "word", "gate", "pass1", "reduce", "pass2", "soft", "ldpc"};
+  const auto& STAGES = coarseFrom ? STAGES_TWO : STAGES_ONE;
   if (profile && dev.features.timestamps && (!ln.qsProfile || ln.qsProfile->count < 2 * STAGES.size())) {
     ln.qsProfile = dev.createQuerySet(2 * (uint32_t)STAGES.size());
     ln.qsProfileBuf = dev.createBuffer(16ull * STAGES.size(), wg::QUERY_RESOLVE | wg::COPY_SRC);
@@ -673,17 +699,23 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   step(P("pyramid"), ln.pyrGroup, ceilDiv(W, C.PYRAMID_BLOCK), ceilDiv(H, C.PYRAMID_BLOCK), n);
   begin("bank");
   // ai: bank_fcn2.mjs dispatch
+  std::function<void(int)> bank;
   {
     const json& form = S->tree["front"]["fcn2Form"];
     const uint32_t TX = form["TX"], TY = form["TY"], walk = form["walk"];
     auto fcn2X = P("fcn2X"), fcn2 = P("fcn2");
-    if (fcn2X) {
-      e.setPipeline(*fcn2X.p);
-      const uint32_t XB0 = form["XB"][0], XB1 = form["XB"][1];
-      for (auto& lv : ln.fcn2Levels) { e.setBindGroup(*lv.xgroup); e.dispatch(ceilDiv(lv.w, XB0), ceilDiv(lv.h, XB1), n); }
-    }
-    e.setPipeline(*fcn2.p);
-    for (auto& lv : ln.fcn2Levels) { e.setBindGroup(*lv.group); e.dispatch(ceilDiv(ceilDiv(lv.w, C.TILE * TX), walk), ceilDiv(lv.h, C.TILE * TY), n); }
+    // ai: bank_fcn2.mjs dispatch's round: 0 every level, 1 the first round's (from coarseFrom up), 2 the second's
+    const uint32_t XB0 = fcn2X ? form["XB"][0].get<uint32_t>() : 0, XB1 = fcn2X ? form["XB"][1].get<uint32_t>() : 0;
+    bank = [this, &ln, &e, n, TX, TY, walk, XB0, XB1, fcn2X, fcn2](int round) {
+      auto in = [&](const Lane::Fcn2Level& lv) { return round == 0 || (lv.l < coarseFrom) == (round == 2); };
+      if (fcn2X) {
+        e.setPipeline(*fcn2X.p);
+        for (auto& lv : ln.fcn2Levels) if (in(lv)) { e.setBindGroup(round == 2 ? *lv.xgroup2 : *lv.xgroup); e.dispatch(ceilDiv(lv.w, XB0), ceilDiv(lv.h, XB1), n); }
+      }
+      e.setPipeline(*fcn2.p);
+      for (auto& lv : ln.fcn2Levels) if (in(lv)) { e.setBindGroup(round == 2 ? *lv.group2 : *lv.group); e.dispatch(ceilDiv(ceilDiv(lv.w, C.TILE * TX), walk), ceilDiv(lv.h, C.TILE * TY), n); }
+    };
+    bank(coarseFrom ? 1 : 0);
   }
   begin("select");
   step(P("select"), ln.selGroup, n);
@@ -702,6 +734,23 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   begin("score");
   step(P("score"), ln.scoreGroup, C.HYP * n);
   step(P("pick"), ln.pickGroup, n);
+  if (coarseFrom) {
+    // ai: decoder.mjs batch: the finder's second round (gpu/wgsl/finder.mjs REDO), level 1's peaks for the frames the
+    // ai: first round did not find and the finder again on those frames alone
+    begin("find2");
+    step(P("redo"), ln.redoGroup, n);
+    bank(2);
+    step(P("select"), ln.selGroup2, n);
+    if (!cascade.is_null()) {
+      net(classify0, ln.classify0Group2, (uint32_t)cap);
+      step(P("rank"), ln.rankGroup2, n);
+      net(classify, ln.classifyGroup2, cascade["keep"].get<uint32_t>());
+    } else net(classify, ln.classifyGroup2, (uint32_t)cap);
+    step(P("vote"), ln.voteGroup2, ceilDiv((uint32_t)cap, 64), n);
+    step(P("gather"), ln.gatherGroup2, n);
+    step(P("score"), ln.scoreGroup2, C.HYP * n);
+    step(P("pick"), ln.pickGroup2, n);
+  }
   if (reg) for (size_t r = 0; r < ln.nodesGroups.size(); r++) {
     begin(r ? "nodes2" : "nodes1");
     step(P("nodesP"), ln.nodesGroups[r], (uint32_t)nodesMax, n);
@@ -792,7 +841,7 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
   const float* res = (const float*)(all + f->resOff);
   const uint32_t* hist = (const uint32_t*)(all + f->histOff);
   if (!f->stages.empty()) {
-    static const std::vector<std::string> STAGES = {"pyramid", "bank", "select", "describe", "vote", "score", "nodes1", "refit1", "nodes2", "refit2", "word", "gate", "pass1", "reduce", "pass2", "soft", "ldpc"};
+    const auto& STAGES = coarseFrom ? STAGES_TWO : STAGES_ONE;
     const uint64_t* ts = (const uint64_t*)(all + f->tsOff);
     double sum = 0;
     for (auto& name : f->stages) {
