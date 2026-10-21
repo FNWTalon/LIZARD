@@ -564,9 +564,9 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
   let B = T.dims.x;
   let lStride = T.dims.y;
   let blocksMax = T.dims.z;
-  let s = wg.z;
-  if (wg.y >= LISTS[s * (1u + B)]) { return; }
-  let f = LISTS[s * (1u + B) + 1u + wg.y];
+  // ai: A workgroup a (block of this code, frame): the frame's version from the gate (0 for a frame on no list, whose
+  // ai: row of TT is all zero), so every workgroup past the frame's own blocks of this code returns here.
+  let f = wg.y;
   let v = ${versionOf("LISTS", "B", "f")};
   let tt = ttOf(v, CODE);
   let x = wg.x;
