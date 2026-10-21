@@ -161,6 +161,17 @@ class SendState {
     var fileSize by mutableStateOf(0L)
     // ai: the file's bytes as they go, every chunk's zstd frame or its own (the sender's stats, 2026-10-05); 0 before a send
     val sentBytes: Long get() = sender?.num("sentBytes")?.toLong() ?: 0L
+    // ai: The transfer made at the pick (2026-10-19): the bundle's tar written and every chunk compressed (txCreate) on a
+    // ai: thread of its own as soon as the choice is read, so the idle line says what goes, "<compressed> (<raw> raw)",
+    // ai: and Start takes it at once (or waits for one still being made). compressed: its bytes as they go, 0 until it is
+    // ai: made, kept through a run. A stop makes the next one; a new pick or the window's close lets it go.
+    var compressed by mutableStateOf(0L)
+    private var made = 0L                 // ai: the transfer made for the choice, not yet sending (0: none)
+    private var madeTar: File? = null     // ai: its tar, where the choice is a bundle
+    private var making = 0                // ai: the make under way's number: a newer make or pick orphans it
+    private var makingNow = false
+    private var startWhenMade = false     // ai: Start pressed while the transfer was being made
+    private var closing = false
     var test by mutableStateOf(Prefs.payload == "test")
     var enc by mutableStateOf(Prefs.enc.let { if (it == "gpu" || it == "cpu") it else "auto" })
     // ai: the painter the sender runs on now, "gpu" or "cpu" ("" before a send): the Encoder chip auto marks (2026-10-05)
@@ -247,7 +258,8 @@ class SendState {
     // ai: (never followed, so a loop of them cannot make a bundle without end).
     fun pick(items: List<File>) {
         val my = ++picking
-        reading = true; choice = null; picks = items; fileSize = 0
+        reading = true; choice = null; picks = items; fileSize = 0; compressed = 0
+        dropMade()
         if (phase is Phase.Error) phase = Phase.Idle
         canvas.idleLook()
         thread(name = "lizard-send-pick", isDaemon = true) {
@@ -255,7 +267,7 @@ class SendState {
             EventQueue.invokeLater {
                 if (my != picking) return@invokeLater
                 reading = false
-                b.onSuccess { choice = it; fileSize = it?.size ?: 0 }.onFailure { phase = Phase.Error("The files could not be read: ${it.message}") }
+                b.onSuccess { choice = it; fileSize = it?.size ?: 0; if (it != null) make() }.onFailure { phase = Phase.Error("The files could not be read: ${it.message}") }
                 canvas.idleLook()
             }
         }
@@ -274,6 +286,41 @@ class SendState {
     // ai: a bundle's tar, written for the sender to map (txCreate maps a file) and deleted when the run ends
     private var tarFile: File? = null
     private fun dropTar() { tarFile?.delete(); tarFile = null }
+
+    // ai: The choice's transfer made off the UI thread: its tar written where it is a bundle, txCreate (each chunk
+    // ai: compressed, its fountain set up), its bytes as sent read from the stats. A failure is the state line's at once.
+    private fun make() {
+        val b = choice ?: return
+        dropMade()
+        val my = making
+        makingNow = true
+        val one = if (b.single == null) null else picks[0]
+        val tar = if (one != null) null else File(System.getProperty("user.home"), ".cache/lizard-sender/send-${ProcessHandle.current().pid()}-$my.tar")
+        val path = one?.path ?: tar!!.path
+        val type = if (one == null) TAR_TYPE else runCatching { Files.probeContentType(one.toPath()) }.getOrNull() ?: ""
+        thread(name = "lizard-send-make", isDaemon = true) {
+            val wrote = if (tar == null) null else runCatching {
+                tar.parentFile.mkdirs(); tar.deleteOnExit()
+                tar.outputStream().buffered(1 shl 20).use { b.write(it) }
+            }.exceptionOrNull()
+            val hnd = if (wrote != null) 0L else Native.txCreate(path, b.name, type)
+            val err = if (wrote != null) "The files could not be read: ${wrote.message}" else if (hnd == 0L) "This file cannot be sent: ${Native.txError()}" else ""
+            val sent = if (hnd != 0L) parse(Native.txStats(hnd))?.num("sentBytes")?.toLong() ?: 0L else 0L
+            EventQueue.invokeLater {
+                if (my != making || closing) { if (hnd != 0L) Native.txDestroy(hnd); tar?.delete(); return@invokeLater }   // ai: let go meanwhile
+                makingNow = false
+                if (hnd == 0L) { tar?.delete(); startWhenMade = false; phase = Phase.Error(err); return@invokeLater }
+                made = hnd; madeTar = tar; compressed = sent
+                if (startWhenMade) { startWhenMade = false; go() }
+            }
+        }
+    }
+    // ai: the made transfer let go, and any make under way orphaned
+    private fun dropMade() {
+        making++; makingNow = false; startWhenMade = false
+        if (made != 0L) { Native.txDestroy(made); made = 0L }
+        madeTar?.delete(); madeTar = null
+    }
 
     // ai: Start as the person presses it (the column's Start, the rail's play): before the first send, the brightness tip
     // ai: (2026-10-04; the web sender's the same): the monitor's contrast and brightness are the channel's and no app
@@ -294,33 +341,30 @@ class SendState {
 
     fun start() {
         if (!canStart) return
-        val b = choice
         runTest = test
-        runName = if (test) "the test stream" else b!!.name
-        val one = if (test || b!!.single == null) null else picks[0]
+        runName = if (test) "the test stream" else choice!!.name
         dropTar()
-        val tar = if (test || one != null) null else File(System.getProperty("user.home"), ".cache/lizard-sender/send-${ProcessHandle.current().pid()}-${gen + 1}.tar").also { tarFile = it }
-        val path = one?.path ?: tar?.path ?: ""
-        val type = if (test) "" else if (one == null) TAR_TYPE else runCatching { Files.probeContentType(one.toPath()) }.getOrNull() ?: ""
-        // ai: the device is made whatever the encoder (the presenter shows the code from it, 2026-10-07); the GPU
-        // ai: painter's pipelines come with it
-        val prepare = true
-        val my = ++gen
         phase = Phase.Preparing; paused = false
+        // ai: the file's transfer still being made (or its make let go): Start waits for it
+        if (!test && made == 0L) { if (!makingNow) make(); startWhenMade = true; return }
+        go()
+    }
+    // ai: Sending begins: the made transfer taken (the test stream's made here), the GPU painter's device and pipelines
+    // ai: made off the UI thread (txPrepare, whatever the encoder: the presenter shows the code from that device,
+    // ai: 2026-10-07), then the pick and the presenter once the canvas has a size
+    private fun go() {
+        val pre = if (runTest) 0L else made
+        if (!runTest) { made = 0L; tarFile = madeTar; madeTar = null }
+        val my = ++gen
         thread(name = "lizard-send-prep", isDaemon = true) {
-            val wrote = if (tar == null) null else runCatching {
-                tar.parentFile.mkdirs(); tar.deleteOnExit()
-                tar.outputStream().buffered(1 shl 20).use { b!!.write(it) }
-            }.exceptionOrNull()
-            if (wrote != null) { tar?.delete(); EventQueue.invokeLater { if (my == gen) phase = Phase.Error("The files could not be read: ${wrote.message}") }; return@thread }
-            val hnd = Native.txCreate(path, if (runTest) "" else runName, type)
+            val hnd = if (pre != 0L) pre else Native.txCreate("", "", "")
             val err = if (hnd == 0L) Native.txError() else ""
             // ai: the GPU painter's device and pipelines made here, off the UI thread that configures
-            val why = if (hnd != 0L && prepare) Native.txPrepare(hnd, Native.assets) else ""
+            val why = if (hnd != 0L) Native.txPrepare(hnd, Native.assets) else ""
             EventQueue.invokeLater {
-                if (my != gen) { if (hnd != 0L) Native.txDestroy(hnd); tar?.delete(); return@invokeLater }   // ai: stopped meanwhile
+                if (my != gen) { if (hnd != 0L) Native.txDestroy(hnd); return@invokeLater }   // ai: stopped meanwhile
                 if (hnd == 0L) { phase = Phase.Error("This file cannot be sent: $err"); return@invokeLater }
-                h = hnd; gpuWhy = why; prepared = prepare; fmt = null; phase = Phase.On
+                h = hnd; gpuWhy = why; prepared = true; fmt = null; phase = Phase.On
                 if (why.isNotEmpty()) System.err.println("send: no GPU painter: $why")
                 areaChanged()
             }
@@ -337,9 +381,14 @@ class SendState {
         if (h != 0L && h != preparing) Native.txDestroy(h)
         h = 0L
         dropTar()
+        startWhenMade = false
         if (sending) phase = Phase.Idle
         paused = false; fmt = null; present = null; sender = null
+        // ai: the next Start's transfer, made afresh (the stopped one went with its run)
+        if (!closing && choice != null && made == 0L && !makingNow) EventQueue.invokeLater { if (!closing && !sending && choice != null && made == 0L && !makingNow) make() }
     }
+    // ai: the window closing: the run stopped and the made transfer let go
+    fun close() { closing = true; stop(); dropMade() }
 
     private fun fail(why: String) { stop(); phase = Phase.Error(why) }
 
@@ -460,14 +509,18 @@ class SendState {
         if (e.isNotEmpty()) fail(e)
     }
 
+    // ai: what goes, "<compressed> (<raw> raw)" once the transfer is made, "<raw> raw" while it is being made (the web's
+    // ai: and the app's the same)
+    private fun sizeText() = if (compressed > 0) "${Fmt.bytes(compressed)} (${Fmt.bytes(fileSize)} raw)" else "${Fmt.bytes(fileSize)} raw"
+
     // ai: The state line (the web's #state): what is sent, paused, or the error (red; Main.kt colours it)
     val stateLine: String get() = when (val ph = phase) {
         is Phase.Error -> ph.why
         Phase.Preparing -> "Preparing $runName"
         Phase.On -> if (paused) "Paused" else "Sending $runName"
-        // ai: idle, the web's "<name>, <size>" (the bytes that go, once the sender says) or the app's "The test stream"
+        // ai: idle, the web's "<name>, <size>" (sizeText) or the app's "The test stream"
         Phase.Idle -> loadError.ifEmpty { if (test) "The test stream" else if (reading) "Reading the files" else choice?.let {
-            "${it.name}, ${if (it.single == null) "${it.files} ${if (it.files == 1) "file" else "files"}, " else ""}${Fmt.bytes(if (sentBytes > 0) sentBytes else fileSize)}" } ?: "" }
+            "${it.name}, ${if (it.single == null) "${it.files} ${if (it.files == 1) "file" else "files"}, " else ""}${sizeText()}" } ?: "" }
     }
 
     // ai: The figures (the web's #nums): the rate the pictures actually presented carry (the presenter's fresh pictures a

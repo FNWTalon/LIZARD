@@ -21,7 +21,10 @@ let fileBytes = 0, sentBytes = 0;   // ai: the file's bytes and its bytes as sen
 // ai: ", 420 KB": the bytes that go, what compression left of the file (2026-10-05; the file's own size, and "compressed
 // ai: to" beside it, are #tx's since), at module scope: start() names its file's bytes `bytes`, which there shadows
 // ai: ui.mjs's formatter (a TypeError on the first frame left the line at "Preparing")
-const sizeLine = () => (fileBytes ? `, ${bytes(sentBytes || fileBytes)}` : "");
+const sizeLine = () => (fileBytes ? `, ${sizeText(sentBytes, fileBytes)}` : "");
+// ai: what goes, "<compressed> (<raw> raw)" once the transfer is made, "<raw> raw" while it is being made (2026-10-19;
+// ai: the native senders' the same)
+const sizeText = (sent, raw) => (sent ? `${bytes(sent)} (${bytes(raw)} raw)` : `${bytes(raw)} raw`);
 const $ = (id) => document.getElementById(id), canvas = $("c"), ctx = canvas.getContext("2d"), tmp = document.createElement("canvas"), tctx = tmp.getContext("2d"), gcanvas = $("cg");
 // nextId is the block id space and seq only counts painted frames. They are separate because
 // blocksPerFrame changes when repick() swaps the layout mid-stream: seq * blocksPerFrame would
@@ -45,6 +48,8 @@ function swInit() {
   if (sw) return;
   sw = new Worker(new URL("./send-worker.mjs", import.meta.url), { type: "module" });
   sw.onmessage = ({ data: m }) => {
+    // ai: a pick's transfer made (prepare): its own number, not a run's
+    if (m.type === "prepared") { madeFor(m); return; }
     if (m.gen !== gen) return;   // from before a stop or a restart
     if (m.type === "frame") { inflight--; ahead.set(m.seq, m); return; }
     // ai: A batch for the GPU encoder: queued, and encoded a few frames at a time as the paint loop's time allows (pump).
@@ -372,7 +377,7 @@ function showReady() {
   const f = chosen;
   $("go").hidden = false; $("go").disabled = !isTest() && !f; $("stop").hidden = true;
   $("hint").hidden = isTest(); $("nums").textContent = "";
-  say($("state"), isTest() ? "The test stream" : f ? `${f.name}, ${f.bundled ? `${f.files} ${f.files === 1 ? "file" : "files"}, ` : ""}${bytes(f.size)}` : "");
+  say($("state"), isTest() ? "The test stream" : f ? `${f.name}, ${f.bundled ? `${f.files} ${f.files === 1 ? "file" : "files"}, ` : ""}${sizeText(f.sent, f.size)}` : "");
   showRail();
 }
 // ai: Pause and resume (the rail's button, and Resume beside Stop while paused, so the open column has it too).
@@ -450,9 +455,11 @@ async function start() {
   // ai: A browser reads a chosen file only as it was when chosen: once it has been saved again, moved or replaced
   // ai: on disk the read is refused (NotReadableError, in the browser's own words "permission problems that have
   // ai: occurred after a reference to a file was acquired"). The page says what to do about it.
-  const bytes = test ? null : new Uint8Array(await file.blob.arrayBuffer().catch((e) => {
-    throw e?.name === "NotReadableError" || e?.name === "NotFoundError" ? new Error(`${file.bundled ? `A file in ${file.name}` : file.name} has changed, moved or gone since it was chosen: choose it again`) : e;
-  }));
+  // ai: the file's transfer is the worker's, made at the pick (prepare; a start waits there for one still being made,
+  // ai: once the page has handed the file over); one whose making failed is read and made here, which says why
+  if (!test) await file.posted;
+  if (my !== gen) return;
+  const bytes = test || !file.failed ? null : await readOf(file);
   if (my !== gen) return;   // ai: stopped, or started again, while the file was read
   // ai: The spec after the read, so the room is the one the preparing controls left.
   const s = spec(), xfer = bytes ? { name: file.name, type: file.type, chunkLog2: CHUNK_LOG2 } : null;
@@ -460,7 +467,7 @@ async function start() {
   swInit();
   ahead.clear(); inflight = 0; reqSeq = 0; spare = []; respecPending = false; behind = 0;
   const fps = Math.max(0, Math.min(255, Math.round(+$("fps").value) || 0));
-  const codes = codesOf(), gap = gapOf(), made = await swCall({ type: "start", spec: s, bytes: bytes ? bytes.slice().buffer : null, fps, xfer, codes, gap });
+  const codes = codesOf(), gap = gapOf(), made = await swCall({ type: "start", spec: s, pick: file && !file.failed ? file.pick : null, bytes: bytes ? bytes.slice().buffer : null, fps, xfer, codes, gap });
   bandFps = fps;
   // ai: The GPU encoder for this run, where the menu asks for it and it builds (WebGPU by name: its failure is the start's).
   // ai: Its configuration is this run's only if the run is still this one when it comes back.
@@ -478,12 +485,12 @@ async function start() {
   }
   // ai: What is painted, for the development log only: nothing reads it to decode. transfer tells one start from the
   // ai: next in the development log; a re-pick keeps it.
-  cfg = { spec: s, label: made.label, mode: bytes ? "file" : "test", usefulBytes: made.usefulBytes, blocksPerFrame: made.blocksPerFrame, codes, gap, fps: +$("fps").value, encoder: gcfg ? "gpu" : "wasm", transfer: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, ...(bytes ? { fileBytes: bytes.length, name: file.name, ...(file.bundled ? { files: file.files } : {}) } : {}) };
-  shown = s; lap = made.xfer?.lap ?? 0; dataSent = 0; dataWin = 0; fileBytes = bytes?.length ?? 0; sentBytes = made.xfer?.sent ?? 0;
+  cfg = { spec: s, label: made.label, mode: file ? "file" : "test", usefulBytes: made.usefulBytes, blocksPerFrame: made.blocksPerFrame, codes, gap, fps: +$("fps").value, encoder: gcfg ? "gpu" : "wasm", transfer: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, ...(file ? { fileBytes: file.size, name: file.name, ...(file.bundled ? { files: file.files } : {}) } : {}) };
+  shown = s; lap = made.xfer?.lap ?? 0; dataSent = 0; dataWin = 0; fileBytes = file?.size ?? 0; sentBytes = made.xfer?.sent ?? 0;
   showEnc();
   showBlocks();
   // ai: sent: the file's bytes as they go, each chunk zstd-compressed where that is shorter (sim/xfer.mjs, 2026-10-05)
-  const xferLine = xfer ? `\nfile ${bytes.length} B${made.xfer.sent !== bytes.length ? `, ${made.xfer.sent} B as sent (zstd)` : ""}: ${made.xfer.chunks} chunk${made.xfer.chunks === 1 ? "" : "s"} of 2^${made.xfer.chunkLog2}, ${made.xfer.manifest} manifest block${made.xfer.manifest === 1 ? "" : "s"}, BLAKE3 ${made.xfer.root.slice(0, 16)}..., header in the light` : "";
+  const xferLine = made.xfer ? `\nfile ${file.size} B${made.xfer.sent !== file.size ? `, ${made.xfer.sent} B as sent (zstd)` : ""}: ${made.xfer.chunks} chunk${made.xfer.chunks === 1 ? "" : "s"} of 2^${made.xfer.chunkLog2}, ${made.xfer.manifest} manifest block${made.xfer.manifest === 1 ? "" : "s"}, BLAKE3 ${made.xfer.root.slice(0, 16)}..., header in the light` : "";
   // What the window chose, so the guess is visible rather than implied. The capture is an assumption, not a measurement.
   const auto = () => {
     const r = room(), squeezed = SAMPLES(shown.n, ringOf(shown)) > r;
@@ -669,13 +676,35 @@ $("firstCancel").onclick = () => $("first").close();
 $("go").onclick = go;
 $("stop").onclick = () => { stop(); showReady(); };
 $("railSend").onclick = () => (running ? setPaused(!paused) : go());
-// ai: A new payload, picked or dropped, is what Start sends next; one picked while sending stops that first.
+// ai: A new payload, picked or dropped, is what Start sends next; one picked while sending stops that first. Its transfer
+// ai: is made at once in the worker (prepare: every chunk compressed), so the state line says what goes before Start.
+let picks = 0;
 function picked(p) {
   if (!p) { if (!running) showReady(); return; }   // ai: a cancelled picker leaves a running stream alone
   if (running) stop();
   chosen = p;
+  p.pick = ++picks; p.sent = 0; p.failed = null;
   $("payload").value = "file";
   showReady();
+  p.posted = prepare(p);
+}
+// ai: the chosen file's bytes, with the page's words for one the browser no longer reads
+const readOf = (file) => file.blob.arrayBuffer().then((b) => new Uint8Array(b), (e) => {
+  throw e?.name === "NotReadableError" || e?.name === "NotFoundError" ? new Error(`${file.bundled ? `A file in ${file.name}` : file.name} has changed, moved or gone since it was chosen: choose it again`) : e;
+});
+async function prepare(p) {
+  let b;
+  try { b = await readOf(p); } catch (e) { p.failed = e; return; }   // ai: said at Start, which reads it again
+  if (p !== chosen) return;
+  swInit();
+  sw.postMessage({ type: "prepare", pick: p.pick, bytes: b.buffer, xfer: { name: p.name, type: p.type, chunkLog2: CHUNK_LOG2 } }, [b.buffer]);
+}
+function madeFor(m) {
+  const p = chosen;
+  if (!p || p.pick !== m.pick) return;
+  if (m.error) { p.failed = new Error(m.error); return; }
+  p.sent = m.sent;
+  if (!running) showReady();
 }
 // ai: An input's files are taken as they are picked and the input emptied, so the same pick again is a new pick. A
 // ai: folder's files carry their path under it (webkitRelativePath); a browser lists no empty folder there.

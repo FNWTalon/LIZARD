@@ -9,7 +9,7 @@
 // ai: each half as a native receiver would), and the pick again, changed while it runs (below). Each time the page's canvas is
 // ai: read back as luma, padded with white as the page's surround is, and decoded by the C told nothing (sim/phy.mjs
 // ai: makeBlind): the word must name the version painted and the page's 24 fps, the blocks must verify, the state line
-// ai: must say what is sent, and for the file one of the frames read must carry its header block, whose name, length and
+// ai: must say what is sent (for a file "<compressed> (<raw> raw)", 2026-10-19), and for the file one of the frames read must carry its header block, whose name, length and
 // ai: BLAKE3 root (sim/xfer.mjs XferReceiver's parse) are the file's. Then the server's log: every request under /api a
 // ai: POST (a development log), none to /api/config. Exit 1 on any failure. About 10 s; 21 s with ENC=gpu (SwiftShader).
 // ai: The encoder (2026-09-29, gpu/encoder.mjs): plain, Chrome has no WebGPU adapter and the page's auto must fall back
@@ -229,7 +229,7 @@ for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file
   }
   const { g, r } = out, v = subch / 8, wordOk = r.fmt?.version === v && r.fmt?.fps === FPS, blocksOk = r.seen > 0 && r.bad === 0;
   // ai: a file's line carries its size, and what it was compressed to where zstd shrank it (2026-10-05): random bytes do not shrink
-  const stateOk = bun ? g.state.startsWith(`Sending ${bun.made.name}, `) : g.state === (c.file ? "Sending check-send.bin, 50 KB" : "Sending the test stream");
+  const stateOk = bun ? g.state.startsWith(`Sending ${bun.made.name}, `) : g.state === (c.file ? "Sending check-send.bin, 50 KB (50 KB raw)" : "Sending the test stream");
   const want = bun ? { name: bun.made.name, type: "application/x-tar", bytes: bun.bytes } : { name: "check-send.bin", bytes: fileBytes };
   const root = hex(blake3(M, want.bytes)), headerOk = !c.file || (header && header.name === want.name && header.length === want.bytes.length && header.root === root && (!want.type || header.type === want.type));
   console.log(`${name}: canvas ${g.w} x ${g.h}, picture n = ${r.n} (want ${N_FOR(subch)}), word ${r.fmt ? `version ${r.fmt.version} at ${r.fmt.fps} fps` : "not read"}, ${r.seen} blocks verified, ${r.bad} bad${c.file ? `; ${frames} frames read, ${blocks} blocks, header ${header ? `${header.name}, ${header.length} B, root ${header.root.slice(0, 16)}...` : "not read"}` : ""}`);
