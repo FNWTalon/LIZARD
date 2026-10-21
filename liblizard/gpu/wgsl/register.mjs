@@ -17,6 +17,8 @@ export const SUB = 2;       // template samples a module, each way
 // ai: Room for 2 nx + 2 ny - 4 nodes; the rings take 20, 36, 52 and 68 (6, 10, 14 and 18 a side at 94, 158, 222 and
 // ai: 286 modules), and the buffers keep the 136 of the 542-module border before the rings (2026-09-27).
 export const NODES_MAX = 136;
+// ai: Room for every ring's nodes in a round's light counts (Round.light, a node at its ring's base index).
+export const LIGHT_MAX = 4 * NODES_MAX;
 // ai: resid's record a frame: the nodes' residuals, then LENS_SLOTS vec4f of the lens about the camera's axis that
 // ai: REFIT fitted to them (COONS's Lens; 2026-10-17), which every sampler adds back.
 export const LENS_SLOTS = 5, RESID = NODES_MAX + LENS_SLOTS;
@@ -84,7 +86,8 @@ fn levelFor(u: f32) -> u32 { return u32(clamp(floor(log2(max(u, 1.0) / 1.5)), 0.
 // image position and the map's Jacobian there are found once, exactly, and an offset moves the sample by
 // J * offset (the offsets are within 0.6 module, where the map's curvature is under a thousandth of a pixel).
 export const NODES = DIMS + LEVELS + MAP + /* wgsl */ `
-struct Round { steps: u32, stride: u32, p0: u32, p1: u32, step: f32, p2: f32, p3: f32, p4: f32, count: vec4u, base: vec4u }
+// ai: light: the template's light samples (expected value 1) among those the round takes, a node of every ring.
+struct Round { steps: u32, stride: u32, p0: u32, p1: u32, step: f32, p2: f32, p3: f32, p4: f32, count: vec4u, base: vec4u, light: array<vec4u, ${LIGHT_MAX / 4}> }
 @group(0) @binding(7) var<storage, read> nodes: array<vec4f>;
 @group(0) @binding(8) var<storage, read> tmpl: array<vec4f>;
 @group(0) @binding(9) var<storage, read> maps: array<array<f32, 16>>;
@@ -137,29 +140,11 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   // exact in single precision as the direct sum sample + offset is, so the two paths read the same positions.
   let origin = floor(node.xy - ${WINDOW / 2}.0) + vec2f(0.5 / ${SUB}.0);
   if (li == 0u) { atomicStore(&best, 0u); }
-  // The template's own sums, reduced through the partials' arrays before those are used.
-  var se = 0.0;
-  var se2 = 0.0;
-  for (var j = li; j < P; j += WG) {
-    let t = tmpl[first + j * R.stride];
-    se += t.z;
-    se2 += t.z * t.z;
-  }
-  psv[li] = se;
-  psv2[li] = se2;
-  workgroupBarrier();
-  if (li < 16u) {
-    var s1 = 0.0;
-    var s2 = 0.0;
-    for (var k = 0u; k < 16u; k++) { s1 += psv[16u * li + k]; s2 += psv2[16u * li + k]; }
-    psev[li] = s1;
-    psev[16u + li] = s2;
-  }
-  workgroupBarrier();
-  var tse = 0.0;
-  var tse2 = 0.0;
-  for (var k = 0u; k < 16u; k++) { tse += psev[k]; tse2 += psev[16u + k]; }
-  workgroupBarrier();
+  // ai: The template's own sums: its expected values are 0 or 1, so both are the count of its light samples the round
+  // ai: takes (the host's, Round.light).
+  let nq = R.base[pick.x] + n;
+  let tse = f32(R.light[nq >> 2u][nq & 3u]);
+  let tse2 = tse;
   if (lattice) {
     for (var q = li; q < gridN * gridN; q += WG) {
       let g = vec2f(f32(q % gridN), f32(q / gridN));

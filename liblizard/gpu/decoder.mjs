@@ -26,7 +26,7 @@ import { SAMPLE } from "./wgsl/sample.mjs";
 import { SLOTS, axisWord } from "./wgsl/common.mjs";
 import { SELECT } from "./wgsl/bank.mjs";
 import { VOTE, GATHER, SCORE, PICK, K, CELL, HYP, RING_COUNT } from "./wgsl/finder.mjs";
-import { NODES, REFIT, NODES_MAX, RESID, WINDOW, SUB, REFIT_DBG, ringOrder } from "./wgsl/register.mjs";
+import { NODES, REFIT, NODES_MAX, LIGHT_MAX, RESID, WINDOW, SUB, REFIT_DBG, ringOrder } from "./wgsl/register.mjs";
 import { WORD, wordUniform, wordPoints, wordLattice, heldUniform } from "./wgsl/word.mjs";
 import { gridOf, slotOf } from "./tables.mjs";
 import { VERSION_MAX } from "./wordcode.mjs";
@@ -543,11 +543,16 @@ export class FrontHalf {
     this.wordLatUni = d.createBuffer({ size: wl.byteLength, usage: U.UNIFORM | U.COPY_DST });
     d.queue.writeBuffer(this.wordLatUni, 0, wl);
     // Rounds of the node search: +-3 modules at half a module, one template sample a module; then +-0.6 at a
-    // ai: fifth, all four.
+    // ai: fifth, all four. Each with every node's count of the light samples it takes (wgsl/register.mjs Round.light).
+    if (nodes.length / 4 > LIGHT_MAX) throw new Error(`${nodes.length / 4} nodes over the rings, room for ${LIGHT_MAX}`);
     this.rounds = [[6, SUB * SUB, 0.5], [3, 1, 0.2]].map(([steps, stride, step]) => {
-      const ab = new ArrayBuffer(64), u = new Uint32Array(ab), fl = new Float32Array(ab);
+      const ab = new ArrayBuffer(64 + 4 * LIGHT_MAX), u = new Uint32Array(ab), fl = new Float32Array(ab);
       u.set([steps, stride]); fl[4] = step; u.set(count, 8); u.set(nbase, 12);
-      const b = d.createBuffer({ size: 64, usage: U.UNIFORM | U.COPY_DST });
+      for (let q = 0; q < nodes.length / 4; q++) {
+        const first = nodes[4 * q + 2], P = Math.ceil(nodes[4 * q + 3] / stride);
+        for (let j = 0; j < P; j++) u[16 + q] += tmpl[4 * (first + j * stride) + 2];
+      }
+      const b = d.createBuffer({ size: ab.byteLength, usage: U.UNIFORM | U.COPY_DST });
       d.queue.writeBuffer(b, 0, ab);
       return b;
     });
