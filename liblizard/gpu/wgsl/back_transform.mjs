@@ -278,8 +278,8 @@ fn latAt(i: u32) -> f32 { return PIC.lat[i >> 2u][i & 3u]; }
 `;
 // ai: A fused sampler's head for frame f listed in `lists` (LISTS or LISTS2): its edge, map, ring's grid and lattice.
 export const pictureHead = (lists, B) => `  let fw: i32 = i32(${lists}[${listsHead(B)}u + 2u * f]);\n  let fh: i32 = i32(${lists}[${listsHead(B)}u + 2u * f + 1u]);\n  let M: array<f32, 16> = maps[f];\n  let pr: vec4f = PIC.ring[${lists}[${listsRing(B)}u + f]];\n  let g0: f32 = pr.x;\n  let gstep: f32 = pr.y;\n  let nn: u32 = u32(pr.z);\n  let first: u32 = u32(pr.w);\n  let cn: Corners = corners(f, nn);\n  let lz: Lens = lensOf(f);\n`;
-// Workgroup memory pass 1 declares for a size: the two exchange buffers and 48 B a thread of partials.
-export const pass1WorkgroupBytes = (n, prec) => 2 * n * (prec === "f16" ? 4 : 8) + 48 * (n / 8);
+// Workgroup memory pass 1 declares for a size: the two exchange buffers and 16 B a thread of partials.
+export const pass1WorkgroupBytes = (n, prec) => 2 * n * (prec === "f16" ? 4 : 8) + 16 * (n / 8);
 // ai: keep: either picture variant also keeps every sample it read, as unorm16, in KEEP (binding 10, read_write:
 // ai: quad-major, vec2u (four adjacent x) at f sampStride + (x / 4) n + y, so a workgroup's rows are one contiguous
 // ai: store), for the cancel variant to read instead of sampling the frame again: pass two's sampling through
@@ -338,13 +338,16 @@ export function pass1Source({ n, prec, B, cpw = CPW, tw = "chain", grid = "f32",
       // The detrend basis along y: c = (2 y + 1 - n) / n, q = c^2 less its mean (src/focus.c ws_init).
       body += `      let c: f32 = f32(2 * i32(y) + 1 - i32(N)) / f32(N);\n      s1 += zz;\n      sc += zz * c;\n      sq += zz * (c * c - P.m2);\n    }\n`;
     }
-    // The column sums: eight lanes fold T / 8 entries each, then every lane folds the eight.
-    body += `    red[3u * tid] = s1; red[3u * tid + 1u] = sc; red[3u * tid + 2u] = sq;\n    workgroupBarrier();\n`;
-    body += `    if (tid < 8u) {\n      var a: vec4f = vec4f(0.0);\n      var b: vec4f = vec4f(0.0);\n      var c: vec4f = vec4f(0.0);\n`;
-    body += `      for (var i: u32 = tid; i < T; i += 8u) { a += red[3u * i]; b += red[3u * i + 1u]; c += red[3u * i + 2u]; }\n`;
-    body += `      red[3u * tid] = a; red[3u * tid + 1u] = b; red[3u * tid + 2u] = c;\n    }\n    workgroupBarrier();\n`;
+    // The column sums: eight lanes fold T / 8 entries each, then every lane folds the eight; the three sums one after
+    // ai: another through red (T entries, a third of the three side by side before 2026-10-21: the same sums in the
+    // ai: same order, in less workgroup memory).
     body += `    var S1: vec4f = vec4f(0.0);\n    var SC: vec4f = vec4f(0.0);\n    var SQ: vec4f = vec4f(0.0);\n`;
-    body += `    for (var i: u32 = 0u; i < 8u; i++) { S1 += red[3u * i]; SC += red[3u * i + 1u]; SQ += red[3u * i + 2u]; }\n`;
+    [["s1", "S1"], ["sc", "SC"], ["sq", "SQ"]].forEach(([part, sum], k) => {
+      if (k > 0) body += `    workgroupBarrier();\n`;
+      body += `    red[tid] = ${part};\n    workgroupBarrier();\n`;
+      body += `    if (tid < 8u) {\n      var a: vec4f = vec4f(0.0);\n      for (var i: u32 = tid; i < T; i += 8u) { a += red[i]; }\n      red[tid] = a;\n    }\n    workgroupBarrier();\n`;
+      body += `    for (var i: u32 = 0u; i < 8u; i++) { ${sum} += red[i]; }\n`;
+    });
     body += `    let mean: vec4f = S1 / f32(N);\n`;
     body += `    if (tid == 0u) {\n`;
     for (let k = 0; k < 4; k++) body += `      part[f * P.partStride + xq + ${k}u] = vec4f(S1[${k}], SC[${k}], SQ[${k}], mean[${k}]);\n`;
@@ -423,7 +426,7 @@ const LS: u32 = ${B + 1}u;
 const ROWS_AT: u32 = ${listsRows(B)}u;
 var<workgroup> buf0: array<${ty}, N>;
 var<workgroup> buf1: array<${ty}, N>;
-var<workgroup> red: array<vec4f, ${3 * T}>;
+var<workgroup> red: array<vec4f, T>;
 ` + keepSource + cancelSource + BUTTERFLIES + /* wgsl */ `
 @compute @workgroup_size(T)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) tid: u32) {
