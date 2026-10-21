@@ -29,8 +29,8 @@ export const VERSIONS = 128;
 export const KNOWN = 3816;        // ai: (473 + 4) x 8: the bits a block's payload and CRC fill; past them a code's data bits are zeros
 export const WHITE_SLOTS = 1024 * 640;
 // ai: The LDPC kernel's forms (2026-10-08, the decoder's speed; research STATUS "The LDPC's speed"): "base" counts the
-// ai: violated checks after each
-// ai: iteration by re-reading every check's slots; "toggle" keeps each check's parity in a bit array, set once from
+// ai: violated checks after each iteration from a bitmap of the posteriors' signs, 32 checks of a row at a time
+// ai: (violatedChunks; every check's slots re-read until 2026-10-21); "toggle" keeps each check's parity in a bit array, set once from
 // ai: the soft values and flipped whenever a row's update turns a bit's sign (the bit's column's checks, or a parity
 // ai: bit's two), so the count is a popcount and equals the re-read's exactly (the same decisions and iterations);
 // ai: "i32" keeps a posterior a word with plain loads and stores where the code's workgroup memory still fits 32 KB
@@ -369,10 +369,13 @@ export function tierShape(code, form = LDPC_FORMS[0]) {
   return { n, k, z, mb, ns, slots, kb: code.kb, threads: Math.max(128, 32 * Math.ceil(z / 32)), one: ns <= 12, rowv: Math.ceil((mb + 1) / 4), pairv: Math.ceil(slots / 4),
     colv: Math.ceil((code.kb + 1 + slots) / 4), parw: Math.ceil((mb * z) / 32), form, toggle: form === "toggle",
     reg: form.split("+").includes("reg"),
-    wide: form.split("+").includes("i32") && 4 * n + (form.split("+").includes("reg") ? 0 : (ns <= 12 ? 4 : 8) * mb * z) + 4 * 120 + 12 + 4 * (6 + 2 * 64) <= 32768 };
+    wide: form.split("+").includes("i32") && 4 * n + (form.split("+").includes("reg") ? 0 : (ns <= 12 ? 4 : 8) * mb * z) + 4 * packWords(n) + 12 + 4 * (6 + 2 * 64) <= 32768 };
 }
+// ai: packw's words: the 120 of a block's data for the CRC, and between iterations the posteriors' signs (N bits and a
+// ai: word past them, which get32 may read).
+const packWords = (n) => Math.max(120, Math.ceil(n / 32) + 1);
 // ai: Workgroup bytes a code's kernel declares (32 KB is the floor every phone we know offers).
-export const tierWgBytes = (sh, net) => (sh.wide ? 4 * sh.n : 4 * Math.ceil(sh.n / 2)) + (sh.reg ? 0 : (sh.one ? 4 : 8) * sh.mb * sh.z) + 4 * 120 + 12 + (net ? 4 * (6 + 2 * net.hidden) : 0) + (sh.toggle ? 4 * sh.parw : 0);
+export const tierWgBytes = (sh, net) => (sh.wide ? 4 * sh.n : 4 * Math.ceil(sh.n / 2)) + (sh.reg ? 0 : (sh.one ? 4 : 8) * sh.mb * sh.z) + 4 * packWords(sh.n) + 12 + (net ? 4 * (6 + 2 * net.hidden) : 0) + (sh.toggle ? 4 * sh.parw : 0);
 // ai: A code's uniform: dims (B, L words a frame, blocksMax, record cap), the row pointers, the data slots (col |
 // ai: shift << 16), the CRC powers.
 // ai: Under "toggle" the column table follows: colPtr[kb + 1], then each column's (row | shift << 16) in column order.
@@ -416,7 +419,7 @@ ${sh.wide ? `var<workgroup> Lw: array<i32, ${N}>;   // ai: a posterior a word ("
 ${sh.reg ? `` : `var<workgroup> Rw: array<${R}, ${MB * Z}>;
 `}var<workgroup> badc: atomic<u32>;
 var<workgroup> flag: u32;
-var<workgroup> packw: array<u32, 120>;
+var<workgroup> packw: array<u32, ${packWords(N)}>;   // ai: the CRC's data words; between iterations the signs' bitmap
 var<workgroup> crcw: atomic<u32>;
 ${sh.toggle ? `const KB: u32 = ${sh.kb}u;
 const PARW: u32 = ${sh.parw}u;
@@ -544,16 +547,61 @@ ${sh.toggle ? `    let old = q + oldMsg(rec, e);
 ${one ? `  ${sh.reg ? "(*rp)[r]" : "Rw[ri]"} = u32(m1) | (u32(m2) << 8u) | (arg << 16u) | (signs << 20u);` : `  ${sh.reg ? "(*rp)[r]" : "Rw[ri]"} = vec2<u32>(u32(m1) | (u32(m2) << 8u) | (arg << 16u), signs);`}
 }
 
-fn violated(i: u32) -> u32 {
+// ai: The violated checks a (row, 32 checks): check (r, i) is the parity of its row's data slots, bit (col, (i - shift)
+// ai: mod Z) for each (col, shift) of the row, its own parity bit (K + r Z + i) and the previous check's ((r - 1, i), or
+// ai: (MB - 1, i - 1) from row 0; none at (0, 0)) (slotIdx). With the posteriors' signs a bitmap in packw (bit idx at
+// ai: Lw's index), 32 consecutive checks of a row take each slot's 32 consecutive bits of its column from (i0 - shift)
+// ai: mod Z, wrapping at the column's end: one XOR a slot, then a popcount. The same count as reading every check's
+// ai: slots, so the same decisions and iterations.
+const CH: u32 = ${Math.ceil(Z / 32)}u;
+const KCOL: u32 = ${K / Z}u;
+fn get32(p: u32) -> u32 {
+  let w = p >> 5u;
+  let s = p & 31u;
+  let lo = packw[w] >> s;
+  return select(lo | (packw[w + 1u] << (32u - s)), lo, s == 0u);
+}
+// ai: bits t0 .. t0 + 31 of column c, t past Z wrapping to t - Z.
+fn win(c: u32, t0: u32) -> u32 {
+  let a = get32(c * Z + t0);
+  if (t0 + 32u <= Z) { return a; }
+  let n1 = Z - t0;
+  return (a & ((1u << n1) - 1u)) | (get32(c * Z) << n1);
+}
+fn signsToBitmap(i: u32) {
+  for (var w: u32 = i; w < ${Math.ceil(N / 32)}u; w = w + ${TH}u) {
+    var b: u32 = 0u;
+${sh.wide ? `    for (var t: u32 = 0u; t < 32u; t = t + 1u) {
+      let idx = 32u * w + t;
+      if (idx < N && Lw[idx] < 0) { b = b | (1u << t); }
+    }` : `    for (var h: u32 = 0u; h < 16u; h = h + 1u) {
+      let q = 16u * w + h;
+      if (q < ${Math.ceil(N / 2)}u) {
+        let v = atomicLoad(&Lw[q]);
+        b = b | (((v >> 15u) & 1u) << (2u * h)) | ((v >> 31u) << (2u * h + 1u));
+      }
+    }`}
+    packw[w] = b;
+  }
+  if (i == 0u) { packw[${Math.ceil(N / 32)}u] = 0u; }
+}
+fn violatedChunks(i: u32) -> u32 {
   var c: u32 = 0u;
-  for (var r: u32 = 0u; r < MB; r = r + 1u) {
-    var p: u32 = 0u;
-    for (var e: u32 = 0u; e < NS; e = e + 1u) {
-      let idx = slotIdx(r, i, e);
-      if (idx < 0) { continue; }
-      p = p ^ u32(ldL(idx) < 0);
+  for (var u: u32 = i; u < MB * CH; u = u + ${TH}u) {
+    let r = u / CH;
+    let i0 = 32u * (u - r * CH);
+    var acc = win(KCOL + r, i0);
+    if (r > 0u) { acc = acc ^ win(KCOL + r - 1u, i0); }
+    else { acc = acc ^ (win(KCOL + MB - 1u, (i0 + Z - 1u) % Z) & select(0xffffffffu, 0xfffffffeu, i0 == 0u)); }
+    let q1 = rowAt(r + 1u);
+    for (var q = rowAt(r); q < q1; q = q + 1u) {
+      let lc = T.pairs[q >> 2u][q & 3u];
+      var t0 = i0 + Z - (lc >> 16u);
+      if (t0 >= Z) { t0 = t0 - Z; }
+      acc = acc ^ win(lc & 0xffffu, t0);
     }
-    c = c + p;
+    let m = min(32u, Z - i0);
+    c = c + countOneBits(acc & select((1u << m) - 1u, 0xffffffffu, m == 32u));
   }
   return c;
 }
@@ -628,10 +676,10 @@ ${sh.toggle ? `  if (i < Z) { for (var r: u32 = 0u; r < MB; r = r + 1u) { if (ro
 ${sh.toggle ? `    for (var q: u32 = i; q < PARW; q = q + ${TH}u) {
       let c = countOneBits(atomicLoad(&par[q]));
       if (c != 0u) { atomicAdd(&badc, c); }
-    }` : `    if (i < Z) {
-      let c = violated(i);
-      if (c != 0u) { atomicAdd(&badc, c); }
-    }`}
+    }` : `    signsToBitmap(i);
+    workgroupBarrier();
+    let c = violatedChunks(i);
+    if (c != 0u) { atomicAdd(&badc, c); }`}
     workgroupBarrier();
 ${net ? `    if (i == 0u) {
       let bad = atomicLoad(&badc);
