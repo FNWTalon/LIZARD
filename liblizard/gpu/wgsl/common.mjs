@@ -53,8 +53,13 @@ fn toImage(M: array<f32, 16>, m: vec2f) -> vec2f {
   let u = vec2f(M[0] * m.x + M[1] * m.y + M[2], M[3] * m.x + M[4] * m.y + M[5]) / w;
   if (M[9] == 0.0) { return u; }
   let c = vec2f(M[10], M[11]);
-  var p = u;
-  for (var i = 0; i < 6; i++) { let d = p - c; p = c + (u - c) / (1.0 + M[9] * dot(d, d) * M[12]); }
-  return p;
+  // ai: p - c is u - c scaled by s, the root of s (1 + g s^2) = 1 with g = k1 |u - c|^2 / R^2: three Newton steps from
+  // ai: s = 1 (six fixed-point steps on p until 2026-10-21, which reach the same root less closely, at twice the
+  // ai: divisions).
+  let e = u - c;
+  let g = M[9] * dot(e, e) * M[12];
+  var s = 1.0;
+  for (var i = 0; i < 3; i++) { let gs = g * s * s; s = s - (s * (1.0 + gs) - 1.0) / (1.0 + 3.0 * gs); }
+  return c + e * s;
 }
 `;
