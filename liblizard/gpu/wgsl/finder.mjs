@@ -108,47 +108,86 @@ struct P5 { cap: u32, gx: u32, gy: u32, p0: u32, modules: vec4f }
 @group(0) @binding(2) var<storage, read_write> acc: array<atomic<u32>>;
 @group(0) @binding(3) var<uniform> P: P5;
 const CENTRE = array<f32, 2>(${CENTRE[0]}, ${CENTRE[1]});
+// ai: The workgroup's readings that vote, then each one's rays a chunk of steps at a time: lane 0 walks a ray's
+// ai: distances by the same additions a lane walked them by (into dk), and the 64 lanes cast that chunk's votes
+// ai: together (2026-10-21; a lane walked its own reading's rays, every vote one after another, before). The votes
+// ai: are the same: the same distances, cells and weights, summed by atomics that commute.
+const CHUNK = 256u;
+var<workgroup> vlist: array<u32, 64>;
+var<workgroup> vcount: atomic<u32>;
+var<workgroup> nvote: u32;
+var<workgroup> dk: array<f32, CHUNK>;
+var<workgroup> nk: u32;
+var<workgroup> dnext: f32;
 @compute @workgroup_size(64, 1, 1)
-fn main(@builtin(global_invocation_id) g: vec3u) {
-  let f = g.y;
-  let i = g.x;
-  if (i >= P.cap || frames[f].valid == 0u) { return; }
-  let o = 3u * (f * P.cap + i);
-  let r0 = readings[o];
-  let r2 = readings[o + 2u];
-  let p = readings[o + 1u].x;
-  if (r2.w == 0.0 || p < ${SMIN}) { return; }
-  let beta = r0.w + PI / 4.0;
-  let inward = -vec2f(cos(beta), sin(beta));
-  let perp = vec2f(-inward.y, inward.x);
-  let c = CENTRE[u32(r2.x)];
-  let w = u32(clamp(p, 0.0, 1.5) * 256.0);
-  // The frame's own cells, not the lane's: a lane sized for a larger frame earlier would otherwise keep the votes
-  // that run past this frame's edge, and a frame's answer would depend on which lane it ran in.
-  let gxf = i32((frames[f].w + ${CELL - 1}u) / ${CELL}u);
-  let gyf = i32((frames[f].h + ${CELL - 1}u) / ${CELL}u);
-  // ai: A ray stops at the grid's farthest corner from the reading (and a cell of slack): a cell a ray reaches at d
-  // ai: lies at least d from the reading, so past that no cell is in the grid and the votes are the same. The ray's
-  // ai: length is the reading's module size, the network's uw exp(dlogu), which nothing bounds: a reading whose
-  // ai: size was absurd walked this loop until the device was lost (2026-09-30, found with a kernel that wrote
-  // ai: such readings; STATUS "Native speed"). A reach that is not a number walks nothing.
-  let far = length(max(r0.xy, vec2f(f32(gxf), f32(gyf)) * ${CELL}.0 - r0.xy)) + ${CELL}.0;
-  for (var m = 0u; m < ${RING_COUNT}u; m++) {
-    let reach = (P.modules[m] - 2.0 * c) / sqrt(2.0) * r0.z;
-    let d0 = ${RAY_LO} * reach;
-    let d1 = min(${RAY_HI} * reach, far);
-    let spread = i32(clamp(ceil(${RAY_SPREAD} * reach / ${CELL}.0), 1.0, 6.0));
-    // One step a cell along the ray; at each, a triangle across the band. A cell is hit by more than one step
-    // of the same ray when the ray runs near an axis, which is the same small bias for every ray.
-    for (var d = d0; d <= d1; d += ${CELL}.0) {
-      let at = (r0.xy + d * inward) / ${CELL}.0;
-      for (var q = -spread; q <= spread; q++) {
-        let cell = at + f32(q) * perp;
-        let x = i32(floor(cell.x));
-        let y = i32(floor(cell.y));
-        if (x < 0 || y < 0 || x >= gxf || y >= gyf) { continue; }
-        let t = 1.0 - f32(abs(q)) / f32(spread + 1);
-        atomicAdd(&acc[((f * ${RING_COUNT}u + m) * P.gy + u32(y)) * P.gx + u32(x)], u32(f32(w) * t));
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let f = wg.y;
+  if (li == 0u) { atomicStore(&vcount, 0u); }
+  workgroupBarrier();
+  let i0 = wg.x * 64u + li;
+  if (i0 < P.cap && frames[f].valid != 0u) {
+    let o0 = 3u * (f * P.cap + i0);
+    // ai: as the lane a reading did: none where r2.w is 0 or p under SMIN (a NaN in either votes)
+    if (!(readings[o0 + 2u].w == 0.0 || readings[o0 + 1u].x < ${SMIN})) { vlist[atomicAdd(&vcount, 1u)] = i0; }
+  }
+  workgroupBarrier();
+  if (li == 0u) { nvote = atomicLoad(&vcount); }
+  let nv = workgroupUniformLoad(&nvote);
+  for (var e = 0u; e < nv; e++) {
+    let i = vlist[e];
+    let o = 3u * (f * P.cap + i);
+    let r0 = readings[o];
+    let r2 = readings[o + 2u];
+    let p = readings[o + 1u].x;
+    let beta = r0.w + PI / 4.0;
+    let inward = -vec2f(cos(beta), sin(beta));
+    let perp = vec2f(-inward.y, inward.x);
+    let c = CENTRE[u32(r2.x)];
+    let w = u32(clamp(p, 0.0, 1.5) * 256.0);
+    // The frame's own cells, not the lane's: a lane sized for a larger frame earlier would otherwise keep the votes
+    // that run past this frame's edge, and a frame's answer would depend on which lane it ran in.
+    let gxf = i32((frames[f].w + ${CELL - 1}u) / ${CELL}u);
+    let gyf = i32((frames[f].h + ${CELL - 1}u) / ${CELL}u);
+    // ai: A ray stops at the grid's farthest corner from the reading (and a cell of slack): a cell a ray reaches at d
+    // ai: lies at least d from the reading, so past that no cell is in the grid and the votes are the same. The ray's
+    // ai: length is the reading's module size, the network's uw exp(dlogu), which nothing bounds: a reading whose
+    // ai: size was absurd walked this loop until the device was lost (2026-09-30, found with a kernel that wrote
+    // ai: such readings; STATUS "Native speed"). A reach that is not a number walks nothing.
+    let far = length(max(r0.xy, vec2f(f32(gxf), f32(gyf)) * ${CELL}.0 - r0.xy)) + ${CELL}.0;
+    for (var m = 0u; m < ${RING_COUNT}u; m++) {
+      let reach = (P.modules[m] - 2.0 * c) / sqrt(2.0) * r0.z;
+      let d0 = ${RAY_LO} * reach;
+      let d1 = min(${RAY_HI} * reach, far);
+      let spread = i32(clamp(ceil(${RAY_SPREAD} * reach / ${CELL}.0), 1.0, 6.0));
+      let S = u32(2 * spread + 1);
+      // One step a cell along the ray; at each, a triangle across the band. A cell is hit by more than one step
+      // of the same ray when the ray runs near an axis, which is the same small bias for every ray.
+      // ai: every lane past its last read of dk, nk and dnext before lane 0 writes them again (workgroupUniformLoad's
+      // ai: barrier is before its load, not after: a lane still loading nk would read the next chunk's)
+      workgroupBarrier();
+      if (li == 0u) { dnext = d0; }
+      loop {
+        workgroupBarrier();
+        if (li == 0u) {
+          var d = dnext;
+          var k = 0u;
+          for (; k < CHUNK && d <= d1; k++) { dk[k] = d; d += ${CELL}.0; }
+          nk = k;
+          dnext = d;
+        }
+        let n = workgroupUniformLoad(&nk);
+        if (n == 0u) { break; }
+        for (var t2 = li; t2 < n * S; t2 += 64u) {
+          let q = i32(t2 % S) - spread;
+          let at = (r0.xy + dk[t2 / S] * inward) / ${CELL}.0;
+          let cell = at + f32(q) * perp;
+          let x = i32(floor(cell.x));
+          let y = i32(floor(cell.y));
+          if (x < 0 || y < 0 || x >= gxf || y >= gyf) { continue; }
+          let t = 1.0 - f32(abs(q)) / f32(spread + 1);
+          atomicAdd(&acc[((f * ${RING_COUNT}u + m) * P.gy + u32(y)) * P.gx + u32(x)], u32(f32(w) * t));
+        }
+        workgroupBarrier();
       }
     }
   }
