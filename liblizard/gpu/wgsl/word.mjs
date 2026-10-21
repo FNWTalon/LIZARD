@@ -5,7 +5,9 @@
 // ai: and one light cell, so its mean is the local grey). One code a ring over every word cell, W = 16, 32, 64, 128 a
 // ai: side (src/fmt.h; 48 for the 96 ring until 2026-10-10), so 4 W soft bits, one cell each. Then every valid word is scored against them and the best
 // ai: kept (gpu/wordcode.mjs): maximum likelihood over VERSION_MAX x 256 words a ring (any ring carries any version
-// ai: since 2026-09-27), where the reference decodes hard bytes. A word is taken if the contrast reads (CON_MIN, as
+// ai: since 2026-09-27), where the reference decodes hard bytes. The scores are a Walsh-Hadamard transform over the
+// ai: rate for each version (wordBins, since 2026-10-21; each word scored bit by bit before, 0.212 against 0.026 ms a
+// ai: frame on the iGPU in the 128 ring, the same words). A word is taken if the contrast reads (CON_MIN, as
 // ai: src/acquire.c) and the best word disagrees with at most DMAX[W] of the hard bits.
 // ai: The frame then decodes at the word's version, or, with no word taken, at the batch's held version (the last word
 // ai: the host read, 0 for none, since 2026-09-27: the ring bootstraps the word, and a frame whose word does not decode
@@ -13,7 +15,7 @@
 // ai: half's gate reads it as the frame's blocks) and sel[f].z its picture slot (gpu/tables.mjs PICTURES), or sel[f].y
 // ai: = 0 and the gate drops the frame. result[f]: [5] the word's version (0 for none), [6] fps, [7] the best word's
 // ai: soft score; [29] the version the frame decodes at (0 for none), [30] 1 where the held version stood in.
-// ai: No private array: a codeword is a struct of VECS vec4u (Cw) built from the uniform with static members and
+// ai: No private array: the best word's codeword (for its distance) is a struct of VECS vec4u (Cw) built from the uniform with static members and
 // ai: components, and the lattice is read from a uniform (the S26's Adreno returned zeros from a private array indexed
 // ai: at run time).
 import { DIMS, MAP, SLOTS } from "./common.mjs";
@@ -38,13 +40,32 @@ export const WMAX = 128, ROWS = 17, MIDS_MAX = 512;
 export const VECS = (4 * WMAX) / 128;
 // ai: vec4u the pictures' last versions take, four a vec4u.
 const TOPS = Math.ceil(SLOTS / 4);
+// ai: The scoring's tables a ring (wordBins): BINS u32 of offsets (257 used) and ENTS of entries (4 W used); VPASS
+// ai: versions transformed a pass.
+export const BINS = 260, ENTS = 4 * WMAX, VPASS = 8;
 // ai: The Word uniform's layout in vec4u: code (every ring's ROWS rows, a row VECS vec4u: ring r's row k at (r ROWS +
 // ai: k) VECS), then range (W, DMAX, 0, 0) a ring, then plan a ring, then tops (the last version of pictures 0 to
-// ai: SLOTS - 1).
+// ai: SLOTS - 1), then bins (BINS u32 a ring) and ents (ENTS u32 a ring).
 export const LAYOUT = (() => {
-  const range = RING_COUNT * ROWS * VECS, plan = range + RING_COUNT, tops = plan + RING_COUNT;
-  return { code: 0, range, plan, tops, size: tops + TOPS };
+  const range = RING_COUNT * ROWS * VECS, plan = range + RING_COUNT, tops = plan + RING_COUNT, bins = tops + TOPS, ents = bins + (RING_COUNT * BINS) / 4;
+  return { code: 0, range, plan, tops, bins, ents, size: ents + (RING_COUNT * ENTS) / 4 };
 })();
+
+// ai: The scoring's tables for W word cells a side. A word's bit i is the base's b_i xor <v, gv_i> xor <r, gr_i>, gv_i
+// ai: and gr_i the bits of the version's and the rate's rows at i, so its score sum_i q_i (2 c_i - 1) is, for a
+// ai: version v, the 256-point Walsh-Hadamard transform over r of h_v[g] = sum over the i with gr_i = g of
+// ai: q_i (2 b_i - 1) (-1)^<v, gv_i>. ents: every i < 4 W as i | gv_i << 9 | b_i << 17, in order of gr_i (then i);
+// ai: offs[g]: where gr_i = g starts, offs[256] = 4 W.
+export function wordBins(W) {
+  const { base, rows } = wordCode(W), nb = 4 * W, bit = (a, i) => (a[i >> 5] >>> (i & 31)) & 1;
+  const bitsOf = (i, first) => rows.slice(first, first + 8).reduce((g, row, k) => g | (bit(row, i) << k), 0);
+  const gr = Array.from({ length: nb }, (_, i) => bitsOf(i, 8));
+  const offs = new Uint32Array(BINS);
+  gr.forEach((g) => offs[g + 1]++);
+  for (let g = 0; g < 256; g++) offs[g + 1] += offs[g];
+  const order = Array.from({ length: nb }, (_, i) => i).sort((a, b) => gr[a] - gr[b] || a - b);
+  return { offs, ents: Uint32Array.from(order, (i) => i | (bitsOf(i, 0) << 9) | (bit(base, i) << 17)) };
+}
 
 // ai: The Word uniform for the rings, from gpu/tables.mjs formatTables() rings (word.cells), the plan wordPoints lays
 // ai: out, and the pictures (their last versions, which pick a version's slot), as u32 in LAYOUT's order.
@@ -55,8 +76,10 @@ export function wordUniform(rings, plans, pictures) {
   rings.forEach(({ word }, r) => {
     if (!(word.cells in DMAX)) throw new Error(`ring ${r}: ${word.cells} word cells a side, F8 has a DMAX for ${Object.keys(DMAX).join(", ")}`);
     if (word.cells > WMAX) throw new Error(`ring ${r}: ${word.cells} word cells a side, F8 holds ${WMAX}`);
-    const { base, rows } = wordCode(word.cells);
+    const { base, rows } = wordCode(word.cells), { offs, ents } = wordBins(word.cells);
     [base, ...rows].forEach((v, k) => u.set(v, 4 * VECS * (r * ROWS + k)));
+    u.set(offs, 4 * LAYOUT.bins + BINS * r);
+    u.set(ents, 4 * LAYOUT.ents + ENTS * r);
     u.set([word.cells, DMAX[word.cells], 0, 0], 4 * (LAYOUT.range + r));
     u.set(plans[r], 4 * (LAYOUT.plan + r));
   });
@@ -105,12 +128,51 @@ const WORDS = ["x", "y", "z", "w"];
 const MEMBERS = Array.from({ length: VECS }, (_, j) => `v${j}`);
 const U32S = MEMBERS.flatMap((m) => WORDS.map((c) => `${m}.${c}`));
 
+// ai: The scoring, after q: invocation li's best (score, candidate) into red[li]. Candidate c = (v - 1) 256 + fps; ties
+// ai: go to the lower c.
+const PASS = Array.from({ length: VPASS }, (_, k) => k);
+const SCORING = /* wgsl */ `
+  // ai: Every word, against the soft bits, by the transform (wordBins): each bit's soft value signed by the base and
+  // ai: its version rows' bits, once; then VPASS versions a pass: invocation g sums bin g of each, 8 butterfly
+  // ai: stages turn the bins into every rate's score, and invocation li keeps rate li's best.
+  let at0 = rg * ${ROWS}u;
+  for (var e = li; e < nb; e += 256u) {
+    let t = entAt(rg, e);
+    let s = q[t & 511u];
+    sv[e] = select(-s, s, ((t >> 17u) & 1u) != 0u);
+    gw[e] = (t >> 9u) & 255u;
+  }
+  let o0 = binAt(rg, li);
+  let o1 = binAt(rg, li + 1u);
+  workgroupBarrier();
+  var best = -1e9;
+  var bv = 1u;
+  for (var v0 = 1u; v0 <= ${VERSION_MAX}u; v0 += ${VPASS}u) {
+    ${PASS.map((k) => `var h${k} = 0.0;`).join(" ")}
+    for (var e = o0; e < o1; e++) {
+      let s = sv[e];
+      let g = gw[e];
+      ${PASS.map((k) => `h${k} += select(s, -s, (countOneBits((v0 + ${k}u) & g) & 1u) != 0u);`).join("\n      ")}
+    }
+    ${PASS.map((k) => `wt[${256 * k}u + li] = h${k};`).join(" ")}
+    workgroupBarrier();
+    for (var st = 0u; st < 8u; st++) {
+      let bit = 1u << st;
+      ${Array.from({ length: VPASS / 2 }, (_, m) => `{ let p = li + ${256 * m}u; let j = p & 127u; let lo = (p >> 7u) * 256u + (((j >> st) << (st + 1u)) | (j & (bit - 1u))); let a = wt[lo]; let b = wt[lo + bit]; wt[lo] = a + b; wt[lo + bit] = a - b; }`).join("\n      ")}
+      workgroupBarrier();
+    }
+    ${PASS.map((k) => `if (wt[${256 * k}u + li] > best) { best = wt[${256 * k}u + li]; bv = v0 + ${k}u; }`).join("\n    ")}
+    workgroupBarrier();
+  }
+  red[li] = vec4f(best, f32((bv - 1u) * 256u + li), 0.0, 0.0);`;
+
 export const WORD = DIMS + MAP + /* wgsl */ `
 struct LevelDims { d: array<vec4u, 5> }
 // ai: code: per ring, BASE then the 16 rows (version bits, then fps bits), VECS vec4u each; range[ring] = (word cells
 // ai: a side W, DMAX, 0, 0); plan[ring] = (first point, reference steps, track pairs, word points); tops: the last
-// ai: version of pictures 0 to SLOTS - 1, four a vec4u (LAYOUT).
-struct Word { code: array<vec4u, ${LAYOUT.range}>, range: array<vec4u, ${RING_COUNT}>, plan: array<vec4u, ${RING_COUNT}>, tops: array<vec4u, ${TOPS}> }
+// ai: version of pictures 0 to SLOTS - 1, four a vec4u; bins, ents: the transform's tables, BINS and ENTS u32 a ring
+// ai: (LAYOUT, wordBins).
+struct Word { code: array<vec4u, ${LAYOUT.range}>, range: array<vec4u, ${RING_COUNT}>, plan: array<vec4u, ${RING_COUNT}>, tops: array<vec4u, ${TOPS}>, bins: array<vec4u, ${(RING_COUNT * BINS) / 4}>, ents: array<vec4u, ${(RING_COUNT * ENTS) / 4}> }
 // ai: A codeword or a row of the code, 4 WMAX bits: bit i in u32 i / 32 of v0, v1, ... in turn (4 W of them used).
 struct Cw { ${MEMBERS.map((m) => `${m}: vec4u`).join(", ")} }
 struct Lattice { at: array<vec4u, ${RING_COUNT}>, lat: array<vec4f, ${(RING_COUNT * LATTICE_MAX) / 4}> }
@@ -159,6 +221,12 @@ var<workgroup> red: array<vec4f, 256>;
 var<workgroup> mids: array<f32, ${MIDS_MAX}>;
 var<workgroup> q: array<f32, ${4 * WMAX}>;
 var<workgroup> go: u32;
+var<workgroup> wt: array<f32, ${256 * VPASS}>;
+var<workgroup> sv: array<f32, ${ENTS}>;
+var<workgroup> gw: array<u32, ${ENTS}>;
+// ai: The transform's tables (wordBins): ring r's offset j and entry e.
+fn binAt(r: u32, j: u32) -> u32 { let k = r * ${BINS}u + j; return W.bins[k >> 2u][k & 3u]; }
+fn entAt(r: u32, e: u32) -> u32 { let k = r * ${ENTS}u + e; return W.ents[k >> 2u][k & 3u]; }
 // ai: Row i of the code (every ring's rows in turn).
 fn rowAt(i: u32) -> Cw { return Cw(${MEMBERS.map((_, j) => `W.code[${VECS}u * i + ${j}u]`).join(", ")}); }
 // ai: rows first .. first + 7 of the ring's code at "at", those whose bit of x is set, xored into cw.
@@ -170,15 +238,6 @@ fn addRows(cw: Cw, at: u32, first: u32, x: u32) -> Cw {
     ${MEMBERS.map((v) => `o.${v} ^= r.${v} & m;`).join(" ")}
   }
   return o;
-}
-// ai: One u32 of a codeword against q[base ..]: a set bit (dark) adds its soft value, a clear one takes it away.
-fn wordScore(w: u32, base: u32, nb: u32) -> f32 {
-  var s = 0.0;
-  for (var i = base; i < min(nb, base + 32u); i++) { s += select(-q[i], q[i], ((w >> (i - base)) & 1u) != 0u); }
-  return s;
-}
-fn score(cw: Cw, nb: u32) -> f32 {
-  return ${U32S.map((c, k) => `wordScore(cw.${c}, ${32 * k}u, nb)`).join(" + ")};
 }
 // ai: The hard bits a codeword disagrees with.
 fn wordDist(w: u32, base: u32, nb: u32) -> u32 {
@@ -243,18 +302,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
     for (var j = lo; j <= hi; j++) { grey += mids[j]; }
     q[bit] = clamp((grey / f32(hi - lo + 1u) - look(l, f, imgAt(f, M, L, e.xy))) / max(con, 1e-3), -0.5, 0.5);
   }
-  workgroupBarrier();
-  // ai: Every word, against the soft bits: invocation li scores rate li at every version, so the rate's rows are added
-  // ai: once. Candidate c = (v - 1) 256 + fps; ties go to the lower c.
-  let at0 = rg * ${ROWS}u;
-  let fp = addRows(rowAt(at0), at0, 9u, li);
-  var best = -1e9;
-  var bv = 1u;
-  for (var v = 1u; v <= ${VERSION_MAX}u; v++) {
-    let sc = score(addRows(fp, at0, 1u, v), nb);
-    if (sc > best) { best = sc; bv = v; }
-  }
-  red[li] = vec4f(best, f32((bv - 1u) * 256u + li), 0.0, 0.0);
+  workgroupBarrier();${SCORING}
   workgroupBarrier();
   if (li == 0u) {
     var b = red[0];
