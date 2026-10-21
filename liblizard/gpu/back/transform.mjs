@@ -68,7 +68,30 @@ export function rowsByCount({ n, bw, blocks, npos }, pos) {
   return rowsBy;
 }
 
-// ai: The tables for every picture size, from the codec: sizes = [{ n, subch, bitmap }] with a size's index its
+// ai: The transform size a picture of n samples is read at by the fused pass 1: the ladder size below n, 192 below
+// ai: 256 (2026-10-21). n is the first ladder size of at least 3 R, so the one below it holds 2 R and every coefficient
+// ai: the picture carries; sampled on the picture's own square from its first sample, at n / nt of its step, a picture
+// ai: band-limited to R gives the same coefficients at nt (each pass divides by its own size).
+export const TRANSFORM_DOWN = { 256: 192, 384: 256, 512: 384, 768: 512, 1024: 768, 1536: 1024 };
+
+// ai: The detrend's basis and its transforms at m points, as src/focus.c init defines them (in double, then f32):
+// ai: cx, qx, then x12 (x1r, x1i, x2r, x2i a u), sx2 and sq2.
+function detrendTables(m) {
+  const cx = new Float32Array(m), qx = new Float32Array(m), x12 = new Float32Array(4 * m), er = new Float64Array(m), ei = new Float64Array(m);
+  let m2 = 0, sq2 = 0;
+  for (let i = 0; i < m; i++) { const c = (2 * i + 1 - m) / m; m2 += c * c; er[i] = Math.cos(-2 * 3.14159265358979323846 * i / m); ei[i] = Math.sin(-2 * 3.14159265358979323846 * i / m); }
+  const sx2 = m2;
+  m2 /= m;
+  for (let i = 0; i < m; i++) { const c = (2 * i + 1 - m) / m, q = c * c - m2; cx[i] = c; qx[i] = q; sq2 += q * q; }
+  for (let u = 0; u < m; u++) {
+    let ar = 0, ai = 0, br = 0, bi = 0;
+    for (let i = 0; i < m; i++) { const c = (2 * i + 1 - m) / m, q = c * c - m2, k = (u * i) % m; ar += c * er[k]; ai += c * ei[k]; br += q * er[k]; bi += q * ei[k]; }
+    x12.set([ar, ai, br, bi], 4 * u);
+  }
+  return { cx, qx, x12, sx2: Math.fround(sx2), sq2: Math.fround(sq2) };
+}
+
+// ai: The tables for every picture size, from the codec: sizes = [{ n, subch, bitmap, nt }] with a size's index its
 // ai: position (gpu/tables.mjs PICTURES) and null where a size is not built; bitmap left out is the format's own.
 // ai: A picture's tables do not depend on the ring it is painted in, so the codec is set up in its default ring.
 // Besides A's own tables each entry carries what B and C bind to: blocks, the bit map mode and the LDPC code. Read
@@ -77,7 +100,7 @@ export async function transformTables(sizes) {
   await init();
   return sizes.map((z) => {
     if (!z) return null;
-    const { n, subch } = z;
+    const { n, subch } = z, nt = z.nt ?? n;
     if (SIZES.indexOf(n) < 0) throw new Error(`picture size ${n}`);
     // focus_setup puts the format's own bit map in place, so a size that names none gets that (a replay of a
     // recording names its own, 0 before the bit map existed).
@@ -88,14 +111,16 @@ export async function transformTables(sizes) {
     const shape = { ...fc.shape(), blocks: subch / 8 }, pos = fc.posTable(), tab = fc.tables();
     const disc = discLayout(shape, pos), rowsBy = rowsByCount(shape, pos);
     if (rowsBy[shape.blocks] !== disc.V) throw new Error(`${n}/${subch}: the blocks take ${rowsBy[shape.blocks]} rows of the disc's ${disc.V}`);
-    const x12 = new Float32Array(4 * n), tw = new Float32Array(2 * n);
+    // ai: the transform's tables at nt: the codec's own where nt is n, else the same definitions at nt
+    let x12 = new Float32Array(4 * n), sx2 = tab[6 * n], sq2 = tab[6 * n + 1], cx = tab.slice(0, n), qx = tab.slice(n, 2 * n);
     for (let u = 0; u < n; u++) x12.set([tab[2 * n + u], tab[3 * n + u], tab[4 * n + u], tab[5 * n + u]], 4 * u);
-    for (let m = 0; m < n; m++) { const th = -2 * Math.PI * m / n; tw[2 * m] = Math.cos(th); tw[2 * m + 1] = Math.sin(th); }
-    const sx2 = tab[6 * n], sq2 = tab[6 * n + 1];
+    if (nt !== n) ({ x12, sx2, sq2, cx, qx } = detrendTables(nt));
+    const tw = new Float32Array(2 * nt);
+    for (let m = 0; m < nt; m++) { const th = -2 * Math.PI * m / nt; tw[2 * m] = Math.cos(th); tw[2 * m + 1] = Math.sin(th); }
     fc.free();
     const one = new Focus(256, 8, 1), code = one.ldpcCode().code;
     one.free();
-    return { n, subch, bitmap, blocks: shape.blocks, code, shape, pos, V: disc.V, rowsBy, rows: disc.rows, off: disc.off, UV: disc.UV, UC: disc.UC, npos: shape.npos, x12, tw, sx2, sq2, m2: sx2 / n, cx: tab.slice(0, n), qx: tab.slice(n, 2 * n) };
+    return { n, subch, bitmap, blocks: shape.blocks, code, shape, pos, V: disc.V, rowsBy, rows: disc.rows, off: disc.off, UV: disc.UV, UC: disc.UC, npos: shape.npos, x12, tw, sx2, sq2, m2: sx2 / nt, cx, qx, nt };
   });
 }
 
@@ -155,7 +180,7 @@ export class Transform {
     t.pass1 = []; t.reduce = []; t.pass2 = []; t.pass1f = []; t.pass1c = [];
     const set = (arr, s) => (p) => { arr[s] = p; };
     for (const s of t.built) {
-      const { n } = tables[s], common = { n, prec: precision, B, cpw, tw, keep: !!cancel };
+      const { nt: n } = tables[s], common = { n, prec: precision, B, cpw, tw, keep: !!cancel };
       jobs.push(pipe(t.p1Bgl, pass1Source({ ...common, grid }), `back pass1 ${n}`).then(set(t.pass1, s)));
       jobs.push(pipe(t.redBgl, reduceSource({ n, B }), `back reduce ${n}`).then(set(t.reduce, s)));
       jobs.push(pipe(t.p2Bgl, pass2Source({ n, prec: precision, B, tw }), `back pass2 ${n}`).then(set(t.pass2, s)));
@@ -182,8 +207,9 @@ export class Transform {
       const ab = new ArrayBuffer(16 * RING_COUNT + 4 * RING_COUNT * LATTICE_MAX), fl = new Float32Array(ab);
       picture.forEach((rg, r) => {
         if (rg.lattice.length > LATTICE_MAX || rg.lattice.length < 2) throw new Error(`${rg.lattice.length} lattice nodes a side in ring ${r}: PIC holds 2 to ${LATTICE_MAX}`);
+        // ai: the picture's own grid, from its first sample at n / nt of its step where it is read at nt
         const { g0, step } = gridOf(rg, tables[s].n);
-        fl.set([g0, step, rg.lattice.length, r * LATTICE_MAX], 4 * r);
+        fl.set([g0, (step * tables[s].n) / tables[s].nt, rg.lattice.length, r * LATTICE_MAX], 4 * r);
         fl.set(rg.lattice, 4 * RING_COUNT + r * LATTICE_MAX);
       });
       t.picUnis[s] = up(new Uint8Array(ab), U.UNIFORM);
@@ -193,7 +219,7 @@ export class Transform {
     const gate = new Uint32Array(gateWords(counts));
     for (const s of t.built) {
       const tb = tables[s];
-      gate.set([tb.n / cpw, tb.V, tb.blocks, 0], 4 * s);
+      gate.set([tb.nt / cpw, tb.V, tb.blocks, 0], 4 * s);
       for (let c = 0; c < counts; c++) gate[gateRowsAt(c, s)] = tb.rowsBy[Math.min(c, tb.blocks)];
     }
     t.gateUni = up(gate, U.UNIFORM);
@@ -202,9 +228,9 @@ export class Transform {
     // ai: scratch for a whole disc (rows 0 to V - 1), and the column means ride in PART's w (no Y0 buffer).
     const over = (f) => Math.max(...t.built.map((s) => f(tables[s])));
     t.nmax = nmax;
-    t.yStride = over((tb) => tb.V * tb.n);
+    t.yStride = over((tb) => tb.V * tb.nt);
     t.sStride = over((tb) => tb.npos);
-    t.partStride = t.nmax;
+    t.partStride = over((tb) => tb.nt);
     // ai: KEEP: a frame's samples as unorm16, vec2u a quad of columns a row (nmax^2 / 4 a frame, 2 MB at 1024).
     t.sampStride = (t.nmax * t.nmax) / 4;
     return t;
@@ -231,7 +257,7 @@ export class Transform {
     for (const s of this.built) {
       const tb = this.tables[s], b = mk(48, U.UNIFORM | U.COPY_DST);
       const u = new Uint32Array(12), f = new Float32Array(u.buffer);
-      u.set([gridStride, this.yStride, this.partStride, s, tb.n, 0]);
+      u.set([gridStride, this.yStride, this.partStride, s, tb.nt, 0]);
       f[6] = tb.m2; f[7] = tb.sx2; f[8] = tb.sq2; u[9] = this.sStride; u[10] = this.sampStride;
       d.queue.writeBuffer(b, 0, u);
       ln.params[s] = b;
