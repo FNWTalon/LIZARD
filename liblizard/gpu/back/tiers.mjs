@@ -11,7 +11,6 @@ import { whiten, perm, inverse } from "./bitmap.mjs";
 import { ruleTables } from "./codes.mjs";
 import { crcPowers, PAYLOAD, stopRule, DEFAULT_STOP, FIRST_READ, C_RULE } from "./ref_ldpc.mjs";
 import { netWords, hasRule } from "./stop/rule.mjs";
-import { SLOTS } from "../wgsl/common.mjs";
 import { talignSource, tsoftSource, tblocksSource, tldpcSource, tierShape, tierWgBytes, tierUniformWords, tabLayout, VERSIONS, CODES, TTW, WHITE_SLOTS, LDPC_FORMS } from "../wgsl/back_tiers.mjs";
 import { computePipeline } from "../pipeline.mjs";
 
@@ -138,9 +137,9 @@ export class RuleStage {
     p.setPipeline(this.blocksPipe); for (const s of so.served) { p.setBindGroup(0, g.blocks[s]); p.dispatchWorkgroups(1, 1, frames); }
   }
 
-  // ai: The LDPC's pass: a dispatch a code over every slot.
+  // ai: The LDPC's pass: a dispatch a code, (the code's most blocks, frames).
   dispatchLdpc(p, ln, frames) {
-    this.ldpc.forEach((pipe, c) => { if (!this.counts[c]) return; p.setPipeline(pipe); p.setBindGroup(0, ln.ruleGroups.ldpc[c]); p.dispatchWorkgroups(this.counts[c], frames, SLOTS); });
+    this.ldpc.forEach((pipe, c) => { if (!this.counts[c]) return; p.setPipeline(pipe); p.setBindGroup(0, ln.ruleGroups.ldpc[c]); p.dispatchWorkgroups(this.counts[c], frames, 1); });
   }
 
   // ai: The native host's form (core/dec/front.cpp): every object by its recorder id, a lane buffer as "lane:<name>"
@@ -153,7 +152,7 @@ export class RuleStage {
     for (const s of so.served) soft.push(step(this.align, this.alignBgl, ["lane:S", uv, "lane:LISTS", "lane:PILOT", tab, idOf(so.params[s])], [1, 1, "frames"]));
     for (const s of so.served) soft.push(step(this.soft, this.softBgl, ["lane:S", uv, "lane:LISTS", "lane:L", "lane:EP", "lane:BCOUNTS", "lane:PILOT", tab, idOf(so.params[s])], [so.sizes[s].blocks, 1, "frames"]));
     for (const s of so.served) soft.push(step(this.blocksPipe, this.blocksBgl, ["lane:LISTS", "lane:EP", "lane:BLK", "lane:PILOT", tab, idOf(so.params[s])], [1, 1, "frames"]));
-    const ldpcOf = (pipes) => pipes.map((pipe, c) => step(pipe, this.ldpcBgl, ["lane:L", "lane:BLK", "lane:LISTS", tab, "lane:V", "lane:ITS", "lane:REC", "lane:BCOUNTS", idOf(this.tBufs[c])], [this.counts[c], "frames", SLOTS])).filter((_, c) => this.counts[c] > 0);
+    const ldpcOf = (pipes) => pipes.map((pipe, c) => step(pipe, this.ldpcBgl, ["lane:L", "lane:BLK", "lane:LISTS", tab, "lane:V", "lane:ITS", "lane:REC", "lane:BCOUNTS", idOf(this.tBufs[c])], [this.counts[c], "frames", 1])).filter((_, c) => this.counts[c] > 0);
     // ai: ldpcAlt: the same steps in the second form (the same groups), which core/dec/front.cpp times against ldpc
     return { bytes: this.bytes, blocks: Array.from(this.blocks), soft, ldpc: ldpcOf(this.ldpc), ldpcForms: LDPC_FORMS, ...(this.ldpcAlt ? { ldpcAlt: ldpcOf(this.ldpcAlt) } : {}) };
   }
