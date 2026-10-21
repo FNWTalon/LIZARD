@@ -496,7 +496,10 @@ static int selftest(Ctx& c, std::string v) {
 
 // ai: A recording through the decoder as the web's replay runs it (scripts/exp/gpu_captures.mjs): the frames in capture
 // ai: order, batches of the batcher's size, two in flight, each launched with the last word read so far.
+// ai: LIZ_LAUNCH=<n>: at most n frames a launch on the same plan (the app's receiver launches 1 or 2 halves), so
+// ai: PROFILE=1 times each stage at the app's launch size.
 static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
+  const int launch = getenv("LIZ_LAUNCH") ? std::max(1, atoi(getenv("LIZ_LAUNCH"))) : 1 << 30;
   auto fh = open(c, v);
   const std::string dir = c.barcode + "/captures/v0.3/" + run;
   auto metaBytes = readAll(dir + "/meta.json");
@@ -538,7 +541,7 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
   std::vector<std::vector<uint8_t>> px;
   while (next < frames || !flight.empty()) {
     if (next < frames && (int)flight.size() < fh->inflightMax() && fh->freeLane()) {
-      const int nb = std::min(fh->size(), frames - next);
+      const int nb = std::min({fh->size(), frames - next, launch});
       std::vector<Slot*> slots;
       for (int i = 0; i < nb; i++, next++) {
         snprintf(name, sizeof name, "/%04d.gray", next);
