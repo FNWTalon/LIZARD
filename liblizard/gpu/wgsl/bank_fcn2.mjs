@@ -628,11 +628,11 @@ ${Qn ? Qn.dbg : "fn dbgBase(f: u32) -> u32 { return f * (P.stride * P.rows + 2u 
   const origin = stage === "x"
     ? `  let xo0 = i32(wg.x) * ${XB[0]};
   let yo0 = i32(wg.y) * ${XB[1]};
-  if (F.valid == 0u || xo0 >= w || yo0 >= h) { return; }`
+  if (F.valid != 1u || xo0 >= w || yo0 >= h) { return; }`
     : stage === "net" ? `  let ry0 = i32(wg.y) * RH;
   let yo0 = ry0 - HALO;
   // A whole workgroup returns together, so the early exit keeps control flow uniform.
-  if (F.valid == 0u || i32(wg.x * WALK) * RW >= w || ry0 >= h) { return; }
+  if (F.valid != 1u || i32(wg.x * WALK) * RW >= w || ry0 >= h) { return; }
 ${Array.from({ length: Math.ceil((Lz.XH * Lz.XE) / WG) }, (_, r) => `  var xp${r} = ${int8 ? "0u" : "vec4f(0.0)"};`).join("\n")}
   {
     let xo0 = i32(wg.x * WALK) * RW - HALO;
@@ -643,7 +643,7 @@ ${Array.from({ length: Math.ceil((Lz.XH * Lz.XE) / WG) }, (_, r) => `    if (li 
   let xo0 = rx0 - HALO;
   let yo0 = ry0 - HALO;
   // A whole workgroup returns together, so the early exit keeps control flow uniform.
-  if (F.valid == 0u || rx0 >= w || ry0 >= h) { return; }
+  if (F.valid != 1u || rx0 >= w || ry0 >= h) { return; }
   if (li < ${Lz.NT}u) { atomicStore(&nfound[li], 0u); }`;
   return (f16 ? "enable f16;\n" : "") + (int8 ? INT8_REQUIRES : "") + DIMS + /* wgsl */ `
 // slotBase: where this level's tiles start in the frame's slots; tilesX: tiles a row at this level; slots: a frame's

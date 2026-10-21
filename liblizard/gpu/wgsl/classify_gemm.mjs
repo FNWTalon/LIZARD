@@ -923,7 +923,7 @@ ${decls}
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
   let f = wg.y;
   // Uniform over the workgroup (workgroup id and read-only storage), so the whole group returns before any barrier.
-  if (frames[f].valid == 0u) { return; }
+  if (frames[f].valid != 1u) { return; }
   let n = min(counts[f * 16u + ${role === "second" ? 3 : 2}u], ${role === "second" ? `${keep}u` : "P.cap"});
   let j0 = wg.x * ${P}u;
   if (j0 >= n) { return; }

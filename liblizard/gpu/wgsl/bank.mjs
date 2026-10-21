@@ -29,6 +29,8 @@ fn bin(v: f32) -> u32 { return u32(clamp(floor(8.0 * log2(v / P.tau)), 0.0, 63.0
 @compute @workgroup_size(256, 1, 1)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
   let f = wg.x;
+  // ai: a frame record's word (read-only storage), so the whole group returns before any barrier
+  if (frames[f].valid != 1u) { return; }
   let base = f * P.slots;
   for (var i = li; i < P.slots; i += 256u) {
     let v = raw[base + i].w;

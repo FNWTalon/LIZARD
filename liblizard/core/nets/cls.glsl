@@ -421,7 +421,7 @@ void main() {
   uint li = gl_LocalInvocationIndex;
   uint f = gl_WorkGroupID.y;
   // ai: uniform over the workgroup (its id and read-only storage), so the group returns before any barrier
-  if (frames[f].valid == 0u) return;
+  if (frames[f].valid != 1u) return;
   uint n = min(counts[f * 16u + 2u], P.cap);
   uint j0 = gl_WorkGroupID.x * PP;
   if (j0 >= n) return;
