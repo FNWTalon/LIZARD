@@ -107,7 +107,7 @@ private fun MainActivity.devReadout(): String {
     put("camera", c?.let { "${it.id}: ${it.size.width}x${it.size.height} ${it.format} at ${it.fps.upper} fps, ${settings.layout} crop${if (it.note.isEmpty()) "" else ", ${it.note}"}" } ?: "not open",
         j?.let { "${f(it.optDouble("capturedFps", 0.0), 0)} captured, ${f(it.optDouble("processedFps", 0.0), 0)} decoded, ${it.optInt("dropped")} dropped a second" +
             if (it.has("heldMs")) ", held ${f(it.optDouble("heldMs", 0.0), 0)} ms (${f(it.optDouble("heldMaxMs", 0.0), 0)} max)" else "" },
-        now?.let { "exposure ${f(it.exposureMs, 2)} ms, ISO ${it.iso}, readout ${f(it.readoutMs, 2)} ms" })
+        now?.let { "exposure ${f(it.exposureMs, 2)} ms, ISO ${it.iso}, readout ${f(it.readoutMs, 2)} ms" + (it.lens?.let { l -> ", lens $l" } ?: "") })
     if (j != null) {
         val word = j.optJSONObject("word")
         val v = word?.optInt("version", 0) ?: 0
@@ -135,14 +135,15 @@ private fun MainActivity.devReadout(): String {
 }
 
 // ai: Zoom as a slider (2026-10-01; chips of 1, 1.4 and 2 before):
-// ai: 0.1x steps over the camera's range up to 4x (on the S26's 2.2 mm camera, aimed by hand to fill the square,
+// ai: 0.1x steps over the camera's whole range (up to 4x until 2026-10-21: the S26's camera 0 runs 0.6 to 10x and reaches
+// ai: its 3x and 5x lenses by the zoom, Engine.CameraNow's lens) (on the S26's 2.2 mm camera, aimed by hand to fill the square,
 // ai: 1.0x read 381 to 420 KB/s, 1.2x 456, 1.4x 509 and 589, 1.7x 517, 2.8x 352: STATUS "The Android app live on
 // ai: the S26"), moved live on the running camera while it slides (Engine.zoom) and kept at every step (a press that a
 // ai: scroll then took, on the S26, moved it with no "finished" call, so a value kept only then could differ from the label).
 @Composable
 private fun MainActivity.ZoomField(range: Range<Float>?) {
     val lo = range?.lower ?: 1f
-    val hi = maxOf(lo + 0.1f, minOf(range?.upper ?: 4f, 4f))
+    val hi = maxOf(lo + 0.1f, range?.upper ?: 4f)
     val z = (settings.zoom.toFloatOrNull() ?: 1.5f).coerceIn(lo, hi)
     Field("Zoom", "%.1fx".format(Locale.ROOT, z)) {
         Bar(z, lo..hi, maxOf(0, ((hi - lo) * 10).roundToInt() - 1)) { zoomTo((it * 10).roundToInt() / 10f) }

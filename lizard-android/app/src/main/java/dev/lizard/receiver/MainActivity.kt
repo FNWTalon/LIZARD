@@ -485,7 +485,7 @@ class MainActivity : ComponentActivity() {
         val more = JSONObject().apply {
             if (c != null) put("camera", JSONObject().put("id", c.id).put("format", c.format).put("size", "${c.size.width}x${c.size.height}")
                 .put("fps", "[${c.fps.lower},${c.fps.upper}]").put("minFrameMs", c.minFrameMs).put("sensorOrientation", c.sensorOrientation).put("note", c.note)
-                .apply { if (cn != null) put("exposureMs", cn.exposureMs).put("iso", cn.iso).put("readoutMs", cn.readoutMs) })
+                .apply { if (cn != null) put("exposureMs", cn.exposureMs).put("iso", cn.iso).put("readoutMs", cn.readoutMs).put("lens", cn.lens ?: JSONObject.NULL) })
             put("zoom", settings.zoom); put("batch", settings.batch); put("thermal", heat); put("app", aboutLine())
         }.toString()
         engine.replayEnd(r.handle, raw, statsRows.joinToString("\n"), more) { res ->
@@ -611,7 +611,7 @@ class MainActivity : ComponentActivity() {
                     val body = runCatching { JSONObject(s).put("thermal", heat).apply {
                         if (c != null) put("gpuMaxMHz", c.mhz)
                         powerW?.let { put("powerW", it) }; put("batteryC", batteryC)
-                        if (cn != null) { put("exposureMs", cn.exposureMs); put("iso", cn.iso); put("readoutMs", cn.readoutMs); put("frameMs", cn.frameMs) }
+                        if (cn != null) { put("exposureMs", cn.exposureMs); put("iso", cn.iso); put("readoutMs", cn.readoutMs); put("frameMs", cn.frameMs); put("lens", cn.lens ?: JSONObject.NULL) }
                         if (ph != null) put("phase", JSONObject().put("arm", ph.arm).put("state", ph.what).put("a", nz(ph.a)).put("b", nz(ph.b)).put("k", nz(ph.k))
                             .put("se", nz(ph.se)).put("n", ph.n).put("gain", ph.gain).put("pace", ph.pace).put("stood", ph.stood).put("edge", ph.edge).put("flatMs", ph.flatMs).put("delays", ph.delays))
                         if (j != null && r.hasFile && !r.verified && r.secs >= 1) put("avgKBs", r.received / r.secs / 1000) }.toString() }.getOrDefault(s)

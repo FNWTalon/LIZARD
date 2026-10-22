@@ -104,12 +104,15 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         return floatArrayOf(k[0], k[1], k[2], 0.5f * (cal[0] + cal[1]) * scale)
     }
     // ai: The newest capture's exposure, sensitivity, frame and readout (the `capture:` line's keys) and the
-    // ai: phase lock's snapshot: for the stats row and a replay's meta (MainActivity, 2026-10-04), read from any thread
-    data class CameraNow(val exposureMs: Double, val iso: Int, val frameMs: Double, val readoutMs: Double)
+    // ai: phase lock's snapshot: for the stats row and a replay's meta (MainActivity, 2026-10-04), read from any thread.
+    // ai: lens: the physical camera a logical one is capturing with (2026-10-21; null for a single camera): the S26's
+    // ai: camera 0 picks among 2 (ultra-wide), 5 (main), 6 (3x) and 7 (5x periscope) by its zoom and the focus distance.
+    data class CameraNow(val exposureMs: Double, val iso: Int, val frameMs: Double, val readoutMs: Double, val lens: String?)
     fun cameraNow(): CameraNow? {
         val r = last ?: return null
         return CameraNow((r.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L) / 1e6, r.get(CaptureResult.SENSOR_SENSITIVITY) ?: 0,
-            (r.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L) / 1e6, (r.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1e6)
+            (r.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L) / 1e6, (r.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1e6,
+            r.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID))
     }
     fun phaseState(): PhaseLock.State? = phase.state
 
@@ -554,7 +557,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                             t = now; seen = im
                             // ai: `readout`: the sensor's first row to its last (the rolling shutter), which with the
                             // ai: exposure is how long a capture looks at the display
-                            Log.i(TAG, "capture: exposure %.2f ms, iso %d, frame %.2f ms, readout %.2f ms, focus %.2f D (af state %d), eis %d, ois %d, nr %d, edge %d, face %d, scene %d, hot %d, tone %d, shade %d, dist %d, zoom %.2f".format(
+                            Log.i(TAG, "capture: exposure %.2f ms, iso %d, frame %.2f ms, readout %.2f ms, focus %.2f D (af state %d), eis %d, ois %d, nr %d, edge %d, face %d, scene %d, hot %d, tone %d, shade %d, dist %d, zoom %.2f, lens %s".format(
                                 (r.get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L) / 1e6, r.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY) ?: 0,
                                 (r.get(android.hardware.camera2.CaptureResult.SENSOR_FRAME_DURATION) ?: 0L) / 1e6, (r.get(android.hardware.camera2.CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1e6,
                                 r.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE) ?: 0f,
@@ -565,7 +568,8 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                                 r.get(android.hardware.camera2.CaptureResult.HOT_PIXEL_MODE) ?: -1,
                                 r.get(android.hardware.camera2.CaptureResult.TONEMAP_MODE) ?: -1, r.get(android.hardware.camera2.CaptureResult.SHADING_MODE) ?: -1,
                                 (if (Build.VERSION.SDK_INT >= 28) r.get(android.hardware.camera2.CaptureResult.DISTORTION_CORRECTION_MODE) else null) ?: -1,
-                                if (Build.VERSION.SDK_INT >= 30) r.get(android.hardware.camera2.CaptureResult.CONTROL_ZOOM_RATIO) ?: 1f else 1f))
+                                if (Build.VERSION.SDK_INT >= 30) r.get(android.hardware.camera2.CaptureResult.CONTROL_ZOOM_RATIO) ?: 1f else 1f,
+                                r.get(android.hardware.camera2.CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID) ?: "-"))
                         }
                     }
                     try { cs.setRepeatingRequest(b.build(), told, h) } catch (e: Exception) { return fail("The camera stopped: ${e.message}", e) }
