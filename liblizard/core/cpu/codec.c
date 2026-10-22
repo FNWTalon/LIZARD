@@ -44,7 +44,7 @@ void cpu_dec_block_stats(const cpu_dec_t *d, const int8_t **its, const float **e
   *its = 0; *est = 0;
   if (d->any.last) focus_block_stats(d->any.last, its, est);
 }
-// ai: focus.c's test hook, which the wasm build takes from dec.c (the binary grid code, left out here): armed
+// ai: focus.c's test hook, which the wasm build defines in src/wasm.c: armed
 // ai: (nonzero) before a frame, it comes back as a hash of the floats and soft values behind that frame's decode. One
 // ai: global, so it is armed from one thread only (the check tool's single-thread runs); the pool never arms it.
 uint32_t ob_debug_hash;

@@ -76,10 +76,6 @@ import kotlin.math.floor
 
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.border
-import androidx.compose.ui.focus.onFocusChanged
-import androidx.compose.ui.graphics.SolidColor
 
 // ai: The web's tokens and parts (lizard-web/ui.css; 2026-10-01): light, black and white, flat; one solid black button
 // ai: on a screen, the others on a soft grey fill, minor ones text alone, every button a pill; a top bar with a back
@@ -436,25 +432,6 @@ fun <T> Select(title: String, value: T, options: List<Pair<T, String>>, blank: S
             }
             DropdownMenu(open, { open = false }) {
                 for ((k, label) in options) DropdownMenuItem({ Text(label, color = Fg) }, { open = false; if (k != value) onChoose(k) }, enabled = enabledFor(k))
-            }
-        }
-    }
-}
-
-// ai: A text field in the web's input look (2026-10-06): the title over a 48 dp box on the soft fill, 8 dp corners, a
-// ai: hairline in the text's colour while it has the focus, the placeholder grey while it is empty.
-@Composable
-fun TextInput(title: String, value: String, placeholder: String, onChange: (String) -> Unit) {
-    var focused by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxWidth()) {
-        Text(title, style = MaterialTheme.typography.bodyMedium, color = Muted)
-        Spacer(Modifier.height(4.dp))
-        BasicTextField(value, onChange, Modifier.fillMaxWidth().onFocusChanged { focused = it.isFocused }, singleLine = true,
-            textStyle = MaterialTheme.typography.bodyLarge.copy(color = Fg), cursorBrush = SolidColor(Fg)) { inner ->
-            Box(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(8.dp)).background(Soft)
-                .border(1.dp, if (focused) Fg else Color.Transparent, RoundedCornerShape(8.dp)).padding(horizontal = 12.dp), contentAlignment = Alignment.CenterStart) {
-                if (value.isEmpty()) Text(placeholder, style = MaterialTheme.typography.bodyLarge, color = Muted)
-                inner()
             }
         }
     }

@@ -9,8 +9,8 @@
 import { N_FOR } from "../../sim/lizard_pick.mjs";
 import { whiten, perm, inverse } from "./bitmap.mjs";
 import { ruleTables } from "./codes.mjs";
-import { crcPowers, PAYLOAD, stopRule, DEFAULT_STOP, FIRST_READ, C_RULE } from "./ref_ldpc.mjs";
-import { netWords, hasRule } from "./stop/rule.mjs";
+import { crcPowers, PAYLOAD, stopRule, DEFAULT_STOP, FIRST_READ } from "./ref_ldpc.mjs";
+import { netWords } from "./stop/rule.mjs";
 import { talignSource, tsoftSource, tblocksSource, tldpcSource, tierShape, tierWgBytes, tierUniformWords, tabLayout, VERSIONS, CODES, TTW, WHITE_SLOTS, LDPC_FORMS } from "../wgsl/back_tiers.mjs";
 import { computePipeline } from "../pipeline.mjs";
 
@@ -51,15 +51,6 @@ function tierUniform(code, sh, dims, B) {
   for (let e = 0; e < code.slots; e++) w[o + e] = code.lay[code.mb + 1 + 2 * e] | (code.lay[code.mb + 2 + 2 * e] << 16);
   o += 4 * sh.pairv;
   w.set(crcPowers(PAYLOAD), o);
-  o += 120;
-  // ai: the "toggle" form (../wgsl/back_tiers.mjs LDPC_FORMS): each data column's checks, colPtr[kb + 1] then (row | shift << 16)
-  if (sh.toggle) {
-    const byCol = Array.from({ length: code.kb }, () => []);
-    for (let r = 0; r < code.mb; r++) for (let e = code.lay[r]; e < code.lay[r + 1]; e++) byCol[code.lay[code.mb + 1 + 2 * e]].push(r | (code.lay[code.mb + 2 + 2 * e] << 16));
-    let q = 0;
-    for (let c = 0; c <= code.kb; c++) { w[o + c] = q; if (c < code.kb) q += byCol[c].length; }
-    byCol.flat().forEach((v, j) => { w[o + code.kb + 1 + j] = v; });
-  }
   return w;
 }
 
@@ -70,24 +61,23 @@ export class RuleStage {
     const device = bh.device, f16 = bh.precision === "f16";
     const rt = await ruleTables();
     // ai: every code gives up by its own learned stop (since 2026-10-07; the 3/4 code's alone before, the 7/8 and 1/2
-    // ai: codes by the C's stall rule), or all by the stall rule under a page's ?ldpcstop=c (ldpc.mjs's switch, the
+    // ai: codes by the C's stall rule), or all by the stall rule under a page's ?ldpcstop=c (read here: the
     // ai: arithmetic check and the A/B's other arm)
     const forced = globalThis.location ? new URLSearchParams(globalThis.location.search).get("ldpcstop") : null, stop = forced ?? DEFAULT_STOP;
     if (!FIRST_READ.includes(stop)) throw new Error(`ldpc stop ${stop}: one of ${FIRST_READ.join(", ")}`);
     // ai: a code with no learned stop of its own gives up by the stall rule (every code of the format has one)
-    const rules = await Promise.all(rt.codes.map((code) => (stop === "learned" && !hasRule(code.m) ? C_RULE : stopRule(stop, code.m))));
+    const rules = await Promise.all(rt.codes.map((code) => stopRule(stop, code.m)));
     const { L, tab, blocks, consts } = ruleContents(rt, rules.map((r) => (r.net ? netWords(r.net) : null)));
     // ai: the versions this back half serves: those whose picture it built (a 32 KB device in f32 builds no 1536)
     const served = []; for (let v = 1; v <= VERSIONS; v++) if (bh.sizes.some((z) => z && z.n === N_FOR(8 * v))) served.push(v);
     const maxBlocks = Math.max(...served.map((v) => blocks[v]));
     if (maxBlocks > bh.dims.blocksMax) throw new Error(`the rate profile's ${maxBlocks} blocks a frame pass the back half's ${bh.dims.blocksMax}`);
     const limit = device.limits.maxComputeWorkgroupStorageSize;
-    // ai: each code in the first of LDPC_FORMS, and in the second where there is one (the same uniform and groups: only
-    // ai: the pipelines differ; the native host keeps the faster on its device)
+    // ai: each code in the first of LDPC_FORMS, and in every other there is (the same uniform and groups: only the
+    // ai: pipelines differ; the native host keeps the fastest on its device)
     const shapes = rt.codes.map((code) => tierShape(code, LDPC_FORMS[0]));
-    const alts = LDPC_FORMS[1] ? rt.codes.map((code) => tierShape(code, LDPC_FORMS[1])) : null;
-    for (const set of [shapes, alts]) if (set) set.forEach((sh, c) => { const need = tierWgBytes(sh, rules[c].net); if (need > limit) throw new Error(`the ${CODES[c].name} code (${sh.form}) needs ${need} B of workgroup memory, the device offers ${limit}`); });
-    if (alts && alts.some((sh, c) => sh.toggle !== shapes[c].toggle)) throw new Error("LDPC forms with different uniforms");
+    const alts = LDPC_FORMS.slice(1).map((form) => rt.codes.map((code) => tierShape(code, form)));
+    for (const set of [shapes, ...alts]) set.forEach((sh, c) => { const need = tierWgBytes(sh, rules[c].net); if (need > limit) throw new Error(`the ${CODES[c].name} code (${sh.form}) needs ${need} B of workgroup memory, the device offers ${limit}`); });
     const bgl = (types) => device.createBindGroupLayout({ entries: types.map((type, binding) => ({ binding, visibility: GPUShaderStage.COMPUTE, buffer: { type: type === "u" ? "uniform" : type === "r" ? "read-only-storage" : "storage" } })) });
     const st = new RuleStage();
     Object.assign(st, { bh, blocks, layout: L, consts, codes: rt.codes, shapes, alts, stop });
@@ -108,9 +98,9 @@ export class RuleStage {
       computePipeline(device, { code: tblocksSource(args), layout: pl(st.blocksBgl), label: "tblocks" }),
       ...shapes.map((sh, c) => computePipeline(device, { code: tldpcSource(sh, { c, inv: L.inv[c], ...args, net: rules[c].net ? { hidden: rules[c].net.hidden, at: L.netAt[c] } : null }), layout: pl(st.ldpcBgl), label: `tldpc ${CODES[c].name}` })),
     ]);
-    st.ldpcAlt = alts ? await Promise.all(alts.map((sh, c) => computePipeline(device, { code: tldpcSource(sh, { c, inv: L.inv[c], ...args, net: rules[c].net ? { hidden: rules[c].net.hidden, at: L.netAt[c] } : null }), layout: pl(st.ldpcBgl), label: `tldpc ${CODES[c].name} ${sh.form}` }))) : null;
+    st.ldpcAlts = await Promise.all(alts.map((set) => Promise.all(set.map((sh, c) => computePipeline(device, { code: tldpcSource(sh, { c, inv: L.inv[c], ...args, net: rules[c].net ? { hidden: rules[c].net.hidden, at: L.netAt[c] } : null }), layout: pl(st.ldpcBgl), label: `tldpc ${CODES[c].name} ${sh.form}` })))));
     st.bytes = { EP: 8 * bh.B * bh.dims.subchMax };
-    bh.log(`rate profile (LDPC ${LDPC_FORMS.join(" and ")}): ${shapes.map((sh, c) => `${CODES[c].name} n ${sh.n} z ${sh.z}, ${sh.threads} lanes, ${tierWgBytes(sh, rules[c].net)} B${rules[c].net ? `, the learned stop ${rules[c].net.hidden} x ${rules[c].net.hidden}` : ", the stall rule"}`).join("; ")}; TAB ${(tab.byteLength / 1024).toFixed(0)} KB; LIZARD-432 ${blocks[54]} blocks`);
+    bh.log(`rate profile (LDPC ${LDPC_FORMS.join(", ")}): ${shapes.map((sh, c) => `${CODES[c].name} n ${sh.n} z ${sh.z}, ${sh.threads} lanes, ${tierWgBytes(sh, rules[c].net)} B${rules[c].net ? `, the learned stop ${rules[c].net.hidden} x ${rules[c].net.hidden}` : ", the stall rule"}`).join("; ")}; TAB ${(tab.byteLength / 1024).toFixed(0)} KB; LIZARD-432 ${blocks[54]} blocks`);
     return st;
   }
 
@@ -153,7 +143,7 @@ export class RuleStage {
     for (const s of so.served) soft.push(step(this.soft, this.softBgl, ["lane:S", uv, "lane:LISTS", "lane:L", "lane:EP", "lane:BCOUNTS", "lane:PILOT", tab, idOf(so.params[s])], [so.sizes[s].blocks, 1, "frames"]));
     for (const s of so.served) soft.push(step(this.blocksPipe, this.blocksBgl, ["lane:LISTS", "lane:EP", "lane:BLK", "lane:PILOT", tab, idOf(so.params[s])], [1, 1, "frames"]));
     const ldpcOf = (pipes) => pipes.map((pipe, c) => step(pipe, this.ldpcBgl, ["lane:L", "lane:BLK", "lane:LISTS", tab, "lane:V", "lane:ITS", "lane:REC", "lane:BCOUNTS", idOf(this.tBufs[c])], [this.counts[c], "frames", 1])).filter((_, c) => this.counts[c] > 0);
-    // ai: ldpcAlt: the same steps in the second form (the same groups), which core/dec/front.cpp times against ldpc
-    return { bytes: this.bytes, blocks: Array.from(this.blocks), soft, ldpc: ldpcOf(this.ldpc), ldpcForms: LDPC_FORMS, ...(this.ldpcAlt ? { ldpcAlt: ldpcOf(this.ldpcAlt) } : {}) };
+    // ai: ldpcAlts: the same steps in each further form (the same groups), which core/dec/front.cpp times against ldpc
+    return { bytes: this.bytes, blocks: Array.from(this.blocks), soft, ldpc: ldpcOf(this.ldpc), ldpcForms: LDPC_FORMS, ...(this.ldpcAlts.length ? { ldpcAlts: this.ldpcAlts.map(ldpcOf) } : {}) };
   }
 }

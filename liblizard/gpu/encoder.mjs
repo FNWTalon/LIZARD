@@ -8,7 +8,7 @@
 // ai:   paint: a block a workgroup (wgsl/send.mjs paintSource, 2026-10-07): CRC-32, its code's systematic codeword
 // ai:     (every code of the format's rate profile, src/focus.h focus_tiers_for; the codes' tables in TAB, sendTab,
 // ai:     from the wasm's codec), the bit map and whitening, the pilots, QPSK onto the disc;
-// ai:   irows, ipic: the decoder's own inverse transforms (wgsl/cancel_paint.mjs, mode "send"): the inverse along x,
+// ai:   irows, ipic: the decoder's own butterflies as the inverse transforms (wgsl/inverse.mjs): the inverse along x,
 // ai:     turn_pack's packing and the inverse along y, clipped to 0..1 in f32, left quad-major for whole-line stores;
 // ai:   tpose: the picture row-major again (wgsl/send.mjs);
 // ai:   rsv, rsh: the C's Lanczos-3 resample onto the ring's square with the C's own taps (sim/ob.mjs resampleGeom),
@@ -42,7 +42,7 @@
 // ai: and setFps run one at a time on a chain shared by every encoder, and only the latest configuration's border is ever painted again (an fps
 // ai: change leaves an older one's last frames at the old rate). batch 16 and sub 4 unless asked, sub then batch halved
 // ai: while the device cannot hold a configuration's buffers (cfg.batch, cfg.sub say what it got).
-import { irowsSource, ipicSource } from "./wgsl/cancel_paint.mjs";
+import { irowsSource, ipicSource } from "./wgsl/inverse.mjs";
 import { paintSource, tposeSource, rsvSource, rshSource, presentSource, TPOSE_TILE, RSV_THREADS, RSH_THREADS } from "./wgsl/send.mjs";
 import { transformTables } from "./back/transform.mjs";
 import { whiten, perm } from "./back/bitmap.mjs";
@@ -159,8 +159,8 @@ export class GpuEncoder {
       if (need > lim.maxComputeWorkgroupStorageSize) throw new Unavailable(`the ${n} picture's inverse needs ${need} B of workgroup memory, the device has ${lim.maxComputeWorkgroupStorageSize}`);
       if (n / 8 > lim.maxComputeInvocationsPerWorkgroup) throw new Unavailable(`the ${n} picture's inverse needs ${n / 8} invocations a workgroup`);
       const d = this.device, job = Promise.all([
-        computePipeline(d, { code: irowsSource({ n, prec: "f32", mode: "send" }), layout: this.pl("irows"), label: `send irows ${n}` }),
-        computePipeline(d, { code: ipicSource({ n, prec: "f32", mode: "send" }), layout: this.pl("ipic"), label: `send ipic ${n}` }),
+        computePipeline(d, { code: irowsSource({ n, prec: "f32" }), layout: this.pl("irows"), label: `send irows ${n}` }),
+        computePipeline(d, { code: ipicSource({ n, prec: "f32" }), layout: this.pl("ipic"), label: `send ipic ${n}` }),
       ]);
       job.catch(() => this.pipes.delete(n));
       this.pipes.set(n, job);

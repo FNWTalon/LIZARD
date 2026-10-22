@@ -60,16 +60,12 @@ OB_VFN v128_t wasm_f32x4_sub(v128_t a, v128_t b) { return OB_OF_F32(vsubq_f32(OB
 OB_VFN v128_t wasm_f32x4_mul(v128_t a, v128_t b) { return OB_OF_F32(vmulq_f32(OB_F32(a), OB_F32(b))); }
 OB_VFN v128_t wasm_f32x4_div(v128_t a, v128_t b) { return OB_OF_F32(vdivq_f32(OB_F32(a), OB_F32(b))); }
 OB_VFN v128_t wasm_f32x4_abs(v128_t a) { return OB_OF_F32(vabsq_f32(OB_F32(a))); }
-// ai: To the nearest whole number, halves to the even one (FRINTN), whatever the rounding mode.
-OB_VFN v128_t wasm_f32x4_nearest(v128_t a) { return OB_OF_F32(vrndnq_f32(OB_F32(a))); }
 // ai: pmin(a, b) is b < a ? b : a and pmax(a, b) is a < b ? b : a: a select on one compare, so a NaN in either
 // ai: operand gives a back, and of two zeros a. NEON's own minimum and maximum (FMIN, FMINNM) answer both
 // ai: differently, so they are not used.
 OB_VFN v128_t wasm_f32x4_pmin(v128_t a, v128_t b) { return OB_OF_F32(vbslq_f32(vcltq_f32(OB_F32(b), OB_F32(a)), OB_F32(b), OB_F32(a))); }
 OB_VFN v128_t wasm_f32x4_pmax(v128_t a, v128_t b) { return OB_OF_F32(vbslq_f32(vcltq_f32(OB_F32(a), OB_F32(b)), OB_F32(b), OB_F32(a))); }
-// ai: Compares: a lane of all ones where true, zeros where false, and false whenever either side is NaN.
-OB_VFN v128_t wasm_f32x4_lt(v128_t a, v128_t b) { return OB_OF_U32(vcltq_f32(OB_F32(a), OB_F32(b))); }
-OB_VFN v128_t wasm_f32x4_gt(v128_t a, v128_t b) { return OB_OF_U32(vcgtq_f32(OB_F32(a), OB_F32(b))); }
+// ai: A compare: a lane of all ones where true, zeros where false, and false whenever either side is NaN.
 OB_VFN v128_t wasm_f32x4_le(v128_t a, v128_t b) { return OB_OF_U32(vcleq_f32(OB_F32(a), OB_F32(b))); }
 // ai: int32 to float, to nearest even (SCVTF under the default rounding mode, which nothing here changes).
 OB_VFN v128_t wasm_f32x4_convert_i32x4(v128_t a) { return OB_OF_F32(vcvtq_f32_s32(a)); }
@@ -108,8 +104,6 @@ OB_VFN v128_t wasm_i16x8_eq(v128_t a, v128_t b) { return OB_OF_U16(vceqq_s16(OB_
 // ai: negative count, and neither SSHL (arithmetic) nor USHL (logical) rounds.
 OB_VFN v128_t wasm_i16x8_shr(v128_t a, uint32_t n) { return OB_OF_S16(vshlq_s16(OB_S16(a), vdupq_n_s16((int16_t)-(int)(n & 15)))); }
 OB_VFN v128_t wasm_u16x8_shr(v128_t a, uint32_t n) { return OB_OF_U16(vshlq_u16(OB_U16(a), vdupq_n_s16((int16_t)-(int)(n & 15)))); }
-// ai: Narrowing saturates: each signed 32-bit lane to a signed 16-bit one, a's lanes in the low half, b's above.
-OB_VFN v128_t wasm_i16x8_narrow_i32x4(v128_t a, v128_t b) { return OB_OF_S16(vcombine_s16(vqmovn_s32(a), vqmovn_s32(b))); }
 // ai: The low or the high eight unsigned bytes, each widened to a 16-bit lane.
 OB_VFN v128_t wasm_u16x8_extend_low_u8x16(v128_t a) { return OB_OF_U16(vmovl_u8(vget_low_u8(OB_U8(a)))); }
 OB_VFN v128_t wasm_u16x8_extend_high_u8x16(v128_t a) { return OB_OF_U16(vmovl_u8(vget_high_u8(OB_U8(a)))); }

@@ -16,7 +16,7 @@ const glslang = fileURLToPath(new URL("../.tools/glslang/bin/glslang", HERE));
 if (!existsSync(glslang)) throw new Error(`no ${glslang} (glslang 16, placed by hand: a KhronosGroup/glslang release's bin/glslang)`);
 mkdirSync(new URL("nets/", OUT), { recursive: true });
 const kernels = [];
-for (const name of ["nets_cls.mjs", "nets_prop.mjs", "nets_probe.mjs"]) {
+for (const name of ["nets_cls.mjs", "nets_probe.mjs"]) {
   if (!existsSync(new URL(name, HERE))) continue;
   const m = await import(new URL(name, HERE).href);
   const k = await m.build({ out: OUT, glslang });

@@ -23,7 +23,7 @@ export interface Format {
   /** The format's size, 1 to 128 (LIZARD-8 to LIZARD-1024); a symbol carries the rate profile's blocks
    *  (frameBlocks over codes). */
   blocks: number;
-  /** 0 to 3 (the 32, 64, 96 or 128 ring), -1 the default (the 128). */
+  /** 0 to 3 (the 32, 64, 128 or 256 ring), -1 the default (the 128). */
   ring?: number;
   /** The display rate the symbol's word states, 1 to 255 (default 60). */
   fps?: number;

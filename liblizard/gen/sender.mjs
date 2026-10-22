@@ -13,7 +13,7 @@ const imp = (p) => import(new URL(p, LIB).href);
 
 // ai: { modules: { name: WGSL }, manifest (setup/send.json), tab: TAB's bytes (blobs/<hash>.bin) }
 export async function senderSetup() {
-  const { irowsSource, ipicSource } = await imp("gpu/wgsl/cancel_paint.mjs");
+  const { irowsSource, ipicSource } = await imp("gpu/wgsl/inverse.mjs");
   const { paintSource, tposeSource, rsvSource, rshSource, TPOSE_TILE, RSV_THREADS, RSH_THREADS } = await imp("gpu/wgsl/send.mjs");
   const { SLOTS, SIZES } = await imp("gpu/wgsl/common.mjs");
   const { PARAMS_AT } = await imp("gpu/wgsl/back_ldpc.mjs");
@@ -24,8 +24,8 @@ export async function senderSetup() {
   const { GAP_MODULES, sendTab } = await imp("gpu/encoder.mjs");
   const modules = { paint: paintSource(), tpose: tposeSource(), rsv: rsvSource(), rsh: rshSource(), rshCopy: rshSource({ copy: true }) };
   for (const n of SIZES) {
-    modules[`irows${n}`] = irowsSource({ n, prec: "f32", mode: "send" });
-    modules[`ipic${n}`] = ipicSource({ n, prec: "f32", mode: "send" });
+    modules[`irows${n}`] = irowsSource({ n, prec: "f32" });
+    modules[`ipic${n}`] = ipicSource({ n, prec: "f32" });
   }
   // ai: the codes from the codec (the wasm's, as the web's encoder reads them), in CODES' order: the paint's uniform
   // ai: names a tier by its place there

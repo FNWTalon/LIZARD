@@ -20,7 +20,7 @@
 // pixels a lane. f16: activations stored and multiplied as f16, the statistics, head outputs, sigmoid and parabola
 // f32. packed: f32 arithmetic, activations stored as halves through pack2x16float (core WGSL), for a device whose
 // ai: workgroup memory will not hold f32. Peaks (v1's test without its slack, peakAt), the parabola, sigma and each
-// ai: tile's KEEP strongest are v1's (wgsl/bank_fcn.mjs), per 16 x 16 tile of the region.
+// ai: tile's KEEP strongest are version 1's (its kernel archived 2026-10-22), per 16 x 16 tile of the region.
 //
 // Workgroup memory is two pools of 16-byte elements, each holding one thing at a time between barriers:
 //   A: the mean's partial sums, then the row sums, then conv1's output, then conv2's, then the peaks;
@@ -132,7 +132,7 @@ function statsLayout(P, XW, XH, colrun) {
 // Sizes of a stage's planes, in 16-byte elements, and the workgroup memory they need.
 // ai: int8 (net stage, staged only): in 8-byte elements (vec2<u32>), a pixel's codes one, a map pixel one, a peak two,
 // ai: the X window RS Xq words a row, two an element.
-export function fcn2Layout(P, { TX = 1, TY = 1, halves = false, int8 = false, stage = "all", colrun = 0, XB = XBLOCKS[1], staged = true } = {}) {
+export function fcn2Layout(P, { TX = 1, TY = 1, halves = false, int8 = false, stage = "all", colrun = 0, XB = XBLOCKS[1] } = {}) {
   if (stage === "x") {
     const S = statsLayout(P, XB[0], XB[1], colrun || 2);
     return { ...S, stage, HALO: 0, R: P.R, nA: S.nA, nB: S.nB, bytes: 16 * (S.nA + S.nB) + 4 * 16 };
@@ -144,30 +144,21 @@ export function fcn2Layout(P, { TX = 1, TY = 1, halves = false, int8 = false, st
   if (w !== RW + 2 || h !== RH + 2) throw new Error(`fcn2 bank: the convs leave ${w} x ${h}, the region and its ring are ${RW + 2} x ${RH + 2}`);
   const G1 = Math.ceil(convs[0].outW / 4), RS = G1 + 1;
   if (int8) {
-    if (stage !== "net" || !staged) throw new Error("fcn2 bank int8: the network reads the plane (stage net), staged");
+    if (stage !== "net") throw new Error("fcn2 bank int8: the network reads the plane (stage net)");
     const NT = TX * TY, MW = RW + 2, MH = RH + 2;
     const nA = Math.max(...convs.slice(0, -1).map((L) => L.outW * L.outH), 2 * NT * LOCAL), nB = Math.max(Math.ceil((XH * RS) / 2), MW * MH);
-    return { stage, RW, RH, HALO, R, XW, XH, XE, G1, RS, NT, MW, MH, convs, nA, nB, mapPool: "B", staged, int8, bytes: 8 * (nA + nB) + 4 * NT };
+    return { stage, RW, RH, HALO, R, XW, XH, XE, G1, RS, NT, MW, MH, convs, nA, nB, mapPool: "B", int8, bytes: 8 * (nA + nB) + 4 * NT };
   }
   const epp = (C) => (halves ? Math.ceil(C / 8) : C / 4);
   const NT = TX * TY, MW = RW + 2, MH = RH + 2;
-  // staged: every conv writes A, conv1 straight over nothing, the later ones from registers after a barrier (over the
+  // Staged: every conv writes A, conv1 straight over nothing, the later ones from registers after a barrier (over the
   // output they read), so conv1's and conv2's outputs never coexist; the map (two pixels an element) goes in B over X,
-  // the peaks in A. Else conv k's output is in A for even k, B for odd, the map in the pool the last conv does not read.
+  // the peaks in A.
   const act = convs.slice(0, -1).map((L) => L.outW * L.outH * epp(L.outC));
   const S = stage === "all" ? statsLayout(P, XW, XH, colrun) : { nA: 0, nB: 0 };
-  let mapPool, nA, nB;
-  if (staged) {
-    mapPool = "B";
-    nA = Math.max(S.nA, ...act, NT * LOCAL);
-    nB = Math.max(S.nB, XH * RS, Math.ceil((MW * MH) / 2));
-  } else {
-    mapPool = (convs.length - 1) % 2 ? "B" : "A";
-    nA = Math.max(S.nA, ...act.filter((_, k) => k % 2 === 0), mapPool === "A" ? MW * MH : 0, mapPool === "B" ? NT * LOCAL : 0);
-    nB = Math.max(S.nB, XH * RS, ...act.filter((_, k) => k % 2 === 1), mapPool === "B" ? MW * MH : 0, mapPool === "A" ? NT * LOCAL : 0);
-  }
+  const mapPool = "B", nA = Math.max(S.nA, ...act, NT * LOCAL), nB = Math.max(S.nB, XH * RS, Math.ceil((MW * MH) / 2));
   const bytes = 16 * (nA + nB) + (stage === "all" ? 4 * 16 : 0) + 4 * NT;
-  return { ...(stage === "all" ? S : {}), stage, RW, RH, HALO, R, XW, XH, XE, G1, RS, NT, MW, MH, convs, epp, nA, nB, mapPool, staged, bytes };
+  return { ...(stage === "all" ? S : {}), stage, RW, RH, HALO, R, XW, XH, XE, G1, RS, NT, MW, MH, convs, epp, nA, nB, mapPool, bytes };
 }
 
 // The forms a device can be given, best first: f16 when the decoder runs f16; else f32 storage, then halves stored.
@@ -215,11 +206,11 @@ export function fcn2Dump(json, W, H, { int8 = false } = {}) {
 // loads of the luma window and of the X window.
 // ai: int8: the int8 form (fcn2Forms; a q8 file). Its plane holds Xq, four pixels a u32 at a row stride rounded up to
 // ai: four; its dump build writes Xq, then each requantised conv's codes, then logit and s, as fcn2Dump lays them out.
-export function fcn2Source(json, { f16 = false, packed = false, int8 = false, TX = 2, TY = 2, stage = "all", dump = false, probe = "", colrun = 0, XB = XBLOCKS[1], staged = true, walk = WALK } = {}) {
+export function fcn2Source(json, { f16 = false, packed = false, int8 = false, TX = 2, TY = 2, stage = "all", dump = false, probe = "", colrun = 0, XB = XBLOCKS[1], walk = WALK } = {}) {
   if (f16 && packed) throw new Error("fcn2 bank: f16 already stores halves; packed is for f32");
-  if (int8 && (f16 || packed || stage === "all" || !staged)) throw new Error("fcn2 bank: int8 is a store of its own with the plane form only (stage x, then net), staged");
+  if (int8 && (f16 || packed || stage === "all")) throw new Error("fcn2 bank: int8 is a store of its own with the plane form only (stage x, then net)");
   const Q = quantOf(json, int8);
-  const P = fcn2Plan(json), halves = f16 || packed, Lz = fcn2Layout(P, { TX, TY, halves, int8, stage, colrun, XB, staged });
+  const P = fcn2Plan(json), halves = f16 || packed, Lz = fcn2Layout(P, { TX, TY, halves, int8, stage, colrun, XB });
   const { HALO, R, nA, nB, bytes } = Lz;
   const T = f16 ? "f16" : "f32", V4 = `vec4<${T}>`, K = P.K, KK = K * K;
   const f32 = lit9;
@@ -379,7 +370,7 @@ ${halves ? `  xpl[i >> 1u] = pack2x16float(xv.xy);
       return f16 ? `bitcast<vec4<f16>>(${h})` : `upk(${h})`;
     };
     const storePixel = (dst, p, accs) => { const es = packPixel(accs); return es.map((x, e) => `${dst}[${p} * ${es.length}u + ${e}u] = ${x};`).join(" "); };
-    const pool = (k) => (Lz.staged || k % 2 === 0 ? "poolA" : "poolB");
+    const pool = () => "poolA";
     // conv1: four output pixels a lane, each tap row read as two elements of X (four pixels an element).
     const conv1 = (L) => {
       const OG = L.outC / 4, N = G1 * L.outH, lines = [];
@@ -431,7 +422,7 @@ ${st.join("\n")}
           dbg[o + (P.stride + 2u) * (P.rows + 2u)] = sv;
         }
       }` : ""}`;
-      } else if (Lz.staged) {
+      } else {
         // Staged: the pixel's elements into registers o<r>_<e> for round r, written over the input after a barrier.
         const NR = Math.ceil(N / WG), es = packPixel(Array.from({ length: OG }, (_, go) => `acc${go}`));
         const regs = Array.from({ length: NR }, (_, r) => es.map((_, e) => `o${k}_${r}_${e}`));
@@ -451,8 +442,6 @@ ${regs.map((rr, r) => `      if (r == ${r}u) { ${rr.map((o, e) => `${o} = st${e}
 ${regs.map((rr, r) => `    if (li + ${r * WG}u < ${N}u) { ${rr.map((o, e) => `${pool(k)}[(li + ${r * WG}u) * ${es.length}u + ${e}u] = ${o};`).join(" ")} }`).join("\n")}
     workgroupBarrier();
 `;
-      } else {
-        store = `      ${storePixel(pool(k), "i", Array.from({ length: OG }, (_, go) => `acc${go}`))}`;
       }
       return `    for (var i = li; i < ${N}u; i += ${WG}u) {
       let x = i % ${L.outW}u;
@@ -497,17 +486,13 @@ ${halves ? `    let i = (planeRow(f, y) + u32(x0)) >> 1u;
 ${xfetch("xo0 + RW")}
     }
 `;
-    const foundName = Lz.staged ? "poolA" : mapPool === "A" ? "poolB" : "poolA", mp = mapPool === "A" ? "poolA" : "poolB";
-    // The map: probability and s a pixel, two pixels an element when staged.
+    const foundName = "poolA", mp = mapPool === "A" ? "poolA" : "poolB";
+    // The map: probability and s a pixel, two pixels an element.
     const mapFns = Qn
       ? Qn.map
-      : Lz.staged
-      ? `fn mapPut(i: u32, z: f32, s: f32) { ${mp}[i >> 1u][(i & 1u) * 2u] = bitcast<u32>(z); ${mp}[i >> 1u][(i & 1u) * 2u + 1u] = bitcast<u32>(s); }
+      : `fn mapPut(i: u32, z: f32, s: f32) { ${mp}[i >> 1u][(i & 1u) * 2u] = bitcast<u32>(z); ${mp}[i >> 1u][(i & 1u) * 2u + 1u] = bitcast<u32>(s); }
 fn mapP(i: u32) -> f32 { return bitcast<f32>(${mp}[i >> 1u][(i & 1u) * 2u]); }
-fn mapS(i: u32) -> f32 { return bitcast<f32>(${mp}[i >> 1u][(i & 1u) * 2u + 1u]); }`
-      : `fn mapPut(i: u32, z: f32, s: f32) { ${mp}[i] = vec4<u32>(bitcast<u32>(z), bitcast<u32>(s), 0u, 0u); }
-fn mapP(i: u32) -> f32 { return bitcast<f32>(${mp}[i].x); }
-fn mapS(i: u32) -> f32 { return bitcast<f32>(${mp}[i].y); }`;
+fn mapS(i: u32) -> f32 { return bitcast<f32>(${mp}[i >> 1u][(i & 1u) * 2u + 1u]); }`;
     // ai: A peak in the found list: a vec4 element of the float pools, two vec2 elements of int8's.
     const peakStore = (i, v) => (int8 ? `peakPut(${i}, ${v})` : `${foundName}[${i}] = bitcast<vec4<u32>>(${v})`);
     const peakLoad = (i) => (int8 ? `peakGet(${i})` : `bitcast<vec4f>(${foundName}[${i}])`);

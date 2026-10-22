@@ -236,8 +236,8 @@ class SendState {
         val hz = present?.num("hz") ?: 0.0
         return f.codes * sentBlocks * 469.0 * (if (hz > 0) min(f.fps.toDouble(), hz) else f.fps.toDouble()) / 1000
     }
-    // ai: the blocks a code of the painted format carries, from the sender's stats (a rate profile under test,
-    // ai: LIZ_PROFILE, paints its own count), the configured format's before the first stats; its profile, "" none
+    // ai: the blocks a code of the painted format carries, from the sender's stats, the configured format's before the
+    // ai: first stats; its profile, "" none
     val sentBlocks: Int get() = sender?.num("blocks")?.toInt()?.takeIf { it > 0 } ?: fmt?.let { Native.blocksFor(it.subch) } ?: 0
     val tiers: String get() = sender?.str("tiers").orEmpty()
 

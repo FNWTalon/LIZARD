@@ -1,5 +1,5 @@
 // F9: the picture, n x n samples a frame, through the frame's map from module coordinates to image pixels.
-// Sample (x, y) sits at module (g0 + x step, g0 + y step) (src/focus.c focus_finish_bits). Written in the strip
+// Sample (x, y) sits at module (g0 + x step, g0 + y step) (src/focus.c focus_finish_ext). Written in the strip
 // order the reference back half reads (src/focus.c focus_finish_ext): element (x, y) at (x / 64) n 64 + y 64 + x % 64.
 // ai: g0 and step are the frame's (ring, picture) pair's since 2026-09-27: any ring may carry any picture.
 //

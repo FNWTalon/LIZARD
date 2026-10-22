@@ -18,8 +18,7 @@
 // 30 fps holds ~150 frames, so this still allows a few genuine new frames before it speaks up.
 const STALLED = 0.05;
 
-// ai: The receiver hears nothing from the sender but its light (2026-09-26), so which end stopped is not said
-// ai: here: the sender's own line beside the row says whether it was painting.
+// ai: The receiver hears nothing from the sender but its light (2026-09-26), so which end stopped is not said here.
 /**
  * @param {object} stats   the row recv.mjs builds each second
  * @returns {{ level: "ok"|"warn", text: string } | null}  null when nothing is wrong

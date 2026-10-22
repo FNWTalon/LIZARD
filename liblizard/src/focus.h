@@ -27,16 +27,13 @@
 // tier of it.
 enum { FOCUS_RATE = 4, FOCUS_TIER_IN = 39, FOCUS_TIER_23 = 15, FOCUS_TIER_OUT = 20 };
 
-// ai: THE RINGS (2026-09-27: three ring sizes; that evening 32, 64 and 128, then four: 32, 64, 96 and 128; since
-// ai: 2026-10-10 32, 64, 128 and 256, the 256 in the 96's place). The
-// ai: dotted band holds FOCUS_RING[r] cells of 2 x 2 modules on a side, the border round it is 15 modules (a 12-module
-// ai: mark, a 3-module guard) and the corner clearance 15, so a side is S = 2 B + 30 modules (94, 158, 286, 542) and
-// ai: the picture spans 2 B (64, 128, 256, 512). The ring only locates the symbol and syncs its grid, as 5G's sync block
-// ai: does; which picture is inside is the format word's to say (sub-channels, so n), and any ring may
-// ai: carry any picture: a caller names a ring by its span. With none named the ring is FOCUS_RING_DEFAULT, the 128
-// ai: since 2026-10-01 (the 64 before), whatever the picture: no ring follows the version, even by default. Until that evening the default followed n
-// ai: (32 / 48 / 64, rings 32, 48, 64, that morning), before that the side itself, n / 8 + 60 (92 / 124 / 188 / 316, 2026-09-23),
-// ai: and n / 4 + 30 that morning.
+// ai: THE RINGS (32, 64, 128 and 256 band cells a side since 2026-10-10). The dotted band holds FOCUS_RING[r] cells
+// ai: of 2 x 2 modules on a side, the border round it is 15 modules (a 12-module mark, a 3-module guard) and the corner
+// ai: clearance 15, so a side is S = 2 B + 30 modules (94, 158, 286, 542) and the picture spans 2 B (64, 128, 256,
+// ai: 512). The ring only locates the symbol and syncs its grid, as 5G's sync block does; which picture is inside is
+// ai: the format word's to say (sub-channels, so n), and any ring may carry any picture: a caller names a ring by its
+// ai: span. With none named the ring is FOCUS_RING_DEFAULT, the 128,
+// ai: whatever the picture: no ring follows the version, even by default.
 //
 // The ring and the picture are independent grids. The ring is painted at pxm = ceil(n / span) pixels a module, a
 // whole number, so no module is ever split; the picture keeps its n samples and is resampled to fill its span
@@ -152,20 +149,12 @@ int focus_init_tiers(focus_t *f, int n, const focus_tier_t *tier, int tiers, flo
 // The format's rate profile for subch sub-channels (a multiple of 8, 8 to 1024): a 7/8 blocks of 7 sub-channels, m 3/4
 // blocks of 8, t 2/3 blocks of 9 and c 1/2 blocks of 12, inner first, with 7 a + 8 m + 9 t + 12 c = subch and m >= 1,
 // the (a, t, c) whose 7 a, 9 t and 12 c are nearest FOCUS_TIER_IN, FOCUS_TIER_23 and FOCUS_TIER_OUT percent of subch
-// (least squares, in integers; the first of equals in a, then t, then c rising). LIZARD-568: 7/8 x 24, 3/4 x 17,
-// 2/3 x 16, 1/2 x 10. Writes the tiers present (1 to 4) to tier[] and returns their count, or 0 for a count that is no
+// (least squares, in integers; the first of equals in a, then t, then c rising). LIZARD-568: 7/8 x 33, 3/4 x 17,
+// 2/3 x 9, 1/2 x 10. Writes the tiers present (1 to 4) to tier[] and returns their count, or 0 for a count that is no
 // format's.
 int focus_tiers_for(int subch, focus_tier_t tier[FOCUS_TIERS]);
-// ai: A rate profile other than the format's, for a live A/B of rate families (2026-10-07): "6432:30/24/20" names the
-// ai: rates inner first (6 7/8, 4 3/4, 3 2/3, 2 1/2; two to four of them), the second tier filling what the others leave,
-// ai: then each other tier's target percent of the sub-channels in order; focus_tiers_for follows it by the same rule
-// ai: (least squares in integers, the loops in tier order, the first of equals), and a count it cannot fill takes the
-// ai: format's profile ("642:32/30" is the format's of 2026-10-07, which reads the recordings painted then). Not the
-// ai: format: a frame painted under
-// ai: one is read only by a receiver set the same. Set from LIZ_PROFILE where the platform has an environment (read at
-// ai: every call, so a host sets it before making its codecs), or by focus_profile_set, which overrides it ("" or 0
-// ai: back to the environment). Returns the tiers the spec names, 0 for the format's, -1 for a spec it refuses.
-int focus_profile_set(const char *spec);
+// The blocks a frame of subch sub-channels carries under that profile (0 for no format).
+int focus_blocks_for(int subch);
 // ai: Where the camera's optical axis falls in the image the calling thread decodes next, image px (2026-10-17): the
 // ai: border mesh fits the lens's radial field about it (acquire.c border_fill_axis). NaN, the default, is the image's
 // ai: centre, right for a crop centred on the camera's frame; a 2:1 half's axis is the middle of its inner edge. Kept
@@ -175,12 +164,10 @@ void focus_set_axis(float x, float y);
 // ai: distorted = ideal (1 + k1 r^2 + k2 r^4 + k3 r^6), r over the focal length f, in this image's px, about the axis
 // ai: focus_set_axis gives); f = 0 or every k 0 for none. The lens model takes its shape and fits its strength.
 void focus_set_lens(float k1, float k2, float k3, float f);
-// ai: The lens model's A/B switch (2026-10-17, a lab arm until its A/B is read): 1 the model before, one radial term
-// ai: about the image's centre; 0 the axis model; -1 back to the environment (LIZ_LENS=old for the model before).
+// ai: The camera's report's A/B switch (2026-10-17): 1 leaves the report out of the lens model (focus_set_lens is
+// ai: ignored), 0 takes it; -1, the default, reads the environment at each frame (LIZ_LENS=axis leaves it out).
 // ai: Process-wide: set it from one thread with no decode running.
-void focus_lens_set(int legacy);   // ai: 2 the axis model without the camera's report (LIZ_LENS=axis)
-// The blocks a frame of subch sub-channels carries under that profile (0 for no format).
-int focus_blocks_for(int subch);
+void focus_lens_set(int no_report);
 void focus_free(focus_t *f);
 // blocks: blocks * block_bytes. drive: px^2 values in 0..1, the frame at pxm pixels a module and the picture resampled into it.
 void focus_encode(const focus_t *f, const uint8_t *blocks, float *drive);
@@ -243,17 +230,13 @@ int focus_finish(const focus_t *f, float *grid, uint8_t *blocks, uint8_t *ok, ob
 // grid is then unused and the transform is not run, so a caller supplying these supplies the spectrum's whole
 // product. Everything from the decline gate onwards is shared with the ordinary path.
 int focus_finish_ext(const focus_t *f, float *grid, const int8_t *ext_llr, const float *ext_est, uint8_t *blocks, uint8_t *ok, ob_result_t *res);
-// The same with the LDPC run elsewhere too: ext_bits is blocks * code[0].n hard decisions, one a byte, and
-// ai: ext_its what each block spent. The decline gate and the CRC stay here, so acceptance is identical.
-int focus_finish_bits(const focus_t *f, float *grid, const int8_t *ext_llr, const float *ext_est, const uint8_t *ext_bits, const int8_t *ext_its, uint8_t *blocks, uint8_t *ok, ob_result_t *res);
 // The tail alone, from verdicts and bytes worked out elsewhere; and the format word from soft values alone.
 int focus_assemble(const focus_t *f, const uint8_t *bytes, int stride, const uint8_t *verdicts, const int8_t *its, const float *est,
                    uint8_t *blocks, uint8_t *ok, ob_result_t *res, const float *quad, int orient, float score);
 int focus_fmt_check(const focus_t *f, const float *q);
 // What focus_acquire is holding is declared in internal.h, where image_t and ob_reg_t live: it is the sampler's
 // business, not the format's, and this header is the format's.
-// For a caller running the transform elsewhere: the detrend basis it needs, and the spectrum to be held to.
+// For a caller running the transform elsewhere: the detrend basis it needs.
 void focus_tables(const focus_t *f, float *out);          // cx[n], qx[n], x1r[n], x1i[n], x2r[n], x2i[n], sx2, sq2
-void focus_spectrum(const focus_t *f, float *re, float *im);   // vblocks * n * bw of each
 
 #endif

@@ -1,14 +1,13 @@
-// Test rig for the PHY candidates: a sender page for the laptop and a receiver page for a phone.
+// The development rig: serves the pages (a sender for the laptop, a receiver for a phone) and takes their development logs.
 //   node lizard-web/server.mjs      (from the project's root)
 // Needs openssl (the https certificate, made once); python3's qrcode module, where installed, prints a QR of the
-// phone's address. RIG_HTTP, RIG_HTTPS: other ports (8080, 8443); RIG_UPLOADS=1: take /api/file posts.
+// phone's address. RIG_HTTP, RIG_HTTPS: other ports (8080, 8443); RIG_UPLOADS=1: take /api/file posts (check_rates.mjs).
 // It serves the repository to the LAN but no dot folder (its key) and none of research/rig/.
 // Serves the repository over http (localhost) and https (LAN, self-signed: a phone's camera
 // ai: needs a secure origin), and takes the pages' development logs, the only thing a page sends it (2026-09-26):
 // ai: nothing it answers is read by a
 // ai: page to decode or paint. POSTs: /api/stats (the receiver's row a second, the latest kept in memory alone: rows are
-// ai: logged only in a replay since 2026-10-09, research/rig/stats.jsonl no longer written), /api/sender (the sender's line
-// ai: and config), /api/selftest, /api/fft,
+// ai: logged only in a replay since 2026-10-09, research/rig/stats.jsonl no longer written), /api/selftest, /api/fft,
 // ai: /api/file. GETs for node scripts: /api/info, /api/stats (the last row, for lizard-web/check_rates.mjs).
 import { createServer as http } from "node:http";
 import { createServer as https } from "node:https";
@@ -36,7 +35,7 @@ const phoneUrl = `https://${lan}:${HTTPS}/lizard-web/recv.html`;
 let matrix = null;
 try { matrix = JSON.parse(execFileSync("python3", ["-c", "import qrcode,json,sys; q=qrcode.QRCode(border=2); q.add_data(sys.argv[1]); q.make(); print(json.dumps(q.get_matrix()))", phoneUrl], { stdio: ["ignore", "pipe", "ignore"] }).toString()); } catch {}
 
-let stats = {}, statsAt = 0, sender = {}, senderAt = 0;
+let stats = {}, statsAt = 0;
 const body = (req) => new Promise((ok) => { const c = []; req.on("data", (d) => c.push(d)); req.on("end", () => ok(Buffer.concat(c))); });
 
 async function handle(req, res) {
@@ -50,13 +49,10 @@ async function handle(req, res) {
       // ai: only as part of a replay, the Android app's Save replays)
       stats = JSON.parse(await body(req)); statsAt = Date.now();
     }
-    // senderAgeSecs is worked out here, against the rig's own clock. The receiver is a different
-    // device and its clock can be minutes off, so it must never subtract one from the other.
     // ai: A post is answered { ok }: the page reads nothing back. A GET is a script's (the last row, 5 s at most old).
     if (req.method === "POST") return json({ ok: true });
-    return json({ stats: Date.now() - statsAt < 5000 ? stats : {}, sender, senderAgeSecs: senderAt ? (Date.now() - senderAt) / 1000 : null });
+    return json({ stats: Date.now() - statsAt < 5000 ? stats : {} });
   }   // a receiver that went away must not look live
-  if (p === "/api/sender" && req.method === "POST") { sender = JSON.parse(await body(req)); senderAt = Date.now(); return json({ ok: true }); }
   // ai: The GPU self-test's report (gpu_selftest.html), a line each in research/rig/selftest.jsonl stamped with the rig's clock,
   // ai: and its verdict printed here.
   if (p === "/api/selftest" && req.method === "POST") {
@@ -70,7 +66,7 @@ async function handle(req, res) {
   }
   // scripts/pages/fft.html's table, printed here so the phone's numbers do not have to be transcribed off its screen.
   if (p === "/api/fft" && req.method === "POST") { console.log(`\n--- transform bench from the phone ---\n${await body(req)}\n`); return json({ ok: true }); }
-  // ai: Uploads (a received file) only where asked for, RIG_UPLOADS=1 (rig.sh, the checks that post): a rig on the LAN
+  // ai: Uploads (a received file) only where asked for, RIG_UPLOADS=1 (check_rates.mjs): a rig on the LAN
   // ai: otherwise takes no writes. The pages record no replays since 2026-10-09 (the Android app's Save replays does).
   if (p === "/api/file" && req.method === "POST" && process.env.RIG_UPLOADS !== "1") { res.writeHead(403); return res.end("uploads off (RIG_UPLOADS=1)"); }
   // A file a receiver finished (recv.html?save=post), for a scripted run to check against what was sent

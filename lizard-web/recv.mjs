@@ -27,7 +27,7 @@ import { frameTap, cornerProbe } from "./vframes.mjs";
 import { verdict } from "./verdict.mjs";
 import { PoolPolicy } from "./pool.mjs";
 import { logPost } from "./devlog.mjs";
-import { R_RING, SPAN, MODULES, N_FOR, NAME, FOCUS_BITMAP, PICTURE_SIZES } from "../liblizard/sim/lizard_pick.mjs";
+import { R_RING, SPAN, MODULES, N_FOR, NAME, PICTURE_SIZES } from "../liblizard/sim/lizard_pick.mjs";
 import { isControlId, PAYLOAD, fractionDone } from "../liblizard/sim/xfer.mjs";
 import { remember, persist, restoreSaved, say, meter, bytes, rate, left, about, registerApp, collapser, sideResizer } from "./ui.mjs";
 import { open as openKept, list as listKept, watch as watchLibrary } from "./library.mjs";
@@ -57,11 +57,10 @@ registerApp(() => about($("about"), true));
 const PARAMS = new URLSearchParams(location.search), VERIFY = PARAMS.has("verify"), PROF = PARAMS.has("prof");
 // ai: The lab's switches that were test-only menus until 2026-10-01, URL parameters alone since, each read where its
 // ai: menu was: grab=gl, srccrop=full, workers=<n>, and the
-// ai: GPU worker's gprec=int8|f16|f32, gsg=off, gtest=nocascade|b1, gcancel=on, gsrc=page, gstages=on. The stale stored
-// ai: values of those menus go, so none comes back if a menu ever does. The GPU self-test went with them
-// ai: (gpu_selftest.html by its URL). The page records no replays since 2026-10-09: the Android app's Save replays does.
+// ai: GPU worker's gprec=int8|f16|f32, gsg=off, gtest=nocascade|b1, gsrc=page, gstages=on. The GPU self-test went with
+// ai: them (gpu_selftest.html by its URL). The page records no replays since 2026-10-09: the Android app's Save replays
+// ai: does.
 const LAB = (k, d) => PARAMS.get(k) ?? d;
-for (const k of ["gprec", "gsg", "gtest", "gcancel", "gsrc", "gstages", "grab", "srccrop", "workers"]) try { localStorage.removeItem(`recv:${k}`); } catch {}
 // ai: A chunked file's header comes in the light, and only from there. ?save=post hands a finished file to the
 // rig (lizard-web/server.mjs /api/file) for a scripted run to check (lizard-web/check_rates.mjs).
 // ?store=memory keeps a chunked transfer's blocks in memory even where OPFS is there, to measure what OPFS saves.
@@ -442,12 +441,11 @@ function startGpu() {
   // ai: The worker's switches: ?pref=high-performance|low-power asks for that adapter (on a machine with two GPUs
   // ai: Chrome's default is the low-power one); the rest are the lab's, from this page's URL (LAB): a precision or no
   // ai: subgroups for a device whose int8, f16 or subgroup arithmetic is suspect (precision auto: the chain, int8 first
-  // ai: where it builds), a stage test, straddle cancellation, the page's tap for frames, stage timing.
+  // ai: where it builds), a stage test, the page's tap for frames, stage timing.
   const q = new URLSearchParams([...PARAMS].filter(([k]) => k === "pref"));
   if (LAB("gprec", "auto") !== "auto") q.set("prec", LAB("gprec"));
   if (LAB("gsg") === "off") q.set("sg", "0");
   if (LAB("gtest", "none") !== "none") q.set("test", LAB("gtest"));
-  if (LAB("gcancel") === "on") q.set("cancel", "1");   // ai: straddle cancellation (pass two), off by default (2026-09-25: not worth its cost)
   if (LAB("gsrc") === "page") q.set("gsrc", "page");   // ai: the worker declines a track too, so both sides agree
   if (LAB("gstages") === "on") q.set("stages", "1");   // ai: every batch profiled a pass a stage, the stage ms into the stats row
   // ai: the worker named by a literal, its switches as the query: the built app renames every module to a hash of its
@@ -938,9 +936,6 @@ function second() {
       // ai: a frame's raw proposer peaks, peaks kept, cascade candidates, found share and verified blocks: where a device loses them
       gpuRaw: gpu.stats.raw, gpuPeaks: gpu.stats.peaks, gpuCascade: gpu.stats.cascade, gpuFound: gpu.stats.found, gpuBlocks: gpu.stats.blocks,
       gpuScore: gpu.stats.score, gpuTop: gpu.stats.top, gpuF0: gpu.stats.f0, gpuTest: LAB("gtest", "none"), gpuSg: LAB("gsg", "on"),
-      // ai: cancellation (?gcancel=on), and in the worker's last second the frames whose pass two came back with a solved fit and the
-      // ai: blocks it verified there (repeats included), both inside each frame's own answer since 2026-09-27
-      gpuCancel: LAB("gcancel", "off"), gpuCancelled: gpu.stats.cancelled ?? 0, gpuGained: gpu.stats.gained ?? 0,
       gpuPlanMs: gpu.stats.planMs ?? null, gpuTwinMs: gpu.stats.twinMs ?? null, gpuTwins: gpu.stats.twins ?? null,
       gpuStages: LAB("gstages", "off"), gpuStageMs: gpu.stats.stageMs ?? null,
       // ai: where a batch's wall time goes in the worker's last second (recv-gpu-worker.mjs WIN0): batches, the frames a
@@ -1036,7 +1031,7 @@ function second() {
   showState();
   // ai: The frame path's diagnostics go to the console (read over adb DevTools) and the stats row, not the page, which
   // ai: keeps what a user aims and judges by (2026-09-25).
-  console.info(`frames: camera ${stats.capturedFps.toFixed(1)}, callbacks ${stats.callbackFps.toFixed(1)}, processed ${stats.processedFps.toFixed(1)}, new data ${stats.decodedFps.toFixed(1)} (${stats.goodputKBs.toFixed(1)} KB/s, average ${num(stats.avgKBs)} over ${num(stats.avgSecs)} s, band v${stats.bandVersion}, registered ${(100 * stats.foundShare).toFixed(0)}%, bad ${stats.bad} of ${stats.judged} judged), skipped ${stats.skippedFps.toFixed(1)} (merged ${stats.missedFps.toFixed(1)}, tap empty ${num(stats.tapEmptyFps)}, closed unseen ${num(stats.tapClosedUnseen)}); long tasks ${stats.longTasks} (${num(stats.longTaskMs)} ms)${g ? `; gpu: batches ${g.batches}, carrying ${num(g.carried)}, ${num(g.ms)} ms a frame, map ${num(g.mapLatency)}, done ${num(g.doneMs)}, ingest ${num(g.ingestMs)}, arrived ${g.arrived}, open ${g.openMax}, held ${g.held ?? 0}, dropped ${g.dropped}, cancelled ${g.cancelled ?? 0}, gained ${g.gained ?? 0}` : ""}`);
+  console.info(`frames: camera ${stats.capturedFps.toFixed(1)}, callbacks ${stats.callbackFps.toFixed(1)}, processed ${stats.processedFps.toFixed(1)}, new data ${stats.decodedFps.toFixed(1)} (${stats.goodputKBs.toFixed(1)} KB/s, average ${num(stats.avgKBs)} over ${num(stats.avgSecs)} s, band v${stats.bandVersion}, registered ${(100 * stats.foundShare).toFixed(0)}%, bad ${stats.bad} of ${stats.judged} judged), skipped ${stats.skippedFps.toFixed(1)} (merged ${stats.missedFps.toFixed(1)}, tap empty ${num(stats.tapEmptyFps)}, closed unseen ${num(stats.tapClosedUnseen)}); long tasks ${stats.longTasks} (${num(stats.longTaskMs)} ms)${g ? `; gpu: batches ${g.batches}, carrying ${num(g.carried)}, ${num(g.ms)} ms a frame, map ${num(g.mapLatency)}, done ${num(g.doneMs)}, ingest ${num(g.ingestMs)}, arrived ${g.arrived}, open ${g.openMax}, held ${g.held ?? 0}, dropped ${g.dropped}` : ""}`);
   // ai: A development log (devlog.mjs): posted, never awaited, its answer unread.
   logPost("/api/stats", stats);
   for (const c of pool) { c.secMs = 0; c.secN = 0; }

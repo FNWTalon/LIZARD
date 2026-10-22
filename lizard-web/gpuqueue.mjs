@@ -69,9 +69,7 @@ const weightsOf = (path) => {
 // ai: test bypasses one stage to find a device's failing one: "nocascade" (cnn-v1 on every peak), "b1" (batches of
 // ai: 1).
 // ai: probe: the self-test's readback of every stage (gpu/probe.mjs, scripts/pages/gpu_selftest.mjs); the receiver never sets
-// ai: it. cancel: straddle cancellation as pass two of every batch, in the batch's own submit (gpu/back/cancel.mjs),
-// ai: off unless the receiver's ?gcancel=on turns it on; the self-test's judged runs keep it off, since
-// ai: its reference predates pass two. nets: { large, small }, classifier files by path
+// ai: it. nets: { large, small }, classifier files by path
 // ai: under liblizard/ in place of the installed ones (INSTALLED), as gpu/harness/page.mjs takes a job's; a q8 file
 // ai: (arch.quant) runs int8 at precision int8 and is refused at a float one. The GPU bench's arms name them
 // ai: (archive/gpu-bench/gpu_bench.mjs); the receiver never does. The result's nets is fh.nets: the arithmetic each net runs in.
@@ -84,7 +82,7 @@ export function receiverChain(adapter) {
   return precisionChain(adapter).filter((p) => p !== "int8" || WEIGHTS_INT8 || storeOptions().weights);
 }
 
-export async function openGpu(spec, { pref = null, log = () => {}, restart = 0, prec = null, subgroups = true, test = null, probe = false, cancel = false, nets = null, twins = null } = {}) {
+export async function openGpu(spec, { pref = null, log = () => {}, restart = 0, prec = null, subgroups = true, test = null, probe = false, nets = null, twins = null } = {}) {
   const why = unsupported(spec);
   if (why) throw new Unavailable(why);
   if (!globalThis.navigator?.gpu) throw new Unavailable("this browser has no WebGPU");
@@ -110,7 +108,7 @@ export async function openGpu(spec, { pref = null, log = () => {}, restart = 0, 
         B: test === "b1" ? 1 : "auto", capMs: CAP_MS, inflight: test === "b1" ? 1 : "auto", restart, cap: CAP, register: true,
         weights: large, precision, subgroups,
         bank: "fcn2", cascade: test === "nocascade" ? null : { weights: small, keep: CASCADE.keep, rest: CASCADE.rest },
-        back: "gpu", backN: nmax, fuse: true, log, probe, cancel, twins,
+        back: "gpu", backN: nmax, log, probe, twins,
       });
       break;
     } catch (e) {
@@ -144,8 +142,7 @@ export function quadOf(table, H) {
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
 // ai: dec: openGpu's result. reopen(restart): openGpu again, for the one recovery. Callbacks: done(items, out, dec), a
-// ai: batch read back (out is gpu/decoder.mjs batch()'s result whole: out.frames[i] for items[i], its blocks of both
-// ai: passes with the cancel stage, deviceMs the batch's device time, carried, host, idle and ingestMs its measurement
+// ai: batch read back (out is gpu/decoder.mjs batch()'s result whole: out.frames[i] for items[i], deviceMs the batch's device time, carried, host, idle and ingestMs its measurement
 // ai: fields); drop(items), frames answered
 // ai: without a decode; lost(reason), the queue has given up. An item is { w, h, luma }, or { w, h, source, x, y } for
 // ai: F0 (a VideoFrame and the crop, lizard-web/vframes.mjs), plus whatever the caller keeps on it. Its luma is let go and

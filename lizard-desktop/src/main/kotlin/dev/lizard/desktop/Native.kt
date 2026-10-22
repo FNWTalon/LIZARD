@@ -17,11 +17,8 @@ object Native {
     @JvmStatic external fun txPrepare(h: Long, assets: String): String
     // ai: painter: 0 the CPU, 1 the GPU, 2 auto; gap: modules between two codes; "" or the refusal
     @JvmStatic external fun txConfigure(h: Long, n: Int, subch: Int, span: Int, fps: Int, codes: Int, gap: Int, threads: Int, painter: Int, assets: String): String
-    @JvmStatic external fun txSide(h: Long): Int
     // ai: the blocks a frame of subch sub-channels carries (the format's rate profile, src/focus.h focus_blocks_for)
     @JvmStatic external fun blocksFor(subch: Int): Int
-    @JvmStatic external fun txWidth(h: Long): Int
-    @JvmStatic external fun txReady(h: Long): Boolean
     @JvmStatic external fun txStats(h: Long): String
     @JvmStatic external fun txDestroy(h: Long)
 
@@ -31,7 +28,6 @@ object Native {
     @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, whole: Boolean): Long
     @JvmStatic external fun presentFps(p: Long, fps: Int)
     @JvmStatic external fun presentSize(p: Long, size: Float)
-    @JvmStatic external fun presentWhole(p: Long, on: Boolean)
     @JvmStatic external fun presentPause(p: Long, on: Boolean)
     // ai: the compositor bypass (X11's _NET_WM_BYPASS_COMPOSITOR on the canvas's top-level window), with full screen
     @JvmStatic external fun presentFullscreen(p: Long, on: Boolean)

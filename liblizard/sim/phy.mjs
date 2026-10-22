@@ -26,10 +26,9 @@ const RATE = ["1/4", "1/3", "1/2", "2/3", "3/4", "5/6", "7/8"];
 // Block contents are a function of the block id, so a receiver can check any block it decodes
 // without being told which frame it came from.
 //
-// The xorshift32 walk below is kept because research/captures holds runs recorded with it, and
-// scripts/exp/real_dec.mjs replays them through phy.decode, which checks every block against this
-// function. Changing it under those captures would flag every block bad. Streams say which
-// generator they used; no field means this one.
+// The xorshift32 walk below is the stream a spec that names none gets: the simulator's harnesses paint
+// and check their own frames with it. Every recording kept is SHAKE256's (below), which a live sender
+// paints. Streams say which generator they used; no field means this one.
 export function blockBytesLegacy(id, len, out = new Uint8Array(len)) {
   let s = (Math.imul(id + 1, 0x9e3779b1) ^ 0x85ebca6b) >>> 0;
   for (let i = 0; i < len; i++) { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; out[i] = s & 255; }
@@ -213,136 +212,7 @@ async function makeFocus(spec) {
   };
 }
 
-// A grid of small FOCUS symbols in place of one big one: "lizard-2".
-//
-// Every block of a FOCUS symbol is a coefficient of ONE transform over the whole picture, so anything that
-// spoils part of a capture spoils all of it. That is why a capture taken while the display changes frame reads
-// nothing at all (archive/straddle-cancel/exp/straddle_fit.mjs), and it is also why a glare blob costs the frame. Tiles make the tile
-// the unit of loss instead: k x k independent symbols, each with its own picture, its own border and its own
-// blocks, painted edge to edge as one bitmap.
-//
-// A tile is not a new format. It is the same codec at a quarter of the picture: n and span both halve at k = 2,
-// so a tile's module pitch, its normalised radius and its block size are exactly the parent's, and k^2 tiles
-// carry the same blocks the parent did. What differs is k^2 borders instead of one, which is the price.
-//
-// Finding them: the capture is decoded once to find ANY tile, and that tile's own quad gives the grid, since
-// the tiles are rigid against each other and the same size. Which tile it is comes out of the block ids it
-// returned, and from its position in the frame when it returned none. No timestamps, no camera facilities.
-async function makeGrid(spec) {
-  await initOb();
-  const k = spec.grid, { mode = 1, clip = 2, tilt = 0, corner = 0, cornerFilled = 0, centre = 0, edge = 0, trackAlt = 0, border = 0, bitmap, fps = 0, variants = [{ name: "ldpc" }] } = spec;
-  // The parent's picture split k ways on each axis: same cell, same normalised radius, same code per block.
-  const n = spec.n / k, span = (spec.span ?? 0) / k, subch = spec.subch / k / k;   // span 0: each tile takes the default ring (src/focus.h FOCUS_RING_DEFAULT), as the parent does
-  if (!Number.isInteger(n) || !Number.isInteger(span) || !Number.isInteger(subch) || subch % 8)
-    throw new Error(`grid ${k}: ${spec.n}/${spec.span}/${spec.subch} does not divide into tiles`);
-  const fc = new Focus(n, subch, mode, { clip, span, tilt, corner, cornerFilled, centre, edge, trackAlt, border, bitmap });
-  if (fps) fc.setFps(fps);   // one codec behind every tile, so every tile's band states the same rate
-  const B = fc.blockBytes, Tt = fc.blocks, K = k * k, T = Tt * K, S = fc.side;
-  const seen = variants.map(() => new Set()), buf = new Uint8Array(Tt * B), want = new Uint8Array(B - 4);
-  const sheet = new Float32Array(K * S * S);            // the k x k tiles as one bitmap of drive values
-  const quiet = marginSamples(spec, fc);
-  let source = sourceFor(spec.stream);
-  let cropBuf = null;
-
-  // The tile a capture found, from the ids it returned; -1 when it returned none.
-  const tileOf = (ids) => (ids.length ? Math.floor((ids[0] % T) / Tt) : -1);
-  // One tile's box in the image, from the found tile's quad stepped across the grid. The tiles are identical
-  // and edge to edge, so the found tile's own two edge vectors ARE the grid's steps.
-  function boxFor(quad, di, dj, iw, ih, margin) {
-    const [x0, y0, x1, y1, x2, y2, x3, y3] = quad;
-    const ex = (x1 - x0 + (x2 - x3)) / 2, ey = (y1 - y0 + (y2 - y3)) / 2;   // one tile to the right
-    const fx = (x3 - x0 + (x2 - x1)) / 2, fy = (y3 - y0 + (y2 - y1)) / 2;   // one tile down
-    const xs = [], ys = [];
-    for (const [a, b] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
-      xs.push(x0 + (di + a) * ex + (dj + b) * fx);
-      ys.push(y0 + (di + a) * ey + (dj + b) * fy);
-    }
-    const mx = margin * Math.hypot(ex, ey), my = margin * Math.hypot(fx, fy);
-    const bx0 = Math.max(0, Math.floor(Math.min(...xs) - mx)), bx1 = Math.min(iw, Math.ceil(Math.max(...xs) + mx));
-    const by0 = Math.max(0, Math.floor(Math.min(...ys) - my)), by1 = Math.min(ih, Math.ceil(Math.max(...ys) + my));
-    return bx1 - bx0 > 63 && by1 - by0 > 63 ? { x: bx0, y: by0, w: bx1 - bx0, h: by1 - by0 } : null;
-  }
-  // The page hands the worker RGBA, the simulator hands it luma, and a crop has to know which: a row of an RGBA
-  // frame is four bytes a pixel and copying it as one would cut the tile into a quarter of itself.
-  function cut(img, iw, box, bpp) {
-    const need = box.w * box.h * bpp;
-    if (!cropBuf || cropBuf.length < need) cropBuf = new Uint8Array(need);
-    for (let y = 0; y < box.h; y++) {
-      const from = ((box.y + y) * iw + box.x) * bpp;
-      cropBuf.set(img.subarray(from, from + box.w * bpp), y * box.w * bpp);
-    }
-    return cropBuf.subarray(0, need);
-  }
-
-  return {
-    label: `focus ${spec.n} ${spec.subch}sub ${k}x${k} tiles`, family: "focus", variants: variants.map((v) => v.name),
-    usefulBytes: B - 4, blocksPerFrame: T, modules: k * S, tiles: K,
-    // The tiles of one displayed frame take consecutive runs of ids, so a block's id says which tile it was in.
-    frame(seq, baseId = seq * T) {
-      for (let t = 0; t < K; t++) {
-        for (let b = 0; b < Tt; b++) {
-          const id = baseId + t * Tt + b, o = b * B;
-          buf[o] = id & 255; buf[o + 1] = (id >>> 8) & 255; buf[o + 2] = (id >>> 16) & 255; buf[o + 3] = id >>> 24;
-          source(id, buf.subarray(o + 4, o + B));
-        }
-        const drive = fc.encode(buf), ox = (t % k) * S, oy = ((t / k) | 0) * S;
-        for (let y = 0; y < S; y++) sheet.set(drive.subarray(y * S, y * S + S), (oy + y) * k * S + ox);
-      }
-      return { w: k * S, h: k * S, quiet, drive: sheet, truth: null };
-    },
-    decode(img, iw, ih, truth, rgba = false) {
-      return variants.map((v, vi) => {
-        const t0 = performance.now();
-        const got = [];
-        let fresh = 0, n2 = 0, bad = 0, found = 0, quad = null;
-        const take = (r) => {
-          for (let b = 0; b < Tt; b++) {
-            if (!r.ok[b]) continue;
-            const o = b * B, id = (r.blocks[o] | (r.blocks[o + 1] << 8) | (r.blocks[o + 2] << 16) | (r.blocks[o + 3] << 24)) >>> 0;
-            let same = true;
-            if (source) { source(id, want); for (let q = 0; q < B - 4; q++) if (r.blocks[o + 4 + q] !== want[q]) { same = false; break; } }
-            if (!same) { bad++; continue; }
-            n2++;
-            if (!seen[vi].has(id)) { seen[vi].add(id); fresh++; got.push({ id, bytes: r.blocks.slice(o + 4, o + B) }); }
-          }
-        };
-        // One look at the whole frame to find a tile. Whichever it is, its quad gives every other tile's place.
-        const first = fc.decode(img, iw, ih, { ...v, rgba });
-        if (!first.found) return { got, fresh, seen: n2, bad, found: 0, tiles: 0, fmt: first.fmt, quad: null, mark: null, ber: NaN, mi: NaN, ms: { detect: first.msDetect, sample: first.msSample, fec: first.msDecode, total: performance.now() - t0 } };
-        found = 1; quad = first.quad;
-        const before = n2;
-        take(first);
-        const ids = got.map((g) => g.id);
-        // Which tile was that? Its blocks say so outright. With none, its place in the frame does: the grid is
-        // painted as one bitmap, so a tile left of centre and above it is the top left one.
-        let at = tileOf(ids);
-        if (at < 0) {
-          const cx = (quad[0] + quad[2] + quad[4] + quad[6]) / 4, cy = (quad[1] + quad[3] + quad[5] + quad[7]) / 4;
-          at = Math.min(k - 1, Math.max(0, Math.floor((cx / iw) * k))) + k * Math.min(k - 1, Math.max(0, Math.floor((cy / ih) * k)));
-        }
-        const ai = at % k, aj = (at / k) | 0;
-        for (let j = 0; j < k; j++) for (let i = 0; i < k; i++) {
-          if (i === ai && j === aj) continue;
-          const box = boxFor(quad, i - ai, j - aj, iw, ih, 0.12);
-          if (!box) continue;
-          const r = fc.decode(cut(img, iw, box, rgba ? 4 : 1), box.w, box.h, { ...v, rgba });
-          if (!r.found) continue;
-          found++;
-          take(r);
-        }
-        return { got, fresh, seen: n2, bad, found: found > 0 ? 1 : 0, tiles: found, fmt: first.fmt, quad, mark: first.mark,
-                 ber: NaN, mi: NaN, ms: { detect: first.msDetect, sample: first.msSample, fec: first.msDecode, total: performance.now() - t0 } };
-      });
-    },
-    reset() { seen.forEach((s) => s.clear()); },
-    seenCount: () => seen.reduce((t, x) => t + x.size, 0),
-    setSource(fn) { source = fn; },
-    setFps(v) { fc.setFps(v); },
-    prof, free() {},
-  };
-}
-
 export async function makePhy(spec) {
-  if (spec.phy === "focus") return spec.blind ? makeBlind(spec) : spec.grid > 1 ? makeGrid(spec) : makeFocus(spec);
+  if (spec.phy === "focus") return spec.blind ? makeBlind(spec) : makeFocus(spec);
   throw new Error(`unknown phy ${spec.phy}`);
 }

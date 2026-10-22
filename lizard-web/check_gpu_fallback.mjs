@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PORT = 8500 + (process.pid % 300), root = mkdtempSync(join(tmpdir(), "lizard-fallback-"));
-const server = spawn("node", [fileURLToPath(new URL("./server.mjs", import.meta.url))], { env: { ...process.env, RIG_HTTP: PORT, RIG_UPLOADS: "1", RIG_HTTPS: PORT + 363, RIG_FILES: join(root, "received") }, stdio: "ignore" });
+const server = spawn("node", [fileURLToPath(new URL("./server.mjs", import.meta.url))], { env: { ...process.env, RIG_HTTP: PORT, RIG_HTTPS: PORT + 363 }, stdio: "ignore" });
 process.on("exit", () => { server.kill(); rmSync(root, { recursive: true, force: true }); });
 const api = (p, body) => fetch(`http://localhost:${PORT}${p}`, body ? { method: "POST", body: JSON.stringify(body) } : undefined).then((r) => r.json());
 for (let i = 0; i < 40; i++) { try { await api("/api/info"); break; } catch { await new Promise((r) => setTimeout(r, 250)); } }

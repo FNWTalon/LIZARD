@@ -165,18 +165,6 @@ FN(jstring, txConfigure)(JNIEnv* e, jclass, jlong h, jint n, jint subch, jint sp
 // ai: The blocks a frame of subch sub-channels carries under the format's rate profile (src/focus.h focus_blocks_for),
 // ai: for the Blocks slider's figures before a configure
 FN(jint, blocksFor)(JNIEnv*, jclass, jint subch) { return focus_blocks_for(subch); }
-FN(jint, txSide)(JNIEnv*, jclass, jlong h) {
-  std::lock_guard<std::mutex> l(tx(h)->mu);
-  return tx(h)->s->side();
-}
-FN(jint, txWidth)(JNIEnv*, jclass, jlong h) {
-  std::lock_guard<std::mutex> l(tx(h)->mu);
-  return tx(h)->s->width();
-}
-FN(jboolean, txReady)(JNIEnv*, jclass, jlong h) {
-  std::lock_guard<std::mutex> l(tx(h)->mu);
-  return tx(h)->s->ready() ? JNI_TRUE : JNI_FALSE;
-}
 
 FN(jstring, txStats)(JNIEnv* e, jclass, jlong h) {
   std::string s;
@@ -261,7 +249,6 @@ FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jf
 
 FN(void, presentFps)(JNIEnv*, jclass, jlong p, jint fps) { if (p) pr(p)->setFps(fps); }
 FN(void, presentSize)(JNIEnv*, jclass, jlong p, jfloat size) { if (p) pr(p)->setSize(size); }
-FN(void, presentWhole)(JNIEnv*, jclass, jlong p, jboolean on) { if (p) pr(p)->setWhole(on == JNI_TRUE); }
 FN(void, presentPause)(JNIEnv*, jclass, jlong p, jboolean on) { if (p) pr(p)->setPaused(on == JNI_TRUE); }
 // ai: Full screen's part here: the compositor bypass on the window's top level (X11; the app makes the window full screen)
 FN(void, presentFullscreen)(JNIEnv*, jclass, jlong p, jboolean on) { if (p) pr(p)->setBypassCompositor(on == JNI_TRUE); }

@@ -118,7 +118,7 @@ const rigs = [];
 }
 // ai: 4, 6 and 10, over every rig.
 check(rigs.every((r) => r.fh.most <= r.fh.inflight), `never more than fh.inflight batches computing at once (most ${rigs.map((r) => r.fh.most).join(",")} of ${rigs[0].fh.inflight})`);
-check(rigs.every((r) => r.fh.runs.every((x) => x.n > 0 && !x.opts.cancelOnly)), `every run carried frames (${rigs.reduce((a, r) => a + r.fh.runs.length, 0)} runs)`);
+check(rigs.every((r) => r.fh.runs.every((x) => x.n > 0)), `every run carried frames (${rigs.reduce((a, r) => a + r.fh.runs.length, 0)} runs)`);
 const all = rigs.flatMap((r) => r.items);
 check(all.every((it) => it.answered === 1 && it.closed === 1), `every item answered once and its source closed once (${all.length} items, ${all.filter((it) => it.answered !== 1).length} off)`);
 const decoded = rigs.flatMap((r) => r.doneTags.flat().map((t) => `${rigs.indexOf(r)}:${t}`));

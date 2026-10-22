@@ -1,11 +1,10 @@
 // ai: A receiver told nothing, as an object (focus.h focus_acquire_ring; since 2026-09-27 the ring bootstraps what is
 // ai: inside). A codec a ring, each at n = 256, the smallest picture every ring holds: the finder
 // ai: registers against their layouts and the one that registered reads the word. The word names the sub-channels, so
-// ai: the picture n; the frame is finished by the codec for that picture in that ring, built the first time the pair
-// ai: is seen and kept (FOCUS_ANY_PICS of them, the least recently used replaced), each at the top of its n so every
-// ai: smaller sub-channel count is a prefix of it. A frame whose word does not read is finished at the caller's held
-// ai: configuration (the last word it read); with
-// ai: none held, it is not finished.
+// ai: the picture n; the frame is finished by the codec for that count in that ring, built the first time the pair
+// ai: is seen and kept (FOCUS_ANY_PICS of them, the least recently used replaced): each count is a format of its own
+// ai: (its rate profile), not a prefix of a larger one. A frame whose word does not read is finished at the caller's
+// ai: held configuration (the last word it read); with none held, it is not finished.
 // ai: One focus_any_t a thread: a decode keeps its registration inside the codecs it holds, so two threads never
 // ai: share one, and the codec's per-thread state (internal.h OB_TLS) is then each thread's own. The wasm holds one
 // ai: (wasm.c), behind its focus_any_* exports.

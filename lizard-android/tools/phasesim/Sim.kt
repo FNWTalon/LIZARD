@@ -74,10 +74,9 @@ fun run(name: String, mode: PhaseLock.Mode, every: Int, tcNs: Long, tdNs: Double
     var nextStats = ts + 500_000_000L
     // ai: `phasesim.batch=B`: the series as a batching receiver hands it over and a lock asked at every capture: a
     // ai: batch closes B captures on, is decoded 15 ms and 3.2 ms a frame later, and reaches the lock at the next
-    // ai: capture (unset: the series asked twice a second, 0.7 s behind, as the app fed it to 2026-10-01).
-    // ai: `phasesim.soon=S`: batches of S while the lock asks for its frames soon (`PhaseLock.soon`)
+    // ai: capture (B 1, or 2 with halves=2: the app's launches since 2026-10-08; unset: the series asked twice a
+    // ai: second, 0.7 s behind, as the app fed it to 2026-10-01).
     val batchB = System.getProperty("phasesim.batch")?.toInt() ?: 0
-    val soonB = System.getProperty("phasesim.soon")?.toInt() ?: 0
     val halves = System.getProperty("phasesim.halves")?.toInt() ?: 1
     val open = ArrayList<Cap>(); var inBatch = 0
     val due = ArrayDeque<Pair<Long, List<Cap>>>()
@@ -172,7 +171,7 @@ fun run(name: String, mode: PhaseLock.Mode, every: Int, tcNs: Long, tdNs: Double
             all.add(Cap(ts, blocks, hr, rSd, hr2, r2Sd)); open.add(all.last())
         }
         inBatch += halves
-        if (batchB > 0 && inBatch >= (if (soonB > 0 && p.soon) soonB else batchB)) {
+        if (batchB > 0 && inBatch >= batchB) {
             due.addLast(Pair(ts + tcNs + 15_000_000L + 3_200_000L * inBatch, open.toList())); open.clear(); inBatch = 0
         }
         if (n > frames * 2 / 3) { framesLate++; blocksLate += blocks; if (short) shortLate++ }
@@ -297,8 +296,8 @@ fun replay(file: String): Int {
 
 // ai: A recorded series through the lock itself (scripts/exp/replay_phase.py --series: a line `V <version>`, then a
 // ai: row a half-frame, ts_ns verified found r rsd r2 r2sd), open loop: the captures in order, each one's rows handed
-// ai: over as a batching receiver hands them (the rule above: 32 captures a batch, 8 while the lock asks for them
-// ai: soon, read at the first capture after the batch's close plus a frame, 15 ms and 3.2 ms a frame), then onCapture
+// ai: over as the app's receiver hands them since 2026-10-08 (a launch a capture, its one or two frames; read at the
+// ai: first capture after its close plus a frame, 15 ms and 3.2 ms a frame, the rule above), then onCapture
 // ai: with the capture's own timestamp (delayed where its interval is over 16.8 ms; the lock's delays move nothing
 // ai: here). The lock's lines as they come (its leaks and moves too under -Dphase.debug=1), each at the capture's
 // ai: second from the first, then what it asked over the run.
@@ -322,14 +321,14 @@ fun series(file: String) {
     val open = ArrayList<PhaseLock.Frame>()
     val due = ArrayDeque<Triple<Long, List<PhaseLock.Frame>, Int>>()
     val asks = ArrayList<Long>()
-    var i = 0; var prevTs = 0L; var captures = 0; var inBatch = 0
+    var i = 0; var prevTs = 0L; var captures = 0
     while (i < rows.size) {
         val ts = rows[i].ts
         while (i < rows.size && rows[i].ts == ts) { open.add(rows[i]); i++ }
-        captures++; inBatch++
+        captures++
         tNow = ts
         while (due.isNotEmpty() && due.first().first <= ts) { val d = due.removeFirst(); p.onWindow(d.second, d.third) }
-        if (inBatch >= (if (p.soon) 8 else 32)) { due.addLast(Triple(ts + 16_650_000L + 15_000_000L + 3_200_000L * open.size, open.toList(), vers[i - 1])); open.clear(); inBatch = 0 }
+        due.addLast(Triple(ts + 16_650_000L + 15_000_000L + 3_200_000L * open.size, open.toList(), vers[i - 1])); open.clear()
         val delayed = prevTs != 0L && ts - prevTs > 16_800_000L
         val us = p.onCapture(ts, delayed)
         if (us > 0) asks.add(us)

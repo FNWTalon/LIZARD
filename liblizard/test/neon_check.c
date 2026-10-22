@@ -5,8 +5,8 @@
 // ai: NDK, runs them on a phone and compares.
 // ai:   neon_check unit [full]             each simd.h wrapper against a plain C model of the wasm instruction, every
 // ai:                                      special value against every other and random lanes; full adds the whole
-// ai:                                      domain where that can be walked (every float through nearest, trunc_sat
-// ai:                                      and abs, every int32 through convert, every 16-bit lane, every pair of
+// ai:                                      domain where that can be walked (every float through trunc_sat and abs,
+// ai:                                      every int32 through convert, every 16-bit lane, every pair of
 // ai:                                      bytes; a minute). A vector build only: on arm64 it holds the NEON wrappers
 // ai:                                      to the model, and built by emcc with -msimd128 it holds the model to
 // ai:                                      wasm's own instructions.
@@ -74,7 +74,6 @@ static uint64_t rng_s;
 static void rnd_seed(uint64_t s) { rng_s = s * 0x9E3779B97F4A7C15ULL + 0x632BE59BD9B4E019ULL; }
 static uint32_t rnd(void) { rng_s ^= rng_s << 13; rng_s ^= rng_s >> 7; rng_s ^= rng_s << 17; return (uint32_t)(rng_s >> 16); }
 
-static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 // ai: Where the thread is running and that core's clock, MHz (0 where the system does not say): nothing is pinned, so
 // ai: a timing pass is the scheduler's choice of core and the governor's of clock, and the line says which it got.
 static void where(int *cpu, int *mhz) {
@@ -98,6 +97,7 @@ static int contracts(void) { volatile float a = 1.00000011920928955078125f, c = 
 // ai: ---------------------------------------------------------------- unit: simd.h against the wasm instructions
 
 #ifdef OB_SIMD
+static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 typedef union { uint8_t u8[16]; int8_t i8[16]; uint16_t u16[8]; int16_t i16[8]; uint32_t u32[4]; int32_t i32[4]; float f32[4]; int64_t i64[2]; } lanes_t;
 static v128_t vec(const lanes_t *a) { return wasm_v128_load(a); }
 static lanes_t lanes(v128_t v) { lanes_t r; wasm_v128_store(&r, v); return r; }
@@ -129,7 +129,6 @@ static const uint32_t F_SPECIAL[] = {
   0x4a7ffffe, 0x437f0000, 0x437f8000, 0x43800000, 0x5f000000, 0xdf000000, 0x3f7fffff, 0x3f800001, 0x41200000, 0xc1200000 };
 static const uint32_t I_SPECIAL[] = { 0, 1, 0xffffffff, 0x7f, 0x80, 0xff, 0x100, 0x7fff, 0x8000, 0xffff, 0x10000, 0x7fffffff, 0x80000000, 0x80008000, 0x7fff7fff,
   0x80808080, 0x7f7f7f7f, 0x00ff00ff, 0xff00ff00, 0x01010101, 0xfffefffe, 0x00010001, 0x0f0f0f0f, 0xf0f0f0f0, 0x10101010, 0x1f1f1f1f, 0x8000ffff, 0xffff8000 };
-static float f_of(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
 static uint32_t u_of(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 static lanes_t draw_f(void) {
   lanes_t r;
@@ -150,12 +149,6 @@ static lanes_t draw_i(void) {
 // ai: The models. Each is the wasm SIMD instruction's definition for one lane, in C a scalar build would compile, and
 // ai: kept out of line so that it stays scalar code beside the vector instruction it is held against.
 #define MODEL static __attribute__((__noinline__))
-MODEL float m_nearest(float x) {
-  const float a = x < 0 ? -x : x;
-  if (x != x || !(a < 8388608.0f)) return x;                  // ai: NaN, or already whole (2^23 and up, the infinities)
-  const float r = (a + 8388608.0f) - 8388608.0f;              // ai: to the nearest whole number, halves to even
-  return f_of(u_of(r) | (u_of(x) & 0x80000000u));             // ai: the operand's sign, so -0.25 gives -0
-}
 MODEL int32_t m_trunc_sat(float x) { return x != x ? 0 : x >= 2147483648.0f ? INT32_MAX : x <= -2147483648.0f ? INT32_MIN : (int32_t)x; }
 MODEL int16_t m_sar16(int16_t a, unsigned n) { n &= 15; return (int16_t)(a < 0 ? ~(~(int)a >> n) : (int)a >> n); }
 
@@ -171,16 +164,10 @@ static void unit_f(const lanes_t a, const lanes_t b) {
     same("wasm_f32x4_pmin", lanes(wasm_f32x4_pmin(va, vb)), w, 0, &a, &b);
     for (int i = 0; i < 4; i++) w.u32[i] = a.f32[i] < b.f32[i] ? b.u32[i] : a.u32[i];
     same("wasm_f32x4_pmax", lanes(wasm_f32x4_pmax(va, vb)), w, 0, &a, &b);
-    for (int i = 0; i < 4; i++) w.u32[i] = a.f32[i] < b.f32[i] ? 0xffffffffu : 0;
-    same("wasm_f32x4_lt", lanes(wasm_f32x4_lt(va, vb)), w, 0, &a, &b);
-    for (int i = 0; i < 4; i++) w.u32[i] = a.f32[i] > b.f32[i] ? 0xffffffffu : 0;
-    same("wasm_f32x4_gt", lanes(wasm_f32x4_gt(va, vb)), w, 0, &a, &b);
     for (int i = 0; i < 4; i++) w.u32[i] = a.f32[i] <= b.f32[i] ? 0xffffffffu : 0;
     same("wasm_f32x4_le", lanes(wasm_f32x4_le(va, vb)), w, 0, &a, &b);
     for (int i = 0; i < 4; i++) w.u32[i] = a.u32[i] & 0x7fffffffu;
     same("wasm_f32x4_abs", lanes(wasm_f32x4_abs(va)), w, 0, &a, 0);
-    for (int i = 0; i < 4; i++) w.f32[i] = m_nearest(a.f32[i]);
-    same("wasm_f32x4_nearest", lanes(wasm_f32x4_nearest(va)), w, 1, &a, 0);
     for (int i = 0; i < 4; i++) w.i32[i] = m_trunc_sat(a.f32[i]);
     same("wasm_i32x4_trunc_sat_f32x4", lanes(wasm_i32x4_trunc_sat_f32x4(va)), w, 0, &a, 0);
     same("wasm_f32x4_make", lanes(wasm_f32x4_make(a.f32[0], a.f32[1], a.f32[2], a.f32[3])), a, 1, &a, 0);
@@ -235,8 +222,6 @@ static void unit_i(const lanes_t a, const lanes_t b, const lanes_t c, int it) {
       same("wasm_u16x8_shr 8", lanes(wasm_u16x8_shr(va, 8)), w, 0, &a, 0);
       for (int i = 0; i < 16; i++) w.u8[i] = (uint8_t)(a.u8[i] >> 4);
       same("wasm_u8x16_shr 4", lanes(wasm_u8x16_shr(va, 4)), w, 0, &a, 0); }
-    for (int i = 0; i < 4; i++) { w.i16[i] = (int16_t)clampi(a.i32[i], -32768, 32767); w.i16[4 + i] = (int16_t)clampi(b.i32[i], -32768, 32767); }
-    same("wasm_i16x8_narrow_i32x4", lanes(wasm_i16x8_narrow_i32x4(va, vb)), w, 0, &a, &b);
     for (int i = 0; i < 8; i++) { w.i8[i] = (int8_t)clampi(a.i16[i], -128, 127); w.i8[8 + i] = (int8_t)clampi(b.i16[i], -128, 127); }
     same("wasm_i8x16_narrow_i16x8", lanes(wasm_i8x16_narrow_i16x8(va, vb)), w, 0, &a, &b);
     for (int i = 0; i < 8; i++) { w.u8[i] = (uint8_t)clampi(a.i16[i], 0, 255); w.u8[8 + i] = (uint8_t)clampi(b.i16[i], 0, 255); }
@@ -283,22 +268,21 @@ static void unit_i(const lanes_t a, const lanes_t b, const lanes_t c, int it) {
 // ai: narrowings and every shift count, every pair of bytes through the byte operations, every swizzle index in every
 // ai: lane, every bitmask.
 static void unit_full(void) {
-  uint64_t bad[4] = { 0, 0, 0, 0 };
+  uint64_t bad[3] = { 0, 0, 0 };
   for (uint64_t u = 0; u < (1ULL << 32); u += 4) {
     lanes_t a;
     for (int l = 0; l < 4; l++) a.u32[l] = (uint32_t)u + (uint32_t)l;
     const v128_t va = vec(&a);
-    const lanes_t n = lanes(wasm_f32x4_nearest(va)), t = lanes(wasm_i32x4_trunc_sat_f32x4(va)), ab = lanes(wasm_f32x4_abs(va)), cv = lanes(wasm_f32x4_convert_i32x4(va));
+    const lanes_t t = lanes(wasm_i32x4_trunc_sat_f32x4(va)), ab = lanes(wasm_f32x4_abs(va)), cv = lanes(wasm_f32x4_convert_i32x4(va));
     for (int l = 0; l < 4; l++) {
-      const float x = a.f32[l], mn = m_nearest(x);
-      bad[0] += !(n.u32[l] == u_of(mn) || (mn != mn && n.f32[l] != n.f32[l]));
-      bad[1] += t.i32[l] != m_trunc_sat(x);
-      bad[2] += ab.u32[l] != (a.u32[l] & 0x7fffffffu);
-      bad[3] += cv.u32[l] != u_of((float)a.i32[l]);
+      const float x = a.f32[l];
+      bad[0] += t.i32[l] != m_trunc_sat(x);
+      bad[1] += ab.u32[l] != (a.u32[l] & 0x7fffffffu);
+      bad[2] += cv.u32[l] != u_of((float)a.i32[l]);
     }
   }
-  static const char *const NAME[4] = { "wasm_f32x4_nearest", "wasm_i32x4_trunc_sat_f32x4", "wasm_f32x4_abs", "wasm_f32x4_convert_i32x4" };
-  for (int k = 0; k < 4; k++) { u_checks++; if (bad[k]) { u_fails++; printf("  FAIL %s over every input: %llu lanes differ\n", NAME[k], (unsigned long long)bad[k]); } }
+  static const char *const NAME[3] = { "wasm_i32x4_trunc_sat_f32x4", "wasm_f32x4_abs", "wasm_f32x4_convert_i32x4" };
+  for (int k = 0; k < 3; k++) { u_checks++; if (bad[k]) { u_fails++; printf("  FAIL %s over every input: %llu lanes differ\n", NAME[k], (unsigned long long)bad[k]); } }
   for (int v = -32768; v <= 32767; v++) {
     lanes_t a, b, w;
     for (int l = 0; l < 8; l++) { a.i16[l] = (int16_t)v; b.i16[l] = (int16_t)(v ^ (l * 0x1111)); }
@@ -309,11 +293,6 @@ static void unit_full(void) {
     same("wasm_i8x16_narrow_i16x8, every lane value", lanes(wasm_i8x16_narrow_i16x8(va, vb)), w, 0, &a, &b);
     for (int l = 0; l < 8; l++) { w.u8[l] = (uint8_t)clampi(a.i16[l], 0, 255); w.u8[8 + l] = (uint8_t)clampi(b.i16[l], 0, 255); }
     same("wasm_u8x16_narrow_i16x8, every lane value", lanes(wasm_u8x16_narrow_i16x8(va, vb)), w, 0, &a, &b);
-    // ai: 32-bit lanes either side of the 16-bit range, and far outside it
-    lanes_t c, d;
-    for (int l = 0; l < 4; l++) { c.i32[l] = 3 * v + l - 1; d.i32[l] = v * 65537 + l; }
-    for (int l = 0; l < 4; l++) { w.i16[l] = (int16_t)clampi(c.i32[l], -32768, 32767); w.i16[4 + l] = (int16_t)clampi(d.i32[l], -32768, 32767); }
-    same("wasm_i16x8_narrow_i32x4, across the range", lanes(wasm_i16x8_narrow_i32x4(vec(&c), vec(&d))), w, 0, &c, &d);
     for (volatile uint32_t n = 0; n < 32; n++) {
       const uint32_t k = n;
       for (int l = 0; l < 8; l++) w.i16[l] = m_sar16(a.i16[l], k);

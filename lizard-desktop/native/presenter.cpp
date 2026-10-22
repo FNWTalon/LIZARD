@@ -1243,7 +1243,6 @@ Presenter::Presenter(std::unique_ptr<Impl> p) : p_(std::move(p)) {}
 
 void Presenter::setFps(int fps) { p_->fps = std::clamp(fps, 1, 240); }
 void Presenter::setSize(double size) { p_->size = std::clamp(size, 0.25, 1.0); }
-void Presenter::setWhole(bool on) { p_->whole = on; }
 void Presenter::setPaused(bool on) {
   {
     std::lock_guard<std::mutex> l(p_->wakeMu);

@@ -29,14 +29,10 @@ double ldpc_rate_value(int rate);
 // The code at z = n_max / 48 and the given rate index: the format's table where one matches (z, rate, seed 1),
 // else generated (48 columns, no puncturing). Returns 0 on success.
 int ldpc_init(ldpc_t *c, int n_max, int rate, uint32_t seed);
-// Which set of the format's tables ldpc_init builds from: 0 today's (ldpc_base.h LDPC_BASES), 1 the set before
-// 2026-10-08 (LDPC_BASES_V1, what the recordings of 2026-10-07 and 08 were painted with), 2 a lab set (LDPC_BASES_V2:
-// the 2/3 and 1/2 codes at z = 128, for timing the GPU's kernels; not the format); -1 (the default) reads
-// LIZ_TABLES from the environment once, 0 where there is none. Set before the codecs are built.
-extern int ldpc_codes_set;
 // The generator: shift[r][j] for the mb block rows of the code at circulant size z (the profile row, the seed's
 // xorshift draws, the cycle score), -1 where there is no edge. Returns mb, or -1. It builds every code but the
-// format's four, which are the tables they were once generated into; test/ldpc_table.c holds each equal to it.
+// format's four, which are printed tables (ldpc_base.h: the 1/2 code its own output, the 7/8, 3/4 and 2/3 searched
+// past it); test/ldpc_table.c holds each table to the hash of its H.
 int ldpc_generate(int z, int rate, uint32_t seed, int shift[][LDPC_NB]);
 void ldpc_free(ldpc_t *c);
 

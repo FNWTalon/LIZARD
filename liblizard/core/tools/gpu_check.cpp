@@ -103,7 +103,7 @@ static int dump(Ctx& c, std::string v, const std::string& dir) {
   for (size_t i = 0; i < ln.level.size(); i++) bufs.push_back({"level" + std::to_string(i + 1), ln.level[i].buf});
   for (size_t i = 0; i < ln.fcn2Levels.size(); i++) if (ln.fcn2Levels[i].plane) bufs.push_back({"plane" + std::to_string(i + 1), ln.fcn2Levels[i].plane});
   auto& b = *ln.back;
-  for (auto& [k, x] : std::initializer_list<std::pair<const char*, BufP>>{{"lists", b.lists}, {"args", b.args}, {"part", b.part}, {"coef", b.coef}, {"y", b.y}, {"s", b.s}, {"bcounts", b.counts}, {"L", b.L}, {"EST", b.EST}, {"BLK", b.BLK}, {"V", b.V}, {"ITS", b.ITS}}) bufs.push_back({k, x});
+  for (auto& [k, x] : std::initializer_list<std::pair<const char*, BufP>>{{"lists", b.lists}, {"args", b.args}, {"part", b.part}, {"coef", b.coef}, {"y", b.y}, {"s", b.s}, {"bcounts", b.counts}, {"L", b.L}, {"BLK", b.BLK}, {"V", b.V}, {"ITS", b.ITS}}) bufs.push_back({k, x});
   for (auto& [name, bp] : bufs) {
     if (!bp) continue;
     auto data = readBack(*c.dev, *bp);

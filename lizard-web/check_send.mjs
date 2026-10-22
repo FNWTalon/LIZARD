@@ -1,4 +1,4 @@
-// ai: Does the sender page stand alone, its development logs aside (2026-09-26)?
+// ai: Does the sender page stand alone (2026-09-26)?
 // ai: A plain static file server (no /api: every such request is answered 404 and logged) serves lizard/ to headless
 // ai: Chrome, driven over the DevTools protocol (phone.mjs on a local port), its window 1920 x 1080. Six cases: the
 // ai: test stream at LIZARD-96 and at LIZARD-16, LIZARD-96 carrying a 50,000-byte file chosen through the file input
@@ -10,8 +10,8 @@
 // ai: read back as luma, padded with white as the page's surround is, and decoded by the C told nothing (sim/phy.mjs
 // ai: makeBlind): the word must name the version painted and the page's 24 fps, the blocks must verify, the state line
 // ai: must say what is sent (for a file "<compressed> (<raw> raw)", 2026-10-19), and for the file one of the frames read must carry its header block, whose name, length and
-// ai: BLAKE3 root (sim/xfer.mjs XferReceiver's parse) are the file's. Then the server's log: every request under /api a
-// ai: POST (a development log), none to /api/config. Exit 1 on any failure. About 10 s; 21 s with ENC=gpu (SwiftShader).
+// ai: BLAKE3 root (sim/xfer.mjs XferReceiver's parse) are the file's. Then the server's log: no request under /api (the
+// ai: sender posts no development log since 2026-10-22). Exit 1 on any failure. About 10 s; 21 s with ENC=gpu (SwiftShader).
 // ai: The encoder (2026-09-29, gpu/encoder.mjs): plain, Chrome has no WebGPU adapter and the page's auto must fall back
 // ai: to the wasm path and say why (#tx "encoder: wasm in the worker (WebGPU off: ...)"); ENC=gpu gives Chrome
 // ai: SwiftShader's WebGPU and asks for the GPU encoder by name (&enc=gpu), and every case is then read off the GPU's
@@ -376,10 +376,9 @@ s.close();
 cleanup();
 phy.free();
 
-const api = log.filter((l) => / \/api\//.test(l)), gets = api.filter((l) => !l.startsWith("POST ")), config = api.filter((l) => l.includes("/api/config"));
-console.log(`static server: ${log.length} requests; under /api: ${api.length} (${[...new Set(api)].join(", ") || "none"}); GETs there ${gets.length}, /api/config ${config.length}`);
-if (gets.length) faults.push(`the page asked the server for ${gets.join(", ")}`);
-if (config.length) faults.push("the page asked for /api/config");
+const api = log.filter((l) => / \/api\//.test(l));
+console.log(`static server: ${log.length} requests; under /api: ${api.length} (${[...new Set(api)].join(", ") || "none"})`);
+if (api.length) faults.push(`the page sent the server ${[...new Set(api)].join(", ")}`);
 if (faults.length) { console.log(`FAIL\n  ${faults.join("\n  ")}`); process.exit(1); }
 console.log("ok");
 process.exit(0);

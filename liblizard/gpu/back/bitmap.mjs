@@ -1,7 +1,6 @@
-// Part B's tables, regenerated in JS from src/focus.c and src/ldpc.c (nothing here is exported by the wasm):
-// the bit map (perm, inv), the whitening (PRBS-23), the MAP gather table part C reads, the disc layout of S
-// and the UV gather table part B reads, and a JS encoder so the regeneration can be held against what the C
-// paints (scripts/gpu/back/test_soft.mjs, against Focus.sent()).
+// The bit map (perm, inverse) and the whitening (PRBS-23), regenerated in JS from src/focus.c and src/ldpc.c (nothing
+// here is exported by the wasm); the disc layout of S and the UV gather table the soft values read; and a block's
+// systematic codeword and data bits (the C's encoder), which the profile stage's checks paint with.
 
 // x^23 + x^18 + 1 from the all-ones state, one bit a slot of the frame in pos order (focus.c whiten_fill).
 export function whiten(count) {
@@ -35,34 +34,6 @@ export function inverse(p) {
   const inv = new Int32Array(p.length);
   for (let i = 0; i < p.length; i++) inv[p[i]] = i;
   return inv;
-}
-
-// One row a block: MAP[b][j] = the block's slot carrying codeword bit j, bit 15 set where that slot is whitened;
-// 0x7fff for a bit never sent (j < np). Mode 0 is the identity with nothing flipped (a recording painted before the
-// bit map existed). white is applied by the C for any mode above 0 (map_in runs when f->bitmap is set), so mode 1
-// flips without permuting.
-export const NO_SLOT = 0x7fff;
-export function mapTable({ blocks, subs = 8, n = 5088, k = 3816, np = 0, mode }) {
-  const slotsPerBlock = subs * 640, white = mode ? whiten(blocks * slotsPerBlock) : null, inv = inverse(perm(n - np, k - np, mode));
-  const map = new Uint16Array(blocks * n);
-  for (let b = 0; b < blocks; b++) for (let j = 0; j < n; j++) {
-    if (j < np) { map[b * n + j] = NO_SLOT; continue; }
-    const slot = inv[j - np];
-    map[b * n + j] = slot | (white && white[b * slotsPerBlock + slot] ? 0x8000 : 0);
-  }
-  return map;
-}
-
-// ai: The other direction, for the cancel stage's paint (wgsl/cancel_paint.mjs): one row a block, PERMW[b][i] = the
-// ai: codeword bit slot i carries (perm[i]; 0x7fff past the codeword, a slot that carries zeros), bit 15 set where the
-// ai: slot is whitened. Mode 0 is the identity with nothing flipped, as mapTable's.
-export function permTable({ blocks, subs = 8, n = 5088, k = 3816, np = 0, mode }) {
-  const slotsPerBlock = subs * 640, white = mode ? whiten(blocks * slotsPerBlock) : null, nt = n - np, p = perm(nt, k - np, mode);
-  const tab = new Uint16Array(blocks * slotsPerBlock);
-  for (let b = 0; b < blocks; b++) for (let i = 0; i < slotsPerBlock; i++) {
-    tab[b * slotsPerBlock + i] = (i < nt ? np + p[i] : 0x7fff) | (white && white[b * slotsPerBlock + i] ? 0x8000 : 0);
-  }
-  return tab;
 }
 
 // pos entry p to (u, v) (focus.c init: pos = (v / bw) n bw + ((u + n) % n) bw + v % bw).
@@ -137,12 +108,4 @@ export function dataBits(payload, k) {
   const c = crc32(payload);
   for (let i = 0; i < 32; i++) bits[B * 8 + i] = (c >>> (31 - i)) & 1;
   return bits;
-}
-
-// The slots the C paints for a block (focus.c map_out): slot i = cw[np + perm[i]] xor white, zeros past the
-// codeword, whitened too. Mode 0 paints the sent bits as they are.
-export function blockSlots(code, permTab, white, firstSlot, slotsPerBlock, payload, mode) {
-  const cw = encodeCodeword(code, dataBits(payload, code.k)), slots = new Uint8Array(slotsPerBlock), np = code.np ?? 0, nt = code.n - np;
-  for (let i = 0; i < slotsPerBlock; i++) slots[i] = (i < nt ? cw[np + (mode ? permTab[i] : i)] : 0) ^ (mode ? white[firstSlot + i] : 0);
-  return slots;
 }

@@ -1,8 +1,7 @@
 // ai: The sender's GPU encoder (gpu/encoder.mjs; 2026-09-29, as the sender has lagged at LIZARD-1024; bit exact only in
-// ai: the ring): PAINT, a block's codeword onto the disc (below, 2026-10-07: every code of the format's rate profile;
-// ai: wgsl/cancel_paint.mjs's send mode, one code, until then), then the inverse transforms (wgsl/cancel_paint.mjs
-// ai: irows and ipic in their "send" mode: PIC, n x n f32 a symbol in 0..1, clipped), then three shaders, the C's
-// ai: arithmetic (src/focus.c resample, focus_paint_rgba):
+// ai: the ring): PAINT, a block's codeword onto the disc (below: every code of the format's rate profile), then the
+// ai: inverse transforms (wgsl/inverse.mjs irows and ipic: PIC, n x n f32 a symbol in 0..1, clipped), then three
+// ai: shaders, the C's arithmetic (src/focus.c resample, focus_paint_rgba):
 // ai: TPOSE, the picture row-major: ipic leaves it quad-major (PICQ[x / 4][y], four columns' rows consecutive, so its
 // ai:   stores are whole lines); a tile of 16 quads by 16 rows a workgroup through workgroup memory, read a quad's 16
 // ai:   rows (256 B) at a time and written a row's 16 quads at a time, so both sides move whole lines.
