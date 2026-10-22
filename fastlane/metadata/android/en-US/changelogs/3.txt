@@ -1,8 +1,7 @@
 - Send several files or a folder at once; a received folder stays a folder.
-- A new application ID, dev.fosslabs.lizard, for publishing.
-- No network permission: the app never used the network.
+- More of the code reads through wide and zoomed lenses: the lens is fitted about the camera's axis.
+- GPU decoding takes about half the time a frame.
+- Zoom over each camera's whole range, the telephoto included, kept per lens.
+- A new application ID, dev.fosslabs.lizard; no network permission.
 - The live rate counts only the blocks a file takes.
-- Clearing or deleting a received file always clears it in the receiver.
-- Inter and JetBrains Mono as the type; the launcher mark at 70% of its square.
-- Developer Tools: Show statistics, off by default.
-- The example video on Home is the new one.
+- Inter and JetBrains Mono as the type.
