@@ -23,7 +23,7 @@ namespace lizard {
 
 // ai: The constants the web host states (gen.mjs exports them with the setup).
 struct Consts {
-  uint32_t LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, TS_INGEST, RING_SLACK, K, CELL, HYP, RING_COUNT, NODES_MAX, RESID, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK;
+  uint32_t VOTE_READS, LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, TS_INGEST, RING_SLACK, K, CELL, HYP, RING_COUNT, NODES_MAX, RESID, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK;
   float TAU, EPS, TAU_TRACK;
   uint32_t TILE, KEEP, B_CEIL;
   double CAP_MS;
@@ -56,7 +56,7 @@ struct Lane {
   uint32_t W = 0, H = 0;
   uint64_t gridStride = 0;
   BufP peaksBuf, selUni, framesBuf, mapsBuf, countsBuf, readingsBuf, candBuf, quadsBuf, scoreBuf, selBuf, resultBuf, heldUni, p5Uni, ldUni, measBuf, residBuf, refitDbg, histBuf, logitBuf, listBuf;
-  GroupP refitGroup, pickGroup;
+  GroupP refitGroup, refitPostGroup, pickGroup;   // ai: refitPostGroup: the tree's front.refitPost, where it has one
   // ai: the finder's second round (decoder.mjs, gpu/wgsl/finder.mjs REDO): its frame records and its groups over them
   BufP frames2Buf;
   GroupP pickGroup2, redoGroup, selGroup2, classifyGroup2, classify0Group2, rankGroup2, scoreGroup2, voteGroup2, gatherGroup2;

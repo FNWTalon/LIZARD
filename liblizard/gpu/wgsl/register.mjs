@@ -594,17 +594,6 @@ var<workgroup> Jr: array<array<f32, 9>, 64>;
 var<workgroup> Ag: array<f32, 54>;
 var<workgroup> th: array<f32, 9>;
 var<workgroup> lastStep: f32;
-var<workgroup> later: u32;
-// ai: the lens fit's working (LENS): each node's place through the map, the fit's frame, the lanes' sums, each K's
-// ai: coefficients and whether it solved, the lanes' residual sums, and the model kept.
-struct LensFrame { ctr: vec2f, sig: f32, smid: f32, ish: f32, kmax: u32, nw: u32, on: u32 }
-var<workgroup> pn: array<vec2f, ${NODES_MAX}>;
-var<workgroup> LF: LensFrame;
-var<workgroup> LS: array<array<f32, 77>, 16>;
-var<workgroup> LT: array<array<f32, ${LENS_P}>, 4>;
-var<workgroup> LK: array<u32, 4>;
-var<workgroup> LR: array<vec4f, 64>;
-var<workgroup> LZ: Lens;
 const ITERS = ${ITERS};
 // Normalised map: m in [0, 1], homography th[0..7] (th[8] = 1 implied) to u about the centre / S, then the lens.
 fn fwd(t: array<f32, 9>, m: vec2f, c: vec2f, S: f32, inv: f32) -> vec2f {
@@ -706,12 +695,43 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
     mo[13] = m0[13] + 1.0;
     mo[14] = lastStep;
     maps[f] = mo;
-    // ai: The residuals, the lens and the side fits are the last refit's to make: the fine round reads the map alone
-    // ai: (NODES), and the second refit writes every residual and the lens again. PICK zeroes the map, so m0[13]
-    // ai: (the refits before this one) is 0 in the first, which stops here.
-    later = select(0u, 1u, m0[13] != 0.0);
   }
-  if (workgroupUniformLoad(&later) == 0u) { return; }
+}
+`;
+// ai: F7's last step, the last round's alone (2026-10-21; REFIT's own tail until then, behind m0[13] != 0): the nodes'
+// ai: residuals through the map REFIT has just written, the lens about the camera's axis, and each side's residual
+// ai: curve. Its own kernel because its arrays cost REFIT's every run: on the S26 a frame's REFIT took 0.37 ms with them
+// ai: in its code, run or not, and 0.13 without (one frame a launch). A workgroup a frame; REFIT's bindings.
+export const REFIT_POST = DIMS + MAP + /* wgsl */ `
+struct Fit { count: vec4u, base: vec4u, modules: vec4f }
+@group(0) @binding(0) var<storage, read> frames: array<Frame>;
+@group(0) @binding(1) var<storage, read> nodes: array<vec4f>;
+@group(0) @binding(2) var<storage, read> sel: array<vec4u>;
+@group(0) @binding(3) var<storage, read> meas: array<vec4f>;
+@group(0) @binding(4) var<storage, read_write> maps: array<array<f32, 16>>;
+@group(0) @binding(5) var<storage, read_write> resid: array<vec4f>;
+@group(0) @binding(6) var<uniform> P: Fit;
+// ai: Debug, REFIT_DBG words a frame: the first iteration of the first refit's th (0-8), A (9-53) and g (54-62).
+@group(0) @binding(7) var<storage, read_write> dbg: array<f32>;
+` + LENS + /* wgsl */ `
+// ai: the lens fit's working (LENS): each node's place through the map, the fit's frame, the lanes' sums, each K's
+// ai: coefficients and whether it solved, the lanes' residual sums, and the model kept.
+struct LensFrame { ctr: vec2f, sig: f32, smid: f32, ish: f32, kmax: u32, nw: u32, on: u32 }
+var<workgroup> pn: array<vec2f, ${NODES_MAX}>;
+var<workgroup> LF: LensFrame;
+var<workgroup> LS: array<array<f32, 77>, 16>;
+var<workgroup> LT: array<array<f32, ${LENS_P}>, 4>;
+var<workgroup> LK: array<u32, 4>;
+var<workgroup> LR: array<vec4f, 64>;
+var<workgroup> LZ: Lens;
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let f = wg.x;
+  let pick = sel[f];
+  if (frames[f].valid == 0u || pick.y == 0u) { return; }
+  let F = frames[f];
+  let count = P.count[pick.x];
+  let base = P.base[pick.x];
   let mf = maps[f];
   for (var n = li; n < count; n += 64u) {
     let e = meas[f * ${NODES_MAX}u + n];

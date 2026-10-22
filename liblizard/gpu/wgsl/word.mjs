@@ -42,7 +42,7 @@ export const VECS = (4 * WMAX) / 128;
 const TOPS = Math.ceil(SLOTS / 4);
 // ai: The scoring's tables a ring (wordBins): BINS u32 of offsets (257 used) and ENTS of entries (4 W used); VPASS
 // ai: versions transformed a pass.
-export const BINS = 260, ENTS = 4 * WMAX, VPASS = 8;
+export const BINS = 260, ENTS = 4 * WMAX, VPASS = 16;
 // ai: The Word uniform's layout in vec4u: code (every ring's ROWS rows, a row VECS vec4u: ring r's row k at (r ROWS +
 // ai: k) VECS), then range (W, DMAX, 0, 0) a ring, then plan a ring, then tops (the last version of pictures 0 to
 // ai: SLOTS - 1), then bins (BINS u32 a ring) and ents (ENTS u32 a ring).

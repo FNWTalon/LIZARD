@@ -28,6 +28,9 @@ export const HYP = K * ORIENT * RING_COUNT;   // ai: hypotheses a frame
 // ai: A reading votes, and supports a quad, when the network's mark probability p reaches SMIN (the trainer reports
 // ai: at 0.5).
 export const SMIN = 0.35;
+// ai: VOTE's readings a workgroup (2026-10-21; 64 before): a workgroup's voting readings walk their rays one after another
+// ai: on one lane, so at a launch of a frame or two the stage took the longest such chain over the frame's 4 workgroups.
+export const VOTE_READS = 16;
 // A vote ray runs from RAY_LO to RAY_HI times the reach the corner's own module size implies (perspective moves
 // the centre within that), in a band RAY_SPREAD of the reach wide (an angle error of about 5 degrees).
 export const RAY_LO = 0.45, RAY_HI = 2.2, RAY_SPREAD = 0.09;
@@ -113,7 +116,7 @@ const CENTRE = array<f32, 2>(${CENTRE[0]}, ${CENTRE[1]});
 // ai: together (2026-10-21; a lane walked its own reading's rays, every vote one after another, before). The votes
 // ai: are the same: the same distances, cells and weights, summed by atomics that commute.
 const CHUNK = 256u;
-var<workgroup> vlist: array<u32, 64>;
+var<workgroup> vlist: array<u32, ${VOTE_READS}>;
 var<workgroup> vcount: atomic<u32>;
 var<workgroup> nvote: u32;
 var<workgroup> dk: array<f32, CHUNK>;
@@ -124,8 +127,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   let f = wg.y;
   if (li == 0u) { atomicStore(&vcount, 0u); }
   workgroupBarrier();
-  let i0 = wg.x * 64u + li;
-  if (i0 < P.cap && frames[f].valid == 1u) {
+  let i0 = wg.x * ${VOTE_READS}u + li;
+  if (li < ${VOTE_READS}u && i0 < P.cap && frames[f].valid == 1u) {
     let o0 = 3u * (f * P.cap + i0);
     // ai: as the lane a reading did: none where r2.w is 0 or p under SMIN (a NaN in either votes)
     if (!(readings[o0 + 2u].w == 0.0 || readings[o0 + 1u].x < ${SMIN})) { vlist[atomicAdd(&vcount, 1u)] = i0; }

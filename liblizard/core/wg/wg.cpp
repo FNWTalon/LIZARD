@@ -800,6 +800,19 @@ void Encoder::dispatch(uint32_t x, uint32_t y, uint32_t z) {
   vkCmdDispatch(cb, x, y, z);
 }
 
+void Encoder::dispatchAlongside(uint32_t x, uint32_t y, uint32_t z) {
+  if (dev->traceOut) trace.push_back("{\"c\":\"dispatch\",\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) + ",\"z\":" + std::to_string(z) + "}");
+  if (!x || !y || !z) return;
+  commands++;
+  vkCmdDispatch(cb, x, y, z);
+}
+
+void Encoder::dispatchIndirectAlongside(const Buffer& b, uint64_t offset) {
+  if (dev->traceOut) trace.push_back("{\"c\":\"indirect\",\"buf\":" + jsonStr(b.id) + ",\"off\":" + std::to_string(offset) + "}");
+  commands++;
+  vkCmdDispatchIndirect(cb, b.buf, offset);
+}
+
 void Encoder::dispatchIndirect(const Buffer& b, uint64_t offset) {
   if (dev->traceOut) trace.push_back("{\"c\":\"indirect\",\"buf\":" + jsonStr(b.id) + ",\"off\":" + std::to_string(offset) + "}");
   hazard();
