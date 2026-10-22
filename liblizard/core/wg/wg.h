@@ -152,6 +152,10 @@ struct Encoder {
   void setPipeline(const Pipeline& p);
   void setBindGroup(const BindGroup& g);
   void dispatch(uint32_t x, uint32_t y = 1, uint32_t z = 1);
+  // ai: a dispatch with no barrier before it, so it may run alongside the commands since the last barrier: only for a
+  // ai: dispatch that reads nothing they write and writes nothing they read or write, but through atomics
+  void dispatchAlongside(uint32_t x, uint32_t y = 1, uint32_t z = 1);
+  void dispatchIndirectAlongside(const Buffer& b, uint64_t offset);
   void dispatchIndirect(const Buffer& b, uint64_t offset);
   void copyBufferToBuffer(const Buffer& src, uint64_t so, const Buffer& dst, uint64_t dof, uint64_t size);
   // ai: rows of w bytes, `stride` apart in src from `offset`, into layer `layer` of tex at (0, 0).

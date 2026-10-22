@@ -25,8 +25,8 @@ import { PYRAMID, PYRAMID_BLOCK, HIST_BINS } from "./wgsl/pyramid.mjs";
 import { SAMPLE } from "./wgsl/sample.mjs";
 import { SLOTS, axisWord } from "./wgsl/common.mjs";
 import { SELECT } from "./wgsl/bank.mjs";
-import { VOTE, GATHER, SCORE, PICK, REDO, K, CELL, HYP, RING_COUNT } from "./wgsl/finder.mjs";
-import { NODES, REFIT, NODES_MAX, LIGHT_MAX, RESID, WINDOW, SUB, REFIT_DBG, ringOrder } from "./wgsl/register.mjs";
+import { VOTE, GATHER, SCORE, PICK, REDO, K, CELL, HYP, RING_COUNT, VOTE_READS } from "./wgsl/finder.mjs";
+import { NODES, REFIT, REFIT_POST, NODES_MAX, LIGHT_MAX, RESID, WINDOW, SUB, REFIT_DBG, ringOrder } from "./wgsl/register.mjs";
 import { WORD, wordUniform, wordPoints, wordLattice, heldUniform } from "./wgsl/word.mjs";
 import { gridOf, slotOf } from "./tables.mjs";
 import { VERSION_MAX } from "./wordcode.mjs";
@@ -431,7 +431,7 @@ export class FrontHalf {
     // ai: The default, v2, by a literal, so the installed app carries it under its hashed name (lizard-web/pwa/hash.mjs rewrites
     // ai: literal references only); another bank by its name, from the source tree alone (a harness's choice).
     const bank = (async () => { this.bank = await (this.bankName === "fcn2" ? import("./bank_fcn2.mjs") : import(`./bank_${this.bankName}.mjs`)); await this.bank.build(this); })();
-    const [ingest, pyramid, sampler, large, small, rank, twinLarge, twinSmall, vote, gather, score, pick, redo, nodesP, refit, wordP, select] = await Promise.all([
+    const [ingest, pyramid, sampler, large, small, rank, twinLarge, twinSmall, vote, gather, score, pick, redo, nodesP, refit, refitPost, wordP, select] = await Promise.all([
       Ingest.create(this.device),
       // ai: The pyramid and each frame's grey levels in one kernel (wgsl/pyramid.mjs): the layer, the frame records,
       // ai: levels 1 to 4, the histogram (read back with the batch for the receiver's stats row), the levels' dims.
@@ -454,6 +454,8 @@ export class FrontHalf {
       P(REDO, ["ro", "ro", "rw", "rw", "rw", "rw", "rw", "uniform"]),
       P(NODES, [...LV, "ro", "ro", "ro", "ro", "rw", "uniform"]),
       P(REFIT, ["ro", "ro", "ro", "ro", "rw", "rw", "uniform", "rw"]),
+      // ai: F7's last step after the last round's REFIT (wgsl/register.mjs REFIT_POST), on REFIT's bindings
+      P(REFIT_POST, ["ro", "ro", "ro", "ro", "rw", "rw", "uniform", "rw"]),
       // ai: F8 (wgsl/word.mjs): the levels, then maps, sel (read-write: sel.y = 1 + the version the frame decodes at, sel.z
       // ai: its picture), resid, the word plan's points, the finder's results, the word code, the lattice and the lane's
       // ai: held version.
@@ -461,7 +463,7 @@ export class FrontHalf {
       P(SELECT, ["ro", "ro", "rw", "rw", "uniform"]),
       bank,
     ]);
-    Object.assign(this, { ingest, pyramid, sampler, vote, gather, score, pick, redo, nodesP, refit, wordP, select });
+    Object.assign(this, { ingest, pyramid, sampler, vote, gather, score, pick, redo, nodesP, refit, refitPost, wordP, select });
     this.classify = large.pipe;
     this.weightsBuf = large.buf;
     this.arch = large.plan.name;
@@ -608,8 +610,10 @@ export class FrontHalf {
       ln.logitBuf = d.createBuffer({ size: 4 * cap * B, usage: U.STORAGE | probe });
       ln.listBuf = d.createBuffer({ size: 4 * this.cascade.keep * B, usage: U.STORAGE | probe });
     }
-    ln.refitGroup = d.createBindGroup({ layout: this.refit.bgl, entries: [ln.framesBuf, this.nodesBuf, ln.selBuf, ln.measBuf, ln.mapsBuf, ln.residBuf, this.fitUni, ln.refitDbg]
+    const fitGroup = (pl) => d.createBindGroup({ layout: pl.bgl, entries: [ln.framesBuf, this.nodesBuf, ln.selBuf, ln.measBuf, ln.mapsBuf, ln.residBuf, this.fitUni, ln.refitDbg]
       .map((buffer, binding) => ({ binding, resource: { buffer } })) });
+    ln.refitGroup = fitGroup(this.refit);
+    ln.refitPostGroup = fitGroup(this.refitPost);
     const pickGroup = (frames) => d.createBindGroup({ layout: this.pick.bgl, entries: [frames, ln.quadsBuf, ln.scoreBuf, ln.mapsBuf, ln.selBuf, ln.resultBuf, ln.pickUni]
       .map((buffer, binding) => ({ binding, resource: { buffer } })) });
     ln.pickGroup = pickGroup(ln.framesBuf);
@@ -1190,7 +1194,7 @@ export class FrontHalf {
       if (this.cascade) { net(this.classify0, this.classify0Group, this.cap); step(this.rank, this.rankGroup, nb); net(this.classify, this.classifyGroup, this.cascade.keep); }
       else net(this.classify, this.classifyGroup, this.cap);
       begin("vote");
-      step(this.vote, this.voteGroup, ceilDiv(this.cap, 64), nb);
+      step(this.vote, this.voteGroup, ceilDiv(this.cap, VOTE_READS), nb);
       step(this.gather, this.gatherGroup, nb);
       begin("score");
       step(this.score, this.scoreGroup, HYP * nb);
@@ -1202,7 +1206,7 @@ export class FrontHalf {
         step(this.select, this.selGroup2, nb);
         if (this.cascade) { net(this.classify0, this.classify0Group2, this.cap); step(this.rank, this.rankGroup2, nb); net(this.classify, this.classifyGroup2, this.cascade.keep); }
         else net(this.classify, this.classifyGroup2, this.cap);
-        step(this.vote, this.voteGroup2, ceilDiv(this.cap, 64), nb);
+        step(this.vote, this.voteGroup2, ceilDiv(this.cap, VOTE_READS), nb);
         step(this.gather, this.gatherGroup2, nb);
         step(this.score, this.scoreGroup2, HYP * nb);
         step(this.pick, this.pickGroup2, nb);
@@ -1213,6 +1217,9 @@ export class FrontHalf {
           begin(`nodes${r + 1}`); step(this.nodesP, g, this.nodesMax, nb);
           begin(`refit${r + 1}`); step(this.refit, this.refitGroup, nb);
         });
+        // ai: the last round's residuals, lens and side fits (REFIT_POST), in its refit's profile pass: REFIT's own tail
+        // ai: until 2026-10-21, which ran in every round but the first (m0[13] != 0)
+        if (this.rounds.length > 1) step(this.refitPost, this.refitPostGroup, nb);
       }
     }
     // ai: F8 on every frame the finder found or the host told: the word through the final map, a workgroup a frame,

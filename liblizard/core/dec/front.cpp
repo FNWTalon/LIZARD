@@ -21,7 +21,7 @@ static constexpr double MiB = 1 << 20;
 Consts Consts::of(const json& c) {
   Consts k;
   k.LEVELS = c["LEVELS"]; k.COUNTERS = c["COUNTERS"]; k.RESULT = c["RESULT"]; k.SEL_WORDS = c["SEL_WORDS"]; k.TS_MAX = c["TS_MAX"]; k.TS_PLAIN = c["TS_PLAIN"];
-  k.TS_INGEST = c["TS_INGEST"]; k.RING_SLACK = c["RING_SLACK"]; k.K = c["K"]; k.CELL = c["CELL"]; k.HYP = c["HYP"]; k.RING_COUNT = c["RING_COUNT"];
+  k.VOTE_READS = c.value("VOTE_READS", 64u); k.TS_INGEST = c["TS_INGEST"]; k.RING_SLACK = c["RING_SLACK"]; k.K = c["K"]; k.CELL = c["CELL"]; k.HYP = c["HYP"]; k.RING_COUNT = c["RING_COUNT"];
   k.NODES_MAX = c["NODES_MAX"]; k.RESID = c["RESID"]; k.REFIT_DBG = c["REFIT_DBG"]; k.HIST_BINS = c["HIST_BINS"]; k.PYRAMID_BLOCK = c["PYRAMID_BLOCK"];
   k.TAU = c["TAU"]; k.EPS = c["EPS"]; k.TAU_TRACK = c["TAU_TRACK"];
   k.TILE = c["TILE"]; k.KEEP = c["KEEP"]; k.B_CEIL = c["B_CEIL"]; k.CAP_MS = c["CAP_MS"];
@@ -159,6 +159,9 @@ std::unique_ptr<Lane> FrontHalf::lane(int Bl) {
   }
   auto refit = P("refit"), pick = P("pick");
   ln->refitGroup = dev.createBindGroup(refit.bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni"), ln->refitDbg});
+  // ai: decoder.mjs lane: F7's last step on REFIT's bindings (a tree from before 2026-10-21 has none: its REFIT holds it)
+  if (S->tree["front"].contains("refitPost") && !S->tree["front"]["refitPost"].is_null())
+    ln->refitPostGroup = dev.createBindGroup(P("refitPost").bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni"), ln->refitDbg});
   ln->pickGroup = dev.createBindGroup(pick.bgl, {ln->framesBuf, ln->quadsBuf, ln->scoreBuf, ln->mapsBuf, ln->selBuf, ln->resultBuf, FBP("pickUni")});
   if (coarseFrom) {
     ln->frames2Buf = mk(16 * B, STORAGE, "frames2Buf");
@@ -566,33 +569,53 @@ void FrontHalf::encodeBack(wg::Encoder& e, Lane& ln, int frames, const std::func
   e.setPipeline(*S->pipe(T["gate"]));
   e.setBindGroup(*b.gate);
   e.dispatch(1);
+  // ai: The picture sizes side by side (2026-10-21): a frame is of one size, and each size's pass writes only its own
+  // ai: frames' parts of the buffers, so a step's sizes run together behind one barrier (a launch of a frame has one
+  // ai: size with work and the rest empty, which each stood behind a barrier before).
+  auto sized = [&](const char* step, const json& pipes, const std::vector<GroupP>& groups) {
+    bool first = true;
+    for (auto& sj : T["built"]) {
+      const int s = sj;
+      e.setPipeline(*S->pipe(pipes[s]));
+      e.setBindGroup(*groups[s]);
+      if (first) e.dispatchIndirect(*b.args, argsOffset(s, step)); else e.dispatchIndirectAlongside(*b.args, argsOffset(s, step));
+      first = false;
+    }
+  };
   begin("pass1");
-  for (auto& sj : T["built"]) { const int s = sj; e.setPipeline(*S->pipe(T["pass1f"][s])); e.setBindGroup(*b.p1f[s]); e.dispatchIndirect(*b.args, argsOffset(s, "pass1")); }
+  sized("pass1", T["pass1f"], b.p1f);
   begin("reduce");
-  for (auto& sj : T["built"]) { const int s = sj; e.setPipeline(*S->pipe(T["reduce"][s])); e.setBindGroup(*b.red[s]); e.dispatchIndirect(*b.args, argsOffset(s, "reduce")); }
+  sized("reduce", T["reduce"], b.red);
   begin("pass2");
-  for (auto& sj : T["built"]) { const int s = sj; e.setPipeline(*S->pipe(T["pass2"][s])); e.setBindGroup(*b.p2[s]); e.dispatchIndirect(*b.args, argsOffset(s, "pass2")); }
+  sized("pass2", T["pass2"], b.p2);
   // ai: the soft values and the LDPC by the format's rate profile (gpu/back/tiers.mjs exportFor): its steps in their
   // ai: order, a dispatch's numbers or "frames" the batch's. The soft pass: the shift's fit by the pilots, the soft
   // ai: values, the blocks, a slot each (LIZ_ALIGN=0 leaves the fits out, for an A/B: the shift then stays 0, 0).
   static const bool align = !(getenv("LIZ_ALIGN") && std::string(getenv("LIZ_ALIGN")) == "0");
   const json& st = bk["rule"];
-  auto stepOf = [&](const json& step, const GroupP& g) {
+  auto stepOf = [&](const json& step, const GroupP& g, bool alongside = false) {
     e.setPipeline(*S->pipe(step["pipeline"]));
     e.setBindGroup(*g);
     uint32_t d[3];
     for (int k = 0; k < 3; k++) d[k] = step["dispatch"][k].is_string() ? (uint32_t)frames : step["dispatch"][k].get<uint32_t>();
-    e.dispatch(d[0], d[1], d[2]);
+    if (alongside) e.dispatchAlongside(d[0], d[1], d[2]);
+    else e.dispatch(d[0], d[1], d[2]);
   };
   begin("soft");
+  // ai: its three steps (the pilots' fit, the soft values, the blocks), each the served sizes side by side
   const size_t nAlign = st["soft"].size() / 3;
-  for (size_t k = align ? 0 : nAlign; k < b.rsoft.size(); k++) stepOf(st["soft"][k], b.rsoft[k]);
+  for (size_t k = align ? 0 : nAlign; k < b.rsoft.size(); k++) stepOf(st["soft"][k], b.rsoft[k], k % nAlign != 0);
   begin("ldpc");
   // ai: LIZ_LDPC_ONLY=<k> (a lab switch, 2026-10-08, for timing one code's kernel alone): only the profile's code k
   // ai: (CODES order) runs; the other codes' blocks are left undecoded, so the blocks counted are code k's alone.
   static const int only = getenv("LIZ_LDPC_ONLY") ? atoi(getenv("LIZ_LDPC_ONLY")) : -1;
   const json& lsteps = ldpcForm == 1 ? st["ldpcAlt"] : st["ldpc"];
-  for (size_t k = 0; k < b.rldpc.size(); k++) if (only < 0 || (size_t)only == k) stepOf(lsteps[k], b.rldpc[k]);
+  // ai: The codes' kernels side by side (2026-10-21): each decodes its own blocks of the frames into their own V, ITS
+  // ai: and record slots, the counters and the record count by atomics, so none reads or writes what another does and
+  // ai: only the first waits on the soft values. Behind a barrier each, a launch of one or two frames paid the four
+  // ai: codes' slowest codewords one after another.
+  bool first = true;
+  for (size_t k = 0; k < b.rldpc.size(); k++) if (only < 0 || (size_t)only == k) { stepOf(lsteps[k], b.rldpc[k], !first); first = false; }
 }
 
 // ai: decoder.mjs batch, up to the submit: the frame records and held version written, each slot copied into its
@@ -706,14 +729,20 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
     auto fcn2X = P("fcn2X"), fcn2 = P("fcn2");
     // ai: bank_fcn2.mjs dispatch's round: 0 every level, 1 the first round's (from coarseFrom up), 2 the second's
     const uint32_t XB0 = fcn2X ? form["XB"][0].get<uint32_t>() : 0, XB1 = fcn2X ? form["XB"][1].get<uint32_t>() : 0;
+    // ai: The levels side by side (2026-10-21): a level's X pass writes its own plane from its own pyramid level, and its
+    // ai: network its own slots of the raw list (bases[l]), the counts by atomics, so the levels' X passes run together
+    // ai: behind one barrier and their networks together behind the next.
     bank = [this, &ln, &e, n, TX, TY, walk, XB0, XB1, fcn2X, fcn2](int round) {
       auto in = [&](const Lane::Fcn2Level& lv) { return round == 0 || (lv.l < coarseFrom) == (round == 2); };
+      auto go = [&](bool& first, uint32_t x, uint32_t y) { if (first) e.dispatch(x, y, n); else e.dispatchAlongside(x, y, n); first = false; };
       if (fcn2X) {
         e.setPipeline(*fcn2X.p);
-        for (auto& lv : ln.fcn2Levels) if (in(lv)) { e.setBindGroup(round == 2 ? *lv.xgroup2 : *lv.xgroup); e.dispatch(ceilDiv(lv.w, XB0), ceilDiv(lv.h, XB1), n); }
+        bool first = true;
+        for (auto& lv : ln.fcn2Levels) if (in(lv)) { e.setBindGroup(round == 2 ? *lv.xgroup2 : *lv.xgroup); go(first, ceilDiv(lv.w, XB0), ceilDiv(lv.h, XB1)); }
       }
       e.setPipeline(*fcn2.p);
-      for (auto& lv : ln.fcn2Levels) if (in(lv)) { e.setBindGroup(round == 2 ? *lv.group2 : *lv.group); e.dispatch(ceilDiv(ceilDiv(lv.w, C.TILE * TX), walk), ceilDiv(lv.h, C.TILE * TY), n); }
+      bool first = true;
+      for (auto& lv : ln.fcn2Levels) if (in(lv)) { e.setBindGroup(round == 2 ? *lv.group2 : *lv.group); go(first, ceilDiv(ceilDiv(lv.w, C.TILE * TX), walk), ceilDiv(lv.h, C.TILE * TY)); }
     };
     bank(coarseFrom ? 1 : 0);
   }
@@ -729,7 +758,7 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   } else net(classify, ln.classifyGroup, (uint32_t)cap);
   begin("vote");
   // ai: F5 (wgsl/finder.mjs): VOTE a lane a reading, then GATHER a workgroup a frame (its centre peaks and their quads)
-  step(P("vote"), ln.voteGroup, ceilDiv((uint32_t)cap, 64), n);
+  step(P("vote"), ln.voteGroup, ceilDiv((uint32_t)cap, C.VOTE_READS), n);
   step(P("gather"), ln.gatherGroup, n);
   begin("score");
   step(P("score"), ln.scoreGroup, C.HYP * n);
@@ -746,7 +775,7 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
       step(P("rank"), ln.rankGroup2, n);
       net(classify, ln.classifyGroup2, cascade["keep"].get<uint32_t>());
     } else net(classify, ln.classifyGroup2, (uint32_t)cap);
-    step(P("vote"), ln.voteGroup2, ceilDiv((uint32_t)cap, 64), n);
+    step(P("vote"), ln.voteGroup2, ceilDiv((uint32_t)cap, C.VOTE_READS), n);
     step(P("gather"), ln.gatherGroup2, n);
     step(P("score"), ln.scoreGroup2, C.HYP * n);
     step(P("pick"), ln.pickGroup2, n);
@@ -757,6 +786,8 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
     begin(r ? "refit2" : "refit1");
     step(P("refit"), ln.refitGroup, n);
   }
+  // ai: decoder.mjs batch: the last round's residuals, lens and side fits (REFIT_POST), in its refit's pass
+  if (reg && ln.refitPostGroup && ln.nodesGroups.size() > 1) step(P("refitPost"), ln.refitPostGroup, n);
   begin("word");
   step(P("wordP"), ln.wordGroup, n);
   encodeBack(e, ln, nb, begin);
