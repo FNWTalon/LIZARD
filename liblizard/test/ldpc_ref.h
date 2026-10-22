@@ -41,7 +41,7 @@ int ref_decode(ref_dec_t *d, const float *llr, uint8_t *out, const ref_opts_t *o
 // ai: The soft stage's quantiser (focus.c): an LLR clipped to +-10, times 8, rounded to nearest even. [-80, 80].
 int8_t ref_quant8(float llr);
 
-// ai: An arm: one decoder with its settings, as test/ldpc_awgn.c and test/ldpc_replay.c compare them.
+// ai: An arm: one decoder with its settings, as test/ldpc_awgn.c compares them.
 typedef struct {
   const char *name;
   int today;       // ai: 1: src/ldpc.c's decoder on the int8 soft values; 0: ref_decode

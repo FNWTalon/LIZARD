@@ -67,8 +67,8 @@ typedef struct { homo_t H; node_t *nodes; } ob_reg_t;
 // ai: a thread (any.h). The wasm build has one thread, where this is a plain global.
 #define OB_TLS _Thread_local
 double ob_now_ms(void);
-// Stage timers for the benches (scripts/exp/focus_bench.mjs). A handful of clock reads per frame, left in. The slots
-// before PROF_F_SAMPLE were the binary grid code's (deleted 2026-10-09), kept so the JS readers' indices hold.
+// Stage timers for the benches (scripts/exp/focus_bench.mjs). A handful of clock reads per frame, left in. Slots 4 to
+// 12 (PROF_SAMPLE to PROF_D_LLR) were the binary grid code's (deleted 2026-10-09), kept so the JS readers' indices hold.
 enum { PROF_LUMA, PROF_BINARIZE, PROF_FINDERS, PROF_MESH, PROF_SAMPLE, PROF_DEMAP, PROF_LDPC, PROF_PACK, PROF_D_STATS, PROF_D_NORM, PROF_D_FIT, PROF_D_APPLY, PROF_D_LLR,
        PROF_F_SAMPLE, PROF_F_DETREND, PROF_F_FFT, PROF_F_LLR, PROF_F_LDPC, PROF_F_ENC_FFT, PROF_F_ENC_REST,   // F: the FOCUS decoder and encoder (scripts/exp/focus_bench.mjs)
        PROF_FF_POINTS, PROF_FF_TURN, PROF_FF_FIT, PROF_FF_SCORE,   // FF: inside the thin frame's finder (slots 20..23)
@@ -90,19 +90,12 @@ int ob_acquire_quad(const ob_layout_t *L, const image_t *im, int mesh, ob_reg_t 
                     const float *quad, int orient, float score);
 extern OB_TLS float ob_raw_quad[8];   // the finder's quad before the corner nodes refine it
 int ob_test_mesh_tables(const ob_layout_t *L, int32_t *dims, float *nodeX, float *nodeY, uint8_t *kind, int32_t *mark);
-void ob_test_corner_coords(const ob_layout_t *L, float *src);
-int ob_test_homography(const float *src, const float *dst, float *out);
 int ob_thin_fmt_plan(const ob_layout_t *L, int cells, float *pts, int32_t *meta, int32_t *widx);
 int ob_thin_score_plan(const ob_layout_t *L, float *pts, int32_t *meta, int32_t *signs);
 int ob_test_thin_score(const ob_layout_t *L, const uint8_t *img, int w, int h, const float *centres, int hyp, int merged, float *out);
 extern OB_TLS float ob_finder_info[8];
 // Mark geometry in modules, for a finder measured outside this file. See acquire.c.
 void ob_mark_geom(const ob_layout_t *L, float *out);
-int ob_test_mark_scan(const ob_layout_t *L, const uint8_t *bin, int w, int h, int merged, float *out, int cap);
-int ob_test_mark_cfg(const ob_layout_t *L, int32_t *out);
-int ob_test_mark_quads(const ob_layout_t *L, const float *cands, int n, int merged, float *out);
-// The line anchor's candidate scan alone, for a port measured outside this file. See acquire.c.
-int ob_test_line_points(const uint8_t *grey, const uint8_t *bin, int w, int h, float *out, int32_t *n, int cap);
 void ob_reg_free(ob_reg_t *reg);
 // Module coordinates to image px through the homography and the mesh.
 void ob_map_point(const ob_layout_t *L, const ob_reg_t *reg, float mx, float my, float *u, float *v);
@@ -117,8 +110,7 @@ struct focus_s;
 const image_t *focus_held_image(const struct focus_s *f);
 const ob_reg_t *focus_held_reg(const struct focus_s *f);
 
-// The block tail of focus_finish_bits, for a second implementation to be measured against (src/focus.c).
-int ob_test_crc_pack(const uint8_t *bits, int B, uint8_t *dst, uint32_t *out);
+// The block CRC (test/vectors.mjs) and the decline gate (the GPU back half's is held to it), from src/focus.c.
 uint32_t ob_test_crc_hash(const uint8_t *p, int n);
 int ob_test_crc_gate(const struct focus_s *f, const float *est, float *blk_est, float *bar, uint8_t *declined);
 

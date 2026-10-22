@@ -27,8 +27,7 @@ import org.json.JSONObject
 // ai: else the C, Receiver::create): GPU and CPU alone since 2026-10-05, a menu since 2026-10-06 (an Auto chip naming
 // ai: what auto last ran on, "Auto (GPU)", until 2026-10-05; "Decoding on the GPU." under the chips until 2026-10-02):
 // ai: with nothing chosen the setting stays auto and the menu shows what auto runs on; a choice takes that decoder
-// ai: outright. The lab's switches (their menus save and restart as the chips did, MainActivity.change; their keys
-// ai: unchanged, tools/phone/ab.sh rewrites them).
+// ai: outright. The lab's switches' menus save and restart as the chips did (MainActivity.change).
 @Composable
 internal fun MainActivity.ReceiveSettings() {
     val caps = remember(settings.camera) { runCatching { engine.caps(settings) }.getOrNull() }
@@ -51,8 +50,7 @@ internal fun MainActivity.ReceiveSettings() {
 }
 
 // ai: The lab's readouts: Save replays (MainActivity's runs: the switch, each run listed with its Download once ended,
-// ai: how the last Download went), the lab line, then the readout (devReadout). The dev log's address and the stats
-// ai: JSON printed whole went 2026-10-09 (rows are logged only in a replay; the JSON's 150-frame series made it a page).
+// ai: how the last Download went), the lab line, then the readout (devReadout).
 @Composable
 internal fun MainActivity.ReceiveAdvanced() {
     val s = settings
@@ -129,7 +127,6 @@ private fun MainActivity.devReadout(): String {
     }
     put("heat", "thermal $heat" + (clocks?.let { ", GPU ${it.mhz} of ${it.top} MHz" } ?: "") + (powerW?.let { ", ${f(it, 1)} W" } ?: "") +
         (if (batteryC > 0) ", battery ${f(batteryC, 1)} C" else ""))
-    if (settings.precision != "auto") put("precision", "${settings.precision} (set by tools/phone/ab.sh p=)")
     j?.optString("error")?.takeIf { it.isNotEmpty() }?.let { put("error", it) }
     return out.joinToString("\n")
 }

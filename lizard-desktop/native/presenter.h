@@ -46,7 +46,6 @@ class Presenter {
                                           const PresentOptions& opt, std::string* err);
   void setFps(int fps);
   void setSize(double size);
-  void setWhole(bool on);
   // ai: Paused: the last picture stays (no new pictures taken; presents go on a few times a second, uncounted).
   void setPaused(bool on);
   // ai: X11: _NET_WM_BYPASS_COMPOSITOR (1 on, 0 the manager's choice) on the target's top-level window (the ancestor the

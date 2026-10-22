@@ -11,7 +11,7 @@
 // ai: with the first, the vector build's check against the scalar one.
 // ai: info runs on its own; replay reads a recording, the lab's research/ (LIZ_BARCODE), which is not published. A run
 // ai: lizard_engine paint makes reads as a recording put at <LIZ_BARCODE>/captures/v0.3/<run>.
-// ai: Env: LIZ_BARCODE (../research), LIZ_PASSES (1: timing passes over the frames), LIZ_NMAX (1024).
+// ai: Env: LIZ_BARCODE (../research), LIZ_PASSES (1: timing passes over the frames), LIZ_NMAX (1536: every picture of the ladder, as the receiver's pool).
 #include "codec.h"
 #include "json.hpp"
 #include "axes.h"
@@ -97,7 +97,7 @@ static int replay(const std::string& run, int want, int threads, std::string mod
   if (mode == "seq" && threads != 1) { fprintf(stderr, "seq carries the held word in frame order: one thread\n"); return 2; }
   const auto axes = replayAxes(mj, dims);
   const auto lenses = replayLens(mj, (int)dims.size());
-  const int passes = std::max(1, atoi(envOr("LIZ_PASSES", "1").c_str())), nmax = atoi(envOr("LIZ_NMAX", "1024").c_str());
+  const int passes = std::max(1, atoi(envOr("LIZ_PASSES", "1").c_str())), nmax = atoi(envOr("LIZ_NMAX", "1536").c_str());
   std::vector<FrameResult> res(frames);
   std::vector<double> passMs;
   std::vector<double> prof(32, 0.0);

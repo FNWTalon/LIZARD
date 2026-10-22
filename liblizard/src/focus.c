@@ -4,7 +4,6 @@
 #include "rs.h"
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
 // Everything a call writes, allocated once: a frame costs no malloc. Behind a pointer so a const focus_t can use it.
 struct focus_ws {
@@ -250,10 +249,7 @@ static void fmt_paint(focus_t *f) {
 
 const ob_fmt_t *focus_fmt_rx(const focus_t *f) { return f->ws && f->ws->fmt_rx_ok ? &f->ws->fmt_rx : 0; }
 
-// The display rate the word states, in whole frames a second (fmt.h): the only field a caller supplies, since it
-// is the only one that is not a property of this focus_t. Safe at any time, including mid-transfer: repainting
-// the word moves the word's cells and nothing else (layout.c ob_layout_set_fmt), so registration is untouched,
-// and it takes effect on the next encode, which paints the border from the layout as it then stands.
+// ai: the pilots' count (focus.h focus_parity), which the next encode paints
 int focus_parity(focus_t *f, int c) {
   if (c < 0 || c > 3) return -1;
   f->parity = c;
@@ -282,6 +278,10 @@ int focus_pilot(const focus_t *f, int blocks, float r[2], float sd[2]) {
   return all;
 }
 void focus_align(const focus_t *f, float d[2]) { const struct focus_ws *w = f->ws; d[0] = w ? w->align[0] : 0; d[1] = w ? w->align[1] : 0; }
+// The display rate the word states, in whole frames a second (fmt.h): the only field a caller supplies, since it
+// is the only one that is not a property of this focus_t. Safe at any time, including mid-transfer: repainting
+// the word moves the word's cells and nothing else (layout.c ob_layout_set_fmt), so registration is untouched,
+// and it takes effect on the next encode, which paints the border from the layout as it then stands.
 int focus_fmt_fps(focus_t *f, int fps) {
   if (fps < 0 || fps > 255) return -1;
   f->fmt.fps = fps;
@@ -388,73 +388,33 @@ static int init(focus_t *f, int n, int subch, int mode, const focus_tier_t *tier
 
 const int FOCUS_RING[FOCUS_RINGS] = { 32, 64, 128, 256 };
 
-// ai: The rate profile under test, if any (focus_profile_set, else LIZ_PROFILE): its rates, sub-channels a block and
-// ai: target percents, tier by tier inner first; prof_tiers 0 for the format's own.
-static char prof_spec[48];
-static int prof_parse(const char *spec, int rate[FOCUS_TIERS], int subs[FOCUS_TIERS], int pct[FOCUS_TIERS]) {
-  if (!spec || !*spec) return 0;
-  int n = 0;
-  const char *p = spec;
-  for (; *p && *p != ':'; p++) {
-    if (n == FOCUS_TIERS) return -1;
-    const int r = *p - '0', s = r == 6 ? 7 : r == 4 ? 8 : r == 3 ? 9 : r == 2 ? 12 : 0;
-    if (!s) return -1;
-    rate[n] = r; subs[n] = s; pct[n] = 0; n++;
-  }
-  if (n < 2 || *p != ':') return -1;
-  p++;
-  for (int t = 0; t < n; t++) {
-    if (t == 1) continue;
-    char *end;
-    const long v = strtol(p, &end, 10);
-    if (end == p || v < 0 || v > 100) return -1;
-    pct[t] = (int)v;
-    p = end;
-    if (*p == '/') p++;
-  }
-  return *p ? -1 : n;
-}
-int focus_profile_set(const char *spec) {
-  int rate[FOCUS_TIERS], subs[FOCUS_TIERS], pct[FOCUS_TIERS];
-  const int n = prof_parse(spec, rate, subs, pct);
-  if (n < 0 || (spec && strlen(spec) >= sizeof prof_spec)) return -1;
-  snprintf(prof_spec, sizeof prof_spec, "%s", spec ? spec : "");
-  return n;
-}
-// ai: the free tiers' blocks (every tier but the second), in tier order, the first of equals kept
-static void prof_search(int k, int n, const int *subs, const int *pct, int subch, int used, long long cost, int *cnt, long long *best, int *keep) {
+// ai: the profile's search: the blocks of every tier but the second (which fills), in tier order, each count's
+// ai: squared distance from its target percent summed, the least kept, the first of equals
+static void tier_search(int k, int n, const int *subs, const int *pct, int subch, int used, long long cost, int *cnt, long long *best, int *keep) {
   if (k == n) {
     const int rest = subch - used;
     if (rest < subs[1] || rest % subs[1]) return;
     if (*best < 0 || cost < *best) { *best = cost; for (int t = 0; t < n; t++) keep[t] = cnt[t]; keep[1] = rest / subs[1]; }
     return;
   }
-  if (k == 1) { prof_search(2, n, subs, pct, subch, used, cost, cnt, best, keep); return; }
+  if (k == 1) { tier_search(2, n, subs, pct, subch, used, cost, cnt, best, keep); return; }
   for (int a = 0; used + subs[k] * a <= subch - subs[1]; a++) {
     const long long d = 100LL * subs[k] * a - (long long)pct[k] * subch;
     cnt[k] = a;
-    prof_search(k + 1, n, subs, pct, subch, used + subs[k] * a, cost + d * d, cnt, best, keep);
+    tier_search(k + 1, n, subs, pct, subch, used + subs[k] * a, cost + d * d, cnt, best, keep);
   }
 }
 
 int focus_tiers_for(int subch, focus_tier_t tier[FOCUS_TIERS]) {
   if (subch < FOCUS_GROUP || subch % FOCUS_GROUP || subch > FOCUS_GROUP * OB_FMT_VERSION_MAX) return 0;
-  // ai: the format's rule is the search a profile under test takes, at the format's rates and targets: the tiers in
-  // ai: order 7/8, 3/4 (filling), 2/3, 1/2, their counts least squares from the targets, the first of equals
-  static const int FMT_RATE[FOCUS_TIERS] = { 6, FOCUS_RATE, 3, 2 }, FMT_SUBS[FOCUS_TIERS] = { 7, FOCUS_GROUP, 9, 12 },
-                   FMT_PCT[FOCUS_TIERS] = { FOCUS_TIER_IN, 0, FOCUS_TIER_23, FOCUS_TIER_OUT };
-  int rate[FOCUS_TIERS], subs[FOCUS_TIERS], pct[FOCUS_TIERS], cnt[FOCUS_TIERS] = { 0 }, keep[FOCUS_TIERS] = { 0 };
-  int n = prof_parse(prof_spec[0] ? prof_spec : getenv("LIZ_PROFILE"), rate, subs, pct);
+  // ai: the tiers in order 7/8, 3/4 (filling), 2/3, 1/2, their counts least squares from the targets, the first of equals
+  static const int RATE[FOCUS_TIERS] = { 6, FOCUS_RATE, 3, 2 }, SUBS[FOCUS_TIERS] = { 7, FOCUS_GROUP, 9, 12 },
+                   PCT[FOCUS_TIERS] = { FOCUS_TIER_IN, 0, FOCUS_TIER_23, FOCUS_TIER_OUT };
+  int cnt[FOCUS_TIERS] = { 0 }, keep[FOCUS_TIERS] = { 0 };
   long long best = -1;
-  if (n > 0) prof_search(0, n, subs, pct, subch, 0, 0, cnt, &best, keep);
-  // ai: the format's where no profile is under test, or where the one under test cannot fill the count
-  if (best < 0) {
-    n = FOCUS_TIERS;
-    for (int q = 0; q < n; q++) { rate[q] = FMT_RATE[q]; subs[q] = FMT_SUBS[q]; pct[q] = FMT_PCT[q]; cnt[q] = keep[q] = 0; }
-    prof_search(0, n, subs, pct, subch, 0, 0, cnt, &best, keep);
-  }
+  tier_search(0, FOCUS_TIERS, SUBS, PCT, subch, 0, 0, cnt, &best, keep);
   int t = 0;
-  for (int q = 0; q < n; q++) if (keep[q]) tier[t++] = (focus_tier_t){ rate[q], keep[q], subs[q] };
+  for (int q = 0; q < FOCUS_TIERS; q++) if (keep[q]) tier[t++] = (focus_tier_t){ RATE[q], keep[q], SUBS[q] };
   return t;
 }
 int focus_blocks_for(int subch) {
@@ -470,12 +430,9 @@ int focus_init(focus_t *f, int n, int subch, int mode, float clip, int span, flo
     focus_tier_t tier[FOCUS_TIERS];
     const int tiers = focus_tiers_for(subch, tier);
     if (!tiers) { memset(f, 0, sizeof *f); return -1; }
-    const int r = init(f, n, subch, mode, tier, tiers, clip, span, tilt, corner, corner_filled, centre, edge, track_alt, border);
-    // ai: a block is the transfer's 473 B (xfer.h XFER_BLOCK) at every rate: a profile with no 3/4 tier (a rate family
-    // ai: under test, focus_profile_set) would take its smallest code's room (476 B beside 2/3 and 1/2), which nothing
-    // ai: else in the chain reads; the roomier codes carry the zeros past it, known to the decoder
-    if (!r && f->block_bytes > 473) f->block_bytes = 473;
-    return r;
+    // ai: a block is the transfer's 473 B (xfer.h XFER_BLOCK) at every rate: the profile always holds a 3/4 tier, the
+    // ai: code with the least room, and the roomier codes carry the zeros past it, known to the decoder
+    return init(f, n, subch, mode, tier, tiers, clip, span, tilt, corner, corner_filled, centre, edge, track_alt, border);
   }
   const focus_tier_t one = { FOCUS_RATE, subch / FOCUS_GROUP, FOCUS_GROUP };
   return init(f, n, subch, mode, &one, 0, clip, span, tilt, corner, corner_filled, centre, edge, track_alt, border);
@@ -927,10 +884,10 @@ static void sub_scaled(float *tr, float *ti, const float *xr, const float *xi, f
   for (; c < cols; c++) { float r = xr[c], i = xi[c]; tr[c] -= ar * r - ai * i; ti[c] -= ar * i + ai * r; }
 }
 
-// The decode is split at the sampling boundary so the sampler can live somewhere else: on a GPU (the first WebGPU
-// port's sampler, since deleted) a fence costs more than the stage unless the caller can have several frames out
-// at once, which it cannot while the decode is one blocking call. focus_decode is the two halves called in a row,
-// so the single-call path cannot drift away from the split one and every digest gate covers both.
+// The decode is split at the sampling boundary so the sampler can live somewhere else: on a GPU a fence costs more
+// than the stage unless the caller can have several frames out at once, which it cannot while the decode is one
+// blocking call. focus_decode is the two halves called in a row, so the single-call path cannot drift away from the
+// split one and every digest gate covers both.
 //
 // What focus_acquire leaves behind is the registration and the image POINTER. The caller's pixels have to
 // outlive the matching focus_finish; in the rig a worker owns the frame for the whole decode, so they do.
@@ -1026,16 +983,10 @@ static int acquire_hold(const focus_t *f, const image_t *pim, ob_reg_t *reg_in, 
 
 // The rest of the decode. grid: n * n samples the caller took, in strip order (strip s at s * n * FOCUS_STRIP,
 // n rows of FOCUS_STRIP, which is the shape the transform wants), or NULL to sample here the way it always did.
-// A supplied grid is transformed IN PLACE, so it is scratch the caller does not read again.
+// A supplied grid is transformed IN PLACE, so it is scratch the caller does not read again. ext_llr and ext_est,
+// where given, are soft values made elsewhere (focus.h): the decline gate, the LDPC and the CRC are then this path's,
+// so a block whose soft values came from a GPU is accepted on exactly the terms one read here is.
 int focus_finish_ext(const focus_t *f, float *grid, const int8_t *ext_llr, const float *ext_est, uint8_t *blocks, uint8_t *ok, ob_result_t *res) {
-  return focus_finish_bits(f, grid, ext_llr, ext_est, 0, 0, blocks, ok, res);
-}
-
-// The same again with the LDPC itself run elsewhere: ext_bits is one hard decision a byte, blocks * n of them
-// at the widest code's n, and ext_its the iteration count each block used (negative the way ldpc_decode_stall
-// ai: reports it). Everything after that, the decline gate and the CRC, is the shared path, so a block
-// decoded on a GPU is accepted on exactly the terms one decoded here is.
-int focus_finish_bits(const focus_t *f, float *grid, const int8_t *ext_llr, const float *ext_est, const uint8_t *ext_bits, const int8_t *ext_its, uint8_t *blocks, uint8_t *ok, ob_result_t *res) {
   struct focus_ws *w = f->ws;
   memset(ok, 0, (size_t)f->blocks);
   if (!w->hold_valid) return 0;
@@ -1191,13 +1142,7 @@ have_llr:
       if (f->bitmap) { map_in(f, w, f->block_tier[b], first, llr, w->llr2); cl = w->llr2; }
       else if (code->np) { memmove(llr + code->np, llr, (size_t)code->nt); memset(llr, 0, (size_t)code->np); }
       for (int i = (f->block_bytes + 4) * 8; i < code->k; i++) cl[i] = 127;   // the zeros a roomier code carries: known, and said so
-      int its;
-      if (ext_bits) {
-        its = ext_its ? ext_its[b] : 1;
-        // The caller's decisions, at this code's length. w->bits is what everything below reads,
-        // so they land there and nothing downstream knows the difference.
-        for (int i = 0; i < code->n; i++) bits[i] = ext_bits[(size_t)b * f->code[0].n + i];
-      } else its = ldpc_decode_stall(code, cl, bits, 30, FOCUS_STALL_IT, FOCUS_STALL_RATIO);
+      const int its = ldpc_decode_stall(code, cl, bits, 30, FOCUS_STALL_IT, FOCUS_STALL_RATIO);
       w->blk_its[b] = (int8_t)its;
       ob_prof_ms[PROF_F_LDPC] += ob_now_ms() - tb;
       if (its < 0) continue;
@@ -1218,7 +1163,7 @@ have_llr:
 }
 
 // The block tail with everything before it done elsewhere: a verdict a block in
-// focus_finish_bits's own order (1 passed, 2 declined, 3 never converged, 4 CRC), the payload bytes of the ones
+// focus_finish_ext's own order (1 passed, 2 declined, 3 never converged, 4 CRC), the payload bytes of the ones
 // that passed at `stride` a block, and the numbers the stats read. No registration is needed or consumed; the
 // caller says what it registered so ob_last reports it.
 int focus_assemble(const focus_t *f, const uint8_t *bytes, int stride, const uint8_t *verdicts, const int8_t *its, const float *est,
@@ -1273,31 +1218,7 @@ void focus_tables(const focus_t *f, float *out) {
   for (int i = 0; i < n; i++) { out[i] = w->cx[i]; out[n + i] = w->qx[i]; out[2 * n + i] = w->x1r[i]; out[3 * n + i] = w->x1i[i]; out[4 * n + i] = w->x2r[i]; out[5 * n + i] = w->x2i[i]; }
   out[6 * n] = (float)w->sx2; out[6 * n + 1] = (float)w->sq2;
 }
-// The spectrum the last decode produced, vblocks * n * bw of each. What a second implementation of the
-// transform has to reproduce.
-void focus_spectrum(const focus_t *f, float *re, float *im) {
-  const size_t tn = (size_t)f->vblocks * f->n * f->bw;
-  for (size_t i = 0; i < tn; i++) { re[i] = f->ws->tre[i]; im[i] = f->ws->tim[i]; }
-}
-
-// ---- the block tail, for the first WebGPU port to be held against (since deleted) ----
-//
-// focus_finish_bits runs the packing, the embedded CRC and ob_crc32 inline, so a second implementation has
-// nothing to compare against block by block. These expose exactly those lines and nothing else: the reference
-// is the C that ships, not a copy of it written for the test.
-
-// One block's hard decisions to its bytes and the two CRCs. bits is one decision a byte: B payload bytes'
-// worth, then the 32 the codeword carries. Returns 1 when they agree, which is what focus_finish_bits keeps.
-int ob_test_crc_pack(const uint8_t *bits, int B, uint8_t *dst, uint32_t *out) {
-  memset(dst, 0, (size_t)B);
-  for (int i = 0; i < B * 8; i++) dst[i >> 3] |= (uint8_t)(bits[i] << (7 - (i & 7)));
-  uint32_t emb = 0;
-  for (int i = 0; i < 32; i++) emb = (emb << 1) | bits[B * 8 + i];
-  uint32_t got = ob_crc32(dst, B);
-  out[0] = got; out[1] = emb;
-  return got == emb;
-}
-
+// The block CRC alone, held to SPEC's vectors (test/vectors.mjs).
 uint32_t ob_test_crc_hash(const uint8_t *p, int n) { return ob_crc32(p, n); }
 
 // The decline gate's arithmetic on the external path: est is one estimate a sub-channel (what the GPU's a2 and

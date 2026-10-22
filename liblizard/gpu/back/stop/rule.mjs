@@ -18,7 +18,6 @@ export const RULE_URL = new URL("./stop.safetensors", import.meta.url);
 // ai: profile's 7/8 and 1/2 codes', trained on the same recipe and budget against their own codes; the 2/3 code's
 // ai: (1920 checks, 2026-10-08, the format's since its profile took four rates), trained the same way.
 export const RULE_URLS = Object.freeze({ 1272: RULE_URL, 651: new URL("./stop_78.safetensors", import.meta.url), 1920: new URL("./stop_23.safetensors", import.meta.url), 3840: new URL("./stop_12.safetensors", import.meta.url) });
-export const hasRule = (m) => m in RULE_URLS;
 export function ruleUrlFor(m) {
   const url = RULE_URLS[m];
   if (!url) throw new Error(`stop rule: no file for a code of ${m} checks`);

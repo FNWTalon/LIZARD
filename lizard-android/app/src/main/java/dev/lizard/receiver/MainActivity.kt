@@ -63,7 +63,7 @@ import java.util.TimeZone
 // ai: The web's pages are the same shell (lizard-web/index.html, recv.html, send.html) and the words the
 // ai: same (Readout.kt). The camera runs on Receive alone, from entering it (or a resume there) to leaving it (or a
 // ai: pause, or Stop camera); the receiver, and a transfer partly in, outlives it as it outlives Stop. The launcher opens
-// ai: Home; `--es screen receive` (tools/phone/ab.sh) and the launcher shortcut (publishShortcut) open Receive with the
+// ai: Home; `--es screen receive` (tools/phone/live.sh, arms.sh) and the launcher shortcut (publishShortcut) open Receive with the
 // ai: camera, in this activity when it runs (singleTop, onNewIntent).
 class MainActivity : ComponentActivity() {
     // ai: the folds' keys, and the two collapsers' (Receive's column, the sending screen's panel; landscape)
@@ -71,8 +71,7 @@ class MainActivity : ComponentActivity() {
         val FOLDS = listOf("recvSettings", "recvAdvanced", "sendSettings", "sendAdvanced", "recvCollapsed", "sendCollapsed")
         // ai: the received tars' unpacking (keep), one at a time, off the main thread and the engine's
         private val unpacker = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "lizard-unpack") }
-        // ai: Save replays: the frames a replay keeps, and the seconds of stats rows its stats.jsonl holds (the web's
-        // ai: REC_FRAMES and REC_LOG, recv.mjs)
+        // ai: Save replays: the frames a replay keeps, and the seconds of stats rows its stats.jsonl holds
         const val REPLAY_FRAMES = 300
         const val REPLAY_LOG = 60
         // ai: The replays are the process's, not an activity's (2026-10-03: each activity kept its own, so
@@ -120,13 +119,12 @@ class MainActivity : ComponentActivity() {
     private var savingTree: Library.Entry? = null
     internal var shownBundle by mutableStateOf<Library.Entry?>(null)   // ai: the bundle the Files screen lists
     private var asked = false
-    // ai: Save replays (Developer Tools, 2026-10-03; the web's Record 300 frames, recv.mjs saveRun, as a rolling
-    // ai: window): while the switch is on and the camera runs, the newest REPLAY_FRAMES frames the decoder is handed
-    // ai: are kept as a run's folder under filesDir/replays (liblizard/core/rx/replay.h), its stats.jsonl the last
-    // ai: REPLAY_LOG stats rows, made a second while a run records and at no other time (2026-10-09: rows are logged only
-    // ai: as part of a replay; the rig's dev log went); the run ends when either stops. A finished run keeps its Download
-    // ai: until a newer run ends with frames, then goes (the companion's `runs`). `owner` the Engine recording the run,
-    // ai: which this activity's poll alone ends; null once it ends.
+    // ai: Save replays (Developer Tools, 2026-10-03; a rolling window): while the switch is on and the camera runs, the
+    // ai: newest REPLAY_FRAMES frames the decoder is handed are kept as a run's folder under filesDir/replays
+    // ai: (liblizard/core/rx/replay.h), its stats.jsonl the last REPLAY_LOG stats rows, made a second while a run records
+    // ai: and at no other time; the run ends when either stops. A finished run keeps its Download until a newer run ends
+    // ai: with frames, then goes (the companion's `runs`). `owner` the Engine recording the run, which this activity's
+    // ai: poll alone ends; null once it ends.
     enum class ReplayState { Recording, Ending, Ready, Failed }
     internal data class Replay(val run: String, val dir: File, val handle: Long, val state: ReplayState, val frames: Long = 0, val bytes: Long = 0,
                                val why: String = "", val owner: Any? = null)
@@ -194,7 +192,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); handle(intent) }
-    // ai: Receive from the shortcut or ab.sh; Send from its shortcut, or with files another app shared to LIZARD (one,
+    // ai: Receive from the shortcut or `--es screen receive`; Send from its shortcut, or with files another app shared to LIZARD (one,
     // ai: or several since 2026-10-16: one transfer, as the sender bundles them)
     private fun handle(i: Intent?) {
         if (i?.action == Intent.ACTION_SEND || i?.action == Intent.ACTION_SEND_MULTIPLE) {

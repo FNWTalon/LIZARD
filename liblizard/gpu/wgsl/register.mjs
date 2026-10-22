@@ -460,7 +460,7 @@ const lensFit = /* wgsl */ `
   {
     let aw = F.size;
     var LA = vec2f(0.5 * f32(F.w), 0.5 * f32(F.h));
-    if (aw != 0u && aw != 0xffffffffu) { LA = vec2f(0.5 * f32(aw & 0xffffu) - 16384.0, 0.5 * f32(aw >> 16u) - 16384.0); }
+    if (aw != 0u) { LA = vec2f(0.5 * f32(aw & 0xffffu) - 16384.0, 0.5 * f32(aw >> 16u) - 16384.0); }
     let fwh = vec2f(f32(F.w), f32(F.h));
     let lR = max(max(length(LA), length(vec2f(fwh.x, 0.0) - LA)), max(length(vec2f(0.0, fwh.y) - LA), length(fwh - LA)));
     let lir = 1.0 / max(lR, 1.0);
@@ -493,7 +493,7 @@ const lensFit = /* wgsl */ `
         neg += select(0u, 1u, cr < 0.0);
       }
       LF = LensFrame(0.5 * (lo + hi), 2.0 / max(max(hi.x - lo.x, hi.y - lo.y), 1.0), 0.5 * (smin + smax),
-        2.0 / max(smax - smin, 1e-6), select(3u, 1u, pos == 4u || neg == 4u), nw, select(0u, 1u, aw != 0xffffffffu && nw > 0u));
+        2.0 / max(smax - smin, 1e-6), select(3u, 1u, pos == 4u || neg == 4u), nw, select(0u, 1u, nw > 0u));
       for (var k = 0u; k < 4u; k++) { LK[k] = 0u; }
     }
     workgroupBarrier();

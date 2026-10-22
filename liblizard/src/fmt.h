@@ -23,10 +23,10 @@
 // on, where one in the version byte costs every block.
 //
 // Why one code over every word cell (2026-09-24). The band has W word cells a side, B / 2 in ring B: 16, 32,
-// 64 and 128 over the four rings (16, 32, 48, 64 while the 96 ring was the third, to 2026-10-10) (2B + 30 modules a side; S = n / 8 + 60 and W 16 to 72 by picture size before
-// 2026-09-27). Whole copies of an 8-byte word summed before RS spent the extra cells on averaging; a word as long as
-// the band spends them on parity, RS(W / 2, 3), so a side lost to glare is W / 8 erasures out of W / 2 - 3 roots: two
-// faded sides read in every ring, three in the 128 and 256 (src/fmt.c, test/fmt_test.c; SPEC.md 5.4).
+// 64 and 128 over the four rings (2B + 30 modules a side). Whole copies of an 8-byte word summed before RS spent the
+// extra cells on averaging; a word as long as the band spends them on parity, RS(W / 2, 3), so a side lost to glare is
+// W / 8 erasures out of W / 2 - 3 roots: two faded sides read in every ring, three in the 128 and 256 (src/fmt.c,
+// test/fmt_test.c; SPEC.md 5.4).
 //
 // Why it is not an anchor count. Counting anchors was built and measured on 2026-09-21: the version as the
 // number of edge marks a side, three corner marks QR-style, no word at all. It works in a good capture and it
@@ -44,11 +44,11 @@
 // OB_FMT_MAGIC: a fixed byte the decoder checks after Reed-Solomon. RS can miscorrect past its distance, and a
 // wrong word is worse than none: it would send the receiver to another picture size and cost every block of
 // every frame until it changed again. 0x4c is 'L'.
-// OB_FMT_VERSION_MAX: the top version a word may state, LIZARD-1024's 128 (121 blocks under the rate profile). A byte
+// OB_FMT_VERSION_MAX: the top version a word may state, LIZARD-1024's 128 (124 blocks under the rate profile). A byte
 // could say 255; keeping the range to the formats that exist keeps it a check on a miscorrected word, with the magic.
 // OB_FMT_BYTES: the shortest word, RS(8, 3), the 32 ring's, and OB_FMT_SIDE_CELLS the cells a side it needs.
-// OB_FMT_BYTES_MAX: the longest a band holds, RS(64, 3), the 256 ring's (W = 128; RS(36, 3) until 2026-10-10, when the
-// 128 ring's RS(32, 3) was the longest). A wider border paints its remaining word cells light.
+// OB_FMT_BYTES_MAX: the longest a band holds, RS(64, 3), the 256 ring's (W = 128). A wider border paints its remaining
+// word cells light.
 enum { OB_FMT_MAGIC = 0x4c, OB_FMT_DATA = 3, OB_FMT_BYTES = 8, OB_FMT_BYTES_MAX = 64, OB_FMT_SIDE_CELLS = 16, OB_FMT_VERSION_MAX = 128 };
 
 typedef struct { int version, fps; } ob_fmt_t;

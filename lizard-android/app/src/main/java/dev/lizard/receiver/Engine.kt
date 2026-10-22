@@ -265,14 +265,14 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     }
 
     private fun ensureReceiver(s: Settings) {
-        val key = "${s.decoder}/${s.precision}/${s.layout}"
+        val key = "${s.decoder}/${s.layout}"
         if (handle != 0L && key == rxKey) return
         destroyReceiver()
         phase(Phase.Loading)
         val assets = Assets.ensure(ctx)
         val cache = File(ctx.cacheDir, "lizard").apply { mkdirs() }
         val store = File(ctx.filesDir, "received").apply { mkdirs() }
-        val hnd = Native.create(assets.path, cache.path, store.path, s.decoder, s.precision, s.layout)
+        val hnd = Native.create(assets.path, cache.path, store.path, s.decoder, "auto", s.layout)
         luma = Native.wantsLuma(hnd)
         Native.batchCap(hnd, (wanted ?: s).frames)
         if (replaying != 0L) Native.record(hnd, replaying)
@@ -593,8 +593,8 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
             })) } catch (e: Exception) { closeReader(); fail("The camera could not start: ${e.message}", e) }
     }
 
-    // ai: A second's line for the log while a symbol is in view: what the receiver read (the rig's stats rows say the
-    // ai: same when the rig is up; this needs only adb), and what it could have read at this format (2026-09-30). With
+    // ai: A second's line for the log while a symbol is in view: what the receiver read (this needs only adb), and what
+    // ai: it could have read at this format (2026-09-30). With
     // ai: the phase held every capture is a clean one, so the ceiling is a clean capture's blocks at the painted rate;
     // ai: it is read off the captures since the last line, whatever share of them the phase let through: clean are
     // ai: those with at least half the blocks

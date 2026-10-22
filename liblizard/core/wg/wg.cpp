@@ -727,15 +727,6 @@ Encoder Device::encoder() {
 // ai: Everything an encoder records sees what came before it: WebGPU's usage scopes, a dispatch each, and its
 // ai: copies' ordering, as one barrier over every kind of access the decoder makes.
 static void fullBarrier(VkCommandBuffer cb) {
-  // ai: LIZ_BARRIER=all: every stage and every access (a driver experiment, 2026-09-29)
-  static const bool all = getenv("LIZ_BARRIER") && std::string(getenv("LIZ_BARRIER")) == "all";
-  if (all) {
-    VkMemoryBarrier m{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    m.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-    m.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &m, 0, nullptr, 0, nullptr);
-    return;
-  }
   VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
   mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
   mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;

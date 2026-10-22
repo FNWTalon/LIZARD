@@ -8,40 +8,48 @@
 // ai: carries codeword bit j, 0xffff for a bit never sent: the 7/8 code's first 93, read as 0); WHITE, the whitening a bit a slot over 1024 sub-channels (bitmap.mjs whiten, packed
 // ai: little-end first); NET, the learned stops' words, a code's after another's (each code's kernel reads its own,
 // ai: stop/rule.mjs netWords; tiers.mjs ruleContents lays them out).
-// ai:   talign   the pilots' grid shift (back_soft.mjs alignSource's fit) over each block's own tail: 16 coefficients at
+// ai:   talign   the pilots' grid shift (the fit at ALIGN_CHI, below) over each block's own tail: 16 coefficients at
 // ai:            3/4, 8 at 7/8, none at 2/3 and 1/2 (their codewords fill the block). A workgroup a frame, a dispatch a slot.
-// ai:   tsoft    back_soft.mjs softSource's soft values and estimates a sub-channel, exactly; and each sub-channel's
+// ai:   tsoft    the soft values and estimates a sub-channel (the one-rate soft kernel's, exactly); and each sub-channel's
 // ai:            pilot reading where a block's tail lies in it. Both to EP (est, pilot) a sub-channel. Over the
 // ai:            version's 8-sub-channel chunks, a dispatch a slot.
 // ai:   tblocks  a block's estimate (the mean of its sub-channels'), its decline at its code's bar (0.2 k / n, as src/
 // ai:            focus.c FOCUS_DECLINE), its pilot (its last sub-channel's). A workgroup a frame, a dispatch a slot.
-// ai:   tldpc    a code's blocks: back_ldpc.mjs ldpcSource's i16 min-sum, the code's shape the module's constants, its
+// ai:   tldpc    a code's blocks: the one-rate kernel's i16 min-sum, the code's shape the module's constants, its
 // ai:            block rows (unequal at 2/3 and 1/2) from the uniform; codeword bit j's slot and whitening from INV and WHITE
 // ai:            (no stored rows); the known zeros past a block's 477 B at 127; each code gives up by its own learned
 // ai:            stop (trained on that code; the 7/8 and 1/2 codes' since 2026-10-07, the C's stall rule before), or by
 // ai:            the stall rule where the stage is built without nets. A dispatch a code over every slot.
 import { SLOTS } from "./common.mjs";
 import { CRC_SPLIT } from "./back_ldpc.mjs";
-import { ALIGN_CHI } from "./back_soft.mjs";
+// ai: The grid's shift by the pilots (2026-10-01; the format paints the pilots whatever the phone, so a decoder may
+// ai: steer by them; src/focus.c pilot_align, the same fit). A grid (dx, dy) samples off turns coefficient (u, v) by
+// ai: 2 pi (u dx + v dy) / n. `talign` (one workgroup a frame, a thread a block, before the soft values in their pass
+// ai: and on their bind groups) reads every block's 16 pilot coefficients, each against its known symbol with
+// ai: the block's sign from its own pilots' sum, fits zi = k zr (u dx + v dy) by least squares twice (the second about
+// ai: the first's answer), and keeps the shift only where it stands ALIGN_CHI over the fit's residual variance (one
+// ai: chance in a thousand for noise), else 0, 0. It goes to the end of PILOT: PILOT[B blocksMax + 2 f] and the next.
+// ai: The soft stage turns every coefficient back by it as it gathers (a turn leaves |y|, so the moments and the
+// ai: estimate read as before). UV's second half (from P.ucOff) is each coefficient's (u, v), u in the high 16 bits
+// ai: (signed), v in the low.
+export const ALIGN_CHI = 13.8;
 
 export const TIER_BLOCKS = 128;   // ai: blocks a frame at most (talign's and tblocks' lanes; the rule's top is 121)
 export const VERSIONS = 128;
 export const KNOWN = 3816;        // ai: (473 + 4) x 8: the bits a block's payload and CRC fill; past them a code's data bits are zeros
 export const WHITE_SLOTS = 1024 * 640;
-// ai: The LDPC kernel's forms (2026-10-08, the decoder's speed; research STATUS "The LDPC's speed"): "base" counts the
-// ai: violated checks after each iteration from a bitmap of the posteriors' signs, 32 checks of a row at a time
-// ai: (violatedChunks; every check's slots re-read until 2026-10-21); "toggle" keeps each check's parity in a bit array, set once from
-// ai: the soft values and flipped whenever a row's update turns a bit's sign (the bit's column's checks, or a parity
-// ai: bit's two), so the count is a popcount and equals the re-read's exactly (the same decisions and iterations);
-// ai: "i32" keeps a posterior a word with plain loads and stores where the code's workgroup memory still fits 32 KB
-// ai: (the 7/8, 3/4 and 2/3 codes; the 1/2 code stays two a word, which needs the atomic stores); "reg" keeps each
-// ai: check's record in its lane's own array (lane i is check i of every row, so no other lane reads it) in place of
-// ai: workgroup memory; "reg+i32" both, which fits every code. All are exact (the same decisions and iterations). A
-// ai: generated tree carries "reg" and "reg+i32" (the native host times both on its first batch and keeps the faster:
-// ai: on-chip memory bounds the desktop GPUs' workgroups, which "reg" frees, and atomic stores cost the Adreno, which
-// ai: "i32" drops); a browser builds "reg" alone. LIZ_TLDPC=<form> where a tree is generated: that form alone (a lab A/B).
-const LAB_FORM = typeof process !== "undefined" ? process.env?.LIZ_TLDPC : null;
-export const LDPC_FORMS = LAB_FORM ? [LAB_FORM] : typeof process !== "undefined" ? ["reg", "reg+i32"] : ["reg"];
+// ai: The LDPC kernel's forms (2026-10-08, the decoder's speed; research STATUS "The LDPC's speed"), every one counting
+// ai: the violated checks after each iteration from a bitmap of the posteriors' signs, 32 checks of a row at a time
+// ai: (violatedChunks), and keeping each check's record in its lane's own array (lane i is check i of every row, so no
+// ai: other lane reads it): "reg" two posteriors a word in workgroup memory (atomic stores); "reg+i32" a posterior a
+// ai: word with plain loads and stores where the code's workgroup memory still fits 32 KB (the 7/8, 3/4 and 2/3 codes;
+// ai: the 1/2 code stays two a word); "reg+i32+pair" (2026-10-22) each check on two lanes, which shortens an iteration
+// ai: where a launch's few codewords leave cores idle (the Adreno at one or two frames a launch) and lengthens it where
+// ai: the codewords fill the device (the iGPU at any launch, the Adreno at 32). All are exact (the same decisions and
+// ai: iterations). A generated tree carries all three (the native host times them on its first batch and keeps the
+// ai: fastest: on-chip memory bounds the desktop GPUs' workgroups, atomic stores cost the Adreno); a browser builds
+// ai: "reg" alone. The lab's other forms (records in workgroup memory, a parity bit array; LIZ_TLDPC) went 2026-10-22.
+export const LDPC_FORMS = typeof process !== "undefined" ? ["reg", "reg+i32", "reg+i32+pair"] : ["reg"];
 // ai: the codes TT names, in order: src/focus.c focus_tiers_for's four rates (ldpc.h index, sub-channels a block)
 export const CODES = [{ rate: 6, subs: 7, name: "7/8" }, { rate: 4, subs: 8, name: "3/4" }, { rate: 3, subs: 9, name: "2/3" }, { rate: 2, subs: 12, name: "1/2" }];
 // ai: TT's words a version: (blocks, 0, 0, 0), then (first block, first sub-channel, blocks, 0) a code in CODES' order.
@@ -204,7 +212,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) t: u3
 }
 `;
 
-// ai: back_soft.mjs softSource's sub-channel arithmetic exactly (32 lanes of 10 coefficients a sub-channel, eight a
+// ai: The one-rate soft kernel's sub-channel arithmetic exactly (32 lanes of 10 coefficients a sub-channel, eight a
 // ai: workgroup); a sub-channel's pilot reading where a block's tail lies in it, to EP with its estimate; no BLK.
 export const tsoftSource = ({ f16 = false, layout, codes }) => (f16 ? "enable f16;\n" : "") + /* wgsl */ `
 ${PARAMS}
@@ -366,21 +374,23 @@ export function tierShape(code, form = LDPC_FORMS[0]) {
   let nd = 0;
   for (let r = 0; r < mb; r++) nd = Math.max(nd, lay[r + 1] - lay[r]);
   const ns = nd + 2, slots = lay[mb];
-  return { n, k, z, mb, ns, slots, kb: code.kb, threads: Math.max(128, 32 * Math.ceil(z / 32)), one: ns <= 12, rowv: Math.ceil((mb + 1) / 4), pairv: Math.ceil(slots / 4),
-    colv: Math.ceil((code.kb + 1 + slots) / 4), parw: Math.ceil((mb * z) / 32), form, toggle: form === "toggle",
-    reg: form.split("+").includes("reg"),
-    wide: form.split("+").includes("i32") && 4 * n + (form.split("+").includes("reg") ? 0 : (ns <= 12 ? 4 : 8) * mb * z) + 4 * packWords(n) + 12 + 4 * (6 + 2 * 64) <= 32768 };
+  // ai: pair: a check on two lanes, the even and the odd slots, where two lanes a check fit a workgroup of 256 (the
+  // ai: 7/8, 3/4 and 2/3 codes; the 1/2 code's 160 checks a row stay one lane each)
+  const parts = form.split("+");
+  if (!parts.includes("reg") || parts.some((p) => !["reg", "i32", "pair"].includes(p))) throw new Error(`LDPC form ${form}: one of ${LDPC_FORMS.join(", ")}`);
+  const pair = parts.includes("pair") && 2 * z <= 256;
+  return { n, k, z, mb, ns, slots, threads: Math.max(128, 32 * Math.ceil((pair ? 2 : 1) * z / 32)), one: ns <= 12, rowv: Math.ceil((mb + 1) / 4), pairv: Math.ceil(slots / 4), form, pair,
+    wide: parts.includes("i32") && 4 * n + 4 * packWords(n) + 12 + 4 * (6 + 2 * 64) + (pair ? 16 * z : 0) <= 32768 };
 }
 // ai: packw's words: the 120 of a block's data for the CRC, and between iterations the posteriors' signs (N bits and a
 // ai: word past them, which get32 may read).
 const packWords = (n) => Math.max(120, Math.ceil(n / 32) + 1);
 // ai: Workgroup bytes a code's kernel declares (32 KB is the floor every phone we know offers).
-export const tierWgBytes = (sh, net) => (sh.wide ? 4 * sh.n : 4 * Math.ceil(sh.n / 2)) + (sh.reg ? 0 : (sh.one ? 4 : 8) * sh.mb * sh.z) + 4 * packWords(sh.n) + 12 + (net ? 4 * (6 + 2 * net.hidden) : 0) + (sh.toggle ? 4 * sh.parw : 0);
+export const tierWgBytes = (sh, net) => (sh.wide ? 4 * sh.n : 4 * Math.ceil(sh.n / 2)) + 4 * packWords(sh.n) + 12 + (net ? 4 * (6 + 2 * net.hidden) : 0) + (sh.pair ? 16 * sh.z : 0);
 // ai: A code's uniform: dims (B, L words a frame, blocksMax, record cap), the row pointers, the data slots (col |
 // ai: shift << 16), the CRC powers.
-// ai: Under "toggle" the column table follows: colPtr[kb + 1], then each column's (row | shift << 16) in column order.
-export const tierUniformStruct = (sh) => `struct TierCode { dims: vec4u, rows: array<vec4u, ${sh.rowv}>, pairs: array<vec4u, ${sh.pairv}>, pw: array<vec4u, 30>${sh.toggle ? `, ct: array<vec4u, ${sh.colv}>` : ""} }`;
-export const tierUniformWords = (sh) => 4 + 4 * sh.rowv + 4 * sh.pairv + 120 + (sh.toggle ? 4 * sh.colv : 0);
+export const tierUniformStruct = (sh) => `struct TierCode { dims: vec4u, rows: array<vec4u, ${sh.rowv}>, pairs: array<vec4u, ${sh.pairv}>, pw: array<vec4u, 30> }`;
+export const tierUniformWords = (sh) => 4 + 4 * sh.rowv + 4 * sh.pairv + 120;
 
 // ai: c: the code's index in CODES; inv: its INV section's offset in TAB; net: { hidden, at } for the learned stop.
 export function tldpcSource(sh, { c, inv, layout, codes, net = null }) {
@@ -416,47 +426,11 @@ const DATA_WORDS: u32 = 120u;
 const REC_WORDS: u32 = 121u;
 
 ${sh.wide ? `var<workgroup> Lw: array<i32, ${N}>;   // ai: a posterior a word ("i32")` : `var<workgroup> Lw: array<atomic<u32>, ${Math.ceil(N / 2)}>;   // ai: two posteriors a word; N odd (the 7/8 code's 4557) leaves the last word's high half unused`}
-${sh.reg ? `` : `var<workgroup> Rw: array<${R}, ${MB * Z}>;
-`}var<workgroup> badc: atomic<u32>;
+var<workgroup> badc: atomic<u32>;
 var<workgroup> flag: u32;
 var<workgroup> packw: array<u32, ${packWords(N)}>;   // ai: the CRC's data words; between iterations the signs' bitmap
 var<workgroup> crcw: atomic<u32>;
-${sh.toggle ? `const KB: u32 = ${sh.kb}u;
-const PARW: u32 = ${sh.parw}u;
-var<workgroup> par: array<atomic<u32>, ${sh.parw}>;
-fn ctAt(q: u32) -> u32 { return T.ct[q >> 2u][q & 3u]; }
-fn flipChk(r: u32, i: u32) { let b = r * Z + i; atomicXor(&par[b >> 5u], 1u << (b & 31u)); }
-// ai: bit idx's sign turned: every check holding it flips. A data bit col * Z + t sits in check (r, (t + shift) mod Z)
-// ai: of each row r its column has; parity bit K + r * Z + i is check (r, i)'s own and the next check's previous
-// ai: ((r + 1, i), or (0, i + 1) from the last row; slotIdx).
-fn toggleBit(idx: u32) {
-  if (idx < K) {
-    let col = idx / Z;
-    let t = idx - col * Z;
-    let q1 = ctAt(col + 1u);
-    for (var q = ctAt(col); q < q1; q = q + 1u) {
-      let e = ctAt(KB + 1u + q);
-      var i2 = t + (e >> 16u);
-      if (i2 >= Z) { i2 = i2 - Z; }
-      flipChk(e & 0xffffu, i2);
-    }
-  } else {
-    let p = idx - K;
-    let r = p / Z;
-    let i = p - r * Z;
-    flipChk(r, i);
-    if (r + 1u < MB) { flipChk(r + 1u, i); } else if (i + 1u < Z) { flipChk(0u, i + 1u); }
-  }
-}
-fn rowParity(r: u32, i: u32) -> u32 {
-  var p: u32 = 0u;
-  for (var e: u32 = 0u; e < NS; e = e + 1u) {
-    let idx = slotIdx(r, i, e);
-    if (idx < 0) { continue; }
-    p = p ^ u32(ldL(idx) < 0);
-  }
-  return p;
-}
+${sh.pair ? `var<workgroup> pmin: array<vec2<u32>, ${2 * Z}>;   // ai: a lane's part of its check: (min1 | min2 << 16, arg | sign << 8)
 ` : ``}${net ? `const NET_H: u32 = ${H}u;
 const NET_AT: u32 = ${net.at}u;
 var<workgroup> netX: array<f32, 6>;
@@ -501,9 +475,70 @@ ${one ? `  let m = select(i32(rec & 0xffu), i32((rec >> 8u) & 0xffu), e == ((rec
   return select(m, -m, ((rec.y >> e) & 1u) != 0u);`}
 }
 
-fn rowUpdate(r: u32, i: u32${sh.reg ? `, rp: ptr<function, array<${R}, ${MB}>>` : ``}) {
-${sh.reg ? `  let rec = (*rp)[r];` : `  let ri = r * Z + i;
-  let rec = Rw[ri];`}
+${sh.pair ? `// ai: Check (r, i) on lanes 2i (slots 0, 2, ...) and 2i + 1 (slots 1, 3, ...): each its slots' minima and sign, the two
+// ai: put together as one pass over every slot in order makes them (the first slot of the least magnitude, the second
+// ai: least of all; integers), then each its own slots' messages. Its record keeps the pair's minima and its own slots'
+// ai: signs, the only ones it reads back. Every lane calls it (the barrier); lanes past the checks only wait.
+fn rowUpdate(r: u32, t: u32, rp: ptr<function, array<${R}, ${MB}>>) {
+  let live = t < ${2 * Z}u;
+  let i = t >> 1u;
+  let h = t & 1u;
+  let rec = (*rp)[r];
+  var min1: i32 = 32767;
+  var min2: i32 = 32767;
+  var arg: u32 = 0u;
+  var sgn: u32 = 0u;
+  var idxs = array<i32, ${NS}>();
+  var qs = array<i32, ${NS}>();
+  if (live) {
+    for (var e: u32 = h; e < NS; e = e + 2u) {
+      let idx = slotIdx(r, i, e);
+      idxs[e] = idx;
+      var q: i32 = 8191;
+      if (idx >= 0) { q = ldL(idx) - oldMsg(rec, e); }
+      qs[e] = q;
+    }
+    for (var e: u32 = h; e < NS; e = e + 2u) {
+      let idx = idxs[e];
+      if (idx < 0) { continue; }
+      let q = qs[e];
+      let a = abs(q);
+      sgn = sgn ^ u32(q < 0);
+      let lt = a < min1;
+      min2 = min(min2, max(min1, a));
+      arg = select(arg, e, lt);
+      min1 = min(min1, a);
+    }
+    pmin[t] = vec2<u32>(u32(min1) | (u32(min2) << 16u), arg | (sgn << 8u));
+  }
+  workgroupBarrier();
+  if (!live) { return; }
+  let o = pmin[t ^ 1u];
+  let om1 = i32(o.x & 0xffffu);
+  let om2 = i32(o.x >> 16u);
+  let oarg = o.y & 0xffu;
+  arg = select(select(arg, oarg, om1 < min1), min(arg, oarg), om1 == min1);
+  min2 = min(max(min1, om1), min(min2, om2));
+  min1 = min(min1, om1);
+  sgn = sgn ^ ((o.y >> 8u) & 1u);
+  let m1 = min(127, (min1 * NORM) >> 4u);
+  let m2 = min(127, (min2 * NORM) >> 4u);
+  var signs: u32 = 0u;
+  for (var e: u32 = h; e < NS; e = e + 2u) {
+    let idx = idxs[e];
+    if (idx < 0) { continue; }
+    let q = qs[e];
+    let mag = select(m1, m2, e == arg);
+    let s = sgn ^ u32(q < 0);
+    let rn = select(mag, -mag, s != 0u);
+    signs = signs | (s << e);
+    let nl = clamp(q + rn, -8191, 8191);
+    stL(idx, q + oldMsg(rec, e), nl);
+  }
+${one ? `  (*rp)[r] = u32(m1) | (u32(m2) << 8u) | (arg << 16u) | (signs << 20u);` : `  (*rp)[r] = vec2<u32>(u32(m1) | (u32(m2) << 8u) | (arg << 16u), signs);`}
+}
+` : `fn rowUpdate(r: u32, i: u32, rp: ptr<function, array<${R}, ${MB}>>) {
+  let rec = (*rp)[r];
   var min1: i32 = 32767;
   var min2: i32 = 32767;
   var arg: u32 = 0u;
@@ -540,14 +575,12 @@ ${sh.reg ? `  let rec = (*rp)[r];` : `  let ri = r * Z + i;
     let rn = select(mag, -mag, s != 0u);
     signs = signs | (s << e);
     let nl = clamp(q + rn, -8191, 8191);
-${sh.toggle ? `    let old = q + oldMsg(rec, e);
-    stL(idx, old, nl);
-    if ((old < 0) != (nl < 0)) { toggleBit(u32(idx)); }` : `    stL(idx, q + oldMsg(rec, e), nl);`}
+    stL(idx, q + oldMsg(rec, e), nl);
   }
-${one ? `  ${sh.reg ? "(*rp)[r]" : "Rw[ri]"} = u32(m1) | (u32(m2) << 8u) | (arg << 16u) | (signs << 20u);` : `  ${sh.reg ? "(*rp)[r]" : "Rw[ri]"} = vec2<u32>(u32(m1) | (u32(m2) << 8u) | (arg << 16u), signs);`}
+${one ? `  (*rp)[r] = u32(m1) | (u32(m2) << 8u) | (arg << 16u) | (signs << 20u);` : `  (*rp)[r] = vec2<u32>(u32(m1) | (u32(m2) << 8u) | (arg << 16u), signs);`}
 }
 
-// ai: The violated checks a (row, 32 checks): check (r, i) is the parity of its row's data slots, bit (col, (i - shift)
+`}// ai: The violated checks a (row, 32 checks): check (r, i) is the parity of its row's data slots, bit (col, (i - shift)
 // ai: mod Z) for each (col, shift) of the row, its own parity bit (K + r Z + i) and the previous check's ((r - 1, i), or
 // ai: (MB - 1, i - 1) from row 0; none at (0, 0)) (slotIdx). With the posteriors' signs a bitmap in packw (bit idx at
 // ai: Lw's index), 32 consecutive checks of a row take each slot's 32 consecutive bits of its column from (i0 - shift)
@@ -652,14 +685,10 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
     }
     ${sh.wide ? `` : `atomicStore(&Lw[wd], packed);`}
   }
-${sh.reg ? `  var Rr: array<${R}, ${MB}>;   // ai: this lane's check records, one a row ("reg"), zero to start
-` : `  for (var q: u32 = i; q < MB * Z; q = q + ${TH}u) { Rw[q] = ${one ? "0u" : "vec2<u32>(0u, 0u)"}; }
-`}${sh.toggle ? `  for (var q: u32 = i; q < PARW; q = q + ${TH}u) { atomicStore(&par[q], 0u); }
-` : ``}  if (i == 0u) { atomicStore(&badc, 0u); flag = 0u; }
+  var Rr: array<${R}, ${MB}>;   // ai: this lane's check records, one a row ("reg"), zero to start
+  if (i == 0u) { atomicStore(&badc, 0u); flag = 0u; }
   workgroupBarrier();
-${sh.toggle ? `  if (i < Z) { for (var r: u32 = 0u; r < MB; r = r + 1u) { if (rowParity(r, i) != 0u) { flipChk(r, i); } } }
-  workgroupBarrier();
-` : ``}
+
   var first0: u32 = 0u;${net ? `
   var low: u32 = 0xffffffffu;
   var prev: u32 = 0u;
@@ -670,16 +699,13 @@ ${sh.toggle ? `  if (i < Z) { for (var r: u32 = 0u; r < MB; r = r + 1u) { if (ro
     for (var step: u32 = 0u; step < MB; step = step + 1u) {
       var r = step;
       if ((it & 1u) != 0u) { r = MB - 1u - step; }
-      if (i < Z) { rowUpdate(r, i${sh.reg ? ", &Rr" : ""}); }
+      ${sh.pair ? `rowUpdate(r, i, &Rr);` : `if (i < Z) { rowUpdate(r, i, &Rr); }`}
       workgroupBarrier();
     }
-${sh.toggle ? `    for (var q: u32 = i; q < PARW; q = q + ${TH}u) {
-      let c = countOneBits(atomicLoad(&par[q]));
-      if (c != 0u) { atomicAdd(&badc, c); }
-    }` : `    signsToBitmap(i);
+    signsToBitmap(i);
     workgroupBarrier();
     let c = violatedChunks(i);
-    if (c != 0u) { atomicAdd(&badc, c); }`}
+    if (c != 0u) { atomicAdd(&badc, c); }
     workgroupBarrier();
 ${net ? `    if (i == 0u) {
       let bad = atomicLoad(&badc);
@@ -696,7 +722,7 @@ ${net ? `    if (i == 0u) {
     }
     let d = workgroupUniformLoad(&flag);
     if (d != 0u) { exitCode = d; break; }
-    // ai: the learned stop after iterations 1 to 29 (the cap ends 30): a hidden unit a lane (back_ldpc.mjs ldpcSource)
+    // ai: the learned stop after iterations 1 to 29 (the cap ends 30): a hidden unit a lane
     if (it + 1u < MAXIT) {
       if (i < NET_H) {
         var a: f32 = netW(6u * NET_H + i);

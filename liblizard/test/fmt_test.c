@@ -1,6 +1,7 @@
-// The format word (src/fmt.c) at each ring's code: RS(8,3), RS(16,3), RS(24,3), RS(32,3) over every word cell of the
-// 32, 64, 96 and 128 ring. Lengths from the layout, the SPEC test vectors, round trips through the soft values, whole sides lost, errors
-// with and without the least confident bytes erased, the acceptance checks, and how often garbage is accepted.
+// The format word (src/fmt.c) at each ring's code: RS(8,3), RS(16,3), RS(32,3), RS(64,3) over every word cell of the
+// 32, 64, 128 and 256 ring. Lengths from the layout, the SPEC test vectors, round trips through the soft values, whole
+// sides lost, errors with and without the least confident bytes erased, the acceptance checks, and how often garbage
+// is accepted.
 //   gcc -O2 -Wall -Wextra -Isrc -o build/fmt_test test/fmt_test.c src/fmt.c src/rs.c src/layout.c src/ldpc.c -lm && build/fmt_test
 //   build/fmt_test N      N garbage reads a length through ob_fmt_decode (default 20000, about 10 s; 2000000 for
 //                         counts worth reading, about 10 minutes)
@@ -20,7 +21,7 @@ static int fails;
 
 // The four rings: B band cells a side, modules a side S = 2B + 30 (src/focus.h), band reserve 15
 // (ob_thin_reserve(OB_THIN_CORNER)); W word cells a side, RS(BS, 3). Any ring carries any version (SPEC 5.2).
-static const int RB[4] = { 32, 64, 128, 256 }, WS[4] = { 16, 32, 64, 128 }, BS[4] = { 8, 16, 32, 64 };   // ai: the 96 ring (48, 24) until 2026-10-10
+static const int RB[4] = { 32, 64, 128, 256 }, WS[4] = { 16, 32, 64, 128 }, BS[4] = { 8, 16, 32, 64 };
 
 // SPEC.md 5.2's seven words, a the ring's index (test/vectors.mjs holds the wasm build to the same words). A change
 // here is a change to the format.

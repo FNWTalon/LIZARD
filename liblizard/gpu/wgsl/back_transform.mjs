@@ -35,15 +35,12 @@ struct Frame { w: u32, h: u32, size: u32, valid: u32 }
 // ai: The per size uniform pass 1, reduce and pass 2 share (transform.mjs lane). p5 held the size's V until a frame's
 // ai: rows came from LISTS (listsRows, 2026-09-26); p11 pads to 48 B.
 const PARAMS = /* wgsl */ `
-struct Params { gridStride: u32, yStride: u32, partStride: u32, size: u32, n: u32, p5: u32, m2: f32, sx2: f32, sq2: f32, sStride: u32, sampStride: u32, p11: u32 }
+struct Params { gridStride: u32, yStride: u32, partStride: u32, size: u32, n: u32, p5: u32, m2: f32, sx2: f32, sq2: f32, sStride: u32, p10: u32, p11: u32 }
 `;
 
 // Per size: workgroups pass 1 takes a frame (n / CPW), the rows pass 2 takes (V), the blocks a frame (the slot B and C
 // ai: may dispatch from), and 0 where the size is not built: a frame whose size index is SLOTS or more, or names an
-// ai: unbuilt size, is left off every list. ARGS is u32 [SLOTS][12]: pass 1, reduce, pass 2, blocks; then from
-// ai: argsLdpc pass one's LDPC dispatch (gpu/back/ldpc.mjs): (the most blocks of a size with a frame listed,
-// ai: the most frames listed at one size, SLOTS), so a slot on no list (a frame with nothing found) and a size with no
-// ai: frame dispatch no codeword's workgroup.
+// ai: unbuilt size, is left off every list. ARGS is u32 [SLOTS][12]: pass 1, reduce, pass 2, blocks.
 // ai: A frame's size is its picture slot, sel.z, which F8 sets from the version it decodes at (gpu/wgsl/word.mjs); a
 // ai: frame is listed only with sel.y = 1 + that version (a found frame with no word and nothing held has sel.y 0).
 // ai: V is the size's most rows; pass 2's slot of ARGS takes the rows its listed frames need (listsRows) instead.
@@ -61,12 +58,11 @@ struct Params { gridStride: u32, yStride: u32, partStride: u32, size: u32, n: u3
 // ai: (gpu/back/transform.mjs rowsByCount, in the gate's uniform at gateRowsAt(count, size)), which pass 1's store and
 // ai: pass 2 stop at. Pass 2's dispatch is the most rows any listed frame of the size needs; pass 1's and reduce's
 // ai: stay a size's whole picture.
-// ai: Then from listsHead + 4 B each frame's ring (listsRing, sel.x): the fused samplers (pass 1, the cancel
-// ai: stage's fit) take the pair's grid and the ring's lattice from their PIC by it (PICTURE).
+// ai: Then from listsHead + 4 B each frame's ring (listsRing, sel.x): the fused pass 1 takes the pair's grid and the
+// ai: ring's lattice from its PIC by it (PICTURE).
 export const ARGS_WORDS = 12;
-// ai: ARGS whole, u32 words: ARGS_WORDS a picture slot, then the LDPC's three.
-export const argsLdpc = SLOTS * ARGS_WORDS;
-export const argsWords = argsLdpc + 3;
+// ai: ARGS whole, u32 words: ARGS_WORDS a picture slot.
+export const argsWords = SLOTS * ARGS_WORDS;
 export const listsHead = (B) => SLOTS * (1 + B);
 export const listsWords = (B) => listsHead(B) + 5 * B;
 export const listsBlocks = (B) => listsHead(B) + 2 * B;
@@ -123,8 +119,6 @@ ${zero ? `  for (var i: u32 = t; i < ${8 * B}u; i += 64u) { counts[i] = 0u; }
     lists[HEAD + 4u * B + f] = sel[f].x;
     args[s * ${ARGS_WORDS}u + 6u] = max(args[s * ${ARGS_WORDS}u + 6u], r);
   }
-  var most: u32 = 0u;
-  var wide: u32 = 0u;
   for (var s: u32 = 0u; s < SLOTS; s++) {
     let c: u32 = lists[s * LS];
     let a: u32 = s * ${ARGS_WORDS}u;
@@ -132,16 +126,14 @@ ${zero ? `  for (var i: u32 = t; i < ${8 * B}u; i += 64u) { counts[i] = 0u; }
     args[a + 3u] = 1u; args[a + 4u] = 1u; args[a + 5u] = c;
     args[a + 7u] = 1u; args[a + 8u] = c;
     args[a + 9u] = G.at[s].z; args[a + 10u] = 1u; args[a + 11u] = c;
-    if (c > 0u) { most = max(most, c); wide = max(wide, G.at[s].z); }
   }
-  args[${argsLdpc}u] = wide; args[${argsLdpc + 1}u] = most; args[${argsLdpc + 2}u] = SLOTS;
 }
 `;
 }
 
 // Complex helpers and the butterflies, on function-scope register arrays.
-// ai: BUTTERFLIES, store, firstStage, laterStages and V8 are exported for the cancel stage's inverse transforms
-// ai: (wgsl/cancel_paint.mjs): the same kernels, conj in and conj out.
+// ai: BUTTERFLIES, store, firstStage, laterStages and V8 are exported for the sender's inverse transforms
+// ai: (wgsl/inverse.mjs): the same kernels, conj in and conj out.
 export const BUTTERFLIES = /* wgsl */ `
 fn cmul(a: vec2f, b: vec2f) -> vec2f { return vec2f(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
 fn mneg_i(a: vec2f) -> vec2f { return vec2f(a.y, -a.x); }
@@ -255,19 +247,14 @@ export const V8 = "array<vec2f, 8>(vec2f(0.0), vec2f(0.0), vec2f(0.0), vec2f(0.0
 // touched the same 32 cache lines four times a row and pass 1 was 95% of the iGPU's time); the two pairs of a quad
 // are transformed side by side, so Y(v) for the four columns leaves as one 16 B store (f16) or two (f32).
 // ai: Params: gridStride (f32 a frame), yStride (complex a frame), partStride (vec4 a frame), the size index, n,
-// ai: m2 = mean of cx^2, sx2, sq2, sStride and sampStride (vec2u a frame of the kept samples, transform.mjs).
+// ai: m2 = mean of cx^2, sx2, sq2 and sStride.
 // ai: Rows 1 to R - 1 of Y are stored, R the frame's rows from LISTS (listsRows): the rows past it hold no
 // ai: coefficient of the blocks the frame decodes.
-// ai: A column's mean rides in its PART record's w (pass 2 reads it for row v = 0), so pass 1 binds no Y0: that
-// ai: binding is the one the cancel variant needs for REF under the 8 storage buffers a stage.
-// grid: "f32" (the sampler's, one f32 an element) or "f16" (two f16 a u32, the same strip order and element index,
-// half the bytes: what the sampler would write to halve the grid's traffic; the transform's arithmetic is unchanged).
-// picture: "grid" reads the sampler's grid; "fused" samples the frame itself, F9's arithmetic a sample (the map, the
-// Coons patch, the bilinear read; wgsl/sample.mjs), with a side's curve taken once a column or once a row. It binds
-// ai: the frame texture, the maps and the residuals in place of the grid, and PIC (each ring's g0 and step for the
-// ai: size, and the rings' lattices: PICTURE), taking the frame's ring from LISTS (listsRing).
-export const GRID_FORMATS = ["f32", "f16"];
-export const PICTURES = ["grid", "fused"];
+// ai: A column's mean rides in its PART record's w (pass 2 reads it for row v = 0), so pass 1 binds no Y0.
+// Pass 1 samples the frame itself, F9's arithmetic a sample (the map, the Coons patch, the bilinear read;
+// wgsl/sample.mjs), with a side's curve taken once a column or once a row. It binds the frame texture, the maps and
+// ai: the residuals, and PIC (each ring's g0 and step for the size, and the rings' lattices: PICTURE), taking the
+// ai: frame's ring from LISTS (listsRing). The variant that read F9's sampled grid went 2026-10-22.
 export const LATTICE_MAX = 36;   // node coordinates a side PIC holds (register.mjs NODES_MAX / 4 is 34)
 // ai: PIC, a picture size's uniform for the fused samplers: per ring (g0, step, nodes a side, first lattice
 // ai: coordinate) as f32, the pair's grid (gpu/tables.mjs gridOf), then every ring's lattice, LATTICE_MAX a ring.
@@ -280,60 +267,23 @@ fn latAt(i: u32) -> f32 { return PIC.lat[i >> 2u][i & 3u]; }
 export const pictureHead = (lists, B) => `  let fw: i32 = i32(${lists}[${listsHead(B)}u + 2u * f]);\n  let fh: i32 = i32(${lists}[${listsHead(B)}u + 2u * f + 1u]);\n  let M: array<f32, 16> = maps[f];\n  let pr: vec4f = PIC.ring[${lists}[${listsRing(B)}u + f]];\n  let g0: f32 = pr.x;\n  let gstep: f32 = pr.y;\n  let nn: u32 = u32(pr.z);\n  let first: u32 = u32(pr.w);\n  let cn: Corners = corners(f, nn);\n  let lz: Lens = lensOf(f);\n`;
 // Workgroup memory pass 1 declares for a size: the two exchange buffers and 16 B a thread of partials.
 export const pass1WorkgroupBytes = (n, prec) => 2 * n * (prec === "f16" ? 4 : 8) + 16 * (n / 8);
-// ai: keep: either picture variant also keeps every sample it read, as unorm16, in KEEP (binding 10, read_write:
-// ai: quad-major, vec2u (four adjacent x) at f sampStride + (x / 4) n + y, so a workgroup's rows are one contiguous
-// ai: store), for the cancel variant to read instead of sampling the frame again: pass two's sampling through
-// ai: the map cost 0.56 of pass 1c's ms on the iGPU (DESIGN 12, 13.7). With it the fused pass binds 8 storage
-// ai: buffers.
-// ai: cancel: the cancel stage's variant (DESIGN 13, pass1c): the same pass over the second lists (LISTS2, ARGS2,
-// ai: counting into BCOUNTS2), reading KEEP at binding 0 in place of a picture (picture is not consulted), with the
-// ai: fitted mixture taken off each sample before the column sums, zz -= sum over the frame's references and their
-// ai: three bases of (a + c v + d u) (b(x, y) - bbar(y)), the coefficients from the CANCEL uniform (binding 11:
-// ai: { slotA, slotB, nrefs, ok, coef[18] } a frame, slot A's nine first, then slot B's; nothing is taken off a
-// ai: frame whose solve failed) and the bases from REF (binding 10, read-only: a 24 B record a quad of columns a
-// ai: row, the row means behind the slot's records; refSlot and refMeans in vec2u units).
-export function pass1Source({ n, prec, B, cpw = CPW, tw = "chain", grid = "f32", picture = "grid", keep = false, cancel = false, refSlot = 0, refMeans = 0 }) {
+export function pass1Source({ n, prec, B, cpw = CPW, tw = "chain" }) {
   if (cpw % 4) throw new Error(`pass 1 takes columns four at a time: cpw ${cpw}`);
-  if (!GRID_FORMATS.includes(grid)) throw new Error(`grid format ${grid}`);
-  if (!PICTURES.includes(picture)) throw new Error(`pass 1 picture ${picture}`);
-  if (cancel && !(refSlot > 0 && refMeans > 0)) throw new Error("the cancel variant needs REF's slot and means strides");
-  if (cancel && keep) throw new Error("the cancel variant reads the kept samples; it keeps none");
   const { ty, ld } = store(prec);
-  const T = n / 8, quads = cpw / 4, f16 = prec === "f16", g16 = grid === "f16", fused = !cancel && picture === "fused";
+  const T = n / 8, quads = cpw / 4, f16 = prec === "f16";
   const lanes = [["v0", "buf0"], ["v1", "buf1"]];
-  // ai: Coefficient k of the frame's CANCEL record: 18 f32 behind the four header words, five vec4f; the solve
-  // ai: (wgsl/cancel_fit.mjs) fills slot A's nine first, then slot B's, (1, v, u) a base, the rest zero.
-  const cf = (k) => `cr.c${k >> 2}[${k & 3}]`;
-  const model = (b, k0) => `(${cf(k0)} + ${cf(k0 + 1)} * yv + ${cf(k0 + 2)} * uu) * ${b}.d0 + (${cf(k0 + 3)} + ${cf(k0 + 4)} * yv + ${cf(k0 + 5)} * uu) * ${b}.d1 + (${cf(k0 + 6)} + ${cf(k0 + 7)} * yv + ${cf(k0 + 8)} * uu) * ${b}.d2`;
   let body = "";
   for (let q = 0; q < quads; q++) {
     body += `  {\n    let xq: u32 = x0 + ${4 * q}u;\n`;
-    if (!fused && !cancel) body += `    let gq: u32 = (gbase + (xq >> 6u) * N * 64u + (xq & 63u)) >> 2u;\n`;
     // The top and bottom curves and the blend weight across depend on the column alone: once a column, not a sample.
-    if (fused) for (let k = 0; k < 4; k++) body += `    let mx${k}: f32 = g0 + f32(xq + ${k}u) * gstep;\n    let u${k}: f32 = coonsT(mx${k}, first, nn);\n    let tp${k}: vec2f = curve(f, 0u, mx${k}, first, nn);\n    let bt${k}: vec2f = curve(f, 2u, mx${k}, first, nn);\n`;
-    // ai: The quad's kept samples: one vec2u a row, rows contiguous.
-    if (keep || cancel) body += `    let kq: u32 = kbase + (xq >> 2u) * N;\n`;
-    // ai: The fit's u of the quad's four columns, x / (n - 1) - 0.5.
-    if (cancel) body += `    let uu: vec4f = (vec4f(f32(xq)) + vec4f(0.0, 1.0, 2.0, 3.0)) / f32(N - 1u) - 0.5;\n`;
+    for (let k = 0; k < 4; k++) body += `    let mx${k}: f32 = g0 + f32(xq + ${k}u) * gstep;\n    let u${k}: f32 = coonsT(mx${k}, first, nn);\n    let tp${k}: vec2f = curve(f, 0u, mx${k}, first, nn);\n    let bt${k}: vec2f = curve(f, 2u, mx${k}, first, nn);\n`;
     body += `    var z: array<vec4f, 8> = array<vec4f, 8>(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));\n`;
     body += `    var s1: vec4f = vec4f(0.0);\n    var sc: vec4f = vec4f(0.0);\n    var sq: vec4f = vec4f(0.0);\n`;
     for (let r = 0; r < 8; r++) {
       body += `    {\n      let y: u32 = tid + ${r * T}u;\n`;
-      if (fused) {
-        // The left and right curves and the weight down, once a row for the quad's four samples.
-        body += `      let my: f32 = g0 + f32(y) * gstep;\n      let v: f32 = coonsT(my, first, nn);\n      let lf: vec2f = curve(f, 3u, my, first, nn);\n      let rg: vec2f = curve(f, 1u, my, first, nn);\n`;
-        body += `      var zz: vec4f = vec4f(${[0, 1, 2, 3].map((k) => `sampleAt(f, M, lz, vec2f(mx${k}, my), u${k}, v, tp${k}, bt${k}, lf, rg, cn, fw, fh)`).join(",\n        ")});\n`;
-      } else if (cancel) body += `      let kw: vec2u = KEEP[kq + y];\n      var zz: vec4f = vec4f(unpack2x16unorm(kw.x), unpack2x16unorm(kw.y));\n`;
-      else body += g16 ? `      let gw: vec2u = grid[gq + y * 16u];\n      var zz: vec4f = vec4f(unpack2x16float(gw.x), unpack2x16float(gw.y));\n` : `      var zz: vec4f = grid[gq + y * 16u];\n`;
-      // ai: unorm16, not f16: a sample is luma in [0, 1] (the r8unorm texture, the C's lut), and unorm16 holds it to
-      // ai: 7.6e-6 where f16 holds 2.4e-4 near 1 (f16 moved a block on test_cancel's batches, unorm16 none).
-      if (keep) body += `      KEEP[kq + y] = vec2u(pack2x16unorm(zz.xy), pack2x16unorm(zz.zw));\n`;
-      // ai: The subtraction at the sample: the frame's references' centred bases at this quad and row, weighted by
-      // ai: the fitted planes (the archived arm's "full" model, one 24 B record a reference a row).
-      if (cancel) {
-        body += `      if (live) {\n        let yv: f32 = f32(y) / f32(N - 1u) - 0.5;\n        let bA: Bases = basesOf(slotA, xq, y);\n        zz -= ${model("bA", 0)};\n`;
-        body += `        if (two) {\n          let bB: Bases = basesOf(slotB, xq, y);\n          zz -= ${model("bB", 9)};\n        }\n      }\n`;
-      }
+      // The left and right curves and the weight down, once a row for the quad's four samples.
+      body += `      let my: f32 = g0 + f32(y) * gstep;\n      let v: f32 = coonsT(my, first, nn);\n      let lf: vec2f = curve(f, 3u, my, first, nn);\n      let rg: vec2f = curve(f, 1u, my, first, nn);\n`;
+      body += `      var zz: vec4f = vec4f(${[0, 1, 2, 3].map((k) => `sampleAt(f, M, lz, vec2f(mx${k}, my), u${k}, v, tp${k}, bt${k}, lf, rg, cn, fw, fh)`).join(",\n        ")});\n`;
       body += `      z[${r}] = zz;\n`;
       // The detrend basis along y: c = (2 y + 1 - n) / n, q = c^2 less its mean (src/focus.c ws_init).
       body += `      let c: f32 = f32(2 * i32(y) + 1 - i32(N)) / f32(N);\n      s1 += zz;\n      sc += zz * c;\n      sq += zz * (c * c - P.m2);\n    }\n`;
@@ -367,9 +317,9 @@ export function pass1Source({ n, prec, B, cpw = CPW, tw = "chain", grid = "f32",
       : `      yb[e >> 1u] = vec4f(a0, b0);\n      yb[(e >> 1u) + 1u] = vec4f(a1, b1);\n`;
     body += `    }\n    workgroupBarrier();\n  }\n`;
   }
-  // The fused variant's picture: the frame texture, its map, F7's residuals at the border nodes and, in PIC, where
-  // ai: samples sit (g0, step) in each ring and the rings' lattices (PICTURE); bindings 1 to 6 are the grid variant's.
-  const source = fused ? /* wgsl */ `
+  // The picture: the frame texture, its map, F7's residuals at the border nodes and, in PIC, where
+  // ai: samples sit (g0, step) in each ring and the rings' lattices (PICTURE).
+  const source = /* wgsl */ `
 @group(0) @binding(0) var img: texture_2d_array<f32>;
 @group(0) @binding(7) var<storage, read> maps: array<array<f32, 16>>;
 @group(0) @binding(8) var<storage, read> resid: array<vec4f>;
@@ -378,41 +328,9 @@ fn sampleAt(f: u32, M: array<f32, 16>, lz: Lens, m: vec2f, u: f32, v: f32, top: 
   let p = toImage(M, m);
   return bilin0(f, p + lensAt(lz, p) + coonsMix(u, v, top, bot, lft, rgt, cn), fw, fh);
 }
-` : cancel ? /* wgsl */ `
-@group(0) @binding(0) var<storage, read> KEEP: array<vec2u>;
-` : /* wgsl */ `
-@group(0) @binding(0) var<storage, read> grid: array<${g16 ? "vec2u" : "vec4f"}>;
 `;
-  // Per workgroup: the frame's size (from the gate), map and border corners (fused), or where its grid starts.
-  // ai: With cancel, the frame's CANCEL record: its slots, whether the fit solved and its coefficients.
-  const head = (fused ? pictureHead("lists", B) : cancel ? "" : `  let gbase: u32 = f * P.gridStride;\n`)
-    + (keep || cancel ? `  let kbase: u32 = f * P.sampStride;\n` : "")
-    + (cancel ? `  let cr: CancelRec = CANCEL[f];\n  let live: bool = cr.hdr.z > 0u && cr.hdr.w != 0u;\n  let two: bool = cr.hdr.z >= 2u;\n  let slotA: u32 = cr.hdr.x;\n  let slotB: u32 = cr.hdr.y;\n` : "");
-  const keepSource = keep ? /* wgsl */ `
-@group(0) @binding(10) var<storage, read_write> KEEP: array<vec2u>;
-` : "";
-  const cancelSource = cancel ? /* wgsl */ `
-struct CancelRec { hdr: vec4u, c0: vec4f, c1: vec4f, c2: vec4f, c3: vec4f, c4: vec4f }
-@group(0) @binding(10) var<storage, read> REF: array<vec2u>;
-@group(0) @binding(11) var<uniform> CANCEL: array<CancelRec, ${B}>;
-const REF_SLOT: u32 = ${refSlot}u;
-const REF_MEANS: u32 = ${refMeans}u;
-struct Bases { d0: vec4f, d1: vec4f, d2: vec4f }
-// ai: The three bases of a reference slot at the quad's four columns and row y, less the row's means: the record
-// ai: 3 x vec4<f16> read as three vec2u, the means f32 behind the same view (wgsl/cancel_blur.mjs writes both).
-fn basesOf(slot: u32, xq: u32, y: u32) -> Bases {
-  let rec: u32 = REF_SLOT * slot + ((xq >> 2u) * N + y) * 3u;
-  let w0: vec2u = REF[rec];
-  let w1: vec2u = REF[rec + 1u];
-  let w2: vec2u = REF[rec + 2u];
-  let m: u32 = REF_SLOT * slot + REF_MEANS + 2u * y;
-  let ma: vec2u = REF[m];
-  let mb: vec2u = REF[m + 1u];
-  return Bases(vec4f(unpack2x16float(w0.x), unpack2x16float(w0.y)) - bitcast<f32>(ma.x),
-    vec4f(unpack2x16float(w1.x), unpack2x16float(w1.y)) - bitcast<f32>(ma.y),
-    vec4f(unpack2x16float(w2.x), unpack2x16float(w2.y)) - bitcast<f32>(mb.x));
-}
-` : "";
+  // Per workgroup: the frame's size (from the gate), map and border corners.
+  const head = pictureHead("lists", B);
   return (f16 ? "enable f16;\n" : "") + PARAMS + source + /* wgsl */ `
 @group(0) @binding(1) var<storage, read> lists: array<u32>;
 @group(0) @binding(2) var<storage, read> tw: array<vec2f>;
@@ -427,7 +345,7 @@ const ROWS_AT: u32 = ${listsRows(B)}u;
 var<workgroup> buf0: array<${ty}, N>;
 var<workgroup> buf1: array<${ty}, N>;
 var<workgroup> red: array<vec4f, T>;
-` + keepSource + cancelSource + BUTTERFLIES + /* wgsl */ `
+` + BUTTERFLIES + /* wgsl */ `
 @compute @workgroup_size(T)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) tid: u32) {
   let f: u32 = lists[P.size * LS + 1u + wg.z];
@@ -441,7 +359,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) tid: 
 `;
 }
 
-// The five surface coefficients from the column partials (src/focus.c focus_finish_bits, the px .. pyy lines).
+// The five surface coefficients from the column partials (src/focus.c focus_finish_ext, the px .. pyy lines).
 export function reduceSource({ n, B }) {
   return PARAMS + /* wgsl */ `
 @group(0) @binding(0) var<storage, read> lists: array<u32>;
@@ -537,7 +455,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) tid: 
     if (e < row.z) { u = i32(e + ustart); } else { u = i32(e) - i32(row.z) - i32(row.w); }
     let m: u32 = u32(u + i32(N)) % N;
     let xu: vec4f = x12[m];
-    // The C's spectral subtraction (src/focus.c focus_finish_bits) in its units: buf holds
+    // The C's spectral subtraction (src/focus.c focus_finish_ext) in its units: buf holds
     // T / n, so the surface's spectrum D is taken off as D / n, and S = (T - D) / n^2.
     var d: vec2f = c0.z * cmul(xu.xy, xv.xy);
     if (vv == 0u) { d += nf * (c0.x * xu.xy + c0.w * xu.zw); }

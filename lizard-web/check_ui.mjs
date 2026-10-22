@@ -6,7 +6,7 @@
 // ai:      checks' "Advanced") closed then open: <main>'s box and the version unmoved by it (a resize re-picks
 // ai:      mid-stream), #c inside <main>; #tx's first line names the version (the lab line #lab did until 2026-10-02), the
 // ai:      numbers line (#nums) the speed;
-// ai:      the defaults LIZARD-480 at 60 ("Receiving with" went 2026-10-02); Fullscreen, then its end clearing body.full.
+// ai:      the defaults LIZARD-480 at 60; Fullscreen, then its end clearing body.full.
 // ai:   1. The receiver on Chrome's fake camera, Settings (#dev) closed then open: #v visible and above 100 x 100 px with
 // ai:      more than 10 frame callbacks a second; at the phone sizes #go and #view on screen with no scrolling.
 // ai:   2. getUserMedia made to throw NotAllowedError, then navigator.mediaDevices taken away: each sentence in red.
@@ -40,7 +40,7 @@ const DIR = process.env.APP ? "lizard-web/app" : "lizard-web", OUT = at(process.
 const BASE = `http://localhost:${PORT}/${DIR}/recv.html`, SEND = `http://localhost:${PORT}/${DIR}/send.html`, HOME = `http://localhost:${PORT}/${DIR}/index.html`;
 const scratch = mkdtempSync(join(tmpdir(), "lizard-ui-"));
 mkdirSync(OUT, { recursive: true });
-const server = spawn("node", [at("./server.mjs")], { env: { ...process.env, RIG_HTTP: PORT, RIG_UPLOADS: "1", RIG_HTTPS: PORT + 363, RIG_FILES: join(scratch, "received") }, stdio: "ignore" });
+const server = spawn("node", [at("./server.mjs")], { env: { ...process.env, RIG_HTTP: PORT, RIG_HTTPS: PORT + 363 }, stdio: "ignore" });
 const browsers = [];
 process.on("exit", () => { server.kill(); for (const b of browsers) try { process.kill(-b.pid, "SIGKILL"); } catch {} rmSync(scratch, { recursive: true, force: true }); });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -168,9 +168,9 @@ const SIZES = [
       await until(s, `document.getElementById("fpsOut").textContent !== ""`, 10000, "send.mjs run");
       check(await evaluate(s, `document.getElementById("dev").open`), `send ${z.name}: Advanced's open state remembered over a reload`);
       await remembered(s, SEND, "ring", "256", "64", `send ${z.name}`);   // ai: the options are the rings' cells since 2026-10-10
-      // ai: the page's defaults, LIZARD-480 at 60 (2026-10-01); "Receiving with", a preset view over them, went 2026-10-02
-      const defaults = await evaluate(s, `[document.getElementById("subch").value, document.getElementById("fps").value, !document.getElementById("target")].join()`);
-      check(defaults === "480,60,true", `send ${z.name}: the defaults LIZARD-480 at 60, no "Receiving with" (${defaults})`);
+      // ai: the page's defaults, LIZARD-480 at 60 (2026-10-01)
+      const defaults = await evaluate(s, `[document.getElementById("subch").value, document.getElementById("fps").value].join()`);
+      check(defaults === "480,60", `send ${z.name}: the defaults LIZARD-480 at 60 (${defaults})`);
       await evaluate(s, `document.getElementById("dev").open = false`);
       await navigate(s, `${SEND}?subch=auto&fps=24&payload=test&auto`);
       await until(s, `/^LIZARD-\\d+/.test(document.getElementById("tx").textContent)`, 20000, "the test stream painted");

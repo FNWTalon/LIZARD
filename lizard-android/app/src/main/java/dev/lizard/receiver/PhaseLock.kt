@@ -130,14 +130,8 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
     private var edgeT = 0L
     private var edgeClean = false   // ai: frames since that step have held neither neighbour (it landed inside the top)
     private var flatHalf = 0L
-    // ai: Whether the lock wants its frames soon: track, with a symbol registered in the last RECENT (`foundT`:
-    // ai: the newest registered frame fed), until a hold by the pilots first asks no move (and again from a mix too
-    // ai: deep to read). The receiver decoded in small batches while it was on until 2026-10-08, when the native
-    // ai: receiver stopped waiting for a batch (a launch as soon as a frame is staged and a lane is free); only
-    // ai: tools/phasesim reads it now, modelling a batching receiver.
+    // ai: whether a hold by the pilots has asked no move (State.stood), until a mix too deep to read or a new hold
     private var stood = false
-    private var foundT = 0L
-    val soon get() = mode == Mode.Track && usePilots && !plainly && !stood && now >= rest && foundT != 0L && now - foundT < RECENT_NS
     private var looked = 0L         // ai: when the blocks' search or hold last looked at its frames
     fun set(m: Mode, holdUs: Long = 0) {
         if (m == mode && (m != Mode.Hold || holdUs * 1000 % gridNs == base)) return
@@ -148,7 +142,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         ref = 0; out = 0; searching = false; sought.clear(); fails = 0; line = -1; line0 = 0; move = false; moving = false
         window.clear(); since = 0; level = 0.0; wide = 0; sure = Double.MAX_VALUE; anchor = 0.0; proven = false; lastAt = 0
         flashing = false; plainly = false; lately.clear()
-        byLeaks = false; gain = GAIN_MS; prevT = 0; fitS.fill(0.0); pairs = 0; edgeDir = 0; flatHalf = 0; stood = false; looked = 0; foundT = 0
+        byLeaks = false; gain = GAIN_MS; prevT = 0; fitS.fill(0.0); pairs = 0; edgeDir = 0; flatHalf = 0; stood = false; looked = 0
         lastLeak = null; state = null; delaysAll = 0
         say(when (m) {
             Mode.Off -> "phase: off"
@@ -166,7 +160,7 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         settle = 0; rest = 0
         out = 0; searching = false; sought.clear(); fails = 0; line = -1; line0 = 0; move = false; moving = false; window.clear(); since = 0; level = 0.0
         flashing = false; plainly = false; lately.clear()
-        byLeaks = false; prevT = 0; edgeDir = 0; stood = false; looked = 0; foundT = 0
+        byLeaks = false; prevT = 0; edgeDir = 0; stood = false; looked = 0
         lastLeak = null; state = null
         if (mode == Mode.Scan) { tally.clear(); point = -1; start = -1; base = -1 }
     }
@@ -409,7 +403,6 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
 
     // ai: The receiver's new registered frames (track), in capture order, their blocks as read.
     private fun tracked(got: List<Frame>, version: Int) {
-        if (got.isNotEmpty()) foundT = got.last().ts
         if (now < rest) return
         for (f in got) if (!f.r.isNaN()) lately.addLast(f)
         while (lately.size > FLASH_FRAMES) lately.removeFirst()

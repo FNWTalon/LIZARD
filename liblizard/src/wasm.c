@@ -35,7 +35,6 @@ uint32_t ob_debug_hash;
 uint32_t ob_dbg_hash(int arm) { uint32_t v = ob_debug_hash; ob_debug_hash = (uint32_t)arm; return v; }
 double ob_prof(int i) { return i >= 0 && i < PROF_N ? ob_prof_ms[i] : 0; }
 void ob_prof_reset(void) { for (int i = 0; i < PROF_N; i++) ob_prof_ms[i] = 0; }
-int ob_result_size(void) { return (int)sizeof(ob_result_t); }
 
 static focus_t F;
 static int fready;
@@ -79,8 +78,8 @@ const ob_fmt_t *focus_any_fmt(void) { return focus_any_word(&ANY); }
 // ai: out[3] their standard errors; the blocks read, 0 for none
 int focus_any_pilot_get(float *out) { return focus_any_pilot(&ANY, out, out + 2); }
 
-// The bit map (focus.h FOCUS_BITMAP_*) of the codec focus_setup made. A replay of a capture painted before
-// 2026-09-23 sets FOCUS_BITMAP_NONE; nothing else needs to.
+// The bit map (focus.h FOCUS_BITMAP_*) of the codec focus_setup made: the format's unless a measurement sets another
+// (scripts/exp/bitmap_race.mjs).
 int focus_bitmap_set(int mode) { return fready ? focus_bitmap(&F, mode) : -1; }
 int focus_bitmap_get(void) { return fready ? F.bitmap : -1; }
 
@@ -153,7 +152,7 @@ double ob_fft_bench(int rows, int cols, int reps) {
 // The top of the heap. sbrk never gives memory back here, so this is the most the module has had in use.
 unsigned ob_heap_top(void) { return (unsigned)(uintptr_t)sbrk(0); }
 
-// Test hook for a second implementation of ob_sample_grid (the first WebGPU port's, since deleted). Acquires
+// Test hook for a second implementation of ob_sample_grid (the GPU back half's checks, scripts/gpu/back/). Acquires
 // one capture with the current FOCUS setup, writes out everything the sampler reads, then the grid it produces,
 // so the two can be held to the same floats. A GPU cannot be byte-identical to the scalar build the way
 // scripts/exp/simd_check.mjs holds the vector build, so what this exists for is a tolerance and an ulp count.
@@ -212,42 +211,29 @@ int focus_rx_acquire_quad(const uint8_t *img, int iw, int ih, float gamma, int m
   state_dump(focus_held_image(&F), focus_held_reg(&F), dims, state);
   return 1;
 }
-// What the finder settled on for the last acquisition: the quad in image pixels, then orient and score.
-void focus_rx_quad(float *out) {
-  for (int k = 0; k < 8; k++) out[k] = ob_raw_quad[k];
-  out[8] = (float)R.orient; out[9] = R.mark_score;
-}
 int focus_rx_finish(float *grid, uint8_t *blocks, uint8_t *ok) { return fready ? focus_finish(&F, grid, blocks, ok, &R) : 0; }
 
-// Shapes the GPU pipeline has to allocate for: n, bw, vblocks, subch, blocks, and the coefficient index table's
-// length. The table itself is focus_pos_ptr: subch * FOCUS_SUB ints into the spectrum (src/focus.c).
-// The mark scan and the constants it runs on, for the first WebGPU port's finder to be held to (since deleted).
-int ob_test_mark_scan_out(const uint8_t *bin, int w, int h, int merged, float *out, int cap) {
-  return fready ? ob_test_mark_scan(&F.frame, bin, w, h, merged, out, cap) : -1;
-}
-int ob_test_mark_cfg_out(int32_t *out) { return fready ? ob_test_mark_cfg(&F.frame, out) : 0; }
-// ai: The mesh tables, for a mesh built elsewhere (the first WebGPU port's, since deleted).
+// ai: The mesh tables (the node lattice, the per-module kind map, which nodes carry a mark), for gpu/tables.mjs and the
+// ai: checks that read a symbol's cells (test/vectors.mjs, scripts/exp/ring_held.mjs and fmt_word.mjs).
 int ob_test_mesh_tables_out(int32_t *dims, float *nodeX, float *nodeY, uint8_t *kind, int32_t *mark) {
   return fready ? ob_test_mesh_tables(&F.frame, dims, nodeX, nodeY, kind, mark) : 0;
 }
-void ob_test_corner_coords_out(float *src) { if (fready) ob_test_corner_coords(&F.frame, src); }
 int ob_test_fmt_plan(int cells, float *pts, int32_t *meta, int32_t *widx) {
   return fready ? ob_thin_fmt_plan(&F.frame, cells, pts, meta, widx) : 0;
 }
-// The track read's sample plan and a single hypothesis through it, and what the finder settled on last time,
-// for the first WebGPU port's track read to be held to (since deleted).
+// The track read's sample plan (gpu/tables.mjs), and a single hypothesis through it and what the finder settled on
+// last time (scripts/exp/fmt_word.mjs).
 int ob_test_thin_plan(float *pts, int32_t *meta, int32_t *signs) { return fready ? ob_thin_score_plan(&F.frame, pts, meta, signs) : 0; }
 int ob_test_thin_score_out(const uint8_t *img, int w, int h, const float *centres, int hyp, int merged, float *out) {
   return fready ? ob_test_thin_score(&F.frame, img, w, h, centres, hyp, merged, out) : 0;
 }
 void ob_test_finder_out(float *out) { for (int k = 0; k < 8; k++) out[k] = ob_finder_info[k]; }
 int ob_test_fmt_cells(void) { return fready ? ob_fmt_side_cells(F.frame.w < F.frame.h ? F.frame.w : F.frame.h, F.frame.reserve) : 0; }
-int ob_test_mark_quads_out(const float *cands, int n, int merged, float *out) {
-  return fready ? ob_test_mark_quads(&F.frame, cands, n, merged, out) : -1;
-}
 
-// The current layout's mark geometry, for archive/opencv-finder/opencv_finder.mjs.
+// The current layout's mark geometry (acquire.c ob_mark_geom), for gpu/tables.mjs and scripts/exp/fmt_word.mjs.
 int ob_test_marks(float *out) { if (!fready) return 0; ob_mark_geom(&F.frame, out); return 1; }
+// Shapes the GPU pipeline has to allocate for: n, bw, vblocks, subch, blocks, and the coefficient index table's
+// length. The table itself is focus_pos_ptr: subch * FOCUS_SUB ints into the spectrum (src/focus.c).
 int focus_shape(int32_t *out) {
   if (!fready) return 0;
   out[0] = F.n; out[1] = F.bw; out[2] = F.vblocks; out[3] = F.subch; out[4] = F.blocks; out[5] = F.subch * FOCUS_SUB;
@@ -255,7 +241,6 @@ int focus_shape(int32_t *out) {
 }
 const int *focus_pos_ptr(void) { return fready ? F.pos : 0; }
 void focus_tables_out(float *out) { if (fready) focus_tables(&F, out); }
-void focus_spectrum_out(float *re, float *im) { if (fready) focus_spectrum(&F, re, im); }
 // The decode finished from soft values quantised elsewhere: llr is subch runs of
 // 2 * FOCUS_SUB int8, est one information estimate per sub-channel. The transform is not run.
 int focus_rx_ldpc(const int8_t *llr, const float *est, uint8_t *blocks, uint8_t *ok) {
@@ -268,19 +253,10 @@ void focus_block_subs(int32_t *first, int32_t *count) {
   for (int b = 0; b < F.blocks; b++) { first[b] = F.block_sub[b]; count[b] = F.tier[F.block_tier[b]].subs; }
 }
 
-// The LDPC code behind a block, for a decoder running elsewhere. tier is a block's tier
-// index; focus_block_tiers says which block is on which. See ldpc.c ldpc_tables for the layout (12 dims).
+// The LDPC code of a tier, for a decoder running elsewhere: tier is an index into the frame's tiers (focus.h
+// focus_tiers_for gives each one's blocks). See ldpc.c ldpc_tables for the layout (12 dims).
 void focus_ldpc_tables(int tier, int32_t *dims, int32_t *lay) {
   if (fready && tier >= 0 && tier < FOCUS_TIERS) ldpc_tables(&F.code[tier], dims, lay);
-}
-// ai: Which set of the format's tables the codecs built from here on take (ldpc.h ldpc_codes_set: 0 today's, 1 the set
-// ai: before 2026-10-08); the wasm has no environment for LIZ_TABLES, so sim/ob.mjs passes it.
-void focus_codes_set(int set) { ldpc_codes_set = set; }
-void focus_block_tiers(int32_t *out) { if (fready) for (int b = 0; b < F.blocks; b++) out[b] = F.block_tier[b]; }
-// The decode finished from soft values AND hard decisions worked out elsewhere. bits: blocks * code[0].n, one
-// decision a byte. its: what each block spent, or 0 to say one iteration each.
-int focus_rx_bits(const int8_t *llr, const float *est, const uint8_t *bits, const int8_t *its, uint8_t *blocks, uint8_t *ok) {
-  return fready ? focus_finish_bits(&F, 0, llr, est, bits, its, blocks, ok, &R) : 0;
 }
 // The whole tail done on the device: verdicts and bytes in, blocks out, no registration.
 int focus_rx_assemble(const uint8_t *bytes, int stride, const uint8_t *verdicts, const int8_t *its, const float *est, uint8_t *blocks, uint8_t *ok, const float *quad, int orient, float score) {
@@ -291,8 +267,8 @@ int focus_fmt_check_out(const float *q) { return fready ? focus_fmt_check(&F, q)
 // acquisition, for a sampler that runs without one.
 void focus_grid_out(float *out) { out[0] = F.margin + 0.5f / F.scale; out[1] = 1.0f / F.scale; }
 
-// The decline gate against the live configuration, for the first WebGPU port's gate to be held to (since deleted).
-// Packing and the CRC itself need no state, so they are exported straight out of src/focus.c.
+// The decline gate against the live configuration, for the GPU back half's to be held to (scripts/gpu/back/frames.mjs).
+// The CRC itself needs no state, so ob_test_crc_hash is exported straight out of src/focus.c.
 int ob_test_crc_gate_out(const float *est, float *blk_est, float *bar, uint8_t *declined) {
   return fready ? ob_test_crc_gate(&F, est, blk_est, bar, declined) : 0;
 }

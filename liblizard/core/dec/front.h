@@ -2,8 +2,8 @@
 // ai: lanes and dispatches from liblizard/gpu/back/{back,transform,soft,ldpc}.mjs; the proposer's from
 // ai: liblizard/gpu/bank_fcn2.mjs). What create() builds comes from the setup (setup.h); what a lane holds and what a
 // ai: batch records are ported here, name for name, so the two can be read side by side and their traces compared.
-// ai: Not ported: the probe, F9 and the grid (the fused pass 1 samples the frame), the cancel stage (off by default on
-// ai: the web), told frames (maps: the receiver is blind), the wasm back half.
+// ai: Not ported: the probe, F9 and the grid (the fused pass 1 samples the frame), told frames (maps: the receiver is
+// ai: blind), the wasm back half.
 //
 // ai: One thread drives it (the decoder's). A batch is recorded and submitted by run(), and its readback parsed by
 // ai: finish() once its ticket is done, so two lanes can be in flight as on the web.
@@ -27,7 +27,7 @@ struct Consts {
   float TAU, EPS, TAU_TRACK;
   uint32_t TILE, KEEP, B_CEIL;
   double CAP_MS;
-  uint32_t TWIN_FRAMES, TWIN_ROUNDS, VERSION_MAX, SLOTS, ARGS_WORDS, argsLdpc, argsWords, COUNTS, REC_BYTES, PAYLOAD;
+  uint32_t TWIN_FRAMES, TWIN_ROUNDS, VERSION_MAX, SLOTS, ARGS_WORDS, argsWords, COUNTS, REC_BYTES, PAYLOAD;
   std::map<std::string, uint32_t> ARGS_SLOT;
   static Consts of(const json& c);
 };
@@ -37,7 +37,7 @@ using GroupP = std::shared_ptr<wg::BindGroup>;
 
 // ai: The back half's lane (back.mjs lane: transform.lane, soft.lane, ldpc.lane, bindGate; bindPicture).
 struct BackLane {
-  BufP lists, args, part, coef, y, s, counts, L, EST, BLK, V, ITS, REC, PILOT;
+  BufP lists, args, part, coef, y, s, counts, L, BLK, V, ITS, REC, PILOT;
   std::vector<BufP> params;   // ai: a size slot each (null where the size is not built)
   GroupP gate, ldpc;
   std::vector<GroupP> p1f, red, p2, soft;
@@ -52,11 +52,11 @@ struct BackLane {
 struct Lane {
   int B = 0, slotsG = 0;
   BufP dumpBuf;   // ai: LIZ_DUMP_S's copy of the back half's spectrum, made on the first batch that dumps
-  bool busy = false, watched = false, reserved = false;
+  bool busy = false, watched = false;
   uint32_t W = 0, H = 0;
   uint64_t gridStride = 0;
   BufP peaksBuf, selUni, framesBuf, mapsBuf, countsBuf, readingsBuf, candBuf, quadsBuf, scoreBuf, selBuf, resultBuf, heldUni, p5Uni, ldUni, measBuf, residBuf, refitDbg, histBuf, logitBuf, listBuf;
-  GroupP refitGroup, refitPostGroup, pickGroup;   // ai: refitPostGroup: the tree's front.refitPost, where it has one
+  GroupP refitGroup, refitPostGroup, pickGroup;   // ai: refitPostGroup: the tree's front.refitPost
   // ai: the finder's second round (decoder.mjs, gpu/wgsl/finder.mjs REDO): its frame records and its groups over them
   BufP frames2Buf;
   GroupP pickGroup2, redoGroup, selGroup2, classifyGroup2, classify0Group2, rankGroup2, scoreGroup2, voteGroup2, gatherGroup2;
@@ -84,7 +84,6 @@ struct Lane {
 struct Slot {
   int id = -1;
   uint32_t w = 0, h = 0;
-  double at = 0;          // ai: ms on the decoder's clock at enqueue (the web queue's launch bound; none natively)
   bool luma = false;      // ai: the host-luma path: the frame is in the slot's staging buffer, and its batch copies it into the layer
   // ai: the batch copy that last read the layer: the slot is not written again until it is done (Vulkan orders
   // ai: nothing between the ingest's queue and the decoder's; the web's one queue ordered the next write for free)
@@ -97,8 +96,7 @@ struct Slot {
 };
 
 // ai: The axis word (gpu/wgsl/common.mjs axisWord): x and y in half pixels, each + 32768 in 16 bits, x low; 0 the
-// ai: frame's centre, AXIS_OLD no lens fit (LIZ_LENS=old: the model before 2026-10-17, for A/Bs).
-constexpr uint32_t AXIS_OLD = 0xffffffffu;
+// ai: frame's centre.
 inline uint32_t axisWord(double x, double y) {
   auto h = [](double v) { const double t = std::floor(2 * v + 0.5) + 32768; return (uint32_t)(t < 0 ? 0 : t > 65535 ? 65535 : t); };
   return h(x) | (h(y) << 16);
@@ -110,7 +108,7 @@ struct FrameOut {
   bool empty = false;
   uint64_t tag = 0;   // ai: the caller's, as enqueued
   int ring = -1, version = 0, n = 0, size = -1;
-  bool held = false, sampled = false;
+  bool held = false;
   struct { float found = 0, score = 0, ring = -1, orient = 0, quad = 0; std::array<float, 9> H{}; std::array<float, 8> corners{}; std::array<float, 4> depths{}; } finder;
   bool hasWord = false;
   struct { int version = 0, fps = 0; float score = 0; } word;
@@ -133,12 +131,11 @@ struct FrameOut {
 struct BatchOut {
   std::vector<FrameOut> frames;
   std::optional<double> gpuMs;
-  double deviceMs = 0, submitted = 0, done = 0;
+  double deviceMs = 0, done = 0;
   int carried = 0;
   bool idle = false;
   std::map<std::string, double> host;
   std::vector<std::pair<std::string, double>> stageMs;
-  double twinMs = -1;
 };
 
 class FrontHalf;
@@ -202,7 +199,7 @@ class FrontHalf {
   std::string precision, floatPrecision, variant;
   json nets;
   int cap = 256, nodesMax = 0, bankKeep = 4;
-  uint32_t coarseFrom = 0;   // ai: the tree's front.coarseFrom: the bank's first round from this level, 0 one round
+  uint32_t coarseFrom = 0;   // ai: the tree's front.coarseFrom: the bank's first round from this level
   bool reg = true;
   std::array<float, 4> modules{};
   json cascade;   // ai: { keep, rest, precision } or null
@@ -213,8 +210,8 @@ class FrontHalf {
   BufP weightsBuf, weightsBuf0;
   json twinForms;   // ai: the twins still to measure (null once measured)
   json twins;       // ai: the measurement
-  // ai: the LDPC kernel's form in use (gpu/back/tiers.mjs exportFor: 0 the rule's "ldpc" steps, 1 its "ldpcAlt"), the
-  // ai: two still to be timed on the first batch, and the timing
+  // ai: the LDPC kernel's form in use (gpu/back/tiers.mjs exportFor: 0 the rule's "ldpc" steps, k its "ldpcAlts"[k - 1]),
+  // ai: the forms still to be timed on the first batch, and the timing
   int ldpcForm = 0;
   bool ldpcPending = false;
   json ldpcTimes;

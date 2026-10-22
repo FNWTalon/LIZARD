@@ -152,13 +152,13 @@ cannot state any of them. A receiver told nothing reads a frame of other rate ti
 - `FOCUS_RS`, mode 0 of `liblizard/src/focus.c:focus_init`: the FOCUS paper's RS(80,64) per sub-channel with hard QPSK.
 - Bit map modes other than LINEAR (7.3).
 - Straddle cancellation, reading a capture that straddles a frame change by subtracting what the receiver already
-  holds: out for good (2026-09-23), archived in `archive/straddle-cancel/`.
+  holds: out for good in the C (2026-09-23), archived in `archive/straddle-cancel/`; the GPU decoder's form, off by
+  default since 2026-09-25, was deleted on 2026-10-22, the pilots (7.3) having taken over what it was for.
 - FOCUS's own finder frame ("finders and margin", `thin = 0`): corner finders, orientation strips and a 20-module
   margin, the frame the FOCUS reimplementation began with. Deleted from `liblizard/src/` and `liblizard/sim/` (2026-09-26; section
   13, item 12). A symbol has one frame, the border of section 4.
 - A 2 x 2 picture split, four smaller symbols edge to edge in place of one, each with a word stating its own version
-  or with none (n = 128). It is gone from the sender page (2026-09-24); `archive/lizard-2/lizard2.mjs` still builds it
-  through `liblizard/sim/phy.mjs:makeGrid` for measurement, and the receiver still accepts a grid spec.
+  or with none (n = 128). It is gone from the sender page (2026-09-24) and from the simulator (2026-10-22).
 - The other borders `liblizard/src/` can paint for experiments (4.11).
 
 **Implementation rules.** These bind the project's decoders, not the symbol.
@@ -1464,7 +1464,7 @@ float32, 2026-09-27 evening): 15.25 and 0.5 at n = 256, 15.166667 and 0.3333333 
 1/24 and 1/12) at 1536. In the 256 ring, by the same rule (2026-10-10): 16 and 2 at 256, 15.666667 and 1.3333333 at
 384, 15.5 and 1 at 512, 15.333333 and 0.6666667 at 768, 15.25 and 0.5 at 1024, 15.166667 and 0.3333333 at 1536 (the 96
 ring's, until then: 15.375 and 0.75 at 256 to 15.0625 and 0.125 at 1536). Any other pair follows from 6.2's scale
-(`focus_finish_bits`: `g0 = margin + 0.5f / scale` with the C's `margin` = 15, `step = 1.0f / scale`; `wasm.c`
+(`focus_finish_ext`: `g0 = margin + 0.5f / scale` with the C's `margin` = 15, `step = 1.0f / scale`; `wasm.c`
 `focus_grid_out`). A receiver that takes the forward DFT of an n x n grid MUST take it at these points: a grid displaced
 by (dx, dy) samples turns coefficient (u, v) by 2 pi (u dx + v dy) / n.
 
@@ -1482,7 +1482,7 @@ the clip level nor the tilt nor the capture's gain is signalled.
 Y(C_s) = n^2 H(C_s) / (2L), with (u, v) taken mod n as an index; the constant 1/2 lands on DC only. Clipping and the
 channel scale this, to first order, by a positive gain for each sub-channel and add noise. So a receiver MUST read
 Re Y(C_s) > 0 as bit 0 of frame slot 2s and Re Y(C_s) < 0 as bit 1, and Im Y(C_s) the same way for slot 2s + 1 (6.5:
-bit 0 is sent as +). The reference's soft values follow it: `focus.c:focus_finish_bits` sets each LLR to a non-negative
+bit 0 is sent as +). The reference's soft values follow it: `focus.c:focus_finish_ext` sets each LLR to a non-negative
 multiple of the component, and positive means bit 0 (8.5, `ldpc.h`). The signs of the forward DFT of the clipped
 picture g itself, with no resampling, give back every slot bit of all seven frames in 6.8's "How exact" (0 of 368,640
 at LIZARD-576).
@@ -1500,7 +1500,7 @@ rings).
 
 A screen is never evenly lit. A brightness ramp across the picture is not periodic, so its spectrum falls off as 1 / k
 along both axes and lands on the coefficients nearest zero frequency, which carry block 0. The reference receiver
-removes the least-squares surface in 1, x, y, xy, x^2, y^2 (`focus_finish_bits`, basis built in `ws_init`).
+removes the least-squares surface in 1, x, y, xy, x^2, y^2 (`focus_finish_ext`, basis built in `ws_init`).
 
 With c_i = (2 i + 1 - n) / n and q_i = c_i^2 - mean(c^2) for i = 0 to n - 1, the five non-constant functions c(x),
 c(y), c(x) c(y), q(x), q(y) are orthogonal on the grid and to the constant, so each coefficient is one projection of
@@ -1595,7 +1595,7 @@ are those of P2, since block 0's payload, codeword and whitening are the same.
   `025532283ce407bb54fe1b1333d7a33ae0391751f47b144bba0ec26b89c7c91b`. The border holds the RS(16, 3) word (5.2)
 
 P2, P3 and 7.4 moved with the 3/4 and 7/8 tables of 2026-10-08 (8.3, 8.6; the previous values are those of the vectors
-script's history and of `LIZ_TABLES=1`). P2 and P3 moved to the 64 ring when it became the default for every picture (2026-09-27 evening); that morning they were
+script's history). P2 and P3 moved to the 64 ring when it became the default for every picture (2026-09-27 evening); that morning they were
 in the 32 and 48 rings, and P3 was at n = 512 before the picture sizes of 3.2. Both are copies, so neither goes through
 the Lanczos taps: in the 64 ring every picture is a copy, and only four (ring, picture) pairs resample (6.8), 384 in
 the 128 ring, the default since 2026-10-01, among them.
@@ -1616,7 +1616,7 @@ not been run on these.
 ## 7. Blocks, the bit mapping and the transfer
 
 Normative, except where a paragraph says otherwise. Sources: `liblizard/src/focus.c` `init`, `focus_encode`, `whiten_fill`,
-`perm_fill`, `map_out`, `map_in`, `focus_finish_bits`; `liblizard/src/focus.h` `FOCUS_BITMAP`; `liblizard/src/layout.c` `ob_crc32`. For the
+`perm_fill`, `map_out`, `map_in`, `focus_finish_ext`; `liblizard/src/focus.h` `FOCUS_BITMAP`; `liblizard/src/layout.c` `ob_crc32`. For the
 transfer (7.5 to 7.10): `liblizard/src/xfer.h`, `liblizard/src/xfer.c`, and their wasm exports in `liblizard/src/wasm.c`.
 
 A frame of version V carries B(V) blocks (3.1). Each block is one LDPC codeword with its own CRC-32. Blocks are independent, so a
@@ -1651,7 +1651,7 @@ B(V) x 469 bytes.
 | 3816 to k - 1 | zeros: 90 bits at 7/8, 24 at 1/2, none at 3/4. |
 
 At 3/4 the word fills k exactly. At 7/8 and 1/2 the zeros past the CRC are known to the decoder (the reference feeds
-them as certain zeros, `focus.c:focus_finish_bits`), so the roomier code spends them on protection.
+them as certain zeros, `focus.c:focus_finish_ext`), so the roomier code spends them on protection.
 
 **CRC-32** (`layout.c:ob_crc32`) is the CRC of IEEE 802.3 and zlib: polynomial 0x04C11DB7 processed reflected
 (0xEDB88320, each byte least significant bit first), register initialised to 0xFFFFFFFF, result complemented. The CRC-32
@@ -1662,7 +1662,7 @@ The two multi-byte fields have opposite byte orders. The id is little-endian. Th
 
 **Acceptance.** A receiver MUST hand a block to the fountain only when the CRC-32 it computes over the 473 decoded bytes
 equals the 32 decoded CRC bits. LDPC convergence alone is not acceptance. The reference requires both, a zero syndrome
-and then the CRC (`focus.c:focus_finish_bits`).
+and then the CRC (`focus.c:focus_finish_ext`).
 
 ### 7.2 Where a block lies in the frame
 
@@ -1818,7 +1818,7 @@ same way (1280 bytes), c = 0: `ce4bbd787faaed53466ecabc2b53a065d5eb0fc9c89daa666
 `0553582180f06091f3eb3d13e4c2d28bcb8a9448082eded7cab060962c629d22`,
 `c59837299f58766bcfa9f91741738ed6406a0526e1eb8c96536194d70b1fd484`,
 `5b84bf5505e5252280d574772694bcf7d60787d4ccf96617077ee481cc5b3d10`. The values before the tables of 2026-10-08
-(the same blocks under the 3/4 table of 2026-09-24, `LIZ_TABLES=1`): parity `689b3806ae2ff8272a67778bebce6096` and
+(the same blocks under the 3/4 table of 2026-09-24): parity `689b3806ae2ff8272a67778bebce6096` and
 `689b47f951d007d8d598887414319f96`, slots `2a6d2d409722af16f5f2c5ec83cda6fb` and `77df2df63b06611785ae191b9d491b47`,
 the frame at c = 0 `8881113e5edfc7b2c3ac85c58d00b57d4186021e9c3a66a045715263e95cbd1f`.
 
@@ -2171,7 +2171,7 @@ profiles (3/4: 7 columns of degree 12; 7/8: one column of degree 7 never sent an
 the rest degree 3) were chosen on the exact int8 decoder's 10%-loss thresholds on BI-AWGN (3/4 4.03 dB against the
 2026-09-24 table's 4.07, 7/8 5.83 against 5.99, 2/3 3.00 against 3.04; no floor to 0.8 dB above at 65,536 codewords).
 The 1/2 table is the generator's own output (seed 1, 2026-10-07), as the three were before that day (the 3/4 table of
-2026-09-24, the 7/8 and 2/3 of 2026-10-07; `LDPC_BASES_V1`, `LIZ_TABLES=1`, for reading what was painted under them). The
+2026-09-24, the 7/8 and 2/3 of 2026-10-07). The
 generator stays: `ldpc.c:ldpc_generate` builds every code outside the format (the
 rates the experiments tier with, `liblizard/test/ldpc_ablate.c`'s profiles), and the format's own when a test sets
 `ldpc_override_heavy`. `liblizard/test/ldpc_table.c` holds every table to the hash of its H as adopted (FNV-1a over its
@@ -2238,7 +2238,7 @@ p_c = p_(c-1) XOR (XOR of the data bits in check c),    p_(-1) = 0
 
 ### 8.5 Soft values into the code, and the reference decoder (non-normative)
 
-What the reference decoder feeds the code, and how it decodes (`focus.c:focus_finish_bits`, `focus.c:axis_info`,
+What the reference decoder feeds the code, and how it decodes (`focus.c:focus_finish_ext`, `focus.c:axis_info`,
 `focus.c:map_in`, `ldpc.c:ldpc_decode_stall`). The format fixes only the sign convention and the bit map. A decoder may
 compute and scale its soft values any way it likes.
 
@@ -2317,8 +2317,7 @@ the code's own block rows and data columns. The reference ships them as `libliza
 (`LDPC_BASE78_NP` 1, the columns never sent), `LDPC_BASE23` and `LDPC_BASE12`, which `ldpc_init` builds from, as it does
 the 3/4 code from `LDPC_BASE`; `liblizard/test/ldpc_table.c` holds all four to the hashes above. 8.5 applies at each
 code's own z, mb and decline bar. The tables before 2026-10-08 (7/8 d942b2a6: 6 block rows, 6 columns of degree 4; 2/3
-94b14b2c: 8 columns of degree 12; the 3/4 table 2ca2bc24 of 8.2's history) are `LDPC_BASES_V1`, built under
-`LIZ_TABLES=1`.
+94b14b2c: 8 columns of degree 12; the 3/4 table 2ca2bc24 of 8.2's history) are no longer in the source.
 
 **The 7/8 shift table** (a dash: no circulant):
 
@@ -2716,7 +2715,7 @@ decode of one known codec, is `focus_acquire` then `focus_finish`:
     their payload to the fountain.
 
 `liblizard/src/focus.c` also accepts a quad, a sampled grid, soft values or hard decisions made elsewhere (`focus_acquire_quad`,
-`focus_finish`, `focus_finish_ext`, `focus_finish_bits`), so another front or back half is held to the C's acceptance
+`focus_finish`, `focus_finish_ext`), so another front or back half is held to the C's acceptance
 rules.
 
 ### 10.2 The GPU decoder (`liblizard/gpu/`)
@@ -2823,7 +2822,7 @@ Each of these was built and measured, or decided. The reason given is the one on
 | The word carries the display rate | the one property of an animated symbol that no single frame shows | `liblizard/src/fmt.h` |
 | The margin, 2 modules of light, is part of the symbol, and the codec paints it (`FOCUS_QUIET`) | the finder assumes light outside the ring: noise up to the ring cost LIZARD-256 73 to 96% of its blocks; in the codec, every encoder built from `liblizard/src/` paints it and no JS keeps a copy | 2026-09-23 and 2026-09-24; `liblizard/src/focus.h` |
 | Only ladder versions are painted; a receiver reads any version the word states, with no flag; the codec refuses a symbol past LIZARD-1024 | an odd version is unsupported; past version 128 the word cannot name the symbol; since 2026-10-01 every version is on the ladder (above) | 2026-09-24; `liblizard/sim/lizard_pick.mjs:VERSIONS`, `liblizard/src/focus.c:init` |
-| The 3/4, 7/8 and 2/3 tables optimised within their structure, the 7/8 code with a first data column never sent (2026-10-08): +0.04, +0.16 and +0.03 dB at the 10%-loss threshold, +0.3 to +0.9% bytes on the 2:1 replays as recorded and up to +2.7% on captures 1 dB worse; on degraded frames the same blocks for 5.3% less GPU a frame; the sent-bit map unchanged but for the 93-bit offset; the previous tables under `LIZ_TABLES=1` | 8.3, 8.6; `scripts/exp/ldpc_opt.py`; the full 5G NR structure (a double-diagonal core, degree-1 extension parities) not taken: another 0.3 dB at 7/8 for a different encoder in every painter and under 1% as recorded |
+| The 3/4, 7/8 and 2/3 tables optimised within their structure, the 7/8 code with a first data column never sent (2026-10-08): +0.04, +0.16 and +0.03 dB at the 10%-loss threshold, +0.3 to +0.9% bytes on the 2:1 replays as recorded and up to +2.7% on captures 1 dB worse; on degraded frames the same blocks for 5.3% less GPU a frame; the sent-bit map unchanged but for the 93-bit offset | 8.3, 8.6; `scripts/exp/ldpc_opt.py`; the full 5G NR structure (a double-diagonal core, degree-1 extension parities) not taken: another 0.3 dB at 7/8 for a different encoder in every painter and under 1% as recorded |
 | H is the printed shift table, `liblizard/src/ldpc_base.h`, not a construction (the 7/8 and 1/2 codes' too since 2026-10-07, the 2/3 code's since 2026-10-08) | with H generated at start-up, a change to the profile, the seed or the cycle score would have changed the format without warning | 2026-09-24; 8.2, 8.6 |
 | The transfer is in the light: the block id as 14 bits of chunk over 18 of fountain symbol, a header block, manifest blocks, and chunks of 2^10 to 2^24 bytes each verified by BLAKE3 against the file's root | a camera alone recovers a file; a chunk aligned at its own size is a subtree of BLAKE3's tree, so each is checked on arrival, as Bao and iroh stream; one fountain stops at 30 MB | 2026-09-24; `liblizard/src/xfer.h` |
 | The rig's sender interleaves every chunk over the whole file, laps with fresh repair ids, not chunks in turn | in turn needs a budget per chunk a lap, since nothing says a chunk arrived: counted over 64 MB at LIZARD-512, 15% random loss took 1.18 laps interleaved against 1.25 to 2.18 in turn, and nothing lost 1.001 against 1.10 to 1.49 | STATUS 2026-09-24; a count, not a camera |
@@ -2847,7 +2846,7 @@ Each of these was built and measured, or decided. The reason given is the one on
 | The even border: a 13-module mark with a 2-module inner edge, a 2-module guard, ring breaks of 2, light depths 7 to 12, every feature but the rim whole 2 x 2 cells | built and reverted the same day; the code paints the 12-module mark with 1-module inner edge and breaks and the 3-module guard (section 4); the rim stays either way | 2026-09-27 |
 | A side that follows the picture, n / 8 + 60 modules (92, 124, 188, 316), from 2026-09-23 | replaced by the rings: the ring bootstraps what is inside, and versions collapse. It had replaced borders whose ring was too thin and which shrank to almost nothing beside the picture (92 = 28 modules of corner clearance + 32 band cells of 2) | 2026-09-27 |
 | The receiver's size check: a word whose version implied another picture size than the module count registered was dropped, and the frame registered again at the other counts | the module count no longer says anything about the picture | 2026-09-27 |
-| Straddle cancellation, out for good | too complicated for its gain, on one phone's evidence; restored as a receiver menu, it spiked the phone's lag (2026-09-23) | `archive/straddle-cancel/README.md` |
+| Straddle cancellation, out for good | too complicated for its gain, on one phone's evidence; restored as a receiver menu, it spiked the phone's lag (2026-09-23); the GPU decoder's form, off by default, deleted 2026-10-22, the pilots' phase lock and grid fit doing its work | `archive/straddle-cancel/README.md` |
 | Dithered black and white as the default | about 20 KB/s on the phone against 270 for grey; a sender option with no further work | STATUS 2026-09-20 |
 | Dithered black and white LIZARD, the sender option, deleted | it ruins the range and the pixel scaling; it was also decoded told at gamma 2.2, which no blind receiver is | 2026-09-26 |
 | Reed-Solomon in place of the LDPC | 70 to 81% of the LDPC's payload on the mean, since it cannot use grey values; RS stays for small fixed fields such as the word | `research/08` |

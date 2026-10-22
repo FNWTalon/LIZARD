@@ -77,8 +77,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 // ai: surface asks the display for that rate, the switch always made), the screen kept on, at the Brightness set, its
 // ai: bars hidden. The test stream is Developer Tools' (Payload). Vsync-locked since 2026-10-02: on
 // ai: Android 13 and up each frame is due by its frame timeline's expected presentation time and posted for that vsync
-// ai: (jni.cpp Ring), not into the window's queue at whatever refresh it is latched for; `adb shell setprop
-// ai: debug.lizard.sendvsync 0` before Start takes the window's queue, for an A/B.
+// ai: (jni.cpp Ring), not into the window's queue at whatever refresh it is latched for; below 13 the window's queue.
 class SendState(private val a: MainActivity) {
     sealed interface Phase { data object Idle : Phase; data object Preparing : Phase; data object On : Phase; data class Error(val why: String) : Phase }
     data class Stats(val label: String = "", val shownFps: Double = 0.0, val offeredKBs: Double = 0.0, val paintMs: Double = 0.0, val pass: Double = 0.0,
@@ -86,7 +85,7 @@ class SendState(private val a: MainActivity) {
                      // ai: the GPU ring's tally over the last second (2026-10-07, jni.cpp txPostStats): posted, held by
                      // ai: vsyncs, late, behind, buffers filled of the ring's
                      val gpuRing: Boolean = false, val posted: Long = 0, val held: String = "", val late: Long = 0, val behind: Long = 0, val filled: Int = 0, val slots: Int = 0,
-                     // ai: the blocks a code carries and its rate profile (2026-10-07; LIZ_PROFILE in debug.lizard.env paints its profile's count)
+                     // ai: the blocks a code carries and its rate profile (2026-10-07)
                      val blocks: Int = 0, val tiers: String = "")
 
     private val prefs = a.getSharedPreferences("lizard", Context.MODE_PRIVATE)
@@ -301,7 +300,7 @@ class SendState(private val a: MainActivity) {
                 if (hnd == 0L) { phase = Phase.Error("This file cannot be sent: $err"); return@runOnUiThread }
                 if (phase != Phase.Preparing || my != making) { Native.txDestroy(hnd); return@runOnUiThread }   // ai: stopped meanwhile
                 h = hnd; configured = 0; phase = Phase.On
-                vsynced = Build.VERSION.SDK_INT >= 33 && Native.prop("debug.lizard.sendvsync") != "0"
+                vsynced = Build.VERSION.SDK_INT >= 33
                 screenFor(true)
                 reconfigure()
                 due = 0; lastStats = 0; lastTimeline = 0; vsyncNs = 0

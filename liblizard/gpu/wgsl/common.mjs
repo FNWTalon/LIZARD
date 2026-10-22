@@ -18,12 +18,11 @@ export const SLOTS = SIZES.length;
 export const DIMS = /* wgsl */ `
 struct Frame { w: u32, h: u32, size: u32, valid: u32 }
 `;
-// ai: The axis word: 0 the frame's centre (a centred crop's axis), 0xffffffff no lens fit (the model before
-// ai: 2026-10-17, LIZ_LENS=old, for A/Bs), else x and y in half pixels, each + 32768 in 16 bits (x low): a 2:1 half's
-// ai: axis is the middle of its inner edge, (w, h / 2) on the left, (0, h / 2) on the right (core/rx/receiver.cpp).
-export const AXIS_CENTRE = 0, AXIS_OLD = 0xffffffff;
-export function axisWord(axis, old = false) {
-  if (old) return AXIS_OLD;
+// ai: The axis word: 0 the frame's centre (a centred crop's axis), else x and y in half pixels, each + 32768 in 16
+// ai: bits (x low): a 2:1 half's axis is the middle of its inner edge, (w, h / 2) on the left, (0, h / 2) on the right
+// ai: (core/rx/receiver.cpp).
+export const AXIS_CENTRE = 0;
+export function axisWord(axis) {
   if (!axis) return AXIS_CENTRE;
   const h = (v) => Math.max(0, Math.min(65535, Math.round(2 * v) + 32768));
   return (h(axis[0]) | (h(axis[1]) << 16)) >>> 0;

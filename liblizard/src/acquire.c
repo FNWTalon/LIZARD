@@ -28,16 +28,14 @@ void focus_set_axis(float x, float y) { ob_axis[0] = x; ob_axis[1] = y; }
 // ai: The camera's report of its lens for the next image (focus_set_lens): k1, k2, k3, f in image px; f 0 none.
 static OB_TLS float ob_lens[4] = { 0, 0, 0, 0 };
 void focus_set_lens(float k1, float k2, float k3, float f) { ob_lens[0] = k1; ob_lens[1] = k2; ob_lens[2] = k3; ob_lens[3] = f; }
-// ai: The lens model's lab switch (focus_lens_set): 0, 1 or 2 as set, or -1, LIZ_LENS read at each frame ("old": the
-// ai: model before 2026-10-17, 1; "axis": the axis model without the camera's report, 2; else 0, both), since the
-// ai: Android app sets its env as each receiver is made.
-static int lens_legacy = -1;
-void focus_lens_set(int legacy) { lens_legacy = legacy < 0 ? -1 : legacy > 2 ? 0 : legacy; }
-static int ob_lens_arm(void) {
-  if (lens_legacy < 0) { const char *e = getenv("LIZ_LENS"); return !e ? 0 : !strcmp(e, "old") ? 1 : !strcmp(e, "axis") ? 2 : 0; }
-  return lens_legacy;
+// ai: The camera's report's lab switch (focus_lens_set): 0 or 1 as set, or -1, LIZ_LENS read at each frame ("axis":
+// ai: the report left out, 1), since the Android app sets its env as each receiver is made.
+static int lens_no_report = -1;
+void focus_lens_set(int no_report) { lens_no_report = no_report < 0 ? -1 : no_report > 0; }
+static int ob_lens_no_report(void) {
+  if (lens_no_report < 0) { const char *e = getenv("LIZ_LENS"); return e && !strcmp(e, "axis"); }
+  return lens_no_report;
 }
-static int ob_lens_legacy(void) { return ob_lens_arm() == 1; }
 
 void ob_image_init(image_t *im, const uint8_t *px, int w, int h, float gamma) {
   im->px = px; im->w = w; im->h = h;
@@ -408,13 +406,13 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
 // ai: part and the corners are left as measured. A display that scales the symbol by a fraction (part of the channel:
 // ai: a page's stretch, an OS scale, a monitor's scaler) moves the border's sharp cells along each side by a sub-pixel
 // ai: amount that repeats every 1 / frac(device px a module) modules, where the band-limited picture keeps its
-// ai: geometry. The nodes, 16 modules apart, alias that ripple, and border_fill's Coons blend would carry it across
+// ai: geometry. The nodes, 16 modules apart, alias that ripple, and border_fill_axis's Coons blend would carry it across
 // ai: the picture as stripes (STATUS "The grid misalignment's source": on 07-56-38 a +-0.3 to 0.4-sample ripple of 23
 // ai: modules). The cubic is in each node's projected position along the corner chord, not its module position: a
 // ai: lens bend is a cubic in the image, which under perspective is not a cubic in modules (at 30 degrees and k1
 // ai: 0.03 a module-coordinate cubic missed a 96-ring node by 0.47 px, this one by 0.02). Rolling-shutter jello moves
 // ai: the left and right sides across themselves and the top and bottom as a whole, which the fit leaves alone.
-// ai: Only trusted nodes enter (border_fill's rule), and a side is left as measured unless it has six, two of them
+// ai: Only trusted nodes enter (border_fill_axis's rule), and a side is left as measured unless it has six, two of them
 // ai: marks in each half (a cubic over one half would swing free over the other); a mark more than a fifth of a module
 // ai: and three times the median off the first fit (a wrong lock) is dropped and the side fitted once more.
 enum { ALONG_MIN = 6, ALONG_HALF = 2 };
@@ -481,56 +479,13 @@ static void smooth_along(const ob_layout_t *L, const homo_t *H, node_t *nodes) {
   }
 }
 
-// mesh = 2: the interior of a code that carries marks on its border only, computed from the border.
-// Averaging neighbours inward is wrong for the two errors that matter. A lens's radial distortion,
-// once the corners are pinned, is largest along the edges and zero in the middle, which no average
-// of edge values reproduces; and rolling-shutter jello is a sideways shift that depends on the
-// image row alone. So: (1) fit the border residuals with k |q|^2 q about the image centre plus an
-// affine term (the homography has already swallowed part of the distortion), per frame, nothing
-// calibrated; (2) carry what the fit leaves inward with a Coons patch, the blend of the four
-// border curves, which is exact for any field that is a function of the row plus one of the column.
-static void border_fill(const ob_layout_t *L, const homo_t *H, int iw, int ih, node_t *nodes) {
-  int nx = L->nx, ny = L->ny;
-  float cx = iw * 0.5f, cy = ih * 0.5f, R = 0.5f * sqrtf((float)iw * iw + (float)ih * ih);
-  double A[8][9];
-  memset(A, 0, sizeof A);
-  float *qx = malloc((size_t)nx * ny * sizeof(float)), *qy = malloc((size_t)nx * ny * sizeof(float));
-  for (int j = 0; j < ny; j++) for (int i = 0; i < nx; i++) {
-    float u, v;
-    project(H, L->node_x[i], L->node_y[j], &u, &v);
-    qx[j * nx + i] = (u - cx) / R; qy[j * nx + i] = (v - cy) / R;
-    const node_t *nd = &nodes[j * nx + i];
-    int corner = (i == 0 || i == nx - 1) && (j == 0 || j == ny - 1);
-    if (!nd->done || !(corner || (L->node_mark[j * nx + i] && nd->score >= 0.35f))) continue;
-    double x = qx[j * nx + i], y = qy[j * nx + i], s = x * x + y * y;
-    double rx[8] = { s * x, x, y, 0, 0, 1, 0, 0 }, ry[8] = { s * y, 0, 0, x, y, 0, 1, 0 };
-    for (int a = 0; a < 8; a++) { for (int b = 0; b < 8; b++) A[a][b] += rx[a] * rx[b] + ry[a] * ry[b]; A[a][8] += rx[a] * nd->dx + ry[a] * nd->dy; }
-  }
-  for (int a = 0; a < 8; a++) A[a][a] += 1e-9;
-  A[7][7] = 1;   // seven unknowns in an eight-row solver
-  double th[8] = { 0 };
-  if (solve8(A)) for (int a = 0; a < 7; a++) th[a] = A[a][8] / A[a][a];
-  #define MODEL_X(k) (float)(th[0] * (qx[k] * qx[k] + qy[k] * qy[k]) * qx[k] + th[1] * qx[k] + th[2] * qy[k] + th[5])
-  #define MODEL_Y(k) (float)(th[0] * (qx[k] * qx[k] + qy[k] * qy[k]) * qy[k] + th[3] * qx[k] + th[4] * qy[k] + th[6])
-  #define EX(i, j) (nodes[(j) * nx + (i)].dx - MODEL_X((j) * nx + (i)))
-  #define EY(i, j) (nodes[(j) * nx + (i)].dy - MODEL_Y((j) * nx + (i)))
-  for (int j = 1; j < ny - 1; j++) for (int i = 1; i < nx - 1; i++) {
-    node_t *nd = &nodes[j * nx + i];
-    if (L->node_mark[j * nx + i]) continue;
-    float u = (L->node_x[i] - L->node_x[0]) / (L->node_x[nx - 1] - L->node_x[0]), v = (L->node_y[j] - L->node_y[0]) / (L->node_y[ny - 1] - L->node_y[0]);
-    float fx = (1 - u) * EX(0, j) + u * EX(nx - 1, j) + (1 - v) * EX(i, 0) + v * EX(i, ny - 1)
-             - ((1 - u) * (1 - v) * EX(0, 0) + u * (1 - v) * EX(nx - 1, 0) + (1 - u) * v * EX(0, ny - 1) + u * v * EX(nx - 1, ny - 1));
-    float fy = (1 - u) * EY(0, j) + u * EY(nx - 1, j) + (1 - v) * EY(i, 0) + v * EY(i, ny - 1)
-             - ((1 - u) * (1 - v) * EY(0, 0) + u * (1 - v) * EY(nx - 1, 0) + (1 - u) * v * EY(0, ny - 1) + u * v * EY(nx - 1, ny - 1));
-    nd->dx = MODEL_X(j * nx + i) + fx; nd->dy = MODEL_Y(j * nx + i) + fy; nd->done = 1; nd->score = 1;
-  }
-  #undef MODEL_X
-  #undef MODEL_Y
-  #undef EX
-  #undef EY
-  free(qx); free(qy);
-}
-
+// The mesh (any mesh but 0): the interior of a code that carries marks on its border only, computed from the border. Averaging
+// neighbours inward is wrong for the two errors that matter: a lens's radial distortion, once the corners are pinned,
+// is largest along the edges and zero in the middle, which no average of edge values reproduces, and rolling-shutter
+// jello is a sideways shift that depends on the image row alone. So the border's residuals are fitted with a model of
+// the lens and of what the homography missed (below), per frame, nothing calibrated, and what the fit leaves is carried
+// inward by a Coons patch, the blend of the four border curves, which is exact for any field that is a function of the
+// row plus one of the column.
 // ai: The lens about its axis (2026-10-17; STATUS "The lens about its axis"). What the border nodes say H
 // ai: missed, fitted as the radial terms k1 to kK about the camera's optical axis, k |q|^(2k) q (the radial part of
 // ai: Android's lens form, linearised about H), beside the first-order change of the homography itself (an affine map,
@@ -546,8 +501,7 @@ static void border_fill(const ob_layout_t *L, const homo_t *H, int iw, int ih, n
 // ai:   convex region not holding the point are on its boundary), so the radial terms interpolate. With the axis inside
 // ai:   (a 1:1 crop's), the interior's radii run down to 0, below the band from a side's middle to a corner that the
 // ai:   border sees, and higher terms fitted there extrapolate: on the three 1:1 recordings of 2026-09, K chosen by the
-// ai:   fit alone cost 20 to 43% of the blocks. So K is at most 1 there, which the patch carries anyway: the model
-// ai:   before, in effect.
+// ai:   fit alone cost 20 to 43% of the blocks. So K is at most 1 there, a term the patch carries anyway.
 // ai: - Within that, the K the evidence pays for, by AICc (below).
 // ai: - Beside them, where the camera reports its lens (focus_set_lens, 2026-10-17): its radial shape about the axis as
 // ai:   one column, its strength fitted (one number the border can measure, where three terms it cannot), a candidate
@@ -635,7 +589,7 @@ static void border_fill_axis(const ob_layout_t *L, const homo_t *H, int iw, int 
   const int kmax = (pos == 4 || neg == 4) ? 1 : LENS_TERMS;
   // ai: the camera's reported shape in q's units, where it gave one and the arm takes it (LIZ_LENS=axis leaves it out)
   double prior[3];
-  const int hasPrior = ob_lens[3] > 0 && (ob_lens[0] != 0 || ob_lens[1] != 0 || ob_lens[2] != 0) && ob_lens_arm() != 2;
+  const int hasPrior = ob_lens[3] > 0 && (ob_lens[0] != 0 || ob_lens[1] != 0 || ob_lens[2] != 0) && !ob_lens_no_report();
   if (hasPrior) {
     const double rho2 = (R / ob_lens[3]) * (R / ob_lens[3]);
     prior[0] = ob_lens[0] * rho2; prior[1] = ob_lens[1] * rho2 * rho2; prior[2] = ob_lens[2] * rho2 * rho2 * rho2;
@@ -1100,9 +1054,6 @@ static int mark_cores(const ob_layout_t *L, int *out) {
   if (L->edge >= 5 && (!L->centre || L->edge != L->centre)) out[n++] = L->edge - ring;
   return n;
 }
-static inline int mark_core(const ob_layout_t *L) {
-  return L->corner >= 5 ? L->corner - 1 - OB_THIN_TRACK : (L->centre >= 5 ? L->centre : L->edge) - 2 * OB_THIN_TRACK;
-}
 static inline float mark_mid(const ob_layout_t *L) { return (OB_THIN_TRACK + L->corner - 1) / 2.0f; }
 
 // line, gap and core in pixels against the ratio OB_THIN_LINE : OB_RING_DEEP : core. `unit` comes back as the
@@ -1315,37 +1266,10 @@ static int mark_candidates(const ob_layout_t *L, const uint8_t *bin, int w, int 
   return n;
 }
 
-// The mark scan's own output, for a second implementation of it to be held to. Four floats
-// a candidate: x, y, unit, hits. Returns how many, or -1 if the layout paints no marks. Nothing in the decoder
-// calls this; mark_rect is the path.
-int ob_test_mark_scan(const ob_layout_t *L, const uint8_t *bin, int w, int h, int merged, float *out, int cap) {
-  cand_t *c = malloc((size_t)MAX_CAND * sizeof(cand_t));
-  if (!c) return -1;
-  const int n = mark_candidates(L, bin, w, h, merged, c);
-  const int m = n < cap ? n : cap;
-  for (int i = 0; i < m; i++) { out[4 * i] = c[i].x; out[4 * i + 1] = c[i].y; out[4 * i + 2] = c[i].unit; out[4 * i + 3] = (float)c[i].hits; }
-  free(c);
-  return n;
-}
-
-// The mark geometry the scan runs on, so a second implementation can build the same tests: the module counts
-// mark_ratio matches against, and the band depths it matches them in. Returns how many cores.
-int ob_test_mark_cfg(const ob_layout_t *L, int32_t *out) {
-  int cores[3];
-  const int nc = mark_cores(L, cores);
-  out[0] = OB_THIN_LINE; out[1] = OB_RING_DEEP; out[2] = OB_THIN_TRACK; out[3] = MARK_MIN_CORE;
-  out[4] = L->corner >= 5 ? L->corner - 2 : 0;   // the merged square's side in modules
-  out[5] = mark_side(L);
-  out[6] = nc;
-  for (int i = 0; i < 3; i++) out[7 + i] = i < nc ? cores[i] : 0;
-  return nc;
-}
-
 // Four marks chosen the way zxing chooses finder patterns: not by where they are but by whether they AGREE with
 // each other (archive/qr-aztec/vendor/zxing-cpp, QRDetector.cpp GenerateFinderPatternSets rejects a triple on size ratio, leg
-// ratio, implied module count and angle). The widest convex quad, which is what the finder frame used, picks
-// picture texture here: the picture offers dozens of small things with a mark's cross-section, and four of them
-// always span more of the image than the marks do.
+// ratio, implied module count and angle). The widest convex quad picks picture texture here: the picture offers
+// dozens of small things with a mark's cross-section, and four of them always span more of the image than the marks do.
 //
 // LIZARD can press the module-count test much harder than QR can, because the count is not being estimated: two
 // adjacent marks are exactly L->w - 2 * mark_mid modules apart and a mark's own cross-section gives the module
@@ -1361,8 +1285,8 @@ int ob_test_mark_cfg(const ob_layout_t *L, int32_t *out) {
 // is the gapped middle, since the core is what the gapped form's cross-section is centred on.
 static float mark_form_mid(const ob_layout_t *L, int form) { return form == 1 ? L->corner / 2.0f : mark_mid(L); }
 
-// The mark geometry a harness outside the codec needs to be scale-free the way mark_ratio and mark_quads are
-// (archive/opencv-finder/opencv_finder.mjs). Nothing in the decoder calls this. A blob detector measures a mark in PIXELS and has
+// The mark geometry a finder outside the codec needs to be scale-free the way mark_ratio and mark_quads are
+// (gpu/tables.mjs, scripts/exp/fmt_word.mjs). Nothing in the decoder calls this. A blob detector measures a mark in PIXELS and has
 // no module size of its own, so it has to get one the way this file does: divide the blob by the mark's known
 // module count, then check that four of them sit the known number of modules apart. Both forms are given
 // because a threshold that keeps the light gap open finds the CORE and one that closes it finds the whole
@@ -1462,29 +1386,6 @@ static int mark_quads(const ob_layout_t *L, const cand_t *all, int nall, int mer
   return nq;
 }
 
-// What mark_quads picks from a candidate list somebody else produced. Four floats a
-// candidate in, MARK_QUADS quads out, each four candidates then its score. Returns how many quads.
-//
-// This is the test that matters for a ported scan. Whether two candidate lists are identical is a proxy; whether
-// they lead to the same QUAD is the thing, because a candidate that never reaches the pool or never joins a
-// four-cycle at the known spacing cannot change any decode however wrong it is.
-int ob_test_mark_quads(const ob_layout_t *L, const float *cands, int n, int merged, float *out) {
-  cand_t *c = malloc((size_t)(n > 0 ? n : 1) * sizeof(cand_t));
-  mquad_t mq[MARK_QUADS];
-  if (!c) return -1;
-  for (int i = 0; i < n; i++) c[i] = (cand_t){ cands[4 * i], cands[4 * i + 1], cands[4 * i + 2], (int)cands[4 * i + 3] };
-  const int nq = mark_quads(L, c, n, merged, mq);
-  for (int i = 0; i < nq; i++) {
-    for (int k = 0; k < 4; k++) {
-      out[i * 17 + 4 * k] = mq[i].q[k].x; out[i * 17 + 4 * k + 1] = mq[i].q[k].y;
-      out[i * 17 + 4 * k + 2] = mq[i].q[k].unit; out[i * 17 + 4 * k + 3] = (float)mq[i].q[k].hits;
-    }
-    out[i * 17 + 16] = mq[i].score;
-  }
-  free(c);
-  return nq;
-}
-
 // What a mesh built elsewhere has to be built against: the layout's node lattice, the per-module kind map and which
 // nodes carry a mark. Read once a configuration. dims: nx, ny, w, h, thin, corner.
 int ob_test_mesh_tables(const ob_layout_t *L, int32_t *dims, float *nodeX, float *nodeY, uint8_t *kind, int32_t *mark) {
@@ -1496,16 +1397,6 @@ int ob_test_mesh_tables(const ob_layout_t *L, int32_t *dims, float *nodeX, float
   for (int k = 0; k < L->nx * L->ny; k++) mark[k] = L->node_mark[k];
   return 1;
 }
-// The same two solves the mesh has to agree with, so a caller driving it from outside does not reimplement them
-// and drift: corner_coords gives the lattice corners the quad is measured against, homography the map itself.
-void ob_test_corner_coords(const ob_layout_t *L, float *src) { corner_coords(L, src); }
-int ob_test_homography(const float *src, const float *dst, float *out) {
-  homo_t H;
-  if (!homography(src, dst, &H)) return 0;
-  memcpy(out, H.h, sizeof H.h);
-  return 1;
-}
-
 // Four points determine a homography exactly, so every error in them is an error in it. Eight over-determine it,
 // which is the difference between trusting one measurement and averaging several: QR v40 carries 46 alignment
 // patterns for the same reason LIZARD carries more than its corners.
@@ -2112,8 +2003,8 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
   // Then the same again on the image halved and quartered. binarize calls a pixel dark against the mean of its
   // 40 px neighbourhood, so a mark whose core outgrows that window is light in the middle and fails its solidity
   // probes: a 94-module symbol at 1080 fill 0.7 is 8 px a module and its cores are 48 px, and at 30 degrees the
-  // near marks were not found at all. The finder frame has always been searched this way (acquire_core); the
-  // marks were not, because at 286 modules a core only reaches the window at very close range.
+  // near marks were not found at all. A full-scale scan alone had sufficed for the 286-module side, where a core
+  // only reaches the window at very close range.
   float msrc[8];
   cand_t *mcand = malloc((size_t)MAX_CAND * sizeof(cand_t));
   mquad_t mq[MARK_QUADS];
@@ -2498,7 +2389,7 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
   }
   free(blurred);
   // the border is all there is to hang the mesh on
-  if (mesh) { smooth_along(L, &H, nodes); if (ob_lens_legacy()) border_fill(L, &H, iw, ih, nodes); else border_fill_axis(L, &H, iw, ih, nodes); }
+  if (mesh) { smooth_along(L, &H, nodes); border_fill_axis(L, &H, iw, ih, nodes); }
   float msum = 0;
   int mcount = 0;
   for (int k = 0; k < nn; k++) if (nodes[k].done) { msum += nodes[k].score; mcount++; }
@@ -2537,8 +2428,7 @@ void ob_map_point(const ob_layout_t *L, const ob_reg_t *reg, float mx, float my,
 // Any regular grid of points in module coordinates, through the homography and the mesh: point (xx, yy) of the
 // block is at (mx0 + (x0 + xx) * step, my0 + (y0 + yy) * step) and lands in out[yy * pitch + xx]. Points up to the
 // next mesh column share their four nodes and differ in mx alone, so a row is walked in such runs, four points
-// to a vector. The binary code's cells are the grid with origin 0.5 and step 1; FOCUS's picture is a finer one,
-// taken a strip of columns at a time.
+// to a vector. The picture is such a grid, n samples across its span, taken a strip of columns at a time.
 void ob_sample_grid(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
   const image_t im = *pim;
   const homo_t H = reg->H;
@@ -2601,32 +2491,3 @@ void ob_sample_grid(const ob_layout_t *L, const image_t *pim, const ob_reg_t *re
   }
 }
 
-// The line anchor's scan on its own, for the first WebGPU port (since deleted) to be held to candidate for
-// candidate. No layout: the scan is geometry-free, it only needs the grey image and
-// its binarization. Sides in find_frame's order (0 top, 1 right, 2 bottom, 3 left), three floats a candidate:
-// along, across, rank. n takes the four counts and then min_con, which find_frame works out here and the port
-// has to work out for itself.
-int ob_test_line_points(const uint8_t *grey, const uint8_t *bin, int w, int h, float *out, int32_t *n, int cap) {
-  int hist[256] = { 0 }, cnt = 0, p5 = 0, p95 = 255, acc = 0;
-  for (int y = 4; y < h; y += 8) for (int x = 4; x < w; x += 8) { hist[grey[(size_t)y * w + x]]++; cnt++; }
-  for (int v = 0; v < 256; v++) { acc += hist[v]; if (acc * 20 < cnt) p5 = v; if (acc * 20 < cnt * 19) p95 = v; }
-  const int min_con = (p95 - p5) / 4 < 12 ? 12 : (p95 - p5) / 4;
-  const int big = w > h ? w : h;
-  fpt_t *pts[4] = { 0 };
-  int m[4] = { 0 }, at = 0, ok = 1;
-  edge_ctx_t ctx;
-  for (int s = 0; s < 4; s++) if (!(pts[s] = malloc((size_t)(big / 2 + 1) * SIDE_K * sizeof(fpt_t)))) ok = 0;
-  if (!ok || edge_ctx_init(&ctx, grey, w, h, min_con)) { for (int s = 0; s < 4; s++) free(pts[s]); return -1; }
-  row_points(bin, w, h, &ctx, pts[3], &m[3], pts[1], &m[1]);
-  col_points(bin, w, h, &ctx, pts[0], &m[0], pts[2], &m[2]);
-  free(ctx.buf);
-  for (int s = 0; s < 4; s++) {
-    n[s] = m[s];
-    for (int k = 0; k < m[s] && at < cap; k++, at++) {
-      out[3 * at] = pts[s][k].along; out[3 * at + 1] = pts[s][k].across; out[3 * at + 2] = (float)pts[s][k].rank;
-    }
-    free(pts[s]);
-  }
-  n[4] = min_con;
-  return at;
-}

@@ -35,7 +35,7 @@ import { VERSION_MAX } from "./wordcode.mjs";
 import { classifySource, classifyPlan, rankSource, packWeights, packWeightsF16, packWeightsInt8 } from "./wgsl/classify_gemm.mjs";
 import { INT8_TWINS } from "./wgsl/classify.mjs";
 import { loadNet } from "./cnn/netfile.mjs";
-import { BackHalf, parseReadback, PASSES as BACK_PASSES, PASSES2 as CANCEL_PASSES } from "./back/back.mjs";
+import { BackHalf, parseReadback, PASSES as BACK_PASSES } from "./back/back.mjs";
 import { Ingest } from "./ingest.mjs";
 import { computePipeline } from "./pipeline.mjs";
 import { Probe } from "./probe.mjs";
@@ -55,7 +55,7 @@ export const TAU_TRACK = 0.15;
 const RESULT = 32;   // floats a frame in the finder's result record (wgsl/finder.mjs PICK)
 // ai: sel a frame: (ring, 1 + the version it decodes at, picture slot, 0), vec4u (wgsl/word.mjs).
 const SEL_WORDS = 4;
-const TS_MAX = 80;   // timestamps a batch's readback has room for: 40 profiled stages (pass two's 14 among them)
+const TS_MAX = 80;   // timestamps a batch's readback has room for: 40 profiled stages
 const TS_PLAIN = 2;   // ai: an unprofiled batch's one compute pass: its pair at 0, 1
 const TS_INGEST = 2;   // ai: a ring slot's F0 pair (its ingest pass ran before any batch, outside the batch's timestamps)
 // ai: Ring slots past Bmax: a batch's worth can wait to launch while frames keep arriving during its copies. Slots
@@ -135,7 +135,7 @@ export function precisionChain(adapter) {
 const TWIN_FRAMES = 2, TWIN_ROUNDS = 3;
 const TWINS = ["measure", "int8", "off"];
 // ai: The proposers (gpu/bank_<name>.mjs): v2, the default, and v1. (v3, 2026-10-01, is in archive/proposer-v3/.)
-export const BANKS = ["fcn2", "fcn"];
+export const BANKS = ["fcn2"];
 // ai: The bindings every classifier kernel (and SCORE, NODES, WORD) reads the pyramid through.
 const LV = ["tex", "ro", "ro", "ro", "ro", "ro", "uniform"];
 
@@ -187,14 +187,10 @@ export class FrontHalf {
   // ai: tables: gpu/tables.mjs formatTables() ({ rings, pictures }). backN: the largest picture the back half builds
   // ai: (each picture at its top, tables.pictures); a frame whose word names a larger one is found and not decoded,
   // ai: and the largest built picture sets every stride and the readback.
-  // fuse: with the GPU back half, its pass 1 samples each picture itself (wgsl/back_transform.mjs, fused) and F9 and
-  // the grid are left out, except in a batch that asks for the grids; false keeps F9 and the grid on every batch.
+  // ai: With the GPU back half its pass 1 samples each picture itself (wgsl/back_transform.mjs) and F9 and the grid
+  // ai: are left out; F9 is built only for the wasm back half, which reads each sampled grid back.
   // ai: probe: a batch run with probe: true also reads back what every stage left (probe.mjs), for the self-test page
   // ai: (scripts/pages/gpu_selftest.mjs); it gives four kinds of buffer COPY_SRC, so the receiver never sets it.
-  // ai: cancel: with the GPU back half, straddle cancellation as pass two of every batch (back/cancel.mjs): the short
-  // ai: frames read again with their known neighbours subtracted, in the batch's own command buffer after pass one,
-  // ai: its blocks and verdicts in the batch's readback. The carry it keeps between batches (the batch before's last
-  // ai: reference) is a shared buffer made with the back half (buildBack).
   // ai: twins: at precision int8, what a classifier given as an installed float file runs (its int8 twin,
   // ai: gpu/wgsl/classify.mjs INT8_TWINS). "measure" (the default under B "auto"): both forms are built and timed on the
   // ai: first stream batch's frames (measureTwins), and each net keeps the faster, by measurement alone; "int8": the
@@ -202,7 +198,7 @@ export class FrontHalf {
   // ai: fh.nets says what each net runs in.
   // ai: fh.boot: what create spent, ms: the device, the int8 twins fetched, the front half's pipelines (build), the
   // ai: probe kit and the back half (under B "auto" built here at B_CEIL, 2026-09-29), and the total.
-  static async create(adapter, tables, { B = "auto", budget = budgetFor(adapter?.limits), capMs = CAP_MS, restart = 0, cap = CAP, register = true, log = () => {}, weights = null, precision = "f32", bank = "fcn2", cascade = null, inflight = "auto", back = "gpu", backN = 1024, fuse = true, subgroups = true, probe = false, cancel = false, twins = null, lensOld = false } = {}) {
+  static async create(adapter, tables, { B = "auto", budget = budgetFor(adapter?.limits), capMs = CAP_MS, restart = 0, cap = CAP, register = true, log = () => {}, weights = null, precision = "f32", bank = "fcn2", cascade = null, inflight = "auto", back = "gpu", backN = 1024, subgroups = true, probe = false, twins = null } = {}) {
     if (back !== "wasm" && back !== "gpu") throw new Error(`back ${back}`);
     if (tables?.rings?.length !== RING_COUNT || tables.pictures?.length !== SLOTS) throw new Error(`tables: gpu/tables.mjs formatTables(), ${RING_COUNT} rings and ${SLOTS} pictures`);
     const whole = (v) => v >= 1 && v === Math.floor(v);
@@ -236,7 +232,6 @@ export class FrontHalf {
       device.addEventListener("uncapturederror", (e) => log(`uncaptured: ${e.error.message}`));
       lapBoot("device");
       const fh = new FrontHalf(device, tables, auto ? 0 : B, want, log, cap);
-      fh.lensOld = !!lensOld;
       // A caller that finds its batch failed asks here whether the device went with it (the page then makes a new one).
       fh.lost = null;
       device.lost.then((info) => { fh.lost = info; });
@@ -273,6 +268,7 @@ export class FrontHalf {
         } else if (tw.large || tw.small) fh.twinForms = { large: tw.large && packed(tw.large), small: tw.small && packed(tw.small) };
       }
       lapBoot("twins");
+      fh.sampled = back === "wasm";
       await fh.build();
       lapBoot("build");
       // ai: What each net runs in. A net bank's store leads its name ("int8 32x32 ...", "f16", "f32, halves stored";
@@ -292,10 +288,10 @@ export class FrontHalf {
         // Its tables come from the wasm, which holds no other Focus here (formatTables frees its own).
         // ai: Every picture at its top, so a frame decodes the version its word (or the held one) names out of it.
         const sizes = tables.pictures.map(({ n, subch }) => (n <= backN ? { n, subch } : null));
-        // ai: picture: the rings, where each puts a picture's samples and the lattice its Coons patch runs on, which the
-        // ai: fused pass 1 samples by (on the frame's (ring, picture) pair).
-        const picture = fuse ? tables.rings.map((t) => ({ span: t.span, margin: t.margin, lattice: t.nodeX })) : null;
-        fh.backOpts = { sizes, precision: floatPrecision, cap: 0, variant: "i16", picture, cancel, log };
+        // ai: picture: the rings, where each puts a picture's samples and the lattice its Coons patch runs on, which
+        // ai: pass 1 samples by (on the frame's (ring, picture) pair).
+        const picture = tables.rings.map((t) => ({ span: t.span, margin: t.margin, lattice: t.nodeX }));
+        fh.backOpts = { sizes, precision: floatPrecision, cap: 0, picture, log };
         // Built before any lane, since a lane's ensure() makes its BackHalf lane. Its shaders are compiled for B
         // frames.
         // ai: Under "auto" for B_CEIL, the lanes' size on every device whose memory allows it (the phone, the iGPU, the
@@ -309,8 +305,7 @@ export class FrontHalf {
       boot.total = Math.round(performance.now() - t0);
       fh.boot = boot;
       log(`built in ${boot.total} ms (device ${boot.device}, twins ${boot.twins}, front half ${boot.build}, probe ${boot.probe}, back half ${boot.back})`);
-      fh.fuse = back === "gpu" && fuse;
-      fh.cancel = back === "gpu" && cancel;
+      fh.fuse = back === "gpu";
       fh.lanes = auto ? [] : Array.from({ length: fh.fixedInflight }, () => fh.lane());
       fh.planning = null;
       fh.planned = null;
@@ -353,8 +348,6 @@ export class FrontHalf {
   get inflight() { return this.batcher ? this.batcher.inflight : this.fixedInflight; }
 
   // The back half, its shaders compiled for B frames; its buffers (the shared tables) listed so it can go whole.
-  // ai: The cancel stage's carry (one reference slot, shared by the lanes) is made here with it, counted in
-  // ai: backShared and destroyed with it: a new back half starts with no carry.
   async buildBack(B, quiet = false) {
     this.destroyBack();
     const a0 = this.allocated;
@@ -425,18 +418,18 @@ export class FrontHalf {
     const c = this.cascade, tf = this.twinForms, subgroups = this.features.includes("subgroups") ? " subgroups" : "";
     if (!BANKS.includes(this.bankName)) throw new Error(`bank ${this.bankName}: ${BANKS.join(", ")}`);
     const P = (code, entries) => this.pipeline(code, entries);
-    // ai: The proposer is a module (gpu/bank_<name>.mjs). A device whose workgroup memory cannot hold it even with its
+    // ai: The proposer is a module (gpu/bank_fcn2.mjs, version 2). A device whose workgroup memory cannot hold it even with its
     // ai: activations stored as halves (under 18,692 B; WebGPU promises only 16 KB) gets its FitError: no GPU decoder
     // ai: there, and the receiver's C decodes (lizard-web/gpuqueue.mjs openGpu throws Unavailable).
-    // ai: The default, v2, by a literal, so the installed app carries it under its hashed name (lizard-web/pwa/hash.mjs rewrites
-    // ai: literal references only); another bank by its name, from the source tree alone (a harness's choice).
-    const bank = (async () => { this.bank = await (this.bankName === "fcn2" ? import("./bank_fcn2.mjs") : import(`./bank_${this.bankName}.mjs`)); await this.bank.build(this); })();
+    // ai: By a literal, so the installed app carries it under its hashed name (lizard-web/pwa/hash.mjs rewrites literal
+    // ai: references only). Version 1 (bank_fcn.mjs) went 2026-10-22.
+    const bank = (async () => { this.bank = await import("./bank_fcn2.mjs"); await this.bank.build(this); })();
     const [ingest, pyramid, sampler, large, small, rank, twinLarge, twinSmall, vote, gather, score, pick, redo, nodesP, refit, refitPost, wordP, select] = await Promise.all([
       Ingest.create(this.device),
       // ai: The pyramid and each frame's grey levels in one kernel (wgsl/pyramid.mjs): the layer, the frame records,
       // ai: levels 1 to 4, the histogram (read back with the batch for the receiver's stats row), the levels' dims.
       P(PYRAMID, ["tex", "ro", "rw", "rw", "rw", "rw", "rw", "uniform"]),
-      P(SAMPLE, ["tex", "ro", "ro", "ro", "rw", "rw", "uniform", "ro", "ro", "ro", "uniform"]),
+      this.sampled ? P(SAMPLE, ["tex", "ro", "ro", "ro", "rw", "rw", "uniform", "ro", "ro", "ro", "uniform"]) : null,
       this.netForm(this.weights, false),
       // The cascade: the small net on every kept peak (writing its mark logit), RANK, then the net above on the list.
       c ? this.netForm(c.weights, true) : null,
@@ -638,7 +631,7 @@ export class FrontHalf {
   }
 
   // Capacity for frames up to W x H and pictures up to the largest size any frame asks for. Grows, never shrinks.
-  // grid: the batch runs F9 into the grid (the wasm back half, grids asked for, or no fused pass 1). Called on a lane.
+  // grid: the batch runs F9 into the grid (the wasm back half). Called on a lane.
   ensure(W, H, nmax, grid = true) {
     const d = this.device, B = this.B, a0 = this.allocated, root = this.root;
     root.sink = this.owned;
@@ -721,7 +714,7 @@ export class FrontHalf {
         // ai: backAt, backBytes: which of the lane's owned buffers are the BackHalf lane's (it holds bh.B frames
         // ai: whatever this lane's B), and their bytes, for plan() to price a frame.
         const o0 = this.owned.length, b0 = root.allocated;
-        this.backLane = this.bh.lane({ gridBuf: null, gridStride: this.gridStride, framesBuf: this.framesBuf, selBuf: this.selBuf });
+        this.backLane = this.bh.lane({ gridStride: this.gridStride, framesBuf: this.framesBuf, selBuf: this.selBuf });
         this.backAt = [o0, this.owned.length]; this.backBytes = root.allocated - b0;
         this.backPicture = null;
       }
@@ -729,7 +722,6 @@ export class FrontHalf {
     if (grid && !this.gridBuf) {
       this.gridBuf = d.createBuffer({ size: 4 * this.gridStride * B, usage: U.STORAGE | U.COPY_SRC | U.COPY_DST });
       this.sampleGroup = null;
-      if (this.bh) this.bh.bindGrid(this.backLane, this.gridBuf);
     }
     // The fused pass 1's bind groups hold the texture's view, which the W, H branch above replaces.
     if (this.fuse && this.backPicture !== this.texView) {
@@ -757,19 +749,18 @@ export class FrontHalf {
 
   // The capacity a batch needs: its largest frame, the largest picture it may sample, and whether F9 fills a grid.
   // ai: The picture is the word's to name (F8), found or told, so the grid holds up to nmaxFind whatever the frames.
-  shapeOf(frames, maps, nmaxFind = 1024, grids = false) {
+  shapeOf(frames, maps, nmaxFind = 1024) {
     const W = Math.max(1, ...frames.map((f) => (f ? f.w : 0))), H = Math.max(1, ...frames.map((f) => (f ? f.h : 0)));
     const nmax = nmaxFind;
-    // With the fused pass 1 the back half samples each picture itself, so F9 and the grid run only for the wasm back
-    // half or a batch that reads the grids back.
-    const fused = !!this.fuse && !grids;
+    // With the GPU back half pass 1 samples each picture itself, so F9 and the grid run only for the wasm back half.
+    const fused = !!this.fuse;
     return { W, H, nmax, fused, grid: !fused };
   }
 
   // B "auto": does this batch need lanes planned first (none yet, or a larger frame, picture or a grid)?
   // ai: At a fixed B, whether the ring is missing or too small for it. frames may be slots (only w and h are read).
-  needsPlan(frames, maps, { nmaxFind = 1024, grids = false } = {}) {
-    const p = this.planned, s = this.shapeOf(frames, maps, nmaxFind, grids), r = this.ring;
+  needsPlan(frames, maps, { nmaxFind = 1024 } = {}) {
+    const p = this.planned, s = this.shapeOf(frames, maps, nmaxFind), r = this.ring;
     if (!this.auto) return !r || s.W > r.W || s.H > r.H;
     return !p || s.W > p.W || s.H > p.H || s.nmax > p.nmax || (s.grid && !p.grid);
   }
@@ -780,7 +771,7 @@ export class FrontHalf {
   // ai: (the back half is built at create, B_CEIL), so a plan on the first frame is buffers alone. The ring is freed
   // ai: with the lanes and made again with them.
   async plan(frames, maps, opts = {}) {
-    const t0 = performance.now(), bt = this.batcher, d = this.device, L = d.limits, s = this.shapeOf(frames, maps, opts.nmaxFind ?? 1024, !!opts.grids);
+    const t0 = performance.now(), bt = this.batcher, d = this.device, L = d.limits, s = this.shapeOf(frames, maps, opts.nmaxFind ?? 1024);
     const p = this.planned ?? { W: 0, H: 0, nmax: 0, grid: false };
     const W = Math.max(p.W, s.W), H = Math.max(p.H, s.H), nmax = Math.max(p.nmax, s.nmax), grid = p.grid || s.grid;
     await Promise.allSettled(this.lanes.map((l) => l.pending));
@@ -804,8 +795,7 @@ export class FrontHalf {
       // ai: The readback buffer holds the back half's readback for its bh.B frames too: shared out the same.
       const [o0, o1] = probe.backAt ?? [0, 0], readBack = this.bh?.readBytes ?? 0, backBytes = (probe.backBytes ?? 0) + readBack;
       const size = (o, i) => (o === probe.readBuf ? o.size - readBack + readBack / Bb : (o.size ?? 0) / (i >= o0 && i < o1 ? Bb : 1));
-      // BACK=both reads the grids back through a buffer made for the batch, which the lane does not hold.
-      const perFrame = probe.laneBytes - backBytes + backBytes / Bb + (opts.grids && this.bh ? 4 * nmax * nmax : 0);
+      const perFrame = probe.laneBytes - backBytes + backBytes / Bb;
       const largest = Math.max(...probe.owned.map(size));
       probe.destroyLane();
       const oom = await d.popErrorScope();
@@ -977,7 +967,7 @@ export class FrontHalf {
   ready(frames = null, maps = null, opts = {}) {
     if (!this.auto) {
       if (frames && this.needsPlan(frames, maps, opts)) {
-        const s = this.shapeOf(frames, maps, opts.nmaxFind ?? 1024, !!opts.grids), r = this.ring;
+        const s = this.shapeOf(frames, maps, opts.nmaxFind ?? 1024), r = this.ring;
         this.makeRing(this.B + RING_SLACK, Math.max(s.W, r?.W ?? 0), Math.max(s.H, r?.H ?? 0));
       }
       return Promise.resolve();
@@ -1082,14 +1072,9 @@ export class FrontHalf {
     return p;
   }
 
-  // grids: with the GPU back half, read the sampled grids back as well, a diagnostic that holds the two back halves to
-  // the same grids (scripts/exp/gpu_captures.mjs BACK=both); never on a timed path.
   // ai: probe: every stage's buffers read back too, as out.probe (probe.mjs; a decoder made with probe: true).
   // A batch carries nb = slots.length slots (at most the lane's B): every dispatch, clear and readback covers those.
-  // ai: With the cancel stage the batch's pass two (back/cancel.mjs, back/DESIGN.md 13.3) follows pass one on this
-  // ai: lane in this command buffer, its carry in (the batch before's last reference) at the encoder's head; its
-  // ai: records, and each frame's cancelled, refs and gained, come back in the batch's own readback.
-  async batch(slots, maps, { debug = false, nmaxFind = 1024, peaks: inject = null, profile = false, grids = false, probe = false, held = 0 } = {}) {
+  async batch(slots, maps, { debug = false, nmaxFind = 1024, peaks: inject = null, profile = false, probe = false, held = 0 } = {}) {
     const d = this.device, B = this.B, nb = slots.length, root = this.root, ring = root.ring;
     if (nb > B) throw new Error(`${nb} frames in a batch of ${B}`);
     if (!(held >= 0 && held <= VERSION_MAX && held === Math.floor(held))) throw new Error(`held ${held}: a version 1 to ${VERSION_MAX}, or 0 for none`);
@@ -1103,7 +1088,7 @@ export class FrontHalf {
     const host = {}, t = [performance.now()];
     const lap = (name) => { t.push(performance.now()); host[name] = t[t.length - 1] - t[t.length - 2]; };
     const live = slots.map((s) => !!s);
-    const { W, H, nmax, fused } = this.shapeOf(slots, maps, nmaxFind, grids);
+    const { W, H, nmax, fused } = this.shapeOf(slots, maps, nmaxFind);
     // Errors are caught over the whole batch (buffers, bind groups, the submit) rather than only logged: a batch
     // that failed validation or ran out of memory would otherwise read back stale zeros and score as "nothing found".
     d.pushErrorScope("out-of-memory");
@@ -1117,7 +1102,7 @@ export class FrontHalf {
     const dims = new Uint32Array(4 * G), mp = new Float32Array(16 * B), sel = new Uint32Array(SEL_WORDS * G);
     slots.forEach((s, i) => {
       if (!s) return;
-      dims.set([s.w, s.h, axisWord(s.axis, this.lensOld), 1], 4 * i);
+      dims.set([s.w, s.h, axisWord(s.axis), 1], 4 * i);
       if (!find && maps[i]) { mp.set(maps[i], 16 * i); sel.set([s.ring, 1, 0, 0], SEL_WORDS * i); }
     });
     d.queue.writeBuffer(this.framesBuf, 0, dims);
@@ -1135,15 +1120,12 @@ export class FrontHalf {
       d.queue.writeBuffer(this.countsBuf, 0, cnt);
     }
     const enc = d.createCommandEncoder();
-    // ai: The cancel stage's carry in (the shared carry into this lane's REF slot R): a copy, so on the encoder
-    // ai: before the compute pass; no stage before pass two reads REF.
-    if (this.cancel) this.bh.prepareCancel(enc, this.backLane);
     // Stage groups for the profile: each gets its own pass and timestamp pair; otherwise one pass, one pair.
     // F7 is timed a dispatch at a time (nodes and refit, each round), so the split is on record with every profile.
     // ai: The finder's second round (wgsl/finder.mjs REDO) wherever it runs: the bank's levels below COARSE_FROM for the
     // ai: frames the first round did not find, and the finder again on those frames.
     const second = find && !inject && this.bank.COARSE_FROM != null;
-    const STAGES = ["pyramid", "bank", "select", "describe", "vote", "score", ...(second ? ["find2"] : []), ...this.rounds.flatMap((_, r) => [`nodes${r + 1}`, `refit${r + 1}`]), "word", ...(fused ? [] : ["sample"]), ...(this.bh ? [...BACK_PASSES, ...(this.cancel ? CANCEL_PASSES : [])] : [])];
+    const STAGES = ["pyramid", "bank", "select", "describe", "vote", "score", ...(second ? ["find2"] : []), ...this.rounds.flatMap((_, r) => [`nodes${r + 1}`, `refit${r + 1}`]), "word", ...(fused ? [] : ["sample"]), ...(this.bh ? BACK_PASSES : [])];
     if (profile && this.qs && this.qs.count < 2 * STAGES.length) { this.qs.destroy(); this.qs = d.createQuerySet({ type: "timestamp", count: 2 * STAGES.length }); this.qsBuf.destroy(); this.qsBuf = d.createBuffer({ size: 8 * 2 * STAGES.length, usage: U.QUERY_RESOLVE | U.COPY_SRC }); }
     const pair = (k) => (this.qs ? { timestampWrites: { querySet: this.qs, beginningOfPassWriteIndex: 2 * k, endOfPassWriteIndex: 2 * k + 1 } } : {});
     // ai: Each slot's crop from its ring layer into the lane's layer i (1.2 MB at 1080, about 0.1 ms a batch): no
@@ -1234,17 +1216,14 @@ export class FrontHalf {
       pass.setBindGroup(0, this.sampleGroup);
       pass.dispatchWorkgroups(ceilDiv(nmax, 16), ceilDiv(nmax, 16), nb);
     }
-    // ai: The back half behind the sampler, and with the cancel stage its pass two behind that: in the same pass, or
-    // ai: profiled as their passes with a timestamp pair each.
+    // ai: The back half behind the sampler: in the same pass, or profiled as its passes with a timestamp pair each.
     if (profile) pass.end();
     const target = profile ? enc : pass, at = (first) => (profile && this.qs ? { qs: this.qs, base: 2 * STAGES.indexOf(first) } : null);
-    if (this.bh) this.bh.encode(target, this.backLane, { fused, frames: nb, ts: at(BACK_PASSES[0]) });
-    if (this.cancel) this.bh.encodeCancel(target, this.backLane, { fused, frames: nb, ts: at(CANCEL_PASSES[0]) });
+    if (this.bh) this.bh.encode(target, this.backLane, { frames: nb, ts: at(BACK_PASSES[0]) });
     if (!profile) pass.end();
     const probed = probe ? this.probeKit.encode(this, enc, nb) : null;
     // The readback's layout. The wasm back half's: grid, counters, peaks, finder results, histograms, timestamps. The
     // GPU's: counters, finder results, histograms, the back half's (REC, V, ITS, BCOUNTS), timestamps; only that much is mapped.
-    // ai: With the cancel stage the back half's part holds pass two's counters too (BCOUNTS2, CANCEL).
     const gridBytes = this.bh ? 0 : 4 * this.gridStride * nb, cntBytes = 4 * COUNTERS * nb, pkBytes = this.bh ? 0 : 16 * this.cap * nb, resBytes = 4 * RESULT * nb, histBytes = 4 * HIST_BINS * nb;
     const cntOff = gridBytes, pkOff = cntOff + cntBytes, resOff = pkOff + pkBytes, histOff = resOff + resBytes, backOff = histOff + histBytes;
     const tsOff = backOff + (this.bh ? this.bh.readBytes : 0);
@@ -1265,11 +1244,6 @@ export class FrontHalf {
       for (const i of inPairs) enc.copyBufferToBuffer(ring.qsBuf, 8 * TS_INGEST * slots[i].id, this.readBuf, tsInOff + 8 * TS_INGEST * i, 8 * TS_INGEST);
     }
     const readBytes = tsInOff + (inPairs.length ? 8 * TS_INGEST * nb : 0);
-    let gridRead = null;
-    if (this.bh && grids) {
-      gridRead = d.createBuffer({ size: 4 * this.gridStride * nb, usage: U.MAP_READ | U.COPY_DST });
-      enc.copyBufferToBuffer(this.gridBuf, 0, gridRead, 0, gridRead.size);
-    }
     // Debug: the finder's intermediate buffers, read back separately (never on a timed path).
     let dbg = null;
     if (debug && find) {
@@ -1290,7 +1264,7 @@ export class FrontHalf {
     const mapped = this.readBuf.mapAsync(GPUMapMode.READ, 0, readBytes);
     probed?.start();
     const errs = (await Promise.all(scopes)).filter(Boolean).map((e) => e.message);
-    if (errs.length) { mapped.then(() => this.readBuf.unmap(), () => {}); gridRead?.destroy(); probed?.discard(); throw new Error(`GPU batch failed: ${errs.join(" | ")}`); }
+    if (errs.length) { mapped.then(() => this.readBuf.unmap(), () => {}); probed?.discard(); throw new Error(`GPU batch failed: ${errs.join(" | ")}`); }
     lap("scopes");
     await mapped;
     lap("map");
@@ -1304,8 +1278,6 @@ export class FrontHalf {
       let o = 0;
       for (const [name, b] of dbg.parts) { debugOut[name] = new Float32Array(raw, o, b.size / 4); o += b.size; }
     }
-    let gridAll = null;
-    if (gridRead) { await gridRead.mapAsync(GPUMapMode.READ); gridAll = gridRead.getMappedRange(); }
     // Only what the batch made leaves the mapped range: the counters, the results, the kept peaks and each sampled
     // picture's n x n floats, not the grid's room for the largest picture (4 MB a frame at nmax 1024).
     const all = this.readBuf.getMappedRange(0, readBytes);
@@ -1316,18 +1288,16 @@ export class FrontHalf {
     const res = new Float32Array(all, resOff, RESULT * nb).slice();
     const hist = new Uint32Array(all, histOff, HIST_BINS * nb).slice();
     const peaks = (i) => (this.bh ? new Float32Array(0) : new Float32Array(all, pkOff + 16 * this.cap * i, 4 * Math.min(this.cap, counts[COUNTERS * i + COUNT.peaks])).slice());
-    const gridAt = (i, n) => (this.bh ? (gridAll ? new Float32Array(gridAll, 4 * this.gridStride * i, n * n).slice() : new Float32Array(0)) : new Float32Array(all, 4 * this.gridStride * i, n * n).slice());
+    const gridAt = (i, n) => (this.bh ? new Float32Array(0) : new Float32Array(all, 4 * this.gridStride * i, n * n).slice());
     // The back half's frame: its counters (back.mjs COUNT), how many blocks got each verdict (0 not run, 1 verified,
     // 2 declined, 3 stall or cap, 4 CRC), the verified blocks (block, iterations, id, 473 payload bytes, the id
-    // first), and with grids every block's verdict. An empty slot must show zeros and no block.
-    // ai: cancelled: pass two ran on the frame with a solved fit; refs: the references the gate gave it; gained: the
-    // ai: blocks pass two verified, among the records (0, 0 and false without the cancel stage).
+    // first). An empty slot must show zeros and no block.
     const bk = this.bh ? parseReadback(all.slice(backOff, backOff + this.bh.readBytes), 0, this.bh.dims) : null;
     const backOf = (i) => {
       if (!bk) return null;
       const fr = bk.frames[i], verdicts = [0, 0, 0, 0, 0];
       for (const v of fr.verdict) verdicts[Math.min(v, 4)]++;
-      return { counts: fr.counts, verdicts, records: bk.records.filter((x) => x.frame === i), verdict: grids ? Array.from(fr.verdict) : null, cancelled: !!fr.cancel?.cancelled, refs: fr.cancel?.refs ?? 0, gained: fr.cancel?.gained ?? 0 };
+      return { counts: fr.counts, verdicts, records: bk.records.filter((x) => x.frame === i) };
     };
     // ai: The batch's device time: the timestamps where the device has them (unprofiled, its one compute pass), else
     // ai: its readback's arrival less when the device could start it (its submit, or the batch before it done).
@@ -1373,7 +1343,6 @@ export class FrontHalf {
       };
       }),
     };
-    if (gridRead) { gridRead.unmap(); gridRead.destroy(); }
     this.readBuf.unmap();
     lap("read");
     out.read = t[t.length - 1];

@@ -9,7 +9,7 @@ import kotlin.system.exitProcess
 // ai: code area has a size, and after secs (8 unless named) of presenting the last presenter and sender stats are
 // ai: printed to stdout as one JSON line {"present": {...}, "sender": {...}} and the app exits 0. Any failure prints
 // ai: "FAIL <why>" and exits 1. Keys: secs; codes 1 or 2; enc auto, gpu or cpu; blocks 0 (auto) to 128; fps 1 to 60;
-// ai: size 25 to 100 (%); gap 0 to 64 (modules); ring auto, 32, 64, 96 or 128; full 0 or 1 (the window full screen, the
+// ai: size 25 to 100 (%); gap 0 to 64 (modules); ring auto, 32, 64, 128 or 256; full 0 or 1 (the window full screen, the
 // ai: compositor bypassed); file=<path>[:<path>...] (files or folders in place of the test stream, as a pick or a drop
 // ai: gives them: one file as itself, else one tar, 2026-10-16); steps
 // ai: (2026-10-04, the app's own controls, which only a hand had moved): comma separated <seconds>:<action>, from when

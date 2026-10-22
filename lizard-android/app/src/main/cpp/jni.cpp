@@ -94,7 +94,7 @@ extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
   return JNI_VERSION_1_6;
 }
 
-// ai: The core's LIZ_* switches for a run driven over adb: `adb shell setprop debug.lizard.env "LIZ_PARTS=0 ..."`, read
+// ai: The core's LIZ_* switches for a run driven over adb: `adb shell setprop debug.lizard.env "LIZ_LDPC_FORM=0 ..."`, read
 // ai: as each receiver and each sender is made; the names set the last time are unset first, so a property cleared
 // ai: takes effect at the next one (2026-10-07; they stayed set before).
 static void applyDebugEnv() {
@@ -898,7 +898,6 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txPostStats
   return e->NewStringUTF((o + "}").c_str());
 }
 
-extern "C" JNIEXPORT jint JNICALL Java_dev_lizard_receiver_Native_txSide(JNIEnv*, jclass, jlong h) { return tx(h)->s->side(); }
 // ai: The blocks a frame of subch sub-channels carries under the format's rate profile (src/focus.h focus_blocks_for),
 // ai: for the Blocks slider's figures before a configure
 extern "C" JNIEXPORT jint JNICALL Java_dev_lizard_receiver_Native_blocksFor(JNIEnv*, jclass, jint subch) { return focus_blocks_for(subch); }

@@ -63,7 +63,7 @@ struct Args {
 
 [[noreturn]] void usage(const std::string& why) {
   std::fprintf(stderr,
-               "%s\nusage: lizard_present [--output NAME] [--subch K] [--codes 1|2] [--fps F] [--ring 32|64|96|128]\n"
+               "%s\nusage: lizard_present [--output NAME] [--subch K] [--codes 1|2] [--fps F] [--ring 32|64|128|256]\n"
                "  [--painter auto|gpu|cpu] [--threads T] [--n N] [--file PATH] [--fit stretch|whole] [--secs S] [--log CSV]\n"
                "  [--assets DIR]\n",
                why.c_str());
@@ -97,7 +97,7 @@ Args parse(int argc, char** argv) {
   if (a.subch < 8 || a.subch > 1024 || a.subch % 8) usage("--subch is 8 to 1024 in steps of 8 (LIZARD-k)");
   if (a.codes != 1 && a.codes != 2) usage("--codes is 1 or 2");
   if (a.fps < 1 || a.fps > 240) usage("--fps is 1 to 240");
-  if (a.ring != 32 && a.ring != 64 && a.ring != 96 && a.ring != 128) usage("--ring is 32, 64, 96 or 128");
+  if (a.ring != 32 && a.ring != 64 && a.ring != 128 && a.ring != 256) usage("--ring is 32, 64, 128 or 256");
   if (a.fit != "stretch" && a.fit != "whole") usage("--fit is stretch or whole");
   if (a.painter != "auto" && a.painter != "gpu" && a.painter != "cpu") usage("--painter is auto, gpu or cpu");
   return a;

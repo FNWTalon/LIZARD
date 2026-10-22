@@ -74,7 +74,6 @@ function wasm(M) {
 }
 export const hex = (a) => Array.from(a, (v) => v.toString(16).padStart(2, "0")).join("");
 export const b64 = (a) => { let s = ""; for (const v of a) s += String.fromCharCode(v); return btoa(s); };
-export const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 // BLAKE3 of a buffer through the vendored C, for a harness that has the codec's wasm to hand.
 export const blake3 = (M, bytes) => wasm(M).b3(bytes);
 

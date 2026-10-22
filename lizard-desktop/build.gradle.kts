@@ -34,14 +34,14 @@ val nativeLib = rootDir.resolve("build/native/" + System.getProperty("os.name").
         else -> "liblizard_desktop.so"
     }
 })
-// ai: the TAB blob send.json names (the paint's codes, since 2026-10-07; PERMW before); a tree without liblizard/out or the native library (a fresh clone) still
+// ai: the TAB blob send.json names (the paint's codes); a tree without liblizard/out or the native library (a fresh clone) still
 // ai: configures, and bundleInputs says what to run (a Sync with no files is skipped, its own actions too)
 val sendJson = liblizardOut.resolve("setup/send.json")
-val perm = if (sendJson.isFile) Regex("\"blob\"\\s*:\\s*\"([^\"]+)\"").find(sendJson.readText())?.groupValues?.get(1) else null
+val tab = if (sendJson.isFile) Regex("\"blob\"\\s*:\\s*\"([^\"]+)\"").find(sendJson.readText())?.groupValues?.get(1) else null
 val bundleInputs by tasks.registering {
     doLast {
         if (!nativeLib.isFile) throw GradleException("no $nativeLib: cmake -S native -B build/native && cmake --build build/native")
-        if (perm == null) throw GradleException("no GPU painter's files in ${liblizardOut.normalize()}: ../lizard-android/build.sh tools, then gen")
+        if (tab == null) throw GradleException("no GPU painter's files in ${liblizardOut.normalize()}: ../lizard-android/build.sh tools, then gen")
     }
 }
 val bundle by tasks.registering(Sync::class) {
@@ -49,7 +49,7 @@ val bundle by tasks.registering(Sync::class) {
     into(bundled)
     from(nativeLib) { into("lizard/native") }
     from(liblizardOut) {
-        include(listOfNotNull("setup/send.json", perm, "spv/send_*.spv"))
+        include(listOfNotNull("setup/send.json", tab, "spv/send_*.spv"))
         exclude("spv/*.raw.spv")
         into("lizard/assets")
     }

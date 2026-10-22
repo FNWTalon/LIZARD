@@ -74,7 +74,7 @@ const { HIST_BINS, PYRAMID_BLOCK } = await imp("gpu/wgsl/pyramid.mjs");
 const { KEEP } = await imp("gpu/wgsl/bank.mjs");
 const { TILE } = await imp("gpu/wgsl/bank_fcn2.mjs");
 const { SLOTS } = await imp("gpu/wgsl/common.mjs");
-const { ARGS_WORDS, ARGS_SLOT, argsLdpc, argsWords } = await imp("gpu/wgsl/back_transform.mjs");
+const { ARGS_WORDS, ARGS_SLOT, argsWords } = await imp("gpu/wgsl/back_transform.mjs");
 const { VERSION_MAX } = await imp("gpu/wordcode.mjs");
 const { COUNTS } = await imp("gpu/back/back.mjs");
 const { REC_BYTES } = await imp("gpu/back/ldpc.mjs");
@@ -154,16 +154,16 @@ function exportBack(bh) {
   return {
     B: bh.B, precision: bh.precision, dims: plain(bh.dims), bytes: bh.bytes, readBytes: bh.readBytes,
     transform: {
-      built: t.built, zero: t.zero, cbytes: t.cbytes, yStride: t.yStride, sStride: t.sStride, partStride: t.partStride, sampStride: t.sampStride, nmax: t.nmax,
+      built: t.built, zero: t.zero, cbytes: t.cbytes, yStride: t.yStride, sStride: t.sStride, partStride: t.partStride, nmax: t.nmax,
       gate: idOf(t.gate), gateBgl: idOf(t.gateBgl), p1fBgl: idOf(t.p1fBgl), redBgl: idOf(t.redBgl), p2Bgl: idOf(t.p2Bgl),
       pass1f: perSlot(t.pass1f), reduce: perSlot(t.reduce), pass2: perSlot(t.pass2),
       twBufs: perSlot(t.twBufs), x12Bufs: perSlot(t.x12Bufs), rowsBufs: perSlot(t.rowsBufs), picUnis: perSlot(t.picUnis), gateUni: idOf(t.gateUni),
       sizes: t.tables.map((tb) => (tb ? { n: tb.n, subch: tb.subch, blocks: tb.blocks, m2: tb.m2, sx2: tb.sx2, sq2: tb.sq2 } : null)),
     },
-    // ai: the one-rate soft and LDPC stages make the lane's buffers; their kernels are not run (the rate profile's are,
-    // ai: below), so their pipelines are not named and the native host builds none of them
-    soft: { pipeline: null, align: null, bgl: idOf(so.bgl), uvBuf: idOf(so.uvBuf), twBuf: idOf(so.twBuf), params: perSlot(so.params), served: so.served, blocks: so.sizes.map((z) => (z ? z.blocks : 0)), bytes: so.bytes, indirect: so.indirect },
-    ldpc: { pipeline: null, bgl: idOf(ld.bgl), mapBuf: idOf(ld.mapBuf), params: idOf(ld.params), bytes: ld.bytes, blocksMax: ld.blocksMax, recCap: ld.recCap },
+    // ai: the soft and LDPC stages' tables and lane buffers (back/soft.mjs, back/ldpc.mjs), which the rate profile's
+    // ai: stage below decodes through
+    soft: { uvBuf: idOf(so.uvBuf), params: perSlot(so.params), served: so.served, blocks: so.sizes.map((z) => (z ? z.blocks : 0)), bytes: so.bytes },
+    ldpc: { bytes: ld.bytes, blocksMax: ld.blocksMax, recCap: ld.recCap },
     // ai: the format's rate profile's stage (gpu/back/tiers.mjs exportFor), in the soft and LDPC stages' place
     rule: bh.rule.exportFor(idOf),
   };
@@ -178,7 +178,7 @@ function exportTree(fh, v, tables) {
   return {
     variant: v.name, precision: fh.precision, floatPrecision: fh.floatPrecision, subgroups: v.subgroups, features: fh.features, nets: fh.nets,
     consts: { LEVELS, COUNTERS, RESULT: 32, SEL_WORDS: 4, TS_MAX: 80, TS_PLAIN: 2, TS_INGEST: 2, RING_SLACK: 4, K, CELL, HYP, RING_COUNT, VOTE_READS, NODES_MAX, RESID, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK, TAU, EPS, TAU_TRACK,
-      TILE, KEEP, B_CEIL, CAP_MS, TWIN_FRAMES: 2, TWIN_ROUNDS: 3, VERSION_MAX, SLOTS, ARGS_WORDS, ARGS_SLOT, argsLdpc, argsWords, COUNTS, REC_BYTES, PAYLOAD },
+      TILE, KEEP, B_CEIL, CAP_MS, TWIN_FRAMES: 2, TWIN_ROUNDS: 3, VERSION_MAX, SLOTS, ARGS_WORDS, ARGS_SLOT, argsWords, COUNTS, REC_BYTES, PAYLOAD },
     cap: fh.cap, register: fh.register, nodesMax: fh.nodesMax, modules: Array.from(fh.modules), bankKeep: fh.bank.KEEP,
     cascade: fh.cascade ? { keep: fh.cascade.keep, rest: fh.cascade.rest, precision: fh.cascade.weights.precision } : null, weightsPrecision: fh.weights.precision,
     front: {
@@ -347,7 +347,7 @@ async function main() {
     const adapter = mockAdapter(rec, { features: FEATURES, limits: LIMITS });
     const fh = await FrontHalf.create(adapter, tables, {
       B: "auto", capMs: CAP_MS, inflight: "auto", restart: 0, cap: CAP, register: true, weights: large, precision: v.precision, subgroups: v.subgroups,
-      bank: "fcn2", cascade: { weights: small, keep: CASCADE.keep, rest: CASCADE.rest }, back: "gpu", backN: 1536, fuse: true, log: (m) => log.push(m), probe: false, cancel: false, twins: null,
+      bank: "fcn2", cascade: { weights: small, keep: CASCADE.keep, rest: CASCADE.rest }, back: "gpu", backN: 1536, log: (m) => log.push(m), probe: false, twins: null,
     });
     const tree = exportTree(fh, v, tables);
     tree.backs[fh.bh.B] = exportBack(fh.bh);
@@ -356,11 +356,7 @@ async function main() {
     const objects = exportObjects(rec, tree, blobs);
     tree.objects = objects;
     for (const p of Object.values(objects.pipelines)) if (!modules.has(p.module)) modules.set(p.module, rec.modules.get(p.module));
-    // ai: under a rate profile being tested (LIZ_PROFILE, src/focus.h focus_profile_set) the setup is that profile's,
-    // ai: setup/<variant>@<tag>.json beside the format's (the shaders and blobs are content-hashed, so a candidate adds
-    // ai: only its setups and its TAB); core/dec/setup.cpp loads it under the same variable
-    const TAG = process.env.LIZ_PROFILE ? `@${process.env.LIZ_PROFILE.replace(/[:/]/g, "_")}` : "";
-    writeFileSync(new URL(`setup/${v.name}${TAG}.json`, OUT), JSON.stringify(tree));
+    writeFileSync(new URL(`setup/${v.name}.json`, OUT), JSON.stringify(tree));
     summary.push({ variant: v.name, pipelines: Object.keys(objects.pipelines).length, buffers: Object.keys(objects.buffers).length, nets: fh.nets });
     console.log(`${v.name}: ${Object.keys(objects.pipelines).length} pipelines, ${Object.keys(objects.buffers).length} buffers, nets ${JSON.stringify(fh.nets)}`);
   }

@@ -1,16 +1,14 @@
 // Sender: paints the chosen code at a whole number of device pixels per cell.
 // ai: Standalone (2026-09-26): it picks its format,
-// ai: encodes and paints the test stream or a file picked from this device with no server. Once a second it posts
-// ai: what it painted and its config to the rig as a development log (devlog.mjs), best effort, never awaited.
+// ai: encodes and paints the test stream or a file picked from this device with no server.
 // ai: For a user the page is a file, several or a folder (bundled as one tar, tar.mjs): choose or drop them, Start,
 // ai: Fullscreen, Stop, the version picked from the window over
 // ai: the whole ladder (up to LIZARD-560 until 2026-09-29, APP_TOP). The lab's switches are in Settings and Developer
 // ai: Tools, their ids the URL presets.
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { DEFAULT_LOG2 } from "../liblizard/sim/xfer.mjs";
-import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, versionOf, blocksFor } from "../liblizard/sim/lizard_pick.mjs";
+import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor } from "../liblizard/sim/lizard_pick.mjs";
 import { GAP_MODULES } from "../liblizard/gpu/encoder.mjs";
-import { logPost } from "./devlog.mjs";
 import { bundle } from "./tar.mjs";
 import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, collapser, sideResizer } from "./ui.mjs";
 
@@ -29,7 +27,7 @@ const $ = (id) => document.getElementById(id), canvas = $("c"), ctx = canvas.get
 // nextId is the block id space and seq only counts painted frames. They are separate because
 // blocksPerFrame changes when repick() swaps the layout mid-stream: seq * blocksPerFrame would
 // then jump backwards onto ids already sent, and every one of them would read as a repeat.
-// ai: cfg: what is painted, for the log. running: from Start until Stop (preparing, then sending); live: a frame is painted.
+// ai: cfg: what is painted. running: from Start until Stop (preparing, then sending); live: a frame is painted.
 // ai: lap: a file's data blocks a lap (sim/xfer.mjs), 0 for the test stream; dataSent: data blocks painted this run.
 let timer = 0, seq = 0, nextId = 0, image = null, painted = 0, paintMs = 0, encMs = 0, lastReport = 0, cfg = null, shown = null;
 let running = false, live = false, lap = 0, dataSent = 0, dataWin = 0;
@@ -243,10 +241,8 @@ function stateFps(force = false) {
 // ai: (2026-09-26).
 const URLP = new URLSearchParams(location.search), CHUNK_LOG2 = +URLP.get("chunk") || DEFAULT_LOG2;
 // ai: The size on screen and the surround, test-only menus until 2026-10-01, URL parameters since: fit=stretch|whole|fit,
-// ai: bg=none|noise|text|photo|checker|squares|mixed. Their
-// ai: stale stored values go.
+// ai: bg=none|noise|text|photo|checker|squares|mixed.
 const FIT = URLP.get("fit") ?? "stretch", SURROUND = URLP.get("bg") ?? "none";
-for (const k of ["fit", "bg"]) try { localStorage.removeItem(`send:${k}`); } catch {}
 
 // Which generator fills a test block (sim/phy.mjs STREAMS). It rides in the spec so the receiver
 // and any later replay of research/captures take it from the same place; a capture recorded before
@@ -255,9 +251,8 @@ for (const k of ["fit", "bg"]) try { localStorage.removeItem(`send:${k}`); } cat
 const STREAM = "shake256";
 
 function spec() {
-  // The 2 x 2 picture split (sim/phy.mjs makeGrid) is gone from this page (2026-09-24): its tiles were
-  // n = 128 pictures off the ladder with no format word, a symbol that cannot describe itself. The lab's
-  // archive/lizard-2/lizard2.mjs (not published) built them for measurement.
+  // The 2 x 2 picture split is gone from this page (2026-09-24): its tiles were n = 128 pictures off the ladder
+  // with no format word, a symbol that cannot describe itself.
   // ai: The format's rate profile (the codec's, from the sub-channel count: src/focus.c focus_tiers_for, four rates
   // ai: since 2026-10-08), equal power, soft LDPC: the power tilt and RS(80,64) lost (research/10).
   // n is derived from the version (N_FOR in sim/lizard_pick.mjs) and is never chosen here.
@@ -338,8 +333,8 @@ function layout(n, codes = 1, gpu = false, gap = 0) {
     cv.style.imageRendering = "auto";
     ctx.imageSmoothingEnabled = false;
     canvasWhole = scale;
-    // ai: scale: what a sample ends up as on screen, fractional once stretched. whole: the canvas's own integer factor.
-    $("tx").dataset.scale = (css / n).toFixed(3); $("tx").dataset.whole = scale; $("tx").dataset.gap = gap * scale;
+    // ai: scale: what a sample ends up as on screen, fractional once stretched.
+    $("tx").dataset.scale = (css / n).toFixed(3); $("tx").dataset.gap = gap * scale;
   }
 }
 
@@ -571,10 +566,6 @@ async function start() {
       // ai: pass went to #tx on 2026-10-05).
       $("nums").textContent = rate(offeredKBs);
       dataWin = 0;
-      // nextId and seq go with it: a stalled paint loop stops posting at all, so staleness is the
-      // signal, and these separate "painting nothing new" from "not painting".
-      // ai: A development log (devlog.mjs), the config beside it; the rig puts it in the receiver's next row.
-      logPost("/api/sender", { painted: painted / dt, offeredKBs, codes: cfg.codes, scale: +$("tx").dataset.scale, whole: +$("tx").dataset.whole, samples, n: shown.n, subch: shown.subch, version: versionOf(shown.subch), room: Math.round(room()), seq, nextId, transfer: cfg.transfer, worker: true, encodeMs: encMs / painted, paintMs: paintMs / painted, behind, refreshMs: tickMs, animationFps: afps, held: held.slice(), encoder: gcfg ? "gpu" : "wasm", gpuMs, gpuAdapter: genc?.adapterName ?? null, gpuOff, config: cfg });
       painted = 0; paintMs = encMs = 0; behind = 0; held.fill(0); rafGaps.length = 0; lastReport = now;
     }
   };

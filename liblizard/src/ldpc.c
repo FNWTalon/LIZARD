@@ -61,11 +61,6 @@ static int count_cycles(int mb, int z, int shift[][LDPC_NB], int r, int j, int s
 
 // Test hook: a degree profile to use instead of the table's, for the ablations in test/.
 int ldpc_override_heavy = -1, ldpc_override_dh = 0, ldpc_norm = 0;
-int ldpc_codes_set = -1;
-static int codes_set(void) {
-  if (ldpc_codes_set < 0) { const char *e = getenv("LIZ_TABLES"); ldpc_codes_set = e && *e ? atoi(e) : 0; }
-  return ldpc_codes_set;
-}
 
 static profile_t profile(int rate) {
   profile_t prof = PROFILE[rate];
@@ -116,13 +111,9 @@ int ldpc_init(ldpc_t *c, int n_max, int rate, uint32_t seed) {
   // columns and columns never sent); every other code, and the format's own under a test's profile override, is
   // generated over 48 columns.
   static _Thread_local int shift[LDPC_NB][LDPC_NB];   // ai: scratch, a thread's own
-  const ldpc_base_t *base = 0, *set = codes_set() == 1 ? LDPC_BASES_V1 : codes_set() == 2 ? LDPC_BASES_V2 : LDPC_BASES;
+  const ldpc_base_t *base = 0;
   for (int t = 0; t < LDPC_BASES_N; t++)
-    if (z == set[t].z && rate == set[t].rate && seed == LDPC_BASE_SEED && ldpc_override_heavy < 0) base = &set[t];
-  // ai: the lab set 2's tables carry their own z (128): matched by rate where the codeword fits the block's n_max
-  if (!base && codes_set() == 2)
-    for (int t = 0; t < LDPC_BASES_N; t++)
-      if (rate == set[t].rate && seed == LDPC_BASE_SEED && ldpc_override_heavy < 0 && (set[t].kb + set[t].mb) * set[t].z <= n_max) { base = &set[t]; z = set[t].z; }
+    if (z == LDPC_BASES[t].z && rate == LDPC_BASES[t].rate && seed == LDPC_BASE_SEED && ldpc_override_heavy < 0) base = &LDPC_BASES[t];
   int mb = base ? base->mb : p->mb, kb = base ? base->kb : LDPC_NB - mb, np = base ? base->np * z : 0;
   if (mb > LDPC_NB || kb > LDPC_NB) return -1;
   c->z = z; c->mb = mb; c->kb = kb; c->rate = rate; c->norm = ldpc_norm ? ldpc_norm : p->norm;

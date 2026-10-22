@@ -41,9 +41,7 @@ export function planArch(arch = V1) {
 // cnn-v1's constants, for the scripts that replicate that network in JS (scripts/gpu/cnn/check_scaled.mjs).
 export const SPEC = V1.name;
 const v1 = planArch(V1);
-export const LAYERS = v1.layers.map((l) => [l.name, l.shape]);
 export const OFFSETS = v1.offsets;
-export const TOTAL = v1.total;
 
 // ai: A float packer: a q8 file (arch.quant, codes and no float w or b) is refused by name; its packer is
 // ai: gpu/wgsl/classify_gemm.mjs packWeightsInt8.

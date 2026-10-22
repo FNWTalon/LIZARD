@@ -17,20 +17,16 @@
 // ai:     { type: "unavailable", reason } per config; { type: "source", kind: "worker-track" } once the track's first
 // ai:     frame is read, or { type: "source", kind: "page", why } when the track gives none in SOURCE_WAIT, fails, or
 // ai:     ?gsrc=page declines it (the page keeps its tap); one { type: "result", ... } per frame (a track frame's with
-// ai:     box: { x, y, w, h }, the crop used; with gained, the blocks among its own that straddle cancellation, pass two,
-// ai:     verified, where it verified any); { type: "stats",
+// ai:     box: { x, y, w, h }, the crop used); { type: "stats",
 // ai:     ms, lag, B, inflight, queued, held, dropped, f0, vf, luma, levelsFrom, batches, carried, host, submitToMap,
-// ai:     mapLatency, doneMs, ingestMs, arrived, gapMax, openMax, cancelled, gained } at most once a second
-// ai:     (vf and luma: { n, found, blocks } of the window's VideoFrame frames and its luma frames; cancelled and
-// ai:     gained: the window's frames pass two ran on with a solved fit, and the blocks it verified, sums a second;
-// ai:     levelsFrom: where the last grey levels reported came from, "gpu" for a VideoFrame's histogram read back with
+// ai:     mapLatency, doneMs, ingestMs, arrived, gapMax, openMax } at most once a second
+// ai:     (vf and luma: { n, found, blocks } of the window's VideoFrame frames and its luma frames; levelsFrom: where the last grey levels reported came from, "gpu" for a VideoFrame's histogram read back with
 // ai:     its batch, "luma" for a luma frame measured here, "" before any; the rest: where a batch's wall time goes,
 // ai:     at WIN0 below);
 // ai:     { type: "lost", reason } once it gives up; { type: "error", tag, message } as the CPU worker's. A frame not
 // ai:     decoded (dropped from the queue, or no decoder yet) is answered with the CPU worker's no-decoder result plus
 // ai:     dropped: true.
-// ai: ?pref=high-performance|low-power on the worker's URL asks for that adapter (a machine with two GPUs); ?cancel=1
-// ai: puts straddle cancellation in the decoder (the receiver's ?gcancel=on; off by default).
+// ai: ?pref=high-performance|low-power on the worker's URL asks for that adapter (a machine with two GPUs).
 import { blockJudge } from "../liblizard/sim/phy.mjs";
 import { init as initOb, heapTop } from "../liblizard/sim/ob.mjs";
 import { PAYLOAD } from "../liblizard/sim/xfer.mjs";
@@ -41,9 +37,8 @@ import { Ingest } from "../liblizard/gpu/ingest.mjs";
 const Q = new URLSearchParams(globalThis.location?.search ?? "");
 const PREF = Q.get("pref");
 // ai: Diagnostic switches (?prec=int8|f16|f32, that precision alone; ?sg=0) for a device whose int8, f16 or subgroup
-// ai: arithmetic is suspect; ?cancel=1 puts straddle cancellation (pass two, gpu/back/cancel.mjs) in the decoder (the
-// ai: receiver's ?gcancel=on).
-const OPEN = { pref: PREF, prec: Q.get("prec"), subgroups: Q.get("sg") !== "0", test: Q.get("test"), cancel: Q.get("cancel") === "1" };
+// ai: arithmetic is suspect.
+const OPEN = { pref: PREF, prec: Q.get("prec"), subgroups: Q.get("sg") !== "0", test: Q.get("test") };
 // ai: ?stages=1 (the receiver's ?gstages=on): every batch profiled a pass a stage, its stage ms a frame in
 // ai: the stats (stageMs). Off by default: the profile splits the one compute pass, so it is not the default's timing.
 const STAGES = Q.get("stages") === "1";
@@ -265,7 +260,6 @@ function answerDecoded(item, fr, ms, dec) {
   const proved = r.seen > 0 || !!fr.word;
   const out = { type: "result", tag: item.tag, found: r.found, seen: r.seen, bad: r.bad, test: r.test, judged: r.judged, code: proved ? "lizard" : null, ms, heap: heapTop(), quad: found ? quadOf(dec.fh.tables.rings[fr.ring], fr.finder.H) : null, ids: r.ids };
   if (r.bytes) out.bytes = r.bytes;
-  if (fr.back?.gained) out.gained = fr.back.gained;
   // ai: The band's word as F8 read it (gpu/wgsl/word.mjs), the shape the pool sends (recv-worker.mjs fmt): the page keeps
   // ai: the last one and takes it as proof of the symbol for the tracker, as it does the pool's.
   if (fr.word) out.fmt = { version: fr.word.version, fps: fr.word.fps, ring: fr.ring };
@@ -305,12 +299,10 @@ function post(item, out) {
 // ai: timestamps, or where no frame came as a VideoFrame). arrived: frames that reached this worker in the window,
 // ai: from the page or off the track, gapMax the largest gap in ms between two; openMax: the most VideoFrames open at
 // ai: once (gpuqueue.mjs).
-// ai: cancelled, gained: the cancel stage's tally over the window's frames (gpu/back/cancel.mjs): frames it ran on with
-// ai: a solved fit, and the blocks it verified (in blocks too), posted as sums, not means.
 // ai: stageMs (only with ?stages=1): each profiled stage's device ms a frame over the window's batches (gpu/decoder.mjs
 // ai: STAGES names them: bank is the proposer, describe both classifiers and RANK), null when no batch was profiled.
 const WIN0 = () => ({ stage: {}, stageFrames: 0, n: 0, ms: 0, lag: 0, raw: 0, peaks: 0, cascade: 0, found: 0, blocks: 0, score: 0, top: 0, f0: 0, lumaN: 0, lumaFound: 0, lumaBlocks: 0,
-  batches: 0, carried: 0, host: { upload: 0, encode: 0, scopes: 0, map: 0, read: 0 }, submitToMap: 0, idle: 0, mapLatency: 0, doneMs: 0, ingestMs: 0, arrived: 0, gapMax: 0, cancelled: 0, gained: 0 });
+  batches: 0, carried: 0, host: { upload: 0, encode: 0, scopes: 0, map: 0, read: 0 }, submitToMap: 0, idle: 0, mapLatency: 0, doneMs: 0, ingestMs: 0, arrived: 0, gapMax: 0 });
 let win = WIN0(), statAt = 0;
 // ai: A batch's frames answered.
 function done(items, out, dec) {
@@ -326,7 +318,6 @@ function done(items, out, dec) {
     win.raw += k[1] ?? 0; win.peaks += k[2] ?? 0; win.cascade += k[3] ?? 0;
     const found = fr?.finder?.found === 1 ? 1 : 0, blocks = fr?.back?.records?.length ?? 0;
     win.found += found; win.blocks += blocks;
-    win.cancelled += fr?.back?.cancelled ? 1 : 0; win.gained += fr?.back?.gained ?? 0;
     if (!it.f0) { win.lumaN++; win.lumaFound += found; win.lumaBlocks += blocks; }
     // ai: A VideoFrame's grey levels, from the decoder's histogram of its layer; a luma frame keeps levelsOf's.
     else if (fr?.hist) it.levels = levelsFromHist(fr.hist);
@@ -359,7 +350,6 @@ function stats() {
     vf: { n: win.n - win.lumaN, found: win.found - win.lumaFound, blocks: win.blocks - win.lumaBlocks }, luma: { n: win.lumaN, found: win.lumaFound, blocks: win.lumaBlocks }, levelsFrom,
     batches: win.batches, carried: perB(win.carried), host: Object.fromEntries(Object.entries(win.host).map(([k, v]) => [k, perB(v)])), submitToMap: perB(win.submitToMap),
     mapLatency: win.idle ? win.mapLatency / win.idle : null, doneMs: perB(win.doneMs), ingestMs: per(win.ingestMs), arrived: win.arrived, gapMax: win.gapMax, openMax: queue.takeOpenMax(),
-    cancelled: win.cancelled, gained: win.gained,
     // ai: the last plan's ms (fh.batcher.planMs: the first, unless a larger crop planned again) and the int8 twins'
     // ai: measurement on the first batch (its ms and fh.twins), this decoder's
     planMs: fh.batcher ? Math.round(fh.batcher.planMs) : null, twinMs, twins: fh.twins ?? null,

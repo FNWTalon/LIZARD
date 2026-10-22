@@ -23,34 +23,17 @@ export let QUIET;
 export async function init() {
   if (!M) {
     M = await (await loader())();
-    // ai: a rate profile under test (LIZ_PROFILE, src/focus.h focus_profile_set), which the wasm has no environment to
-    // ai: read: handed in at load, as the native hosts read it from theirs
-    const spec = typeof process !== "undefined" && process.env ? process.env.LIZ_PROFILE : null;
-    if (spec && M._focus_profile_set) setProfile(spec);
-    // ai: which set of the format's LDPC tables (LIZ_TABLES, src/ldpc.h ldpc_codes_set: 1 the set before 2026-10-08's,
-    // ai: for the recordings painted under it), the same way
-    const codes = typeof process !== "undefined" && process.env ? process.env.LIZ_TABLES : null;
-    if (codes && M._focus_codes_set) M._focus_codes_set(+codes);
-    // ai: the lens model's lab switch (LIZ_LENS=old, src/focus.h focus_lens_set: the model before 2026-10-17), the same way
+    // ai: the camera's report's lab switch (LIZ_LENS=axis, src/focus.h focus_lens_set: the lens model without the
+    // ai: report), which the wasm has no environment to read: handed in at load, as the native hosts read it from theirs
     const lens = typeof process !== "undefined" && process.env ? process.env.LIZ_LENS : null;
-    if (lens && M._focus_lens_set) M._focus_lens_set(lens === "old" ? 1 : lens === "axis" ? 2 : 0);
+    if (lens && M._focus_lens_set) setLens(lens);
   }
   QUIET ??= M._focus_quiet?.();
   return M;
 }
-// ai: Sets the codec's rate profile under test ("6432:24/20/26"; "" the format's); the tiers it names, or throws.
-export function setProfile(spec) {
-  const b = new TextEncoder().encode(`${spec}\0`), p = M._malloc(b.length);
-  M.HEAPU8.set(b, p);
-  const n = M._focus_profile_set(p);
-  M._free(p);
-  if (n < 0) throw new Error(`rate profile ${spec}: refused`);
-  return n;
-}
-
-// ai: The lens model's A/B switch (src/focus.h focus_lens_set): true or "old" the model before 2026-10-17, "axis" the
-// ai: axis model without the camera's report, false or anything else both.
-export function setLens(arm) { M._focus_lens_set(arm === true || arm === "old" ? 1 : arm === "axis" ? 2 : 0); }
+// ai: The camera's report's A/B switch (src/focus.h focus_lens_set): "axis" the lens model without the report, anything
+// ai: else with it.
+export function setLens(arm) { M._focus_lens_set(arm === "axis" ? 1 : 0); }
 // ai: Where the camera's axis falls in the next image decoded (src/focus.h focus_set_axis): [x, y] image px, or null
 // ai: for the image's centre. Every decode sets it, so one frame's axis never stays for the next.
 const setAxis = (axis, lens) => {
@@ -60,8 +43,7 @@ const setAxis = (axis, lens) => {
 };
 
 // Stage times since the last call, ms, summed over the decodes in between (slots: PROF_* in src/internal.h).
-// Both codes share one table: a stage one of them does not have stays at 0.
-const STAGES = { luma: [0], binarize: [1], finder: [2], mesh: [3], sample: [4, 13], demap: [5, 14, 16], fft: [15], ldpc: [6, 17] };
+const STAGES = { luma: [0], binarize: [1], finder: [2], mesh: [3], sample: [13], demap: [14, 16], fft: [15], ldpc: [17] };
 export function prof() {
   const out = {};
   for (const [name, slots] of Object.entries(STAGES)) out[name] = slots.reduce((t, i) => t + M._ob_prof(i), 0);
@@ -250,15 +232,16 @@ export class Focus {
   align() { this.pAlign ??= M._malloc(8); if (!M._focus_align_get || !M._focus_align_get(this.pAlign)) return [0, 0]; return Array.from(M.HEAPF32.subarray(this.pAlign >> 2, (this.pAlign >> 2) + 2)); }
   blockStats() { const pi = M._focus_blk_its(), pe = M._focus_blk_est() >> 2; return { its: Array.from(new Int8Array(M.HEAPU8.buffer, pi, this.blocks)), est: Array.from(M.HEAPF32.subarray(pe, pe + this.blocks)) }; }
   read() { const p = M._focus_dbg_coef() >> 2; return M.HEAPF32.slice(p, p + 2 * 320 * this.subch); }
-  // mesh: 0 off, 1 interior by neighbour average, 2 interior from the border model (research/06). 2 is never worse.
+  // mesh: 0 the homography alone, any other the border mesh (the lens model and a Coons patch from the border's nodes,
+  // research/06).
   decode(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null, lens = null } = {}) {
     setAxis(axis, lens);
     let pLuma = 0;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
     const n = M._focus_rx(pLuma, iw, ih, gamma, mesh, this.pBlocks, this.pOk), r = M._ob_last();
-    // quad: the lattice corners the frame finder settled on, TL TR BR BL in image pixels (src/ob.h). Same offset
-    // as the binary codec reads: one ob_result_t serves both. A locate pass needs it to know what to crop to.
+    // quad: the lattice corners the frame finder settled on, TL TR BR BL in image pixels (src/ob.h ob_result_t). A
+    // locate pass needs it to know what to crop to.
     return { n, found: M.HEAP32[r >> 2], quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
       fmt: Focus.fmtOf(M._focus_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
       // mark: the best corner or centre mark the finder saw, x, y and module size (src/ob.h), or null.
@@ -396,20 +379,6 @@ export class Focus {
     const count = M.HEAP32.slice(pCount >> 2, (pCount >> 2) + this.blocks);
     for (const q of [pD, pLay, pFirst, pCount]) M._free(q);
     return { code, first, count };
-  }
-  // The decode finished from bits a GPU LDPC decided, in place of rxLdpc finishing it from the soft values.
-  // bits/its are what that LDPC gave back, already unpacked to one byte a coded bit.
-  rxBits(est, bits, its, n) {
-    this.pBits ??= M._malloc(this.blocks * n);
-    this.pIts ??= M._malloc(this.blocks);
-    M.HEAPU8.set(bits, this.pBits);
-    M.HEAPU8.set(its, this.pIts);
-    M.HEAPF32.set(est, this.pEst >> 2);
-    const nb = M._focus_rx_bits(this.pLlr, this.pEst, this.pBits, this.pIts, this.pBlocks, this.pOk), r = M._ob_last();
-    return { n: nb, found: M.HEAP32[r >> 2], quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
-      fmt: Focus.fmtOf(M._focus_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
-      mark: (() => { const m = [200, 204, 208].map((o) => M.HEAPF32[(r + o) >> 2]); return m[2] > 0 ? m : null; })(),
-      msDetect: M.HEAPF32[(r + 180) >> 2], msSample: M.HEAPF32[(r + 184) >> 2], msDecode: M.HEAPF32[(r + 188) >> 2] };
   }
   // The decode finished from what a GPU back half left: packed payload bytes at `stride` a block, a verdict a
   // block (1 passed, 2 declined, 3 never converged, 4 CRC), the LDPC's iteration counts and the gate's estimates.
