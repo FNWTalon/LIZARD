@@ -134,9 +134,10 @@ writeFileSync(join(OUT, "service-worker.js"), sw);
 // ai: loads it, so it is outside the worker's shell. Other hosts ignore it.
 writeFileSync(join(OUT, "_headers"), "/assets/*\n  Cache-Control: public, max-age=31536000, immutable\n");
 // ai: The licenses the app ships under, one text beside the pages, outside the worker's shell as _headers is: its wasm
-// ai: carries the codec, BLAKE3 and Wirehair (whose BSD 3-Clause asks for its notice with a binary), and the build
-// ai: strips every comment.
+// ai: carries the codec, BLAKE3, Wirehair and Zstandard (both BSD 3-Clause, which asks for its notice with a binary),
+// ai: and the build strips every comment.
 const NOTICES = [["", "LICENSE"], ["", "NOTICE"], ["Wirehair (liblizard/vendor/wirehair)", "liblizard/vendor/wirehair/LICENSE"],
+  ["Zstandard (liblizard/vendor/zstd), under its BSD 3-Clause option", "liblizard/vendor/zstd/LICENSE"],
   ["BLAKE3 (liblizard/vendor/blake3), under its Apache License 2.0 option", "liblizard/vendor/blake3/LICENSE_A2"],
   ["Inter (liblizard/vendor/fonts/inter), under the SIL Open Font License 1.1", "liblizard/vendor/fonts/inter/LICENSE.txt"],
   ["JetBrains Mono (liblizard/vendor/fonts/jetbrains-mono), under the SIL Open Font License 1.1", "liblizard/vendor/fonts/jetbrains-mono/OFL.txt"]];
