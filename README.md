@@ -6,7 +6,7 @@ carried up to about 4 MB/s (see [Status](#status)).
 
 - **Demo:** [fosslabs.dev](https://fosslabs.dev)
 - **How it works:** [an example on video](https://www.youtube.com/shorts/pjcAtQ7GcVQ)
-- **Android app:** [0.2 (alpha)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.2)
+- **Android app:** [0.3 (alpha)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.3)
 
 ## The idea
 
