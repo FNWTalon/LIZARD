@@ -280,21 +280,27 @@ function spec() {
 // guess at it was a control on this page that nobody could answer. Each format states the room it needs
 // (ROOM_FOR, from its top ring), so the largest that fits is the pick. sim/lizard_pick.mjs has the arithmetic so
 // scripts/exp/pick_check.mjs can exercise it.
-// ai: The Margin, Settings' slider (2026-10-23; a gap between two codes before it, from 2026-10-03, shown with two
-// ai: codes): the light round a code in modules from its ring, the quiet zone (OB_QUIET) at least, 34 at most (a
-// ai: painter's widest gap, 64 modules), MARGIN_DEFAULT the encoders' own gap (GAP_MODULES) as a margin. Two codes stand
-// ai: two margins apart (the painters' gap, gapOf(), past their quiet zones) and the area's edges a margin from the
-// ai: codes, so each code takes its painted side and two margins: marginScale() times its side in the ring, which the
-// ai: room and the canvas (layout) take and the checks read (#tx dataset.over). Commits on release, as Size.
-const MARGIN_DEFAULT = GAP_MODULES / 2 + OB_QUIET;
-const marginOf = () => { const m = Math.round(+$("margin").value); return Number.isFinite(m) ? Math.max(OB_QUIET, Math.min(34, m)) : MARGIN_DEFAULT; };
-const gapOf = () => 2 * (marginOf() - OB_QUIET);
-const marginScale = (ring = ringChosen() ?? RING_DEFAULT) => { const side = MODULES(256, ring) + 2 * OB_QUIET; return (side + gapOf()) / side; };
-// ai: With two codes each symbol gets half the width: the room is one symbol's.
+// ai: Spacing and Margin, Settings' sliders (2026-10-23; one Margin, two of them between codes, that morning; a gap
+// ai: between two codes before it, from 2026-10-03): the light between two codes' rings, two quiet zones (OB_QUIET) at
+// ai: least and 68 modules at most (a painter's widest gap, 64, and its quiet zones), shown with two codes; and between a
+// ai: ring and the area's edge, one quiet zone at least, 34 at most. The defaults the encoders' own gap (GAP_MODULES) and
+// ai: its quiet zones, and half that. The painters' gap is the spacing past both quiet zones (gapOf); the edges' light
+// ai: past the codec's own quiet zone is edgeShare of a painted symbol's side, a side's modules SIDE. The room and the
+// ai: canvas (layout) take both; the checks read the room's shares (#tx dataset.wf, .hf). Commit on release, as Size.
+const SPACING_DEFAULT = GAP_MODULES + 2 * OB_QUIET, MARGIN_DEFAULT = SPACING_DEFAULT / 2;
+const sliderOf = (id, lo, hi, d) => { const v = Math.round(+$(id).value); return Number.isFinite(v) && $(id).value !== "" ? Math.max(lo, Math.min(hi, v)) : d; };
+const spacingOf = () => sliderOf("spacing", 2 * OB_QUIET, 68, SPACING_DEFAULT);
+const marginOf = () => sliderOf("margin", OB_QUIET, 34, MARGIN_DEFAULT);
+const gapOf = () => spacingOf() - 2 * OB_QUIET;
+const SIDE = (ring = ringChosen() ?? RING_DEFAULT) => MODULES(256, ring) + 2 * OB_QUIET;
+const edgeShare = (ring) => (marginOf() - OB_QUIET) / SIDE(ring);
+// ai: one symbol's room: the codes, the gaps between them and the edges' light across, the code and the edges down,
+// ai: each as shares of a painted symbol's side
 function room() {
-  const box = canvas.parentElement, dpr = devicePixelRatio || 1, codes = codesOf(), k = marginScale();
-  $("tx").dataset.over = k;
-  return Math.max(64, Math.min(box.clientWidth / codes, box.clientHeight) / k * dpr * sizeOf());
+  const box = canvas.parentElement, dpr = devicePixelRatio || 1, codes = codesOf(), e = edgeShare();
+  const wf = codes + (codes - 1) * gapOf() / SIDE() + 2 * e, hf = 1 + 2 * e;
+  Object.assign($("tx").dataset, { wf, hf });
+  return Math.max(64, Math.min(box.clientWidth / wf, box.clientHeight / hf) * dpr * sizeOf());
 }
 // ai: The code's size, Settings' slider (2026-10-03, against instability at a monitor's edges): a share of <main>'s
 // ai: room, 25 to 100%, which both the pick (room) and the canvas (layout)
@@ -327,9 +333,9 @@ function layout(n, codes = 1, gpu = false, gap = 0) {
     image = { width: fw, height: n, gpu }; tmp.width = fw; tmp.height = n;
     const cv = gpu ? gcanvas : canvas;
     canvas.hidden = gpu; gcanvas.hidden = !gpu;
-    // ai: the frame with a margin less the quiet zone at each edge (marginScale() - 1 of a symbol's side across both)
-    const k = marginScale(shown ? ringOf(shown) : undefined), box = canvas.parentElement;
-    const dpr = devicePixelRatio || 1, room = Math.min(box.clientWidth / (fw / n + k - 1), box.clientHeight / k) * dpr * sizeOf();
+    // ai: the frame with the margin past the quiet zone at each edge (edgeShare of a symbol's side)
+    const e = edgeShare(shown ? ringOf(shown) : undefined), box = canvas.parentElement;
+    const dpr = devicePixelRatio || 1, room = Math.min(box.clientWidth / (fw / n + 2 * e), box.clientHeight / (1 + 2 * e)) * dpr * sizeOf();
     // Three ways to put a symbol of n samples on screen. "stretch" is the default and what a small screen wants:
     // paint whole device pixels a sample, then let the browser stretch that up to fill the room. Stretching UP only
     // interpolates, so no ring is lost; squeezing DOWN below the format's room (ROOM_FOR) would throw the outer rings
@@ -877,7 +883,7 @@ document.addEventListener("keydown", (e) => {
 $("enc").onchange = () => { gpuOff = null; showEnc(); if (running) go(); };
 // ai: One code or two changes the room a symbol has, so it re-picks as a resize does; so does another version or ring
 // ai: (2026-10-01: until then they waited for the next start or resize).
-$("codes").onchange = () => { image = null; roomChanged(); };
+$("codes").onchange = () => { image = null; showMargin(); roomChanged(); };
 $("subch").onchange = $("ring").onchange = () => roomChanged();
 // ai: the display fps slider's label (2026-10-02, a slider 1 to 60 in place of the number box): live while it is dragged,
 // ai: and the page's pace and the word's rate follow it as they followed the box (both read #fps as they go)
@@ -887,10 +893,13 @@ for (const ev of ["input", "change"]) $("fps").addEventListener(ev, showFps);
 const showSize = () => { $("sizeOut").textContent = `${Math.round(sizeOf() * 100)}%`; };
 $("size").addEventListener("input", showSize);
 $("size").addEventListener("change", () => { showSize(); roomChanged(); });
-// ai: the margin slider (marginOf): its label live while dragged, a new canvas and the room changed on release
-const showMargin = () => { $("marginOut").textContent = `${marginOf()} modules`; };
-$("margin").addEventListener("input", showMargin);
-$("margin").addEventListener("change", () => { showMargin(); image = null; roomChanged(); });
+// ai: the spacing and margin sliders: their labels live while dragged, a new canvas and the room changed on release;
+// ai: Spacing shown with two codes
+const showMargin = () => { $("spacingOut").textContent = `${spacingOf()} modules`; $("spacingRow").hidden = codesOf() < 2; $("marginOut").textContent = `${marginOf()} modules`; };
+for (const id of ["spacing", "margin"]) {
+  $(id).addEventListener("input", showMargin);
+  $(id).addEventListener("change", () => { showMargin(); image = null; roomChanged(); });
+}
 // ai: The app's shell (2026-10-01): the bar's Settings, About and the installed app's worker.
 about($("about"));
 registerApp(() => about($("about"), true));

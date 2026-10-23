@@ -49,11 +49,11 @@
 // ai: Bundles (2026-10-16, tar.mjs): two files through the file input (one transfer, "check-send.bin and 1 more.tar")
 // ai: and a folder of two, one in a subfolder, through the folder input (check-folder.tar), each case's header the
 // ai: name, application/x-tar, length and root of the tar tar.mjs makes in node of the same files and times.
-// ai: The margin (2026-10-23, send.html's Margin slider; a gap slider from 2026-10-03): auto with one code at a margin of
-// ai: 20 (the pick the page's room less the margins); two codes again at margins 2 and 22 (&margin=), each canvas's gap
-// ai: between the painted squares 2 (margin - 2) modules within half a module and both halves read blind; then the margin
-// ai: moved to 4 while it runs (the slider's change event), grabbed until the canvas's gap is 4 (5 s at most), both
-// ai: halves every block, 0 bad.
+// ai: Spacing and Margin (2026-10-23, send.html's sliders; a gap slider from 2026-10-03): auto with one code at a margin
+// ai: of 20 (the pick the page's room less the margins); two codes again at spacings 4 and 44 (&spacing=), each canvas's
+// ai: gap between the painted squares spacing - 4 modules within half a module and both halves read blind; then the
+// ai: spacing moved to 8 while it runs (the slider's change event), grabbed until the canvas's gap is 4 (5 s at most),
+// ai: both halves every block, 0 bad.
 // ai:   node lizard-web/check_send.mjs            (from anywhere; APP=1 the built app, lizard-web/app)
 // ai:   ENC=gpu node lizard-web/check_send.mjs
 import { createServer } from "node:http";
@@ -162,8 +162,8 @@ async function readTold(x, subs) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const waitPainted = async () => { for (let t = 0; t < 100; t++) { if (/painted [\d.]+\/s/.test(await evaluate(s, `document.getElementById("tx").textContent`))) return true; await sleep(200); } return false; };
 // ai: The window and the room the page measures, as send.mjs room() measures it (codes symbols across <main>, each
-// ai: with its margins: the page's #tx dataset.over of a symbol's side).
-const measure = (codes = 1) => evaluate(s, `(() => { const b = document.querySelector("main"), k = +document.getElementById("tx").dataset.over || 1; return { w: innerWidth, h: innerHeight, room: Math.max(64, Math.min(b.clientWidth / ${codes}, b.clientHeight) / k * devicePixelRatio) }; })()`);
+// ai: with the spacing between them and the margins: the page's #tx dataset.wf across and .hf down, in symbol sides).
+const measure = () => evaluate(s, `(() => { const b = document.querySelector("main"), d = document.getElementById("tx").dataset, wf = +d.wf || 1, hf = +d.hf || 1; return { w: innerWidth, h: innerHeight, room: Math.max(64, Math.min(b.clientWidth / wf, b.clientHeight / hf) * devicePixelRatio) }; })()`);
 // ai: #tx's encoder line, and whether it and the canvas read are the arm's: WebGPU off #cg, or wasm off #c saying why
 // ai: WebGPU is off.
 function encoderOf(g) {
@@ -177,13 +177,13 @@ const faults = [];
 let tipSeen = false;
 // ai: 488 (version 61, 58 blocks under the rate profile; 2026-10-01): a version the 16-step ladder never offered, set as
 // ai: the slider sets it
-for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file: true }, { subch: 96, file: true, bundle: "files" }, { subch: 96, file: true, bundle: "folder" }, { subch: "auto" }, { subch: "auto", margin: 20 }, { subch: "auto", codes: 2 }, { subch: "auto", codes: 2, margin: 2 }, { subch: "auto", codes: 2, margin: 22, remargin: 4 }, { subch: "auto", midStream: true }]) {
+for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file: true }, { subch: 96, file: true, bundle: "files" }, { subch: 96, file: true, bundle: "folder" }, { subch: "auto" }, { subch: "auto", margin: 20 }, { subch: "auto", codes: 2 }, { subch: "auto", codes: 2, spacing: 4 }, { subch: "auto", codes: 2, spacing: 44, respacing: 8 }, { subch: "auto", midStream: true }]) {
   const codes = c.codes ?? 1;
   const bun = c.bundle ? BUNDLES[c.bundle] : null;
-  let name = `LIZARD-${c.subch}${bun ? `, ${bun.made.name} (${bun.made.files} files, ${bun.bytes.length} B)` : c.file ? `, a ${FILE_BYTES} B file` : ", test stream"}${c.margin !== undefined ? `, margin ${c.margin}` : ""}`;
+  let name = `LIZARD-${c.subch}${bun ? `, ${bun.made.name} (${bun.made.files} files, ${bun.bytes.length} B)` : c.file ? `, a ${FILE_BYTES} B file` : ", test stream"}${c.margin !== undefined ? `, margin ${c.margin}` : ""}${c.spacing !== undefined ? `, spacing ${c.spacing}` : ""}`;
   // ai: The window's frame takes rows even headless (1920 x 937 of 1920 x 1080), so the auto case sets the page's viewport.
   if (c.subch === "auto") await s.send("Emulation.setDeviceMetricsOverride", { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false });
-  await navigate(s, `http://127.0.0.1:${HTTP}/lizard-web/${process.env.APP ? "app/" : ""}send.html?${c.subch === "auto" ? `subch=auto&fps=${FPS}&payload=test&auto` : `subch=${c.subch}&fps=${FPS}${c.file ? "&payload=file" : "&payload=test&auto"}`}${codes > 1 ? `&codes=${codes}` : ""}${c.margin !== undefined ? `&margin=${c.margin}` : ""}${GPU ? "&enc=gpu" : ""}`);
+  await navigate(s, `http://127.0.0.1:${HTTP}/lizard-web/${process.env.APP ? "app/" : ""}send.html?${c.subch === "auto" ? `subch=auto&fps=${FPS}&payload=test&auto` : `subch=${c.subch}&fps=${FPS}${c.file ? "&payload=file" : "&payload=test&auto"}`}${codes > 1 ? `&codes=${codes}` : ""}${c.margin !== undefined ? `&margin=${c.margin}` : ""}${c.spacing !== undefined ? `&spacing=${c.spacing}` : ""}${GPU ? "&enc=gpu" : ""}`);
   if (c.file) {
     // ai: The file picked as a user picks one: into the file input, then the start button.
     const doc = await s.send("DOM.getDocument"), { nodeId } = await s.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: bun?.input ?? "#file" });
@@ -251,22 +251,22 @@ for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file
     if (!(right.fmt?.version === v && right.fmt?.fps === FPS)) faults.push(`${name}: the right half's word is not version ${v} at ${FPS} fps`);
     if (!(right.seen > 0 && right.bad === 0)) faults.push(`${name}: the right half read ${right.seen} blocks, ${right.bad} bad`);
     if (shared.length) faults.push(`${name}: the halves share ${shared.length} ids`);
-    // ai: two squares a gap apart (send.mjs gapOf: 2 (margin - 2) modules, 12 at the default margin of 8; the page's #tx
-    // ai: dataset.gap in canvas px): 2:1 plus the gap, and the gap the margin asks (the 128 ring's symbol, quiet zone
+    // ai: two squares a gap apart (send.mjs gapOf: spacing - 4 modules, 12 at the default spacing of 16; the page's #tx
+    // ai: dataset.gap in canvas px): 2:1 plus the gap, and the gap the spacing asks (the 128 ring's symbol, quiet zone
     // ai: included, the canvas's height)
     if (g.w !== 2 * g.h + g.gap) faults.push(`${name}: the canvas is ${g.w} x ${g.h}, not two squares ${g.gap} px apart`);
-    const mods = g.gap / g.h * (MODULES(256, RING_DEFAULT) + 2 * OB_QUIET), asked = 2 * ((c.margin ?? 8) - OB_QUIET);
+    const mods = g.gap / g.h * (MODULES(256, RING_DEFAULT) + 2 * OB_QUIET), asked = (c.spacing ?? 16) - 2 * OB_QUIET;
     console.log(`  gap ${g.gap} canvas px, ${mods.toFixed(2)} modules (${asked} asked)`);
     if (Math.abs(mods - asked) > 0.5) faults.push(`${name}: the gap is ${mods.toFixed(2)} modules, not ${asked}`);
   }
   if (c.midStream) await midStream(subch, r);
-  // ai: The margin slider moved while it runs (2026-10-03, the gap's then): its change event, as a release gives it,
+  // ai: The spacing slider moved while it runs (2026-10-03, the gap's then): its change event, as a release gives it,
   // ai: re-picks (send.mjs repickOnce: the worker's respec, and under the GPU encoder a new configuration) and the
-  // ai: canvas's gap follows. Grabs until the gap is the one the margin asks (5 s at most), then both halves read
+  // ai: canvas's gap follows. Grabs until the gap is the one the spacing asks (5 s at most), then both halves read
   // ai: blind, every block, 0 bad.
-  if (c.remargin !== undefined) {
-    const regap = 2 * (c.remargin - OB_QUIET);
-    await evaluate(s, `(() => { const e = document.getElementById("margin"); e.value = "${c.remargin}"; e.dispatchEvent(new Event("change")); })()`);
+  if (c.respacing !== undefined) {
+    const regap = c.respacing - 2 * OB_QUIET;
+    await evaluate(s, `(() => { const e = document.getElementById("spacing"); e.value = "${c.respacing}"; e.dispatchEvent(new Event("change")); })()`);
     const T = MODULES(256, RING_DEFAULT) + 2 * OB_QUIET, t0 = Date.now();
     let o = null, mods = -1;
     while (Date.now() - t0 < 5000) {
@@ -275,7 +275,7 @@ for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file
       mods = o.g.gap / o.g.h * T;
       if (Math.abs(mods - regap) <= 0.5 && o.halves.every((h) => h.fmt)) break;
     }
-    const n2 = `${name}, the margin moved to ${c.remargin} (a gap of ${regap}) while running`;
+    const n2 = `${name}, the spacing moved to ${c.respacing} (a gap of ${regap}) while running`;
     console.log(`${n2}: ${((Date.now() - t0) / 1000).toFixed(1)} s, gap ${mods.toFixed(2)} modules, halves ${o.halves.map((h) => `version ${h.fmt?.version ?? "none"} ${h.seen} verified ${h.bad} bad`).join(", ")}`);
     if (Math.abs(mods - regap) > 0.5) faults.push(`${n2}: the gap is ${mods.toFixed(2)} modules after 5 s`);
     // ai: every block of the half: the format's rate profile's count for the version its word names (2026-10-07;

@@ -198,6 +198,9 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
                 BlocksField(s)
                 Field("FPS", "${s.fps}") { Bar(s.fps.toFloat(), 1f..60f, 58, done = { s.commitFps() }) { s.chooseFps(it.roundToInt()) } }
                 Field("Size", "${s.size}%") { Bar(s.size.toFloat(), 25f..100f, 74, done = { s.commitSize() }) { s.chooseSize(it.roundToInt()) } }
+                if (s.codes == 2) Field("Spacing", "${s.spacing} modules") {
+                    Bar(s.spacing.toFloat(), Pick.SPACING_MIN.toFloat()..Pick.SPACING_MAX.toFloat(), Pick.SPACING_MAX - Pick.SPACING_MIN - 1, done = { s.repick() }) { s.chooseSpacing(it.roundToInt()) }
+                }
                 Field("Margin", "${s.margin} modules") {
                     Bar(s.margin.toFloat(), Pick.QUIET.toFloat()..Pick.MARGIN_MAX.toFloat(), Pick.MARGIN_MAX - Pick.QUIET - 1, done = { s.repick() }) { s.chooseMargin(it.roundToInt()) }
                 }
