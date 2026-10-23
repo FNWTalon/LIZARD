@@ -244,7 +244,7 @@ class FileStore final : public Store {
   uint64_t tick = 0;
   std::unordered_map<uint32_t, uint64_t> sizes;   // ai: chunks with a file, and its bytes
   std::unordered_map<uint32_t, Open> opened;
-  static constexpr size_t OPEN_MAX = 32;
+  static constexpr size_t OPEN_CAP = 32;
   std::string chunkPath(uint32_t c) const { return cur + "/c" + std::to_string(c); }
   void closeAll() {
     for (auto& [c, o] : opened) fclose(o.f);
@@ -277,7 +277,7 @@ class FileStore final : public Store {
   FILE* handle(uint32_t c) {
     auto o = opened.find(c);
     if (o != opened.end()) { o->second.used = ++tick; return o->second.f; }
-    if (opened.size() >= OPEN_MAX) {
+    if (opened.size() >= OPEN_CAP) {
       auto old = std::min_element(opened.begin(), opened.end(), [](auto& a, auto& b) { return a.second.used < b.second.used; });
       fclose(old->second.f);
       opened.erase(old);

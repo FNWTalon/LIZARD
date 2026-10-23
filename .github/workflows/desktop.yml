@@ -201,7 +201,7 @@ jobs:
       - name: The native library and the C's tools
         run: |
           cmake -S lizard-desktop/native -B lizard-desktop/build/native -DCMAKE_BUILD_TYPE=Release
-          cmake --build lizard-desktop/build/native --target lizard_desktop tx_check -j"$(sysctl -n hw.ncpu)"
+          cmake --build lizard-desktop/build/native --target lizard_desktop tx_check -j"$(sysctl -n hw.ncpu)" -- -k
 
       - name: The .dmg
         working-directory: lizard-desktop
