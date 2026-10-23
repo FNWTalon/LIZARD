@@ -219,8 +219,9 @@ jobs:
           pid=$!
           sleep 10
           screencapture -x smoke/screen.png || true
-          wait $pid; echo "exit $?" >> smoke/err.txt
-          cat smoke/err.txt | tail -40; cat smoke/out.json
+          code=0; wait $pid || code=$?; echo "exit $code" >> smoke/err.txt
+          grep -v '^present:' smoke/err.txt | tail -40; cat smoke/out.json
+          [ "$code" = 0 ]
           python3 -m venv /tmp/py && /tmp/py/bin/pip install --quiet pillow
           /tmp/py/bin/python - <<'EOF'
           from PIL import Image
