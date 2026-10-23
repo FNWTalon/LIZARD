@@ -67,7 +67,14 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     init {
         background = java.awt.Color.WHITE
         isFocusable = false
-        addComponentListener(object : ComponentAdapter() { override fun componentResized(e: ComponentEvent) = s.areaChanged() })
+        addComponentListener(object : ComponentAdapter() {
+            override fun componentResized(e: ComponentEvent) { s.areaChanged(); s.canvasMoved() }
+            override fun componentMoved(e: ComponentEvent) = s.canvasMoved()
+        })
+        if (Native.mac) addHierarchyBoundsListener(object : java.awt.event.HierarchyBoundsAdapter() {
+            override fun ancestorMoved(e: HierarchyEvent) = s.canvasMoved()
+            override fun ancestorResized(e: HierarchyEvent) = s.canvasMoved()
+        })
         // ai: shown or hidden with its parents (Compose's SwingPanel sizes it before it shows it)
         addHierarchyListener { e -> if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) s.areaChanged() }
         addMouseListener(object : MouseAdapter() {
@@ -237,6 +244,16 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     override fun addNotify() { super.addNotify(); EventQueue.invokeLater { s.areaChanged() } }
     override fun removeNotify() { s.canvasGone(); super.removeNotify() }
 
+    // ai: macOS: where the presenter's layer goes (native/macos.h Place): the canvas's bounds in points from the top left
+    // ai: of its window's content (the frame's insets are its title bar), and the screen's scale
+    fun place(): FloatArray {
+        val win = SwingUtilities.getWindowAncestor(this) ?: return FloatArray(5)
+        val at = SwingUtilities.convertPoint(this, 0, 0, win)
+        val ins = win.insets
+        val k = graphicsConfiguration?.defaultTransform?.scaleX ?: 1.0
+        return floatArrayOf((at.x - ins.left).toFloat(), (at.y - ins.top).toFloat(), width.toFloat(), height.toFloat(), k.toFloat())
+    }
+
     // ai: the canvas's size in device px (its user-space size by the screen's scale)
     fun devicePx(): Pair<Int, Int> {
         val t = graphicsConfiguration?.defaultTransform
@@ -402,23 +419,33 @@ class SendState {
             }
         }
     }
-    // ai: the portal's choice as files (its file:// URIs), none when cancelled, null where it could not be asked
+    // ai: the portal's choice as files (its file:// URIs; Windows' dialog gives paths), none when cancelled, null where it
+    // ai: could not be asked
     private fun portal(parent: Long, title: String, folders: Boolean): List<File>? {
+        if (Native.mac) return null
         val uris = runCatching { Native.portalPick(parent, title, folders, true) }.getOrNull()
         if (uris == null) { System.err.println("chooser: no portal: ${runCatching { Native.txError() }.getOrDefault("")}"); return null }
-        return uris.mapNotNull { u -> runCatching { File(java.net.URI(u)) }.getOrNull() }
+        return uris.mapNotNull { u -> runCatching { if (u.startsWith("file:")) File(java.net.URI(u)) else File(u) }.getOrNull() }
     }
     // ai: zenity's, a path a line; none when cancelled (exit 1), null where it is not there
-    private fun zenity(title: String, folders: Boolean): List<File>? = runCatching {
+    private fun zenity(title: String, folders: Boolean): List<File>? = if (Native.mac || Native.windows) null else runCatching {
         val p = ProcessBuilder(listOf("zenity", "--file-selection", "--multiple", "--separator=\n", "--title=$title") + (if (folders) listOf("--directory") else emptyList()))
             .redirectError(ProcessBuilder.Redirect.DISCARD).start()
         val out = p.inputStream.bufferedReader().readText()
         when (p.waitFor()) { 0 -> out.lines().filter { it.isNotEmpty() }.map(::File); 1 -> emptyList(); else -> null }
     }.getOrNull()
-    // ai: the dialogs before the portal: AWT's FileDialog (GTK's on Linux), one file or several, over the sender's window
-    // ai: (the canvas's frame); a folder through Swing's chooser, which AWT's dialog cannot pick
+    // ai: the dialogs before the portal: AWT's FileDialog (GTK's on Linux, the system's open panel on macOS), one file or
+    // ai: several, over the sender's window (the canvas's frame); a folder through Swing's chooser, which AWT's dialog
+    // ai: cannot pick, but on macOS, where the panel takes folders when asked
     private fun fallback(folders: Boolean) {
-        if (!folders) {
+        if (Native.mac) {
+            System.setProperty("apple.awt.fileDialogForDirectories", folders.toString())
+            val d = FileDialog(SwingUtilities.getWindowAncestor(canvas) as? Frame, if (folders) "Choose folders" else "Choose files", FileDialog.LOAD)
+            d.isMultipleMode = true
+            d.isVisible = true
+            System.setProperty("apple.awt.fileDialogForDirectories", "false")
+            if (d.files.isNotEmpty()) pick(d.files.toList())
+        } else if (!folders) {
             val d = FileDialog(SwingUtilities.getWindowAncestor(canvas) as? Frame, "Choose files", FileDialog.LOAD)
             d.isMultipleMode = true
             d.isVisible = true
@@ -498,7 +525,7 @@ class SendState {
         val my = making
         makingNow = true
         val one = if (b.single == null) null else singleFile
-        val tar = if (one != null) null else File(System.getProperty("user.home"), ".cache/lizard-sender/send-${ProcessHandle.current().pid()}-$my.tar")
+        val tar = if (one != null) null else File(Native.cache, "send-${ProcessHandle.current().pid()}-$my.tar")
         val path = one?.path ?: tar!!.path
         val type = if (one == null) TAR_TYPE else runCatching { Files.probeContentType(one.toPath()) }.getOrNull() ?: ""
         thread(name = "lizard-send-make", isDaemon = true) {
@@ -668,6 +695,9 @@ class SendState {
     }
     private val settle = Timer(300) { repick() }.apply { isRepeats = false }
 
+    // ai: macOS: the presenter's layer follows the canvas (a move or a resize of it or of the window)
+    fun canvasMoved() { if (p != 0L) Native.presentPlace(p, canvas.place()) }
+
     // ai: the canvas's window going: the presenter stopped first (its surface is that window); begun again on the next
     fun canvasGone() {
         if (p != 0L) { Native.presentStop(p); p = 0L }
@@ -678,7 +708,7 @@ class SendState {
         if (h == 0L || p != 0L || !canvas.isShowing || areaW <= 0 || areaH <= 0) return
         if (!configure()) return
         canvas.presenting = true
-        val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, false)
+        val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, false, canvas.place())
         if (pr == 0L) { fail("The code cannot be shown: ${Native.txError()}"); return }
         p = pr
         if (paused) Native.presentPause(p, true)

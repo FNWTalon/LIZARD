@@ -44,6 +44,10 @@
 #include <X11/extensions/Xrandr.h>
 #include <X11/extensions/shape.h>
 #include <vulkan/vulkan_xlib.h>
+#elif defined(__APPLE__)
+#include <vulkan/vulkan_metal.h>
+
+#include "macos.h"
 #endif
 
 namespace lizard {
@@ -592,6 +596,13 @@ void Presenter::Impl::setup() {
   si.dpy = dpy;
   si.window = xwin;
   vkCheck(createSurface(inst, &si, nullptr, &surf), "vkCreateXlibSurfaceKHR");
+#elif defined(__APPLE__)
+  if (!target.metalLayer) throw std::runtime_error("no layer to present to");
+  auto createSurface = reinterpret_cast<PFN_vkCreateMetalSurfaceEXT>(vkGetInstanceProcAddr(inst, "vkCreateMetalSurfaceEXT"));
+  if (!createSurface) throw std::runtime_error("the sender's Vulkan instance has no VK_EXT_metal_surface");
+  VkMetalSurfaceCreateInfoEXT si{VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT};
+  si.pLayer = static_cast<const CAMetalLayer*>(target.metalLayer);
+  vkCheck(createSurface(inst, &si, nullptr, &surf), "vkCreateMetalSurfaceEXT");
 #else
   throw std::runtime_error("no window surface for this platform yet");
 #endif
@@ -662,12 +673,15 @@ VkExtent2D Presenter::Impl::windowSize() {
 #elif LIZ_X11
   XWindowAttributes wa{};
   if (XGetWindowAttributes(xq, xwin, &wa)) return {static_cast<uint32_t>(wa.width), static_cast<uint32_t>(wa.height)};
+#elif defined(__APPLE__)
+  uint32_t w = 0, h = 0;
+  if (mac::layerPixels(target.metalLayer, &w, &h)) return {w, h};
 #endif
   return {0, 0};
 }
 
 // ai: X11: the mode's refresh of the monitor (a CRTC) holding the window's centre; Windows: the display settings of the
-// ai: monitor nearest the window (whole Hz: 59 for 59.94, the measurement corrects it); elsewhere none
+// ai: monitor nearest the window (whole Hz: 59 for 59.94, the measurement corrects it); macOS: the main display's mode
 void Presenter::Impl::queryMode() {
 #if defined(_WIN32)
   HMONITOR mon = MonitorFromWindow(static_cast<HWND>(target.hwnd), MONITOR_DEFAULTTONEAREST);
@@ -702,6 +716,8 @@ void Presenter::Impl::queryMode() {
   }
   XRRFreeScreenResources(res);
   modeHz = hz;
+#elif defined(__APPLE__)
+  modeHz = mac::layerRefreshHz(target.metalLayer);
 #endif
 }
 
@@ -1213,6 +1229,8 @@ const wg::DeviceExtras& Presenter::deviceExtras() {
                       VK_KHR_WIN32_SURFACE_EXTENSION_NAME
 #elif LIZ_X11
                       VK_KHR_XLIB_SURFACE_EXTENSION_NAME
+#elif defined(__APPLE__)
+                      VK_EXT_METAL_SURFACE_EXTENSION_NAME
 #endif
     };
     x.deviceExts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PRESENT_ID_EXTENSION_NAME, VK_KHR_PRESENT_WAIT_EXTENSION_NAME};

@@ -7,9 +7,10 @@ import java.security.MessageDigest
 // ai: test stream, its painters (the C on the CPU, or the Vulkan painter: liblizard/core/tx/gpu_painter), and the
 // ai: presenter (lizard-desktop/native/presenter.cpp), which takes the sender's frames in order and shows them on the code
 // ai: area's canvas through its own Vulkan swapchain, FIFO. load() first: it extracts the bundled library and the GPU
-// ai: painter's kernels and tables (build.gradle.kts `bundle`) to a folder named by their hash
-// ai: (~/.cache/lizard-sender/<hash>), loads the JDK's jawt (the presenter finds the canvas's window through it, and
-// ai: the library links it) and then the library.
+// ai: painter's kernels and tables (build.gradle.kts `bundle`) to a folder named by their hash under the cache
+// ai: (Native.cache: ~/.cache/lizard-sender on Linux), loads the JDK's jawt (the presenter finds the canvas's window
+// ai: through it) and then the library. On macOS the bundle also carries MoltenVK, put beside the library, where the
+// ai: library's Vulkan loader finds it.
 object Native {
     // ai: path: the file to send ("" for the test stream); name and type as its header carries them; 0, why in txError()
     @JvmStatic external fun txCreate(path: String, name: String, type: String): Long
@@ -26,10 +27,13 @@ object Native {
     // ai: of the area's room (0.25 to 1), edge the light kept at each edge past the frame's own (Pick.edgeShare), whole
     // ai: whole device pixels a sample (nearest) or stretched (linear), device a substring of a Vulkan device's name ("" the
     // ai: first, LIZ_VK_DEVICE where set).
-    @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, edge: Float, whole: Boolean): Long
+    // ai: place: macOS's layer over the canvas (CodeCanvas.place), ignored elsewhere; presentPlace when the canvas moves
+    @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, edge: Float, whole: Boolean, place: FloatArray): Long
+    @JvmStatic external fun presentPlace(p: Long, place: FloatArray)
     // ai: the desktop's file chooser (2026-10-23, native/portal.cpp): the window manager's window around a canvas (0 none,
-    // ai: on the UI thread), and the XDG portal's OpenFile attached to it, blocking until it closes (never on the UI
-    // ai: thread): the file:// URIs chosen, none when cancelled, null where the portal could not be asked (why: txError)
+    // ai: on the UI thread), and the XDG portal's OpenFile attached to it (Windows: the shell's dialog), blocking until it
+    // ai: closes (never on the UI thread): the file:// URIs chosen (Windows: paths), none when cancelled, null where it
+    // ai: could not be asked (why: txError)
     @JvmStatic external fun windowOf(canvas: java.awt.Component): Long
     @JvmStatic external fun portalPick(window: Long, title: String, directory: Boolean, multiple: Boolean): Array<String>?
     // ai: the window manager's own full screen for the window windowOf gave (2026-10-23): asked (false where it could not
@@ -46,6 +50,16 @@ object Native {
     lateinit var assets: String
         private set
 
+    private val os = System.getProperty("os.name").lowercase()
+    val mac = os.contains("mac")
+    val windows = os.contains("win")
+    // ai: the app's cache, where each platform keeps one: the native files' folders and the bundles' tars
+    val cache: File = when {
+        windows -> File(System.getenv("LOCALAPPDATA")?.takeIf { it.isNotEmpty() } ?: System.getProperty("user.home"), "LIZARD/cache")
+        mac -> File(System.getProperty("user.home"), "Library/Caches/LIZARD")
+        else -> File(System.getenv("XDG_CACHE_HOME")?.takeIf { it.isNotEmpty() } ?: File(System.getProperty("user.home"), ".cache").path, "lizard-sender")
+    }
+
     fun load() {
         val names = javaClass.getResourceAsStream("/lizard/files.txt")?.bufferedReader()?.readLines()?.filter { it.isNotBlank() }
             ?: error("the app carries no native files (build.gradle.kts bundle)")
@@ -53,7 +67,7 @@ object Native {
         val md = MessageDigest.getInstance("SHA-256")
         for ((k, v) in bytes) { md.update(k.toByteArray()); md.update(v) }
         val hash = md.digest().joinToString("") { "%02x".format(it) }.take(16)
-        val root = File(System.getProperty("user.home"), ".cache/lizard-sender")
+        val root = cache
         val dir = File(root, hash)
         val done = File(dir, ".done")
         if (!done.exists()) {
@@ -66,7 +80,7 @@ object Native {
         root.listFiles()?.filter { it.isDirectory && it.name != hash }?.sortedByDescending { it.lastModified() }?.drop(2)
             ?.forEach { runCatching { it.deleteRecursively() } }
         assets = File(dir, "assets").path
-        val lib = names.first { it.startsWith("native/") }
+        val lib = names.first { it.startsWith("native/") && it.contains("lizard_desktop") }
         System.loadLibrary("jawt")
         System.load(File(dir, lib).absolutePath)
     }

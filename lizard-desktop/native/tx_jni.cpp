@@ -28,6 +28,9 @@
 #include "portal.h"
 #include "presenter.h"
 #include "sender.h"
+#if defined(__APPLE__)
+#include "macos.h"
+#endif
 
 #include <jawt.h>
 #include <jawt_md.h>
@@ -84,7 +87,18 @@ void unmapFile(const uint8_t* map, size_t len) {
   munmap(const_cast<uint8_t*>(map), len);
 #endif
 }
-lizard::Presenter* pr(jlong h) { return reinterpret_cast<lizard::Presenter*>(h); }
+// ai: a presenter and, on macOS, the layer it presents to (made with it, released after it)
+struct Pres {
+  std::unique_ptr<lizard::Presenter> p;
+  void* layer = nullptr;
+  ~Pres() {
+    p.reset();
+#if defined(__APPLE__)
+    lizard::mac::detachLayer(layer);
+#endif
+  }
+};
+lizard::Presenter* pr(jlong h) { return reinterpret_cast<Pres*>(h)->p.get(); }
 std::string str(JNIEnv* e, jstring s) {
   if (!s) return "";
   const char* c = e->GetStringUTFChars(s, nullptr);
@@ -92,6 +106,17 @@ std::string str(JNIEnv* e, jstring s) {
   if (c) e->ReleaseStringUTFChars(s, c);
   return o;
 }
+#if defined(__APPLE__)
+// ai: the five numbers of a place (macos.h Place), a missing or short array the empty place
+lizard::mac::Place placeOf(JNIEnv* e, jfloatArray a) {
+  lizard::mac::Place p;
+  if (!a || e->GetArrayLength(a) < 5) return p;
+  jfloat v[5];
+  e->GetFloatArrayRegion(a, 0, 5, v);
+  p.x = v[0]; p.y = v[1]; p.w = v[2]; p.h = v[3]; p.scale = v[4];
+  return p;
+}
+#endif
 std::mutex gErrorMu;
 std::string gError;
 void setError(const std::string& m) {
@@ -226,16 +251,21 @@ static bool canvasTarget(JNIEnv* e, jobject canvas, lizard::PresentTarget& targe
 // ai: at each edge (presenter.h PresentOptions), whole pixels or stretched, the device the sender's (txPrepare). JAWT
 // ai: is held only to read the window's handle. 0, with why in txError(), where it cannot start. presentStop before the
 // ai: canvas goes or the sender is destroyed.
-FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jfloat size, jfloat edge, jboolean whole) {
+// ai: place: macOS's layer over the canvas (x, y, w, h in points from the top left of the window's content, the
+// ai: backing scale; presentPlace when it moves), ignored elsewhere.
+FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jfloat size, jfloat edge, jboolean whole, jfloatArray place) {
   if (!h) { setError("no sender"); return 0; }
-#if defined(__APPLE__)
-  // ai: macOS needs a CAMetalLayer through JAWT's surface layers and MoltenVK: not built yet
-  (void)e; (void)canvas; (void)fps; (void)size; (void)edge; (void)whole;
-  setError("presenting is not built for macOS yet");
-  return 0;
-#else
+  auto out = std::make_unique<Pres>();
   lizard::PresentTarget target;
+#if defined(__APPLE__)
+  std::string why;
+  out->layer = lizard::mac::attachLayer(e, canvas, placeOf(e, place), &why);
+  if (!out->layer) { setError(why); return 0; }
+  target.metalLayer = out->layer;
+#else
+  (void)place;
   if (!canvasTarget(e, canvas, target)) return 0;
+#endif
   lizard::PresentOptions o;
   o.fps = fps;
   o.size = size;
@@ -246,15 +276,24 @@ FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jf
   o.log = [](const std::string& m) { std::fprintf(stderr, "lizard: %s\n", m.c_str()); };
   std::string err;
   try {
-    auto p = lizard::Presenter::start(target, tx(h)->s.get(), &tx(h)->mu, o, &err);
-    if (!p) { setError(err); return 0; }
-    return reinterpret_cast<jlong>(p.release());
+    out->p = lizard::Presenter::start(target, tx(h)->s.get(), &tx(h)->mu, o, &err);
+    if (!out->p) { setError(err); return 0; }
+    return reinterpret_cast<jlong>(out.release());
   } catch (const std::exception& x) {
     setError(std::string("the presenter could not start: ") + x.what());
   } catch (...) {
     setError("the presenter could not start");
   }
   return 0;
+}
+
+// ai: macOS: the layer moved to where the canvas is now (presentStart's place); nothing elsewhere, where the canvas's
+// ai: own window carries the swapchain
+FN(void, presentPlace)(JNIEnv* e, jclass, jlong p, jfloatArray place) {
+#if defined(__APPLE__)
+  if (p) lizard::mac::placeLayer(reinterpret_cast<Pres*>(p)->layer, placeOf(e, place));
+#else
+  (void)e; (void)p; (void)place;
 #endif
 }
 
@@ -263,15 +302,20 @@ FN(void, presentSize)(JNIEnv*, jclass, jlong p, jfloat size, jfloat edge) { if (
 FN(void, presentPause)(JNIEnv*, jclass, jlong p, jboolean on) { if (p) pr(p)->setPaused(on == JNI_TRUE); }
 // ai: presenter.h stats(): the last second's window as JSON
 FN(jstring, presentStats)(JNIEnv* e, jclass, jlong p) { return e->NewStringUTF(p ? pr(p)->stats().c_str() : ""); }
-FN(void, presentStop)(JNIEnv*, jclass, jlong p) { delete pr(p); }
+FN(void, presentStop)(JNIEnv*, jclass, jlong p) { delete reinterpret_cast<Pres*>(p); }
 
 // ai: The desktop's file chooser (2026-10-23, portal.cpp). windowOf: the window manager's window around the canvas (the
-// ai: ancestor with WM_STATE), for the dialog's parent; 0 where there is none (not X11, no window yet). On the UI thread.
+// ai: ancestor with WM_STATE; Windows: the canvas's root window), for the dialog's parent; 0 where there is none
+// ai: (macOS, no window yet). On the UI thread.
 FN(jlong, windowOf)(JNIEnv* e, jclass, jobject canvas) {
 #if defined(__linux__)
   lizard::PresentTarget target;
   if (!canvasTarget(e, canvas, target)) return 0;
   return static_cast<jlong>(lizard::x11TopLevel(target.x11Window));
+#elif defined(_WIN32)
+  lizard::PresentTarget target;
+  if (!canvasTarget(e, canvas, target)) return 0;
+  return static_cast<jlong>(reinterpret_cast<uintptr_t>(GetAncestor(static_cast<HWND>(target.hwnd), GA_ROOT)));
 #else
   (void)e; (void)canvas;
   return 0;
@@ -281,8 +325,12 @@ FN(jlong, windowOf)(JNIEnv* e, jclass, jobject canvas) {
 // ai: multiple; blocks until the dialog closes, so never on the UI thread. The file:// URIs chosen (none: cancelled), or
 // ai: null with why in txError() where the portal could not be asked.
 FN(jobjectArray, portalPick)(JNIEnv* e, jclass, jlong window, jstring title, jboolean directory, jboolean multiple) {
-  char parent[32] = "";
+  char parent[40] = "";
+#if defined(_WIN32)
+  if (window) std::snprintf(parent, sizeof parent, "win32:%llx", static_cast<unsigned long long>(window));
+#else
   if (window) std::snprintf(parent, sizeof parent, "x11:%lx", static_cast<unsigned long>(window));
+#endif
   const lizard::PortalPick r = lizard::portalOpen(parent, str(e, title), directory == JNI_TRUE, multiple == JNI_TRUE);
   if (!r.answered) { setError(r.error); return nullptr; }
   jobjectArray out = e->NewObjectArray(static_cast<jsize>(r.uris.size()), e->FindClass("java/lang/String"), nullptr);
