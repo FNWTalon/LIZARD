@@ -143,6 +143,13 @@ tasks.matching { it.name == "createDistributable" || it.name == "createReleaseDi
     }
 }
 
+// ai: macOS: the license text in the app's resources (Contents/app/resources/LICENSES.txt)
+val appLicense by tasks.registering(Copy::class) {
+    from(licenseText.flatMap { it.out }) { rename { "LICENSES.txt" } }
+    into(layout.buildDirectory.dir("appres/macos"))
+}
+tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(appLicense) }
+
 compose.desktop {
     application {
         mainClass = "dev.lizard.desktop.MainKt"
@@ -159,9 +166,11 @@ compose.desktop {
             description = "LIZARD sender"
             vendor = "LIZARD"
             // ai: the repository's license, NOTICE and the vendored code's licenses (licenseText), which jpackage writes
-            // ai: into the package (the .deb's share/doc/copyright said "License: Unknown" without them)
+            // ai: into the package (the .deb's share/doc/copyright said "License: Unknown" without them; the MSI shows it
+            // ai: as its license page). macOS: inside the app as LICENSES.txt (appLicense), since jpackage makes a
+            // ai: license file the .dmg's click-through agreement
             copyright = "Copyright 2026 The LIZARD authors"
-            licenseFile.set(licenseText.flatMap { it.out })
+            if (onMac) appResourcesRootDir.set(layout.buildDirectory.dir("appres")) else licenseFile.set(licenseText.flatMap { it.out })
             modules("java.instrument", "java.prefs", "jdk.unsupported")
             linux {
                 packageName = "lizard-sender"
