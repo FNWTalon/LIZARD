@@ -66,6 +66,10 @@ async function watch(s) {
   await s.send("Runtime.enable"); await s.send("Log.enable"); await s.send("Page.enable");
   return s;
 }
+// ai: a key pressed and let go as a keyboard does it (trusted events: a user activation); modifiers 2 is Ctrl
+async function press(s, key, code, vk, modifiers = 0) {
+  for (const type of ["keyDown", "keyUp"]) await s.send("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: vk, modifiers, ...(type === "keyDown" && !modifiers ? { text: key } : {}) });
+}
 async function until(s, expr, ms, what) {
   for (const t0 = Date.now(); Date.now() - t0 < ms; await sleep(100)) if (await evaluate(s, expr)) return true;
   // ai: what the page showed when it gave up, and its console errors so far, so a stall names itself
@@ -139,6 +143,10 @@ const SIZES = [
       const opened = new Promise((ok) => { s.on("Page.fileChooserOpened", () => ok(true)); setTimeout(() => ok(false), 3000); });
       await s.send("Runtime.evaluate", { expression: `document.querySelector("main").click()`, userGesture: true });
       check(await opened, `send ${z.name}: a tap on the middle opens the file chooser`);
+      // ai: Ctrl+O, as a video player opens a file (2026-10-23)
+      const byKey = new Promise((ok) => { s.on("Page.fileChooserOpened", () => ok(true)); setTimeout(() => ok(false), 3000); });
+      await press(s, "o", "KeyO", 79, 2);
+      check(await byKey, `send ${z.name}: Ctrl+O opens the file chooser`);
       await s.send("Page.setInterceptFileChooserDialog", { enabled: false });
     }
     await screenshot(s, `${OUT}/send-${z.name}-idle.png`);
@@ -184,6 +192,33 @@ const SIZES = [
     await evaluate(s, f.api ? `document.exitFullscreen()` : `document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     await sleep(500);
     check(!(await evaluate(s, `document.body.classList.contains("full")`)), `send ${z.name}: body.full cleared when ${f.api ? "fullscreen ends (fullscreenchange)" : "Escape is pressed"}`);
+    // ai: Keys as video players have them (2026-10-23, send.mjs): Space and K pause and resume, Space on a focused button
+    // ai: is the hotkey and not that button's press, F full screen and back, Ctrl+O nothing while the test stream is the payload
+    if (k === 0) {
+      const now = () => evaluate(s, `({ state: document.getElementById("state").textContent, resume: !document.getElementById("go").hidden && document.getElementById("go").textContent === "Resume", full: document.body.classList.contains("full") })`);
+      await press(s, " ", "Space", 32); await sleep(200);
+      const a = await now();
+      await press(s, "k", "KeyK", 75); await sleep(200);
+      const b = await now();
+      await evaluate(s, `document.getElementById("fs").focus()`);
+      await press(s, " ", "Space", 32); await sleep(400);
+      const c = await now();
+      await press(s, " ", "Space", 32); await sleep(200);
+      await press(s, "f", "KeyF", 70); await sleep(500);
+      const d = await now();
+      await press(s, "f", "KeyF", 70); await sleep(500);
+      const e = await now();
+      await s.send("Page.setInterceptFileChooserDialog", { enabled: true });
+      const none = new Promise((ok) => { s.on("Page.fileChooserOpened", () => ok(true)); setTimeout(() => ok(false), 1500); });
+      await press(s, "o", "KeyO", 79, 2);
+      const opened = await none;
+      await s.send("Page.setInterceptFileChooserDialog", { enabled: false });
+      check(a.state === "Paused" && a.resume, `send ${z.name}: Space pauses ("${a.state}")`);
+      check(b.state !== "Paused" && !b.resume, `send ${z.name}: K resumes ("${b.state}")`);
+      check(c.state === "Paused" && !c.full, `send ${z.name}: Space with Fullscreen focused pauses, not Fullscreen ("${c.state}", full ${c.full})`);
+      check(d.full && !e.full, `send ${z.name}: F enters full screen and leaves it`);
+      check(!opened, `send ${z.name}: Ctrl+O opens nothing while the test stream is the payload`);
+    }
   }
   // ai: The selection (2026-10-23): files and a folder added through the inputs (the DevTools protocol sets their
   // ai: files), a file added twice listed once, one removed, one dropped, the list cleared; the state line names the

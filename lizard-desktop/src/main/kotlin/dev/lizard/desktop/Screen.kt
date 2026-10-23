@@ -95,7 +95,7 @@ private fun RailSquares(s: SendState) {
     val on = s.phase == SendState.Phase.On
     Square {
         IconBtn(if (on && !s.paused) Icons.pause else Icons.play, if (!on) "Start" else if (s.paused) "Resume" else "Pause",
-            enabled = on || s.canStart) { if (on) s.pause(!s.paused) else s.requestStart() }
+            enabled = on || s.canStart) { s.playPause() }
     }
     RateSquare(s.capacityKBs)
 }

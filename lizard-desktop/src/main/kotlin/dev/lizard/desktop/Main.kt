@@ -15,6 +15,7 @@ import androidx.compose.ui.window.rememberWindowState
 import java.awt.EventQueue
 import java.awt.KeyEventDispatcher
 import java.awt.KeyboardFocusManager
+import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
 
 // ai: The desktop sender (2026-10-04): the web sender's page as a window (lizard-web/send.html), the
@@ -46,14 +47,34 @@ fun main(args: Array<String>) {
         Window(onCloseRequest = { s.close(); exitApplication() }, state = ws, title = "LIZARD sender", icon = rememberVectorPainter(Icons.mark)) {
             // ai: the frame white before Compose's first frame (2026-10-07): AWT's default grey showed until Skia drew
             remember { window.background = java.awt.Color.WHITE; window.contentPane.background = java.awt.Color.WHITE }
-            // ai: F11 full screen and back, Escape out of it, wherever the focus is (the canvas takes none)
+            // ai: Keys wherever the focus is (the canvas takes none), as video players have them (2026-10-23; F11 and Escape
+            // ai: before): Space or K play and pause (SendState.playPause), F or F11 full screen and back, Escape out of it,
+            // ai: Ctrl+O add files where files are sent. A key held down acts once; the keys taken are taken whole (press,
+            // ai: typed, release), so Space on a focused button is the hotkey and not that button's press. While the
+            // ai: brightness tip is open, Escape alone (its Cancel).
             DisposableEffect(Unit) {
+                val held = HashSet<Int>()
+                val taken = HashSet<Int>()
+                val mods = InputEvent.CTRL_DOWN_MASK or InputEvent.ALT_DOWN_MASK or InputEvent.META_DOWN_MASK or InputEvent.SHIFT_DOWN_MASK
                 val keys = KeyEventDispatcher { e ->
-                    if (e.id != KeyEvent.KEY_PRESSED) false
-                    else when {
-                        e.keyCode == KeyEvent.VK_ESCAPE && s.askBrightness -> { s.answerBrightness(false); true }
-                        e.keyCode == KeyEvent.VK_F11 -> { s.toggleFull(); true }
-                        e.keyCode == KeyEvent.VK_ESCAPE && s.full -> { s.toggleFull(); true }
+                    when (e.id) {
+                        KeyEvent.KEY_RELEASED -> { held.remove(e.keyCode); taken.remove(e.keyCode) }
+                        KeyEvent.KEY_TYPED -> taken.isNotEmpty() && e.keyChar in " kKfF"
+                        KeyEvent.KEY_PRESSED -> {
+                            val first = held.add(e.keyCode)
+                            val m = e.modifiersEx and mods
+                            val act: (() -> Unit)? = when {
+                                s.askBrightness -> if (e.keyCode == KeyEvent.VK_ESCAPE) ({ s.answerBrightness(false) }) else null
+                                e.keyCode == KeyEvent.VK_F11 -> ({ s.toggleFull() })
+                                e.keyCode == KeyEvent.VK_ESCAPE && s.full -> ({ s.toggleFull() })
+                                m == 0 && (e.keyCode == KeyEvent.VK_SPACE || e.keyCode == KeyEvent.VK_K) -> ({ s.playPause() })
+                                m == 0 && e.keyCode == KeyEvent.VK_F -> ({ s.toggleFull() })
+                                m == InputEvent.CTRL_DOWN_MASK && e.keyCode == KeyEvent.VK_O -> ({ if (!s.test) s.chooseFile() })
+                                else -> null
+                            }
+                            if (act != null) { taken += e.keyCode; if (first) act() }
+                            act != null
+                        }
                         else -> false
                     }
                 }
