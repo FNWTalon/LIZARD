@@ -25,6 +25,28 @@ namespace {
 // ai: the canvas's surface layers, kept on the layer for its detach
 const char kSurfaceLayers = 0;
 
+// ai: DIAGNOSTIC (2026-10-23, the layer not shown on the CI runner): each window's views and layers, from the root
+void logLayer(CALayer* l, int depth) {
+  std::fprintf(stderr, "lizard: macOS: %*s%s %p at %.0f, %.0f, %.0f x %.0f, z %.0f%s, %lu sub, flipped %d\n", 2 * depth, "",
+               object_getClassName(l), (__bridge void*)l, l.frame.origin.x, l.frame.origin.y, l.frame.size.width, l.frame.size.height,
+               l.zPosition, l.hidden ? ", hidden" : "", static_cast<unsigned long>(l.sublayers.count), l.geometryFlipped);
+  if (depth < 5) for (CALayer* c in l.sublayers) logLayer(c, depth + 1);
+}
+void logView(NSView* v, int depth) {
+  std::fprintf(stderr, "lizard: macOS: %*sview %s at %.0f, %.0f, %.0f x %.0f, layer %s %p, wants %d\n", 2 * depth, "", object_getClassName(v),
+               v.frame.origin.x, v.frame.origin.y, v.frame.size.width, v.frame.size.height, v.layer ? object_getClassName(v.layer) : "none",
+               (__bridge void*)v.layer, v.wantsLayer);
+  if (depth < 4) for (NSView* c in v.subviews) logView(c, depth + 1);
+}
+void logWindows() {
+  for (NSWindow* w in NSApp.windows) {
+    std::fprintf(stderr, "lizard: macOS: window \"%s\" visible %d\n", w.title.UTF8String, w.visible);
+    NSView* root = w.contentView.superview ? w.contentView.superview : w.contentView;
+    logView(root, 1);
+    if (w.contentView.layer) logLayer(w.contentView.layer, 1);
+  }
+}
+
 // ai: the window layer's sublayers on stderr, from the back: what stands over the code where it does not show
 void logTree(CALayer* window, const char* when) {
   std::fprintf(stderr, "lizard: macOS: %s, window layer %s, %lu sublayers:\n", when, object_getClassName(window),
@@ -70,7 +92,7 @@ void* attachLayer(JNIEnv* e, jobject canvas, const Place& p, std::string* err) {
     if (window) {
       layer = [CAMetalLayer layer];
       layer.opaque = YES;
-      layer.backgroundColor = CGColorGetConstantColor(kCGColorWhite);
+      layer.backgroundColor = CGColorCreateGenericRGB(1, 0, 0, 1);   // ai: DIAGNOSTIC: red, to see where it is drawn
       objc_setAssociatedObject(layer, &kSurfaceLayers, sl, OBJC_ASSOCIATION_RETAIN);
       // ai: above Compose's own layer (skiko's, a sublayer of the same window layer, over the window's whole content)
       layer.zPosition = 1000;
@@ -90,7 +112,7 @@ void* attachLayer(JNIEnv* e, jobject canvas, const Place& p, std::string* err) {
                layer.frame.origin.x, layer.frame.origin.y, layer.frame.size.width, layer.frame.size.height, layer.contentsScale,
                window.bounds.size.width, window.bounds.size.height);
   logTree(window, "at the attach");
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ logTree(window, "2 s later"); });
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ logTree(window, "2 s later"); logWindows(); });
   return (__bridge_retained void*)layer;
 }
 
