@@ -1,0 +1,5 @@
+- Unfinished transfers are kept: a later receive resumes them, after a restart too; Home lists them to continue or delete.
+- Send builds a list: add files, folders, photos and videos, and remove any; shared files join it.
+- Long file names keep one line, their ending shown.
+- A first-send tip on power saving, which can drop pictures.
+- The phase lock stays off on a lens that cannot time single frames, and the camera runs free there.
