@@ -4,7 +4,7 @@
 // ai: a file, and Delete) and Settings (the tips again, the files' size and Delete all, About). Receive goes to
 // ai: recv.html?auto: the tap is the wish to start.
 import { bytes, tips, tipsAgain, about, registerApp, confirmTap, icon } from "./ui.mjs";
-import { list, open, remove, removeAll, watch, keeps } from "./library.mjs";
+import { list, open, remove, removeAll, watch, keeps, unfinished, forgetUnfinished } from "./library.mjs";
 
 const $ = (id) => document.getElementById(id);
 tips();
@@ -37,7 +37,7 @@ async function row(e, next) {
   li.className = "item"; li.dataset.id = e.id;
   const lead = document.createElement("span"), name = document.createElement(f ? "a" : "span"), meta = document.createElement("span");
   lead.className = "lead"; lead.append(icon("file"));
-  name.className = "name"; name.textContent = e.name;
+  name.className = "name"; name.textContent = e.name; name.title = e.name;
   if (f) { name.href = link.url; name.target = "_blank"; name.rel = "noopener"; }
   meta.className = "meta"; meta.textContent = [bytes(e.size ?? f?.size ?? 0), when(e.at)].filter(Boolean).join(" · ");
   name.append(meta);
@@ -66,14 +66,43 @@ async function row(e, next) {
   li.append(lead, name, menu);
   return li;
 }
-document.addEventListener("click", (ev) => { for (const m of document.querySelectorAll("#list details.menu[open]")) if (!m.contains(ev.target)) m.open = false; });
-document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") for (const m of document.querySelectorAll("#list details.menu[open]")) { m.open = false; m.querySelector("summary").focus(); } });
+// ai: An unfinished transfer's row (2026-10-22, library.mjs unfinished): its name and "37% of 3.1 MB · date", the more
+// ai: menu Continue (Receive, which resumes it once the file is in the light) and Delete (asked on itself first).
+function partialRow(e) {
+  const li = document.createElement("li"), lead = document.createElement("span"), name = document.createElement("span"), meta = document.createElement("span");
+  li.className = "item"; li.dataset.id = e.id;
+  lead.className = "lead"; lead.append(icon("file"));
+  name.className = "name"; name.textContent = e.name || "a file"; name.title = e.name || "";
+  meta.className = "meta"; meta.textContent = [`${Math.floor(100 * (e.fraction ?? 0))}% of ${bytes(e.length ?? 0)}`, when(e.at)].filter(Boolean).join(" · ");
+  name.append(meta);
+  const menu = document.createElement("details"), more = document.createElement("summary"), acts = document.createElement("div");
+  menu.className = "menu";
+  more.className = "btn icon"; more.title = `More for ${e.name}`; more.append(icon("more"));
+  acts.className = "acts";
+  const go = document.createElement("a");
+  go.className = "btn"; go.href = "recv.html?auto"; go.textContent = "Continue";
+  const del = button("Delete");
+  del.classList.add("danger");
+  const disarm = confirmTap(del, "Delete it?", () => forgetUnfinished(e.id).then(show));
+  acts.append(go, del);
+  menu.append(more, acts);
+  menu.addEventListener("toggle", () => {
+    if (!menu.open) return disarm();
+    for (const m of document.querySelectorAll("details.menu[open]")) if (m !== menu) m.open = false;
+  });
+  li.append(lead, name, menu);
+  return li;
+}
+document.addEventListener("click", (ev) => { for (const m of document.querySelectorAll("details.menu[open]")) if (!m.contains(ev.target)) m.open = false; });
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") for (const m of document.querySelectorAll("details.menu[open]")) { m.open = false; m.querySelector("summary").focus(); } });
 // ai: One drawing at a time: a change heard while one runs draws once more after it.
 let drawing = null, again = false;
 async function show() {
   if (drawing) { again = true; return drawing; }
   drawing = (async () => {
-    const entries = await list(), kept = await keeps(), next = new Map();
+    const entries = await list(), kept = await keeps(), next = new Map(), parts = await unfinished();
+    $("partialList").replaceChildren(...parts.map(partialRow));
+    $("partial").hidden = !parts.length;
     $("list").replaceChildren(...(await Promise.all(entries.map((e) => row(e, next)))));
     for (const [key, { url }] of links) if (!next.has(key)) URL.revokeObjectURL(url);
     links = next;

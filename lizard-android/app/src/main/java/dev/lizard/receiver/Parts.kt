@@ -53,6 +53,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.ExperimentalTextApi
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -301,7 +303,8 @@ fun ListRow(title: String, sub: String? = null, lead: Int? = null, divider: Bool
                 Icon(painterResource(lead), contentDescription = null, Modifier.size(24.dp), tint = Fg)
             }
             Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = Fg, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                // ai: one line, cut with an ellipsis where the row is too narrow (2026-10-23: a long file name took two)
+                Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = Fg, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (sub != null) Text(sub, style = MaterialTheme.typography.bodyMedium, color = Muted)
             }
             trailing?.invoke()
@@ -337,7 +340,30 @@ fun heatText(status: Int, clocks: Clocks.Read?, camera: Engine.CameraSlow? = nul
 
 @Composable
 fun HeatWarning(status: Int, clocks: Clocks.Read?, camera: Engine.CameraSlow? = null, modifier: Modifier = Modifier) {
-    val text = heatText(status, clocks, camera) ?: return
+    Warning(heatText(status, clocks, camera) ?: return, modifier)
+}
+
+// ai: A line that names a file (2026-10-23; the web's ui.mjs sayName): its head, up to the name and a comma after it,
+// ai: on one line, the name's stem cut with an ellipsis where the line is too narrow and its ending kept whole
+// ai: (Readout.nameParts); the rest after it there where it fits, else under it.
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun NameLine(before: String, name: String, after: String, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
+    val (stem, end) = Readout.nameParts(name)
+    val comma = after.startsWith(",")
+    val rest = (if (comma) after.drop(1) else after).trim()
+    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Row {
+            Text(before + stem, style = style, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            Text(end + if (comma) "," else "", style = style, color = color, maxLines = 1)
+        }
+        if (rest.isNotEmpty()) Text(rest, style = style, color = color)
+    }
+}
+
+// ai: a warning line: the red triangle and its words (the heat's)
+@Composable
+fun Warning(text: String, modifier: Modifier = Modifier) {
     Row(modifier.semantics(mergeDescendants = true) {}, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Icon(painterResource(R.drawable.ic_alert), contentDescription = "Warning", Modifier.size(20.dp), tint = Bad)
         Text(text, style = MaterialTheme.typography.bodyMedium, color = Bad)

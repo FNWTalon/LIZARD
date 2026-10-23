@@ -30,6 +30,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
@@ -100,6 +101,9 @@ class MainActivity : ComponentActivity() {
     internal var denied by mutableStateOf(false)           // ai: refused, and Android asks no more: only its settings allow it
     internal var note by mutableStateOf("")                // ai: what came of a Save a copy or an Open
     internal var files by mutableStateOf(listOf<Library.Entry>())
+    // ai: transfers begun and not finished (2026-10-22, Partials.kt): Home lists them to continue or delete
+    internal var partials by mutableStateOf(listOf<Partials.Entry>())
+    private lateinit var partialStore: Partials
     internal var tipsSeen by mutableStateOf(false)
     // ai: The landscape column's width on Receive and Send, dp (2026-10-05): 0 the default (SideWidth), else what its edge
     // ai: was dragged to (SideEdge), kept as `sideDp`; sideDragging while a finger is on the edge (Send re-picks after).
@@ -143,6 +147,9 @@ class MainActivity : ComponentActivity() {
     internal fun pickFile() { try { choose.launch(arrayOf("*/*")) } catch (_: ActivityNotFoundException) {} }
     private val chooseTree = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { u -> if (u != null) send.pickTree(u) }
     internal fun pickFolder() { try { chooseTree.launch(null) } catch (_: ActivityNotFoundException) {} }
+    // ai: photos and videos through the system's photo picker (2026-10-23): no permission, each one a file item
+    private val chooseMedia = registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { us -> if (us.isNotEmpty()) send.pick(us) }
+    internal fun pickMedia() { try { chooseMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) } catch (_: ActivityNotFoundException) {} }
     private val save = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         val e = saving
         saving = null
@@ -168,6 +175,8 @@ class MainActivity : ComponentActivity() {
         tipsSeen = prefs.getBoolean("tipsSeen", false)
         for (k in FOLDS) folds[k] = prefs.getBoolean(k, false)
         library = Library(File(filesDir, "library"))
+        partialStore = Partials(File(filesDir, "received/lizard-xfer"))
+        partials = partialStore.list()
         adoptReplays()
         files = library.list()
         engine = Engine(applicationContext, { p ->
@@ -275,7 +284,7 @@ class MainActivity : ComponentActivity() {
         if (screen == Screen.Send) send.stop()
         screen = s
         note = ""
-        if (s == Screen.Home) files = library.list()
+        if (s == Screen.Home) { files = library.list(); partials = partialStore.list() }
         if (s == Screen.Receive) {
             stopped = false
             if (resumed()) { if (granted) startCamera() else askCamera() }
@@ -390,6 +399,15 @@ class MainActivity : ComponentActivity() {
     // ai: the deleted file still received and not kept, kept it again from a store it had already left, failed, and so
     // ai: marked the root unfiled, so the same file received after it was never kept (the S26, 18:46:59).
     private fun forgetReceived() { clearAsked = true; root = ""; unfiled = ""; ended = "" }
+    // ai: an unfinished transfer deleted (2026-10-22): the receiver forgets it (Engine.forget: the one in hand, or its
+    // ai: folder), or with no receiver its folder goes here; off the main thread, a folder can hold hundreds of MB
+    internal fun deletePartial(p: Partials.Entry) {
+        partials = partials.filter { it.id != p.id }
+        Thread({
+            if (!engine.forget(p.root.ifEmpty { p.id })) p.dir.deleteRecursively()
+            runOnUiThread { partials = partialStore.list() }
+        }, "lizard-forget").start()
+    }
     private var clearAsked = false   // ai: main thread only: the poll takes it
     internal fun installed(): String = try {
         SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.ROOT).format(Date(packageManager.getPackageInfo(packageName, 0).lastUpdateTime))
@@ -587,6 +605,8 @@ class MainActivity : ComponentActivity() {
                         Log.i(Engine.TAG, "dim: window brightness " + (want?.toString() ?: "the system's"))
                     }
                 }
+                // ai: the unfinished transfers on Home, once a second (a transfer in hand writes its meta.json as it goes)
+                if (tick % 4 == 0 && screen == Screen.Home) partials = withContext(Dispatchers.IO) { partialStore.list() }
                 // ai: the GPU's clock once a second, a log line at the first read and whenever a throttle's ceiling moves
                 if (tick % 4 == 0) {
                     val c = withContext(Dispatchers.IO) { Clocks.read() }

@@ -23,9 +23,9 @@ namespace lizard {
 
 class XferRx {
  public:
-  // ai: storeDir: a directory the receiver may write; it works in storeDir/lizard-xfer, emptied here (one receiver a
-  // ai: directory: what a run before this one left is nobody's, as the web's OPFS store does). A finished file is
-  // ai: storeDir/lizard-xfer/done<k>/<its name>.
+  // ai: storeDir: a directory the receiver may write; it works in storeDir/lizard-xfer, a folder a transfer (store.h
+  // ai: fileStore): the transfers a receiver before this one parked stay there to resume, anything else is let go (one
+  // ai: receiver a directory). A finished file is storeDir/lizard-xfer/<id>/done/<its name>.
   XferRx(const std::string& storeDir, std::function<void(const std::string&)> log = nullptr);
   ~XferRx();
   XferRx(const XferRx&) = delete;
@@ -43,12 +43,15 @@ class XferRx {
   // ai: queued before it), so progress() read after it never shows the transfer let go. It queued the clear and returned
   // ai: until then, and an app's poll in between read the file it had just forgotten as still received.
   void clear();
+  // ai: A transfer let go by its root (xfer_rx_core.h forget), the ids forgotten with it; done when it returns, as clear.
+  void forget(const std::string& root);
   // ai: Waits until the worker has taken everything queued (tools and tests; the app never needs it).
   void drain();
 
  private:
-  struct Item { uint8_t kind; std::array<uint8_t, XFER_BLOCK_BYTES> b; };   // ai: kind 0 a block, 1 a clear
+  struct Item { uint8_t kind; std::array<uint8_t, XFER_BLOCK_BYTES> b; };   // ai: kind 0 a block, 1 a clear, 2 a forget (b the root, NUL-ended)
   void push(uint8_t kind, const uint8_t* b);
+  void ask(uint8_t kind, const uint8_t* b);
   void run();
 
   std::function<void(const std::string&)> log_;

@@ -57,7 +57,7 @@ if(MINGW)
 else()
   find_package(JNI REQUIRED)
 endif()
-add_library(lizard_desktop SHARED tx_jni.cpp)
+add_library(lizard_desktop SHARED tx_jni.cpp portal.cpp)   # ai: portal.cpp, the desktop's file chooser (2026-10-23)
 if(WIN32)
   set_target_properties(lizard_desktop PROPERTIES PREFIX "")   # ai: lizard_desktop.dll, the name the Gradle bundle takes
 endif()

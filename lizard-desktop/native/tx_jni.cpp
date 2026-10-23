@@ -25,6 +25,7 @@
 #include <mutex>
 #include <string>
 
+#include "portal.h"
 #include "presenter.h"
 #include "sender.h"
 
@@ -184,19 +185,10 @@ FN(void, txDestroy)(JNIEnv*, jclass, jlong h) {
   delete t;
 }
 
-// ai: The presenter on a canvas (a heavyweight java.awt.Component, displayable: its native window made), the sender's
-// ai: frames on it: fps pictures a second asked, size the code's share of the room (0.25 to 1), whole pixels or
-// ai: stretched, the device the sender's (txPrepare). JAWT
-// ai: is held only to read the window's handle. 0, with why in txError(), where it cannot start. presentStop before the
-// ai: canvas goes or the sender is destroyed.
-FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jfloat size, jboolean whole) {
-  if (!h) { setError("no sender"); return 0; }
-#if defined(__APPLE__)
-  // ai: macOS needs a CAMetalLayer through JAWT's surface layers and MoltenVK: not built yet
-  (void)e; (void)canvas; (void)fps; (void)size; (void)whole;
-  setError("presenting is not built for macOS yet");
-  return 0;
-#else
+// ai: a heavyweight canvas's native window (X11's drawable, Windows' HWND), JAWT locked only to read it; false, with
+// ai: why in txError(), where it has none yet
+#if !defined(__APPLE__)
+static bool canvasTarget(JNIEnv* e, jobject canvas, lizard::PresentTarget& target) {
   JAWT awt;
   awt.version = JAWT_VERSION_9;
 #if defined(_WIN32)
@@ -205,15 +197,14 @@ FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jf
   using GetAWT = jboolean(JNICALL*)(JNIEnv*, JAWT*);
   HMODULE jm = GetModuleHandleW(L"jawt.dll");
   const auto getAwt = jm ? reinterpret_cast<GetAWT>(reinterpret_cast<void*>(GetProcAddress(jm, "JAWT_GetAWT"))) : nullptr;
-  if (!getAwt || getAwt(e, &awt) == JNI_FALSE) { setError("JAWT is not available"); return 0; }
+  if (!getAwt || getAwt(e, &awt) == JNI_FALSE) { setError("JAWT is not available"); return false; }
 #else
-  if (JAWT_GetAWT(e, &awt) == JNI_FALSE) { setError("JAWT is not available"); return 0; }
+  if (JAWT_GetAWT(e, &awt) == JNI_FALSE) { setError("JAWT is not available"); return false; }
 #endif
   JAWT_DrawingSurface* ds = awt.GetDrawingSurface(e, canvas);
-  if (!ds) { setError("the canvas has no drawing surface"); return 0; }
+  if (!ds) { setError("the canvas has no drawing surface"); return false; }
   const jint lock = ds->Lock(ds);
-  if (lock & JAWT_LOCK_ERROR) { awt.FreeDrawingSurface(ds); setError("the canvas's drawing surface could not be locked"); return 0; }
-  lizard::PresentTarget target;
+  if (lock & JAWT_LOCK_ERROR) { awt.FreeDrawingSurface(ds); setError("the canvas's drawing surface could not be locked"); return false; }
   JAWT_DrawingSurfaceInfo* dsi = ds->GetDrawingSurfaceInfo(ds);
   if (dsi) {
 #if defined(_WIN32)
@@ -225,10 +216,30 @@ FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jf
   }
   ds->Unlock(ds);
   awt.FreeDrawingSurface(ds);
-  if (!target.x11Window && !target.hwnd) { setError("the canvas has no native window yet"); return 0; }
+  if (!target.x11Window && !target.hwnd) { setError("the canvas has no native window yet"); return false; }
+  return true;
+}
+#endif
+
+// ai: The presenter on a canvas (a heavyweight java.awt.Component, displayable: its native window made), the sender's
+// ai: frames on it: fps pictures a second asked, size the code's share of the room (0.25 to 1), edge the light kept
+// ai: at each edge (presenter.h PresentOptions), whole pixels or stretched, the device the sender's (txPrepare). JAWT
+// ai: is held only to read the window's handle. 0, with why in txError(), where it cannot start. presentStop before the
+// ai: canvas goes or the sender is destroyed.
+FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jfloat size, jfloat edge, jboolean whole) {
+  if (!h) { setError("no sender"); return 0; }
+#if defined(__APPLE__)
+  // ai: macOS needs a CAMetalLayer through JAWT's surface layers and MoltenVK: not built yet
+  (void)e; (void)canvas; (void)fps; (void)size; (void)edge; (void)whole;
+  setError("presenting is not built for macOS yet");
+  return 0;
+#else
+  lizard::PresentTarget target;
+  if (!canvasTarget(e, canvas, target)) return 0;
   lizard::PresentOptions o;
   o.fps = fps;
   o.size = size;
+  o.edge = edge;
   o.whole = whole == JNI_TRUE;
   // ai: LIZ_PRESENT_CSV=<path>: a line a present (lizard_present --log's), for reading a run's cadence around a resize
   if (const char* c = std::getenv("LIZ_PRESENT_CSV")) o.csv = c;
@@ -248,10 +259,45 @@ FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jf
 }
 
 FN(void, presentFps)(JNIEnv*, jclass, jlong p, jint fps) { if (p) pr(p)->setFps(fps); }
-FN(void, presentSize)(JNIEnv*, jclass, jlong p, jfloat size) { if (p) pr(p)->setSize(size); }
+FN(void, presentSize)(JNIEnv*, jclass, jlong p, jfloat size, jfloat edge) { if (p) pr(p)->setSize(size, edge); }
 FN(void, presentPause)(JNIEnv*, jclass, jlong p, jboolean on) { if (p) pr(p)->setPaused(on == JNI_TRUE); }
-// ai: Full screen's part here: the compositor bypass on the window's top level (X11; the app makes the window full screen)
-FN(void, presentFullscreen)(JNIEnv*, jclass, jlong p, jboolean on) { if (p) pr(p)->setBypassCompositor(on == JNI_TRUE); }
 // ai: presenter.h stats(): the last second's window as JSON
 FN(jstring, presentStats)(JNIEnv* e, jclass, jlong p) { return e->NewStringUTF(p ? pr(p)->stats().c_str() : ""); }
 FN(void, presentStop)(JNIEnv*, jclass, jlong p) { delete pr(p); }
+
+// ai: The desktop's file chooser (2026-10-23, portal.cpp). windowOf: the window manager's window around the canvas (the
+// ai: ancestor with WM_STATE), for the dialog's parent; 0 where there is none (not X11, no window yet). On the UI thread.
+FN(jlong, windowOf)(JNIEnv* e, jclass, jobject canvas) {
+#if defined(__linux__)
+  lizard::PresentTarget target;
+  if (!canvasTarget(e, canvas, target)) return 0;
+  return static_cast<jlong>(lizard::x11TopLevel(target.x11Window));
+#else
+  (void)e; (void)canvas;
+  return 0;
+#endif
+}
+// ai: portalPick: the portal's OpenFile, parent the window windowOf gave (0 none), files or folders, several where
+// ai: multiple; blocks until the dialog closes, so never on the UI thread. The file:// URIs chosen (none: cancelled), or
+// ai: null with why in txError() where the portal could not be asked.
+FN(jobjectArray, portalPick)(JNIEnv* e, jclass, jlong window, jstring title, jboolean directory, jboolean multiple) {
+  char parent[32] = "";
+  if (window) std::snprintf(parent, sizeof parent, "x11:%lx", static_cast<unsigned long>(window));
+  const lizard::PortalPick r = lizard::portalOpen(parent, str(e, title), directory == JNI_TRUE, multiple == JNI_TRUE);
+  if (!r.answered) { setError(r.error); return nullptr; }
+  jobjectArray out = e->NewObjectArray(static_cast<jsize>(r.uris.size()), e->FindClass("java/lang/String"), nullptr);
+  for (size_t i = 0; i < r.uris.size(); i++) {
+    jstring u = e->NewStringUTF(r.uris[i].c_str());
+    e->SetObjectArrayElement(out, static_cast<jsize>(i), u);
+    e->DeleteLocalRef(u);
+  }
+  return out;
+}
+// ai: full screen as other apps ask for it (2026-10-23, presenter.cpp x11Fullscreen): the window manager's own for the
+// ai: window windowOf gave; false where it could not be asked (not X11), for Compose's placement instead
+FN(jboolean, windowFullscreen)(JNIEnv*, jclass, jlong window, jboolean on) {
+  return window && lizard::x11Fullscreen(static_cast<unsigned long>(window), on == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+}
+FN(jboolean, windowIsFullscreen)(JNIEnv*, jclass, jlong window) {
+  return window && lizard::x11IsFullscreen(static_cast<unsigned long>(window)) ? JNI_TRUE : JNI_FALSE;
+}

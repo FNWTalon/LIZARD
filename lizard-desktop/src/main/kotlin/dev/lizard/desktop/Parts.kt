@@ -126,6 +126,31 @@ object Icons {
     }.build()
 }
 
+// ai: A line that names a file (2026-10-23; the web's ui.mjs sayName, the Android app's NameLine): its head, up to the
+// ai: name and a comma after it, on one line, the name's stem cut with an ellipsis where the column is too narrow and
+// ai: its ending kept whole (nameParts); the rest after it there where it fits, else under it.
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun NameLine(before: String, name: String, after: String, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
+    val (stem, end) = nameParts(name)
+    val comma = after.startsWith(",")
+    val rest = (if (comma) after.drop(1) else after).trim()
+    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+        Row {
+            Text(before + stem, style = style, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            Text(end + if (comma) "," else "", style = style, color = color, maxLines = 1)
+        }
+        if (rest.isNotEmpty()) Text(rest, style = style, color = color)
+    }
+}
+// ai: a name's stem and the ending kept whole when the line cuts it: a bundle's " and N more.tar" (Tar.kt Bundle), else
+// ai: an extension of at most 10 characters, else nothing
+fun nameParts(name: String): Pair<String, String> {
+    Regex("^(.+)( and \\d+ more\\.tar)$", RegexOption.DOT_MATCHES_ALL).find(name)?.let { return it.groupValues[1] to it.groupValues[2] }
+    val dot = name.lastIndexOf('.')
+    return if (dot > 0 && name.length - dot <= 10) name.substring(0, dot) to name.substring(dot) else name to ""
+}
+
 // ai: The top bar (the web's .bar): the screen's title, the actions on the right, the last one out in the gutter so its
 // ai: ink lines up with the text below; a hairline under it.
 @Composable

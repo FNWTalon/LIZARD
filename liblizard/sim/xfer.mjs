@@ -221,10 +221,20 @@ class Bits {
 
 // Blocks and the finished file, held in memory: the fallback where there is no origin private file system. The
 // fountain worker (lizard-web/fountain-worker.mjs) has the OPFS one with the same calls.
+// ai: A store that keeps transfers (keeps; 2026-10-22, the OPFS one) holds each in a folder of its own and resumes one
+// ai: when its header comes again (open, the notes, park, forget: liblizard/core/rx/store.h's). This one keeps one
+// ai: transfer at a time, as before: open is begin, park is clear, the notes are nothing.
 export class MemoryStore {
-  constructor() { this.kind = "memory"; this.recs = new Map(); this.out = null; }
+  constructor() { this.kind = "memory"; this.keeps = false; this.recs = new Map(); this.out = null; }
   async clear() { this.recs.clear(); this.out = null; }
   async begin(length) { this.out = new Uint8Array(length); }
+  async open(id, header, length) { await this.begin(length); return { found: false }; }
+  async noteManifest() {}
+  async noteVerified() {}
+  async noteMeta() {}
+  async truncate() {}
+  async park() { await this.clear(); }
+  async forget() {}
   async append(c, sym, bytes) {
     let r = this.recs.get(c);
     if (!r) this.recs.set(c, (r = { buf: new Uint8Array(REC * 256), n: 0 }));
@@ -241,6 +251,10 @@ export class MemoryStore {
   held() { let t = this.out?.length ?? 0; for (const r of this.recs.values()) t += r.buf.length; return t; }
 }
 
+// ai: meta.json written again every this many blocks stored (about 1 MB) or a second of storing, whichever comes first,
+// ai: as well as at each chunk verified and at a park, so a page closed mid-chunk leaves the list a line at most that
+// ai: far behind (liblizard/core/rx/xfer_rx_core.cpp)
+const META_EVERY = 2048, META_MS = 1000;
 const COLLECTING = 0, HOT = 1, VERIFIED = 3;   // 2 was a chunk decoded before the manifest, which no longer happens: a chunk's block count waits on it
 const eq = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 
@@ -252,22 +266,46 @@ export class XferReceiver {
   constructor({ M, Decoder, store, Z = null }) {
     this.M = M; this.W = wasm(M); this.Decoder = Decoder; this.store = store; this.Z = Z;
     this.hdr = null; this.source = ""; this.lightSeen = false;
-    this.ch = new Map(); this.raw = new Map();
+    this.ch = new Map(); this.raw = new Map(); this.replaying = false; this.sinceMeta = 0; this.metaMs = 0;
     this.verified = 0; this.rejected = 0; this.manifestRejected = 0; this.refused = 0; this.over = 0; this.ms = 0; this.done = false; this.result = null;
   }
 
-  async reset() {
+  // ai: The transfer in hand parked for its header to come again (keep; a store that keeps no transfers lets it go), or
+  // ai: let go whole (liblizard/core/rx/xfer_rx_core.cpp reset).
+  async reset(keep = false) {
     const M = this.M;
+    if (keep && this.hdr && !this.done && this.store.keeps) {
+      // ai: the blocks since this transfer's header was last read may be the next file's (the sender moved on, its
+      // ai: blocks under the same ids until its header comes): each chunk cut back to its mark
+      for (const [c, s] of this.ch) if (s.state !== VERIFIED && s.recs > s.mark) { await this.store.truncate(c, s.mark); s.recs = s.mark; }
+      await this.saveMeta();
+    }
     for (const s of this.ch.values()) s.dec?.free();
     if (this.hdr) [this.hdr.p, this.hdr.root, this.hdr.list, this.hdr.psent, this.hdr.pseed].forEach((p) => M._free(p));
     this.hdr = null; this.source = ""; this.lightSeen = false; this.ch.clear(); this.raw.clear();
-    this.verified = 0; this.rejected = 0; this.manifestRejected = 0; this.over = 0; this.ms = 0; this.done = false; this.result = null;
-    await this.store.clear();
+    this.verified = 0; this.rejected = 0; this.manifestRejected = 0; this.over = 0; this.ms = 0; this.done = false; this.result = null; this.sinceMeta = 0;
+    if (keep) await this.store.park(); else await this.store.clear();
+  }
+  // ai: A transfer let go by its root (hex, or its first 16 digits): the one in hand, or one the store parked.
+  async forget(root) {
+    const id = root.slice(0, 16);
+    if (this.hdr && hex(this.W.take(this.hdr.root, 32)).startsWith(id)) return this.reset(false);
+    await this.store.forget(id);
+  }
+  // ai: The transfer's line for a page's list of unfinished transfers (the store's meta.json).
+  async saveMeta() {
+    this.sinceMeta = 0; this.metaMs = performance.now();
+    const h = this.hdr;
+    if (!h || !this.store.keeps) return;
+    const p = this.progress(), sent = this.sentTotal();
+    await this.store.noteMeta(JSON.stringify({ name: h.name, type: h.type, length: h.length, chunks: h.chunks, verified: this.verified, root: p.header.root,
+      fraction: Math.round(fractionDone(p) * 1e4) / 1e4, sent: sent ?? 0, sentIn: this.sentIn() }));
   }
 
   state(c) {
     let s = this.ch.get(c);
-    if (!s) this.ch.set(c, (s = { have: new Bits(), ban: new Bits(), state: COLLECTING, dec: null }));
+    // ai: recs: the blocks the store holds for the chunk; mark: how many when this transfer's header was last read
+    if (!s) this.ch.set(c, (s = { have: new Bits(), ban: new Bits(), state: COLLECTING, dec: null, recs: 0, mark: 0 }));
     return s;
   }
 
@@ -279,12 +317,20 @@ export class XferReceiver {
       return;   // reserved: this version ignores it
     }
     const h = this.hdr;
-    if (this.done || (h && c >= h.chunks)) return;
+    // ai: a store that keeps transfers keeps them by their header's folder, so a data block before any header is not
+    // ai: kept (the fountain worker holds such blocks for the next header itself)
+    if (this.done || (h && c >= h.chunks) || (!h && this.store.keeps)) return;
     const s = this.state(c);
     if (s.state === VERIFIED || s.have.has(sym) || s.ban.has(sym)) return;
     s.have.add(sym);
-    if (s.dec) { if (s.dec.add(sym, bytes)) await this.recovered(c, s.dec); return; }
+    if (s.dec) {
+      if (this.store.keeps) { await this.store.append(c, sym, bytes); s.recs++; }   // ai: kept, so a resume rebuilds the decoder
+      if (s.dec.add(sym, bytes)) await this.recovered(c, s.dec);
+      return;
+    }
     await this.store.append(c, sym, bytes);
+    s.recs++;
+    if (++this.sinceMeta >= META_EVERY || performance.now() - this.metaMs >= META_MS) await this.saveMeta();
     if (h && h.K && s.have.n >= h.K[c]) await this.solve(c);   // K: known once the manifest is in (one chunk: from the header)
   }
 
@@ -294,7 +340,7 @@ export class XferReceiver {
     const light = source === "light";
     if (light) this.lightSeen = true;
     if (this.hdr) {
-      if (eq(bytes, this.hdr.bytes)) { if (light) this.source = "light"; return; }
+      if (eq(bytes, this.hdr.bytes)) { if (light) { this.source = "light"; for (const s of this.ch.values()) s.mark = s.recs; } return; }
       if (!light) return;
     }
     const M = this.M, W = this.W, ph = W.put(bytes), sc = M._malloc(52), root = M._malloc(32), nm = M._malloc(255), ty = M._malloc(158);
@@ -303,7 +349,7 @@ export class XferReceiver {
     if (rc) { this.refused++; [ph, sc, root, nm, ty].forEach((p) => M._free(p)); return; }   // not a header this receiver reads
     const f = new Int32Array(M.HEAPU8.buffer, sc, 13).slice(), name = new TextDecoder().decode(W.take(nm, f[5])), type = new TextDecoder().decode(W.take(ty, f[6]));
     [sc, nm, ty].forEach((p) => M._free(p));
-    if (this.hdr) await this.reset();
+    if (this.hdr) await this.reset(true);
     // sent, seed and K: each chunk's bytes as sent, its seed attempt and its blocks, from the header for one chunk and
     // from the manifest (psent, pseed, read back once the list checks) for more; null until then.
     const chunks = f[9], size = f[11], length = (f[7] >>> 0) + (f[8] >>> 0) * 2 ** 32;
@@ -313,14 +359,33 @@ export class XferReceiver {
     if (chunks === 1) { h.sent = Uint32Array.of(f[12]); h.seed = Uint8Array.of(f[4]); h.K = Uint32Array.of(blocksOf(f[12])); }
     this.hdr = h; this.source = source; this.lightSeen ||= light;
     for (const c of [...this.ch.keys()]) if (c >= chunks) { this.ch.delete(c); await this.store.drop(c); }   // blocks of another transfer
-    await this.store.begin(h.length);
+    const before = await this.store.open(hex(W.take(root, 32)).slice(0, 16), bytes, h.length);
     if (!chunks) {   // an empty file: its root is BLAKE3 of nothing, which is all there is to check
       if (eq(W.b3(new Uint8Array(0)), W.take(root, 32))) await this.finish(); else this.refused++;
       return;
     }
+    if (before?.found && (await this.resume(before))) return;
     for (const [m, b] of this.raw) await this.manifestBlock(m, b);
     this.raw.clear();
+    await this.saveMeta();
     if (h.K) await this.solveReady();
+  }
+  // ai: A folder of this transfer from before: its manifest blocks replayed, its verified chunks taken as verified, and
+  // ai: each collecting chunk's symbols marked had from its stored blocks; true when that finished it.
+  async resume(b) {
+    const h = this.hdr;
+    this.replaying = true;
+    for (const [m, pay] of b.manifest) await this.manifestBlock(m, pay);
+    this.replaying = false;
+    for (const c of b.verified) if (c < h.chunks && this.state(c).state !== VERIFIED) { const s = this.state(c); s.state = VERIFIED; s.have = s.ban = null; this.verified++; }
+    for (const c of b.chunks) {
+      if (c >= h.chunks || this.state(c).state === VERIFIED) { await this.store.drop(c); continue; }
+      const s = this.state(c), recs = await this.store.read(c);
+      for (let o = 0; o + REC <= recs.length; o += REC) s.have.add((recs[o] | (recs[o + 1] << 8) | (recs[o + 2] << 16) | (recs[o + 3] << 24)) >>> 0);
+      s.recs = s.mark = recs.length / REC;
+    }
+    if (this.verified === h.chunks) { await this.finish(); return true; }
+    return false;
   }
   // Every chunk with its blocks in hand, now that their counts are known.
   async solveReady() {
@@ -336,6 +401,7 @@ export class XferReceiver {
     M._free(p);
     if (!ok) return;   // another transfer's (its tag), not a manifest block, or entries no chunk could have
     h.mgot[m] = 1;
+    if (!this.replaying) await this.store.noteManifest(m, bytes);
     if (++h.mhave < h.mcount) return;
     if (M._xfer_manifest_check(h.list, h.chunks, h.root)) {
       // Every block passed its parse and the list still does not make the root: one of them passed its CRC wrongly.
@@ -355,11 +421,13 @@ export class XferReceiver {
   }
   async solveOnce(c) {
     const h = this.hdr, s = this.ch.get(c), recs = await this.store.read(c);
-    if (h.K[c] === 1) { const out = recs.slice(ID_BYTES, ID_BYTES + h.sent[c]); await this.store.drop(c); return this.unpack(c, out); }
+    if (h.K[c] === 1) { const out = recs.slice(ID_BYTES, ID_BYTES + h.sent[c]); await this.store.drop(c); s.recs = s.mark = 0; return this.unpack(c, out); }
     const d = new this.Decoder(h.sent[c], PAYLOAD, h.seed[c]);
     let done = false;
     for (let o = 0; o < recs.length && !done; o += REC) done = d.add((recs[o] | (recs[o + 1] << 8) | (recs[o + 2] << 16) | (recs[o + 3] << 24)) >>> 0, recs.subarray(o + ID_BYTES, o + REC));
-    await this.store.drop(c);   // the decoder holds them now
+    // ai: the decoder holds them now; a store that keeps the transfer keeps them until the chunk is verified, so a
+    // ai: resume rebuilds a chunk Wirehair wanted more blocks for
+    if (done || !this.store.keeps) { await this.store.drop(c); s.recs = s.mark = 0; }
     if (!done) { s.dec = d; s.state = HOT; this.over++; return; }   // Wirehair wanted a block more than K (a few percent of chunks): fed as they come
     await this.recovered(c, d);
   }
@@ -378,7 +446,7 @@ export class XferReceiver {
   }
   async check(c, out) {
     const h = this.hdr, s = this.ch.get(c);
-    if (this.verify(c, out)) { await this.store.writeOut(c * h.size, out); await this.accept(c, s); } else this.reject(c, s);
+    if (this.verify(c, out)) { await this.store.writeOut(c * h.size, out); await this.store.noteVerified(c); await this.accept(c, s); } else await this.reject(c, s);
   }
   // xfer_chunk_check: the chunk's chaining value against the list (already checked against the root), or, for a file
   // of one chunk, its hash against the root.
@@ -389,13 +457,16 @@ export class XferReceiver {
   }
   async accept(c, s) {
     s.state = VERIFIED; s.have = s.ban = null; this.verified++;
-    if (this.verified === this.hdr.chunks) await this.finish();
+    await this.store.drop(c); s.recs = s.mark = 0;   // ai: a kept chunk's blocks (store keeps), nothing otherwise
+    if (this.verified === this.hdr.chunks) await this.finish(); else await this.saveMeta();
   }
   // A chunk that decoded to the wrong bytes: some block of it passed its CRC wrongly (1 in 2^32), or was sent wrong.
   // Which one cannot be told, so every symbol that went into it is refused from now on and the chunk is collected
   // again from fresh ids; the sender's next laps bring them.
-  reject(c, s) {
+  async reject(c, s) {
     s.ban.or(s.have); s.have = new Bits(); s.state = COLLECTING; this.rejected++;
+    if (s.dec) { s.dec.free(); s.dec = null; }
+    await this.store.drop(c); s.recs = s.mark = 0;
   }
   async finish() {
     this.done = true;

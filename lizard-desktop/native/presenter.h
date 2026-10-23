@@ -23,11 +23,18 @@ class Sender;
 // ai: The window the code goes in: one of them (X11: the drawable's id; Windows: the HWND, built under _WIN32 and not
 // ai: run yet).
 struct PresentTarget { unsigned long x11Window = 0; void* hwnd = nullptr; };
+// ai: the window manager's window around an X11 window (the ancestor with WM_STATE), else the window itself
+unsigned long x11TopLevel(unsigned long window);
+// ai: the window manager's own full screen for its window (x11TopLevel's), asked (true where the request went) and read
+bool x11Fullscreen(unsigned long top, bool on);
+bool x11IsFullscreen(unsigned long top);
 
 struct PresentOptions {
   int fps = 60;            // ai: pictures a second asked; each held round(refreshHz / fps) refreshes where that is whole
                            // ai: within 1% (present.cpp's rule), else a grid
   double size = 1.0;       // ai: the code's share of the area's room, 0.25 to 1 (the web's #size)
+  double edge = 0;         // ai: light kept at each edge of the area past the frame's own, a share of the frame's
+                           // ai: height (the Margin past the codec's quiet zone, SendState.kt), 0 to 1
   bool whole = false;      // ai: whole device pixels a sample, nearest (present.cpp --fit whole); else stretch, linear
   std::function<void(const std::string&)> log;
   std::string csv;         // ai: a CSV line a present (lizard_present --log), "" none
@@ -45,12 +52,9 @@ class Presenter {
   static std::unique_ptr<Presenter> start(const PresentTarget& target, Sender* sender, std::mutex* senderLock,
                                           const PresentOptions& opt, std::string* err);
   void setFps(int fps);
-  void setSize(double size);
+  void setSize(double size, double edge);
   // ai: Paused: the last picture stays (no new pictures taken; presents go on a few times a second, uncounted).
   void setPaused(bool on);
-  // ai: X11: _NET_WM_BYPASS_COMPOSITOR (1 on, 0 the manager's choice) on the target's top-level window (the ancestor the
-  // ai: window manager manages, which carries WM_STATE; else the root's child); a no-op elsewhere.
-  void setBypassCompositor(bool on);
   // ai: The last second's window, JSON: shownFps (fresh pictures on screen a second), presentsPerSec, hz (the refresh
   // ai: measured, else the mode's, else 60), modeHz (XRandR's for the monitor holding the window, 0 unknown), held
   // ai: ({"refreshes": pictures}), missed (refreshes the loop missed), behind (pictures due and not yet painted),

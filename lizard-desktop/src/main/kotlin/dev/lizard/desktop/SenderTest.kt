@@ -9,17 +9,20 @@ import kotlin.system.exitProcess
 // ai: code area has a size, and after secs (8 unless named) of presenting the last presenter and sender stats are
 // ai: printed to stdout as one JSON line {"present": {...}, "sender": {...}} and the app exits 0. Any failure prints
 // ai: "FAIL <why>" and exits 1. Keys: secs; codes 1 or 2; enc auto, gpu or cpu; blocks 0 (auto) to 128; fps 1 to 60;
-// ai: size 25 to 100 (%); gap 0 to 64 (modules); ring auto, 32, 64, 128 or 256; full 0 or 1 (the window full screen, the
-// ai: compositor bypassed); file=<path>[:<path>...] (files or folders in place of the test stream, as a pick or a drop
+// ai: size 25 to 100 (%); margin 2 to 34 (modules); ring auto, 32, 64, 128 or 256; full 0 or 1 (the window manager's full
+// ai: screen); file=<path>[:<path>...] (files or folders in place of the test stream, as a pick or a drop
 // ai: gives them: one file as itself, else one tar, 2026-10-16); steps
 // ai: (2026-10-04, the app's own controls, which only a hand had moved): comma separated <seconds>:<action>, from when
 // ai: the presenter first presents, each as the control does it: full (Fullscreen, F11), max (the window maximized), pause, resume, stop, start,
-// ai: size=N, gap=N, codes=N, blocks=N (0 auto), fps=N (each a slider's release), enc=auto|gpu|cpu, rail, press (Start as
-// ai: the button presses it: the brightness tip first where it is due), confirm and cancel (the tip's buttons); each logged
-// ai: on stderr as "step <s>: <action>" when it is taken. Each second's presenter stats go to stderr as "present: {...}".
+// ai: size=N, margin=N, codes=N, blocks=N (0 auto), fps=N (each a slider's release), enc=auto|gpu|cpu, rail, press (Start as
+// ai: the button presses it: the brightness tip first where it is due), confirm and cancel (the tip's buttons), and the
+// ai: selection's (2026-10-23): add=<path>[:<path>...] (as a pick adds), remove=<an item's name> (its Remove), clear (Clear),
+// ai: list (the items and the state line on stderr as "list: <name> | ... | <state line>"); a change stops the run, as
+// ai: the app's does, until a start; each logged on stderr as "step <s>: <action>" when it is taken. Each second's
+// ai: presenter stats go to stderr as "present: {...}".
 class SenderTest private constructor(private val secs: Double, private val kv: Map<String, String>) {
     companion object {
-        private val KEYS = setOf("secs", "codes", "enc", "blocks", "fps", "size", "gap", "ring", "full", "file", "steps")
+        private val KEYS = setOf("secs", "codes", "enc", "blocks", "fps", "size", "margin", "ring", "full", "file", "steps")
         // ai: how long the presenter may take to start (the canvas shown, the GPU painter made) before the check fails
         private const val START_SECS = 60.0
 
@@ -67,7 +70,7 @@ class SenderTest private constructor(private val secs: Double, private val kv: M
         int("blocks", 0..128)?.let { s.blocks = it }
         int("fps", 1..60)?.let { s.fps = it }
         int("size", 25..100)?.let { s.size = it }
-        int("gap", 0..64)?.let { s.gap = it }
+        int("margin", Pick.QUIET..Pick.MARGIN_MAX)?.let { s.margin = it }
         kv["ring"]?.let { v -> s.ring = if (v == "auto") -1 else Pick.RINGS.indexOf(v.toIntOrNull() ?: 0).takeIf { it >= 0 } ?: fail("LIZ_SENDER_TEST: ring=$v") }
     }
 
@@ -141,11 +144,15 @@ class SenderTest private constructor(private val secs: Double, private val kv: M
             "confirm" -> { s.answerBrightness(true); return stopped }
             "cancel" -> s.answerBrightness(false)
             "size" -> { s.chooseSize(n(25..100)); s.commitSize() }
-            "gap" -> { s.chooseGap(n(0..64)); s.repick() }
+            "margin" -> { s.chooseMargin(n(Pick.QUIET..Pick.MARGIN_MAX)); s.repick() }
             "codes" -> s.chooseCodes(n(1..2))
             "blocks" -> { s.chooseBlocks(n(0..128)); s.repick() }
             "fps" -> { s.chooseFps(n(1..60)); s.commitFps() }
             "enc" -> if (v in setOf("auto", "gpu", "cpu")) s.chooseEnc(v) else fail("LIZ_SENDER_TEST: step $act")
+            "add" -> { s.pick(v.split(':').filter { it.isNotEmpty() }.map { java.io.File(it) }); return true }
+            "remove" -> { s.items.firstOrNull { it.name == v }?.let { s.remove(it.key) } ?: fail("LIZ_SENDER_TEST: no item $v"); return true }
+            "clear" -> { s.clearPicks(); return true }
+            "list" -> System.err.println("list: ${(s.items.map { "${it.name} (${if (it.dir) "${it.files} files, " else ""}${it.size} B${if (it.links > 0) ", ${it.links} links skipped" else ""})" } + s.stateLine).joinToString(" | ")}")
             else -> fail("LIZ_SENDER_TEST: unknown step $act")
         }
         return stopped

@@ -1,6 +1,7 @@
 package dev.lizard.desktop
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.lizard.tar.Bundle
@@ -60,6 +61,8 @@ import kotlin.math.roundToInt
 // ai: paints that itself, since nothing of Compose can be drawn over a heavyweight canvas.
 class CodeCanvas(private val s: SendState) : Canvas() {
     @Volatile var presenting = false
+    // ai: how near the left edge the pointer shows full screen's rail, the window's units
+    private val EDGE_NEAR = 24
 
     init {
         background = java.awt.Color.WHITE
@@ -68,29 +71,47 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         // ai: shown or hidden with its parents (Compose's SwingPanel sizes it before it shows it)
         addHierarchyListener { e -> if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) s.areaChanged() }
         addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) { if (s.full) s.toggleFull() else if (chooses()) { if (folderLink?.contains(e.point) == true) s.chooseFolder() else s.chooseFile() } }
+            override fun mouseClicked(e: MouseEvent) {
+                if (s.full) s.toggleFull()
+                else if (chooses()) {
+                    if (listing()) hits.firstOrNull { it.first.contains(e.point) }?.second?.invoke()
+                    else if (folderLink?.contains(e.point) == true) s.chooseFolder() else s.chooseFile()
+                }
+            }
         })
+        // ai: over the list, the hand only on what takes a click; full screen's rail near the left edge
+        addMouseMotionListener(object : MouseAdapter() {
+            override fun mouseMoved(e: MouseEvent) {
+                if (s.full) { if (e.x < EDGE_NEAR && !s.edgeRail) s.edgeRail = true; return }
+                if (!listing() || !chooses()) return
+                val c = if (hits.any { it.first.contains(e.point) }) Cursor.HAND_CURSOR else Cursor.DEFAULT_CURSOR
+                if (cursor.type != c) cursor = Cursor.getPredefinedCursor(c)
+            }
+        })
+        addMouseWheelListener { e -> if (listing()) { scroll += e.wheelRotation * 48; repaint() } }
+        // ai: Files and folders dropped are added (a run stops first, as the web's does; refused while sending until
+        // ai: 2026-10-23); the window's column takes them too (Screen.kt), and the area's outline says so while a drag is over
         dropTarget = DropTarget(this, object : DropTargetAdapter() {
+            override fun dragEnter(e: java.awt.dnd.DropTargetDragEvent) = s.dragging(true)
+            override fun dragExit(e: java.awt.dnd.DropTargetEvent) = s.dragging(false)
             override fun drop(e: DropTargetDropEvent) {
-                if (s.sending) { e.rejectDrop(); return }
+                s.dragging(false)
                 e.acceptDrop(DnDConstants.ACTION_COPY)
-                val taken = runCatching {
-                    @Suppress("UNCHECKED_CAST")
-                    val files = e.transferable.getTransferData(DataFlavor.javaFileListFlavor) as List<File>
-                    if (files.isEmpty()) false else { if (s.test) s.chooseTest(false); s.pick(files); true }
-                }.getOrDefault(false)
-                e.dropComplete(taken)
+                e.dropComplete(s.dropped(e.transferable))
             }
         })
     }
 
     private fun chooses() = !s.sending && !s.test
+    private fun listing() = !s.test && s.items.isNotEmpty()
     private var folderLink: Rectangle? = null   // ai: where "or a folder" was painted, while it shows
+    private var hits: List<Pair<Rectangle, () -> Unit>> = emptyList()   // ai: the list's controls as last painted
+    private var scroll = 0
 
     // ai: the look for the state: a hand over the file's area, the default cursor otherwise (shown in full screen too,
-    // ai: 2026-10-07)
+    // ai: 2026-10-07); over the list, the hand on its controls alone (mouseMoved)
     fun idleLook() {
-        cursor = if (chooses()) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
+        cursor = if (chooses() && !listing()) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
         repaint()
     }
 
@@ -98,22 +119,24 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     override fun paint(g: Graphics) {
         if (presenting) return
         val g2 = g as Graphics2D
-        g2.color = java.awt.Color(0xF1, 0xF1, 0xF1)   // ai: the soft fill (Parts.kt Soft)
-        g2.fillRect(0, 0, width, height)
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
         g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-        g2.color = java.awt.Color(0x66, 0x66, 0x66)   // ai: Muted
+        if (listing()) paintList(g2) else paintHint(g2)
+        // ai: a drag over the window: the web's dashed outline, 12 px in
+        if (s.dragOver) {
+            g2.color = FG; g2.stroke = BasicStroke(3f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(9f, 6f), 0f)
+            g2.drawRect(12, 12, width - 25, height - 25)
+        }
+    }
+
+    private fun paintHint(g2: Graphics2D) {
+        g2.color = SOFT   // ai: the soft fill (Parts.kt Soft)
+        g2.fillRect(0, 0, width, height)
+        g2.color = MUTED
         // ai: the file icon (Parts.kt Icons.file, Feather's on a 24 grid, 2 px strokes), then the line 8 px under it
         val cx = width / 2.0; val cy = height / 2.0 - 16
-        val icon = Path2D.Double().apply {
-            moveTo(14.0, 2.0); lineTo(6.0, 2.0); curveTo(4.9, 2.0, 4.0, 2.9, 4.0, 4.0); lineTo(4.0, 20.0); curveTo(4.0, 21.1, 4.9, 22.0, 6.0, 22.0)
-            lineTo(18.0, 22.0); curveTo(19.1, 22.0, 20.0, 21.1, 20.0, 20.0); lineTo(20.0, 8.0); closePath()
-            moveTo(14.0, 2.0); lineTo(14.0, 8.0); lineTo(20.0, 8.0)
-        }
-        g2.stroke = BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-        val t = g2.transform
-        g2.translate(cx - 12, cy - 12); g2.draw(icon); g2.transform = t
-        val text = if (s.test) "Test stream" else if (s.reading) "Reading the files" else s.choice?.name ?: "Choose files"
+        drawIcon(g2, FILE_ICON, cx - 12, cy - 12)
+        val text = if (s.test) "Test stream" else if (s.reading) "Reading the files" else "Choose files"
         g2.font = Font(Font.SANS_SERIF, Font.PLAIN, 14)
         val fm = g2.fontMetrics
         g2.drawString(text, (cx - fm.stringWidth(text) / 2.0).toFloat(), (cy + 12 + 8 + fm.ascent).toFloat())
@@ -122,11 +145,93 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         if (chooses() && !s.reading) {
             val link = "or a folder"; val w = fm.stringWidth(link)
             val x = (cx - w / 2.0).toInt(); val base = (cy + 12 + 8 + fm.ascent + fm.height + 4).toInt()
-            g2.color = java.awt.Color(0x11, 0x11, 0x11)
+            g2.color = FG
             g2.drawString(link, x, base)
             g2.stroke = BasicStroke(1f)
             g2.drawLine(x, base + 2, x + w, base + 2)
             folderLink = Rectangle(x - 8, base - fm.ascent - 4, w + 16, fm.height + 8)
+        }
+    }
+
+    // ai: The selection (2026-10-23, the web's #pick): on white, a column at most 416 px wide, centred, a row an item (a
+    // ai: soft square with its icon, its name, "N files · size" for a folder or its size, Remove), then Add files, Add a
+    // ai: folder and Clear as the soft pills; scrolled by the wheel where it is taller than the area.
+    private fun paintList(g2: Graphics2D) {
+        g2.color = java.awt.Color.WHITE
+        g2.fillRect(0, 0, width, height)
+        val items = s.items.toList()
+        val w = min(width - 32, 416); val x0 = (width - w) / 2
+        val rowH = 64; val btnH = 40
+        val total = items.size * rowH + 12 + btnH
+        val avail = height - 32
+        scroll = scroll.coerceIn(0, maxOf(0, total - avail))
+        var y = if (total <= avail) (height - total) / 2 else 16 - scroll
+        val got = ArrayList<Pair<Rectangle, () -> Unit>>()
+        val name = Font(Font.SANS_SERIF, Font.BOLD, 15); val sub = Font(Font.SANS_SERIF, Font.PLAIN, 13)
+        for ((i, it) in items.withIndex()) {
+            g2.color = SOFT; g2.fillRoundRect(x0, y + 12, 40, 40, 20, 20)
+            g2.color = FG; drawIcon(g2, if (it.dir) FOLDER_ICON else FILE_ICON, x0 + 8.0, y + 20.0)
+            val textW = w - 52 - 48
+            g2.font = name; g2.color = FG
+            g2.drawString(fit(g2, it.name, textW), x0 + 52, y + 12 + 17)
+            g2.font = sub; g2.color = MUTED
+            val line = if (it.dir) "${it.files} ${if (it.files == 1) "file" else "files"} · ${Fmt.bytes(it.size)}${if (it.links > 0) ", ${it.links} ${if (it.links == 1) "link" else "links"} skipped" else ""}"
+                else Fmt.bytes(it.size)
+            g2.drawString(fit(g2, line, textW), x0 + 52, y + 12 + 36)
+            // ai: Remove: an x in a 40 px square at the row's end
+            val rx = x0 + w - 40; val ry = y + 12
+            g2.color = FG; g2.stroke = BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+            g2.drawLine(rx + 14, ry + 14, rx + 26, ry + 26); g2.drawLine(rx + 26, ry + 14, rx + 14, ry + 26)
+            val key = it.key
+            got += Rectangle(rx, ry, 40, 40) to { s.remove(key) }
+            if (i < items.size - 1) { g2.color = LINE; g2.fillRect(x0, y + rowH - 1, w, 1) }
+            y += rowH
+        }
+        y += 12
+        g2.font = Font(Font.SANS_SERIF, Font.BOLD, 14)
+        val fm = g2.fontMetrics
+        val buttons = listOf<Pair<String, () -> Unit>>("Add files" to { s.chooseFile() }, "Add a folder" to { s.chooseFolder() }, "Clear" to { s.clearPicks() })
+        // ai: centred under the list (2026-10-23; from its left edge before, which read off centre)
+        var x = x0 + (w - (buttons.sumOf { fm.stringWidth(it.first) + 40 } + 8 * (buttons.size - 1))) / 2
+        for ((label, act) in buttons) {
+            val bw = fm.stringWidth(label) + 40
+            g2.color = SOFT; g2.fillRoundRect(x, y, bw, btnH, btnH, btnH)
+            g2.color = FG; g2.drawString(label, x + 20, y + (btnH - fm.height) / 2 + fm.ascent)
+            got += Rectangle(x, y, bw, btnH) to act
+            x += bw + 8
+        }
+        hits = got
+    }
+
+    // ai: a line cut on a character with an ellipsis where it is wider than the room
+    private fun fit(g2: Graphics2D, text: String, room: Int): String {
+        val fm = g2.fontMetrics
+        if (fm.stringWidth(text) <= room) return text
+        var t = text
+        while (t.isNotEmpty() && fm.stringWidth("$t…") > room) t = t.dropLast(1)
+        return "$t…"
+    }
+    private fun drawIcon(g2: Graphics2D, icon: Path2D, x: Double, y: Double) {
+        g2.stroke = BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+        val t = g2.transform
+        g2.translate(x, y); g2.draw(icon); g2.transform = t
+    }
+
+    companion object {
+        private val FG = java.awt.Color(0x11, 0x11, 0x11)
+        private val MUTED = java.awt.Color(0x66, 0x66, 0x66)
+        private val SOFT = java.awt.Color(0xF1, 0xF1, 0xF1)
+        private val LINE = java.awt.Color(0xE4, 0xE4, 0xE4)
+        // ai: Feather's file and folder (Parts.kt Icons.file; the app's ic_folder) on a 24 grid
+        private val FILE_ICON = Path2D.Double().apply {
+            moveTo(14.0, 2.0); lineTo(6.0, 2.0); curveTo(4.9, 2.0, 4.0, 2.9, 4.0, 4.0); lineTo(4.0, 20.0); curveTo(4.0, 21.1, 4.9, 22.0, 6.0, 22.0)
+            lineTo(18.0, 22.0); curveTo(19.1, 22.0, 20.0, 21.1, 20.0, 20.0); lineTo(20.0, 8.0); closePath()
+            moveTo(14.0, 2.0); lineTo(14.0, 8.0); lineTo(20.0, 8.0)
+        }
+        private val FOLDER_ICON = Path2D.Double().apply {
+            moveTo(22.0, 19.0); curveTo(22.0, 20.1, 21.1, 21.0, 20.0, 21.0); lineTo(4.0, 21.0); curveTo(2.9, 21.0, 2.0, 20.1, 2.0, 19.0)
+            lineTo(2.0, 5.0); curveTo(2.0, 3.9, 2.9, 3.0, 4.0, 3.0); lineTo(9.0, 3.0); lineTo(11.0, 6.0); lineTo(20.0, 6.0)
+            curveTo(21.1, 6.0, 22.0, 6.9, 22.0, 8.0); closePath()
         }
     }
     override fun addNotify() { super.addNotify(); EventQueue.invokeLater { s.areaChanged() } }
@@ -154,10 +259,36 @@ class SendState {
     data class Format(val n: Int, val subch: Int, val span: Int, val fps: Int, val codes: Int, val gap: Int, val painter: Int)
 
     // ai: What Start sends (2026-10-16): one file as itself, or several files or a folder as one tar
-    // ai: (../liblizard/kotlin/Tar.kt Bundle, the web sender's rule), the items as picked; `reading` while they are walked
+    // ai: (../liblizard/kotlin/Tar.kt Bundle, the web sender's rule), made from the selection (items); `reading` while
+    // ai: picks are walked or the bundle is made
     var choice by mutableStateOf<Bundle?>(null)
-    private var picks: List<File> = emptyList()
+    private var singleFile: File? = null   // ai: the one file the choice is, where it is one
     var reading by mutableStateOf(false)
+    // ai: The selection (2026-10-23; until then a pick replaced the last): items added by each pick, drop or path handed
+    // ai: in (Main.kt), in order, each a file or a folder under its own name, files and folders mixed. An item already
+    // ai: listed (its canonical path) is not added again. Links: one picked is followed; those inside a folder are
+    // ai: skipped (never followed, so a loop of them cannot make a bundle without end) and counted on its row. A folder
+    // ai: that cannot be listed is an error, the list left as it was. Every change stops a run first, then the bundle is
+    // ai: made off the UI thread and its transfer made again (make), as the web's does.
+    class Item(val key: String, val file: File, val name: String, val dir: Boolean, val files: Int, val size: Long, val links: Int, val entries: List<TarEntry>)
+    val items = mutableStateListOf<Item>()
+    private var walks = 0           // ai: picks being walked
+    private var bundling = 0        // ai: the newest bundle asked for; bundleNow while it is being made
+    private var bundleNow = false
+    private fun readingNow() { reading = walks > 0 || bundleNow }
+    // ai: a drag over the window (the canvas's drop target, Screen.kt's for the column): the code area's outline
+    var dragOver = false
+        private set
+    fun dragging(on: Boolean) { if (on != dragOver) { dragOver = on; canvas.repaint() } }
+    // ai: what a drop hands over: its files and folders added (the test stream off); false where it holds none
+    fun dropped(t: java.awt.datatransfer.Transferable): Boolean {
+        @Suppress("UNCHECKED_CAST")
+        val files = runCatching { t.getTransferData(DataFlavor.javaFileListFlavor) as List<File> }.getOrNull().orEmpty()
+        if (files.isEmpty()) return false
+        if (test) chooseTest(false)
+        pick(files)
+        return true
+    }
     var fileSize by mutableStateOf(0L)
     // ai: the file's bytes as they go, every chunk's zstd frame or its own (the sender's stats, 2026-10-05); 0 before a send
     val sentBytes: Long get() = sender?.num("sentBytes")?.toLong() ?: 0L
@@ -179,7 +310,7 @@ class SendState {
     var blocks by mutableStateOf(Prefs.blocks.coerceIn(0, 128))
     var fps by mutableStateOf(Prefs.fps.coerceIn(1, 60))
     var size by mutableStateOf(Prefs.size.coerceIn(25, 100))
-    var gap by mutableStateOf(Prefs.gap.coerceIn(0, 64))
+    var margin by mutableStateOf(Prefs.margin.coerceIn(Pick.QUIET, Pick.MARGIN_MAX))
     var ring by mutableStateOf(Prefs.ring.let { if (it in 0..3) it else -1 })
     var codes by mutableStateOf(if (Prefs.codes == 2) 2 else 1)
     var settingsOpen by mutableStateOf(Prefs.settingsOpen)
@@ -188,12 +319,18 @@ class SendState {
 
     var phase by mutableStateOf<Phase>(Phase.Idle)
     var paused by mutableStateOf(false)
-    // ai: full screen (the button, F11; Escape or a click on the code leaves): the window full screen, the column folded
-    // ai: to the rail unless opened there (fullOpen), the compositor bypassed
+    // ai: Full screen (the Fullscreen button, F11; Escape, F11 or a click on the code leaves), as other apps have it
+    // ai: (2026-10-23): the window manager's own (Main.kt fullscreen), the code alone in it as the web's and the app's;
+    // ai: the manager's word followed (fullFromManager). Until then the column folded to the rail, which a toggle opened
+    // ai: there, and the presenter bypassed the compositor.
     var full by mutableStateOf(false)
-    var fullOpen by mutableStateOf(false)
+    var fullscreen: ((Boolean) -> Unit)? = null
+    // ai: full screen's rail shown (Screen.kt EdgeRail): the pointer came within EDGE_NEAR of the code area's left edge
+    var edgeRail by mutableStateOf(false)
     // ai: the window maximized, as a title bar's double click does (Main.kt sets it; the test hook's `max` step)
     var maximize: (() -> Unit)? = null
+    // ai: the window brought to the front, as paths handed in by a later launch arrive (Main.kt)
+    var raise: (() -> Unit)? = null
     var areaW by mutableStateOf(0)
     var areaH by mutableStateOf(0)
     var fmt by mutableStateOf<Format?>(null)
@@ -222,10 +359,12 @@ class SendState {
     val presenting get() = p != 0L
     val sending get() = phase == Phase.On || phase == Phase.Preparing
     val canStart get() = loadError.isEmpty() && !sending && (test || (choice != null && !reading))
-    val railShown get() = if (full) !fullOpen else collapsed
+    val railShown get() = collapsed
     val ringIndex get() = if (ring in 0..3) ring else Pick.RING_DEFAULT
     // ai: a symbol's room in the area, device px, the Size slider's share of it (send.mjs room)
-    val room get() = Pick.room(areaW, areaH, codes, ringIndex, gap) * size / 100.0
+    val room get() = Pick.room(areaW, areaH, codes, ringIndex, margin) * size / 100.0
+    // ai: the margin past the quiet zone the presenter keeps at the area's edges, for the ring configured
+    private val edge get() = Pick.edgeShare(fmt?.span ?: Pick.span(ringIndex), margin).toFloat()
     // ai: what auto takes in the area now (0 while it has no size): the configured format's while sending
     val autoBlocks get() = fmt?.takeIf { blocks == 0 }?.let { it.subch / 8 } ?: if (areaW > 0 && areaH > 0) Pick.pick(room, ringIndex) / 8 else 0
     // ai: what the code offers at most, KB/s: codes x blocks a frame x 469 B x the pictures a second it can show, the
@@ -241,47 +380,110 @@ class SendState {
     val sentBlocks: Int get() = sender?.num("blocks")?.toInt()?.takeIf { it > 0 } ?: fmt?.let { Native.blocksFor(it.subch) } ?: 0
     val tiers: String get() = sender?.str("tiers").orEmpty()
 
-    // ai: the platform's own file dialog (GTK's on Linux), one file or several, over the sender's window (the canvas's
-    // ai: frame); a folder through Swing's chooser, which AWT's dialog cannot pick
-    fun chooseFile() {
-        val d = FileDialog(SwingUtilities.getWindowAncestor(canvas) as? Frame, "Choose files", FileDialog.LOAD)
-        d.isMultipleMode = true
-        d.isVisible = true
-        if (d.files.isNotEmpty()) pick(d.files.toList())
+    // ai: The chooser (2026-10-23; Swing's folder chooser before, which looks like no desktop's): the
+    // ai: desktop's own dialog through the XDG desktop portal (Native.portalPick: GTK's on Cinnamon and GNOME, KDE's on
+    // ai: Plasma, attached to this window, several files or several folders at once), on a thread of its own while it is
+    // ai: open; where no portal answers, zenity's (GTK's too); else, as before, AWT's FileDialog for files (GTK's) and
+    // ai: Swing's JFileChooser for folders, which AWT's cannot pick. One open at a time.
+    private var choosing = false
+    fun chooseFile() = choose(false)
+    fun chooseFolder() = choose(true)
+    private fun choose(folders: Boolean) {
+        if (choosing) return
+        choosing = true
+        val parent = runCatching { Native.windowOf(canvas) }.getOrDefault(0L)
+        val title = if (folders) "Choose folders" else "Choose files"
+        thread(name = "lizard-chooser", isDaemon = true) {
+            val got = portal(parent, title, folders) ?: zenity(title, folders)
+            EventQueue.invokeLater {
+                choosing = false
+                if (got == null) fallback(folders) else if (got.isNotEmpty()) pick(got)
+            }
+        }
     }
-    fun chooseFolder() {
-        val c = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY; dialogTitle = "Choose a folder" }
-        if (c.showOpenDialog(SwingUtilities.getWindowAncestor(canvas)) == JFileChooser.APPROVE_OPTION) c.selectedFile?.let { pick(listOf(it)) }
+    // ai: the portal's choice as files (its file:// URIs), none when cancelled, null where it could not be asked
+    private fun portal(parent: Long, title: String, folders: Boolean): List<File>? {
+        val uris = runCatching { Native.portalPick(parent, title, folders, true) }.getOrNull()
+        if (uris == null) { System.err.println("chooser: no portal: ${runCatching { Native.txError() }.getOrDefault("")}"); return null }
+        return uris.mapNotNull { u -> runCatching { File(java.net.URI(u)) }.getOrNull() }
+    }
+    // ai: zenity's, a path a line; none when cancelled (exit 1), null where it is not there
+    private fun zenity(title: String, folders: Boolean): List<File>? = runCatching {
+        val p = ProcessBuilder(listOf("zenity", "--file-selection", "--multiple", "--separator=\n", "--title=$title") + (if (folders) listOf("--directory") else emptyList()))
+            .redirectError(ProcessBuilder.Redirect.DISCARD).start()
+        val out = p.inputStream.bufferedReader().readText()
+        when (p.waitFor()) { 0 -> out.lines().filter { it.isNotEmpty() }.map(::File); 1 -> emptyList(); else -> null }
+    }.getOrNull()
+    // ai: the dialogs before the portal: AWT's FileDialog (GTK's on Linux), one file or several, over the sender's window
+    // ai: (the canvas's frame); a folder through Swing's chooser, which AWT's dialog cannot pick
+    private fun fallback(folders: Boolean) {
+        if (!folders) {
+            val d = FileDialog(SwingUtilities.getWindowAncestor(canvas) as? Frame, "Choose files", FileDialog.LOAD)
+            d.isMultipleMode = true
+            d.isVisible = true
+            if (d.files.isNotEmpty()) pick(d.files.toList())
+        } else {
+            val c = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY; dialogTitle = "Choose a folder" }
+            if (c.showOpenDialog(SwingUtilities.getWindowAncestor(canvas)) == JFileChooser.APPROVE_OPTION) c.selectedFile?.let { pick(listOf(it)) }
+        }
     }
 
-    // ai: Files and folders as picked, walked off the UI thread: each folder's tree under its own name, links skipped
-    // ai: (never followed, so a loop of them cannot make a bundle without end).
-    fun pick(items: List<File>) {
-        val my = ++picking
-        reading = true; choice = null; picks = items; fileSize = 0; compressed = 0
-        dropMade()
+    // ai: Files and folders added (picked, dropped, handed in), walked off the UI thread
+    fun pick(files: List<File>) {
+        if (sending) stop()
         if (phase is Phase.Error) phase = Phase.Idle
-        canvas.idleLook()
+        walks++; readingNow(); canvas.idleLook()
         thread(name = "lizard-send-pick", isDaemon = true) {
-            val b = runCatching { entriesOf(items).takeIf { it.isNotEmpty() }?.let { Bundle(it) } }
+            val got = runCatching { files.map { itemOf(it) } }
             EventQueue.invokeLater {
-                if (my != picking) return@invokeLater
-                reading = false
-                b.onSuccess { choice = it; fileSize = it?.size ?: 0; if (it != null) make() }.onFailure { phase = Phase.Error("The files could not be read: ${it.message}") }
+                walks--; readingNow()
+                got.onSuccess { list ->
+                    val have = items.mapTo(HashSet()) { it.key }
+                    val fresh = list.filter { have.add(it.key) }
+                    if (fresh.isNotEmpty()) { items.addAll(fresh); changed() }
+                }.onFailure { phase = Phase.Error("The files could not be read: ${it.message}") }
                 canvas.idleLook()
             }
         }
     }
-    private var picking = 0
-    private fun entriesOf(items: List<File>): List<TarEntry> {
+    fun remove(key: String) { items.removeAll { it.key == key }; changed() }
+    fun clearPicks() { items.clear(); changed() }
+    private fun itemOf(f: File): Item {
+        val top = f.canonicalFile
+        var links = 0
         val out = ArrayList<TarEntry>()
-        fun walk(f: File, rel: String) {
-            if (Files.isSymbolicLink(f.toPath())) return
-            if (f.isDirectory) { out.add(TarEntry(rel, mtimeSec = f.lastModified() / 1000)); f.listFiles()?.sortedBy { it.name }?.forEach { walk(it, "$rel/${it.name}") } }
-            else if (f.isFile) out.add(TarEntry(rel, f.length(), f.lastModified() / 1000) { f.inputStream() })
+        fun walk(x: File, rel: String) {
+            if (x.isDirectory) {
+                out.add(TarEntry(rel, mtimeSec = x.lastModified() / 1000))
+                val kids = x.listFiles() ?: throw java.io.IOException("$rel could not be read")
+                for (k in kids.sortedBy { it.name }) if (Files.isSymbolicLink(k.toPath())) links++ else walk(k, "$rel/${k.name}")
+            } else if (x.isFile) out.add(TarEntry(rel, x.length(), x.lastModified() / 1000) { x.inputStream() })
         }
-        for (i in items) walk(i, i.name)
-        return out
+        walk(top, f.name)
+        if (out.isEmpty()) throw java.io.IOException("${f.name} is not a file or a folder")
+        return Item(top.path, top, f.name, out[0].dir, out.count { !it.dir }, out.filter { !it.dir }.sumOf { it.size }, links, out)
+    }
+    // ai: the selection changed: the run stopped, the made transfer let go, the bundle made again off the UI thread and
+    // ai: its transfer made (make)
+    private fun changed() {
+        if (sending) stop()
+        dropMade()
+        if (phase is Phase.Error) phase = Phase.Idle
+        choice = null; singleFile = null; fileSize = 0; compressed = 0
+        val list = items.toList()
+        val my = ++bundling
+        bundleNow = list.isNotEmpty(); readingNow(); canvas.idleLook()
+        if (list.isEmpty()) return
+        thread(name = "lizard-send-bundle", isDaemon = true) {
+            val b = Bundle(list.flatMap { it.entries })
+            EventQueue.invokeLater {
+                if (my != bundling) return@invokeLater
+                bundleNow = false; readingNow()
+                choice = b; singleFile = if (b.single != null) list[0].file else null; fileSize = b.size
+                make()
+                canvas.idleLook()
+            }
+        }
     }
     // ai: a bundle's tar, written for the sender to map (txCreate maps a file) and deleted when the run ends
     private var tarFile: File? = null
@@ -294,7 +496,7 @@ class SendState {
         dropMade()
         val my = making
         makingNow = true
-        val one = if (b.single == null) null else picks[0]
+        val one = if (b.single == null) null else singleFile
         val tar = if (one != null) null else File(System.getProperty("user.home"), ".cache/lizard-sender/send-${ProcessHandle.current().pid()}-$my.tar")
         val path = one?.path ?: tar!!.path
         val type = if (one == null) TAR_TYPE else runCatching { Files.probeContentType(one.toPath()) }.getOrNull() ?: ""
@@ -399,12 +601,12 @@ class SendState {
         if (p != 0L) Native.presentPause(p, on)
     }
 
-    fun toggleFull() {
-        full = !full; fullOpen = false
-        if (p != 0L) Native.presentFullscreen(p, full)
-    }
+    fun toggleFull() { full = !full; edgeRail = false; fullscreen?.invoke(full) }
+    // ai: the manager's own word on the window (its shortcut, a leave of its own, a request of ours taken): followed,
+    // ai: nothing asked
+    fun fullFromManager(on: Boolean) { if (on != full) { full = on; edgeRail = false } }
 
-    fun toggleRail() { if (full) fullOpen = !fullOpen else { collapsed = !collapsed; Prefs.collapsed = collapsed } }
+    fun toggleRail() { collapsed = !collapsed; Prefs.collapsed = collapsed }
     fun toggleSettings() { settingsOpen = !settingsOpen; Prefs.settingsOpen = settingsOpen }
     fun toggleTools() { toolsOpen = !toolsOpen; Prefs.toolsOpen = toolsOpen }
 
@@ -435,7 +637,7 @@ class SendState {
     fun chooseBlocks(b: Int) { blocks = b.coerceIn(0, 128); Prefs.blocks = blocks }
     fun chooseFps(v: Int) { fps = v.coerceIn(1, 60); Prefs.fps = fps }
     fun chooseSize(v: Int) { size = v.coerceIn(25, 100); Prefs.size = size }
-    fun chooseGap(v: Int) { gap = v.coerceIn(0, 64); Prefs.gap = gap }
+    fun chooseMargin(v: Int) { margin = v.coerceIn(Pick.QUIET, Pick.MARGIN_MAX); Prefs.margin = margin }
     fun chooseRing(v: Int) { ring = if (v in 0..3) v else -1; Prefs.ring = ring; repick() }
     fun chooseCodes(v: Int) { codes = if (v == 2) 2 else 1; Prefs.codes = codes; repick() }
     fun commitFps() {
@@ -443,10 +645,10 @@ class SendState {
         configure()
         if (p != 0L) Native.presentFps(p, fps)
     }
-    fun commitSize() { if (p != 0L) Native.presentSize(p, size / 100f); repick() }
+    fun commitSize() = repick()
     fun repick() {
         if (phase != Phase.On) return
-        if (p == 0L) begin() else configure()
+        if (p == 0L) begin() else if (configure()) Native.presentSize(p, size / 100f, edge)
     }
 
     // ai: the canvas's size (a resize, a window made); sending, a re-pick, or the start once it has one. While presenting
@@ -471,11 +673,10 @@ class SendState {
         if (h == 0L || p != 0L || !canvas.isShowing || areaW <= 0 || areaH <= 0) return
         if (!configure()) return
         canvas.presenting = true
-        val pr = Native.presentStart(canvas, h, fps, size / 100f, false)
+        val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, false)
         if (pr == 0L) { fail("The code cannot be shown: ${Native.txError()}"); return }
         p = pr
         if (paused) Native.presentPause(p, true)
-        if (full) Native.presentFullscreen(p, true)
         timer.start()
     }
 
@@ -484,7 +685,7 @@ class SendState {
     private fun configure(): Boolean {
         if (h == 0L) return false
         val subch = if (blocks > 0) 8 * blocks else Pick.pick(room, ringIndex)
-        val f = Format(Pick.nFor(subch), subch, Pick.span(ringIndex), fps, codes, if (codes > 1) gap else 0,
+        val f = Format(Pick.nFor(subch), subch, Pick.span(ringIndex), fps, codes, if (codes > 1) Pick.gapOf(margin) else 0,
             when (enc) { "cpu" -> 0; "gpu" -> 1; else -> 2 })
         if (f == fmt) return true
         val threads = min(8, maxOf(1, Runtime.getRuntime().availableProcessors() - 2))
@@ -492,7 +693,7 @@ class SendState {
         if (err.isNotEmpty()) { fail(err); return false }
         fmt = f
         val st = parse(Native.txStats(h))
-        System.err.println("send: LIZARD-${f.subch}${if (f.codes > 1) " x ${f.codes}, gap ${f.gap}" else ""}" +
+        System.err.println("send: LIZARD-${f.subch}${if (f.codes > 1) " x ${f.codes}" else ""}, margin $margin" +
             (if (blocks > 0) " set by hand" else " in a ${room.roundToInt()} px room") + " at ${f.fps} a second, ring ${f.span / 2}, painting on the " +
             (if (st?.str("painter") == "gpu") "GPU (${st.str("device")})" else "CPU, $threads painters") +
             (st?.str("gpuWhy").orEmpty().let { if (it.isNotEmpty()) ", not the GPU: $it" else "" }))
@@ -511,17 +712,22 @@ class SendState {
 
     // ai: what goes, "<compressed> (<raw> raw)" once the transfer is made, "<raw> raw" while it is being made (the web's
     // ai: and the app's the same)
-    private fun sizeText() = if (compressed > 0) "${Fmt.bytes(compressed)} (${Fmt.bytes(fileSize)} raw)" else "${Fmt.bytes(fileSize)} raw"
+    // ai: "raw" kept with its figure (a no-break space, 2026-10-23: "(47 KB / raw)" broke there)
+    private fun sizeText() = if (compressed > 0) "${Fmt.bytes(compressed)} (${Fmt.bytes(fileSize)}${Fmt.NB}raw)" else "${Fmt.bytes(fileSize)}${Fmt.NB}raw"
 
-    // ai: The state line (the web's #state): what is sent, paused, or the error (red; Main.kt colours it)
-    val stateLine: String get() = when (val ph = phase) {
-        is Phase.Error -> ph.why
-        Phase.Preparing -> "Preparing $runName"
-        Phase.On -> if (paused) "Paused" else "Sending $runName"
+    // ai: The state line (the web's #state): what is sent, paused, or the error (red; Main.kt colours it). A line naming
+    // ai: the file says so in three parts, the name between (2026-10-23), for Parts.kt NameLine to hold its head on one
+    // ai: line; any other is all `before`.
+    data class StateLine(val before: String, val name: String? = null, val after: String = "")
+    val stateParts: StateLine get() = when (val ph = phase) {
+        is Phase.Error -> StateLine(ph.why)
+        Phase.Preparing -> if (runTest) StateLine("Preparing $runName") else StateLine("Preparing ", runName)
+        Phase.On -> if (paused) StateLine("Paused") else if (runTest) StateLine("Sending $runName") else StateLine("Sending ", runName, ", ${sizeText()}")
         // ai: idle, the web's "<name>, <size>" (sizeText) or the app's "The test stream"
-        Phase.Idle -> loadError.ifEmpty { if (test) "The test stream" else if (reading) "Reading the files" else choice?.let {
-            "${it.name}, ${if (it.single == null) "${it.files} ${if (it.files == 1) "file" else "files"}, " else ""}${sizeText()}" } ?: "" }
+        Phase.Idle -> if (loadError.isNotEmpty()) StateLine(loadError) else if (test) StateLine("The test stream") else if (reading) StateLine("Reading the files")
+            else choice?.let { StateLine("", it.name, ", ${if (it.single == null) "${it.files} ${if (it.files == 1) "file" else "files"}, " else ""}${sizeText()}") } ?: StateLine("")
     }
+    val stateLine: String get() = stateParts.let { "${it.before}${it.name ?: ""}${it.after}" }
 
     // ai: The figures (the web's #nums): the rate the pictures actually presented carry (the presenter's fresh pictures a
     // ai: second x codes x blocks a frame x 469 B, so a limit outside the sender shows in the figure; 2026-10-04); the
@@ -546,7 +752,7 @@ class SendState {
         if (!runTest) l += "file $fileSize B${sd.num("sentBytes").toLong().let { if (it in 1 until fileSize) ", $it B as sent (zstd)" else "" }}: ${sd.num("chunks").toInt()} chunk${if (sd.num("chunks").toInt() == 1) "" else "s"}, " +
             "${sd.num("lap").toInt()} data blocks a pass, BLAKE3 ${sd.str("root").take(16)}..., header in the light" +
             (sd.num("pass").let { p -> if (p >= 1) "\npass ${floor(p).toInt()}" + (sd.num("offeredKBs").let { k -> if (k > 0 && sd.num("lap") > 0) ", ${Fmt.f1(sd.num("lap") / (k * 1000 / 469))} s a pass" else "" }) else "" })
-        l += "frame ${sd.num("width").toInt()} x ${sd.num("side").toInt()} px" + (if (f.codes > 1) ", ${f.codes} side by side ${f.gap} modules apart" else "") +
+        l += "frame ${sd.num("width").toInt()} x ${sd.num("side").toInt()} px" + (if (f.codes > 1) ", ${f.codes} side by side" else "") + ", margin $margin modules" +
             (pr?.let { " on a ${it.str("surface").replace("x", " x ")} px surface" } ?: "")
         l += "${if (f.codes > 1) "${f.codes} x " else ""}$b x 469 B = ${f.codes * b * 469} B per frame"
         if (pr != null) {

@@ -155,7 +155,8 @@ internal fun MainActivity.TransferPanel() {
         else Readout.line(on, phase == Engine.Phase.Starting, phase == Engine.Phase.Loading, (phase as? Engine.Phase.Error)?.why, rx, bundled)
     // ai: Show statistics off (Developer Tools, 2026-10-10): no green line once a file is in, the meter and buttons as before
     val shown = ln.text.isNotEmpty() && !(ln.tone == Readout.Tone.Good && settings.stats == "off")
-    if (shown) Text(ln.text, style = MaterialTheme.typography.titleMedium, color = toneColour(ln.tone), modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
+    if (shown && ln.name != null) NameLine(ln.before, ln.name, ln.after, MaterialTheme.typography.titleMedium, toneColour(ln.tone), Modifier.padding(top = 12.dp, bottom = 2.dp))
+    else if (shown) Text(ln.text, style = MaterialTheme.typography.titleMedium, color = toneColour(ln.tone), modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
     Meter(ln.frac)
     if (ln.nums.isNotEmpty()) Text(ln.nums, style = MaterialTheme.typography.bodyMedium, color = Muted)
     HeatWarning(heat, clocks, engine.cameraSlow, Modifier.padding(top = 8.dp))

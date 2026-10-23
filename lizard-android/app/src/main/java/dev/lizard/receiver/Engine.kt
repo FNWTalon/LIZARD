@@ -115,6 +115,22 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
             r.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID))
     }
     fun phaseState(): PhaseLock.State? = phase.state
+    // ai: Whether the open lens can take the phase lock's delay frame (2026-10-22): one request with auto-exposure off
+    // ai: and a longer SENSOR_FRAME_DURATION (delay below), applied to that frame alone. That needs manual sensor
+    // ai: control and per-frame control; on a lens without them the longer frame lands late or not at all, and the
+    // ai: lock would keep asking for slides that never come, so it stays off there and the camera runs free. Null
+    // ai: where the lens can; else why not, for the Developer readout and the log.
+    @Volatile var lockBar: String? = null
+        private set
+    private fun lockBarOf(ch: CameraCharacteristics): String? {
+        val caps = ch.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toList().orEmpty()
+        if (CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR !in caps) return "the lens has no manual sensor control"
+        return when (val lag = ch.get(CameraCharacteristics.SYNC_MAX_LATENCY) ?: CameraMetadata.SYNC_MAX_LATENCY_UNKNOWN) {
+            CameraMetadata.SYNC_MAX_LATENCY_PER_FRAME_CONTROL -> null
+            CameraMetadata.SYNC_MAX_LATENCY_UNKNOWN -> "the lens does not say when its controls apply"
+            else -> "the lens applies its controls up to $lag frames late"
+        }
+    }
 
     // ai: The camera's pipeline slowing (2026-10-07): once
     // ai: its rate a second (its own timestamps) has stood within 5% of the rate asked, a second under 90%
@@ -189,6 +205,10 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     // ai: then, and a poll in between filed the forgotten file again, MainActivity.forgetReceived). Never on the main
     // ai: thread: it waits for the transfer's worker (XferRx::clear).
     fun clear() = synchronized(lock) { if (handle != 0L) Native.clear(handle) }
+    // ai: one transfer forgotten by its root, the one in hand or one parked unfinished (2026-10-22, Home's Delete of an
+    // ai: unfinished transfer; Native.forget): false with no receiver, the folder then the caller's to remove. Never on the
+    // ai: main thread: it waits for the transfer's worker, as clear().
+    fun forget(root: String): Boolean = synchronized(lock) { if (handle != 0L) { Native.forget(handle, root); true } else false }
     // ai: Save replays (2026-10-03, MainActivity's replay): the replay (Native.replayNew) handed to the receiver, and to
     // ai: one made while it runs, which hands it each frame it decodes; replayEnd takes replay r back where it is the
     // ai: one handed over, then ends its run on a thread of its own (the frames the decoder still holds for it first,
@@ -383,6 +403,9 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         }
         reader = r
         r.setOnImageAvailableListener({ onImage(it) }, fh)
+        val bar = lockBarOf(ch)
+        lockBar = bar
+        if (bar != null) Log.i(TAG, "phase: no lock on this lens: $bar")
         // ai: the preview's size set again here, on the thread that creates the session and right before it does:
         // ai: the view may have reset it since open() (previewSize above)
         previewSize?.let { p -> texture?.setDefaultBufferSize(p.width, p.height) }
@@ -493,7 +516,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                         // ai: debug.lizard.phase <us> | scan | track` (read twice a second): a hold at that
                         // ai: point of a 60 Hz grid, a scan of every point with a line each, or track's automatic
                         // ai: hold; unset, track (always on since 2026-10-10: the Phase lock setting went). Anything else: off.
-                        init { phase.reopened() }
+                        init { phase.reopened(); if (bar != null) phase.set(PhaseLock.Mode.Off) }
                         override fun onCaptureCompleted(s: CameraCaptureSession, q: CaptureRequest, r: android.hardware.camera2.TotalCaptureResult) {
                             val ts = r.get(android.hardware.camera2.CaptureResult.SENSOR_TIMESTAMP) ?: 0L
                             // ai: the lens's report a half-second (a zoom moves it; nothing else does on the S26)
@@ -536,8 +559,8 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                                 // ai: by the pilots' leaks (PhaseLock.kt)
                                 phase.usePilots = Native.prop("debug.lizard.pilots") != "0"
                                 // ai: track always (2026-10-10: the setting and its off went); `debug.lizard.phase` the tools' override
-                                // ai: (scan, track, off, or a hold at that many us)
-                                when (val want = Native.prop("debug.lizard.phase").ifEmpty { "track" }) {
+                                // ai: (scan, track, off, or a hold at that many us); off on a lens that cannot delay a frame (lockBar)
+                                when (val want = if (bar != null) "off" else Native.prop("debug.lizard.phase").ifEmpty { "track" }) {
                                     "scan" -> phase.set(PhaseLock.Mode.Scan)
                                     "track" -> phase.set(PhaseLock.Mode.Track)
                                     else -> want.toLongOrNull()?.let { phase.set(PhaseLock.Mode.Hold, it) } ?: phase.set(PhaseLock.Mode.Off)

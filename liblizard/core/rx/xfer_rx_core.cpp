@@ -28,6 +28,11 @@ static constexpr uint32_t PAYLOAD = XFER_PAYLOAD, REC = XFER_BLOCK;
 // ai: lizard-web/fountain-worker.mjs LIVE_BLOCKS, HOLD_BLOCKS; lizard-web/recv.mjs SEEN_KEEP
 static constexpr int64_t LIVE_BLOCKS = 4096, NEVER = INT64_MAX / 2;
 static constexpr size_t HOLD_BLOCKS = 1024, SEEN_KEEP = 1 << 16;
+// ai: meta.json written again every this many blocks stored (about 1 MB) or a second of storing, whichever comes first,
+// ai: as well as at each chunk verified and at a park, so a receiver stopped mid-chunk leaves an app's list a line at
+// ai: most that far behind
+static constexpr uint32_t META_EVERY = 2048;
+static constexpr double META_MS = 1000;
 enum { COLLECTING = 0, HOT = 1, VERIFIED = 3 };   // ai: 2 was a chunk decoded before the manifest, which no longer happens (a chunk's block count waits on it)
 
 static std::string hexOf(const uint8_t* p, size_t n) {
@@ -37,6 +42,16 @@ static std::string hexOf(const uint8_t* p, size_t n) {
   return s;
 }
 static double nowMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+// ai: a JSON string: quotes, backslashes and control bytes escaped, UTF-8 passed through
+static std::string jstr(const std::string& v) {
+  std::string o = "\"";
+  for (unsigned char ch : v) {
+    if (ch == '"' || ch == '\\') { o += '\\'; o += char(ch); }
+    else if (ch < 0x20) { char b[8]; snprintf(b, sizeof b, "\\u%04x", ch); o += b; }
+    else o += char(ch);
+  }
+  return o + "\"";
+}
 
 // ai: sim/xfer.mjs Bits: a set of symbols grown to the highest one seen
 struct Bits {
@@ -72,7 +87,10 @@ struct Wh {
 };
 
 struct XferRxCore::Rx {
-  struct Ch { Bits have, ban; int state = COLLECTING; std::unique_ptr<Wh> dec; };
+  // ai: recs: the blocks the store holds for the chunk; mark: how many it held when this transfer's header was last
+  // ai: read. The blocks after the mark are provisional: a sender that moved to another file sends that file's blocks
+  // ai: under the same ids until its header is read, so a park cuts each chunk back to its mark.
+  struct Ch { Bits have, ban; int state = COLLECTING; std::unique_ptr<Wh> dec; uint32_t recs = 0, mark = 0; };
   struct Hdr {
     std::array<uint8_t, XFER_PAYLOAD> bytes;
     xfer_header_t h;
@@ -103,6 +121,10 @@ struct XferRxCore::Rx {
   bool failed = false;
   void stop() { if (!failed) say("xfer: " + (hdr ? hdr->name : std::string("the transfer")) + " stopped: " + store->error); failed = true; }
   std::string path;
+  // ai: a folder resumed is replayed into this transfer (its manifest blocks are not noted again)
+  bool replaying = false;
+  uint32_t sinceMeta = 0;   // ai: blocks stored since meta.json was last written, and when (nowMs)
+  double metaMs = 0;
   // ai: the fountain worker's
   int64_t sinceHeader = NEVER;
   std::vector<std::pair<uint32_t, std::array<uint8_t, XFER_PAYLOAD>>> held;
@@ -119,7 +141,7 @@ struct XferRxCore::Rx {
   // ai: lizard-web/fountain-worker.mjs chunked (a config) and handle's clear: a new receiver, the held blocks let go, and on
   // ai: a clear the finished files too (refused kept, as the web's receiver keeps it)
   void clearAll() {
-    reset();
+    reset(false);
     store->removeAll();
     lastRoot.clear();
     sinceHeader = NEVER; held.clear(); heldAt = 0; forwarded = 0; doneAt = 0;
@@ -151,12 +173,35 @@ struct XferRxCore::Rx {
     for (size_t k = 0; k < ring.size(); k++) { auto& r = ring[(at + k) % ring.size()]; add(r.first, r.second.data()); }
   }
 
-  // ai: XferReceiver.reset (refused is kept, as there)
-  void reset() {
+  // ai: XferReceiver.reset (refused is kept, as there): the transfer in hand parked for its header to come again
+  // ai: (keep; a store that keeps no transfers lets it go), or let go whole
+  void reset(bool keep) {
+    if (keep && hdr && !done && !failed && store->keeps()) {
+      for (auto& [c, s] : ch) if (s.state != VERIFIED && s.recs > s.mark) { store->truncate(c, s.mark); s.recs = s.mark; }
+      saveMeta();
+    }
     ch.clear(); raw.clear(); hdr.reset();
     verified = rejected = manifestRejected = over = 0;
-    ms = 0; firstMs = doneMs = 0; done = false; failed = false; path.clear();
-    store->clear();
+    ms = 0; firstMs = doneMs = 0; done = false; failed = false; path.clear(); sinceMeta = 0;
+    if (keep) store->park(); else store->clear();
+  }
+  // ai: a transfer let go by its root (an app's list's Delete): the one in hand, or a parked one
+  void forget(const std::string& root) {
+    const std::string id = root.substr(0, 16);
+    if (hdr && hdr->root.compare(0, id.size(), id) == 0) { reset(false); return; }
+    store->forget(id);
+  }
+  // ai: the transfer's line for an app's list of unfinished transfers (store.h noteMeta)
+  void saveMeta() {
+    sinceMeta = 0; metaMs = nowMs();
+    if (!hdr || !store->keeps()) return;
+    XferProgress p;
+    progress(p);
+    char f[32];
+    snprintf(f, sizeof f, "%.4f", p.fraction);
+    store->noteMeta("{\"name\":" + jstr(p.name) + ",\"type\":" + jstr(p.type) + ",\"length\":" + std::to_string(p.length) +
+                    ",\"chunks\":" + std::to_string(p.chunks) + ",\"verified\":" + std::to_string(p.verified) + ",\"root\":\"" + p.root +
+                    "\",\"fraction\":" + f + ",\"sent\":" + std::to_string(p.sent) + ",\"sentIn\":" + std::to_string(p.sentIn) + "}");
   }
 
   Ch& state(uint32_t c) { return ch[c]; }
@@ -169,28 +214,34 @@ struct XferRxCore::Rx {
       if (sym <= XFER_MAX_MANIFEST) return manifestBlock(sym - 1, p);
       return;   // ai: reserved: this version ignores it
     }
-    if (done || failed || (hdr && c >= hdr->h.chunks)) return;
+    // ai: a store that keeps transfers keeps them by their header's folder: no data block before a header (block()
+    // ai: holds those for the next header itself)
+    if (done || failed || (hdr && c >= hdr->h.chunks) || (!hdr && store->keeps())) return;
     if (!firstMs) firstMs = nowMs();
     Ch& s = state(c);
     if (s.state == VERIFIED || s.have.has(sym) || s.ban.has(sym)) return;
     s.have.add(sym);
     taken.fetch_add(1, std::memory_order_relaxed);
     if (s.dec) {
+      // ai: a store that keeps the transfer keeps this chunk's blocks too, so a resume rebuilds the decoder
+      if (store->keeps()) { if (!store->append(c, sym, p)) return stop(); s.recs++; }
       const int rc = s.dec->add(sym, p);
       if (rc < 0) say("xfer: wirehair decode " + std::to_string(rc) + " on chunk " + std::to_string(c));
       if (rc == 1) recovered(c);
       return;
     }
     if (!store->append(c, sym, p)) return stop();
+    s.recs++;
+    if (++sinceMeta >= META_EVERY || nowMs() - metaMs >= META_MS) saveMeta();
     if (hdr && hdr->known && s.have.n >= hdr->K[c]) solve(c);   // ai: K known once the manifest is in (one chunk: from the header)
   }
 
   // ai: XferReceiver.header, the light's only: a different header is a new transfer, and everything held is let go
   void header(const uint8_t* p) {
-    if (hdr && !memcmp(p, hdr->bytes.data(), PAYLOAD)) return;
+    if (hdr && !memcmp(p, hdr->bytes.data(), PAYLOAD)) { for (auto& [c, s] : ch) s.mark = s.recs; return; }
     auto h = std::make_unique<Hdr>();
     if (xfer_header_parse(p, &h->h)) { refused++; return; }   // ai: not a header this receiver reads
-    if (hdr) reset();
+    if (hdr) reset(!failed);
     memcpy(h->bytes.data(), p, PAYLOAD);
     h->name.assign((const char*)h->h.name, h->h.name_len);
     h->type.assign((const char*)h->h.type, h->h.type_len);
@@ -211,17 +262,42 @@ struct XferRxCore::Rx {
     for (auto it = ch.begin(); it != ch.end();) {   // ai: blocks of another transfer
       if (it->first >= chunks) { store->drop(it->first); it = ch.erase(it); } else ++it;
     }
-    if (!store->begin(hdr->h.length)) return stop();
+    Store::Before before;
+    if (!store->open(hdr->root.substr(0, 16), p, hdr->h.length, before)) return stop();
     if (!chunks) {   // ai: an empty file: its root is BLAKE3 of nothing, which is all there is to check
       uint8_t e[XFER_CV];
       xfer_b3_hash(nullptr, 0, e);
       if (!memcmp(e, hdr->h.root, XFER_CV)) finish(); else refused++;
       return;
     }
+    if (before.found && resume(before)) return;
     auto pending = std::move(raw);
     raw.clear();
     for (auto& [m, b] : pending) manifestBlock(m, b.data());
+    saveMeta();
     if (hdr && hdr->known) solveReady();
+  }
+  // ai: A folder of this transfer from before (store.h): its manifest blocks replayed, its verified chunks taken as
+  // ai: verified, and each collecting chunk's symbols marked had from its stored blocks; true when that finished it
+  bool resume(const Store::Before& b) {
+    replaying = true;
+    for (auto& [m, pay] : b.manifest) if (pay.size() == PAYLOAD) manifestBlock(m, pay.data());
+    replaying = false;
+    const uint32_t chunks = hdr->h.chunks;
+    for (uint32_t c : b.verified) if (c < chunks && ch[c].state != VERIFIED) { ch[c].state = VERIFIED; verified++; }
+    uint64_t had = 0;
+    for (uint32_t c : b.chunks) {
+      if (c >= chunks || ch[c].state == VERIFIED) { store->drop(c); continue; }
+      Ch& s = ch[c];
+      const auto recs = store->read(c);
+      for (size_t o = 0; o + REC <= recs.size(); o += REC) s.have.add(xfer_id_get(recs.data() + o));
+      s.recs = s.mark = uint32_t(recs.size() / REC);
+      had += s.have.n;
+    }
+    say("xfer: resumed " + hdr->name + ", " + std::to_string(verified) + " of " + std::to_string(chunks) + " chunks verified, " +
+        std::to_string(had) + " blocks in hand");
+    if (verified == chunks) { finish(); return true; }
+    return false;
   }
   // ai: XferReceiver.solveReady: every chunk with its blocks in hand, now that their counts are known
   void solveReady() {
@@ -237,6 +313,7 @@ struct XferRxCore::Rx {
     if (failed || h.listOk || m >= h.mcount || h.mgot[m]) return;
     if (xfer_manifest_parse(p, &h.h, m, h.list.data(), h.sent.data(), h.seed.data())) return;   // ai: another transfer's (its tag), not a manifest block, or entries no chunk could have
     h.mgot[m] = 1;
+    if (!replaying) store->noteManifest(m, p);
     if (++h.mhave < h.mcount) return;
     if (xfer_manifest_check(h.list.data(), h.h.chunks, h.h.root)) {
       // ai: every block passed its parse and the list still does not make the root: one passed its CRC wrongly, which
@@ -264,7 +341,7 @@ struct XferRxCore::Rx {
     if (h.K[c] == 1) {
       std::vector<uint8_t> out;
       if (recs.size() >= REC) out.assign(recs.begin() + XFER_ID_BYTES, recs.begin() + XFER_ID_BYTES + h.sent[c]);
-      store->drop(c);
+      store->drop(c); s.recs = s.mark = 0;
       return unpack(c, out);
     }
     auto d = std::make_unique<Wh>();
@@ -280,7 +357,9 @@ struct XferRxCore::Rx {
       if (rc < 0) say("xfer: wirehair decode " + std::to_string(rc) + " on chunk " + std::to_string(c));
       ok = rc == 1;
     }
-    store->drop(c);   // ai: the decoder holds them now
+    // ai: the decoder holds them now; a store that keeps the transfer keeps them until the chunk is verified, so a
+    // ai: resume rebuilds a chunk Wirehair wanted more blocks for
+    if (ok || !store->keeps()) { store->drop(c); s.recs = s.mark = 0; }
     s.dec = std::move(d);
     if (!ok) { s.state = HOT; over++; return; }   // ai: Wirehair wanted a block more than K (a few percent of chunks): fed as they come
     recovered(c);
@@ -306,6 +385,7 @@ struct XferRxCore::Rx {
     Ch& s = ch[c];
     if (!verify(c, out)) return reject(c, s);
     if (!store->writeOut(uint64_t(c) * h.size, out.data(), out.size())) return stop();
+    store->noteVerified(c);
     accept(c, s);
   }
   // ai: xfer_chunk_check: the chunk's chaining value against the list (already checked against the root), or, for a
@@ -316,12 +396,15 @@ struct XferRxCore::Rx {
   }
   void accept(uint32_t c, Ch& s) {
     s.state = VERIFIED; s.have = Bits(); s.ban = Bits(); verified++;
-    if (verified == hdr->h.chunks) finish();
+    store->drop(c); s.recs = s.mark = 0;   // ai: a kept chunk's blocks (store.h keeps), nothing otherwise
+    if (verified == hdr->h.chunks) finish(); else saveMeta();
   }
   // ai: a chunk that decoded to the wrong bytes: which block passed its CRC wrongly cannot be told, so every symbol that
   // ai: went into it is refused from now on and the chunk collected again from fresh ids
   void reject(uint32_t c, Ch& s) {
     s.ban.orWith(s.have); s.have = Bits(); s.state = COLLECTING; rejected++;
+    s.dec.reset();
+    store->drop(c); s.recs = s.mark = 0;
     say("xfer: chunk " + std::to_string(c) + " rejected");
   }
   void finish() {
@@ -369,6 +452,7 @@ XferRxCore::XferRxCore(std::unique_ptr<Store> store, std::function<void(const st
 XferRxCore::~XferRxCore() = default;
 void XferRxCore::block(const uint8_t* b) { rx_->block(b); }
 void XferRxCore::clearAll() { rx_->clearAll(); }
+void XferRxCore::forget(const std::string& root) { rx_->forget(root); }
 void XferRxCore::progress(XferProgress& p) const { rx_->progress(p); }
 const std::atomic<uint64_t>& XferRxCore::rootGen() const { return rx_->gen; }
 const std::atomic<uint64_t>& XferRxCore::taken() const { return rx_->taken; }

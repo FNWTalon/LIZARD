@@ -5,8 +5,8 @@ import java.util.prefs.Preferences
 import kotlin.math.roundToInt
 
 // ai: What the sender keeps between runs (the web's send:<id> keys): the encoder (auto, gpu, cpu), the payload (file,
-// ai: test), the blocks a frame (0 auto, else 1 to 128), pictures a second, the code's size (25 to 100%), the gap between
-// ai: two codes (0 to 64 modules), the ring (-1 the default, else 0 to 3, kept as its cells since 2026-10-10), the codes, the folds and the rail, and
+// ai: test), the blocks a frame (0 auto, else 1 to 128), pictures a second, the code's size (25 to 100%), the margin
+// ai: (Pick.QUIET to MARGIN_MAX modules), the ring (-1 the default, else 0 to 3, kept as its cells since 2026-10-10), the codes, the folds and the rail, and
 // ai: whether the brightness tip was taken before a first send (SendState.requestStart). forget():
 // ai: a run that neither reads nor keeps them, every setting at its default (the test hook's, SenderTest.kt).
 object Prefs {
@@ -23,7 +23,11 @@ object Prefs {
     var blocks: Int get() = int("blocks", 60); set(v) { p?.putInt("blocks", v) }   // ai: the page's LIZARD-480 default
     var fps: Int get() = int("fps", 60); set(v) { p?.putInt("fps", v) }
     var size: Int get() = int("size", 100); set(v) { p?.putInt("size", v) }
-    var gap: Int get() = int("gap", Pick.GAP_DEFAULT); set(v) { p?.putInt("gap", v) }
+    // ai: a "gap" kept from before the margin (2026-10-23: modules between two codes past their quiet zones) read as the
+    // ai: margin it was, (gap + 4) / 2
+    var margin: Int
+        get() = int("margin", 0).takeIf { it > 0 } ?: int("gap", -1).takeIf { it >= 0 }?.let { (it + 2 * Pick.QUIET + 1) / 2 } ?: Pick.MARGIN_DEFAULT
+        set(v) { p?.putInt("margin", v); p?.remove("gap") }
     // ai: an index into Pick.RINGS, kept by its cells (ringCells, 2026-10-10: the 96 ring's place went to the 256, so an
     // ai: index alone would move a saved choice); a key "ring" from before is an index into 32, 64, 96, 128, its 96 the default now
     var ring: Int
@@ -33,7 +37,9 @@ object Prefs {
     var settingsOpen: Boolean get() = bool("dev", false); set(v) { p?.putBoolean("dev", v) }
     var toolsOpen: Boolean get() = bool("logs", false); set(v) { p?.putBoolean("logs", v) }
     var collapsed: Boolean get() = bool("collapsed", false); set(v) { p?.putBoolean("collapsed", v) }
-    var brightnessSeen: Boolean get() = bool("brightnessSeen", false); set(v) { p?.putBoolean("brightnessSeen", v) }
+    // ai: the first-send tip taken (Screen.kt BrightnessTip); "tipSeen" since 2026-10-23, when it gained power saving
+    // ai: and was due once more ("brightnessSeen" before)
+    var brightnessSeen: Boolean get() = bool("tipSeen", false); set(v) { p?.putBoolean("tipSeen", v) }
 }
 
 // ai: The web's figures (lizard-web/ui.mjs bytes, rate; lizard-android/.../Readout.kt the same): 1000 B a KB, the unit chosen

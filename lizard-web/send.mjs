@@ -10,7 +10,7 @@ import { DEFAULT_LOG2 } from "../liblizard/sim/xfer.mjs";
 import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor } from "../liblizard/sim/lizard_pick.mjs";
 import { GAP_MODULES } from "../liblizard/gpu/encoder.mjs";
 import { bundle } from "./tar.mjs";
-import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, collapser, sideResizer } from "./ui.mjs";
+import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, collapser, sideResizer, icon, sayName } from "./ui.mjs";
 
 // The room a format needs holds the codec's margin (src/focus.h FOCUS_QUIET), and only the codec knows it.
 await initOb();
@@ -22,7 +22,9 @@ let fileBytes = 0, sentBytes = 0;   // ai: the file's bytes and its bytes as sen
 const sizeLine = () => (fileBytes ? `, ${sizeText(sentBytes, fileBytes)}` : "");
 // ai: what goes, "<compressed> (<raw> raw)" once the transfer is made, "<raw> raw" while it is being made (2026-10-19;
 // ai: the native senders' the same)
-const sizeText = (sent, raw) => (sent ? `${bytes(sent)} (${bytes(raw)} raw)` : `${bytes(raw)} raw`);
+// ai: each figure kept whole on its line, "raw" with its own (no-break spaces, 2026-10-23: "(47 KB / raw)" broke there)
+const nbsp = (t) => t.replace(/ /g, "\u00a0");
+const sizeText = (sent, raw) => (sent ? `${nbsp(bytes(sent))} ${nbsp(`(${bytes(raw)} raw)`)}` : nbsp(`${bytes(raw)} raw`));
 const $ = (id) => document.getElementById(id), canvas = $("c"), ctx = canvas.getContext("2d"), tmp = document.createElement("canvas"), tctx = tmp.getContext("2d"), gcanvas = $("cg");
 // nextId is the block id space and seq only counts painted frames. They are separate because
 // blocksPerFrame changes when repick() swaps the layout mid-stream: seq * blocksPerFrame would
@@ -33,7 +35,7 @@ let timer = 0, seq = 0, nextId = 0, image = null, painted = 0, paintMs = 0, encM
 let running = false, live = false, lap = 0, dataSent = 0, dataWin = 0;
 // ai: Paused (2026-10-02): the run kept, nothing asked or
 // ai: painted, the last picture left on screen; a receiver holds what it has, and a resume paints on at once.
-let paused = false, sendingLine = "";
+let paused = false, sendingLine = () => {};   // ai: says the sending line again (after a pause)
 
 // A plain grey LIZARD symbol, the default and the one that gets expensive, is encoded and turned into pixels in a
 // worker (lizard-web/send-worker.mjs), in wasm, a few frames ahead: at LIZARD-1024 that was 45 ms a frame on this thread
@@ -278,17 +280,21 @@ function spec() {
 // guess at it was a control on this page that nobody could answer. Each format states the room it needs
 // (ROOM_FOR, from its top ring), so the largest that fits is the pick. sim/lizard_pick.mjs has the arithmetic so
 // scripts/exp/pick_check.mjs can exercise it.
-// ai: With two codes each symbol gets half the width less the gap between them: the room is one symbol's. The gap
-// ai: is gapOf() modules, gapFrac of a symbol's width in the ring chosen (its side in modules, margin included), the
-// ai: same fraction the checks take off (#tx dataset.gapfrac).
-function gapFrac(codes) { return codes > 1 ? (codes - 1) * gapOf() / (MODULES(256, ringChosen() ?? RING_DEFAULT) + 2 * OB_QUIET) : 0; }
-// ai: The gap between two codes in modules, Settings' slider shown with two codes (2026-10-03; GAP_MODULES, 12, fixed
-// ai: before, from 2026-09-30, packed to their quiet zones before that), 0 to 64. Commits on release, as Size.
-const gapOf = () => { const g = Math.round(+$("gap").value); return Number.isFinite(g) ? Math.max(0, Math.min(64, g)) : GAP_MODULES; };
+// ai: The Margin, Settings' slider (2026-10-23; a gap between two codes before it, from 2026-10-03, shown with two
+// ai: codes): the light round a code in modules from its ring, the quiet zone (OB_QUIET) at least, 34 at most (a
+// ai: painter's widest gap, 64 modules), MARGIN_DEFAULT the encoders' own gap (GAP_MODULES) as a margin. Two codes stand
+// ai: two margins apart (the painters' gap, gapOf(), past their quiet zones) and the area's edges a margin from the
+// ai: codes, so each code takes its painted side and two margins: marginScale() times its side in the ring, which the
+// ai: room and the canvas (layout) take and the checks read (#tx dataset.over). Commits on release, as Size.
+const MARGIN_DEFAULT = GAP_MODULES / 2 + OB_QUIET;
+const marginOf = () => { const m = Math.round(+$("margin").value); return Number.isFinite(m) ? Math.max(OB_QUIET, Math.min(34, m)) : MARGIN_DEFAULT; };
+const gapOf = () => 2 * (marginOf() - OB_QUIET);
+const marginScale = (ring = ringChosen() ?? RING_DEFAULT) => { const side = MODULES(256, ring) + 2 * OB_QUIET; return (side + gapOf()) / side; };
+// ai: With two codes each symbol gets half the width: the room is one symbol's.
 function room() {
-  const box = canvas.parentElement, dpr = devicePixelRatio || 1, codes = codesOf(), gf = gapFrac(codes);
-  $("tx").dataset.gapfrac = gf;
-  return Math.max(64, Math.min(box.clientWidth / (codes + gf), box.clientHeight) * dpr * sizeOf());
+  const box = canvas.parentElement, dpr = devicePixelRatio || 1, codes = codesOf(), k = marginScale();
+  $("tx").dataset.over = k;
+  return Math.max(64, Math.min(box.clientWidth / codes, box.clientHeight) / k * dpr * sizeOf());
 }
 // ai: The code's size, Settings' slider (2026-10-03, against instability at a monitor's edges): a share of <main>'s
 // ai: room, 25 to 100%, which both the pick (room) and the canvas (layout)
@@ -321,7 +327,9 @@ function layout(n, codes = 1, gpu = false, gap = 0) {
     image = { width: fw, height: n, gpu }; tmp.width = fw; tmp.height = n;
     const cv = gpu ? gcanvas : canvas;
     canvas.hidden = gpu; gcanvas.hidden = !gpu;
-    const dpr = devicePixelRatio || 1, room = Math.min(canvas.parentElement.clientWidth / (codes + (codes - 1) * gap / n), canvas.parentElement.clientHeight) * dpr * sizeOf();
+    // ai: the frame with a margin less the quiet zone at each edge (marginScale() - 1 of a symbol's side across both)
+    const k = marginScale(shown ? ringOf(shown) : undefined), box = canvas.parentElement;
+    const dpr = devicePixelRatio || 1, room = Math.min(box.clientWidth / (fw / n + k - 1), box.clientHeight / k) * dpr * sizeOf();
     // Three ways to put a symbol of n samples on screen. "stretch" is the default and what a small screen wants:
     // paint whole device pixels a sample, then let the browser stretch that up to fill the room. Stretching UP only
     // interpolates, so no ring is lost; squeezing DOWN below the format's room (ROOM_FOR) would throw the outer rings
@@ -371,8 +379,9 @@ const isTest = () => $("payload").value === "test";
 function showReady() {
   const f = chosen;
   $("go").hidden = false; $("go").disabled = !isTest() && !f; $("stop").hidden = true;
-  $("hint").hidden = isTest(); $("nums").textContent = "";
-  say($("state"), isTest() ? "The test stream" : f ? `${f.name}, ${f.bundled ? `${f.files} ${f.files === 1 ? "file" : "files"}, ` : ""}${sizeText(f.sent, f.size)}` : "");
+  showChoice(false); $("nums").textContent = "";
+  if (f && !isTest()) sayName($("state"), "", f.name, `, ${f.bundled ? `${f.files} ${f.files === 1 ? "file" : "files"}, ` : ""}${sizeText(f.sent, f.size)}`);
+  else say($("state"), isTest() ? "The test stream" : "");
   showRail();
 }
 // ai: Pause and resume (the rail's button, and Resume beside Stop while paused, so the open column has it too).
@@ -381,7 +390,7 @@ function setPaused(p) {
   paused = p;
   $("go").hidden = !p; $("go").disabled = !p; $("go").textContent = p ? "Resume" : "Start";
   if (p) $("nums").textContent = "";
-  say($("state"), p ? "Paused" : sendingLine);
+  if (p) say($("state"), "Paused"); else sendingLine();
   showRail();
 }
 // ai: The collapsed rail (send.html #rail): pause while sending, play to resume or to start, and the code's capacity,
@@ -402,9 +411,9 @@ function showRail() {
   const [v, u] = kbs != null ? rate(kbs).split(/\s/) : ["", ""];   // ai: \s takes rate()'s no-break space
   $("railRate").innerHTML = v ? `${v}<small>${u}</small>` : "";
 }
-function showRunning(text) {
+function showRunning(before, name) {
   $("go").hidden = true; $("go").disabled = true; $("stop").hidden = false;
-  say($("state"), text);
+  if (name) sayName($("state"), before, name); else say($("state"), before);
 }
 // ai: Every error ends here: the stream stops, the state line says what went wrong in red, the console has the rest.
 function fail(what, e) {
@@ -445,7 +454,7 @@ async function start() {
   if (!test && !file) { showReady(); return; }
   const what = test ? "the test stream" : file.name, my = gen;
   running = true;
-  showRunning(`Preparing ${what}`);
+  showRunning(test ? `Preparing ${what}` : "Preparing ", test ? null : what);
   holdWake();
   // ai: A browser reads a chosen file only as it was when chosen: once it has been saved again, moved or replaced
   // ai: on disk the read is refused (NotReadableError, in the browser's own words "permission problems that have
@@ -544,7 +553,7 @@ async function start() {
     samples = fr.w;
     // ai: the first frame painted: a sender has seen what the tips say (ui.mjs), so they go on every page of this origin
     // ai: the file's size and, where compression shrank it, the bytes that actually go (2026-10-05)
-    if (!live) { live = true; $("hint").hidden = true; sendingLine = `Sending ${what}${sizeLine()}`; say($("state"), sendingLine); tipsDone(); }
+    if (!live) { live = true; showChoice(true); const sz = sizeLine(); sendingLine = file ? () => sayName($("state"), "Sending ", what, sz) : () => say($("state"), `Sending ${what}`); sendingLine(); tipsDone(); }
     if (now - lastReport > 1000 && painted) {
       const g = gcfg ? genc.takeGpuMs() : null;
       gpuMs = gcfg ? g ?? gpuMs : null;
@@ -650,9 +659,10 @@ new ResizeObserver(roomChanged).observe(canvas.parentElement);
 // ai: (#first; 2026-10-04; the desktop sender's the same): the display's contrast and brightness are the channel's and
 // ai: no page sets them (the
 // ai: contrast at its maximum took 2:1 past 2.90 MB/s, STATUS "The oscillation in 2:1"). Shown until a send goes from it
-// ai: (its Start, kept as send:brightnessSeen), Cancel or Escape leaving it for the next press; ?auto (the checks', the
+// ai: (its Start, kept as send:tipSeen; send:brightnessSeen until 2026-10-23, when the tip gained power saving and was due
+// ai: once more), Cancel or Escape leaving it for the next press; ?auto (the checks', the
 // ai: rig's), Resume and a running send's restart (the encoder changed, the GPU given up) never show it.
-const SEEN = "send:brightnessSeen";
+const SEEN = "send:tipSeen";
 let seenHere = false;
 const brightnessSeen = () => { try { return seenHere || localStorage.getItem(SEEN) === "1"; } catch { return seenHere; } };
 const begin = () => start().catch((e) => { if (e !== STOPPED) fail("Could not start", e); });
@@ -667,17 +677,35 @@ $("firstCancel").onclick = () => $("first").close();
 $("go").onclick = go;
 $("stop").onclick = () => { stop(); showReady(); };
 $("railSend").onclick = () => (running ? setPaused(!paused) : go());
-// ai: A new payload, picked or dropped, is what Start sends next; one picked while sending stops that first. Its transfer
-// ai: is made at once in the worker (prepare: every chunk compressed), so the state line says what goes before Start.
-let picks = 0;
-function picked(p) {
-  if (!p) { if (!running) showReady(); return; }   // ai: a cancelled picker leaves a running stream alone
+// ai: The selection (2026-10-23; until then a pick replaced the last): items added by each pick, drop or share, in
+// ai: order, each a file or a folder with its entries under its own name (tar.mjs bundle's), so files and folders mix.
+// ai: The payload is their bundle (one file alone is itself, else one tar). An item already listed is not added again
+// ai: (a file by its name, size and time, a folder by its name, files and bytes). Every change stops a run first and
+// ai: makes the transfer again at once in the worker (prepare: every chunk compressed), so the state line says what
+// ai: goes before Start; a reply for a selection since changed is ignored by its pick number.
+let picks = 0, items = [];
+function itemOf(name, entries) {
+  const files = entries.filter((e) => !e.dir), size = files.reduce((n, f) => n + f.blob.size, 0);
+  const dir = entries.length !== 1 || !!entries[0].dir || entries[0].path.includes("/");
+  return { name, dir, files: files.length, size, entries, key: dir ? `d|${name}|${files.length}|${size}` : `f|${name}|${size}|${entries[0].mtime}` };
+}
+function add(fresh) {
+  const have = new Set(items.map((i) => i.key)), more = fresh.filter((i) => !have.has(i.key) && have.add(i.key));
+  if (!more.length) { if (!running) showReady(); return; }
+  items = [...items, ...more];
+  changed();
+}
+function remove(key) { items = items.filter((i) => i.key !== key); changed(); }
+function clearPick() { items = []; changed(); }
+function changed() {
   if (running) stop();
-  chosen = p;
-  p.pick = ++picks; p.sent = 0; p.failed = null;
   $("payload").value = "file";
+  const p = items.length ? bundle(items.flatMap((i) => i.entries)) : null;
+  chosen = p;
+  if (p) { p.pick = ++picks; p.sent = 0; p.failed = null; }
+  else ++picks;
   showReady();
-  p.posted = prepare(p);
+  if (p) p.posted = prepare(p);
 }
 // ai: the chosen file's bytes, with the page's words for one the browser no longer reads
 const readOf = (file) => file.blob.arrayBuffer().then((b) => new Uint8Array(b), (e) => {
@@ -697,20 +725,73 @@ function madeFor(m) {
   p.sent = m.sent;
   if (!running) showReady();
 }
-// ai: An input's files are taken as they are picked and the input emptied, so the same pick again is a new pick. A
-// ai: folder's files carry their path under it (webkitRelativePath); a browser lists no empty folder there.
-const pickedFrom = (input, pathOf) => () => {
-  const fs = [...input.files];
-  input.value = "";
-  picked(fs.length ? bundle(fs.map((f) => ({ path: pathOf(f), blob: f, mtime: f.lastModified / 1000 }))) : null);
+// ai: The list over <main> (#pick) while the selection holds something and no send paints, the hint while it holds
+// ai: nothing: a row an item (its icon, its name, "N files · size" for a folder or its size, Remove), then Add files,
+// ai: Add a folder and Clear.
+function renderPick() {
+  const list = $("pickList");
+  list.replaceChildren(...items.map((it) => {
+    const li = document.createElement("li"), lead = document.createElement("span"), body = document.createElement("span");
+    const t = document.createElement("span"), sub = document.createElement("span"), rm = document.createElement("button");
+    li.className = "item";
+    lead.className = "lead"; lead.append(icon(it.dir ? "folder" : "file"));
+    body.className = "body"; t.className = "t"; t.textContent = it.name; t.title = it.name; sub.className = "s";
+    sub.textContent = it.dir ? `${it.files} ${it.files === 1 ? "file" : "files"} · ${bytes(it.size)}` : bytes(it.size);
+    body.append(t, sub);
+    rm.type = "button"; rm.className = "btn icon"; rm.title = `Remove ${it.name}`; rm.append(icon("x"));
+    rm.onclick = (e) => { e.stopPropagation(); remove(it.key); };
+    li.append(lead, body, rm);
+    return li;
+  }));
+}
+function showChoice(painting) {
+  $("hint").hidden = painting || isTest() || items.length > 0;
+  $("pick").hidden = painting || isTest() || items.length === 0;
+  renderPick();
+}
+// ai: An input's files are taken as they are picked and the input emptied, so the same pick again is a new pick. Each
+// ai: file picked is an item; a folder's files carry their path under it (webkitRelativePath), one item, whose name is
+// ai: its first part (a browser lists no empty folder there).
+$("file").onchange = () => {
+  const fs = [...$("file").files];
+  $("file").value = "";
+  add(fs.map((f) => itemOf(f.name, [{ path: f.name, blob: f, mtime: f.lastModified / 1000 }])));
 };
-$("file").onchange = pickedFrom($("file"), (f) => f.name);
-$("folder").onchange = pickedFrom($("folder"), (f) => f.webkitRelativePath || f.name);
-$("folderBtn").hidden = !("webkitdirectory" in $("folder"));
+$("folder").onchange = () => {
+  const fs = [...$("folder").files];
+  $("folder").value = "";
+  if (!fs.length) { if (!running) showReady(); return; }
+  const entries = fs.map((f) => ({ path: f.webkitRelativePath || f.name, blob: f, mtime: f.lastModified / 1000 }));
+  add([itemOf(entries[0].path.split("/")[0], entries)]);
+};
+// ai: Files from outside the page (2026-10-23), each added as a file picked: what another app shared to the installed
+// ai: app (the worker keeps them in the cache "lizard-share" and opens send.html?shared: pwa/service-worker.js shareIn),
+// ai: and the system's Open with (the manifest's file_handlers, handed over through launchQueue).
+async function takeShared() {
+  if (!new URLSearchParams(location.search).has("shared") || typeof caches === "undefined") return;
+  history.replaceState(null, "", location.pathname);
+  const cache = await caches.open("lizard-share"), got = [];
+  for (const req of await cache.keys()) {
+    const r = await cache.match(req);
+    if (r) {
+      const name = decodeURIComponent(r.headers.get("x-name") || "file"), at = +r.headers.get("x-modified") || Date.now();
+      const f = new File([await r.blob()], name, { type: r.headers.get("content-type") || "", lastModified: at });
+      got.push(itemOf(name, [{ path: name, blob: f, mtime: at / 1000 }]));
+    }
+    await cache.delete(req);
+  }
+  if (got.length) add(got);
+}
+const canFolders = "webkitdirectory" in $("folder");
+$("orFolder").hidden = $("addFolder").hidden = !canFolders;
 $("folderBtn").onclick = (e) => { e.stopPropagation(); $("folder").click(); };
+$("addFiles").onclick = (e) => { e.stopPropagation(); $("file").click(); };
+$("addFolder").onclick = (e) => { e.stopPropagation(); $("folder").click(); };
+$("clearPick").onclick = (e) => { e.stopPropagation(); clearPick(); };
+$("pick").addEventListener("click", (e) => e.stopPropagation());   // ai: a tap on the list is not a tap on <main>
 $("payload").onchange = () => { if (running) stop(); showReady(); };
-// ai: Files and folders dropped anywhere on the page are the payload, as a pick is. The counter pairs enter with leave
-// ai: across child elements, so the outline goes only when the drag leaves the page.
+// ai: Files and folders dropped anywhere on the page are added, each dropped item one. The counter pairs enter with
+// ai: leave across child elements, so the outline goes only when the drag leaves the page.
 const main = canvas.parentElement, hasFiles = (e) => [...(e.dataTransfer?.types ?? [])].includes("Files");
 let drags = 0;
 document.addEventListener("dragenter", (e) => { if (!hasFiles(e)) return; e.preventDefault(); drags++; main.classList.add("drop"); });
@@ -722,23 +803,29 @@ document.addEventListener("drop", (e) => {
   const roots = [...(e.dataTransfer?.items ?? [])].filter((i) => i.kind === "file").map((i) => i.webkitGetAsEntry?.() ?? null);
   const flat = [...(e.dataTransfer?.files ?? [])];
   if (!flat.length && !roots.length) return;
-  const walked = roots.length && roots.every(Boolean) ? walkDrop(roots) : Promise.resolve(flat.map((f) => ({ path: f.name, blob: f, mtime: f.lastModified / 1000 })));
-  walked.then((entries) => picked(entries.length ? bundle(entries) : null), (err) => fail("The dropped files could not be read: choose them instead", err));
+  const walked = roots.length && roots.every(Boolean) ? walkDrop(roots)
+    : Promise.resolve(flat.map((f) => itemOf(f.name, [{ path: f.name, blob: f, mtime: f.lastModified / 1000 }])));
+  if (!running) say($("state"), "Reading the files");
+  // ai: a drop that cannot be read leaves the list and a run as they were, and says so where nothing is sending
+  walked.then(add, (err) => {
+    console.error("sender: the dropped files could not be read:", err);
+    if (!running) { showReady(); say($("state"), `The dropped files could not be read: choose them instead: ${err?.message ?? err}`, "bad"); }
+  });
 });
-// ai: A drop's entries with every folder walked, folders included (an empty one survives), each under its dropped
-// ai: item's name. readEntries hands a folder's listing over in pieces, so it is asked until it hands none.
+// ai: A drop's items, each dropped root with every folder walked, folders included (an empty one survives), under its
+// ai: own name. readEntries hands a folder's listing over in pieces, so it is asked until it hands none.
 async function walkDrop(roots) {
-  const out = [];
   const listAll = async (dir) => {
     const r = dir.createReader(), all = [];
     for (;;) { const got = await new Promise((ok, no) => r.readEntries(ok, no)); if (!got.length) return all; all.push(...got); }
   };
-  const walk = async (en, path) => {
+  const walk = async (en, path, out) => {
     if (en.isFile) { const f = await new Promise((ok, no) => en.file(ok, no)); out.push({ path, blob: f, mtime: f.lastModified / 1000 }); }
-    else if (en.isDirectory) { out.push({ path, dir: true }); for (const c of await listAll(en)) await walk(c, `${path}/${c.name}`); }
+    else if (en.isDirectory) { out.push({ path, dir: true }); for (const c of await listAll(en)) await walk(c, `${path}/${c.name}`, out); }
   };
-  for (const r of roots) await walk(r, r.name);
-  return out;
+  const got = [];
+  for (const r of roots) { const out = []; await walk(r, r.name, out); if (out.length) got.push(itemOf(r.name, out)); }
+  return got;
 }
 
 // ai: Fullscreen: body.full shows <main> alone (the room grows, the ResizeObserver re-picks), and the page asks for
@@ -768,7 +855,7 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document
 $("enc").onchange = () => { gpuOff = null; showEnc(); if (running) go(); };
 // ai: One code or two changes the room a symbol has, so it re-picks as a resize does; so does another version or ring
 // ai: (2026-10-01: until then they waited for the next start or resize).
-$("codes").onchange = () => { image = null; showGap(); roomChanged(); };
+$("codes").onchange = () => { image = null; roomChanged(); };
 $("subch").onchange = $("ring").onchange = () => roomChanged();
 // ai: the display fps slider's label (2026-10-02, a slider 1 to 60 in place of the number box): live while it is dragged,
 // ai: and the page's pace and the word's rate follow it as they followed the box (both read #fps as they go)
@@ -778,10 +865,10 @@ for (const ev of ["input", "change"]) $("fps").addEventListener(ev, showFps);
 const showSize = () => { $("sizeOut").textContent = `${Math.round(sizeOf() * 100)}%`; };
 $("size").addEventListener("input", showSize);
 $("size").addEventListener("change", () => { showSize(); roomChanged(); });
-// ai: the gap slider (gapOf): its label live while dragged, a new canvas and the room changed on release; shown with two codes
-const showGap = () => { $("gapOut").textContent = `${gapOf()} modules`; $("gapRow").hidden = codesOf() < 2; };
-$("gap").addEventListener("input", showGap);
-$("gap").addEventListener("change", () => { showGap(); image = null; roomChanged(); });
+// ai: the margin slider (marginOf): its label live while dragged, a new canvas and the room changed on release
+const showMargin = () => { $("marginOut").textContent = `${marginOf()} modules`; };
+$("margin").addEventListener("input", showMargin);
+$("margin").addEventListener("change", () => { showMargin(); image = null; roomChanged(); });
 // ai: The app's shell (2026-10-01): the bar's Settings, About and the installed app's worker.
 about($("about"));
 registerApp(() => about($("about"), true));
@@ -847,9 +934,15 @@ showBlocks();
 showEnc();
 showFps();
 showSize();
-showGap();
+showMargin();
 remember($("dev"), "send:dev");
 remember($("logs"), "send:logs");
 paintSurround();
 showReady();
 if (URLP.has("auto")) begin();
+// ai: what was shared or opened with the app, once the page is set up (takeShared above)
+takeShared().catch((e) => console.error("sender: the shared files could not be read:", e));
+if ("launchQueue" in window) window.launchQueue.setConsumer(async (params) => {
+  const fs = await Promise.all((params.files ?? []).map((h) => h.getFile()));
+  if (fs.length) add(fs.map((f) => itemOf(f.name, [{ path: f.name, blob: f, mtime: f.lastModified / 1000 }])));
+});

@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
+import kotlin.math.floor
 
 // ai: Home (2026-10-01): the first-run tip (the web Home's three steps, worded for the phone), Send and Receive (Receive
 // ai: the one solid card; the app sends since the same day, Send.kt), the received files (Library.kt: a row opens its file; its more
@@ -64,6 +65,11 @@ internal fun MainActivity.HomeScreen() {
         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Tile(R.drawable.ic_send, "Send", "Show a file as a code on this screen", solid = false, modifier = Modifier.weight(1f)) { go(MainActivity.Screen.Send) }
             Tile(R.drawable.ic_camera, "Receive", "Read a code with this phone's camera", solid = true, modifier = Modifier.weight(1f)) { go(MainActivity.Screen.Receive) }
+        }
+        // ai: transfers begun and not finished (2026-10-22), above the received files
+        if (partials.isNotEmpty()) {
+            SectionLabel("Unfinished")
+            partials.forEachIndexed { i, p -> key(p.id) { PartialRow(p, last = i == partials.lastIndex) } }
         }
         SectionLabel("Received files")
         if (files.isEmpty()) Column(Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally,
@@ -133,6 +139,33 @@ internal fun MainActivity.FileRow(e: Library.Entry, last: Boolean) {
         dismissButton = { Btn("Cancel", Kind.Text) { asking = false } },
         title = { Text("Delete ${e.name}?") },
         text = { Text("It goes from this phone. A copy saved elsewhere stays.") },
+        containerColor = Bg)
+}
+
+// ai: An unfinished transfer's row (2026-10-22, Partials.kt): its name and "37% of 3.1 MB · date" (the transfer in hand's
+// ai: share from the receiver as it goes), a tap Receive, which resumes it once the file is in the light; its more menu
+// ai: Continue and Delete, asked first.
+@Composable
+internal fun MainActivity.PartialRow(p: Partials.Entry, last: Boolean) {
+    var menu by remember { mutableStateOf(false) }
+    var asking by remember { mutableStateOf(false) }
+    val frac = if (p.root.isNotEmpty() && p.root == root && rx.hasFile) Readout.fraction(rx) else p.fraction
+    val name = p.name.ifEmpty { "a file" }
+    ListRow(name, listOf("${floor(100 * frac).toInt()}% of ${Readout.bytes(p.length)}", whenOf(p.at)).filter { it.isNotEmpty() }.joinToString(" · "),
+        lead = R.drawable.ic_file, divider = !last, onClick = { go(MainActivity.Screen.Receive) }) {
+        Box {
+            IconBtn(R.drawable.ic_more, "More for $name") { menu = true }
+            DropdownMenu(menu, { menu = false }) {
+                DropdownMenuItem({ Text("Continue") }, { menu = false; go(MainActivity.Screen.Receive) })
+                DropdownMenuItem({ Text("Delete", color = Bad) }, { menu = false; asking = true })
+            }
+        }
+    }
+    if (asking) AlertDialog(onDismissRequest = { asking = false },
+        confirmButton = { Btn("Delete", Kind.Danger) { asking = false; deletePartial(p) } },
+        dismissButton = { Btn("Cancel", Kind.Text) { asking = false } },
+        title = { Text("Delete $name?") },
+        text = { Text("The part received goes from this phone.") },
         containerColor = Bg)
 }
 

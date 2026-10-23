@@ -112,6 +112,7 @@ class GpuReceiver : public Receiver {
   void batchCap(int n) override { cap = n; cv.notify_all(); }
   std::string file() override;
   void clear() override;
+  void forget(const std::string& root) override;
   bool wantsLuma() const override { return false; }
   void record(std::shared_ptr<Replay> r) override { std::lock_guard<std::mutex> l(mu); rec = std::move(r); }
   void cameraClosed() override {
@@ -517,6 +518,7 @@ std::string GpuReceiver::stats() {
 
 std::string GpuReceiver::file() { auto p = xfer->progress(); return p.done ? p.path : ""; }
 void GpuReceiver::clear() { { std::lock_guard<std::mutex> d(deliverMu); xfer->clear(); } std::lock_guard<std::mutex> l(mu); lastWord = nullptr; held = 0; }
+void GpuReceiver::forget(const std::string& root) { std::lock_guard<std::mutex> d(deliverMu); xfer->forget(root); }
 
 // ai: The C on the CPU (cpu/pool.h: the web's worker pool natively): a frame's crop is copied to an idle worker or the
 // ai: frame is lost, never queued; each worker decodes blind on its own decoder; the held word is the last word any
@@ -537,6 +539,7 @@ class CpuReceiver : public Receiver {
   void batchCap(int) override {}   // ai: a frame at a time already
   std::string file() override { auto p = xfer->progress(); return p.done ? p.path : ""; }
   void clear() override { { std::lock_guard<std::mutex> d(deliverMu); xfer->clear(); } std::lock_guard<std::mutex> l(mu); lastWord = nullptr; held = 0; }
+  void forget(const std::string& root) override { std::lock_guard<std::mutex> d(deliverMu); xfer->forget(root); }
   bool wantsLuma() const override { return true; }
   void record(std::shared_ptr<Replay> r) override { std::lock_guard<std::mutex> l(mu); rec = std::move(r); }
 

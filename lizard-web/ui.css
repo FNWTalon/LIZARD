@@ -64,6 +64,9 @@ pre.readout{font-size:12px;color:var(--fg)}
 .why{font-weight:600;margin:4px 0}
 .good{color:var(--good)}
 .bad{color:var(--bad)}
+/* ai: a file's name in a line (ui.mjs sayName, 2026-10-23): on one line, its stem cut with an ellipsis, its ending whole */
+.fname{display:inline-flex;max-width:100%;white-space:nowrap;vertical-align:bottom}
+.fname>.stem{overflow:hidden;text-overflow:ellipsis;min-width:0}
 .hint{color:var(--muted);font-size:14px}
 .meter{height:6px;background:var(--soft);border-radius:3px;overflow:hidden;margin:8px 0}
 .meter>span{display:block;height:100%;width:0;background:var(--fg);border-radius:3px}
@@ -144,12 +147,13 @@ pre.readout{font-size:12px;color:var(--fg)}
 button.item{width:100%;justify-content:flex-start;padding:8px 0;font-weight:400;font-size:16px;text-align:left;background:transparent;border-radius:0}
 @media (hover:hover){button.item:hover{background:transparent}}
 .item .body{display:flex;flex-direction:column;flex:1 1 auto;min-width:0}
-.item .t{font-weight:500}
+/* ai: a row's title on one line, cut with an ellipsis where the row is too narrow for it (2026-10-23) */
+.item .t{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .item .s{font-size:14px;color:var(--muted)}
 .lead{display:grid;place-items:center;width:40px;height:40px;border-radius:10px;background:var(--soft);flex:none}
 /* ai: The received files (home.mjs): the row opens its file; the more icon's menu holds Open, Save, Share, Delete. */
-.files .name{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;font-weight:500;text-decoration:none}
-.files .meta{display:block;font-weight:400;font-size:14px;color:var(--muted)}
+.files .name{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500;text-decoration:none}
+.files .meta{display:block;overflow:hidden;text-overflow:ellipsis;font-weight:400;font-size:14px;color:var(--muted)}
 .menu{position:relative;flex:none}
 .menu>summary{list-style:none}
 .menu>summary::-webkit-details-marker{display:none}

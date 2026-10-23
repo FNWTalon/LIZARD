@@ -35,6 +35,12 @@
   /* ai: the hint's folder button, a link in its sentence: the one part of the hint that takes a click (send.mjs) */
   #folderBtn{display:inline;min-height:0;padding:0;font:inherit;color:var(--fg);background:none;border-radius:0;
     text-decoration:underline;pointer-events:auto}
+  /* ai: the selection (send.mjs renderPick, 2026-10-23): its rows over <main> until a send paints, centred as the hint
+     is, the list scrolling inside it when long; the buttons under it */
+  #pick{position:absolute;inset:0;margin:auto;z-index:2;width:min(26rem,calc(100% - 32px));height:fit-content;
+    max-height:calc(100% - 32px);display:flex;flex-direction:column;padding:4px 16px 12px;background:var(--bg)}
+  #pickList{overflow-y:auto;min-height:0;flex:0 1 auto}
+  #pick>.row{padding-top:8px;justify-content:center}
   /* ai: a file dragged over the page: the whole of <main> takes the drop, and the outline says so */
   main.drop{outline:3px dashed var(--fg);outline-offset:-12px}
   /* ai: Landscape and desktop: a 20rem column beside <main>, the bar fixed at its top and the controls over Settings in */
@@ -63,10 +69,10 @@
          "?" opening the display tip (2026-10-03, after the S26 broke 2.90 MB/s in 2:1 once the monitor's contrast was at
          its maximum, STATUS "The oscillation in 2:1"): a popover (ui.css .pop), dismissed by a click elsewhere or Escape -->
     <div id="rail" class="rail"><button id="railSend" class="btn icon off" type="button" title="Start"><svg class="i pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg><svg class="i play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3l14 9-14 9z"/></svg></button><span id="railRate" class="rate" aria-live="off"></span><button id="railHelp" class="btn icon help" type="button" title="Tip" popovertarget="tipDisplay"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/></svg><span class="sr-only">Tip</span></button><a id="railHome" class="btn icon home" href="index.html" title="Home"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg><span class="sr-only">Home</span></a></div>
-    <div id="tipDisplay" class="pop" popover>To maximize efficiency, increase the contrast and brightness of your display.</div>
+    <div id="tipDisplay" class="pop" popover>To maximize efficiency, increase the contrast and brightness of your display. Turn off power saving: it can make pictures drop.</div>
     <!-- ai: the same tip before the first send on this browser (send.mjs go, 2026-10-04); the browser's limit is the
          receiver's notice alone since 2026-10-22 -->
-    <dialog id="first" class="dialog"><p>To maximize efficiency, increase the contrast and brightness of your display.</p><div class="row end"><button id="firstCancel" type="button">Cancel</button><button id="firstStart" class="primary" type="button">Start</button></div></dialog>
+    <dialog id="first" class="dialog"><p>To maximize efficiency, increase the contrast and brightness of your display. Turn off power saving: it can make pictures drop.</p><div class="row end"><button id="firstCancel" type="button">Cancel</button><button id="firstStart" class="primary" type="button">Start</button></div></dialog>
     <div id="pane">
     <div id="side">
       <div class="row"><button id="go" class="primary" disabled>Start</button><button id="stop" hidden>Stop</button><button id="fs">Fullscreen</button></div>
@@ -94,8 +100,9 @@
           <div class="blocks"><span class="row"><span>FPS</span><span id="fpsOut">60</span></span><input id="fps" type="range" min="1" max="60" step="1" value="60" aria-label="FPS"></div>
           <!-- ai: the code's size, a share of <main>'s room, 25 to 100% (send.mjs sizeOf), so the code can be kept off a monitor's edges -->
           <div class="blocks"><span class="row"><span>Size</span><span id="sizeOut">100%</span></span><input id="size" type="range" min="25" max="100" step="1" value="100" aria-label="size"></div>
-          <!-- ai: the space between two codes, 0 to 64 modules (send.mjs gapOf), shown with two codes only -->
-          <div class="blocks" id="gapRow" hidden><span class="row"><span>Gap</span><span id="gapOut">12 modules</span></span><input id="gap" type="range" min="0" max="64" step="1" value="12" aria-label="gap"></div>
+          <!-- ai: the light round a code, 2 to 34 modules from its ring (send.mjs marginOf): two codes two margins apart, the
+               area's edges a margin from the codes -->
+          <div class="blocks"><span class="row"><span>Margin</span><span id="marginOut">8 modules</span></span><input id="margin" type="range" min="2" max="34" step="1" value="8" aria-label="margin"></div>
           <!-- ai: the ring, the 128 by default (sim/lizard_pick.mjs RING_DEFAULT; an Auto option, the same ring, until 2026-10-05) -->
           <label>Ring <select id="ring"><option value="32">32</option><option value="64">64</option><option value="128" selected>128</option><option value="256">256</option></select></label>
           <!-- ai: two codes side by side for the app's 2:1 crop (2026-09-28); "(browsers cannot decode 2 codes)" after Two until
@@ -117,10 +124,12 @@
     // ai: drawn (send.mjs awaits the codec first), so Settings and Developer Tools opened, and the kept values moved, a moment
     // ai: after the page showed, the chevrons turning as they did. ui.mjs remember and persist's rules, the same keys; the
     // ai: blocks slider and the labels drawn from the values as send.mjs showBlocks and showFps draw
-    // ai: them. The modules run them again later and change nothing.
+    // ai: them. The modules run them again later and change nothing. A gap between two codes kept from before the margin
+    // ai: (2026-10-23) is kept as the margin it was, (gap + 4) / 2.
     (() => { try {
       const ls = localStorage, $ = (id) => document.getElementById(id);
       for (const id of ["dev", "logs"]) { const v = ls.getItem("send:" + id); if (v !== null) $(id).open = v === "1"; }
+      { const g = ls.getItem("send:gap"); if (g !== null) { if (ls.getItem("send:margin") === null) ls.setItem("send:margin", String(Math.round((+g + 4) / 2))); ls.removeItem("send:gap"); } }
       if (ls.getItem("send:collapsed") === "1") document.body.classList.add("collapsed"); { const w = +ls.getItem("send:side"); if (w > 0) document.documentElement.style.setProperty("--side", Math.max(180, Math.min(w, innerWidth * 0.6)) + "px"); }
       for (const el of document.querySelectorAll("#dev select, #dev input, #logs select")) {
         if (el.type === "file" || "view" in el.dataset) continue;
@@ -132,12 +141,11 @@
       $("blocksOut").textContent = b ? `${b}, ${(b * 469 / 1000).toFixed(1)} KB` : "Auto";
       $("fpsOut").textContent = `${+$("fps").value}`;
       $("sizeOut").textContent = `${+$("size").value}%`;
-      $("gapOut").textContent = `${+$("gap").value} modules`;
-      $("gapRow").hidden = $("codes").value !== "2";
+      $("marginOut").textContent = `${+$("margin").value} modules`;
     } catch {} })();
     </script>
     </div>
   </div>
-  <main><canvas id="bgc"></canvas><canvas id="c"></canvas><canvas id="cg" hidden></canvas><p id="hint" class="hint">Choose files, or <button id="folderBtn" type="button">a folder</button></p><input id="file" type="file" multiple class="sr-only" aria-label="Choose files"><input id="folder" type="file" webkitdirectory class="sr-only" aria-label="Choose a folder"></main>
+  <main><canvas id="bgc"></canvas><canvas id="c"></canvas><canvas id="cg" hidden></canvas><p id="hint" class="hint">Choose files<span id="orFolder">, or <button id="folderBtn" type="button">a folder</button></span></p><div id="pick" class="pick" hidden><ul id="pickList" class="list"></ul><div class="row"><button id="addFiles" type="button">Add files</button><button id="addFolder" type="button">Add a folder</button><button id="clearPick" type="button">Clear</button></div></div><input id="file" type="file" multiple class="sr-only" aria-label="Choose files"><input id="folder" type="file" webkitdirectory class="sr-only" aria-label="Choose a folder"></main>
 </div>
 <script type="module" src="send.mjs"></script>
