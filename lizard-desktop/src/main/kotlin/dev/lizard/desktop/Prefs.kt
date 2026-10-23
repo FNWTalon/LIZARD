@@ -5,8 +5,8 @@ import java.util.prefs.Preferences
 import kotlin.math.roundToInt
 
 // ai: What the sender keeps between runs (the web's send:<id> keys): the encoder (auto, gpu, cpu), the payload (file,
-// ai: test), the blocks a frame (0 auto, else 1 to 128), pictures a second, the code's size (25 to 100%), the margin
-// ai: (Pick.QUIET to MARGIN_MAX modules), the ring (-1 the default, else 0 to 3, kept as its cells since 2026-10-10), the codes, the folds and the rail, and
+// ai: test), the blocks a frame (0 auto, else 1 to 128), pictures a second, the code's size (25 to 100%), the spacing and
+// ai: the margin (modules, Pick's bounds), the ring (-1 the default, else 0 to 3, kept as its cells since 2026-10-10), the codes, the folds and the rail, and
 // ai: whether the brightness tip was taken before a first send (SendState.requestStart). forget():
 // ai: a run that neither reads nor keeps them, every setting at its default (the test hook's, SenderTest.kt).
 object Prefs {
@@ -28,6 +28,11 @@ object Prefs {
     var margin: Int
         get() = int("margin", 0).takeIf { it > 0 } ?: int("gap", -1).takeIf { it >= 0 }?.let { (it + 2 * Pick.QUIET + 1) / 2 } ?: Pick.MARGIN_DEFAULT
         set(v) { p?.putInt("margin", v); p?.remove("gap") }
+    // ai: none kept (2026-10-23, the morning's one margin): two margins, the light between two codes then, kept at its first
+    // ai: read so a later margin does not move it
+    var spacing: Int
+        get() = int("spacing", 0).takeIf { it > 0 } ?: (if (p?.get("margin", null) != null || p?.get("gap", null) != null) 2 * margin else Pick.SPACING_DEFAULT).also { p?.putInt("spacing", it) }
+        set(v) { p?.putInt("spacing", v) }
     // ai: an index into Pick.RINGS, kept by its cells (ringCells, 2026-10-10: the 96 ring's place went to the 256, so an
     // ai: index alone would move a saved choice); a key "ring" from before is an index into 32, 64, 96, 128, its 96 the default now
     var ring: Int

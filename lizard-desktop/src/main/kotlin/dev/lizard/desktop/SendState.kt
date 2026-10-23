@@ -310,6 +310,7 @@ class SendState {
     var blocks by mutableStateOf(Prefs.blocks.coerceIn(0, 128))
     var fps by mutableStateOf(Prefs.fps.coerceIn(1, 60))
     var size by mutableStateOf(Prefs.size.coerceIn(25, 100))
+    var spacing by mutableStateOf(Prefs.spacing.coerceIn(Pick.SPACING_MIN, Pick.SPACING_MAX))
     var margin by mutableStateOf(Prefs.margin.coerceIn(Pick.QUIET, Pick.MARGIN_MAX))
     var ring by mutableStateOf(Prefs.ring.let { if (it in 0..3) it else -1 })
     var codes by mutableStateOf(if (Prefs.codes == 2) 2 else 1)
@@ -362,7 +363,7 @@ class SendState {
     val railShown get() = collapsed
     val ringIndex get() = if (ring in 0..3) ring else Pick.RING_DEFAULT
     // ai: a symbol's room in the area, device px, the Size slider's share of it (send.mjs room)
-    val room get() = Pick.room(areaW, areaH, codes, ringIndex, margin) * size / 100.0
+    val room get() = Pick.room(areaW, areaH, codes, ringIndex, spacing, margin) * size / 100.0
     // ai: the margin past the quiet zone the presenter keeps at the area's edges, for the ring configured
     private val edge get() = Pick.edgeShare(fmt?.span ?: Pick.span(ringIndex), margin).toFloat()
     // ai: what auto takes in the area now (0 while it has no size): the configured format's while sending
@@ -640,6 +641,7 @@ class SendState {
     fun chooseBlocks(b: Int) { blocks = b.coerceIn(0, 128); Prefs.blocks = blocks }
     fun chooseFps(v: Int) { fps = v.coerceIn(1, 60); Prefs.fps = fps }
     fun chooseSize(v: Int) { size = v.coerceIn(25, 100); Prefs.size = size }
+    fun chooseSpacing(v: Int) { spacing = v.coerceIn(Pick.SPACING_MIN, Pick.SPACING_MAX); Prefs.spacing = spacing }
     fun chooseMargin(v: Int) { margin = v.coerceIn(Pick.QUIET, Pick.MARGIN_MAX); Prefs.margin = margin }
     fun chooseRing(v: Int) { ring = if (v in 0..3) v else -1; Prefs.ring = ring; repick() }
     fun chooseCodes(v: Int) { codes = if (v == 2) 2 else 1; Prefs.codes = codes; repick() }
@@ -688,7 +690,7 @@ class SendState {
     private fun configure(): Boolean {
         if (h == 0L) return false
         val subch = if (blocks > 0) 8 * blocks else Pick.pick(room, ringIndex)
-        val f = Format(Pick.nFor(subch), subch, Pick.span(ringIndex), fps, codes, if (codes > 1) Pick.gapOf(margin) else 0,
+        val f = Format(Pick.nFor(subch), subch, Pick.span(ringIndex), fps, codes, if (codes > 1) Pick.gapOf(spacing) else 0,
             when (enc) { "cpu" -> 0; "gpu" -> 1; else -> 2 })
         if (f == fmt) return true
         val threads = min(8, maxOf(1, Runtime.getRuntime().availableProcessors() - 2))
@@ -696,7 +698,7 @@ class SendState {
         if (err.isNotEmpty()) { fail(err); return false }
         fmt = f
         val st = parse(Native.txStats(h))
-        System.err.println("send: LIZARD-${f.subch}${if (f.codes > 1) " x ${f.codes}" else ""}, margin $margin" +
+        System.err.println("send: LIZARD-${f.subch}${if (f.codes > 1) " x ${f.codes}, spacing $spacing" else ""}, margin $margin" +
             (if (blocks > 0) " set by hand" else " in a ${room.roundToInt()} px room") + " at ${f.fps} a second, ring ${f.span / 2}, painting on the " +
             (if (st?.str("painter") == "gpu") "GPU (${st.str("device")})" else "CPU, $threads painters") +
             (st?.str("gpuWhy").orEmpty().let { if (it.isNotEmpty()) ", not the GPU: $it" else "" }))
@@ -755,7 +757,7 @@ class SendState {
         if (!runTest) l += "file $fileSize B${sd.num("sentBytes").toLong().let { if (it in 1 until fileSize) ", $it B as sent (zstd)" else "" }}: ${sd.num("chunks").toInt()} chunk${if (sd.num("chunks").toInt() == 1) "" else "s"}, " +
             "${sd.num("lap").toInt()} data blocks a pass, BLAKE3 ${sd.str("root").take(16)}..., header in the light" +
             (sd.num("pass").let { p -> if (p >= 1) "\npass ${floor(p).toInt()}" + (sd.num("offeredKBs").let { k -> if (k > 0 && sd.num("lap") > 0) ", ${Fmt.f1(sd.num("lap") / (k * 1000 / 469))} s a pass" else "" }) else "" })
-        l += "frame ${sd.num("width").toInt()} x ${sd.num("side").toInt()} px" + (if (f.codes > 1) ", ${f.codes} side by side" else "") + ", margin $margin modules" +
+        l += "frame ${sd.num("width").toInt()} x ${sd.num("side").toInt()} px" + (if (f.codes > 1) ", ${f.codes} side by side $spacing modules apart" else "") + ", margin $margin modules" +
             (pr?.let { " on a ${it.str("surface").replace("x", " x ")} px surface" } ?: "")
         l += "${if (f.codes > 1) "${f.codes} x " else ""}$b x 469 B = ${f.codes * b * 469} B per frame"
         if (pr != null) {

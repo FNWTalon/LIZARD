@@ -100,8 +100,9 @@
           <div class="blocks"><span class="row"><span>FPS</span><span id="fpsOut">60</span></span><input id="fps" type="range" min="1" max="60" step="1" value="60" aria-label="FPS"></div>
           <!-- ai: the code's size, a share of <main>'s room, 25 to 100% (send.mjs sizeOf), so the code can be kept off a monitor's edges -->
           <div class="blocks"><span class="row"><span>Size</span><span id="sizeOut">100%</span></span><input id="size" type="range" min="25" max="100" step="1" value="100" aria-label="size"></div>
-          <!-- ai: the light round a code, 2 to 34 modules from its ring (send.mjs marginOf): two codes two margins apart, the
-               area's edges a margin from the codes -->
+          <!-- ai: the light between two codes' rings, 4 to 68 modules (send.mjs spacingOf), shown with two codes; and between a
+               ring and the area's edge, 2 to 34 (marginOf) -->
+          <div class="blocks" id="spacingRow" hidden><span class="row"><span>Spacing</span><span id="spacingOut">16 modules</span></span><input id="spacing" type="range" min="4" max="68" step="1" value="16" aria-label="spacing"></div>
           <div class="blocks"><span class="row"><span>Margin</span><span id="marginOut">8 modules</span></span><input id="margin" type="range" min="2" max="34" step="1" value="8" aria-label="margin"></div>
           <!-- ai: the ring, the 128 by default (sim/lizard_pick.mjs RING_DEFAULT; an Auto option, the same ring, until 2026-10-05) -->
           <label>Ring <select id="ring"><option value="32">32</option><option value="64">64</option><option value="128" selected>128</option><option value="256">256</option></select></label>
@@ -125,11 +126,13 @@
     // ai: after the page showed, the chevrons turning as they did. ui.mjs remember and persist's rules, the same keys; the
     // ai: blocks slider and the labels drawn from the values as send.mjs showBlocks and showFps draw
     // ai: them. The modules run them again later and change nothing. A gap between two codes kept from before the margin
-    // ai: (2026-10-23) is kept as the margin it was, (gap + 4) / 2.
+    // ai: (2026-10-23) is kept as the margin it was, (gap + 4) / 2, and the spacing, gap + 4; a margin from the morning
+    // ai: of one margin with no spacing kept, the spacing it gave, two margins.
     (() => { try {
       const ls = localStorage, $ = (id) => document.getElementById(id);
       for (const id of ["dev", "logs"]) { const v = ls.getItem("send:" + id); if (v !== null) $(id).open = v === "1"; }
-      { const g = ls.getItem("send:gap"); if (g !== null) { if (ls.getItem("send:margin") === null) ls.setItem("send:margin", String(Math.round((+g + 4) / 2))); ls.removeItem("send:gap"); } }
+      { const g = ls.getItem("send:gap"); if (g !== null) { if (ls.getItem("send:margin") === null) ls.setItem("send:margin", String(Math.round((+g + 4) / 2))); if (ls.getItem("send:spacing") === null) ls.setItem("send:spacing", String(+g + 4)); ls.removeItem("send:gap"); } }
+      { const m = ls.getItem("send:margin"); if (m !== null && ls.getItem("send:spacing") === null) ls.setItem("send:spacing", String(2 * +m)); }
       if (ls.getItem("send:collapsed") === "1") document.body.classList.add("collapsed"); { const w = +ls.getItem("send:side"); if (w > 0) document.documentElement.style.setProperty("--side", Math.max(180, Math.min(w, innerWidth * 0.6)) + "px"); }
       for (const el of document.querySelectorAll("#dev select, #dev input, #logs select")) {
         if (el.type === "file" || "view" in el.dataset) continue;
@@ -141,6 +144,8 @@
       $("blocksOut").textContent = b ? `${b}, ${(b * 469 / 1000).toFixed(1)} KB` : "Auto";
       $("fpsOut").textContent = `${+$("fps").value}`;
       $("sizeOut").textContent = `${+$("size").value}%`;
+      $("spacingOut").textContent = `${+$("spacing").value} modules`;
+      $("spacingRow").hidden = $("codes").value !== "2";
       $("marginOut").textContent = `${+$("margin").value} modules`;
     } catch {} })();
     </script>
