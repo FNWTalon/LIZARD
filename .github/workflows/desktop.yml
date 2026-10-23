@@ -231,7 +231,7 @@ jobs:
           codesign --verify --deep --strict "$app" && echo "signature verified"
           ls "$app/Contents/app/resources/"
           mkdir -p smoke
-          LIZ_SENDER_TEST="secs=14 codes=1 enc=cpu blocks=12 fps=24" "$app/Contents/MacOS/LIZARD" > smoke/out.json 2> smoke/err.txt &
+          LIZ_SENDER_TEST="secs=14 codes=1 enc=gpu blocks=12 fps=24" "$app/Contents/MacOS/LIZARD" > smoke/out.json 2> smoke/err.txt &
           pid=$!
           sleep 10
           screencapture -x smoke/screen.png || true
