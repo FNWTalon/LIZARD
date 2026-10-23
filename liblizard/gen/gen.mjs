@@ -304,6 +304,40 @@ export function patchBitcasts(path) {
   return patched;
 }
 
+// ai: The workgroup size declared as SPIR-V's WorkgroupSize builtin constant too, equal to the entry point's LocalSize, as
+// ai: glslc writes it (2026-10-23, the sender on macOS): Metal has no initializer for threadgroup memory, so MoltenVK's
+// ai: SPIRV-Cross zeroes a workgroup variable with a loop strided by gl_WorkGroupSize, which it declares only from that
+// ai: constant, and the kernel would not compile ("use of undeclared identifier 'gl_WorkGroupSize'"). Only where a
+// ai: workgroup variable has an initializer (naga's Native zeroing) and no such constant exists; 0 where nothing changed.
+export function declareWorkgroupSize(path) {
+  const b = readFileSync(path), w = new Uint32Array(b.buffer, b.byteOffset, b.byteLength / 4);
+  let size = null, uint = 0, uvec3 = 0, zeroed = false, firstType = -1, firstFn = -1;
+  for (let i = 5; i < w.length;) {
+    const n = w[i] >>> 16, op = w[i] & 0xffff;
+    if (op === 16 && w[i + 2] === 17) size = [w[i + 3], w[i + 4], w[i + 5]];                                    // OpExecutionMode LocalSize
+    else if (op === 71 && w[i + 2] === 11 && w[i + 3] === 25) return 0;                                         // BuiltIn WorkgroupSize already
+    else if (op === 21 && w[i + 2] === 32 && w[i + 3] === 0) uint = w[i + 1];                                   // OpTypeInt 32 0
+    else if (op === 59 && w[i + 3] === 4 && n === 5) zeroed = true;                                             // a Workgroup OpVariable with initializer
+    if (firstType < 0 && ((op >= 19 && op <= 39) || (op >= 41 && op <= 52) || op === 59)) firstType = i;
+    if (firstFn < 0 && op === 54) firstFn = i;                                                                  // OpFunction
+    i += n;
+  }
+  for (let i = 5; i < w.length && uint; i += w[i] >>> 16) if ((w[i] & 0xffff) === 23 && w[i + 2] === uint && w[i + 3] === 3) uvec3 = w[i + 1];
+  if (!zeroed || !size || firstType < 0 || firstFn < 0) return 0;
+  let bound = w[3];
+  const decl = [], ids = { uint: uint || bound++ };
+  if (!uint) decl.push((3 << 16) | 21, ids.uint, 32, 0);                                                        // OpTypeInt 32 0
+  ids.uvec3 = uvec3 || bound++;
+  if (!uvec3) decl.push((4 << 16) | 23, ids.uvec3, ids.uint, 3);                                                // OpTypeVector
+  const c = size.map((v) => { const id = bound++; decl.push((4 << 16) | 43, ids.uint, id, v); return id; });  // OpConstant
+  const wgs = bound++;
+  decl.push((6 << 16) | 44, ids.uvec3, wgs, ...c);                                                              // OpConstantComposite
+  const out = [...w.subarray(0, firstType), (4 << 16) | 71, wgs, 11, 25, ...w.subarray(firstType, firstFn), ...decl, ...w.subarray(firstFn)];
+  out[3] = bound;
+  writeFileSync(path, new Uint8Array(new Uint32Array(out).buffer));
+  return 1;
+}
+
 function run(cmd, args) {
   try { return execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }); }
   catch (e) { const err = new Error(`${cmd.split("/").pop()} ${args.join(" ")}: ${(e.stderr || e.stdout || e.message).toString().trim().split("\n").slice(0, 12).join("\n")}`); err.tool = true; throw err; }
@@ -312,7 +346,8 @@ function run(cmd, args) {
 // ai: One module: the web's WGSL, naga's reading of it, then wgsl2spv to SPIR-V 1.3 (its options in its main.rs) with
 // ai: naga's bound checks off (`--unchecked`: index, buffer and image, since 2026-09-30: an index out of range is
 // ai: undefined behaviour here, where WebGPU clamps it), the capabilities no compute module uses cut, validated for
-// ai: Vulkan 1.3 (workgroup memory zeroed by its initializer is 1.3's), optimised only with LIZ_SPIRV_OPT=1.
+// ai: Vulkan 1.3 (workgroup memory zeroed by its initializer is 1.3's), optimised only with LIZ_SPIRV_OPT=1. The
+// ai: sender's kernels also declare their workgroup size as the builtin constant (declareWorkgroupSize, for MoltenVK).
 function compile(h, code) {
   const [w, n, raw, spv] = [`wgsl/${h}.wgsl`, `naga/${h}.wgsl`, `spv/${h}.raw.spv`, `spv/${h}.spv`].map((p) => fileURLToPath(new URL(p, OUT)));
   writeFileSync(w, code);
@@ -320,6 +355,7 @@ function compile(h, code) {
   run(TOOLS.wgsl2spv, [n, raw, "--unchecked"]);
   stripCaps(raw);
   patchBitcasts(raw);
+  if (h.startsWith("send_")) declareWorkgroupSize(raw);
   run(TOOLS.val, ["--target-env", "vulkan1.3", raw]);
   if (OPT) { run(TOOLS.opt, ["-O", "--target-env=vulkan1.3", raw, "-o", spv]); run(TOOLS.val, ["--target-env", "vulkan1.3", spv]); }
   else writeFileSync(spv, readFileSync(raw));
