@@ -484,9 +484,19 @@ cmake -S native -B build/native && cmake --build build/native
 ./gradlew run                  # or ./gradlew packageDeb: a .deb with its own Java runtime
 ```
 
-The Windows library cross-builds from Linux, with MinGW-w64's posix-thread compilers (`x86_64-w64-mingw32-gcc-posix`
-and `g++-posix`, as Debian names them) and `JAVA_HOME` a JDK, for its JNI headers. From `lizard-desktop/`:
+On Windows the native library is built with MinGW-w64, most simply from Linux with its posix-thread compilers
+(`x86_64-w64-mingw32-gcc-posix` and `g++-posix`, as Debian names them) and `JAVA_HOME` a JDK, for its JNI headers. From
+`lizard-desktop/`:
 `cmake -S native -B build/win -DCMAKE_TOOLCHAIN_FILE=$PWD/../liblizard/cmake/mingw-w64.cmake && cmake --build build/win --target lizard_desktop`.
+Then, on Windows, with `build/win/lizard_desktop.dll` copied to `build/native/`, `gradlew.bat packageMsi` writes an
+installer (WiX, which Gradle fetches) with its own Java runtime. Windows needs a GPU driver with Vulkan.
+
+On macOS (Apple Silicon, macOS 12 or later) the code is presented through MoltenVK: `libMoltenVK.dylib` from a
+[MoltenVK release](https://github.com/KhronosGroup/MoltenVK/releases) (`MoltenVK/dynamic/dylib/macOS/`) and its
+`LICENSE`, as `MoltenVK.LICENSE`, go in `build/native/` beside the library CMake builds there (Xcode's command line
+tools); then `./gradlew packageDmg`.
+
+`.github/workflows/desktop.yml` builds all three packages from a clean checkout.
 
 **The library**: CMake presets for Linux, Windows, Android, WebAssembly and the JVM, in
 [liblizard/README.md](liblizard/README.md).

@@ -1,12 +1,15 @@
-// ai: The presenter's surface on macOS (macos.h): a CAMetalLayer over the code area's canvas, through JAWT's surface
-// ai: layers. Built with ARC. Every change to the layer tree runs on the main thread (AppKit's), dispatched without
-// ai: waiting: the AWT thread that calls in may be one the main thread waits on.
+// ai: The presenter's surface on macOS (macos.h): a CAMetalLayer over the code area's canvas, as JAWT's surface layers
+// ai: take one: set as the canvas's layer, the JDK adds it to the window's layer and moves it with the canvas's bounds
+// ai: from then on (AWTSurfaceLayers' setBounds, from the AWT thread, as here). Built with ARC.
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/QuartzCore.h>
 
 #include <dlfcn.h>
+#include <objc/runtime.h>
+
+#include <cstdio>
 
 #include <cmath>
 
@@ -18,6 +21,9 @@
 namespace lizard::mac {
 
 namespace {
+
+// ai: the canvas's surface layers, kept on the layer for its detach
+const char kSurfaceLayers = 0;
 
 // ai: the frame in the window layer's own coordinates: AWT's are from the top left, the layer's from the bottom left
 void setFrame(CAMetalLayer* l, CALayer* window, const Place& p) {
@@ -45,42 +51,51 @@ void* attachLayer(JNIEnv* e, jobject canvas, const Place& p, std::string* err) {
   const jint lock = ds->Lock(ds);
   if (lock & JAWT_LOCK_ERROR) { awt.FreeDrawingSurface(ds); *err = "the canvas's drawing surface could not be locked"; return nullptr; }
   CALayer* window = nil;
+  id<JAWT_SurfaceLayers> sl = nil;
+  CAMetalLayer* layer = nil;
   JAWT_DrawingSurfaceInfo* dsi = ds->GetDrawingSurfaceInfo(ds);
   if (dsi) {
-    id<JAWT_SurfaceLayers> sl = (__bridge id<JAWT_SurfaceLayers>)dsi->platformInfo;
+    sl = (__bridge id<JAWT_SurfaceLayers>)dsi->platformInfo;
     if (sl) window = sl.windowLayer;
+    if (window) {
+      layer = [CAMetalLayer layer];
+      layer.opaque = YES;
+      layer.backgroundColor = CGColorGetConstantColor(kCGColorWhite);
+      objc_setAssociatedObject(layer, &kSurfaceLayers, sl, OBJC_ASSOCIATION_RETAIN);
+      [CATransaction begin];
+      [CATransaction setDisableActions:YES];
+      sl.layer = layer;
+      [CATransaction commit];
+      // ai: its frame now (the JDK sets it again only when the canvas's bounds next change)
+      setFrame(layer, window, p);
+    }
     ds->FreeDrawingSurfaceInfo(dsi);
   }
   ds->Unlock(ds);
   awt.FreeDrawingSurface(ds);
-  if (!window) { *err = "the canvas's window has no layer yet"; return nullptr; }
-  CAMetalLayer* layer = [CAMetalLayer layer];
-  layer.opaque = YES;
-  layer.backgroundColor = CGColorGetConstantColor(kCGColorWhite);
-  // ai: sized before the swapchain is made on the presenter's thread; the window's height read again on the main thread
-  setFrame(layer, window, p);
-  dispatch_async(dispatch_get_main_queue(), ^{
-    [window addSublayer:layer];
-    setFrame(layer, window, p);
-  });
+  if (!layer) { *err = "the canvas's window has no layer yet"; return nullptr; }
+  std::fprintf(stderr, "lizard: macOS: the layer at %.0f, %.0f, %.0f x %.0f points, scale %.2f, in a window layer of %.0f x %.0f\n",
+               layer.frame.origin.x, layer.frame.origin.y, layer.frame.size.width, layer.frame.size.height, layer.contentsScale,
+               window.bounds.size.width, window.bounds.size.height);
   return (__bridge_retained void*)layer;
 }
 
 void placeLayer(void* handle, const Place& p) {
   if (!handle) return;
   CAMetalLayer* layer = (__bridge CAMetalLayer*)handle;
-  dispatch_async(dispatch_get_main_queue(), ^{ setFrame(layer, layer.superlayer, p); });
+  setFrame(layer, layer.superlayer, p);
 }
 
 void detachLayer(void* handle) {
   if (!handle) return;
   CAMetalLayer* layer = (__bridge_transfer CAMetalLayer*)handle;
-  dispatch_async(dispatch_get_main_queue(), ^{
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    [layer removeFromSuperlayer];
-    [CATransaction commit];
-  });
+  id<JAWT_SurfaceLayers> sl = objc_getAssociatedObject(layer, &kSurfaceLayers);
+  [CATransaction begin];
+  [CATransaction setDisableActions:YES];
+  if (sl && sl.layer == layer) sl.layer = nil;
+  else [layer removeFromSuperlayer];
+  [CATransaction commit];
+  objc_setAssociatedObject(layer, &kSurfaceLayers, nil, OBJC_ASSOCIATION_RETAIN);
 }
 
 bool layerPixels(void* handle, uint32_t* w, uint32_t* h) {

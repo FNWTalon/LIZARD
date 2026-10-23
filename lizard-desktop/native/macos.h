@@ -14,12 +14,12 @@ namespace lizard::mac {
 // ai: where the canvas lies, in points from the top left of the window's content view, and the backing scale
 struct Place { double x = 0, y = 0, w = 0, h = 0, scale = 1; };
 
-// ai: a new CAMetalLayer at p, retained, added to the canvas's window through JAWT on the main thread; null, with why in
-// ai: err, where JAWT gives no surface layers. On the calling thread JAWT is held only to read the window's layer.
+// ai: a new CAMetalLayer at p, retained, made the canvas's layer through JAWT's surface layers (the JDK then moves it with
+// ai: the canvas); null, with why in err, where JAWT gives none. On the AWT thread, JAWT locked while it is set.
 void* attachLayer(JNIEnv* e, jobject canvas, const Place& p, std::string* err);
-// ai: the layer moved and sized to p (on the main thread, no animation)
+// ai: the layer moved and sized to p (no animation)
 void placeLayer(void* layer, const Place& p);
-// ai: the layer out of its window and released (on the main thread)
+// ai: the layer out of its window and released
 void detachLayer(void* layer);
 // ai: the layer's size in pixels (its bounds by its contentsScale), for a surface that leaves the extent to the swapchain
 bool layerPixels(void* layer, uint32_t* w, uint32_t* h);
