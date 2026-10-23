@@ -25,6 +25,16 @@ namespace {
 // ai: the canvas's surface layers, kept on the layer for its detach
 const char kSurfaceLayers = 0;
 
+// ai: the window layer's sublayers on stderr, from the back: what stands over the code where it does not show
+void logTree(CALayer* window, const char* when) {
+  std::fprintf(stderr, "lizard: macOS: %s, window layer %s, %lu sublayers:\n", when, object_getClassName(window),
+               static_cast<unsigned long>(window.sublayers.count));
+  for (CALayer* l in window.sublayers)
+    std::fprintf(stderr, "lizard: macOS:   %s at %.0f, %.0f, %.0f x %.0f, z %.0f%s%s, opacity %.2f\n", object_getClassName(l),
+                 l.frame.origin.x, l.frame.origin.y, l.frame.size.width, l.frame.size.height, l.zPosition, l.hidden ? ", hidden" : "",
+                 l.opaque ? ", opaque" : "", l.opacity);
+}
+
 // ai: the frame in the window layer's own coordinates: AWT's are from the top left, the layer's from the bottom left
 void setFrame(CAMetalLayer* l, CALayer* window, const Place& p) {
   const CGFloat H = window ? window.bounds.size.height : p.y + p.h;
@@ -62,6 +72,8 @@ void* attachLayer(JNIEnv* e, jobject canvas, const Place& p, std::string* err) {
       layer.opaque = YES;
       layer.backgroundColor = CGColorGetConstantColor(kCGColorWhite);
       objc_setAssociatedObject(layer, &kSurfaceLayers, sl, OBJC_ASSOCIATION_RETAIN);
+      // ai: above Compose's own layer (skiko's, a sublayer of the same window layer, over the window's whole content)
+      layer.zPosition = 1000;
       [CATransaction begin];
       [CATransaction setDisableActions:YES];
       sl.layer = layer;
@@ -77,6 +89,8 @@ void* attachLayer(JNIEnv* e, jobject canvas, const Place& p, std::string* err) {
   std::fprintf(stderr, "lizard: macOS: the layer at %.0f, %.0f, %.0f x %.0f points, scale %.2f, in a window layer of %.0f x %.0f\n",
                layer.frame.origin.x, layer.frame.origin.y, layer.frame.size.width, layer.frame.size.height, layer.contentsScale,
                window.bounds.size.width, window.bounds.size.height);
+  logTree(window, "at the attach");
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{ logTree(window, "2 s later"); });
   return (__bridge_retained void*)layer;
 }
 
