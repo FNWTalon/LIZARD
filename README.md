@@ -417,8 +417,10 @@ has warmed delivers fewer frames. The rate also depends heavily on the sending s
 their maximum, a steady frame rate) and on the receiving camera: phone cameras through a native app work best,
 browser cameras on laptops and webcams poorly.
 
-Everything was built and run on Linux x86-64. The desktop sender has run on Linux (X11) only: its native library
-cross-builds for Windows with MinGW-w64 but has not been run there, and macOS is not supported yet.
+Everything was built and measured on Linux x86-64. The desktop sender also runs on Windows and on macOS (Apple
+Silicon, through MoltenVK); there it has been checked only on virtual machines (Windows on a software Vulkan driver,
+macOS on a build service's machine), each screenshot of it read back by the decoder, which says it sends but not how
+steadily it paces on real hardware.
 
 ## Layout
 
