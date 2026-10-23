@@ -11,12 +11,13 @@ import kotlin.system.exitProcess
 // ai: "FAIL <why>" and exits 1. Keys: secs; codes 1 or 2; enc auto, gpu or cpu; blocks 0 (auto) to 128; fps 1 to 60;
 // ai: size 25 to 100 (%); spacing 4 to 68 and margin 2 to 34 (modules); ring auto, 32, 64, 128 or 256; full 0 or 1 (the window manager's full
 // ai: screen); file=<path>[:<path>...] (files or folders in place of the test stream, as a pick or a drop
-// ai: gives them: one file as itself, else one tar, 2026-10-16); steps
+// ai: gives them: one file as itself, else one tar, 2026-10-16; the paths split on the platform's separator, ';' on
+// ai: Windows); steps
 // ai: (2026-10-04, the app's own controls, which only a hand had moved): comma separated <seconds>:<action>, from when
 // ai: the presenter first presents, each as the control does it: full (Fullscreen, F11), max (the window maximized), pause, resume, stop, start,
 // ai: size=N, spacing=N, margin=N, codes=N, blocks=N (0 auto), fps=N (each a slider's release), enc=auto|gpu|cpu, rail, press (Start as
 // ai: the button presses it: the brightness tip first where it is due), confirm and cancel (the tip's buttons), and the
-// ai: selection's (2026-10-23): add=<path>[:<path>...] (as a pick adds), remove=<an item's name> (its Remove), clear (Clear),
+// ai: selection's (2026-10-23): add=<path>[:<path>...] (as a pick adds; ';' on Windows), remove=<an item's name> (its Remove), clear (Clear),
 // ai: list (the items and the state line on stderr as "list: <name> | ... | <state line>"); a change stops the run, as
 // ai: the app's does, until a start; each logged on stderr as "step <s>: <action>" when it is taken. Each second's
 // ai: presenter stats go to stderr as "present: {...}".
@@ -59,7 +60,7 @@ class SenderTest private constructor(private val secs: Double, private val kv: M
     fun apply(s: SendState) {
         s.test = true
         kv["file"]?.let { paths ->
-            val fs = paths.split(':').filter { it.isNotEmpty() }.map { java.io.File(it) }
+            val fs = paths.split(java.io.File.pathSeparatorChar).filter { it.isNotEmpty() }.map { java.io.File(it) }
             fs.firstOrNull { !it.exists() }?.let { fail("LIZ_SENDER_TEST: file=$it is not there") }
             if (fs.isEmpty()) fail("LIZ_SENDER_TEST: file= names nothing")
             s.test = false
@@ -151,7 +152,7 @@ class SenderTest private constructor(private val secs: Double, private val kv: M
             "blocks" -> { s.chooseBlocks(n(0..128)); s.repick() }
             "fps" -> { s.chooseFps(n(1..60)); s.commitFps() }
             "enc" -> if (v in setOf("auto", "gpu", "cpu")) s.chooseEnc(v) else fail("LIZ_SENDER_TEST: step $act")
-            "add" -> { s.pick(v.split(':').filter { it.isNotEmpty() }.map { java.io.File(it) }); return true }
+            "add" -> { s.pick(v.split(java.io.File.pathSeparatorChar).filter { it.isNotEmpty() }.map { java.io.File(it) }); return true }
             "remove" -> { s.items.firstOrNull { it.name == v }?.let { s.remove(it.key) } ?: fail("LIZ_SENDER_TEST: no item $v"); return true }
             "clear" -> { s.clearPicks(); return true }
             "list" -> System.err.println("list: ${(s.items.map { "${it.name} (${if (it.dir) "${it.files} files, " else ""}${it.size} B${if (it.links > 0) ", ${it.links} links skipped" else ""})" } + s.stateLine).joinToString(" | ")}")
