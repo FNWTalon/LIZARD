@@ -57,6 +57,9 @@ void logTree(CALayer* window, const char* when) {
                  l.opaque ? ", opaque" : "", l.opacity);
 }
 
+// ai: Every change here is made on the AWT event thread, which has no run loop: Core Animation opens an implicit
+// ai: transaction there that nothing commits (an explicit begin and commit nested inside it does not), so the change sits in
+// ai: the model tree and never reaches the screen. Each call ends with a flush, which commits it.
 // ai: the frame in the window layer's own coordinates: AWT's are from the top left, the layer's from the bottom left
 void setFrame(CAMetalLayer* l, CALayer* window, const Place& p) {
   const CGFloat H = window ? window.bounds.size.height : p.y + p.h;
@@ -102,6 +105,7 @@ void* attachLayer(JNIEnv* e, jobject canvas, const Place& p, std::string* err) {
       [CATransaction commit];
       // ai: its frame now (the JDK sets it again only when the canvas's bounds next change)
       setFrame(layer, window, p);
+      [CATransaction flush];
     }
     ds->FreeDrawingSurfaceInfo(dsi);
   }
@@ -120,6 +124,7 @@ void placeLayer(void* handle, const Place& p) {
   if (!handle) return;
   CAMetalLayer* layer = (__bridge CAMetalLayer*)handle;
   setFrame(layer, layer.superlayer, p);
+  [CATransaction flush];
 }
 
 void detachLayer(void* handle) {
@@ -131,6 +136,7 @@ void detachLayer(void* handle) {
   if (sl && sl.layer == layer) sl.layer = nil;
   else [layer removeFromSuperlayer];
   [CATransaction commit];
+  [CATransaction flush];
   objc_setAssociatedObject(layer, &kSurfaceLayers, nil, OBJC_ASSOCIATION_RETAIN);
 }
 
