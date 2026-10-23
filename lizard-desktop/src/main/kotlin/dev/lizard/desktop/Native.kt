@@ -53,10 +53,11 @@ object Native {
     private val os = System.getProperty("os.name").lowercase()
     val mac = os.contains("mac")
     val windows = os.contains("win")
-    // ai: the app's cache, where each platform keeps one: the native files' folders and the bundles' tars
+    // ai: the app's cache, where each platform keeps one: the native files' folders and the bundles' tars (Windows: not
+    // ai: in %LOCALAPPDATA%\LIZARD, the MSI's folder)
     val cache: File = when {
-        windows -> File(System.getenv("LOCALAPPDATA")?.takeIf { it.isNotEmpty() } ?: System.getProperty("user.home"), "LIZARD/cache")
-        mac -> File(System.getProperty("user.home"), "Library/Caches/LIZARD")
+        windows -> File(System.getenv("LOCALAPPDATA")?.takeIf { it.isNotEmpty() } ?: System.getProperty("user.home"), "lizard-sender")
+        mac -> File(System.getProperty("user.home"), "Library/Caches/lizard-sender")
         else -> File(System.getenv("XDG_CACHE_HOME")?.takeIf { it.isNotEmpty() } ?: File(System.getProperty("user.home"), ".cache").path, "lizard-sender")
     }
 

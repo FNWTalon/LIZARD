@@ -198,10 +198,12 @@ jobs:
         working-directory: lizard-desktop
         run: ./gradlew --no-daemon packageDmg
 
-      - name: Sent into its own window, and read back
+      - name: Sent into its own window from the .dmg's app, and read back
         run: |
-          app=$(ls -d lizard-desktop/build/compose/binaries/main/app/*.app)
-          codesign -dv "$app" 2>&1 | head -5
+          hdiutil attach -nobrowse -mountpoint /tmp/lizard-dmg lizard-desktop/build/compose/binaries/main/dmg/*.dmg
+          app=$(ls -d /tmp/lizard-dmg/*.app)
+          codesign -dv "$app" 2>&1 | head -6
+          codesign --verify --deep --strict "$app" && echo "signature verified"
           mkdir -p smoke
           LIZ_SENDER_TEST="secs=14 codes=1 enc=cpu blocks=12 fps=24" "$app/Contents/MacOS/LIZARD" > smoke/out.json 2> smoke/err.txt &
           pid=$!
@@ -209,8 +211,8 @@ jobs:
           screencapture -x smoke/screen.png || true
           wait $pid; echo "exit $?" >> smoke/err.txt
           cat smoke/err.txt | tail -40; cat smoke/out.json
-          python3 -m pip install --quiet pillow
-          python3 - <<'EOF'
+          python3 -m venv /tmp/py && /tmp/py/bin/pip install --quiet pillow
+          /tmp/py/bin/python - <<'EOF'
           from PIL import Image
           im = Image.open('smoke/screen.png').convert('L')
           im.save('smoke/screen.pgm')
@@ -219,6 +221,8 @@ jobs:
           w=$(cut -d' ' -f1 smoke/size.txt); h=$(cut -d' ' -f2 smoke/size.txt)
           tail -c $((w * h)) smoke/screen.pgm > smoke/screen.luma
           find lizard-desktop/build/native -name tx_check -type f -exec {} decode smoke/screen.luma "$w" "$h" \; | tee smoke/decode.txt
+          hdiutil detach /tmp/lizard-dmg
+          grep -E -q " [1-9][0-9]* blocks verified" smoke/decode.txt
 
       - name: Named
         run: |
