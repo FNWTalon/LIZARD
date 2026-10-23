@@ -37,7 +37,8 @@ void* attachLayer(JNIEnv* e, jobject canvas, const Place& p, std::string* err) {
   using GetAWT = jboolean(JNICALL*)(JNIEnv*, JAWT*);
   const auto getAwt = reinterpret_cast<GetAWT>(dlsym(RTLD_DEFAULT, "JAWT_GetAWT"));
   JAWT awt;
-  awt.version = JAWT_VERSION_9 | JAWT_MACOSX_USE_CALAYER;
+  // ai: 9 alone: macOS's JAWT takes the layer mode as given from 1.7 on, and refuses 9 with JAWT_MACOSX_USE_CALAYER
+  awt.version = JAWT_VERSION_9;
   if (!getAwt || getAwt(e, &awt) == JNI_FALSE) { *err = "JAWT is not available"; return nullptr; }
   JAWT_DrawingSurface* ds = awt.GetDrawingSurface(e, canvas);
   if (!ds) { *err = "the canvas has no drawing surface"; return nullptr; }
