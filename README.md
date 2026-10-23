@@ -6,7 +6,7 @@ carried up to about 4 MB/s (see [Status](#status)).
 
 - **Demo:** [fosslabs.dev](https://fosslabs.dev)
 - **How it works:** [an example on video](https://www.youtube.com/shorts/pjcAtQ7GcVQ)
-- **Android app:** [0.4 (alpha)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.4)
+- **Apps:** [0.5 (alpha)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.5): the Android app, and the desktop sender for Linux, Windows and macOS
 
 ## The idea
 
