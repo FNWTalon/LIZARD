@@ -55,7 +55,7 @@ object Native {
     // ai: the stats JSON; the handle let go.
     @JvmStatic external fun txCreate(path: String, name: String, type: String): Long
     @JvmStatic external fun txError(): String
-    @JvmStatic external fun txConfigure(h: Long, n: Int, subch: Int, span: Int, fps: Int, threads: Int, painter: Int, assets: String, codes: Int, gap: Int, vsynced: Boolean): String
+    @JvmStatic external fun txConfigure(h: Long, n: Int, subch: Int, span: Int, fps: Int, threads: Int, painter: Int, assets: String, codes: Int, gap: Int, vsynced: Boolean, vsync: Boolean): String
     @JvmStatic external fun txPrepare(h: Long, assets: String): String
     // ai: the blocks a frame of subch sub-channels carries (the format's rate profile, src/focus.h focus_blocks_for)
     @JvmStatic external fun blocksFor(subch: Int): Int

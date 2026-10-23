@@ -253,7 +253,8 @@ static bool canvasTarget(JNIEnv* e, jobject canvas, lizard::PresentTarget& targe
 // ai: canvas goes or the sender is destroyed.
 // ai: place: macOS's layer over the canvas (x, y, w, h in points from the top left of the window's content, the
 // ai: backing scale; presentPlace when it moves), ignored elsewhere.
-FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jfloat size, jfloat edge, jboolean whole, jfloatArray place) {
+// ai: vsync: the monitor held at a refresh fps divides while presenting (presenter.h setVsync; presentVsync after).
+FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jfloat size, jfloat edge, jboolean whole, jboolean vsync, jfloatArray place) {
   if (!h) { setError("no sender"); return 0; }
   auto out = std::make_unique<Pres>();
   lizard::PresentTarget target;
@@ -271,6 +272,7 @@ FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jf
   o.size = size;
   o.edge = edge;
   o.whole = whole == JNI_TRUE;
+  o.vsync = vsync == JNI_TRUE;
   // ai: LIZ_PRESENT_CSV=<path>: a line a present (lizard_present --log's), for reading a run's cadence around a resize
   if (const char* c = std::getenv("LIZ_PRESENT_CSV")) o.csv = c;
   o.log = [](const std::string& m) { std::fprintf(stderr, "lizard: %s\n", m.c_str()); };
@@ -298,6 +300,7 @@ FN(void, presentPlace)(JNIEnv* e, jclass, jlong p, jfloatArray place) {
 }
 
 FN(void, presentFps)(JNIEnv*, jclass, jlong p, jint fps) { if (p) pr(p)->setFps(fps); }
+FN(void, presentVsync)(JNIEnv*, jclass, jlong p, jboolean on) { if (p) pr(p)->setVsync(on == JNI_TRUE); }
 FN(void, presentSize)(JNIEnv*, jclass, jlong p, jfloat size, jfloat edge) { if (p) pr(p)->setSize(size, edge); }
 FN(void, presentPause)(JNIEnv*, jclass, jlong p, jboolean on) { if (p) pr(p)->setPaused(on == JNI_TRUE); }
 // ai: presenter.h stats(): the last second's window as JSON

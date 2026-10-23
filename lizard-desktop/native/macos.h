@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace lizard::mac {
 
@@ -24,5 +25,14 @@ void detachLayer(void* layer);
 bool layerPixels(void* layer, uint32_t* w, uint32_t* h);
 // ai: the refresh of the screen holding the layer's window (NSScreen's maximumFramesPerSecond), 0 unknown
 double layerRefreshHz(void* layer);
+
+// ai: VSync (presenter.cpp holdMode), on the main display as layerRefreshHz reads it: its id; the refreshes of its modes
+// ai: at its size in pixels and points, usable for the desktop, with the refresh of its mode now in *now (0 where the
+// ai: mode does not say: a built-in panel); that size's mode at hz set for this app alone (kCGConfigureForAppOnly: the
+// ai: system undoes it at the app's exit); every display back at its own (CGRestorePermanentDisplayConfiguration)
+uint32_t mainDisplay();
+std::vector<double> displayRates(uint32_t display, double* now);
+bool setDisplayRate(uint32_t display, double hz);
+void restoreDisplays();
 
 }  // namespace lizard::mac

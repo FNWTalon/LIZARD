@@ -186,24 +186,11 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
     Spacer(Modifier.height(16.dp))
     Fold("Settings", s.settingsOpen, { s.toggleSettings() }) {
         Fields {
-            // ai: GPU and CPU alone (2026-10-05; an Auto chip until then): with neither chosen the encoder is auto's and
-            // ai: the chip of the painter running is marked; a click chooses that one outright
-            Field("Encoder") {
-                Chips {
-                    Chip("GPU", s.enc == "gpu" || (s.enc == "auto" && s.painterNow == "gpu")) { s.chooseEnc("gpu") }
-                    Chip("CPU", s.enc == "cpu" || (s.enc == "auto" && s.painterNow == "cpu")) { s.chooseEnc("cpu") }
-                }
-            }
+            // ai: two groups (2026-10-23): Code, what the symbol carries, then Display, how this machine paints and shows it
             Group("Code") {
                 BlocksField(s)
-                Field("FPS", "${s.fps}") { Bar(s.fps.toFloat(), 1f..60f, 58, done = { s.commitFps() }) { s.chooseFps(it.roundToInt()) } }
-                Field("Size", "${s.size}%") { Bar(s.size.toFloat(), 25f..100f, 74, done = { s.commitSize() }) { s.chooseSize(it.roundToInt()) } }
-                if (s.codes == 2) Field("Spacing", "${s.spacing} modules") {
-                    Bar(s.spacing.toFloat(), Pick.SPACING_MIN.toFloat()..Pick.SPACING_MAX.toFloat(), Pick.SPACING_MAX - Pick.SPACING_MIN - 1, done = { s.repick() }) { s.chooseSpacing(it.roundToInt()) }
-                }
-                Field("Margin", "${s.margin} modules") {
-                    Bar(s.margin.toFloat(), Pick.QUIET.toFloat()..Pick.MARGIN_MAX.toFloat(), Pick.MARGIN_MAX - Pick.QUIET - 1, done = { s.repick() }) { s.chooseMargin(it.roundToInt()) }
-                }
+                if (s.vsync) Field("FPS") { Chips { for (v in Pick.FPS) Chip("$v", s.fps == v) { s.chooseFps(v); s.commitFps() } } }
+                else Field("FPS", "${s.fps}") { Bar(s.fps.toFloat(), 1f..60f, 58, done = { s.commitFps() }) { s.chooseFps(it.roundToInt()) } }
                 // ai: the rings alone (2026-10-05; an Auto chip, the default ring, until then): none chosen marks the default
                 Field("Ring") {
                     Chips {
@@ -217,6 +204,29 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
                         Chip("One", s.codes == 1) { s.chooseCodes(1) }
                         Chip("Two", s.codes == 2) { s.chooseCodes(2) }
                     }
+                }
+            }
+            Group("Display") {
+                // ai: GPU and CPU alone (2026-10-05; an Auto chip until then): with neither chosen the encoder is auto's and
+                // ai: the chip of the painter running is marked; a click chooses that one outright
+                Field("Encoder") {
+                    Chips {
+                        Chip("GPU", s.enc == "gpu" || (s.enc == "auto" && s.painterNow == "gpu")) { s.chooseEnc("gpu") }
+                        Chip("CPU", s.enc == "cpu" || (s.enc == "auto" && s.painterNow == "cpu")) { s.chooseEnc("cpu") }
+                    }
+                }
+                Field("VSync") {
+                    Chips {
+                        Chip("On", s.vsync) { s.chooseVsync(true) }
+                        Chip("Off", !s.vsync) { s.chooseVsync(false) }
+                    }
+                }
+                Field("Size", "${s.size}%") { Bar(s.size.toFloat(), 25f..100f, 74, done = { s.commitSize() }) { s.chooseSize(it.roundToInt()) } }
+                if (s.codes == 2) Field("Spacing", "${s.spacing} modules") {
+                    Bar(s.spacing.toFloat(), Pick.SPACING_MIN.toFloat()..Pick.SPACING_MAX.toFloat(), Pick.SPACING_MAX - Pick.SPACING_MIN - 1, done = { s.repick() }) { s.chooseSpacing(it.roundToInt()) }
+                }
+                Field("Margin", "${s.margin} modules") {
+                    Bar(s.margin.toFloat(), Pick.QUIET.toFloat()..Pick.MARGIN_MAX.toFloat(), Pick.MARGIN_MAX - Pick.QUIET - 1, done = { s.repick() }) { s.chooseMargin(it.roundToInt()) }
                 }
             }
         }

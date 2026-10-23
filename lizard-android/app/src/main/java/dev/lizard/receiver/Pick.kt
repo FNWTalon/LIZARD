@@ -13,6 +13,11 @@ object Pick {
     // ai: liblizard/src/focus.c FOCUS_RING (32, 64, 128, 256 since 2026-10-10, the 96 before in the 256's place)
     private val RINGS = intArrayOf(32, 64, 128, 256)
     const val RING_DEFAULT = 2
+    // ai: the pictures a second offered under VSync (2026-10-23, a menu; the desktop sender's chips; without it a 1 to 60
+    // ai: slider): 60 and its divisors to 10, every picture a whole number of refreshes at 60 Hz
+    val FPS = listOf(60, 30, 20, 15, 10)
+    // ai: a rate kept from the slider: the nearest offered, a tie to the higher
+    fun fpsOf(v: Int) = FPS.minWith(compareBy<Int> { kotlin.math.abs(it - v) }.thenByDescending { it })
     private const val OB_MARGIN = 15
     private const val QUIET = 2
     private const val T_DISPLAY_CYCLE = 2.7

@@ -319,7 +319,45 @@ void barrier(const DevFns& D, VkCommandBuffer cb, VkImage img, VkImageLayout fro
   D.vkCmdPipelineBarrier(cb, ss, ds, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
+// ai: whether a refresh shows fps pictures a second evenly, each held a whole number of refreshes (period()'s 1%)
+bool evenAt(double hz, int fps) {
+  const double p = hz / std::max(1, fps), r = std::round(p);
+  return r >= 1 && std::fabs(p - r) < 0.01 * r;
+}
+// ai: VSync's choice among a monitor's refreshes at its size: one fps divides, the nearest 60 Hz in whole Hz (the rate
+// ai: every monitor has, and the camera's), a tie to the higher (60.00 over 59.94, 120.00 over 119.88); -1 for none
+int pickRate(const std::vector<double>& hz, int fps) {
+  int best = -1;
+  for (int k = 0; k < static_cast<int>(hz.size()); k++) {
+    if (!evenAt(hz[k], fps)) continue;
+    const long a = std::lround(std::fabs(hz[k] - 60)), b = best < 0 ? 0 : std::lround(std::fabs(hz[best] - 60));
+    if (best < 0 || a < b || (a == b && hz[k] > hz[best])) best = k;
+  }
+  return best;
+}
+
 #if LIZ_X11 && !defined(_WIN32)
+// ai: a RandR mode's refresh as xrandr reckons it; 0 for an interlaced or doubled one, which VSync never takes
+double modeRefresh(const XRRModeInfo& m) {
+  if (!m.hTotal || !m.vTotal || (m.modeFlags & (RR_Interlace | RR_DoubleScan))) return 0;
+  return static_cast<double>(m.dotClock) / (static_cast<double>(m.hTotal) * m.vTotal);
+}
+const XRRModeInfo* modeById(const XRRScreenResources* res, RRMode id) {
+  for (int k = 0; k < res->nmode; k++) if (res->modes[k].id == id) return &res->modes[k];
+  return nullptr;
+}
+// ai: the CRTC showing a point of the root window, 0 none
+RRCrtc crtcAt(Display* d, XRRScreenResources* res, int x, int y) {
+  RRCrtc found = 0;
+  for (int i = 0; i < res->ncrtc && !found; i++) {
+    XRRCrtcInfo* ci = XRRGetCrtcInfo(d, res, res->crtcs[i]);
+    if (!ci) continue;
+    if (ci->mode && x >= ci->x && x < ci->x + static_cast<int>(ci->width) && y >= ci->y && y < ci->y + static_cast<int>(ci->height)) found = res->crtcs[i];
+    XRRFreeCrtcInfo(ci);
+  }
+  return found;
+}
+
 // ai: the window the manager manages above w: the ancestor with WM_STATE (a reparenting manager puts its own frame
 // ai: between it and the root), else the root's child (no manager)
 Window topLevel(Display* d, Window w) {
@@ -422,6 +460,8 @@ struct Presenter::Impl {
   std::atomic<double> size{1.0};
   std::atomic<double> edge{0.0};
   std::atomic<bool> whole{false}, paused{false}, quit{false};
+  // ai: VSync (setVsync), and a change of it or of fps for the loop to take at its next present
+  std::atomic<bool> vsync{false}, vsyncDirty{false};
   std::mutex wakeMu;
   std::condition_variable wake;
   std::thread thread;
@@ -488,6 +528,17 @@ struct Presenter::Impl {
   uint32_t epoch = 0;
   bool resized = false, suboptimal = false, ignoreSuboptimal = false, wasPaused = false;
   VkExtent2D suboptimalAt{};
+  // ai: VSync's hold (holdMode): the monitor looked at for fps (nothing more to do until either moves), and the mode
+  // ai: this presenter set on it, to put back. where: X11 the CRTC, Windows the HMONITOR, macOS the display.
+  struct Held {
+    bool on = false, decided = false;
+    uint64_t where = 0, orig = 0, mode = 0;   // ai: X11: the mode before ours, and ours
+    double origHz = 0, hz = 0;
+    int fps = 0;
+#if defined(_WIN32)
+    std::wstring device;
+#endif
+  } held;
 
   std::mutex statsMu;
   std::string statsJson, totalsJson, error;
@@ -526,8 +577,11 @@ struct Presenter::Impl {
   VkExtent2D windowSize();
   void queryMode();
   void queryDirect();
+  void holdMode();
+  void releaseMode();
+  void rateMoved();
   void drain();
-  void window(double secs);
+  void window(double secs, bool last = false);
 };
 
 VkResult Presenter::Impl::qSubmit(const VkSubmitInfo& si, VkFence f) {
@@ -765,6 +819,194 @@ void Presenter::Impl::queryDirect() {
 #endif
 }
 
+// ai: VSync's hold (presenter.h setVsync), at a change of VSync or fps and once a second: the monitor under the window's
+// ai: centre and the refresh of its mode before ours; where fps divides that, its own mode (ours put back), else the
+// ai: mode at the same size pickRate takes, set. Each monitor and fps is looked at once (held.decided).
+void Presenter::Impl::holdMode() {
+  if (!vsync) { releaseMode(); held.decided = false; return; }
+  const int f = std::max(1, fps.load());
+  auto fpsText = [&] { return std::to_string(f) + " pictures a second"; };
+#if defined(_WIN32)
+  HMONITOR mon = MonitorFromWindow(static_cast<HWND>(target.hwnd), MONITOR_DEFAULTTONEAREST);
+  MONITORINFOEXW mi{};
+  mi.cbSize = sizeof mi;
+  if (!mon || !GetMonitorInfoW(mon, &mi)) return;
+  const uint64_t where = reinterpret_cast<uint64_t>(mon);
+  if (held.on && held.where != where) { releaseMode(); held.decided = false; }
+  if (held.decided && held.where == where && held.fps == f) return;
+  DEVMODEW cur{};
+  cur.dmSize = sizeof cur;
+  if (!EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &cur) || cur.dmDisplayFrequency <= 1) return;
+  held.decided = true; held.where = where; held.fps = f;
+  const double origHz = held.on ? held.origHz : cur.dmDisplayFrequency;
+  if (evenAt(origHz, f)) { releaseMode(); return; }
+  // ai: the monitor's modes at its size and depth, progressive (Windows lists each refresh in whole Hz: 59 is 59.94)
+  std::vector<DEVMODEW> modes;
+  std::vector<double> hz;
+  DEVMODEW dm{};
+  dm.dmSize = sizeof dm;
+  for (DWORD i = 0; EnumDisplaySettingsW(mi.szDevice, i, &dm); i++) {
+    if (dm.dmPelsWidth == cur.dmPelsWidth && dm.dmPelsHeight == cur.dmPelsHeight && dm.dmBitsPerPel == cur.dmBitsPerPel &&
+        !(dm.dmDisplayFlags & DM_INTERLACED) && dm.dmDisplayFrequency > 1) {
+      modes.push_back(dm);
+      hz.push_back(dm.dmDisplayFrequency);
+    }
+    dm = DEVMODEW{};
+    dm.dmSize = sizeof dm;
+  }
+  const int b = pickRate(hz, f);
+  if (b < 0) { say("presenter: VSync: no mode of this monitor shows " + fpsText() + " evenly"); releaseMode(); return; }
+  if (hz[b] == cur.dmDisplayFrequency) return;
+  DEVMODEW want = modes[b];
+  want.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY;
+  if (ChangeDisplaySettingsExW(mi.szDevice, &want, nullptr, CDS_FULLSCREEN, nullptr) != DISP_CHANGE_SUCCESSFUL) {
+    say("presenter: VSync: the monitor refused " + fmt("%.0f", hz[b]) + " Hz");
+    return;
+  }
+  if (!held.on) { held.origHz = origHz; held.device = mi.szDevice; }
+  held.on = true;
+  held.hz = hz[b];
+#elif LIZ_X11
+  if (randr <= 0) return;
+  XWindowAttributes wa{};
+  if (!XGetWindowAttributes(xq, xwin, &wa)) return;
+  int cx = 0, cy = 0;
+  Window child = 0;
+  XTranslateCoordinates(xq, xwin, wa.root, wa.width / 2, wa.height / 2, &cx, &cy, &child);
+  XRRScreenResources* res = XRRGetScreenResourcesCurrent(xq, wa.root);
+  if (!res) return;
+  RRCrtc crtc = crtcAt(xq, res, cx, cy);
+  if (held.on && crtc && held.where != crtc) {
+    releaseMode();
+    held.decided = false;
+    XRRFreeScreenResources(res);
+    res = XRRGetScreenResourcesCurrent(xq, wa.root);
+    if (!res) return;
+    crtc = crtcAt(xq, res, cx, cy);
+  }
+  if (!crtc || (held.decided && held.where == crtc && held.fps == f)) { XRRFreeScreenResources(res); return; }
+  XRRCrtcInfo* ci = XRRGetCrtcInfo(xq, res, crtc);
+  const XRRModeInfo* om = ci ? modeById(res, held.on ? held.orig : ci->mode) : nullptr;
+  if (!om || ci->noutput < 1) {
+    if (ci) XRRFreeCrtcInfo(ci);
+    XRRFreeScreenResources(res);
+    return;
+  }
+  held.decided = true; held.where = crtc; held.fps = f;
+  const double origHz = held.on ? held.origHz : modeRefresh(*om);
+  // ai: the CRTC's outputs: modes all of them list, at the size of the mode before ours. Xwayland's are emulated (its
+  // ai: modes scale one client's view; the refresh is the Wayland compositor's), so VSync leaves them alone.
+  std::vector<RRMode> ids;
+  std::vector<double> hz;
+  bool xwayland = false;
+  for (int o = 0; o < ci->noutput; o++) {
+    XRROutputInfo* oi = XRRGetOutputInfo(xq, res, ci->outputs[o]);
+    if (!oi) continue;
+    if (std::strncmp(oi->name, "XWAYLAND", 8) == 0) xwayland = true;
+    if (o == 0) {
+      for (int k = 0; k < oi->nmode; k++) {
+        const XRRModeInfo* m = modeById(res, oi->modes[k]);
+        const double r = m && m->width == om->width && m->height == om->height ? modeRefresh(*m) : 0;
+        if (r > 0) { ids.push_back(m->id); hz.push_back(r); }
+      }
+    } else {
+      for (size_t k = 0; k < ids.size();) {
+        bool listed = false;
+        for (int j = 0; j < oi->nmode; j++) listed = listed || oi->modes[j] == ids[k];
+        if (listed) k++;
+        else { ids.erase(ids.begin() + static_cast<long>(k)); hz.erase(hz.begin() + static_cast<long>(k)); }
+      }
+    }
+    XRRFreeOutputInfo(oi);
+  }
+  int b = -1;
+  if (xwayland) say("presenter: VSync: under Wayland the desktop sets the refresh");
+  else if (!evenAt(origHz, f) && (b = pickRate(hz, f)) < 0) say("presenter: VSync: no mode of this monitor shows " + fpsText() + " evenly");
+  if (xwayland || b < 0 || ids[static_cast<size_t>(b)] == ci->mode) {
+    XRRFreeCrtcInfo(ci);
+    XRRFreeScreenResources(res);
+    if (xwayland || b < 0) releaseMode();
+    return;
+  }
+  const RRMode want = ids[static_cast<size_t>(b)], before = ci->mode;
+  const Status st = XRRSetCrtcConfig(xq, res, crtc, CurrentTime, ci->x, ci->y, want, ci->rotation, ci->outputs, ci->noutput);
+  XRRFreeCrtcInfo(ci);
+  XRRFreeScreenResources(res);
+  if (st != RRSetConfigSuccess) {
+    say("presenter: VSync: the monitor refused " + fmt("%.2f", hz[static_cast<size_t>(b)]) + " Hz");
+    return;
+  }
+  if (!held.on) { held.orig = before; held.origHz = origHz; }
+  held.on = true;
+  held.mode = want;
+  held.hz = hz[static_cast<size_t>(b)];
+#elif defined(__APPLE__)
+  const uint32_t display = mac::mainDisplay();
+  if (held.on && held.where != display) { releaseMode(); held.decided = false; }
+  if (held.decided && held.where == display && held.fps == f) return;
+  double now = 0;
+  const std::vector<double> hz = mac::displayRates(display, &now);
+  // ai: a built-in panel's mode says 0: its refresh is the one measured
+  const double origHz = held.on ? held.origHz : now > 0 ? now : measured;
+  if (origHz <= 0) return;
+  held.decided = true; held.where = display; held.fps = f;
+  if (evenAt(origHz, f)) { releaseMode(); return; }
+  const int b = pickRate(hz, f);
+  if (b < 0) { say("presenter: VSync: no mode of this display shows " + fpsText() + " evenly"); releaseMode(); return; }
+  if (now > 0 && std::fabs(hz[static_cast<size_t>(b)] - now) < 0.01) return;
+  if (!mac::setDisplayRate(display, hz[static_cast<size_t>(b)])) {
+    say("presenter: VSync: the display refused " + fmt("%.2f", hz[static_cast<size_t>(b)]) + " Hz");
+    return;
+  }
+  if (!held.on) held.origHz = origHz;
+  held.on = true;
+  held.hz = hz[static_cast<size_t>(b)];
+#else
+  return;
+#endif
+  rateMoved();
+  say("presenter: VSync: the monitor moved from " + fmt("%.2f", held.origHz) + " to " + fmt("%.2f", held.hz) + " Hz for " + fpsText());
+}
+
+// ai: the monitor's own mode back, where it still shows ours (a mode the desktop set since is left as it is)
+void Presenter::Impl::releaseMode() {
+  if (!held.on) return;
+  held.on = false;
+#if defined(_WIN32)
+  DEVMODEW cur{};
+  cur.dmSize = sizeof cur;
+  if (EnumDisplaySettingsW(held.device.c_str(), ENUM_CURRENT_SETTINGS, &cur) && cur.dmDisplayFrequency == held.hz)
+    ChangeDisplaySettingsExW(held.device.c_str(), nullptr, nullptr, 0, nullptr);   // ai: the registry's mode, the desktop's
+#elif LIZ_X11
+  if (XRRScreenResources* res = XRRGetScreenResourcesCurrent(xq, DefaultRootWindow(xq))) {
+    if (XRRCrtcInfo* ci = XRRGetCrtcInfo(xq, res, static_cast<RRCrtc>(held.where))) {
+      if (ci->mode == held.mode &&
+          XRRSetCrtcConfig(xq, res, static_cast<RRCrtc>(held.where), CurrentTime, ci->x, ci->y, static_cast<RRMode>(held.orig), ci->rotation,
+                           ci->outputs, ci->noutput) != RRSetConfigSuccess)
+        say("presenter: VSync: the monitor's own mode could not be put back");
+      XRRFreeCrtcInfo(ci);
+    }
+    XRRFreeScreenResources(res);
+  }
+#elif defined(__APPLE__)
+  mac::restoreDisplays();
+#endif
+  rateMoved();
+  say("presenter: VSync: the monitor back at " + fmt("%.2f", held.origHz) + " Hz");
+}
+
+// ai: the monitor's refresh moved: its mode read again, the refresh measured afresh, no gap counted across the change, a
+// ai: picture due at the next present
+void Presenter::Impl::rateMoved() {
+  queryMode();
+  measured = 0;
+  early = 0;
+  firstAcq.clear();
+  win.gaps.clear();
+  epoch++;
+  due = static_cast<double>(presents);
+}
+
 void Presenter::Impl::makeChain(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D ext) {
   if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) throw std::runtime_error("the swapchain cannot be written by transfers");
   uint32_t fn = 0;
@@ -913,13 +1155,15 @@ void Presenter::Impl::drain() {
 }
 
 // ai: A second's window closed: the presents' times counted, the refresh measured, the mode read again (the window may
-// ai: have moved to another monitor), the stats made, the counts zeroed.
-void Presenter::Impl::window(double secs) {
+// ai: have moved to another monitor) and VSync's hold looked at (not in the last window, at a stop), the stats made,
+// ai: the counts zeroed.
+void Presenter::Impl::window(double secs, bool last) {
   drain();
   const double m = win.measuredHz(modeHz);
   if (m > 0) measured = m;
   queryMode();
   queryDirect();
+  if (!last) holdMode();
   const Slot* s = cur >= 0 ? &slots[cur] : nullptr;
   const double per = secs > 0 ? secs : 1;
   std::string st = "{\"shownFps\":" + fmt("%.1f", secs > 0 ? win.pictures / per : 0) +
@@ -931,6 +1175,7 @@ void Presenter::Impl::window(double secs) {
                    std::to_string(c.extent.width) + "x" + std::to_string(c.extent.height) + "\",\"frame\":\"" +
                    std::to_string(s ? s->w : 0) + "x" + std::to_string(s ? s->h : 0) + "\",\"presentWait\":" + (presentWait ? "true" : "false") +
                    (direct >= 0 ? std::string(",\"direct\":") + (direct ? "true" : "false") : std::string()) +
+                   ",\"vsync\":" + (vsync ? "true" : "false") + ",\"modeFrom\":" + fmt("%.3f", held.on ? held.origHz : 0.0) +
                    ",\"device\":\"" + esc(name) + "\",\"error\":\"";
   const double total = (nowMs() - t0) / 1000;
   std::string tt = "{\"secs\":" + fmt("%.3f", total) + ",\"pictures\":" + std::to_string(all.pictures) + ",\"presents\":" +
@@ -1152,6 +1397,7 @@ void Presenter::Impl::presentOnce(bool live) {
 void Presenter::Impl::run() {
   try {
     while (!quit) {
+      if (vsyncDirty.exchange(false)) holdMode();
       const double now = nowMs();
       if (now - lastWin >= 1000) {
         window((now - lastWin) / 1000);
@@ -1186,7 +1432,7 @@ void Presenter::Impl::teardown() {
   if (dev && D.vkQueueWaitIdle) {
     qIdle();
     // ai: the last window, however short (its secs say), and the run's totals with every present counted
-    if (t0 > 0) window((nowMs() - lastWin) / 1000);
+    if (t0 > 0) window((nowMs() - lastWin) / 1000, true);
     for (VkFence f : fences) if (f) D.vkDestroyFence(dev, f, nullptr);
     for (VkSemaphore a : acquired) if (a) D.vkDestroySemaphore(dev, a, nullptr);
     if (!cbs.empty() && pool) D.vkFreeCommandBuffers(dev, pool, static_cast<uint32_t>(cbs.size()), cbs.data());
@@ -1212,6 +1458,7 @@ void Presenter::Impl::teardown() {
   surf = VK_NULL_HANDLE;
   dev = VK_NULL_HANDLE;
   inst = VK_NULL_HANDLE;
+  releaseMode();
 #if LIZ_X11 && !defined(_WIN32)
   if (xq) XCloseDisplay(xq);
   if (dpy) XCloseDisplay(dpy);
@@ -1255,6 +1502,10 @@ std::unique_ptr<Presenter> Presenter::start(const PresentTarget& target, Sender*
   p->size = std::clamp(opt.size, 0.25, 1.0);
   p->edge = std::clamp(opt.edge, 0.0, 1.0);
   p->whole = opt.whole;
+  // ai: VSync's first look on the present thread's first turn, after start returns (a mode change takes a second or
+  // ai: two, which the caller, the UI's thread, would wait out here)
+  p->vsync = opt.vsync;
+  p->vsyncDirty = opt.vsync;
   std::promise<std::string> ready;
   std::future<std::string> started = ready.get_future();
   Impl* raw = p.get();
@@ -1282,7 +1533,14 @@ std::unique_ptr<Presenter> Presenter::start(const PresentTarget& target, Sender*
 
 Presenter::Presenter(std::unique_ptr<Impl> p) : p_(std::move(p)) {}
 
-void Presenter::setFps(int fps) { p_->fps = std::clamp(fps, 1, 240); }
+void Presenter::setFps(int fps) {
+  p_->fps = std::clamp(fps, 1, 240);
+  p_->vsyncDirty = true;
+}
+void Presenter::setVsync(bool on) {
+  p_->vsync = on;
+  p_->vsyncDirty = true;
+}
 void Presenter::setSize(double size, double edge) {
   p_->size = std::clamp(size, 0.25, 1.0);
   p_->edge = std::clamp(edge, 0.0, 1.0);
