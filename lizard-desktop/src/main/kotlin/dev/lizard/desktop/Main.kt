@@ -49,7 +49,7 @@ fun main(args: Array<String>) {
             remember { window.background = java.awt.Color.WHITE; window.contentPane.background = java.awt.Color.WHITE }
             // ai: Keys wherever the focus is (the canvas takes none), as video players have them (2026-10-23; F11 and Escape
             // ai: before): Space or K play and pause (SendState.playPause), F or F11 full screen and back, Escape out of it,
-            // ai: Ctrl+O add files where files are sent. A key held down acts once; the keys taken are taken whole (press,
+            // ai: Ctrl+O (Command+O on macOS) add files where files are sent. A key held down acts once; the keys taken are taken whole (press,
             // ai: typed, release), so Space on a focused button is the hotkey and not that button's press. While the
             // ai: brightness tip is open, Escape alone (its Cancel).
             DisposableEffect(Unit) {
@@ -69,7 +69,7 @@ fun main(args: Array<String>) {
                                 e.keyCode == KeyEvent.VK_ESCAPE && s.full -> ({ s.toggleFull() })
                                 m == 0 && (e.keyCode == KeyEvent.VK_SPACE || e.keyCode == KeyEvent.VK_K) -> ({ s.playPause() })
                                 m == 0 && e.keyCode == KeyEvent.VK_F -> ({ s.toggleFull() })
-                                m == InputEvent.CTRL_DOWN_MASK && e.keyCode == KeyEvent.VK_O -> ({ if (!s.test) s.chooseFile() })
+                                m == (if (Native.mac) InputEvent.META_DOWN_MASK else InputEvent.CTRL_DOWN_MASK) && e.keyCode == KeyEvent.VK_O -> ({ if (!s.test) s.chooseFile() })
                                 else -> null
                             }
                             if (act != null) { taken += e.keyCode; if (first) act() }

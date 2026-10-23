@@ -4,7 +4,9 @@
 // ai: that object's Response signal once the person closes the dialog, so the match is made before the call, on the
 // ai: request path the portal is documented to use (/org/freedesktop/portal/desktop/request/<sender>/<token>), and the
 // ai: bus is read until the signal comes. The portal shows the desktop's dialog (GTK's on Cinnamon and GNOME, KDE's on
-// ai: Plasma), attached to the parent window named "x11:<id>". Linux only; elsewhere every call answers "unavailable".
+// ai: Plasma), attached to the parent window named "x11:<id>". On Windows (2026-10-23) the shell's own dialog,
+// ai: IFileOpenDialog, attached to the window named "win32:<hex HWND>", its choice as paths; on macOS every call answers
+// ai: "unavailable" (AWT's FileDialog is the system's panel there).
 #include "portal.h"
 
 #if defined(__linux__)
@@ -177,12 +179,84 @@ PortalPick portalOpen(const std::string& parent, const std::string& title, bool 
 
 }  // namespace lizard
 
+#elif defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <shobjidl.h>
+
+#include <cstdlib>
+
+namespace lizard {
+
+namespace {
+std::wstring wide(const std::string& s) {
+  const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+  std::wstring w(n > 0 ? n - 1 : 0, L'\0');
+  if (n > 1) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+  return w;
+}
+std::string utf8(const wchar_t* w) {
+  const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+  std::string s(n > 0 ? n - 1 : 0, '\0');
+  if (n > 1) WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+  return s;
+}
+}  // namespace
+
+// ai: the shell's Open dialog on the calling thread (COM initialised there for the call), files or folders, several
+// ai: where multiple; the paths chosen, none when cancelled
+PortalPick portalOpen(const std::string& parent, const std::string& title, bool directory, bool multiple) {
+  PortalPick out;
+  HWND owner = nullptr;
+  if (parent.rfind("win32:", 0) == 0) owner = reinterpret_cast<HWND>(static_cast<uintptr_t>(std::strtoull(parent.c_str() + 6, nullptr, 16)));
+  const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+  if (FAILED(init) && init != RPC_E_CHANGED_MODE) { out.error = "COM could not start"; return out; }
+  IFileOpenDialog* d = nullptr;
+  if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&d)))) {
+    out.error = "no shell file dialog";
+  } else {
+    FILEOPENDIALOGOPTIONS o = 0;
+    d->GetOptions(&o);
+    o |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_FILEMUSTEXIST | FOS_NOCHANGEDIR;
+    if (directory) o |= FOS_PICKFOLDERS;
+    if (multiple) o |= FOS_ALLOWMULTISELECT;
+    d->SetOptions(o);
+    if (!title.empty()) d->SetTitle(wide(title).c_str());
+    const HRESULT shown = d->Show(owner);
+    out.answered = SUCCEEDED(shown) || shown == HRESULT_FROM_WIN32(ERROR_CANCELLED);
+    if (!out.answered) out.error = "the shell file dialog failed";
+    IShellItemArray* items = nullptr;
+    if (SUCCEEDED(shown) && SUCCEEDED(d->GetResults(&items))) {
+      DWORD n = 0;
+      items->GetCount(&n);
+      for (DWORD i = 0; i < n; i++) {
+        IShellItem* it = nullptr;
+        if (FAILED(items->GetItemAt(i, &it))) continue;
+        PWSTR path = nullptr;
+        if (SUCCEEDED(it->GetDisplayName(SIGDN_FILESYSPATH, &path))) { out.uris.push_back(utf8(path)); CoTaskMemFree(path); }
+        it->Release();
+      }
+      items->Release();
+    }
+    d->Release();
+  }
+  if (SUCCEEDED(init)) CoUninitialize();
+  return out;
+}
+
+}  // namespace lizard
+
 #else
 
 namespace lizard {
 PortalPick portalOpen(const std::string&, const std::string&, bool, bool) {
   PortalPick out;
-  out.error = "the portal is Linux's";
+  out.error = "the portal is Linux's and Windows'";
   return out;
 }
 }  // namespace lizard

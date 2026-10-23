@@ -20,9 +20,9 @@ namespace lizard {
 
 class Sender;
 
-// ai: The window the code goes in: one of them (X11: the drawable's id; Windows: the HWND, built under _WIN32 and not
-// ai: run yet).
-struct PresentTarget { unsigned long x11Window = 0; void* hwnd = nullptr; };
+// ai: The window the code goes in: one of them (X11: the drawable's id; Windows: the HWND; macOS: a CAMetalLayer over
+// ai: the canvas, macos.h).
+struct PresentTarget { unsigned long x11Window = 0; void* hwnd = nullptr; void* metalLayer = nullptr; };
 // ai: the window manager's window around an X11 window (the ancestor with WM_STATE), else the window itself
 unsigned long x11TopLevel(unsigned long window);
 // ai: the window manager's own full screen for its window (x11TopLevel's), asked (true where the request went) and read

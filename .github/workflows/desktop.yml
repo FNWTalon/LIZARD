@@ -1,0 +1,257 @@
+# The desktop sender built from a clean checkout for Linux (.deb), Windows (.msi) and macOS on Apple Silicon (.dmg).
+# On Linux once: the codec (Emscripten), naga, the GPU painter's tree, and Windows' native library cross-built with
+# MinGW-w64. Then each system builds its package with jpackage, a Java runtime inside: Linux and macOS their native
+# library too, macOS with MoltenVK beside it. The macOS build is also run once, sending into its own window, and a
+# screenshot of it read back by the C decoder. Every run keeps the packages as artifacts; on a tag they are also attached
+# to that tag's release, made as a draft pre-release where none exists.
+name: Desktop sender
+
+on:
+  push:
+    tags: ['v*']
+    branches: ['desktop-ports']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  EMSDK_VERSION: 6.0.9
+  NDK_VERSION: 27.1.12297006
+  MOLTENVK_VERSION: v1.4.2
+
+jobs:
+  tree:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Emscripten (cached)
+        id: emsdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/emsdk
+          key: emsdk-${{ env.EMSDK_VERSION }}-${{ runner.os }}
+
+      - name: Emscripten
+        if: steps.emsdk-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git ~/emsdk
+          ~/emsdk/emsdk install "$EMSDK_VERSION"
+          ~/emsdk/emsdk activate "$EMSDK_VERSION"
+
+      - name: naga and wgsl2spv (cached)
+        uses: actions/cache@v4
+        with:
+          path: |
+            liblizard/.tools
+            liblizard/gen/wgsl2spv/target
+            ~/.cargo/registry
+          key: naga-30.0.1-${{ runner.os }}-${{ hashFiles('liblizard/gen/wgsl2spv/Cargo.lock') }}
+
+      - name: The NDK's shader tools
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+
+      - name: The codec
+        run: |
+          source ~/emsdk/emsdk_env.sh
+          liblizard/build.sh
+
+      - name: naga
+        run: lizard-android/build.sh tools
+
+      - name: The GPU tree
+        run: lizard-android/build.sh gen
+
+      - name: Windows' native library (MinGW-w64)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q mingw-w64 > /dev/null
+          cmake -S lizard-desktop/native -B lizard-desktop/build/win -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/liblizard/cmake/mingw-w64.cmake" -DLIZ_JDK_INCLUDE="$JAVA_HOME/include"
+          cmake --build lizard-desktop/build/win --target lizard_desktop -j"$(nproc)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tree
+          path: |
+            liblizard/out/setup/send.json
+            liblizard/out/blobs/
+            liblizard/out/spv/send_*.spv
+            lizard-desktop/build/win/lizard_desktop.dll
+
+  linux:
+    needs: tree
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tree
+
+      - name: The native library
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q libx11-dev libxrandr-dev libxcomposite-dev libxext-dev > /dev/null
+          cmake -S lizard-desktop/native -B lizard-desktop/build/native -DCMAKE_BUILD_TYPE=Release
+          cmake --build lizard-desktop/build/native --target lizard_desktop -j"$(nproc)"
+
+      - name: The .deb
+        working-directory: lizard-desktop
+        run: ./gradlew --no-daemon packageDeb
+
+      - name: Named
+        run: |
+          v=$(cd lizard-desktop && ./gradlew -q --no-daemon releaseVersion)
+          mkdir -p dist
+          cp lizard-desktop/build/compose/binaries/main/deb/*.deb "dist/lizard-sender-$v-alpha-linux-amd64.deb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          path: dist/
+
+  windows:
+    needs: tree
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tree
+
+      - name: The native library, cross-built
+        run: |
+          mkdir -p lizard-desktop/build/native
+          mv lizard-desktop/build/win/lizard_desktop.dll lizard-desktop/build/native/
+
+      - name: The .msi
+        working-directory: lizard-desktop
+        run: ./gradlew --no-daemon packageMsi
+
+      - name: Named
+        run: |
+          v=$(cd lizard-desktop && ./gradlew -q --no-daemon releaseVersion | tr -d '\r')
+          mkdir -p dist
+          cp lizard-desktop/build/compose/binaries/main/msi/*.msi "dist/lizard-sender-$v-alpha-windows-x64.msi"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: dist/
+
+  macos:
+    needs: tree
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tree
+
+      - name: MoltenVK
+        run: |
+          mkdir -p lizard-desktop/build/native /tmp/mvk
+          gh release download "$MOLTENVK_VERSION" -R KhronosGroup/MoltenVK -p MoltenVK-macos.tar -D /tmp/mvk
+          tar xf /tmp/mvk/MoltenVK-macos.tar -C /tmp/mvk
+          lipo /tmp/mvk/MoltenVK/MoltenVK/dynamic/dylib/macOS/libMoltenVK.dylib -thin arm64 -output lizard-desktop/build/native/libMoltenVK.dylib
+          cp /tmp/mvk/MoltenVK/LICENSE lizard-desktop/build/native/MoltenVK.LICENSE
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: The native library and the C's tools
+        run: |
+          cmake -S lizard-desktop/native -B lizard-desktop/build/native -DCMAKE_BUILD_TYPE=Release
+          cmake --build lizard-desktop/build/native --target lizard_desktop tx_check -j"$(sysctl -n hw.ncpu)"
+
+      - name: The .dmg
+        working-directory: lizard-desktop
+        run: ./gradlew --no-daemon packageDmg
+
+      - name: Sent into its own window, and read back
+        run: |
+          app=$(ls -d lizard-desktop/build/compose/binaries/main/app/*.app)
+          codesign -dv "$app" 2>&1 | head -5
+          mkdir -p smoke
+          LIZ_SENDER_TEST="secs=14 codes=1 enc=cpu blocks=12 fps=24" "$app/Contents/MacOS/LIZARD" > smoke/out.json 2> smoke/err.txt &
+          pid=$!
+          sleep 10
+          screencapture -x smoke/screen.png || true
+          wait $pid; echo "exit $?" >> smoke/err.txt
+          cat smoke/err.txt | tail -40; cat smoke/out.json
+          python3 -m pip install --quiet pillow
+          python3 - <<'EOF'
+          from PIL import Image
+          im = Image.open('smoke/screen.png').convert('L')
+          im.save('smoke/screen.pgm')
+          open('smoke/size.txt', 'w').write(f'{im.width} {im.height}')
+          EOF
+          w=$(cut -d' ' -f1 smoke/size.txt); h=$(cut -d' ' -f2 smoke/size.txt)
+          tail -c $((w * h)) smoke/screen.pgm > smoke/screen.luma
+          find lizard-desktop/build/native -name tx_check -type f -exec {} decode smoke/screen.luma "$w" "$h" \; | tee smoke/decode.txt
+
+      - name: Named
+        run: |
+          v=$(cd lizard-desktop && ./gradlew -q --no-daemon releaseVersion)
+          mkdir -p dist
+          cp lizard-desktop/build/compose/binaries/main/dmg/*.dmg "dist/lizard-sender-$v-alpha-macos-arm64.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos
+          path: dist/
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-macos
+          path: smoke/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: dist
+          merge-multiple: true
+
+      - name: Attached to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --draft --prerelease --title "LIZARD ${GITHUB_REF_NAME#v} (alpha)" --notes ""
+          gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" dist/* --clobber

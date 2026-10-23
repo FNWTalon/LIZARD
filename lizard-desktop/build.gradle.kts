@@ -27,13 +27,16 @@ dependencies {
 // ai: Native.kt extracts them at start to a folder named by their hash.
 val bundled = layout.buildDirectory.dir("bundled")
 val liblizardOut = rootDir.resolve("../liblizard/out")
-val nativeLib = rootDir.resolve("build/native/" + System.getProperty("os.name").lowercase().let { os ->
-    when {
-        os.contains("win") -> "lizard_desktop.dll"
-        os.contains("mac") -> "liblizard_desktop.dylib"
-        else -> "liblizard_desktop.so"
-    }
+val hostOs = System.getProperty("os.name").lowercase()
+val onMac = hostOs.contains("mac")
+val nativeLib = rootDir.resolve("build/native/" + when {
+    hostOs.contains("win") -> "lizard_desktop.dll"
+    onMac -> "liblizard_desktop.dylib"
+    else -> "liblizard_desktop.so"
 })
+// ai: macOS (2026-10-23): MoltenVK, Vulkan over Metal, carried beside the library (its rpath is the library's own
+// ai: folder): build/native/libMoltenVK.dylib, from a MoltenVK release (the desktop workflow fetches it)
+val moltenVk = rootDir.resolve("build/native/libMoltenVK.dylib")
 // ai: the TAB blob send.json names (the paint's codes); a tree without liblizard/out or the native library (a fresh clone) still
 // ai: configures, and bundleInputs says what to run (a Sync with no files is skipped, its own actions too)
 val sendJson = liblizardOut.resolve("setup/send.json")
@@ -41,6 +44,7 @@ val tab = if (sendJson.isFile) Regex("\"blob\"\\s*:\\s*\"([^\"]+)\"").find(sendJ
 val bundleInputs by tasks.registering {
     doLast {
         if (!nativeLib.isFile) throw GradleException("no $nativeLib: cmake -S native -B build/native && cmake --build build/native")
+        if (onMac && !moltenVk.isFile) throw GradleException("no $moltenVk: libMoltenVK.dylib from a MoltenVK release (MoltenVK/dynamic/dylib/macOS)")
         if (tab == null) throw GradleException("no GPU painter's files in ${liblizardOut.normalize()}: ../lizard-android/build.sh tools, then gen")
     }
 }
@@ -48,6 +52,7 @@ val bundle by tasks.registering(Sync::class) {
     dependsOn(bundleInputs)
     into(bundled)
     from(nativeLib) { into("lizard/native") }
+    if (onMac) from(moltenVk) { into("lizard/native") }
     from(liblizardOut) {
         include(listOfNotNull("setup/send.json", tab, "spv/send_*.spv"))
         exclude("spv/*.raw.spv")
@@ -111,7 +116,31 @@ val licenseText by tasks.registering(LicenseText::class) {
     parts.from(rootDir.resolve("../LICENSE"), rootDir.resolve("../NOTICE"), lib.resolve("vendor/wirehair/LICENSE"),
         lib.resolve("core/third_party/volk/LICENSE.md"), lib.resolve("core/third_party/json.LICENSE.MIT"), lib.resolve("vendor/blake3/LICENSE_A2"),
         project.file("packaging/skia.LICENSE"), lib.resolve("vendor/fonts/inter/LICENSE.txt"), lib.resolve("vendor/fonts/jetbrains-mono/OFL.txt"))
+    // ai: macOS: MoltenVK's (Apache 2.0), carried beside the library; its release's LICENSE at build/native
+    if (onMac) { titles.add("MoltenVK (Vulkan over Metal, macOS)"); parts.from(rootDir.resolve("build/native/MoltenVK.LICENSE")) }
     out.set(layout.buildDirectory.file("license/copyright.txt"))
+}
+
+// ai: The packages' version (2026-10-23): the release's, the Android app's versionCode as the last number (1.0.4 for
+// ai: 0.4), since an MSI upgrades only to a higher version and a macOS bundle's must start at 1 or more; the releases'
+// ai: files carry the versionName (lizard-android/app/build.gradle.kts, the one place it is set).
+val androidGradle = rootDir.resolve("../lizard-android/app/build.gradle.kts").readText()
+val releaseCode = Regex("versionCode\\s*=\\s*(\\d+)").find(androidGradle)?.groupValues?.get(1) ?: "0"
+val releaseName = Regex("versionName\\s*=\\s*\"([^\"]+)\"").find(androidGradle)?.groupValues?.get(1) ?: "0"
+val releaseVersion by tasks.registering {
+    doLast { println(releaseName) }
+}
+
+// ai: macOS: the bundle signed ad hoc once jpackage has made it (no developer identity): a downloaded app whose
+// ai: signature is broken opens as "damaged", one signed ad hoc as an unverified developer's, which System Settings,
+// ai: Privacy & Security, lets through
+tasks.matching { it.name == "createDistributable" || it.name == "createReleaseDistributable" }.configureEach {
+    if (onMac) doLast {
+        outputs.files.files.flatMap { d -> d.walkTopDown().maxDepth(2).filter { it.name.endsWith(".app") }.toList() }.forEach { app ->
+            val code = ProcessBuilder("codesign", "--force", "--deep", "--sign", "-", app.path).inheritIO().start().waitFor()
+            if (code != 0) throw GradleException("codesign of ${app.name} exited $code")
+        }
+    }
 }
 
 compose.desktop {
@@ -126,7 +155,7 @@ compose.desktop {
             targetFormats(TargetFormat.Deb, TargetFormat.Msi, TargetFormat.Dmg)
             // ai: the app's name as a user reads it: LIZARD, in capitals (the launcher bin/LIZARD, the menu entry)
             packageName = "LIZARD"
-            packageVersion = "1.0.0"
+            packageVersion = "1.0.$releaseCode"
             description = "LIZARD sender"
             vendor = "LIZARD"
             // ai: the repository's license, NOTICE and the vendored code's licenses (licenseText), which jpackage writes
@@ -142,6 +171,24 @@ compose.desktop {
                 shortcut = true
                 menuGroup = "Utility"
                 appCategory = "utils"
+            }
+            // ai: Windows (2026-10-23): an MSI installed for the user alone (no administrator), its folder chosen, a
+            // ai: Start menu entry and a desktop shortcut; one upgrade code for every release, so a newer one replaces it
+            windows {
+                iconFile.set(project.file("packaging/lizard.ico"))
+                menuGroup = "LIZARD"
+                shortcut = true
+                dirChooser = true
+                perUserInstall = true
+                upgradeUuid = "5b0c1d6e-7f4a-4a7e-9a52-1c2f0e9d6b31"
+            }
+            // ai: macOS (2026-10-23): Apple Silicon, the mark on Apple's rounded body (packaging/lizard.icns)
+            macOS {
+                bundleID = "dev.lizard.sender"
+                iconFile.set(project.file("packaging/lizard.icns"))
+                dockName = "LIZARD"
+                appCategory = "public.app-category.utilities"
+                minimumSystemVersion = "12.0"
             }
         }
     }
