@@ -4,6 +4,9 @@
 // ai: chain on the same stream (ref.json); the same stream again after clear(); the stream with one wrong block (a chunk
 // ai: rejected, its symbols banned, the counts against the web's again); and the SHAKE256 test stream, every frame
 // ai: judged test, its one wrong block bad, nothing passed to the transfer. A reader thread polls progress() throughout.
+// ai: Since 2026-10-22 (a transfer kept across receivers, store.h): half the stream into one receiver and the other half
+// ai: into the next on the same directory, the file whole (a fresh receiver given that half alone is not done); a parked
+// ai: transfer forgotten by a later receiver, and the transfer in hand by its own. Each case starts on an empty folder.
 //
 //   xfer_check [dir]      dir: xfer_stream.mjs's output (default $LIZ_XFER, else build/xfer); exit 1 on any difference
 #include "xfer_rx.h"
@@ -101,6 +104,8 @@ int main(int argc, char** argv) {
   printf("stream: %zu blocks (%zu frames of 40), a lap %d blocks, joined at frame %d; file %zu B\n", stream.size() / XFER_BLOCK_BYTES,
          (stream.size() / XFER_BLOCK_BYTES + 39) / 40, ref["lap"].get<int>(), ref["join"].get<int>(), file.size());
 
+  namespace sfs = std::filesystem;
+  for (const char* d : {"/store", "/store-bad", "/store-test", "/store-resume", "/store-fresh", "/store-forget"}) sfs::remove_all(dir + d);
   {
     XferRx rx(dir + "/store", log);
     printf("file stream:\n");
@@ -133,6 +138,35 @@ int main(int argc, char** argv) {
     compare("test", r.got, ref["test"]);
     expect(r.got["test"] == r.got["frames"] && r.got["bad"] == 1 && r.p.forwarded == 0 && !r.p.header && r.p.held == 0,
            "every frame test, its one wrong block bad, none forwarded");
+  }
+  {
+    const size_t n = stream.size() / XFER_BLOCK_BYTES, half = (n / 2 / 40) * 40 * XFER_BLOCK_BYTES;
+    const std::vector<uint8_t> first(stream.begin(), stream.begin() + half), second(stream.begin() + half, stream.end());
+    const std::string id = root.substr(0, 16);
+    printf("resume: the first half into one receiver, the second into the next on the same directory:\n");
+    XferProgress p1;
+    { XferRx a(dir + "/store-resume", log); p1 = feed(a, first).p; }
+    const std::string parked = dir + "/store-resume/lizard-xfer/" + id;
+    expect(p1.header && !p1.done && p1.fraction > 0, "the first half: a header, " + std::to_string(int(p1.fraction * 100)) + "% of the file in");
+    expect(sfs::exists(parked + "/header") && sfs::exists(parked + "/meta.json") && sfs::exists(parked + "/out"), "parked in " + id + "/, its header, meta.json and output there");
+    { XferRx b(dir + "/store-resume", log); Run r = feed(b, second); fileChecks(r.p, file, root); }
+    XferProgress pf;
+    { XferRx c(dir + "/store-fresh", log); pf = feed(c, second).p; }
+    expect(!pf.done, "a fresh receiver given the second half alone: not done (" + std::to_string(int(pf.fraction * 100)) + "%)");
+    printf("forget:\n");
+    { XferRx a(dir + "/store-forget", log); feed(a, first); }
+    const std::string gone = dir + "/store-forget/lizard-xfer/" + id;
+    expect(sfs::exists(gone + "/header"), "parked by the first receiver");
+    {
+      XferRx b(dir + "/store-forget", log);
+      b.forget(root);
+      expect(!sfs::exists(gone), "forgotten by the next, before its header came: the folder gone");
+      feed(b, first);
+      expect(b.progress().header && sfs::exists(gone + "/header"), "its header again: a transfer begun afresh");
+      b.forget(root);
+      auto p = b.progress();
+      expect(!p.header && !sfs::exists(gone), "the transfer in hand forgotten: no header, the folder gone");
+    }
   }
   printf("%s\n", fails ? "FAILED" : "PASS");
   return fails ? 1 : 0;

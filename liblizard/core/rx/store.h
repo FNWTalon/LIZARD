@@ -14,15 +14,46 @@ namespace lizard {
 class Store {
  public:
   virtual ~Store() = default;
-  // ai: OpfsStore.clear, a new transfer's: what the last one held goes (a file store keeps its finished files, which the
-  // ai: app moves out; a memory store's finished file goes too, being unreachable once a new header is read)
+  // ai: The transfer in hand let go whole: what it held goes, its finished file too (a failed transfer's, the
+  // ai: receiver's Clear). A memory store's finished file goes with it, being unreachable once a new header is read.
   virtual void clear() = 0;
-  // ai: OpfsStore.removeAll: the receiver's Clear, finished files too
+  // ai: OpfsStore.removeAll: the receiver's Clear, the transfer in hand and every finished file; a file store keeps
+  // ai: the transfers it parked
   virtual void removeAll() = 0;
   // ai: A new transfer's output, length bytes; false when the store cannot hold it (error says why). begin, append and
   // ai: writeOut return false on a failure, which ends the transfer (xfer_rx_core.cpp): a file the store cannot keep
   // ai: whole is never reported received (before 2026-10-03 it was, with 0 bytes or a short file).
   virtual bool begin(uint64_t length) = 0;
+
+  // ai: Transfers kept across receivers (2026-10-22). A store that keeps them (a file store) holds each transfer in a
+  // ai: folder of its own, named by its id (the root's first 16 hex digits): its header, the manifest blocks it took,
+  // ai: each chunk's stored blocks, the output so far, the chunks verified into it, and meta.json for an app's list. A
+  // ai: header of another root parks the transfer in hand (park: its folder left as it is); its own header read again,
+  // ai: by this receiver or a later one, resumes it (open). A memory store keeps one transfer at a time, as before:
+  // ai: open is begin, park is clear, and the notes are nothing.
+  virtual bool keeps() const { return false; }
+  // ai: What a transfer's folder held from before: the manifest blocks taken (index, payload), the chunks verified into
+  // ai: the output, and the chunks with stored blocks (read() gives them). found: there was a folder to resume.
+  struct Before {
+    bool found = false;
+    std::vector<std::pair<uint32_t, std::vector<uint8_t>>> manifest;
+    std::vector<uint32_t> verified, chunks;
+  };
+  // ai: The transfer whose header is header (469 B) and whose file is length bytes: its folder resumed where it holds
+  // ai: this header, else begun afresh (begin's contract otherwise)
+  virtual bool open(const std::string& id, const uint8_t* header, uint64_t length, Before& before) { (void)id; (void)header; before = Before{}; return begin(length); }
+  // ai: a manifest block taken; a chunk verified into the output (the output's bytes made durable first, so a chunk
+  // ai: noted is a chunk on disk); the transfer's line for an app's list (meta.json)
+  virtual void noteManifest(uint32_t m, const uint8_t* payload) { (void)m; (void)payload; }
+  virtual void noteVerified(uint32_t c) { (void)c; }
+  virtual void noteMeta(const std::string& json) { (void)json; }
+  // ai: chunk c's stored blocks cut back to its first n (a park's: the blocks since the transfer's last header may be
+  // ai: the next file's, xfer_rx_core.cpp)
+  virtual void truncate(uint32_t c, uint32_t n) { (void)c; (void)n; }
+  // ai: the transfer in hand set aside for a later header of its own (a memory store lets it go)
+  virtual void park() { clear(); }
+  // ai: a parked transfer let go, by its id (the transfer in hand is the caller's to clear)
+  virtual void forget(const std::string& id) { (void)id; }
   // ai: one block of chunk c (its symbol, then the 469 B payload)
   virtual bool append(uint32_t c, uint32_t sym, const uint8_t* payload) = 0;
   // ai: chunk c's stored records (symbol then payload, 473 B each), in arrival order
@@ -43,8 +74,10 @@ class Store {
   void fail(const std::string& s) { error = s; if (log) log(s); }
 };
 
-// ai: Files under dir, emptied here (one receiver a directory): a file of stored blocks a chunk (c<k>), one output
-// ai: file a transfer (out<k>), moved to done<k>/<its name> once verified.
+// ai: Files under dir, a folder a transfer (keeps()): <id>/header, manifest (index and payload a block), c<k> (a chunk's
+// ai: stored blocks), out (the output), verified (a chunk index each), meta.json; once verified the output is
+// ai: <id>/done/<its name> and the rest goes. Opening it keeps the folders that hold a header (parked transfers) and
+// ai: lets everything else go (one receiver a directory: a finished file nobody moved, the layout before 2026-10-22).
 std::unique_ptr<Store> fileStore(const std::string& dir);
 // ai: Memory, at most maxBytes held at once (the stored blocks and the output together; 0, no cap; a chunk's fountain
 // ai: decoder, up to a chunk's size, is outside it). A transfer that would pass it ends and says so.

@@ -11,6 +11,15 @@ import kotlin.math.roundToInt
 // ai: share are the lab line's, in Developer Tools. 1 KB = 1000 B, a figure kept on its line (a no-break space), digits as the
 // ai: web prints them whatever the phone's locale. Pure: no Android in here.
 object Readout {
+    // ai: A name's stem and the ending kept whole when the line cuts it (2026-10-23, Parts.kt NameLine): a bundle's
+    // ai: " and N more.tar" (Tar.kt Bundle), else an extension of at most 10 characters, else nothing; the web's
+    // ai: ui.mjs nameParts the same
+    fun nameParts(name: String): Pair<String, String> {
+        Regex("^(.+)( and \\d+ more\\.tar)$", RegexOption.DOT_MATCHES_ALL).find(name)?.let { return it.groupValues[1] to it.groupValues[2] }
+        val dot = name.lastIndexOf('.')
+        return if (dot > 0 && name.length - dot <= 10) name.substring(0, dot) to name.substring(dot) else name to ""
+    }
+
     private const val NB = ' '
 
     // ai: "812 B", "7.4 MB", "31 MB": the unit chosen after rounding, so 999,500 B reads "1.0 MB" (ui.mjs bytes)
@@ -41,7 +50,10 @@ object Readout {
     enum class Tone { Plain, Good, Bad }
 
     // ai: line: the state; nums: the figures under it ("" for none); frac: the meter (null hides it)
-    data class Line(val text: String, val tone: Tone = Tone.Plain, val nums: String = "", val frac: Double? = null)
+    // ai: text: the line whole; a line that names a file also says so in three parts, the name between (before, name,
+    // ai: after), for Parts.kt NameLine to hold its head on one line (2026-10-23)
+    data class Line(val text: String, val tone: Tone = Tone.Plain, val nums: String = "", val frac: Double? = null,
+                    val before: String = "", val name: String? = null, val after: String = "")
 
     // ai: What the native receiver says (its stats JSON, receiver_stub.cpp's header) that the screen reads.
     data class Rx(
@@ -87,10 +99,13 @@ object Readout {
             val now = rx.goodputKBs
             // ai: the rate itself is its own line under the buttons since 2026-10-05 (Receive.kt RateLine), so not here
             val leftNow = if (now > 0) ", ${left((total - got) / (now * 1000))}" else ""
-            Line("Receiving ${rx.name}", nums = "${floor(100 * frac).toInt()}%, ${partOf(got.toDouble(), total)}$leftNow", frac = frac)
+            Line("Receiving ${rx.name}", nums = "${floor(100 * frac).toInt()}%, ${partOf(got.toDouble(), total)}$leftNow", frac = frac, before = "Receiving ", name = rx.name)
         }
-        rx.hasFile && rx.verified -> Line("Received ${rx.name}, ${if (files > 0) "$files ${if (files == 1) "file" else "files"}, " else ""}${bytes(rx.size)} in ${String.format(Locale.ROOT, "%.1f", rx.secs)}${NB}s${received(rx)}" +
-            (if (rx.sent in 1 until rx.size) ", ${bytes(rx.sent)} sent" else ""), Tone.Good, frac = 1.0)
+        rx.hasFile && rx.verified -> {
+            val after = ", ${if (files > 0) "$files ${if (files == 1) "file" else "files"}, " else ""}${bytes(rx.size)} in ${String.format(Locale.ROOT, "%.1f", rx.secs)}${NB}s${received(rx)}" +
+                (if (rx.sent in 1 until rx.size) ", ${bytes(rx.sent)} sent" else "")
+            Line("Received ${rx.name}$after", Tone.Good, frac = 1.0, before = "Received ", name = rx.name, after = after)
+        }
         // ai: nothing while the camera is off (2026-10-02); the screen draws no empty line
         !on -> Line("")
         // ai: nothing while looking (2026-10-05: "Looking for a code" until then; the rate under the buttons says it)

@@ -109,7 +109,7 @@ self.addEventListener("install", (event) => {
 // ai: window is open, since an open page may still ask it for the files its own html names.
 async function retireOldBuilds() {
   const keys = await caches.keys();
-  await Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME && key !== ASSET_CACHE).map((key) => caches.delete(key)));
+  await Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME && key !== ASSET_CACHE && key !== `${CACHE_PREFIX}share`).map((key) => caches.delete(key)));
   const windows = await self.clients.matchAll({ type: "window" });
   if (windows.length > 0) return;
   const wanted = new Set(SHELL_PATHS.filter((path) => cacheFor(path) === ASSET_CACHE).map(shellUrl));
@@ -122,8 +122,31 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(retireOldBuilds().then(() => self.clients.claim()));
 });
 
-// ai: GETs of this origin only: the rig's development logs are POSTs and pass untouched.
+// ai: The share target (2026-10-23, the manifest's share_target): what another app shares comes as a form POSTed to
+// ai: send.html?share. Its files are kept in their own cache, a URL each (the name and time in headers), the share's
+// ai: before them let go, and the page is sent to send.html?shared, which adds them to its selection and empties the
+// ai: cache (send.mjs takeShared).
+const SHARE_CACHE = `${CACHE_PREFIX}share`;
+async function shareIn(request) {
+  const form = await request.formData();
+  const files = form.getAll("files").filter((f) => typeof f !== "string");
+  const cache = await caches.open(SHARE_CACHE);
+  for (const old of await cache.keys()) await cache.delete(old);
+  let i = 0;
+  for (const f of files) {
+    const headers = { "content-type": f.type || "application/octet-stream", "x-name": encodeURIComponent(f.name || "file"), "x-modified": String(f.lastModified ?? Date.now()) };
+    await cache.put(new Request(`${SW_SCOPE}share/${i++}`), new Response(f, { headers }));
+  }
+  return Response.redirect(`${SW_SCOPE}send.html?shared`, 303);
+}
+
+// ai: GETs of this origin only, and the share target's POST: the rig's development logs are POSTs and pass untouched.
 self.addEventListener("fetch", (event) => {
+  const asked = new URL(event.request.url);
+  if (event.request.method === "POST" && asked.origin === self.location.origin && asked.searchParams.has("share") && /\/send(\.html)?$/.test(asked.pathname)) {
+    event.respondWith(shareIn(event.request));
+    return;
+  }
   if (event.request.method !== "GET") return;
   if (new URL(event.request.url).origin !== self.location.origin) return;
   event.respondWith(cacheFirst(event.request));

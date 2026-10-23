@@ -10,6 +10,9 @@
 // ai: The layouts are src/xfer.h's, with Wirehair (liblizard/vendor/wirehair, liblizard/wirehair/shim.cpp), BLAKE3 (liblizard/vendor/blake3)
 // ai: and zstd (liblizard/vendor/zstd, liblizard/zstd/shim.c; 2026-10-05: a chunk sent as a frame is decompressed on recovery, before its hash).
 // ai: A solve (Wirehair and BLAKE3 over a 4 MiB chunk) is tens of ms, run inside the block() that completes the chunk.
+// ai: Since 2026-10-22 a store that keeps transfers (store.h keeps, a file store) holds each in a folder of its own: a
+// ai: header of another root parks the transfer in hand, and its own header read again, by this receiver or a later one
+// ai: on the same directory, resumes it (its manifest, its verified chunks and the blocks of the rest from the folder).
 #pragma once
 #include <array>
 #include <atomic>
@@ -74,8 +77,11 @@ class XferRxCore {
 
   // ai: One block a judge passed on (the fountain worker's take).
   void block(const uint8_t* block473);
-  // ai: The transfer in hand and every file received let go (the page's Clear).
+  // ai: The transfer in hand and every file received let go (the page's Clear); transfers a store parked stay.
   void clearAll();
+  // ai: A transfer let go by its root (hex, or its first 16 digits): the one in hand, or one the store parked
+  // ai: (store.h keeps; 2026-10-22, an app's Delete of an unfinished transfer).
+  void forget(const std::string& root);
   void progress(XferProgress& p) const;
   // ai: Counts the headers of another root read (a new transfer), which clears a judge's dedupe.
   const std::atomic<uint64_t>& rootGen() const;

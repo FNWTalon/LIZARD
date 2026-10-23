@@ -9,12 +9,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
-import androidx.compose.runtime.rememberCoroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import androidx.compose.ui.window.WindowPlacement
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import java.awt.EventQueue
 import java.awt.KeyEventDispatcher
 import java.awt.KeyboardFocusManager
 import java.awt.event.KeyEvent
@@ -22,7 +20,9 @@ import java.awt.event.KeyEvent
 // ai: The desktop sender (2026-10-04): the web sender's page as a window (lizard-web/send.html), the
 // ai: column on the left and the code area on the right, the code drawn there by the native presenter. LIZ_SENDER_TEST
 // ai: (SenderTest.kt) runs the integration check instead of waiting for a hand.
-fun main() {
+// ai: args: files and folders to send, added to the selection (a terminal, a file manager's Open with through the
+// ai: package's desktop entry, Exec %F); a sender already running takes them instead (Instance.kt), and this launch ends.
+fun main(args: Array<String>) {
     // ai: AWT erases nothing under the presenter's pictures (the code area's canvas is the swapchain's)
     System.setProperty("sun.awt.noerasebackground", "true")
     val test = SenderTest.parse(System.getenv("LIZ_SENDER_TEST"))
@@ -30,9 +30,15 @@ fun main() {
         Prefs.forget()
         Thread.setDefaultUncaughtExceptionHandler { _, e -> SenderTest.fail("${e.javaClass.simpleName}: ${e.message}") }
     }
+    val given = args.map { java.io.File(it).absoluteFile }.filter { it.exists() }
+    if (test == null && given.isNotEmpty() && Instance.handOff(given)) return
     val s = SendState()
     try { Native.load() } catch (e: Throwable) { s.loadError = "The native library could not be loaded: ${e.message}" }
     test?.apply(s)
+    if (test == null) {
+        Instance.listen { files -> EventQueue.invokeLater { if (s.test) s.chooseTest(false); s.pick(files); s.raise?.invoke() } }
+        if (given.isNotEmpty()) { if (s.test) s.chooseTest(false); s.pick(given) }
+    }
 
     application {
         val ws = rememberWindowState(width = 1280.dp, height = 800.dp)
@@ -54,54 +60,28 @@ fun main() {
                 KeyboardFocusManager.getCurrentKeyboardFocusManager().addKeyEventDispatcher(keys)
                 onDispose { KeyboardFocusManager.getCurrentKeyboardFocusManager().removeKeyEventDispatcher(keys) }
             }
-            // ai: (the presenter keeps the window above the others while full screen: presenter.cpp applyBypass)
-            // ai: Leaving goes through Floating, which clears the full-screen state, and a window that was maximized
-            // ai: is maximized again once it is out: ComposeWindow.setPlacement(Maximized) sets the maximized bits and
-            // ai: nothing else, so "back to Maximized" left the window full screen for good (2026-10-07: Fullscreen pressed
-            // ai: in full screen goes back to the window it came from).
-            // ai: The leave is asked whatever Compose reports of the window (a leave within a second of the entry found
-            // ai: the placement not yet "Fullscreen" and did nothing), and asked again if the manager's full screen
-            // ai: arrives after it.
-            var restoreMax by remember { mutableStateOf(false) }
+            // ai: Full screen as other apps have it (2026-10-23): the window manager's own (_NET_WM_STATE_FULLSCREEN,
+            // ai: Native.windowFullscreen), which gives the window back as it was, maximized or not; the app follows the
+            // ai: manager's word, read back at each resize of the window, so its own shortcut works too. Off X11,
+            // ai: Compose's placement. Until then: Compose's placement on X11, and a leave through Floating then
+            // ai: Maximized once the bounds held still, since Compose cannot set a window maximized again.
             s.maximize = { ws.placement = WindowPlacement.Maximized }
-            LaunchedEffect(s.full) {
-                if (s.full) { if (ws.placement != WindowPlacement.Fullscreen) { before = ws.placement; ws.placement = WindowPlacement.Fullscreen } }
-                else {
-                    restoreMax = before == WindowPlacement.Maximized
-                    ws.placement = WindowPlacement.Floating
+            s.raise = { window.toFront() }
+            s.fullscreen = { on ->
+                val top = runCatching { Native.windowOf(s.canvas) }.getOrDefault(0L)
+                if (!runCatching { Native.windowFullscreen(top, on) }.getOrDefault(false)) {
+                    if (on) { before = ws.placement; ws.placement = WindowPlacement.Fullscreen } else ws.placement = before
                 }
             }
-            // ai: full screen left by the window manager's own means: once the window was full screen and is no longer
-            // ai: (2026-10-04, on a real screen: reacting to "not full screen" undid a full screen asked before the
-            // ai: manager had made it, the bypass on, then off, the column back)
-            var wasFull by remember { mutableStateOf(false) }
-            val scope = rememberCoroutineScope()
-            LaunchedEffect(ws.placement) {
-                if (ws.placement == WindowPlacement.Fullscreen) {
-                    wasFull = true
-                    if (!s.full) ws.placement = WindowPlacement.Floating
-                } else if (wasFull) {
-                    wasFull = false
-                    if (s.full) s.toggleFull()
-                    if (restoreMax) {
-                        restoreMax = false
-                        // ai: the manager unmaximizes after it leaves full screen (Floating asks both), so the window is
-                        // ai: maximized again once its bounds have held still (asked at once, the request was undone by
-                        // ai: the unmaximize still to come); its own scope, since this effect restarts at each placement
-                        scope.launch {
-                            var last = window.bounds
-                            var still = 0
-                            var waited = 0
-                            while (still < 4 && waited < 40) {
-                                delay(50)
-                                waited++
-                                val b = window.bounds
-                                if (b == last) still++ else { still = 0; last = b }
-                            }
-                            if (!s.full) ws.placement = WindowPlacement.Maximized
-                        }
+            DisposableEffect(Unit) {
+                val resized = object : java.awt.event.ComponentAdapter() {
+                    override fun componentResized(e: java.awt.event.ComponentEvent) {
+                        val top = runCatching { Native.windowOf(s.canvas) }.getOrDefault(0L)
+                        if (top != 0L) s.fullFromManager(Native.windowIsFullscreen(top))
                     }
                 }
+                window.addComponentListener(resized)
+                onDispose { window.removeComponentListener(resized) }
             }
             SendScreen(s, window)
             if (test != null) LaunchedEffect(Unit) { test.run(s) }

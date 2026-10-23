@@ -191,10 +191,13 @@ typedef struct {
 LIZ_API int liz_tx_info_get(const liz_tx *t, liz_tx_info *out);
 
 typedef struct liz_rx liz_rx;
-/* ai: Where a receiver keeps what it holds: dir NULL, in memory; else files under dir (emptied first), the finished
- * ai: file at a path under it. max_bytes (memory only, 0 no cap) bounds the stored blocks and the file together, which
- * ai: peak near twice the file's size (its bytes and every chunk's blocks before it solves); a chunk's fountain decoder,
- * ai: up to a chunk's 4 MiB, is outside it. A store that cannot hold a transfer (over the cap, a write refused, a disk
+/* ai: Where a receiver keeps what it holds: dir NULL, in memory, one transfer at a time; else files under dir, a folder
+ * ai: a transfer, the finished file at a path under it. A directory store keeps an unfinished transfer when another
+ * ai: file's header arrives, and across receivers on the same directory: its own header read again resumes it from the
+ * ai: blocks already held. Opening the directory keeps those transfers and removes anything else under it. max_bytes
+ * ai: (memory only, 0 no cap) bounds the stored blocks and the file together, which peak near twice the file's size
+ * ai: (its bytes and every chunk's blocks before it solves); a chunk's fountain decoder, up to a chunk's 4 MiB, is
+ * ai: outside it. A store that cannot hold a transfer (over the cap, a write refused, a disk
  * ai: full) ends it: never done, its reason in LIZ_META_ERROR, until a new file's header begins afresh. */
 typedef struct {
   const char *dir;
@@ -248,7 +251,7 @@ enum { LIZ_DECODER_AUTO = 0, LIZ_DECODER_GPU = 1, LIZ_DECODER_CPU = 2 };
 typedef struct {
   const char *assets;      /* ai: the GPU's kernels and nets; NULL: the CPU decoder alone */
   const char *cache_dir;   /* ai: the GPU's pipeline cache; NULL none */
-  const char *store_dir;   /* ai: where the file is kept, under store_dir/lizard-xfer (that folder emptied first) */
+  const char *store_dir;   /* ai: where the file is kept, under store_dir/lizard-xfer (unfinished transfers kept there to resume) */
   const char *device;      /* ai: a substring of the Vulkan device's name to use; NULL the first discrete, else the first */
   const char *precision;   /* ai: the GPU decoder's nets: "auto" (NULL), "int8", "f16" or "f32" */
   int decoder;             /* ai: LIZ_DECODER_* */

@@ -124,7 +124,7 @@ private fun MainActivity.devReadout(): String {
     engine.phaseState()?.let { p ->
         val pct = { x: Double -> if (x.isNaN()) "-" else "${f(100 * x, 0)}%" }
         put("lock", "${p.arm} ${p.what}: ${pct(p.a)} before, ${pct(p.b)} after; gain ${f(p.gain, 2)}, pace ${f(p.pace, 0)} us a second, ${p.delays} delays")
-    }
+    } ?: engine.lockBar?.let { put("lock", "off: $it") }
     put("heat", "thermal $heat" + (clocks?.let { ", GPU ${it.mhz} of ${it.top} MHz" } ?: "") + (powerW?.let { ", ${f(it, 1)} W" } ?: "") +
         (if (batteryC > 0) ", battery ${f(batteryC, 1)} C" else ""))
     j?.optString("error")?.takeIf { it.isNotEmpty() }?.let { put("error", it) }

@@ -29,7 +29,7 @@ import { PoolPolicy } from "./pool.mjs";
 import { logPost } from "./devlog.mjs";
 import { R_RING, SPAN, MODULES, N_FOR, NAME, PICTURE_SIZES } from "../liblizard/sim/lizard_pick.mjs";
 import { isControlId, PAYLOAD, fractionDone } from "../liblizard/sim/xfer.mjs";
-import { remember, persist, restoreSaved, say, meter, bytes, rate, left, about, registerApp, collapser, sideResizer } from "./ui.mjs";
+import { remember, persist, restoreSaved, say, meter, bytes, rate, left, about, registerApp, collapser, sideResizer, sayName } from "./ui.mjs";
 import { open as openKept, list as listKept, watch as watchLibrary } from "./library.mjs";
 const $ = (id) => document.getElementById(id), video = $("v"), shot = $("shot"), sctx = shot.getContext("2d", { willReadFrequently: true });
 // ai: Settings and Developer Tools (the Developer panel until 2026-10-01) open as they were left, a phone session
@@ -179,7 +179,7 @@ function plainVerdict(text) {
 }
 function showState() {
   const on = !!track, h = xferNow?.header, go = $("go"), offered = !!h && xferNow.done && h.root === ui.received?.root;
-  let line, tone = null, frac = null, nums = "";
+  let line, tone = null, frac = null, nums = "", named = null;   // ai: named: a line that names a file, for sayName
   const loading = on && !ui.err && !ui.starting && !answered;
   // ai: the test stream first while the camera reads it, the newer of it and a file's frames (2026-10-05): it takes over
   // ai: from a file received or in progress, whose line, buttons and rail squares come back once the camera is on its frames
@@ -190,7 +190,7 @@ function showState() {
   else if (testing) line = "Reading the test stream";   // ai: its rate the rail's and Developer Tools' (#lab) since 2026-10-05
   else if (on && h && !offered) {
     frac = fractionDone(xferNow);
-    line = `Receiving ${h.name || "a file"}`;
+    line = `Receiving ${h.name || "a file"}`; named = ["Receiving ", h.name || "a file", ""];
     // ai: the last second's new bytes a second (recentKBs) and nothing else: the average since the first decode (avgAt)
     // ai: stood beside it as "(M KB/s average)" from 2026-09-29 to 2026-09-30 and is the stats row's alone since (avgKBs:
     // ai: after a wait it often read wrong); the time left is what is missing at that rate
@@ -205,11 +205,12 @@ function showState() {
     // ai: the speed the transfer ran at (2026-10-10, the Android app's Readout.received): the bytes the light carried over
     // ai: its time, none where the time reads 0.0 s
     const speed = r.secs >= 0.05 ? `, ${nb(rate((r.sent || r.n) / r.secs / 1000))}` : "";
-    line = `Received ${r.name}, ${nb(bytes(r.n))} in ${nb(`${r.secs.toFixed(1)} s`)}${speed}${r.sent && r.sent < r.n ? `, ${nb(bytes(r.sent))} sent` : ""}`; tone = "good"; frac = 1;
+    const after = `, ${nb(bytes(r.n))} in ${nb(`${r.secs.toFixed(1)} s`)}${speed}${r.sent && r.sent < r.n ? `, ${nb(bytes(r.sent))} sent` : ""}`;
+    line = `Received ${r.name}${after}`; named = ["Received ", r.name, after]; tone = "good"; frac = 1;
   } else if (!on) line = "";   // ai: idle says nothing (2026-10-02: an instruction that obvious only takes space)
   else line = "Looking for a code";   // ai: a word read with no file yet says this too (2026-10-05; "Found the code, waiting for the file" before)
   // ai: rewritten only when it changes: #state is a live region, and a screen reader reads out every rewrite
-  if (`${tone} ${line}` !== stateShown) { stateShown = `${tone} ${line}`; say($("state"), line, tone); }
+  if (`${tone} ${line}` !== stateShown) { stateShown = `${tone} ${line}`; if (named) sayName($("state"), ...named, tone); else say($("state"), line, tone); }
   meter($("meter"), frac);
   $("nums").textContent = nums;
   $("lab").textContent = on ? ui.lab : "";

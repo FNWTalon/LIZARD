@@ -251,4 +251,27 @@ await test("non-GET and cross-origin requests are not intercepted", async () => 
   assert.strictEqual(await scope.request("https://other.test/x.css"), undefined);
   assert.strictEqual(await scope.request(`${ORIGIN}/api/stats`, "no-cors", "POST"), undefined, "the dev log's POSTs pass");
 });
+await test("a share (POST to send.html?share) is kept for the page and redirected to send.html?shared", async () => {
+  const scope = installedScope();
+  await scope.install();
+  await scope.activate();
+  const form = new FormData();
+  form.append("files", new File([new Uint8Array([1, 2, 3])], "a b.bin", { type: "application/x-test", lastModified: 1700000000000 }));
+  form.append("files", new File(["hello"], "c.txt", { type: "text/plain" }));
+  let responded;
+  scope.listeners.fetch({ request: new Request(`${ORIGIN}/send.html?share`, { method: "POST", body: form }), respondWith: (p) => { responded = p; }, waitUntil() {} });
+  const r = await responded;
+  assert.strictEqual(r.status, 303);
+  assert.strictEqual(r.headers.get("location"), `${ORIGIN}/send.html?shared`);
+  const kept = scope.caches.get("lizard-share");
+  assert.strictEqual(kept?.size, 2, "both files kept");
+  const first = kept.get(`${ORIGIN}/share/0`);
+  assert.strictEqual(decodeURIComponent(first.headers.get("x-name")), "a b.bin");
+  // ai: a multipart form carries no file's time: the one parsed out is its arrival's
+  assert.ok(Number(first.headers.get("x-modified")) > 0, "a time kept");
+  assert.deepStrictEqual([...new Uint8Array(await first.clone().arrayBuffer())], [1, 2, 3]);
+  // ai: a later build's activation keeps a share the page has not taken yet
+  await scope.activate();
+  assert.strictEqual(scope.caches.get("lizard-share")?.size, 2, "the share survives a build's activation");
+});
 console.log(`service worker self-test passed (${passed} checks).`);

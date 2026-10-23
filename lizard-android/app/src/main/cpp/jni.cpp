@@ -195,6 +195,15 @@ extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_cameraClosed(J
 // ai: the transfer in hand forgotten, and the held word with it (Receiver::clear): the app's delete of the file it shows
 // ai: (2026-10-07), so the same file in the light is received anew, as the web's Clear did
 extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_clear(JNIEnv*, jclass, jlong h) { if (h) rx(h)->clear(); }
+// ai: one transfer forgotten by its root, the one in hand or one parked unfinished (Receiver::forget, 2026-10-22): Home's
+// ai: Delete of an unfinished transfer
+extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_forget(JNIEnv* e, jclass, jlong h, jstring root) {
+  if (!h || !root) return;
+  const char* s = e->GetStringUTFChars(root, nullptr);
+  std::string r(s ? s : "");
+  if (s) e->ReleaseStringUTFChars(root, s);
+  rx(h)->forget(r);
+}
 
 // ai: The receiver's destructor releases every frame it still holds (on this thread or its own) before it returns.
 extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_destroy(JNIEnv*, jclass, jlong h) {

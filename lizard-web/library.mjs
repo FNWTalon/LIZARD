@@ -56,3 +56,31 @@ export function watch(cb) {
   bc?.addEventListener("message", () => cb());
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") cb(); });
 }
+
+// ai: Transfers begun and not finished (2026-10-22): the fountain worker's folders under lizard-xfer (fountain-worker.mjs
+// ai: OpfsStore), one a transfer by its root's first 16 hex digits, each with meta.json ({ name, type, length, chunks,
+// ai: verified, root, fraction, sent, sentIn }); a receiver resumes one when its file is in the light again. Newest
+// ai: first: { ...meta, id, at }, at when its meta.json was last written.
+export const XFER = "lizard-xfer";
+const XFER_CHANNEL = "lizard-xfer";
+export async function unfinished() {
+  let d;
+  try { d = await (await navigator.storage.getDirectory()).getDirectoryHandle(XFER); } catch { return []; }
+  const out = [];
+  for await (const [id, h] of d.entries()) {
+    if (h.kind !== "directory") continue;
+    try {
+      await h.getFileHandle("header");
+      const f = await (await h.getFileHandle("meta.json")).getFile();
+      out.push({ ...JSON.parse(await f.text()), id, at: f.lastModified });
+    } catch {}
+  }
+  return out.sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+}
+// ai: An unfinished transfer let go: its folder removed, or, where an open receiver holds its files (OPFS refuses the
+// ai: removal then), that receiver's fountain worker asked to forget it (fountain-worker.mjs listens on the channel).
+export async function forgetUnfinished(id) {
+  try { await (await (await navigator.storage.getDirectory()).getDirectoryHandle(XFER)).removeEntry(id, { recursive: true }); }
+  catch (e) { if (e?.name === "NotFoundError") return; if (typeof BroadcastChannel !== "function") throw e; const bc = new BroadcastChannel(XFER_CHANNEL); bc.postMessage({ forget: id }); bc.close(); }
+  changed();
+}

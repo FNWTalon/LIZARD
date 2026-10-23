@@ -70,6 +70,9 @@ class Receiver {
   virtual std::string file() = 0;
   // ai: Forget the transfer and its file (the page's Clear).
   virtual void clear() = 0;
+  // ai: Forget one transfer by its root, the one in hand or one parked unfinished (2026-10-22, an app's Delete of an
+  // ai: unfinished transfer; xfer_rx.h forget). Done when it returns.
+  virtual void forget(const std::string& root) { (void)root; }
   // ai: Whether frames must come with their luma plane (the CPU decoder reads bytes; the GPU's takes the camera's
   // ai: buffer in place): the caller sets its camera up by this.
   virtual bool wantsLuma() const = 0;

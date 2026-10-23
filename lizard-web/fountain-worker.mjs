@@ -20,45 +20,114 @@ let rx = null, store = null, chain = Promise.resolve(), lastPost = 0, posted = n
 const REC = ID_BYTES + PAYLOAD, DIR = "lizard-xfer", LIVE_BLOCKS = 4096, HOLD_BLOCKS = 1024;
 let sinceHeader = Infinity, held = [], heldAt = 0;
 
-// Blocks and the file on disk, through sync access handles (a dedicated worker's only). One file of stored blocks a
-// chunk, removed once the chunk is verified, and one output file a transfer, written at each chunk's offset. The
-// directory is emptied when this worker starts: one receiver an origin, and what a page load before this one left
-// there is nobody's.
+// Blocks and the file on disk, through sync access handles (a dedicated worker's only).
+// ai: A folder a transfer under lizard-xfer, its id the root's first 16 hex digits (2026-10-22: kept across page loads,
+// ai: liblizard/core/rx/store.h's file store in OPFS): header, manifest (index and payload a block), c<k> (a chunk's
+// ai: stored blocks, removed once the chunk is verified), out (the file, written at each chunk's offset), verified (a
+// ai: chunk index each) and meta.json, which Home lists. A header of another root parks the transfer in hand (its
+// ai: handles closed, its folder left); its own header read again resumes it, in this page or a later one. Opening the
+// ai: store keeps the folders that hold a header and removes everything else (a finished file nobody filed, the layout
+// ai: before). A finished transfer leaves its file alone in its folder, which fileAway moves out and removes.
+const u32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+const put32 = (b, o, v) => { b[o] = v & 255; b[o + 1] = (v >>> 8) & 255; b[o + 2] = (v >>> 16) & 255; b[o + 3] = v >>> 24; };
+async function readAll(dir, name) {
+  try { return new Uint8Array(await (await (await dir.getFileHandle(name)).getFile()).arrayBuffer()); } catch { return null; }
+}
+async function hasFile(dir, name) { try { await dir.getFileHandle(name); return true; } catch { return false; } }
 class OpfsStore {
   static async open() {
     const root = await navigator.storage.getDirectory();
-    await root.removeEntry(DIR, { recursive: true }).catch(() => {});
     const dir = await root.getDirectoryHandle(DIR, { create: true });
     // Proved here, not assumed: a browser can have the directory and refuse the handle (a private window, an old engine).
     const probe = await (await dir.getFileHandle("probe", { create: true })).createSyncAccessHandle();
     probe.close();
     await dir.removeEntry("probe");
+    for await (const [name, h] of dir.entries())
+      if (h.kind !== "directory" || !(await hasFile(h, "header"))) await dir.removeEntry(name, { recursive: true }).catch(() => {});
     return new OpfsStore(dir);
   }
-  constructor(dir) { this.kind = "opfs"; this.dir = dir; this.h = new Map(); this.out = null; this.rec = new Uint8Array(REC); this.n = 0; }
+  constructor(dir) { this.kind = "opfs"; this.keeps = true; this.dir = dir; this.cur = null; this.id = ""; this.h = new Map(); this.out = null; this.man = null; this.ver = null; this.rec = new Uint8Array(REC); this.n = 0; }
   async handle(c) {
     let e = this.h.get(c);
-    if (!e) { e = { h: await (await this.dir.getFileHandle(`c${c}`, { create: true })).createSyncAccessHandle(), size: 0 }; e.h.truncate(0); this.h.set(c, e); }
+    if (!e) { e = { h: await (await this.cur.getFileHandle(`c${c}`, { create: true })).createSyncAccessHandle(), size: 0 }; e.h.truncate(0); this.h.set(c, e); }
     return e;
   }
-  // A finished file is left where it is, since the page's link reads it; only what an unfinished transfer held goes.
-  async clear() {
-    for (const c of [...this.h.keys()]) await this.drop(c);
-    if (this.out && !this.out.done) { this.out.h.close(); await this.dir.removeEntry(this.out.name).catch(() => {}); }
-    this.out = null;
+  async sync(name) { const h = await (await this.cur.getFileHandle(name, { create: true })).createSyncAccessHandle(); return { h, size: h.getSize() }; }
+  closeAll() {
+    for (const e of this.h.values()) e.h.close();
+    this.h.clear();
+    for (const k of ["out", "man", "ver"]) { if (this[k]) { this[k].h.flush(); this[k].h.close(); } this[k] = null; }
+    this.cur = null; this.id = "";
   }
-  async begin(length) { const name = `out${this.n++}`, h = await (await this.dir.getFileHandle(name, { create: true })).createSyncAccessHandle(); h.truncate(length); this.out = { name, h, done: false }; }
+  async open(id, header, length) {
+    this.closeAll();
+    let d = await this.dir.getDirectoryHandle(id, { create: true });
+    const had = await readAll(d, "header");
+    const same = had && had.length === header.length && had.every((v, i) => v === header[i]) && (await hasFile(d, "out"));
+    if (!same) {
+      await this.dir.removeEntry(id, { recursive: true }).catch(() => {});
+      d = await this.dir.getDirectoryHandle(id, { create: true });
+      this.cur = d; this.id = id;
+      this.out = await this.sync("out"); this.out.h.truncate(length);
+      const hh = await this.sync("header"); hh.h.write(header, { at: 0 }); hh.h.flush(); hh.h.close();   // ai: last, so a folder with one holds its output
+      return { found: false };
+    }
+    this.cur = d; this.id = id;
+    this.out = await this.sync("out");
+    const m = (await readAll(d, "manifest")) ?? new Uint8Array(0), v = (await readAll(d, "verified")) ?? new Uint8Array(0);
+    const manifest = [], verified = [], chunks = [];
+    for (let o = 0; o + REC <= m.length; o += REC) manifest.push([u32(m, o), m.slice(o + ID_BYTES, o + REC)]);
+    for (let o = 0; o + 4 <= v.length; o += 4) verified.push(u32(v, o));
+    for await (const [name, h] of d.entries()) {
+      if (h.kind !== "file" || !/^c\d+$/.test(name)) continue;
+      const c = +name.slice(1), sh = await h.createSyncAccessHandle(), size = sh.getSize() - (sh.getSize() % REC);
+      sh.truncate(size);   // ai: a record cut short by a closed page goes, so the next lands on a record's boundary
+      this.h.set(c, { h: sh, size });
+      chunks.push(c);
+    }
+    return { found: true, manifest, verified, chunks };
+  }
+  async begin(length) { return this.open(`t${this.n++}`, new Uint8Array(0), length); }
+  // ai: the transfer in hand let go whole, its folder too
+  async clear() { const id = this.id; this.closeAll(); if (id) await this.dir.removeEntry(id, { recursive: true }).catch(() => {}); }
+  async park() { this.closeAll(); }
+  async forget(id) { if (id === this.id) return this.clear(); await this.dir.removeEntry(id, { recursive: true }).catch(() => {}); }
   async append(c, sym, bytes) {
     const e = await this.handle(c), r = this.rec;
-    r[0] = sym & 255; r[1] = (sym >>> 8) & 255; r[2] = (sym >>> 16) & 255; r[3] = sym >>> 24;
+    put32(r, 0, sym);
     r.set(bytes.subarray(0, PAYLOAD), ID_BYTES);
     e.h.write(r, { at: e.size }); e.size += REC;
   }
   async read(c) { const e = this.h.get(c), b = new Uint8Array(e?.size ?? 0); if (e) e.h.read(b, { at: 0 }); return b; }
-  async drop(c) { const e = this.h.get(c); if (!e) return; e.h.close(); this.h.delete(c); await this.dir.removeEntry(`c${c}`).catch(() => {}); }
+  async drop(c) { const e = this.h.get(c); if (!e) return; e.h.close(); this.h.delete(c); await this.cur.removeEntry(`c${c}`).catch(() => {}); }
+  async truncate(c, n) { const e = this.h.get(c); if (!e || e.size <= n * REC) return; e.h.truncate(n * REC); e.size = n * REC; }
   async writeOut(off, bytes) { this.out.h.write(bytes, { at: off }); }
   async readOut(off, len) { const b = new Uint8Array(len); this.out.h.read(b, { at: off }); return b; }
-  async finish() { this.out.h.flush(); this.out.h.close(); this.out.done = true; return { opfs: [DIR, this.out.name] }; }
+  async noteManifest(m, bytes) {
+    this.man ??= await this.sync("manifest");
+    const r = new Uint8Array(REC); put32(r, 0, m); r.set(bytes.subarray(0, PAYLOAD), ID_BYTES);
+    this.man.h.write(r, { at: this.man.size }); this.man.size += REC;
+  }
+  // ai: the output flushed before the chunk is noted: a chunk noted is a chunk on the disk
+  async noteVerified(c) {
+    this.out.h.flush();
+    this.ver ??= await this.sync("verified");
+    const r = new Uint8Array(4); put32(r, 0, c);
+    this.ver.h.write(r, { at: this.ver.size }); this.ver.size += 4; this.ver.h.flush();
+  }
+  async noteMeta(json) {
+    if (!this.cur) return;
+    const h = await (await this.cur.getFileHandle("meta.json", { create: true })).createSyncAccessHandle(), b = ENC.encode(json);
+    h.truncate(0); h.write(b, { at: 0 }); h.flush(); h.close();
+  }
+  // ai: the file whole: what was kept to resume goes, the file left in the folder for fileAway to move
+  async finish() {
+    const id = this.id, d = this.cur;
+    this.out.h.flush(); this.out.h.close(); this.out = null;
+    this.closeAll();
+    for (const f of ["header", "manifest", "verified", "meta.json"]) await d.removeEntry(f).catch(() => {});
+    return { opfs: [DIR, id, "out"] };
+  }
   held() { return 0; }
 }
 
@@ -67,7 +136,7 @@ async function chunked(c) {
   if (c.store === "memory" && store?.kind !== "memory") { store = new MemoryStore(); store.why = "asked for (?store=memory)"; rx = null; }
   if (!store) try { store = await OpfsStore.open(); } catch (e) { store = new MemoryStore(); store.why = String(e?.message ?? e); }
   rx ??= new XferReceiver({ M, Decoder, store, Z });   // ai: Z decompresses a chunk sent as a zstd frame (2026-10-05)
-  await rx.reset();
+  await rx.reset(true);   // ai: a transfer in hand parked, as a header of another file would (2026-10-22; let go before)
   sinceHeader = Infinity; held = []; heldAt = 0;
 }
 
@@ -113,12 +182,13 @@ async function offer() {
 
 // ai: The received files (2026-10-01, lizard-web/library.mjs, which reads them): lizard-files/<id>/data and its meta.json, the
 // ai: id the root's first 16 hex digits, so the same file received again replaces its entry. The finished file leaves
-// ai: lizard-xfer (the transfer's scratch folder, emptied at this worker's start, and by the page's "Receive again" until
-// ai: 2026-10-05) by a
-// ai: move where the browser has one, else a copy through sync access handles; either way nothing of it is left behind.
+// ai: its transfer's folder under lizard-xfer (OpfsStore) by a move where the browser has one, else a copy through sync
+// ai: access handles, and the folder goes after it: nothing of the transfer is left behind.
 const LIB = "lizard-files", ENC = new TextEncoder();
 async function fileAway(r) {
-  const [dirName, name] = r.opfs, root = await navigator.storage.getDirectory(), from = await root.getDirectoryHandle(dirName);
+  const path = r.opfs, name = path.at(-1), root = await navigator.storage.getDirectory();
+  let from = root;
+  for (const d of path.slice(0, -1)) from = await from.getDirectoryHandle(d);
   const lib = await root.getDirectoryHandle(LIB, { create: true }), id = r.root.slice(0, 16);
   await lib.removeEntry(id, { recursive: true }).catch(() => {});
   const d = await lib.getDirectoryHandle(id, { create: true }), src = await from.getFileHandle(name);
@@ -131,6 +201,8 @@ async function fileAway(r) {
     b.flush(); b.close(); a.close();
     await from.removeEntry(name);
   }
+  // ai: the transfer's folder, empty now (OpfsStore.finish took the rest)
+  if (path.length > 2) { let parent = root; for (const d of path.slice(0, -2)) parent = await parent.getDirectoryHandle(d); await parent.removeEntry(path.at(-2), { recursive: true }).catch(() => {}); }
   const meta = { name: r.name || "received.bin", type: r.mediaType || "", size: r.length, root: r.root, at: Date.now() };
   const m = await (await d.getFileHandle("meta.json", { create: true })).createSyncAccessHandle(), bytes = ENC.encode(JSON.stringify(meta));
   m.truncate(0); m.write(bytes, { at: 0 }); m.flush(); m.close();
@@ -155,4 +227,10 @@ async function handle(m) {
 }
 onmessage = ({ data: m }) => {
   chain = chain.then(() => handle(m)).catch((e) => postMessage({ type: "error", message: String(e?.message ?? e) }));
+};
+// ai: Home's Delete of an unfinished transfer whose files this worker holds open (library.mjs forgetUnfinished):
+// ai: forgotten in turn with the blocks, then the received files' channel told, so Home draws again.
+if (typeof BroadcastChannel === "function") new BroadcastChannel("lizard-xfer").onmessage = ({ data }) => {
+  if (typeof data?.forget !== "string") return;
+  chain = chain.then(async () => { if (rx) await rx.forget(data.forget); const bc = new BroadcastChannel(LIB); bc.postMessage("changed"); bc.close(); }).catch(() => {});
 };

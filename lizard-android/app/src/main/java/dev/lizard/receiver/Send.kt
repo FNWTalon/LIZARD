@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.movableContentOf
@@ -34,6 +35,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Spacer
@@ -48,6 +51,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -153,20 +157,54 @@ class SendState(private val a: MainActivity) {
     private var vh = 0
     val fps get() = rate
 
-    // ai: Files picked or shared (one or several), or a folder's tree: walked and sized off the main thread, then the
-    // ai: choice. A pick while sending stops that first, as the web's does.
-    fun pick(us: List<Uri>) = choose { us.map { fileEntry(it) } }
-    fun pickTree(tree: Uri) = choose { treeEntries(tree) }
-    private fun choose(walk: () -> List<TarEntry>) {
+    // ai: The selection (2026-10-23; until then a pick replaced the last): items added by each pick, share or photo pick,
+    // ai: in order, each a file or a folder with its entries under its own name, so files and folders mix; the choice is
+    // ai: their Bundle (one file alone is itself, else one tar). An item already listed (its document's URI) is not
+    // ai: added again. A walk runs off the main thread, and one that fails leaves the list as it was and says why. Every
+    // ai: change stops a run first, then the bundle is made off the main thread and its transfer made again (make), as
+    // ai: the web's does.
+    class Item(val key: String, val name: String, val dir: Boolean, val files: Int, val size: Long, val entries: List<TarEntry>)
+    val items = mutableStateListOf<Item>()
+    fun pick(us: List<Uri>) = add { us.map { u -> fileEntry(u).let { e -> Item(u.toString(), e.path, false, 1, e.size, listOf(e)) } } }
+    fun pickTree(tree: Uri) = add {
+        val es = treeEntries(tree)
+        if (es.isEmpty()) emptyList() else listOf(Item(tree.toString(), es[0].path, true, es.count { !it.dir }, es.filter { !it.dir }.sumOf { it.size }, es))
+    }
+    fun remove(key: String) { items.removeAll { it.key == key }; changed() }
+    fun clear() { items.clear(); changed() }
+    private fun add(walk: () -> List<Item>) {
         if (phase == Phase.On || phase == Phase.Preparing) stop()
-        test = false; reading = true; choice = null; name = ""; size = 0; type = ""; typeOf.clear(); compressed = 0
-        dropMade()
+        test = false; reading = true
         if (phase is Phase.Error) phase = Phase.Idle
         thread(name = "lizard-send-pick") {
-            val b = try { walk().takeIf { it.isNotEmpty() }?.let { Bundle(it) } } catch (e: Exception) { a.runOnUiThread { reading = false; phase = Phase.Error("The files could not be read: ${e.message}") }; return@thread }
+            val got = try { walk() } catch (e: Exception) { a.runOnUiThread { reading = bundling != bundled; phase = Phase.Error("The files could not be read: ${e.message}") }; return@thread }
             a.runOnUiThread {
-                reading = false; choice = b
-                if (b != null) { name = b.name; size = b.size; type = b.single?.let { typeOf[it] } ?: TAR_TYPE; make() }
+                reading = bundling != bundled
+                val have = items.mapTo(HashSet()) { it.key }
+                val fresh = got.filter { have.add(it.key) }
+                if (fresh.isNotEmpty()) { items.addAll(fresh); changed() }
+            }
+        }
+    }
+    private var bundling = 0     // ai: the newest bundle asked for, and the newest one made: equal while none is being made
+    private var bundled = 0
+    private fun changed() {
+        if (phase == Phase.On || phase == Phase.Preparing) stop()
+        dropMade()
+        if (phase is Phase.Error) phase = Phase.Idle
+        choice = null; name = ""; size = 0; type = ""; compressed = 0
+        val list = items.toList()
+        typeOf.keys.retainAll(list.flatMap { it.entries }.toSet())
+        val my = ++bundling
+        if (list.isEmpty()) { bundled = my; reading = false; return }
+        reading = true
+        thread(name = "lizard-send-bundle") {
+            val b = Bundle(list.flatMap { it.entries })
+            a.runOnUiThread {
+                if (my != bundling) return@runOnUiThread
+                bundled = my; reading = false; choice = b
+                name = b.name; size = b.size; type = b.single?.let { typeOf[it] } ?: TAR_TYPE
+                make()
             }
         }
     }
@@ -269,6 +307,18 @@ class SendState(private val a: MainActivity) {
         making++; makingNow = false; startWhenMade = false
         if (made != 0L) { Native.txDestroy(made); made = 0L }
         madeFile?.delete(); madeFile = null
+    }
+
+    // ai: The first-send tip (2026-10-23; a tip, not a live warning: a power mode is no sure sign of dropped pictures, and
+    // ai: modes differ from phone to phone): Start as a hand presses it (the
+    // ai: column's, the rail's play) asks once, "Turn off power saving: it can make pictures drop.", with Cancel and
+    // ai: Start; its Start sends and it is not asked again (the "lizard" preferences' sendTipSeen). The web's and the
+    // ai: desktop's first-send tips say the same beside their brightness line; this app sets the brightness itself.
+    var askTip by mutableStateOf(false)
+    fun requestStart() { if (prefs.getBoolean("sendTipSeen", false)) start() else askTip = true }
+    fun answerTip(go: Boolean) {
+        askTip = false
+        if (go) { prefs.edit().putBoolean("sendTipSeen", true).apply(); start() }
     }
 
     fun start() {
@@ -456,6 +506,11 @@ class SendState(private val a: MainActivity) {
 // ai: the column folds to a rail (play, pause or resume, the code's capacity, Home at its foot), as Receive's.
 @Composable
 internal fun MainActivity.SendScreen() {
+    if (send.askTip) AlertDialog(onDismissRequest = { send.answerTip(false) },
+        confirmButton = { Btn("Start", Kind.Primary) { send.answerTip(true) } },
+        dismissButton = { Btn("Cancel", Kind.Text) { send.answerTip(false) } },
+        text = { Text("Turn off power saving: it can make pictures drop.") },
+        containerColor = Bg)
     val s = send
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // ai: one code view for both layouts: a turn of the phone moves the surface rather than making another
@@ -552,14 +607,45 @@ private fun MainActivity.CodeBox(modifier: Modifier) {
     val shown = sending && s.shown
     Box(modifier.clipToBounds().background(if (shown) Bg else Soft), contentAlignment = Alignment.Center) {
         if (sending) AndroidView({ ctx -> SurfaceView(ctx).apply { holder.addCallback(s.holder) } }, Modifier.fillMaxSize())
-        if (!shown) Column(Modifier.fillMaxSize().background(Soft).clickable(enabled = !s.test && !sending) { pickFile() }, verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+        // ai: nothing chosen: "Choose files" (a tap on the box) with a folder and photos and videos under it; once
+        // ai: something is, the selection's list (PickList) until the first picture shows
+        if (!shown && !s.test && s.items.isNotEmpty()) PickList(sending)
+        else if (!shown) Column(Modifier.fillMaxSize().background(Soft).clickable(enabled = !s.test && !sending) { pickFile() }, verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(painterResource(R.drawable.ic_file), contentDescription = null, Modifier.size(24.dp), tint = Muted)
-            Text(if (s.test) "Test stream" else if (s.reading) "Reading the files" else if (s.choice == null) "Choose files" else s.name, style = MaterialTheme.typography.bodyMedium, color = Muted,
+            Text(if (s.test) "Test stream" else if (s.reading) "Reading the files" else "Choose files", style = MaterialTheme.typography.bodyMedium, color = Muted,
                 textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 16.dp))
-            // ai: a folder instead (the web's hint link): its own tap, the box's tap the files
-            if (!s.test && !sending && !s.reading) Text("or a folder", style = MaterialTheme.typography.bodyMedium, color = Fg, textDecoration = TextDecoration.Underline,
-                modifier = Modifier.clickable { pickFolder() }.padding(horizontal = 16.dp, vertical = 4.dp))
+            // ai: a folder, or photos and videos, instead (the web's hint link): their own taps, the box's tap the files
+            if (!s.test && !sending && !s.reading) {
+                Text("or a folder", style = MaterialTheme.typography.bodyMedium, color = Fg, textDecoration = TextDecoration.Underline,
+                    modifier = Modifier.clickable { pickFolder() }.padding(horizontal = 16.dp, vertical = 4.dp))
+                Text("or photos and videos", style = MaterialTheme.typography.bodyMedium, color = Fg, textDecoration = TextDecoration.Underline,
+                    modifier = Modifier.clickable { pickMedia() }.padding(horizontal = 16.dp, vertical = 4.dp))
+            }
+        }
+    }
+}
+
+// ai: The selection (2026-10-23): a row an item (its icon, its name, "N files · size" for a folder or its size, Remove),
+// ai: scrolling when long, then Add files, Add a folder, Photos and videos and Clear; nothing changes while sending.
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun MainActivity.PickList(sending: Boolean) {
+    val s = send
+    Column(Modifier.fillMaxSize().background(Bg).padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
+            s.items.forEachIndexed { i, it ->
+                ListRow(it.name, sub = if (it.dir) "${it.files} ${if (it.files == 1) "file" else "files"} · ${Readout.bytes(it.size)}" else Readout.bytes(it.size),
+                    lead = if (it.dir) R.drawable.ic_folder else R.drawable.ic_file, divider = i < s.items.size - 1,
+                    trailing = { IconBtn(R.drawable.ic_x, "Remove ${it.name}", enabled = !sending) { s.remove(it.key) } })
+            }
+        }
+        // ai: centred under the list (2026-10-23; from its left edge before, which read off centre)
+        FlowRow(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Btn("Add files", enabled = !sending) { pickFile() }
+            Btn("Add a folder", enabled = !sending) { pickFolder() }
+            Btn("Photos and videos", enabled = !sending) { pickMedia() }
+            Btn("Clear", enabled = !sending) { s.clear() }
         }
     }
 }
@@ -577,7 +663,8 @@ private fun MainActivity.SendPanel(onFull: () -> Unit) {
     // ai: what goes, "<compressed> (<raw> raw)" once the transfer is made, "<raw> raw" while it is being made (2026-10-19,
     // ai: the web's and the desktop's the same); the pass is Developer Tools' (sendLab, 2026-10-05)
     val count = s.choice?.takeIf { it.single == null }?.files?.let { "$it ${if (it == 1) "file" else "files"}, " } ?: ""
-    val sizeText = if (s.compressed > 0) "${Readout.bytes(s.compressed)} (${Readout.bytes(s.size)} raw)" else "${Readout.bytes(s.size)} raw"
+    // ai: "raw" kept with its figure (no-break spaces, 2026-10-23: "(47 KB / raw)" broke there)
+    val sizeText = if (s.compressed > 0) "${Readout.bytes(s.compressed)} (${Readout.bytes(s.size)}\u00a0raw)" else "${Readout.bytes(s.size)}\u00a0raw"
     val sized = if (s.test || s.size <= 0) what else "$what, ${if (on) "" else count}$sizeText"
     val err = (s.phase as? SendState.Phase.Error)?.why
     val line = when {
@@ -596,7 +683,7 @@ private fun MainActivity.SendPanel(onFull: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val fs: @Composable (Modifier) -> Unit = { m -> Btn("Fullscreen", modifier = m, onClick = onFull) }
         if (!busy) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Btn("Start", Kind.Primary, enabled = s.test || s.ready, modifier = Modifier.weight(1f)) { s.start() }
+            Btn("Start", Kind.Primary, enabled = s.test || s.ready, modifier = Modifier.weight(1f)) { s.requestStart() }
             fs(Modifier.weight(1f))
         } else if (s.paused) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -609,7 +696,12 @@ private fun MainActivity.SendPanel(onFull: () -> Unit) {
             fs(Modifier.weight(1f))
         }
     }
-    if (line.isNotEmpty()) Text(line, style = MaterialTheme.typography.titleMedium, color = if (err != null) Bad else Fg, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
+    // ai: a line naming the file holds its head on one line (Parts.kt NameLine, 2026-10-23)
+    val named = !s.test && err == null && (s.phase == SendState.Phase.Preparing || (on && !s.paused) || (!on && !s.reading && s.choice != null))
+    if (named) NameLine(when { s.phase == SendState.Phase.Preparing -> "Preparing "; on -> "Sending "; else -> "" }, what,
+        if (s.phase == SendState.Phase.Preparing || s.size <= 0) "" else ", ${if (on) "" else count}$sizeText",
+        MaterialTheme.typography.titleMedium, Fg, Modifier.padding(top = 4.dp, bottom = 2.dp))
+    else if (line.isNotEmpty()) Text(line, style = MaterialTheme.typography.titleMedium, color = if (err != null) Bad else Fg, modifier = Modifier.padding(top = 4.dp, bottom = 2.dp))
     if (on && st.offeredKBs > 0) Text(Readout.rate(st.offeredKBs), style = MaterialTheme.typography.bodyMedium, color = Muted, modifier = Modifier.padding(top = 2.dp))
     HeatWarning(heat, clocks, modifier = Modifier.padding(top = 8.dp))
     Spacer(Modifier.height(8.dp))
@@ -624,7 +716,7 @@ private fun MainActivity.SendRail() {
     heatText(heat, clocks)?.let { HeatSquare(it) }
     Square {
         IconBtn(if (on && !s.paused) R.drawable.ic_pause else R.drawable.ic_play, if (!on) "Start" else if (s.paused) "Resume" else "Pause",
-            enabled = if (on) true else s.phase != SendState.Phase.Preparing && (s.test || s.ready)) { if (on) s.pause(!s.paused) else s.start() }
+            enabled = if (on) true else s.phase != SendState.Phase.Preparing && (s.test || s.ready)) { if (on) s.pause(!s.paused) else s.requestStart() }
     }
     RateSquare(if (on) s.capacityKBs else null)
 }

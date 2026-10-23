@@ -4,6 +4,9 @@
 // random (sent as they are) and prose (each chunk sent as its zstd frame, so the chunks differ in blocks); loss at
 // random, by ring, in bursts, a late join, a corrupted block that passes its CRC, a stale header from the network.
 // Laps is the airtime from the join over one lap of the file's blocks as sent. About 8 s.
+// ai: Since 2026-10-22, transfers kept across receivers (store keeps): a store whose folders outlive its receiver, as
+// ai: OPFS outlives a page; part of a file into one receiver, which is dropped, the rest into the next; a file parked by
+// ai: another's header and resumed by its own; a parked transfer forgotten.
 //   node test/xfer_rig.mjs
 import { init as initOb } from "../sim/ob.mjs";
 import { init as initWh, Encoder, Decoder } from "../sim/fountain.mjs";
@@ -79,6 +82,93 @@ for (let k = 0; k < 20; k++) await run(`200 KB, 20% lost, seed ${k}`, { length: 
 // takes the rest as they come.
 await run("41 chunks of 1 KiB, repair blocks only", { length: 40 * 1024 + 100, log2: 10, join: 100 });
 for (let k = 0; k < 10; k++) await run(`400 KB in 16 KiB chunks, repair blocks only, seed ${k}`, { length: 400000 + 37 * k, log2: 14, join: 80 });
+
+// ai: The fountain worker's OPFS store in memory (lizard-web/fountain-worker.mjs OpfsStore): a folder a transfer by its
+// ai: id, in a map that outlives the receiver (the origin's OPFS outliving a page).
+class KeepStore {
+  constructor(folders) { this.kind = "keep"; this.keeps = true; this.folders = folders; this.cur = null; this.id = ""; }
+  async open(id, header, length) {
+    const f = this.folders.get(id);
+    this.id = id;
+    if (f && f.header.length === header.length && f.header.every((v, i) => v === header[i])) {
+      this.cur = f;
+      return { found: true, manifest: f.manifest.map(([m, b]) => [m, b.slice()]), verified: [...f.verified], chunks: [...f.recs.keys()] };
+    }
+    this.cur = { header: header.slice(), out: new Uint8Array(length), recs: new Map(), manifest: [], verified: [], meta: null };
+    this.folders.set(id, this.cur);
+    return { found: false };
+  }
+  async begin(length) { return this.open("t", new Uint8Array(0), length); }
+  async append(c, sym, bytes) {
+    const r = this.cur.recs.get(c) ?? [];
+    const rec = new Uint8Array(4 + PAYLOAD);
+    rec[0] = sym & 255; rec[1] = (sym >>> 8) & 255; rec[2] = (sym >>> 16) & 255; rec[3] = sym >>> 24;
+    rec.set(bytes.subarray(0, PAYLOAD), 4);
+    r.push(rec); this.cur.recs.set(c, r);
+  }
+  async read(c) { const r = this.cur.recs.get(c) ?? [], b = new Uint8Array(r.length * (4 + PAYLOAD)); r.forEach((x, i) => b.set(x, i * x.length)); return b; }
+  async drop(c) { this.cur?.recs.delete(c); }
+  async writeOut(off, bytes) { this.cur.out.set(bytes, off); }
+  async readOut(off, len) { return this.cur.out.subarray(off, off + len); }
+  async noteManifest(m, b) { this.cur.manifest.push([m, b.slice()]); }
+  async noteVerified(c) { this.cur.verified.push(c); }
+  async noteMeta(j) { this.cur.meta = JSON.parse(j); }
+  async truncate(c, n) { const r = this.cur.recs.get(c); if (r) r.length = Math.min(r.length, n); }
+  async finish() { const out = this.cur.out; this.folders.delete(this.id); return { bytes: out }; }
+  async park() { this.cur = null; this.id = ""; }
+  async clear() { if (this.id) this.folders.delete(this.id); this.cur = null; this.id = ""; }
+  async forget(id) { if (id === this.id) return this.clear(); this.folders.delete(id); }
+  held() { return 0; }
+}
+// ai: share of a lap of x's blocks into one receiver, then (other) a second file whole into the same receiver, then x
+// ai: into a new receiver on the same folders (or the same one, other) until it is done
+async function resume(label, { length, log2 = 20, B = 12, loss = 0, join = 0, share = 0.5, text = false, other = false, forget = false }) {
+  const mk = (n, seed) => (text ? prose(n, seed) : rand(n, seed));
+  const file = mk(length, length + 11), xs = new XferSender(file, { name: "x.bin", chunkLog2: log2, M, Encoder, Z });
+  xs.name = "x.bin";
+  const folders = new Map(), id = hex(xs.root).slice(0, 16), buf = new Uint8Array(PAYLOAD);
+  let s = 4242;
+  const rnd = () => { s = (Math.imul(s, 1103515245) + 12345) >>> 0; return (s >>> 8) / 16777216; };
+  const feed = async (rx, tx, frames) => {
+    let f = 0;
+    for (; f < frames && !(rx.done && rx.result?.name === tx.name); f++) { const ids = tx.frameIds(B); for (let k = 0; k < B; k++) if (rnd() >= loss) await rx.add(ids[k], tx.block(ids[k], buf).slice()); }
+    return f;
+  };
+  for (let f = 0; f < join; f++) xs.frameIds(B);
+  const lap = Math.max(1, xs.K.reduce((a, b) => a + b, 0)), first = Math.ceil((share * lap) / B);
+  let rx = new XferReceiver({ M, Decoder, store: new KeepStore(folders), Z });
+  await feed(rx, xs, first);
+  const part = rx.progress(), parked = () => folders.get(id);
+  let ok = !rx.done && part.verified < part.header.chunks, extra = "";
+  if (other) {
+    const y = mk(length + 333, 99), ys = new XferSender(y, { name: "y.bin", chunkLog2: log2, M, Encoder, Z });
+    ys.name = "y.bin";
+    await feed(rx, ys, 50 * Math.ceil(ys.K.reduce((a, b) => a + b, 0) / B));
+    ok &&= !!rx.result && rx.result.bytes.every((v, i) => v === y[i]) && rx.result.name === "y.bin";
+    extra = `, y.bin whole between`;
+    ys.free();
+  } else rx = new XferReceiver({ M, Decoder, store: new KeepStore(folders), Z });   // ai: the page closed: the receiver dropped as it was
+  ok &&= !!parked()?.meta && parked().meta.name === "x.bin";
+  if (forget) {
+    await rx.forget(hex(xs.root));
+    ok &&= !folders.has(id);
+    console.log(`${ok ? "ok  " : "FAIL"} ${label}: parked at ${Math.round(100 * part.verified / part.header.chunks)}% of chunks verified, then forgotten`);
+    if (!ok) fails++;
+    xs.free();
+    return;
+  }
+  const more = await feed(rx, xs, 50 * Math.ceil(lap / B));
+  const r = rx.result;
+  ok &&= !!r && r.bytes.length === length && r.bytes.every((v, i) => v === file[i]) && r.root === hex(blake3(M, file)) && !folders.has(id);
+  if (!ok) fails++;
+  console.log(`${ok ? "ok  " : "FAIL"} ${label}: ${xs.chunks} chunks, ${part.verified} verified and ${Math.round(100 * (first * B) / lap)}% of a lap in before${extra}; the rest in ${(more * B / lap).toFixed(3)} laps`);
+  xs.free();
+}
+await resume("resumed by the next receiver", { length: 6 * 2 ** 20 - 99, log2: 20 });
+await resume("resumed by the next receiver, prose, 30% lost", { length: 6 * 2 ** 20 - 99, log2: 20, loss: 0.3, text: true });
+await resume("resumed by the next receiver, repair blocks only", { length: 400000, log2: 14, join: 80 });
+await resume("parked by another file's header, resumed by its own", { length: 3 * 2 ** 20 - 12345, log2: 20, other: true });
+await resume("a parked transfer forgotten", { length: 3 * 2 ** 20 - 12345, log2: 20, forget: true });
 console.log(`${over} chunk solves needed more than K blocks and took them as they came`);
 console.log(fails ? `${fails} FAILED` : "all ok");
 process.exit(fails ? 1 : 0);

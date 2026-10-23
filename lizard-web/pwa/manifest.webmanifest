@@ -18,7 +18,105 @@
     }
   ],
   "shortcuts": [
-    { "name": "Receive", "url": "./recv.html?auto" },
-    { "name": "Send", "url": "./send.html" }
+    {
+      "name": "Receive",
+      "url": "./recv.html?auto"
+    },
+    {
+      "name": "Send",
+      "url": "./send.html"
+    }
+  ],
+  "share_target": {
+    "action": "./send.html?share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        {
+          "name": "files",
+          "accept": [
+            "*/*"
+          ]
+        }
+      ]
+    }
+  },
+  "file_handlers": [
+    {
+      "action": "./send.html?open",
+      "accept": {
+        "image/*": [
+          ".jpg",
+          ".jpeg",
+          ".png",
+          ".gif",
+          ".webp",
+          ".heic",
+          ".avif",
+          ".bmp",
+          ".tiff"
+        ],
+        "video/*": [
+          ".mp4",
+          ".mov",
+          ".webm",
+          ".mkv",
+          ".avi"
+        ],
+        "audio/*": [
+          ".mp3",
+          ".m4a",
+          ".wav",
+          ".flac",
+          ".ogg",
+          ".opus"
+        ],
+        "text/*": [
+          ".txt",
+          ".md",
+          ".csv",
+          ".json",
+          ".html",
+          ".xml"
+        ],
+        "application/pdf": [
+          ".pdf"
+        ],
+        "application/zip": [
+          ".zip"
+        ],
+        "application/x-tar": [
+          ".tar"
+        ],
+        "application/gzip": [
+          ".gz",
+          ".tgz"
+        ],
+        "application/x-7z-compressed": [
+          ".7z"
+        ],
+        "application/vnd.android.package-archive": [
+          ".apk"
+        ],
+        "application/octet-stream": [
+          ".bin",
+          ".iso",
+          ".img"
+        ],
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [
+          ".docx"
+        ],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [
+          ".xlsx"
+        ],
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": [
+          ".pptx"
+        ],
+        "application/vnd.oasis.opendocument.text": [
+          ".odt"
+        ]
+      }
+    }
   ]
 }

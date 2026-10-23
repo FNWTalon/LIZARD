@@ -185,6 +185,102 @@ const SIZES = [
     await sleep(500);
     check(!(await evaluate(s, `document.body.classList.contains("full")`)), `send ${z.name}: body.full cleared when ${f.api ? "fullscreen ends (fullscreenchange)" : "Escape is pressed"}`);
   }
+  // ai: The selection (2026-10-23): files and a folder added through the inputs (the DevTools protocol sets their
+  // ai: files), a file added twice listed once, one removed, one dropped, the list cleared; the state line names the
+  // ai: bundle and counts its files each step.
+  {
+    const { writeFileSync: put, mkdirSync: mk } = await import("node:fs");
+    const src = join(scratch, "pick");
+    mk(join(src, "album", "sub"), { recursive: true });
+    put(join(src, "a.txt"), "a".repeat(10)); put(join(src, "b.bin"), Buffer.alloc(2000, 7)); put(join(src, "c.txt"), "c".repeat(30));
+    put(join(src, "album", "x.txt"), "x".repeat(40)); put(join(src, "album", "sub", "y.txt"), "y".repeat(50));
+    await size(s, SIZES[3]);
+    await navigate(s, SEND);
+    await until(s, `document.getElementById("fpsOut").textContent !== ""`, 10000, "send.mjs run");
+    const setFiles = async (id, files) => {
+      const { result } = await s.send("Runtime.evaluate", { expression: `document.getElementById("${id}")` });
+      await s.send("DOM.setFileInputFiles", { objectId: result.objectId, files });
+    };
+    const LIST = `(() => ({ rows: [...document.querySelectorAll("#pickList .t")].map((t) => t.textContent), subs: [...document.querySelectorAll("#pickList .s")].map((t) => t.textContent),
+      state: document.getElementById("state").textContent, hint: !document.getElementById("hint").hidden, pick: !document.getElementById("pick").hidden, go: document.getElementById("go").disabled }))()`;
+    const step = async (what, rows, state) => {
+      await until(s, `(${LIST}).rows.join("|") === ${JSON.stringify(rows.join("|"))} && /^${state.replace(/[.()]/g, "\\$&")}/.test(document.getElementById("state").textContent)`, 8000, what).catch(() => {});
+      const m = await evaluate(s, LIST);
+      check(m.rows.join("|") === rows.join("|") && m.state.startsWith(state) && (rows.length ? m.pick && !m.hint && !m.go : m.hint && !m.pick && m.go),
+        `send: ${what}: rows ${m.rows.join(", ") || "none"} (${m.subs.join("; ")}), "${m.state}"`);
+    };
+    await setFiles("file", [join(src, "a.txt"), join(src, "b.bin")]);
+    await step("two files added", ["a.txt", "b.bin"], "a.txt and 1 more.tar, 2 files, ");
+    await setFiles("folder", [join(src, "album")]);
+    // ai: a folder's files come to the page a moment after the protocol sets them
+    const folder = await until(s, `(${LIST}).rows.length === 3`, 5000, "the folder listed").catch(() => false);
+    if (folder) await step("a folder added", ["a.txt", "b.bin", "album"], "a.txt and 2 more.tar, 4 files, ");
+    else {   // ai: a protocol that cannot set a folder input: the folder through a drop below instead
+      console.log("     DOM.setFileInputFiles took no folder here: the folder is dropped below");
+    }
+    await setFiles("file", [join(src, "a.txt")]);
+    await sleep(300);
+    await step("a file added again listed once", folder ? ["a.txt", "b.bin", "album"] : ["a.txt", "b.bin"], folder ? "a.txt and 2 more.tar, 4 files, " : "a.txt and 1 more.tar, 2 files, ");
+    await evaluate(s, `document.querySelector('#pickList button[title="Remove b.bin"]').click()`);
+    await step("one removed", folder ? ["a.txt", "album"] : ["a.txt"], folder ? "a.txt and 1 more.tar, 3 files, " : "a.txt, ");
+    await screenshot(s, `${OUT}/send-pick-list.png`);
+    // ai: a drop on <main>: the protocol's drag events carry the files as paths
+    const drop = async (files) => {
+      const at = await evaluate(s, `(() => { const b = document.querySelector("main").getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + 20 }; })()`);
+      const data = { items: [], files, dragOperationsMask: 1 };
+      for (const type of ["dragEnter", "dragOver", "drop"]) await s.send("Input.dispatchDragEvent", { type, x: at.x, y: at.y, data });
+    };
+    await drop(folder ? [join(src, "c.txt")] : [join(src, "c.txt"), join(src, "album")]);
+    await step("dropped", folder ? ["a.txt", "album", "c.txt"] : ["a.txt", "c.txt", "album"], folder ? "a.txt and 2 more.tar, 4 files, " : "a.txt and 2 more.tar, 4 files, ");
+    await evaluate(s, `document.getElementById("clearPick").click()`);
+    await step("cleared", [], "");
+    await setFiles("file", [join(src, "c.txt")]);
+    await step("one file alone, sent as itself", ["c.txt"], "c.txt, ");
+    // ai: the made transfer: the line gains its bytes as sent
+    await until(s, `/\\(30\\sB\\sraw\\)$/.test(document.getElementById("state").textContent)`, 10000, "the transfer made");   // ai: no-break spaces in the figures
+    check(/\(30\sB\sraw\)$/.test(await evaluate(s, `document.getElementById("state").textContent`)), `send: the made transfer's line "${await evaluate(s, `document.getElementById("state").textContent`)}"`);
+    // ai: long names (2026-10-23): the state line's head, up to the name and its comma, on one line, the stem cut with an
+    // ai: ellipsis and its ending whole (".txt," for a file, " and 1 more.tar," for a bundle); the row cut to its width
+    const long = join(src, "a very long file name for the ellipsis check, longer than any row is wide.txt");
+    const long2 = join(src, "another file with a long name, so the bundle's name is long too.txt");
+    put(long, "long"); put(long2, "long too");
+    const HEAD = `(() => { const f = document.querySelector("#state .fname"); if (!f) return null; const st = f.firstElementChild, lh = parseFloat(getComputedStyle(document.getElementById("state")).lineHeight);
+      return { end: f.lastElementChild.textContent, cut: st.scrollWidth > st.clientWidth, over: getComputedStyle(st).textOverflow, oneLine: f.getBoundingClientRect().height < 1.5 * lh, state: document.getElementById("state").textContent }; })()`;
+    await evaluate(s, `document.getElementById("clearPick").click()`);
+    await setFiles("file", [long]);
+    await until(s, `(${HEAD})?.end === ".txt,"`, 8000, "the long name's line").catch(() => {});
+    const one = await evaluate(s, HEAD);
+    const row = await evaluate(s, `(() => { const t = document.querySelector("#pickList .t"); return { cut: t.scrollWidth > t.clientWidth, over: getComputedStyle(t).textOverflow, title: t.title }; })()`);
+    check(one?.end === ".txt," && one.cut && one.over === "ellipsis" && one.oneLine && row.cut && row.title.endsWith("is wide.txt"),
+      `send: a long name's head on one line, its stem cut and ".txt," whole (${JSON.stringify(one)}), its row cut (${row.over})`);
+    await setFiles("file", [long2]);
+    await until(s, `(${HEAD})?.end === " and 1 more.tar,"`, 8000, "the bundle's line").catch(() => {});
+    const two = await evaluate(s, HEAD);
+    check(two?.end === " and 1 more.tar," && two.cut && two.oneLine, `send: a long bundle name's head on one line, " and 1 more.tar," whole (${JSON.stringify(two)})`);
+    await screenshot(s, `${OUT}/send-long-name.png`);
+  }
+  // ai: Files from outside (2026-10-23): a file the system's Open with hands over (launchQueue, stubbed here) and one
+  // ai: another app shared (left in the "lizard-share" cache as the worker leaves it, then send.html?shared), each added
+  {
+    await s.send("Page.addScriptToEvaluateOnNewDocument", { source: `Object.defineProperty(window, "launchQueue", { configurable: true, value: { setConsumer(fn) { window.__launch = fn; } } });` });
+    await navigate(s, SEND);
+    await until(s, `typeof window.__launch === "function"`, 10000, "the page's launch consumer");
+    await evaluate(s, `window.__launch({ files: [{ getFile: async () => new File(["opened"], "opened.txt", { lastModified: 1700000000000 }) }] })`);
+    await until(s, `[...document.querySelectorAll("#pickList .t")].map((t) => t.textContent).join() === "opened.txt"`, 8000, "the opened file listed").catch(() => {});
+    check(await evaluate(s, `[...document.querySelectorAll("#pickList .t")].map((t) => t.textContent).join() === "opened.txt"`), `send: a file opened with the app is listed`);
+    await evaluate(s, `caches.open("lizard-share").then((c) => c.put(new Request(location.origin + "/share/0"), new Response("shared!", { headers: { "content-type": "text/plain", "x-name": encodeURIComponent("from app.txt"), "x-modified": "1700000000000" } })))`);
+    await navigate(s, `${SEND}?shared`);
+    await until(s, `[...document.querySelectorAll("#pickList .t")].map((t) => t.textContent).join() === "from app.txt"`, 8000, "the shared file listed").catch(() => {});
+    const sh = await evaluate(s, `(async () => ({ rows: [...document.querySelectorAll("#pickList .t")].map((t) => t.textContent).join(), left: (await (await caches.open("lizard-share")).keys()).length, url: location.search }))()`);
+    check(sh.rows === "from app.txt" && sh.left === 0 && sh.url === "", `send: a shared file is listed, the share cache emptied and the URL plain (${JSON.stringify(sh)})`);
+  }
+  // ai: Power saving (2026-10-23): a first-time tip, in the first-send dialog and the rail's "?" (the live line, which a
+  // ai: power mode cannot be told from, went the same day)
+  {
+    const tips = await evaluate(s, `[document.getElementById("first").textContent, document.getElementById("tipDisplay").textContent]`);
+    check(tips.every((t) => /Turn off power saving/.test(t)) && !(await evaluate(s, `!!document.getElementById("power")`)),
+      `send: power saving in the first-send tip and the "?" ("${tips[1]}"), no live line`);
+  }
   check(!s.errors.length, `send: no console errors${s.errors.length ? `: ${s.errors.join("; ")}` : ""}`);
   s.close();
 }
@@ -441,6 +537,23 @@ const SIZES = [
   await until(s, `document.querySelectorAll("#list li").length === 0 && !document.getElementById("empty").hidden`, 5000, "the list empty after Delete");
   const left = await evaluate(s, opfsFiles("lizard-files"));
   check(/Delete it\?/.test(asked) && left === 0, `home: Delete asks on itself ("${asked}") and then empties the received files (${left} left)`);
+  // ai: An unfinished transfer (2026-10-22, library.mjs unfinished): a folder under lizard-xfer as the fountain worker
+  // ai: leaves one (its header and meta.json), listed under Unfinished with its share and size, Continue and Delete;
+  // ai: Delete asks on itself, then removes the folder.
+  await evaluate(s, `(async () => { const d = await (await (await navigator.storage.getDirectory()).getDirectoryHandle("lizard-xfer", { create: true })).getDirectoryHandle("00112233aabbccdd", { create: true });
+    for (const [n, b] of [["header", new Uint8Array(469)], ["meta.json", new TextEncoder().encode(JSON.stringify({ name: "half.bin", type: "", length: 3133383, chunks: 3, verified: 1, root: "00112233aabbccdd", fraction: 0.37, sent: 3133383, sentIn: 1159352 }))]]) {
+      const w = await (await d.getFileHandle(n, { create: true })).createWritable(); await w.write(b); await w.close(); } return true; })()`);
+  await navigate(s, HOME);
+  await until(s, `!document.getElementById("partial").hidden && document.querySelectorAll("#partialList li").length === 1`, 5000, "the unfinished transfer listed on Home");
+  const part = await evaluate(s, `(() => { const r = document.querySelector("#partialList li"); return { text: r.querySelector(".name").textContent, acts: [...r.querySelectorAll(".acts > *")].map((a) => a.textContent).join(","), href: r.querySelector(".acts a")?.getAttribute("href") }; })()`);
+  await screenshot(s, `${OUT}/home-unfinished.png`);
+  check(/^half\.bin37% of 3\.1\sMB/.test(part.text) && part.acts === "Continue,Delete" && part.href === "recv.html?auto", `home: an unfinished transfer listed, "${part.text}", ${part.acts} (Continue to ${part.href})`);
+  await evaluate(s, `[...document.querySelectorAll("#partialList .acts button")].find((x) => x.textContent === "Delete").click()`);
+  await sleep(200);
+  await evaluate(s, `[...document.querySelectorAll("#partialList .acts button")].find((x) => x.textContent === "Delete it?").click()`);
+  await until(s, `document.getElementById("partial").hidden`, 5000, "the unfinished list empty after Delete");
+  const partLeft = await evaluate(s, opfsFiles("lizard-xfer"));
+  check(partLeft === 0, `home: Delete removes the unfinished transfer's folder (${partLeft} left in lizard-xfer)`);
   check(!s.errors.length, `no console errors on Home${s.errors.length ? `: ${s.errors.join("; ")}` : ""}`);
   s.close();
 }

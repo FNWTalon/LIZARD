@@ -344,6 +344,71 @@ Window topLevel(Display* d, Window w) {
 
 }  // namespace
 
+// ai: the window manager's window around w (topLevel above), through a Display of its own (2026-10-23: the parent the
+// ai: desktop's file chooser is attached to, tx_jni.cpp windowOf); w itself off X11
+unsigned long x11TopLevel(unsigned long window) {
+#if LIZ_X11 && !defined(_WIN32)
+  Display* d = XOpenDisplay(nullptr);
+  if (!d) return window;
+  const unsigned long top = topLevel(d, window);
+  XCloseDisplay(d);
+  return top;
+#else
+  return window;
+#endif
+}
+
+// ai: Full screen as other apps ask for it (2026-10-23): the window manager's own, _NET_WM_STATE_FULLSCREEN added or
+// ai: removed by the EWMH client message on the managed window (x11TopLevel's), the way GTK, Qt and the browsers do it;
+// ai: the manager keeps the window's place, size and maximized state and gives them back. Until then the presenter set
+// ai: _NET_WM_BYPASS_COMPOSITOR and _NET_WM_STATE_ABOVE with the app's full screen (2026-10-03 to 2026-10-23), for a
+// ai: vsync whose losses were the machine's power-saving profile. false off X11 (the app then asks Compose).
+bool x11Fullscreen(unsigned long top, bool on) {
+#if LIZ_X11 && !defined(_WIN32)
+  Display* d = XOpenDisplay(nullptr);
+  if (!d) return false;
+  XEvent e{};
+  e.xclient.type = ClientMessage;
+  e.xclient.window = top;
+  e.xclient.message_type = XInternAtom(d, "_NET_WM_STATE", False);
+  e.xclient.format = 32;
+  e.xclient.data.l[0] = on ? 1 : 0;   // ai: _NET_WM_STATE_ADD, _NET_WM_STATE_REMOVE
+  e.xclient.data.l[1] = static_cast<long>(XInternAtom(d, "_NET_WM_STATE_FULLSCREEN", False));
+  e.xclient.data.l[2] = 0;
+  e.xclient.data.l[3] = 1;   // ai: the source: an application
+  const Status sent = XSendEvent(d, DefaultRootWindow(d), False, SubstructureRedirectMask | SubstructureNotifyMask, &e);
+  XFlush(d);
+  XCloseDisplay(d);
+  return sent != 0;
+#else
+  (void)top; (void)on;
+  return false;
+#endif
+}
+// ai: whether the manager has the window full screen: _NET_WM_STATE_FULLSCREEN among its _NET_WM_STATE
+bool x11IsFullscreen(unsigned long top) {
+#if LIZ_X11 && !defined(_WIN32)
+  Display* d = XOpenDisplay(nullptr);
+  if (!d) return false;
+  const Atom state = XInternAtom(d, "_NET_WM_STATE", False), full = XInternAtom(d, "_NET_WM_STATE_FULLSCREEN", False);
+  Atom type = None;
+  int format = 0;
+  unsigned long n = 0, after = 0;
+  unsigned char* data = nullptr;
+  bool is = false;
+  if (XGetWindowProperty(d, top, state, 0, 64, False, XA_ATOM, &type, &format, &n, &after, &data) == Success && data) {
+    const Atom* atoms = reinterpret_cast<const Atom*>(data);
+    for (unsigned long i = 0; i < n; i++) is = is || atoms[i] == full;
+    XFree(data);
+  }
+  XCloseDisplay(d);
+  return is;
+#else
+  (void)top;
+  return false;
+#endif
+}
+
 struct Presenter::Impl {
   PresentTarget target;
   Sender* sender = nullptr;
@@ -351,8 +416,8 @@ struct Presenter::Impl {
   PresentOptions opt;
   std::atomic<int> fps{60};
   std::atomic<double> size{1.0};
+  std::atomic<double> edge{0.0};
   std::atomic<bool> whole{false}, paused{false}, quit{false};
-  std::atomic<int> bypass{-1};   // ai: a bypass asked and not yet set: 1 on, 0 off
   std::mutex wakeMu;
   std::condition_variable wake;
   std::thread thread;
@@ -360,7 +425,7 @@ struct Presenter::Impl {
 #if LIZ_X11 && !defined(_WIN32)
   // ai: two connections of the present thread's own: dpy the surface's (the driver's alone; AWT never calls
   // ai: XInitThreads, so no Xlib call of ours shares it with a driver thread's xcb), xq for the window queries (the size,
-  // ai: the mode, the bypass)
+  // ai: the mode, whether a compositor draws the window)
   Display* dpy = nullptr;
   Display* xq = nullptr;
   Window xwin = 0;
@@ -457,7 +522,6 @@ struct Presenter::Impl {
   VkExtent2D windowSize();
   void queryMode();
   void queryDirect();
-  void applyBypass();
   void drain();
   void window(double secs);
 };
@@ -682,48 +746,6 @@ void Presenter::Impl::queryDirect() {
     if (now == 0) say("presenter: the compositor draws the window");
     else if (now == 1) say("presenter: the screen shows the window direct");
   }
-#endif
-}
-
-// ai: Full screen's part here. X11: asks the window manager to take the window out of the compositor
-// ai: (_NET_WM_BYPASS_COMPOSITOR, 1 on, 0 the manager's choice), so the code's presents reach the screen as the
-// ai: swapchain makes them, not as the compositor redraws (2026-10-03: Chrome under Cinnamon left 8.6% of pictures one
-// ai: refresh or less), and keeps the window above the others (_NET_WM_STATE_ABOVE, a client message as the EWMH asks
-// ai: for a mapped window): a manager that unredirects only the desktop's topmost window (Mutter, Muffin) can then show
-// ai: the code direct while the user works on another monitor (2026-10-07: composited whenever another window stood
-// ai: above it, it tore 3% of frames and paced by the compositor's monitor; with the window above, that Cinnamon
-// ai: session still composited it, `direct` false, its unredirection held off by something outside the window).
-// ai: Windows: the window topmost.
-void Presenter::Impl::applyBypass() {
-  const int b = bypass.exchange(-1);
-  if (b < 0) return;
-#if defined(_WIN32)
-  HWND top = GetAncestor(static_cast<HWND>(target.hwnd), GA_ROOT);
-  if (!top) top = static_cast<HWND>(target.hwnd);
-  SetWindowPos(top, b ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-  say(std::string("presenter: the window ") + (b ? "topmost" : "no longer topmost"));
-#elif LIZ_X11
-  const Window top = topLevel(xq, xwin);
-  const unsigned long v = b ? 1 : 0;
-  XChangeProperty(xq, top, XInternAtom(xq, "_NET_WM_BYPASS_COMPOSITOR", False), XA_CARDINAL, 32, PropModeReplace,
-                  reinterpret_cast<const unsigned char*>(&v), 1);
-  XWindowAttributes wa{};
-  if (XGetWindowAttributes(xq, top, &wa)) {
-    XEvent e{};
-    e.xclient.type = ClientMessage;
-    e.xclient.window = top;
-    e.xclient.message_type = XInternAtom(xq, "_NET_WM_STATE", False);
-    e.xclient.format = 32;
-    e.xclient.data.l[0] = b ? 1 : 0;   // ai: _NET_WM_STATE_ADD, _NET_WM_STATE_REMOVE
-    e.xclient.data.l[1] = static_cast<long>(XInternAtom(xq, "_NET_WM_STATE_ABOVE", False));
-    e.xclient.data.l[2] = 0;
-    e.xclient.data.l[3] = 1;   // ai: the source: an application
-    XSendEvent(xq, wa.root, False, SubstructureRedirectMask | SubstructureNotifyMask, &e);
-  }
-  XFlush(xq);
-  char t[32];
-  std::snprintf(t, sizeof t, "0x%lx", static_cast<unsigned long>(top));
-  say("presenter: compositor bypass " + std::string(b ? "on" : "off") + ", the window " + (b ? "above the others" : "stacked as before") + ", window " + t);
 #endif
 }
 
@@ -1037,10 +1059,11 @@ void Presenter::Impl::presentOnce(bool live) {
   const VkImageSubresourceRange whole1{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   D.vkCmdClearColorImage(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &white, 1, &whole1);
   if (cur >= 0) {
-    // ai: where the picture goes: centred, the largest that fits times the size share, stretched (linear) as the page's
-    // ai: fit=stretch; or whole device pixels a sample (nearest) where at least one fits
+    // ai: where the picture goes: centred, the largest that fits with the edge's light round it, times the size share,
+    // ai: stretched (linear) as the page's fit=stretch; or whole device pixels a sample (nearest) where at least one fits
     const Slot& s = slots[cur];
-    const double fit = std::min(static_cast<double>(c.extent.width) / s.w, static_cast<double>(c.extent.height) / s.h);
+    const double e = 2 * edge.load() * s.h;
+    const double fit = std::min(static_cast<double>(c.extent.width) / (s.w + e), static_cast<double>(c.extent.height) / (s.h + e));
     const double share = std::clamp(size.load(), 0.25, 1.0);
     double scale = fit * share;
     VkFilter filter = VK_FILTER_LINEAR;
@@ -1113,7 +1136,6 @@ void Presenter::Impl::presentOnce(bool live) {
 void Presenter::Impl::run() {
   try {
     while (!quit) {
-      applyBypass();
       const double now = nowMs();
       if (now - lastWin >= 1000) {
         window((now - lastWin) / 1000);
@@ -1213,6 +1235,7 @@ std::unique_ptr<Presenter> Presenter::start(const PresentTarget& target, Sender*
   p->opt = opt;
   p->fps = std::clamp(opt.fps, 1, 240);
   p->size = std::clamp(opt.size, 0.25, 1.0);
+  p->edge = std::clamp(opt.edge, 0.0, 1.0);
   p->whole = opt.whole;
   std::promise<std::string> ready;
   std::future<std::string> started = ready.get_future();
@@ -1242,7 +1265,10 @@ std::unique_ptr<Presenter> Presenter::start(const PresentTarget& target, Sender*
 Presenter::Presenter(std::unique_ptr<Impl> p) : p_(std::move(p)) {}
 
 void Presenter::setFps(int fps) { p_->fps = std::clamp(fps, 1, 240); }
-void Presenter::setSize(double size) { p_->size = std::clamp(size, 0.25, 1.0); }
+void Presenter::setSize(double size, double edge) {
+  p_->size = std::clamp(size, 0.25, 1.0);
+  p_->edge = std::clamp(edge, 0.0, 1.0);
+}
 void Presenter::setPaused(bool on) {
   {
     std::lock_guard<std::mutex> l(p_->wakeMu);
@@ -1250,7 +1276,6 @@ void Presenter::setPaused(bool on) {
   }
   p_->wake.notify_all();
 }
-void Presenter::setBypassCompositor(bool on) { p_->bypass = on ? 1 : 0; }
 
 std::string Presenter::stats() {
   std::lock_guard<std::mutex> l(p_->statsMu);

@@ -114,7 +114,31 @@ export function left(secs) {
 const ICONS = {
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
   more: '<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>',
+  folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
 };
+// ai: A line that names a file (2026-10-23): its head, up to the name and a comma after it, held on one line (.fname),
+// ai: the name's stem cut with an ellipsis where the line is too narrow and its ending kept whole (nameParts), the rest
+// ai: after it, on that line where it fits, else under it. A row cuts its title to its width instead (ui.css .item .t,
+// ai: .files .name). The Android app's and the desktop sender's NameLine the same.
+export function sayName(el, before, name, after = "", tone = null) {
+  const [stem, end] = nameParts(name), comma = after.startsWith(",");
+  const head = document.createElement("span"), cut = document.createElement("span"), kept = document.createElement("span");
+  head.className = "fname"; cut.className = "stem";
+  cut.textContent = `${before}${stem}`; kept.textContent = `${end}${comma ? "," : ""}`;
+  head.append(cut, kept);
+  el.replaceChildren(head, ...(after ? [document.createTextNode(comma ? after.slice(1) : after)] : []));
+  el.classList.toggle("bad", tone === "bad");
+  el.classList.toggle("good", tone === "good");
+}
+// ai: a name's stem and the ending kept whole when it is cut: a bundle's " and N more.tar" (tar.mjs bundle), else an
+// ai: extension of at most 10 characters, else nothing
+export function nameParts(name) {
+  const m = /^(.+)( and \d+ more\.tar)$/s.exec(name);
+  if (m) return [m[1], m[2]];
+  const dot = name.lastIndexOf(".");
+  return dot > 0 && name.length - dot <= 10 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+}
 export function icon(name) {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   s.setAttribute("viewBox", "0 0 24 24");

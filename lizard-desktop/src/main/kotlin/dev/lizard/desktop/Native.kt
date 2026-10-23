@@ -23,14 +23,22 @@ object Native {
     @JvmStatic external fun txDestroy(h: Long)
 
     // ai: The presenter on a displayable canvas, taking the sender tx's frames: 0, why in txError(). size the code's share
-    // ai: of the area's room (0.25 to 1), whole whole device pixels a sample (nearest) or stretched (linear), device a
-    // ai: substring of a Vulkan device's name ("" the first, LIZ_VK_DEVICE where set).
-    @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, whole: Boolean): Long
+    // ai: of the area's room (0.25 to 1), edge the light kept at each edge past the frame's own (Pick.edgeShare), whole
+    // ai: whole device pixels a sample (nearest) or stretched (linear), device a substring of a Vulkan device's name ("" the
+    // ai: first, LIZ_VK_DEVICE where set).
+    @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, edge: Float, whole: Boolean): Long
+    // ai: the desktop's file chooser (2026-10-23, native/portal.cpp): the window manager's window around a canvas (0 none,
+    // ai: on the UI thread), and the XDG portal's OpenFile attached to it, blocking until it closes (never on the UI
+    // ai: thread): the file:// URIs chosen, none when cancelled, null where the portal could not be asked (why: txError)
+    @JvmStatic external fun windowOf(canvas: java.awt.Component): Long
+    @JvmStatic external fun portalPick(window: Long, title: String, directory: Boolean, multiple: Boolean): Array<String>?
+    // ai: the window manager's own full screen for the window windowOf gave (2026-10-23): asked (false where it could not
+    // ai: be: not X11), and read
+    @JvmStatic external fun windowFullscreen(window: Long, on: Boolean): Boolean
+    @JvmStatic external fun windowIsFullscreen(window: Long): Boolean
     @JvmStatic external fun presentFps(p: Long, fps: Int)
-    @JvmStatic external fun presentSize(p: Long, size: Float)
+    @JvmStatic external fun presentSize(p: Long, size: Float, edge: Float)
     @JvmStatic external fun presentPause(p: Long, on: Boolean)
-    // ai: the compositor bypass (X11's _NET_WM_BYPASS_COMPOSITOR on the canvas's top-level window), with full screen
-    @JvmStatic external fun presentFullscreen(p: Long, on: Boolean)
     @JvmStatic external fun presentStats(p: Long): String
     @JvmStatic external fun presentStop(p: Long)
 

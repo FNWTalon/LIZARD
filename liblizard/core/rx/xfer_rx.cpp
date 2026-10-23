@@ -3,6 +3,7 @@
 // ai: solve. The chain itself is xfer_rx_core.cpp's.
 #include "xfer_rx.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace lizard {
@@ -48,8 +49,9 @@ void XferRx::run() {
       busy_ = true;
     }
     for (size_t k = 0; k < batch.size(); k++) {
-      if (batch[k].kind == 1) {
-        rx_->clearAll();
+      if (batch[k].kind != 0) {
+        if (batch[k].kind == 1) rx_->clearAll();
+        else rx_->forget(std::string(reinterpret_cast<const char*>(batch[k].b.data())));
         { std::lock_guard<std::mutex> lk(pmu_); rx_->progress(snap_); }
         { std::lock_guard<std::mutex> lk(mu_); clearsDone_++; }
         idle_.notify_all();
@@ -82,8 +84,21 @@ XferProgress XferRx::progress() {
 
 void XferRx::clear() {
   judge_->clear();
+  ask(1, nullptr);
+}
+
+void XferRx::forget(const std::string& root) {
+  judge_->clear();
+  std::array<uint8_t, XFER_BLOCK_BYTES> b{};
+  memcpy(b.data(), root.data(), std::min(root.size(), b.size() - 1));
+  ask(2, b.data());
+}
+
+// ai: a clear or a forget queued behind what was queued before it, and waited for
+void XferRx::ask(uint8_t kind, const uint8_t* b) {
   std::unique_lock<std::mutex> lk(mu_);
-  queue_.push_back(Item{1, {}});
+  queue_.push_back(Item{kind, {}});
+  if (b) memcpy(queue_.back().b.data(), b, XFER_BLOCK_BYTES);
   const uint64_t ticket = ++clearsAsked_;
   cv_.notify_one();
   idle_.wait(lk, [&] { return clearsDone_ >= ticket || stop_; });

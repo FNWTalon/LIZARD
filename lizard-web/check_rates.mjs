@@ -313,6 +313,10 @@ const CASES = {
   // to the wrong bytes, its chaining value says so, and the page must refuse it and take the chunk again from the
   // second lap. More than one block, so a frame the receiver happened to skip cannot hide the test.
   corrupt: { length: 3 * 2 ** 20 - 12345, log2: 20, corrupt: 1 },
+  // ai: Resumed by the next page (2026-10-22, transfers kept in OPFS across page loads): the first 55% of the frames
+  // ai: to one page, which is killed, the rest to a new page on the same profile. The rest alone cannot carry the file
+  // ai: (each chunk needs a lap's share of its blocks), so a file handed back whole is the first page's blocks resumed.
+  resume: { length: 3 * 2 ** 20 - 12345, log2: 20, resume: 0.55 },
 };
 const XFER = (process.env.XFER ?? "600k").split(",").filter(Boolean);
 if (!ONLY_TEST) {
@@ -332,8 +336,20 @@ if (!ONLY_TEST) {
     // which repeats ids: that only helps a receiver that missed them the first time.
     const frames = Math.ceil((Math.max(1, xs.sched.lap) * (c.corrupt === undefined ? 1.08 : 2.1)) / Math.max(1, B - 1)) + 24;
     const clipFrames = Math.ceil((frames * FC) / FD), path = `${dir}/file.y4m`, t0 = Date.now();
-    await clip(path, (seq) => phy.frame(seq, xs.frameIds(B)), clipFrames);
-    const clipSecs = clipFrames / FC;
+    let first = null;
+    if (c.resume) {
+      // ai: the clips one after the other in the sender's schedule (frameIds goes on where the first left it)
+      const fa = Math.ceil(frames * c.resume), ca = Math.ceil((fa * FC) / FD), pathA = `${dir}/first.y4m`;
+      await clip(pathA, (seq) => phy.frame(seq, xs.frameIds(B)), ca);
+      await clip(path, (seq) => phy.frame(seq + fa, xs.frameIds(B)), Math.ceil(((frames - fa) * FC) / FD));
+      rmSync(`${RECEIVED}/${fname}`, { force: true });
+      first = await chrome(resolve(pathA), ca / FC + 8);
+      rmSync(pathA, { force: true });
+      const x1 = first.xfer;
+      console.log(`  the first page, ${(ca / FC).toFixed(0)} s of the clip's first ${Math.round(100 * c.resume)}%: ${x1?.verified ?? 0} of ${x1?.header?.chunks ?? "?"} chunks verified, ${/complete/.test(first.file ?? "") ? "COMPLETE" : "not complete"}; killed`);
+      if (/complete/.test(first.file ?? "")) process.exitCode = 1;
+    } else await clip(path, (seq) => phy.frame(seq, xs.frameIds(B)), clipFrames);
+    const clipSecs = (c.resume ? Math.ceil(((frames - Math.ceil(frames * c.resume)) * FC) / FD) : clipFrames) / FC;
     console.log(`${name}: ${c.length} B, ${xs.chunks} chunk${xs.chunks === 1 ? "" : "s"} of 2^${xs.chunkLog2}, ${xs.manifest.length} manifest block${xs.manifest.length === 1 ? "" : "s"}, header in the light only; clip ${clipFrames} frames (${clipSecs.toFixed(0)} s) made in ${((Date.now() - t0) / 1000).toFixed(0)} s`);
     rmSync(`${RECEIVED}/${fname}`, { force: true });
     const s = await chrome(resolve(path), clipSecs * (c.corrupt === undefined ? 2 : 1.5) + 30 + (DEC === "gpu" ? GPU_SLACK_S : 0), (st) => /complete|FAILED/.test(st.file ?? ""), `&save=post${process.env.STORE ? "&store=" + process.env.STORE : ""}`);
