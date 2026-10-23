@@ -119,10 +119,14 @@ class SendState(private val a: MainActivity) {
     // ai: web's #subch is. picked: the sub-channels the last configure took, which auto's label names.
     var blocks by mutableStateOf(prefs.getInt("sendBlocks", 0))
     var picked by mutableStateOf(0)
-    // ai: Pictures a second (2026-10-02), the web's #fps: 1 to 60, 60 unless set (the word states it; a rate the
-    // ai: display's refresh does not divide holds pictures unevenly); kept, as the web's is. "Receiving with" (the app
-    // ai: 60, a browser 24) went the same day.
-    var rate by mutableStateOf(prefs.getInt("sendFps", 60).let { if (it in 1..60) it else 60 })
+    // ai: VSync (2026-10-23, on by default, the desktop sender's): the rate voted on both surfaces (the window's and the
+    // ai: ring's, jni.cpp), so the panel moves to a mode the rate divides; off, no vote, the system's choice. Kept.
+    var vsyncOn by mutableStateOf(prefs.getBoolean("sendVsync", true))
+    // ai: Pictures a second (2026-10-02), the web's #fps: 60 unless set (the word states it; a rate the display's refresh
+    // ai: does not divide holds pictures unevenly); kept, as the web's is. "Receiving with" (the app 60, a browser 24) went
+    // ai: the same day. Under VSync Pick.FPS's menu (2026-10-23; a kept rate read as the nearest), without it a 1 to 60
+    // ai: slider; VSync turned on takes a slider's rate to the nearest of the menu's.
+    var rate by mutableStateOf(prefs.getInt("sendFps", 60).let { if (vsyncOn) Pick.fpsOf(it) else it.coerceIn(1, 60) })
     // ai: The screen's brightness while sending (2026-10-02), 1 to 100%, 100 at every launch (2026-10-03; kept as
     // ai: `sendBrightness` before, so a slider moved once dimmed
     // ai: every later send). The window's own override, so the phone's setting is left as it
@@ -258,6 +262,12 @@ class SendState(private val a: MainActivity) {
     private fun plainName(n: String) = n.replace('/', '_').ifEmpty { "file" }
     fun chooseBlocks(b: Int) { blocks = b.coerceIn(0, 128); prefs.edit().putInt("sendBlocks", blocks).apply(); if (phase == Phase.On) reconfigure() }
     fun chooseRate(r: Int) { rate = r.coerceIn(1, 60); prefs.edit().putInt("sendFps", rate).apply(); if (phase == Phase.On) reconfigure() }
+    fun chooseVsync(on: Boolean) {
+        vsyncOn = on
+        if (on && rate !in Pick.FPS) rate = Pick.fpsOf(rate)
+        prefs.edit().putBoolean("sendVsync", on).putInt("sendFps", rate).apply()
+        if (phase == Phase.On) reconfigure()
+    }
     fun chooseBrightness(b: Int) { brightness = b.coerceIn(1, 100) }
     fun pause(p: Boolean) { if (phase == Phase.On) paused = p }
     // ai: what the code offers at most, KB/s: blocks a frame x 469 B x pictures a second; null before the first configure
@@ -383,15 +393,17 @@ class SendState(private val a: MainActivity) {
         if (h == 0L || room <= 0) return
         val subch = if (blocks > 0) 8 * blocks else Pick.pick(room.toDouble())
         val threads = min(4, maxOf(1, Runtime.getRuntime().availableProcessors() - 2))
-        val err = Native.txConfigure(h, Pick.nFor(subch), subch, Pick.span(), fps, threads, when (painter) { "cpu" -> 0; "gpu" -> 1; else -> 2 }, assets, codes, gap, vsynced)
+        val err = Native.txConfigure(h, Pick.nFor(subch), subch, Pick.span(), fps, threads, when (painter) { "cpu" -> 0; "gpu" -> 1; else -> 2 }, assets, codes, gap, vsynced, vsyncOn)
         if (err.isNotEmpty()) { phase = Phase.Error(err); stop(); return }
         configured = room
         picked = subch
         // ai: the window's queue's vote (the vsync-locked present votes on its own surface, jni.cpp): the switch always
-        // ai: made from Android 12 (the default makes it only where seamless, which can leave the panel at another rate)
+        // ai: made from Android 12 (the default makes it only where seamless, which can leave the panel at another rate);
+        // ai: VSync off, 0, no vote
         runCatching {
-            if (Build.VERSION.SDK_INT >= 31) surface?.setFrameRate(fps.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE, Surface.CHANGE_FRAME_RATE_ALWAYS)
-            else if (Build.VERSION.SDK_INT >= 30) surface?.setFrameRate(fps.toFloat(), Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
+            val vote = if (vsyncOn) fps.toFloat() else 0f
+            if (Build.VERSION.SDK_INT >= 31) surface?.setFrameRate(vote, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE, Surface.CHANGE_FRAME_RATE_ALWAYS)
+            else if (Build.VERSION.SDK_INT >= 30) surface?.setFrameRate(vote, Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE)
         }
         val st = runCatching { JSONObject(Native.txStats(h)) }.getOrNull()
         Log.i(Engine.TAG, "send: LIZARD-$subch${if (codes > 1) " x $codes, $gap modules apart" else ""}${if (blocks > 0) " set by hand" else ""} in a $room px square at $fps a second, painting on the " +
@@ -538,19 +550,25 @@ internal fun MainActivity.SendScreen() {
         SendPanel { full = true }
         Fold("Settings", isOpen("sendSettings"), { toggle("sendSettings") }) {
             Fields {
-                // ai: the fields in the web's shape, a menu each (2026-10-06; chips until then); with nothing chosen the setting
-                // ai: stays auto and the menu shows the painter running; a choice takes that painter outright
-                Select("Encoder", if (s.painter == "auto") s.stats.painter.ifEmpty { "gpu" } else s.painter, listOf("gpu" to "GPU", "cpu" to "CPU")) { s.choosePainter(it) }
-                Field("Brightness", "${s.brightness}%") {
-                    Bar(s.brightness.toFloat(), 1f..100f, 98) { v -> val n = v.roundToInt(); if (n != s.brightness) s.chooseBrightness(n) }
-                }
+                // ai: two groups (2026-10-23): Code, what the symbol carries, then Display, how this phone paints and shows it
                 Group("Code") {
                     // ai: the slider sets the format's size (its sub-channels / 8); its title the blocks that size carries under the
                     // ai: format's rate profile and their bytes (2026-10-07)
                     AutoSlider("Blocks", s.blocks, s.picked / 8, 1..128, { n -> val b = Native.blocksFor(8 * n); "$b, ${"%.1f".format(Locale.ROOT, b * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
-                    RateSlider(s)
-                    // ai: one code, or two side by side for a receiver's 2:1 crop, and their gap (the web's #codes and #gap)
+                    if (s.vsyncOn) Select("FPS", s.rate, Pick.FPS.map { it to "$it" }) { s.chooseRate(it) }
+                    else Field("FPS", "${s.rate}") { Bar(s.rate.toFloat(), 1f..60f, 58) { v -> val r = v.roundToInt(); if (r != s.rate) s.chooseRate(r) } }
+                    // ai: one code, or two side by side for a receiver's 2:1 crop (the web's #codes)
                     Select("Codes", s.codes, listOf(1 to "One", 2 to "Two")) { s.chooseCodes(it) }
+                }
+                Group("Display") {
+                    // ai: the fields in the web's shape, a menu each (2026-10-06; chips until then); with nothing chosen the setting
+                    // ai: stays auto and the menu shows the painter running; a choice takes that painter outright
+                    Select("Encoder", if (s.painter == "auto") s.stats.painter.ifEmpty { "gpu" } else s.painter, listOf("gpu" to "GPU", "cpu" to "CPU")) { s.choosePainter(it) }
+                    Select("VSync", s.vsyncOn, listOf(true to "On", false to "Off")) { s.chooseVsync(it) }
+                    Field("Brightness", "${s.brightness}%") {
+                        Bar(s.brightness.toFloat(), 1f..100f, 98) { v -> val n = v.roundToInt(); if (n != s.brightness) s.chooseBrightness(n) }
+                    }
+                    // ai: the gap between two codes (the web's #gap)
                     if (s.codes == 2) Field("Gap", "${s.gap} modules") { Bar(s.gap.toFloat(), 0f..64f, 63) { v -> val g = v.roundToInt(); if (g != s.gap) s.chooseGap(g) } }
                 }
             }
@@ -745,10 +763,4 @@ private fun AutoSlider(title: String, value: Int, shown: Int, range: IntRange, t
     Field(title, if (auto) (if (b > 0) "Auto, ${text(b)}" else "Auto") else text(b)) {
         Bar(value.toFloat(), 0f..range.last.toFloat(), range.last - 1) { choose(it.roundToInt()) }
     }
-}
-
-// ai: Pictures a second: a plain slider, 1 to 60, its value beside its title (the web's #fps and #fpsOut)
-@Composable
-private fun RateSlider(s: SendState) {
-    Field("FPS", "${s.rate}") { Bar(s.rate.toFloat(), 1f..60f, 58) { s.chooseRate(it.roundToInt()) } }
 }

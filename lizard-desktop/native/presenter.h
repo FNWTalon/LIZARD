@@ -36,6 +36,7 @@ struct PresentOptions {
   double edge = 0;         // ai: light kept at each edge of the area past the frame's own, a share of the frame's
                            // ai: height (the Margin past the codec's quiet zone, SendState.kt), 0 to 1
   bool whole = false;      // ai: whole device pixels a sample, nearest (present.cpp --fit whole); else stretch, linear
+  bool vsync = false;      // ai: the monitor held at a refresh fps divides while presenting (setVsync)
   std::function<void(const std::string&)> log;
   std::string csv;         // ai: a CSV line a present (lizard_present --log), "" none
 };
@@ -52,6 +53,12 @@ class Presenter {
   static std::unique_ptr<Presenter> start(const PresentTarget& target, Sender* sender, std::mutex* senderLock,
                                           const PresentOptions& opt, std::string* err);
   void setFps(int fps);
+  // ai: VSync (2026-10-23): where the monitor holding the window refreshes at a rate fps does not divide (165 Hz at 60:
+  // ai: pictures of 3, 3, 2 and 3 refreshes), its mode moved to one at the same size it does, the nearest 60 Hz; put
+  // ai: back when VSync goes off, fps divides the monitor's own refresh again, the window leaves that monitor, or the
+  // ai: presenter stops. X11 (XRandR), Windows (a CDS_FULLSCREEN mode, the system's to undo at exit) and macOS (the
+  // ai: main display, for this app alone); a mode left set by a killed process on X11 stays until the desktop sets one.
+  void setVsync(bool on);
   void setSize(double size, double edge);
   // ai: Paused: the last picture stays (no new pictures taken; presents go on a few times a second, uncounted).
   void setPaused(bool on);
@@ -60,7 +67,8 @@ class Presenter {
   // ai: ({"refreshes": pictures}), missed (refreshes the loop missed), behind (pictures due and not yet painted),
   // ai: queued and queuedMin (presents between one submitted and the last on screen, the mean and the least: the
   // ai: chain's slack; 0 without present_wait), images (the swapchain's), paused, surface and frame ("WxH": the
-  // ai: swapchain's, the picture on screen's), presentWait, device, error, secs (the window's length), and on X11 with
+  // ai: swapchain's, the picture on screen's), presentWait, device, error, secs (the window's length), vsync and
+  // ai: modeFrom (the monitor's refresh before VSync moved it, 0 where it did not), and on X11 with
   // ai: Composite `direct` (true: the screen shows the window direct, no compositor or the window unredirected; false:
   // ai: a compositor draws it, which can tear and paces by its own monitor).
   std::string stats();

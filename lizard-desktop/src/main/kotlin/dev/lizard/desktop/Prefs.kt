@@ -6,7 +6,7 @@ import kotlin.math.roundToInt
 
 // ai: What the sender keeps between runs (the web's send:<id> keys): the encoder (auto, gpu, cpu), the payload (file,
 // ai: test), the blocks a frame (0 auto, else 1 to 128), pictures a second, the code's size (25 to 100%), the spacing and
-// ai: the margin (modules, Pick's bounds), the ring (-1 the default, else 0 to 3, kept as its cells since 2026-10-10), the codes, the folds and the rail, and
+// ai: the margin (modules, Pick's bounds), the ring (-1 the default, else 0 to 3, kept as its cells since 2026-10-10), the codes, VSync, the folds and the rail, and
 // ai: whether the brightness tip was taken before a first send (SendState.requestStart). forget():
 // ai: a run that neither reads nor keeps them, every setting at its default (the test hook's, SenderTest.kt).
 object Prefs {
@@ -39,6 +39,7 @@ object Prefs {
         get() = when (val c = int("ringCells", 0)) { 0 -> when (int("ring", -1)) { 0 -> 0; 1 -> 1; 3 -> 2; else -> -1 }; else -> Pick.RINGS.indexOf(c) }
         set(v) { p?.putInt("ringCells", if (v in Pick.RINGS.indices) Pick.RINGS[v] else -1) }
     var codes: Int get() = int("codes", 1); set(v) { p?.putInt("codes", v) }
+    var vsync: Boolean get() = bool("vsync", true); set(v) { p?.putBoolean("vsync", v) }   // ai: on unless turned off
     var settingsOpen: Boolean get() = bool("dev", false); set(v) { p?.putBoolean("dev", v) }
     var toolsOpen: Boolean get() = bool("logs", false); set(v) { p?.putBoolean("logs", v) }
     var collapsed: Boolean get() = bool("collapsed", false); set(v) { p?.putBoolean("collapsed", v) }

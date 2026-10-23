@@ -325,7 +325,12 @@ class SendState {
     // ai: the painter the sender runs on now, "gpu" or "cpu" ("" before a send): the Encoder chip auto marks (2026-10-05)
     val painterNow: String get() = sender?.str("painter") ?: ""
     var blocks by mutableStateOf(Prefs.blocks.coerceIn(0, 128))
-    var fps by mutableStateOf(Prefs.fps.coerceIn(1, 60))
+    var fps by mutableStateOf(if (Prefs.vsync) Pick.fpsOf(Prefs.fps) else Prefs.fps.coerceIn(1, 60))
+    // ai: VSync (2026-10-23, on by default): while the code is shown its monitor holds a refresh the rate divides, the
+    // ai: nearest 60 Hz, where its own does not (a 165 Hz laptop at 60: pictures of 3, 3, 2 and 3 refreshes), and is put
+    // ai: back at the stop (presenter.h setVsync); off, the monitor is left as it is. FPS is Pick.FPS's chips under VSync,
+    // ai: a 1 to 60 slider without it; VSync turned on takes a slider's rate to the nearest chip.
+    var vsync by mutableStateOf(Prefs.vsync)
     var size by mutableStateOf(Prefs.size.coerceIn(25, 100))
     var spacing by mutableStateOf(Prefs.spacing.coerceIn(Pick.SPACING_MIN, Pick.SPACING_MAX))
     var margin by mutableStateOf(Prefs.margin.coerceIn(Pick.QUIET, Pick.MARGIN_MAX))
@@ -667,6 +672,11 @@ class SendState {
     }
     fun chooseBlocks(b: Int) { blocks = b.coerceIn(0, 128); Prefs.blocks = blocks }
     fun chooseFps(v: Int) { fps = v.coerceIn(1, 60); Prefs.fps = fps }
+    fun chooseVsync(on: Boolean) {
+        vsync = on; Prefs.vsync = on
+        if (on && fps !in Pick.FPS) { chooseFps(Pick.fpsOf(fps)); commitFps() }
+        if (p != 0L) Native.presentVsync(p, on)
+    }
     fun chooseSize(v: Int) { size = v.coerceIn(25, 100); Prefs.size = size }
     fun chooseSpacing(v: Int) { spacing = v.coerceIn(Pick.SPACING_MIN, Pick.SPACING_MAX); Prefs.spacing = spacing }
     fun chooseMargin(v: Int) { margin = v.coerceIn(Pick.QUIET, Pick.MARGIN_MAX); Prefs.margin = margin }
@@ -708,7 +718,7 @@ class SendState {
         if (h == 0L || p != 0L || !canvas.isShowing || areaW <= 0 || areaH <= 0) return
         if (!configure()) return
         canvas.presenting = true
-        val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, false, canvas.place())
+        val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, false, vsync, canvas.place())
         if (pr == 0L) { fail("The code cannot be shown: ${Native.txError()}"); return }
         p = pr
         if (paused) Native.presentPause(p, true)
@@ -792,7 +802,8 @@ class SendState {
         l += "${if (f.codes > 1) "${f.codes} x " else ""}$b x 469 B = ${f.codes * b * 469} B per frame"
         if (pr != null) {
             l += "shown ${Fmt.f1(pr.num("shownFps"))}/s of ${f.fps} asked, ${Fmt.f1(pr.num("presentsPerSec"))} presents a second, the screen " +
-                "${Fmt.f1(pr.num("hz"))} Hz${if (pr.num("modeHz") > 0) " (its mode ${Fmt.f1(pr.num("modeHz"))})" else ""}, times from ${if (pr.flag("presentWait")) "present_wait" else "the acquires"}"
+                "${Fmt.f1(pr.num("hz"))} Hz${if (pr.num("modeHz") > 0) " (its mode ${Fmt.f1(pr.num("modeHz"))})" else ""}" +
+                (if (pr.num("modeFrom") > 0) ", held by VSync from ${Fmt.f1(pr.num("modeFrom"))} Hz" else "") + ", times from ${if (pr.flag("presentWait")) "present_wait" else "the acquires"}"
             val held = (pr["held"] as? JsonObject)?.entries?.sortedBy { it.key.toIntOrNull() ?: Int.MAX_VALUE }
                 ?.joinToString(", ") { "${it.key}: ${(it.value as? JsonPrimitive)?.contentOrNull ?: "?"}" }.orEmpty()
             l += "pictures by the refreshes each held: ${held.ifEmpty { "none" }}; missed ${pr.num("missed").toInt()}, behind the painter ${pr.num("behind").toInt()}"

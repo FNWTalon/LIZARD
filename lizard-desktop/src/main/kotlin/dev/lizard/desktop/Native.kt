@@ -27,8 +27,9 @@ object Native {
     // ai: of the area's room (0.25 to 1), edge the light kept at each edge past the frame's own (Pick.edgeShare), whole
     // ai: whole device pixels a sample (nearest) or stretched (linear), device a substring of a Vulkan device's name ("" the
     // ai: first, LIZ_VK_DEVICE where set).
-    // ai: place: macOS's layer over the canvas (CodeCanvas.place), ignored elsewhere; presentPlace when the canvas moves
-    @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, edge: Float, whole: Boolean, place: FloatArray): Long
+    // ai: place: macOS's layer over the canvas (CodeCanvas.place), ignored elsewhere; presentPlace when the canvas moves.
+    // ai: vsync: the monitor held at a refresh fps divides while presenting (presenter.h setVsync), presentVsync after.
+    @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, edge: Float, whole: Boolean, vsync: Boolean, place: FloatArray): Long
     @JvmStatic external fun presentPlace(p: Long, place: FloatArray)
     // ai: the desktop's file chooser (2026-10-23, native/portal.cpp): the window manager's window around a canvas (0 none,
     // ai: on the UI thread), and the XDG portal's OpenFile attached to it (Windows: the shell's dialog), blocking until it
@@ -41,6 +42,7 @@ object Native {
     @JvmStatic external fun windowFullscreen(window: Long, on: Boolean): Boolean
     @JvmStatic external fun windowIsFullscreen(window: Long): Boolean
     @JvmStatic external fun presentFps(p: Long, fps: Int)
+    @JvmStatic external fun presentVsync(p: Long, on: Boolean)
     @JvmStatic external fun presentSize(p: Long, size: Float, edge: Float)
     @JvmStatic external fun presentPause(p: Long, on: Boolean)
     @JvmStatic external fun presentStats(p: Long): String

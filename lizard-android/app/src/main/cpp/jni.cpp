@@ -419,7 +419,7 @@ struct Tx {
   ANativeWindow* win = nullptr;
   jobject surface = nullptr;   // ai: the global ref win was made from
   int geom = 0, geomW = 0;     // ai: the frame size the window's buffers were set to (height, width)
-  int fps = 0;                 // ai: the rate configured, voted on the ring's surface
+  int fps = 0;                 // ai: the rate voted on the ring's surface: the configured one under VSync, else 0 (no vote)
   std::shared_ptr<Ring> ring;  // ai: the vsync-locked present's surface and buffers (none on the window path)
   int ringSide = 0, ringW = 0, ringFps = 0, dstW = 0, dstH = 0;
   bool ringFailed = false;     // ai: no child surface or buffers here: the window path for this sender
@@ -710,7 +710,7 @@ bool postGpu(Tx* t, int side, int width, int64_t vsync, int64_t expected, int64_
     ASurfaceTransaction_setVisibility(tr, r.sc, ASURFACE_TRANSACTION_VISIBILITY_SHOW);
     t->dstW = w; t->dstH = h;
   }
-  if (t->ringFps != t->fps && t->fps > 0) {
+  if (t->ringFps != t->fps) {
     if (auto f = setFrameRateAlways()) f(tr, r.sc, static_cast<float>(t->fps), ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE, 1);
     else if (auto g = setFrameRate()) g(tr, r.sc, static_cast<float>(t->fps), ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
     t->ringFps = t->fps;
@@ -786,7 +786,7 @@ bool presentVsynced(Tx* t, int side, int width, int64_t vsync, int w, int h) {
     ASurfaceTransaction_setVisibility(tr, r.sc, ASURFACE_TRANSACTION_VISIBILITY_SHOW);
     t->dstW = w; t->dstH = h;
   }
-  if (t->ringFps != t->fps && t->fps > 0) {
+  if (t->ringFps != t->fps) {
     // ai: 1: ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS, whose name the headers fence at Android 12 (the call is looked up)
     if (auto f = setFrameRateAlways()) f(tr, r.sc, static_cast<float>(t->fps), ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE, 1);
     else if (auto g = setFrameRate()) g(tr, r.sc, static_cast<float>(t->fps), ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
@@ -843,14 +843,16 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txError(JNI
 // ai: host copies (the frames go from the painter's ring to the compositor's buffers on the device); otherwise take()
 // ai: needs them. The ring: a second of frames within 96 MB, 2 slots of margin (an expand is waited before its slot
 // ai: is free again).
-extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txConfigure(JNIEnv* e, jclass, jlong h, jint n, jint subch, jint span, jint fps, jint threads, jint painter, jstring assets, jint codes, jint gap, jboolean vsynced) {
+// ai: vsync (2026-10-23, Send.kt SendState.vsync): the rate voted on the ring's surface, which moves the panel to a mode
+// ai: it divides; off, a vote of 0, the system's choice
+extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txConfigure(JNIEnv* e, jclass, jlong h, jint n, jint subch, jint span, jint fps, jint threads, jint painter, jstring assets, jint codes, jint gap, jboolean vsynced, jboolean vsync) {
   lizard::TxFormat f;
   f.n = n; f.subch = subch; f.span = span; f.fps = fps; f.threads = threads; f.painter = painter; f.assets = str(e, assets); f.codes = codes; f.gap = gap;
   f.aheadSecs = 1.0;
   f.aheadBytes = 96ull << 20;
   f.margin = 2;
   f.hostFrames = !(tx(h)->gpuExpand && vsynced == JNI_TRUE);
-  tx(h)->fps = fps;
+  tx(h)->fps = vsync == JNI_TRUE ? fps : 0;
   tx(h)->assets = f.assets;
   return e->NewStringUTF(tx(h)->s->configure(f).c_str());
 }

@@ -8,6 +8,8 @@
 
 #include <dlfcn.h>
 
+#include <cmath>
+
 #include <jawt.h>
 #include <jawt_md.h>
 
@@ -99,5 +101,62 @@ double layerRefreshHz(void*) {
   CGDisplayModeRelease(m);
   return hz;
 }
+
+uint32_t mainDisplay() { return CGMainDisplayID(); }
+
+namespace {
+// ai: the display's modes, the duplicate low-resolution ones listed too (a refresh may live only there); CFRelease it
+CFArrayRef allModes(CGDirectDisplayID d) {
+  const void* keys[] = {kCGDisplayShowDuplicateLowResolutionModes};
+  const void* vals[] = {kCFBooleanTrue};
+  CFDictionaryRef opts = CFDictionaryCreate(nullptr, keys, vals, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+  CFArrayRef all = CGDisplayCopyAllDisplayModes(d, opts);
+  if (opts) CFRelease(opts);
+  return all;
+}
+bool sameSize(CGDisplayModeRef a, CGDisplayModeRef b) {
+  return CGDisplayModeGetPixelWidth(a) == CGDisplayModeGetPixelWidth(b) && CGDisplayModeGetPixelHeight(a) == CGDisplayModeGetPixelHeight(b) &&
+         CGDisplayModeGetWidth(a) == CGDisplayModeGetWidth(b) && CGDisplayModeGetHeight(a) == CGDisplayModeGetHeight(b);
+}
+}  // namespace
+
+std::vector<double> displayRates(uint32_t display, double* now) {
+  std::vector<double> hz;
+  *now = 0;
+  CGDisplayModeRef cur = CGDisplayCopyDisplayMode(display);
+  if (!cur) return hz;
+  *now = CGDisplayModeGetRefreshRate(cur);
+  if (CFArrayRef all = allModes(display)) {
+    for (CFIndex i = 0; i < CFArrayGetCount(all); i++) {
+      auto m = static_cast<CGDisplayModeRef>(const_cast<void*>(CFArrayGetValueAtIndex(all, i)));
+      const double r = CGDisplayModeGetRefreshRate(m);
+      if (r > 0 && CGDisplayModeIsUsableForDesktopGUI(m) && sameSize(m, cur)) hz.push_back(r);
+    }
+    CFRelease(all);
+  }
+  CGDisplayModeRelease(cur);
+  return hz;
+}
+
+bool setDisplayRate(uint32_t display, double hz) {
+  CGDisplayModeRef cur = CGDisplayCopyDisplayMode(display);
+  if (!cur) return false;
+  bool ok = false;
+  if (CFArrayRef all = allModes(display)) {
+    for (CFIndex i = 0; i < CFArrayGetCount(all) && !ok; i++) {
+      auto m = static_cast<CGDisplayModeRef>(const_cast<void*>(CFArrayGetValueAtIndex(all, i)));
+      if (std::fabs(CGDisplayModeGetRefreshRate(m) - hz) >= 0.01 || !CGDisplayModeIsUsableForDesktopGUI(m) || !sameSize(m, cur)) continue;
+      CGDisplayConfigRef cfg = nullptr;
+      if (CGBeginDisplayConfiguration(&cfg) != kCGErrorSuccess) break;
+      if (CGConfigureDisplayWithDisplayMode(cfg, display, m, nullptr) != kCGErrorSuccess) { CGCancelDisplayConfiguration(cfg); break; }
+      ok = CGCompleteDisplayConfiguration(cfg, kCGConfigureForAppOnly) == kCGErrorSuccess;
+    }
+    CFRelease(all);
+  }
+  CGDisplayModeRelease(cur);
+  return ok;
+}
+
+void restoreDisplays() { CGRestorePermanentDisplayConfiguration(); }
 
 }  // namespace lizard::mac

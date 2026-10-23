@@ -22,6 +22,11 @@ object Pick {
     const val SPACING_DEFAULT = 16
     const val MARGIN_MAX = 34
     const val MARGIN_DEFAULT = 8
+    // ai: the pictures a second offered under VSync (2026-10-23; without it, a 1 to 60 slider): 60 and its divisors to 10,
+    // ai: every picture a whole number of refreshes at 60 Hz, where VSync holds a monitor whose own refresh they do not divide
+    val FPS = listOf(60, 30, 20, 15, 10)
+    // ai: a rate kept from the slider: the nearest offered, a tie to the higher
+    fun fpsOf(v: Int) = FPS.minWith(compareBy<Int> { kotlin.math.abs(it - v) }.thenByDescending { it })
     private const val OB_MARGIN = 15
     private const val T_DISPLAY_CYCLE = 2.7
     private val PICTURES = intArrayOf(256, 384, 512, 768, 1024, 1536)
