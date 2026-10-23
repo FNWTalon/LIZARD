@@ -74,9 +74,16 @@ jobs:
       - name: The GPU tree
         run: lizard-android/build.sh gen
 
-      - name: Windows' native library (MinGW-w64)
+      - name: MinGW-w64
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q mingw-w64 > /dev/null
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends g++-mingw-w64-x86-64-posix
+
+      - name: Windows' native library (MinGW-w64)
+        timeout-minutes: 20
+        run: |
           cmake -S lizard-desktop/native -B lizard-desktop/build/win -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$PWD/liblizard/cmake/mingw-w64.cmake" -DLIZ_JDK_INCLUDE="$JAVA_HOME/include"
           cmake --build lizard-desktop/build/win --target lizard_desktop -j"$(nproc)"
@@ -107,7 +114,9 @@ jobs:
 
       - name: The native library
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q libx11-dev libxrandr-dev libxcomposite-dev libxext-dev > /dev/null
+          sudo rm -f /var/lib/man-db/auto-update
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libx11-dev libxrandr-dev libxcomposite-dev libxext-dev
           cmake -S lizard-desktop/native -B lizard-desktop/build/native -DCMAKE_BUILD_TYPE=Release
           cmake --build lizard-desktop/build/native --target lizard_desktop -j"$(nproc)"
 
