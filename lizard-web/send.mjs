@@ -676,7 +676,9 @@ $("firstStart").onclick = () => {
 $("firstCancel").onclick = () => $("first").close();
 $("go").onclick = go;
 $("stop").onclick = () => { stop(); showReady(); };
-$("railSend").onclick = () => (running ? setPaused(!paused) : go());
+// ai: play and pause as a video player's (the rail's button, Space and K): Start where nothing runs, else Pause or Resume
+const playPause = () => (running ? setPaused(!paused) : $("go").disabled ? undefined : go());
+$("railSend").onclick = playPause;
 // ai: The selection (2026-10-23; until then a pick replaced the last): items added by each pick, drop or share, in
 // ai: order, each a file or a folder with its entries under its own name (tar.mjs bundle's), so files and folders mix.
 // ai: The payload is their bundle (one file alone is itself, else one tar). An item already listed is not added again
@@ -851,6 +853,26 @@ sideResizer("send:side");   // ai: the column's edge dragged to resize it (2026-
 // ai: A tap on the middle leaves fullscreen, or, while its hint asks for a file, opens the picker (the page's only one).
 main.addEventListener("click", () => { if (document.body.classList.contains("full")) leaveFull(); else if (!$("hint").hidden) $("file").click(); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("full")) leaveFull(); });
+// ai: Keys as video players have them (2026-10-23): Space, K or the media key play and pause (playPause), F full screen
+// ai: and back (Escape leaves, above), the media key Stop stops, Ctrl+O (Cmd+O) adds files where files are sent. None
+// ai: while a dialog is open or a menu or text field has the keys, nor with a modifier but Ctrl+O's, nor as a held key
+// ai: repeats; Space on a focused button is the hotkey, not a press of that button.
+document.addEventListener("keydown", (e) => {
+  if (e.repeat || e.defaultPrevented || document.querySelector("dialog[open]")) return;
+  const t = e.target, typing = t instanceof HTMLElement && (t.isContentEditable || t.tagName === "SELECT" || t.tagName === "TEXTAREA" ||
+    (t.tagName === "INPUT" && !["range", "checkbox", "radio", "button"].includes(t.type)));
+  if (typing) return;
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && key === "o") {
+    e.preventDefault();
+    if ($("payload").value !== "test") $("file").click();
+    return;
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (key === " " || key === "k" || key === "MediaPlayPause") { e.preventDefault(); playPause(); }
+  else if (key === "f") { e.preventDefault(); if (document.body.classList.contains("full")) leaveFull(); else enterFull(); }
+  else if (key === "MediaStop" && running) { e.preventDefault(); stop(); showReady(); }
+});
 // ai: Another encoder asked for: the run starts again under it, and auto tries the GPU again.
 $("enc").onchange = () => { gpuOff = null; showEnc(); if (running) go(); };
 // ai: One code or two changes the room a symbol has, so it re-picks as a resize does; so does another version or ring

@@ -594,6 +594,9 @@ class SendState {
 
     private fun fail(why: String) { stop(); phase = Phase.Error(why) }
 
+    // ai: play and pause as a video player's (the rail's button, Space and K): Start where nothing runs (the tip first
+    // ai: where it is due), else Pause or Resume
+    fun playPause() { if (phase == Phase.On) pause(!paused) else if (!sending) requestStart() }
     // ai: Paused: the last picture stays (the presenter takes no new one); a receiver holds what it has.
     fun pause(on: Boolean) {
         if (phase != Phase.On) return
