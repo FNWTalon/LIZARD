@@ -451,6 +451,66 @@ bool x11IsFullscreen(unsigned long top) {
 #endif
 }
 
+#if defined(_WIN32)
+namespace {
+// ai: the windows full screen now, each with what it was before: its style, its rectangle as a normal window, maximized
+struct Windowed { LONG_PTR style = 0; RECT rect{}; bool maximized = false; };
+std::mutex gFullMu;
+std::map<HWND, Windowed> gFull;
+}  // namespace
+#endif
+
+// ai: Windows' full screen (2026-10-24; Compose's placement before, which left the window unmaximized and the app's
+// ai: own state wrong), as Chromium makes it: a maximized window restored first (left maximized, its placement's
+// ai: rectangle stays the monitor's and it comes back over the taskbar), its normal rectangle kept, WS_CAPTION and
+// ai: WS_THICKFRAME off and the window over its monitor's whole rectangle, which also hides the taskbar; on leaving,
+// ai: the style and the rectangle back and the window maximized again where it was. Called from the app's thread,
+// ai: these reach the window's (AWT's) synchronously, as AWT's own peers do.
+bool win32Fullscreen(void* hwnd, bool on) {
+#if defined(_WIN32)
+  HWND w = static_cast<HWND>(hwnd);
+  if (!w || !IsWindow(w)) return false;
+  std::lock_guard<std::mutex> l(gFullMu);
+  auto at = gFull.find(w);
+  if (on) {
+    if (at != gFull.end()) return true;
+    MONITORINFO mi{};
+    mi.cbSize = sizeof mi;
+    if (!GetMonitorInfoW(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mi)) return false;
+    Windowed was;
+    was.maximized = IsZoomed(w) != 0;
+    if (was.maximized) ShowWindow(w, SW_RESTORE);
+    was.style = GetWindowLongPtrW(w, GWL_STYLE);
+    GetWindowRect(w, &was.rect);
+    gFull[w] = was;
+    SetWindowLongPtrW(w, GWL_STYLE, was.style & ~static_cast<LONG_PTR>(WS_CAPTION | WS_THICKFRAME));
+    const RECT& r = mi.rcMonitor;
+    SetWindowPos(w, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  } else {
+    if (at == gFull.end()) return true;
+    const Windowed was = at->second;
+    gFull.erase(at);
+    SetWindowLongPtrW(w, GWL_STYLE, was.style);
+    const RECT& r = was.rect;
+    SetWindowPos(w, nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    if (was.maximized) ShowWindow(w, SW_MAXIMIZE);
+  }
+  return true;
+#else
+  (void)hwnd; (void)on;
+  return false;
+#endif
+}
+bool win32IsFullscreen(void* hwnd) {
+#if defined(_WIN32)
+  std::lock_guard<std::mutex> l(gFullMu);
+  return gFull.count(static_cast<HWND>(hwnd)) > 0;
+#else
+  (void)hwnd;
+  return false;
+#endif
+}
+
 struct Presenter::Impl {
   PresentTarget target;
   Sender* sender = nullptr;
