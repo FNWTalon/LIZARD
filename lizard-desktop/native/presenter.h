@@ -28,6 +28,11 @@ unsigned long x11TopLevel(unsigned long window);
 // ai: the window manager's own full screen for its window (x11TopLevel's), asked (true where the request went) and read
 bool x11Fullscreen(unsigned long top, bool on);
 bool x11IsFullscreen(unsigned long top);
+// ai: Windows' full screen for a top-level window (2026-10-24), as Windows apps make it: its frame and caption off and
+// ai: the monitor covered, then its style and placement (maximized or not) given back; set (false where it could not
+// ai: be: not Windows) and read. The window's own thread receives the changes; these may be called from any.
+bool win32Fullscreen(void* hwnd, bool on);
+bool win32IsFullscreen(void* hwnd);
 
 struct PresentOptions {
   int fps = 60;            // ai: pictures a second asked; each held round(refreshHz / fps) refreshes where that is whole

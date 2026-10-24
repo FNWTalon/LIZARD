@@ -345,10 +345,19 @@ FN(jobjectArray, portalPick)(JNIEnv* e, jclass, jlong window, jstring title, jbo
   return out;
 }
 // ai: full screen as other apps ask for it (2026-10-23, presenter.cpp x11Fullscreen): the window manager's own for the
-// ai: window windowOf gave; false where it could not be asked (not X11), for Compose's placement instead
+// ai: window windowOf gave (Windows: win32Fullscreen, 2026-10-24); false where it could not be asked (macOS), for
+// ai: Compose's placement instead
 FN(jboolean, windowFullscreen)(JNIEnv*, jclass, jlong window, jboolean on) {
+#if defined(_WIN32)
+  return window && lizard::win32Fullscreen(reinterpret_cast<void*>(static_cast<uintptr_t>(window)), on == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+#else
   return window && lizard::x11Fullscreen(static_cast<unsigned long>(window), on == JNI_TRUE) ? JNI_TRUE : JNI_FALSE;
+#endif
 }
 FN(jboolean, windowIsFullscreen)(JNIEnv*, jclass, jlong window) {
+#if defined(_WIN32)
+  return window && lizard::win32IsFullscreen(reinterpret_cast<void*>(static_cast<uintptr_t>(window))) ? JNI_TRUE : JNI_FALSE;
+#else
   return window && lizard::x11IsFullscreen(static_cast<unsigned long>(window)) ? JNI_TRUE : JNI_FALSE;
+#endif
 }

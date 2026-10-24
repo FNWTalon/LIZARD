@@ -83,7 +83,8 @@ fun main(args: Array<String>) {
             }
             // ai: Full screen as other apps have it (2026-10-23): the window manager's own (_NET_WM_STATE_FULLSCREEN,
             // ai: Native.windowFullscreen), which gives the window back as it was, maximized or not; the app follows the
-            // ai: manager's word, read back at each resize of the window, so its own shortcut works too. Off X11,
+            // ai: manager's word, read back at each resize of the window, so its own shortcut works too. Windows
+            // ai: (2026-10-24): the same, the window's frame off over its monitor (Native.windowFullscreen); macOS,
             // ai: Compose's placement. Until then: Compose's placement on X11, and a leave through Floating then
             // ai: Maximized once the bounds held still, since Compose cannot set a window maximized again.
             s.maximize = { ws.placement = WindowPlacement.Maximized }
