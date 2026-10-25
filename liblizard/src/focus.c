@@ -37,6 +37,8 @@ struct focus_ws {
   float *rot;
   // The format word of the last decode (fmt.h): its soft values, what they said, and whether they said anything.
   float *fmt_q; int fmt_cells, fmt_bytes, fmt_rx_ok; ob_fmt_t fmt_rx;
+  // ai: whether the last read gave fmt_q at all (past the contrast floor), for focus_fmt_soft
+  int fmt_read;
   // focus_acquire's answer, waiting for focus_finish. The image is held by pointer, so the caller's pixels must
   // outlive the pair; the rig's do, since a worker owns the frame for the whole decode.
   image_t hold_im; ob_reg_t hold_reg; int hold_valid;
@@ -975,8 +977,8 @@ static int acquire_hold(const focus_t *f, const image_t *pim, ob_reg_t *reg_in, 
   // so this is the last moment it can be learned. Reading it costs about 570 bilinear samples
   // against the picture's n^2, and it is what lets a receiver that was told nothing read the symbol.
   w->fmt_rx_ok = 0;
-  if (w->fmt_cells && ob_thin_read_fmt(&f->frame, &im, &reg, w->fmt_q, w->fmt_cells))
-    w->fmt_rx_ok = ob_fmt_decode(w->fmt_q, w->fmt_cells, w->fmt_bytes, 1, OB_FMT_VERSION_MAX, &w->fmt_rx) == 0;
+  w->fmt_read = w->fmt_cells && ob_thin_read_fmt(&f->frame, &im, &reg, w->fmt_q, w->fmt_cells);
+  if (w->fmt_read) w->fmt_rx_ok = ob_fmt_decode(w->fmt_q, w->fmt_cells, w->fmt_bytes, 1, OB_FMT_VERSION_MAX, &w->fmt_rx) == 0;
   w->hold_im = im; w->hold_reg = reg; w->hold_valid = 1;
   return 1;
 }
@@ -1194,6 +1196,14 @@ int focus_fmt_check(const focus_t *f, const float *q) {
   for (int i = 0; i < 4 * w->fmt_cells; i++) w->fmt_q[i] = q[1 + i];
   w->fmt_rx_ok = ob_fmt_decode(w->fmt_q, w->fmt_cells, w->fmt_bytes, 1, OB_FMT_VERSION_MAX, &w->fmt_rx) == 0;
   return w->fmt_rx_ok;
+}
+// ai: The soft values the last acquire read off the band (4 x cells, side * cells + cell, > 0 dark), for a lab decoder
+// ai: held against ob_fmt_decode on the same values (scripts/exp/word_arms.mjs, 2026-10-24). 0 where none was read.
+int focus_fmt_soft(const focus_t *f, float *out) {
+  const struct focus_ws *w = f->ws;
+  if (!w || !w->fmt_cells || !w->fmt_read) return 0;
+  memcpy(out, w->fmt_q, (size_t)4 * w->fmt_cells * sizeof(float));
+  return w->fmt_cells;
 }
 
 // What focus_acquire is holding, for a caller that has to sample elsewhere. Valid until the matching focus_finish.

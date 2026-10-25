@@ -397,6 +397,15 @@ export class Focus {
       fmt: Focus.fmtOf(M._focus_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
       mark: null, msDetect: 0, msSample: 0, msDecode: 0 };
   }
+  // ai: The soft word values the last decode or rxAcquire read off the band (src/focus.h focus_fmt_soft): { cells, q }
+  // ai: with q 4 x cells long, side * cells + cell, > 0 dark; null where the read stopped at its contrast floor.
+  fmtSoft() {
+    this.pFmtS ??= M._malloc(4 * 4096);
+    const cells = M._focus_fmt_soft_out(this.pFmtS);
+    return cells ? { cells, q: M.HEAPF32.slice(this.pFmtS >> 2, (this.pFmtS >> 2) + 4 * cells) } : null;
+  }
+  // ai: the word the last decode or fmtCheck took ({ version, fps }), or null
+  fmtRx() { return Focus.fmtOf(M._focus_fmt_rx_ptr()); }
   // The format word from soft values read on the device, [ok, q0..]: feeds fmtOf and nothing in the decode.
   fmtCheck(q) {
     this.pFmtQ ??= M._malloc(4 * 4096);

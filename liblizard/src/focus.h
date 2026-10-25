@@ -234,6 +234,8 @@ int focus_finish_ext(const focus_t *f, float *grid, const int8_t *ext_llr, const
 int focus_assemble(const focus_t *f, const uint8_t *bytes, int stride, const uint8_t *verdicts, const int8_t *its, const float *est,
                    uint8_t *blocks, uint8_t *ok, ob_result_t *res, const float *quad, int orient, float score);
 int focus_fmt_check(const focus_t *f, const float *q);
+// ai: The last acquire's soft word values into out (4 x the word cells a side); returns the cells a side, 0 for none.
+int focus_fmt_soft(const focus_t *f, float *out);
 // What focus_acquire is holding is declared in internal.h, where image_t and ob_reg_t live: it is the sampler's
 // business, not the format's, and this header is the format's.
 // For a caller running the transform elsewhere: the detrend basis it needs.
