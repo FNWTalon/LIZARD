@@ -1,5 +1,6 @@
 package dev.lizard.receiver
 
+import dev.lizard.readout.Readout
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.ClipData

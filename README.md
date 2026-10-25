@@ -417,10 +417,12 @@ has warmed delivers fewer frames. The rate also depends heavily on the sending s
 their maximum, a steady frame rate) and on the receiving camera: phone cameras through a native app work best,
 browser cameras on laptops and webcams poorly.
 
-Everything was built and measured on Linux x86-64. The desktop sender also runs on Windows and on macOS (Apple
-Silicon, through MoltenVK); there it has been checked only on virtual machines (Windows on a software Vulkan driver,
-macOS on a build service's machine), each screenshot of it read back by the decoder, which says it sends but not how
-steadily it paces on real hardware.
+Everything was built and measured on Linux x86-64. The desktop app also runs on Windows and on macOS (Apple
+Silicon, through MoltenVK); there its sender has been checked only on virtual machines (Windows on a software Vulkan
+driver, macOS on a build service's machine), each screenshot of it read back by the decoder, which says it sends but
+not how steadily it paces on real hardware. The desktop app's receiver (UVC cameras through V4L2, Media Foundation or
+AVFoundation) has been checked only against fake camera devices and a simulated camera filming a simulated screen; no
+rate with a real camera has been measured yet.
 
 ## Layout
 
@@ -429,7 +431,7 @@ steadily it paces on real hardware.
 | `liblizard/` | the library: the C codec (`src/`, the format's reference), the GPU decoder (`gpu/`, WebGPU), the native engine (`core/`: the decoder on Vulkan, the C on the CPU, the transfer, the sender), the generator that compiles the GPU decoder for Vulkan (`gen/`), and a C API with WebAssembly and Kotlin bindings (`include/`, `api/`, `bindings/`) |
 | `lizard-web/` | the web app: sender and receiver pages, installable as a PWA |
 | `lizard-android/` | the Android app: receiver and sender, native Vulkan decoding |
-| `lizard-desktop/` | a desktop sender: a Compose Desktop app drawing the code through a native Vulkan presenter |
+| `lizard-desktop/` | the desktop app: sender and receiver, a Compose Desktop app drawing the code through a native Vulkan presenter and reading a camera (V4L2, Media Foundation or AVFoundation) into the native decoders |
 | `research/SPEC.md` | the format specification |
 
 Comments and docs also cite the project's lab files (`scripts/`, `archive/`, `research/` other than `SPEC.md`,
@@ -438,8 +440,8 @@ or reference files say so.
 
 ## Building
 
-Commands run from the repository's root unless they `cd`. The web pages, the Android app and the desktop sender all
-start from the codec built to WebAssembly; the Android app and the desktop sender also need the GPU kernels generated
+Commands run from the repository's root unless they `cd`. The web pages, the Android app and the desktop app all
+start from the codec built to WebAssembly; the Android app and the desktop app also need the GPU kernels generated
 from it. Node 22 or later (the web checks drive Chrome through Node's own WebSocket); tested with Node 22, Rust 1.93,
 CMake 3.28 and emsdk 6.0.9.
 
@@ -476,9 +478,10 @@ with the packages `platforms;android-36`, `build-tools;35.0.0`, `ndk;27.1.122970
 `lizard-android/build.sh apk` writes `lizard-android/app/build/outputs/apk/debug/app-debug.apk` (arm64, Android 10
 or later).
 
-**The desktop sender** needs CMake 3.22 or later (with `JAVA_HOME` naming a JDK where CMake does not find one for its
+**The desktop app** needs CMake 3.22 or later (with `JAVA_HOME` naming a JDK where CMake does not find one for its
 JNI headers) and, on Linux, the X11, XRandR, Xcomposite and Xext development files; `packageDeb`
-also needs `dpkg-deb` and `fakeroot`.
+also needs `dpkg-deb` and `fakeroot`. On Linux its receiver loads TurboJPEG (`libturbojpeg.so.0`) at run time for
+cameras that send MJPEG; Windows and macOS decode MJPEG themselves.
 
 ```
 cd lizard-desktop
@@ -486,10 +489,17 @@ cmake -S native -B build/native && cmake --build build/native
 ./gradlew run                  # or ./gradlew packageDeb: a .deb with its own Java runtime
 ```
 
+The receiver's checks run against fake camera devices and a simulated camera, never a real one:
+`cmake --build build/native --target cam_check lizard_receive`, then `build/native/cam_check all` (with
+`LIZ_V4L2_NODES=` set empty on Linux, so no camera node is probed). `lizard_receive` is the receiver without the
+window: `lizard_receive list`, or `lizard_receive --camera <id>` with a line of figures a second.
+
 On Windows the native library is built with MinGW-w64, most simply from Linux with its posix-thread compilers
 (`x86_64-w64-mingw32-gcc-posix` and `g++-posix`, as Debian names them) and `JAVA_HOME` a JDK, for its JNI headers. From
 `lizard-desktop/`:
 `cmake -S native -B build/win -DCMAKE_TOOLCHAIN_FILE=$PWD/../liblizard/cmake/mingw-w64.cmake && cmake --build build/win --target lizard_desktop`.
+The Windows build must hold no C++ `thread_local` with a destructor: MinGW-w64's emulated thread-local storage
+corrupts the heap when a thread holding one exits (`x86_64-w64-mingw32-nm` finds `__cxa_thread_atexit` where one is).
 Then, on Windows, with `build/win/lizard_desktop.dll` copied to `build/native/`, `gradlew.bat packageMsi` writes an
 installer (WiX, which Gradle fetches) with its own Java runtime. Windows needs a GPU driver with Vulkan.
 

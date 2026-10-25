@@ -67,9 +67,13 @@ void XferRx::run() {
   }
 }
 
-bool XferRx::take(const uint8_t* b) { return judge_->take(b, [this](const uint8_t* p) { push(0, p); }); }
+bool XferRx::take(const uint8_t* b) {
+  std::lock_guard<std::mutex> lk(prod_);
+  return judge_->take(b, [this](const uint8_t* p) { push(0, p); });
+}
 
 FrameVerdict XferRx::frame(const std::vector<Block>& verified) {
+  std::lock_guard<std::mutex> lk(prod_);
   return judge_->frame(verified.empty() ? nullptr : verified.front().bytes.data(), verified.size(), [this](const uint8_t* p) { push(0, p); });
 }
 
@@ -82,12 +86,15 @@ XferProgress XferRx::progress() {
   return p;
 }
 
+// ai: the producers' lock held through the worker's clear, so no frame lands between the judge's and the core's
 void XferRx::clear() {
+  std::lock_guard<std::mutex> lk(prod_);
   judge_->clear();
   ask(1, nullptr);
 }
 
 void XferRx::forget(const std::string& root) {
+  std::lock_guard<std::mutex> lk(prod_);
   judge_->clear();
   std::array<uint8_t, XFER_BLOCK_BYTES> b{};
   memcpy(b.data(), root.data(), std::min(root.size(), b.size() - 1));

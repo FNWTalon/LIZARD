@@ -204,6 +204,9 @@ struct Device {
   VkPhysicalDeviceMemoryProperties mem{};
   std::string name, driver;
   uint32_t apiVersion = 0, vendorId = 0, deviceId = 0;
+  // ai: what the device is (2026-10-25): VK_PHYSICAL_DEVICE_TYPE_CPU a software rasterizer on the host's cores
+  // ai: (lavapipe, SwiftShader), which the receiver's auto passes over for the C (core/rx/receiver.cpp)
+  VkPhysicalDeviceType type = VK_PHYSICAL_DEVICE_TYPE_OTHER;
   Limits limits;
   Features features;
   double timestampPeriod = 1.0;   // ai: ns a tick

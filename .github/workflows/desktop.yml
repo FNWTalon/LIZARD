@@ -1,10 +1,15 @@
-# The desktop sender built from a clean checkout for Linux (.deb), Windows (.msi) and macOS on Apple Silicon (.dmg).
-# On Linux once: the codec (Emscripten), naga, the GPU painter's tree, and Windows' native library cross-built with
-# MinGW-w64. Then each system builds its package with jpackage, a Java runtime inside: Linux and macOS their native
-# library too, macOS with MoltenVK beside it. The macOS build is also run once, sending into its own window, and a
-# screenshot of it read back by the C decoder. Every run keeps the packages as artifacts; on a tag they are also attached
-# to that tag's release, made as a draft pre-release where none exists.
-name: Desktop sender
+# The desktop app (Home, Send and Receive) built from a clean checkout for Linux (.deb), Windows (.msi) and macOS on
+# Apple Silicon (.dmg). On Linux once: the codec (Emscripten), naga, the GPU tree (the painter's and the decoder's),
+# and Windows' native library and the receiver's tools (cam_check, lizard_receive) cross-built with MinGW-w64. Then
+# each system builds its package with jpackage, a Java runtime inside (Linux and macOS their native library too, macOS
+# with MoltenVK beside it), keeps it as an artifact, and only then runs the receiver's checks, synthetic all
+# (cam_check: no camera is listed or opened; each camera backend against a fake device, the receiver on a simulated
+# camera and the CPU decoder): a check that fails fails its job, and so the release, while the package it built is
+# kept to look at. The macOS build is also run from its .dmg twice: sending into its own window, a screenshot of it
+# read back by the C decoder, and receiving the simulated camera's test stream. Each system's checks' output is kept
+# too (smoke-<system>); on a tag the packages are also attached to that tag's release, made as a draft pre-release
+# where none exists.
+name: Desktop app
 
 on:
   push:
@@ -19,6 +24,7 @@ env:
   EMSDK_VERSION: 6.0.9
   NDK_VERSION: 27.1.12297006
   MOLTENVK_VERSION: v1.4.2
+  TURBOJPEG_VERSION: 3.2.0
 
 jobs:
   tree:
@@ -97,21 +103,26 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive dpkg -i ~/mingw-debs/*.deb
           x86_64-w64-mingw32-g++-posix --version | head -1
 
-      - name: Windows' native library (MinGW-w64)
+      - name: Windows' native library and the receiver's tools (MinGW-w64)
         timeout-minutes: 20
         run: |
           cmake -S lizard-desktop/native -B lizard-desktop/build/win -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$PWD/liblizard/cmake/mingw-w64.cmake" -DLIZ_JDK_INCLUDE="$JAVA_HOME/include"
-          cmake --build lizard-desktop/build/win --target lizard_desktop -j"$(nproc)"
+          cmake --build lizard-desktop/build/win --target lizard_desktop cam_check lizard_receive -j"$(nproc)"
 
+      # The GPU tree as the packages carry it (build.gradle.kts bundle): every setup (the painter's send.json, the
+      # decoder's six), every blob, every module but the raw ones; and Windows' binaries
       - uses: actions/upload-artifact@v4
         with:
           name: tree
           path: |
-            liblizard/out/setup/send.json
+            liblizard/out/setup/*.json
             liblizard/out/blobs/
-            liblizard/out/spv/send_*.spv
+            liblizard/out/spv/*.spv
+            !liblizard/out/spv/*.raw.spv
             lizard-desktop/build/win/lizard_desktop.dll
+            lizard-desktop/build/win/cam_check.exe
+            lizard-desktop/build/win/lizard_receive.exe
 
   linux:
     needs: tree
@@ -128,13 +139,16 @@ jobs:
         with:
           name: tree
 
-      - name: The native library
+      # libturbojpeg: no header, its calls declared in camera/jpeg.cpp and opened at run time, for the checks' MJPEG
+      # cases (the package's Depends carry it for the app: packaging/deb-deps.sh)
+      - name: The native library and the receiver's tools
+        id: native
         run: |
           sudo rm -f /var/lib/man-db/auto-update
           sudo apt-get update -q
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libx11-dev libxrandr-dev libxcomposite-dev libxext-dev
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libx11-dev libxrandr-dev libxcomposite-dev libxext-dev libturbojpeg
           cmake -S lizard-desktop/native -B lizard-desktop/build/native -DCMAKE_BUILD_TYPE=Release
-          cmake --build lizard-desktop/build/native --target lizard_desktop -j"$(nproc)"
+          cmake --build lizard-desktop/build/native --target lizard_desktop cam_check lizard_receive -j"$(nproc)"
 
       - name: The .deb
         working-directory: lizard-desktop
@@ -150,6 +164,34 @@ jobs:
         with:
           name: desktop-linux
           path: dist/
+
+      # The receiver's checks (native/checks.h), after the package is kept and whatever packaging gave: the
+      # conversions and TurboJPEG, the trigger's clock, the simulated screen and camera, the session on the CPU
+      # decoder, V4L2 against sim/fake_v4l2's devices. LIZ_V4L2_NODES empty: no /dev/video* node is probed. Every check
+      # runs; any one's failure (exit other than 0) fails the step after the last, and the job.
+      - name: The receiver's checks
+        if: ${{ !cancelled() && steps.native.outcome == 'success' }}
+        timeout-minutes: 20
+        run: |
+          export LIZ_V4L2_NODES=
+          mkdir -p smoke
+          fail=0
+          for c in luma trigger scene session v4l2; do
+            rc=0
+            timeout 600 lizard-desktop/build/native/cam_check "$c" > "smoke/cam_check-$c.txt" 2>&1 || rc=$?
+            echo "::group::cam_check $c: exit $rc"
+            cat "smoke/cam_check-$c.txt"
+            echo "::endgroup::"
+            grep '^FAIL' "smoke/cam_check-$c.txt" || true
+            if [ "$rc" != 0 ]; then echo "::error::cam_check $c exited $rc"; fail=1; fi
+          done
+          exit "$fail"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-linux
+          path: smoke/
 
   windows:
     needs: tree
@@ -189,6 +231,74 @@ jobs:
           name: desktop-windows
           path: dist/
 
+      # TurboJPEG for the checks' MJPEG cases (the simulated camera's frames, luma's decodes; the app's Media
+      # Foundation backend decodes a camera's MJPEG itself): turbojpeg.dll from libjpeg-turbo's release (its Visual
+      # C++ build, the C runtime inside: KERNEL32 alone), beside cam_check.exe, where camera/jpeg.cpp's LoadLibraryW
+      # finds it first
+      - name: TurboJPEG
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$TURBOJPEG_VERSION" -R libjpeg-turbo/libjpeg-turbo -p "libjpeg-turbo-$TURBOJPEG_VERSION-vc-x64.exe" -D tj
+          7z x -y "tj/libjpeg-turbo-$TURBOJPEG_VERSION-vc-x64.exe" -otj/x > /dev/null
+          cp tj/x/bin/turbojpeg.dll lizard-desktop/build/win/
+
+      # The receiver's checks (native/checks.h), as on Linux: after the .msi is kept and whatever packaging gave, the
+      # conversions and TurboJPEG, the trigger's clock, the simulated screen and camera, the session on the CPU
+      # decoder. Every check runs; any one's failure fails the step after the last, and the job. Without
+      # turbojpeg.dll the MJPEG cases would skip saying why (Media Foundation decodes a camera's MJPEG here: checks.h
+      # jpegOptional); with it they run.
+      - name: The receiver's checks
+        if: ${{ !cancelled() }}
+        timeout-minutes: 20
+        run: |
+          mkdir -p smoke
+          fail=0
+          for c in luma trigger scene session; do
+            rc=0
+            lizard-desktop/build/win/cam_check.exe "$c" > "smoke/cam_check-$c.txt" 2>&1 || rc=$?
+            echo "::group::cam_check $c: exit $rc"
+            cat "smoke/cam_check-$c.txt"
+            echo "::endgroup::"
+            grep '^FAIL' "smoke/cam_check-$c.txt" || true
+            if [ "$rc" != 0 ]; then echo "::error::cam_check $c exited $rc"; fail=1; fi
+          done
+          exit "$fail"
+
+      # Media Foundation is a feature Windows Server installs on request (the runner is a Server). Whether it works
+      # without the restart a job cannot make is not known, so this step and the mf check after it may fail without
+      # failing the job; both run whatever the checks before them gave.
+      - name: Media Foundation (Server-Media-Foundation)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 20
+        shell: powershell
+        run: |
+          $r = Install-WindowsFeature Server-Media-Foundation
+          $r | Format-List
+          if ($r.RestartNeeded -eq 'Yes') { Write-Warning 'the feature asks for a restart' }
+          "mfplat.dll in System32: $(Test-Path C:\Windows\System32\mfplat.dll)"
+          if (-not $r.Success) { exit 1 }
+
+      - name: The receiver's Media Foundation backend against the fake source
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          mkdir -p smoke
+          rc=0
+          lizard-desktop/build/win/cam_check.exe mf > smoke/cam_check-mf.txt 2>&1 || rc=$?
+          cat smoke/cam_check-mf.txt
+          echo "cam_check mf: exit $rc"
+          exit "$rc"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-windows
+          path: smoke/
+
   macos:
     needs: tree
     runs-on: macos-15
@@ -214,16 +324,36 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: The native library and the C's tools
+      # TurboJPEG for the checks' MJPEG cases: Homebrew's jpeg-turbo, the first place camera/jpeg.cpp looks
+      - name: TurboJPEG
+        run: brew install jpeg-turbo
+
+      - name: The native library, the C's tools and the receiver's
+        id: native
         run: |
           cmake -S lizard-desktop/native -B lizard-desktop/build/native -DCMAKE_BUILD_TYPE=Release
-          cmake --build lizard-desktop/build/native --target lizard_desktop tx_check -j"$(sysctl -n hw.ncpu)" -- -k
+          cmake --build lizard-desktop/build/native --target lizard_desktop tx_check cam_check lizard_receive -j"$(sysctl -n hw.ncpu)" -- -k
 
       - name: The .dmg
+        id: dmg
         working-directory: lizard-desktop
         run: ./gradlew --no-daemon packageDmg
 
+      - name: Named
+        run: |
+          v=$(cd lizard-desktop && ./gradlew -q --no-daemon releaseVersion)
+          mkdir -p dist
+          cp lizard-desktop/build/compose/binaries/main/dmg/*.dmg "dist/lizard-sender-$v-alpha-macos-arm64.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos
+          path: dist/
+
+      # The tests of the .dmg's app and the receiver's checks, after the package is kept: each runs whatever the ones
+      # before it gave, and any one's failure fails the job
       - name: Sent into its own window from the .dmg's app, and read back
+        if: ${{ !cancelled() && steps.dmg.outcome == 'success' }}
         run: |
           hdiutil attach -nobrowse -mountpoint /tmp/lizard-dmg lizard-desktop/build/compose/binaries/main/dmg/*.dmg
           app=$(ls -d /tmp/lizard-dmg/*.app)
@@ -251,16 +381,56 @@ jobs:
           hdiutil detach /tmp/lizard-dmg
           grep -E -q " [1-9][0-9]* blocks verified" smoke/decode.txt
 
-      - name: Named
+      # The receiver from the .dmg's app (ReceiverTest.kt, LIZ_RECEIVER_TEST): the simulated camera (camera/sim.cpp,
+      # LIZ_CAMERA_SIM) filming the test stream, 12 blocks a frame painted 30 a second, read for 12 s by the CPU
+      # decoder; the line it ends with must count verified blocks. The Info.plist's camera sentence read first.
+      - name: Received from the simulated camera by the .dmg's app
+        if: ${{ !cancelled() && steps.dmg.outcome == 'success' }}
+        timeout-minutes: 5
         run: |
-          v=$(cd lizard-desktop && ./gradlew -q --no-daemon releaseVersion)
-          mkdir -p dist
-          cp lizard-desktop/build/compose/binaries/main/dmg/*.dmg "dist/lizard-sender-$v-alpha-macos-arm64.dmg"
+          hdiutil detach /tmp/lizard-dmg 2> /dev/null || true   # left mounted where the step before failed
+          hdiutil attach -nobrowse -mountpoint /tmp/lizard-dmg lizard-desktop/build/compose/binaries/main/dmg/*.dmg
+          app=$(ls -d /tmp/lizard-dmg/*.app)
+          /usr/libexec/PlistBuddy -c 'Print :NSCameraUsageDescription' "$app/Contents/Info.plist"
+          mkdir -p smoke "$RUNNER_TEMP/lizard-data"
+          code=0
+          LIZ_DATA="$RUNNER_TEMP/lizard-data" LIZ_DOWNLOADS="$RUNNER_TEMP/lizard-data" \
+            LIZ_CAMERA_SIM="blocks=12 fps=30 camfps=60 w=1280 h=720" LIZ_RECEIVER_TEST="secs=12 camera=sim:0 decoder=cpu" \
+            "$app/Contents/MacOS/LIZARD" > smoke/rx-out.json 2> smoke/rx-err.txt || code=$?
+          hdiutil detach /tmp/lizard-dmg
+          grep -v '^rx: {' smoke/rx-err.txt | tail -40; cat smoke/rx-out.json; echo "exit $code"
+          [ "$code" = 0 ]
+          python3 - <<'EOF'
+          import json, sys
+          lines = [l for l in open('smoke/rx-out.json') if l.startswith('{')]
+          rx = json.loads(lines[-1])['rx'] if lines else {}
+          totals = rx.get('totals') or {}
+          blocks = totals.get('blocks') or 0
+          print(f"the receiver: {rx.get('state')}, {totals.get('frames')} frames, {blocks} blocks verified")
+          sys.exit(0 if blocks > 0 else 1)
+          EOF
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: desktop-macos
-          path: dist/
+      # The receiver's checks (native/checks.h): AVFoundation's (its list on a runner with no camera, its frames'
+      # conversions on test buffers), the conversions and TurboJPEG, the trigger's clock, the simulated screen and
+      # camera, the session on the CPU decoder. Every check runs; any one's failure fails the step after the last, and
+      # the job. Without jpeg-turbo the MJPEG cases would skip saying why (AVFoundation decodes a camera's MJPEG here:
+      # checks.h jpegOptional); with it they run.
+      - name: The receiver's checks
+        if: ${{ !cancelled() && steps.native.outcome == 'success' }}
+        timeout-minutes: 20
+        run: |
+          mkdir -p smoke
+          fail=0
+          for c in avf luma trigger scene session; do
+            rc=0
+            lizard-desktop/build/native/cam_check "$c" > "smoke/cam_check-$c.txt" 2>&1 || rc=$?
+            echo "::group::cam_check $c: exit $rc"
+            cat "smoke/cam_check-$c.txt"
+            echo "::endgroup::"
+            grep '^FAIL' "smoke/cam_check-$c.txt" || true
+            if [ "$rc" != 0 ]; then echo "::error::cam_check $c exited $rc"; fail=1; fi
+          done
+          exit "$fail"
 
       - uses: actions/upload-artifact@v4
         if: always()

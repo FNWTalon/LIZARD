@@ -1,4 +1,4 @@
-// ai: The app's PhaseLock (app/src/main/java/dev/lizard/receiver/PhaseLock.kt, the class itself, compiled beside
+// ai: The apps' PhaseLock (liblizard/kotlin/PhaseLock.kt, the class itself, compiled beside
 // ai: this file) against a model of what it steers and reads, and against the phone's own recorded frames.
 // ai: The model: a camera whose frame is `tcNs` long and takes a delay seven captures after it is asked, as the S26
 // ai: does (delays asked while one is on its way queue, one a frame, as Camera2's requests do); a display refreshing every `tdNs`, a
@@ -38,7 +38,7 @@
 // ai:   lizard-android/tools/phasesim/run.sh        (the Kotlin compiler of the Gradle cache; no device)
 // ai:   JAVA_TOOL_OPTIONS="-Dphasesim.trace=1 -Dphase.debug=1" run.sh Track "<case>": a line a capture for the first
 // ai:   400 (its phase in the display's refresh, r, blocks, the delay asked), and the lock's own debug lines
-import dev.lizard.receiver.PhaseLock
+import dev.lizard.phase.PhaseLock
 
 // ai: `startNs`: where in the display's refresh the camera starts; `out` (when given) takes the run's share of short
 // ai: captures in its first 10 s, from 10 to 30 s and in its last third, its blocks a capture from 10 to 30 s and in

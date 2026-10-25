@@ -1,7 +1,12 @@
-# ai: The desktop sender's native library (2026-10-03): liblizard/core's sender (lizard_tx: the transfer, the C's
+# ai: The desktop app's native library (2026-10-03): liblizard/core's sender (lizard_tx: the transfer, the C's
 # ai: painters, the Vulkan painter) behind a JNI face for the Kotlin app (lizard-desktop/src), and the presenter that
-# ai: puts its frames on screen (presenter.h, 2026-10-04: the app's canvas through JAWT; lizard_present's own window).
+# ai: puts its frames on screen (presenter.h, 2026-10-04: the app's canvas through JAWT; lizard_present's own window);
+# ai: since 2026-10-25 the receiver beside it (rx_session.h over the core's lizard_rx, the cameras in camera/).
 cmake_minimum_required(VERSION 3.22)
+# ai: macOS 12 on, as the app's Info.plist says (LSMinimumSystemVersion): with no target set the library was built for
+# ai: the SDK's own macOS (15.0 in CI's 2026-10-25 .dmg) and would not load before it. Set before project(); no effect
+# ai: elsewhere.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "the oldest macOS the library loads on")
 if(APPLE)
   project(lizard_desktop C CXX OBJCXX)
 else()
@@ -71,7 +76,47 @@ if(UNIX AND NOT APPLE)
   target_link_libraries(lizard_presenter PUBLIC ${X11_X11_LIB} ${X11_Xrandr_LIB} ${X11_Xcomposite_LIB} ${X11_Xext_LIB})
 endif()
 
-add_library(lizard_desktop SHARED tx_jni.cpp portal.cpp)   # ai: portal.cpp, the desktop's file chooser (2026-10-23)
+# ai: The receiver (2026-10-25). lizard_api_static: the C API's layers 1 to 3 (liblizard/api) as a static library, the
+# ai: simulated screen's painter (sim/scene.cpp: liz_tx_next, liz_encoder_paint); LIZ_STATIC leaves LIZ_API empty.
+# ai: lizard_cam: the cameras (camera/camera.h), each system's own UVC backend, and the simulated camera
+# ai: (LIZ_CAMERA_SIM): TurboJPEG and Media Foundation's functions loaded at run time; Media Foundation's GUIDs (Windows)
+# ai: and AVFoundation's frameworks (macOS) linked, below. lizard_rxs: the session over the core's receiver, which the
+# ai: app's library, lizard_receive and cam_check share.
+find_package(Threads REQUIRED)
+set(LZ ${CMAKE_CURRENT_SOURCE_DIR}/../../liblizard)
+add_library(lizard_api_static STATIC ${LZ}/api/api.cpp ${LZ}/api/format.cpp ${LZ}/api/codec.cpp ${LZ}/api/xfer.cpp)
+target_include_directories(lizard_api_static PUBLIC ${LZ}/include)
+target_compile_definitions(lizard_api_static PUBLIC LIZ_STATIC PRIVATE LIZ_VERSION_STRING="desktop")
+target_link_libraries(lizard_api_static PUBLIC lizard_codec lizard_xfer_core)
+set(LIZ_CAM_SOURCES camera/camera.cpp camera/luma.cpp camera/jpeg.cpp camera/trigger.cpp camera/sim.cpp sim/scene.cpp)
+if(UNIX AND NOT APPLE)
+  list(APPEND LIZ_CAM_SOURCES camera/v4l2.cpp)
+elseif(WIN32)
+  list(APPEND LIZ_CAM_SOURCES camera/mf.cpp)
+elseif(APPLE)
+  list(APPEND LIZ_CAM_SOURCES camera/avf.mm)
+  set_source_files_properties(camera/avf.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+endif()
+add_library(lizard_cam STATIC ${LIZ_CAM_SOURCES})
+target_include_directories(lizard_cam PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/camera)
+target_include_directories(lizard_cam SYSTEM PRIVATE ${LZ}/core/third_party)
+target_compile_options(lizard_cam PRIVATE ${LIZ_DESKTOP_WARN} $<$<NOT:$<BOOL:${MSVC}>>:-O3>)
+target_link_libraries(lizard_cam PUBLIC lizard_api_static Threads::Threads ${CMAKE_DL_LIBS})
+if(WIN32)
+  # ai: Media Foundation's GUIDs and DirectShow's camera-control IIDs are static data (libmfuuid, libstrmiids); its
+  # ai: functions are looked up in mfplat, mf and mfreadwrite at run time, so the library loads where it is absent
+  # ai: (Windows N without the Media Feature Pack, a Server without the feature) and the sender with it
+  target_link_libraries(lizard_cam PUBLIC mfuuid strmiids ole32 uuid)
+elseif(APPLE)
+  target_link_libraries(lizard_cam PUBLIC "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework Foundation")
+endif()
+add_library(lizard_rxs STATIC rx_session.cpp)
+target_include_directories(lizard_rxs PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(lizard_rxs SYSTEM PRIVATE ${LZ}/core/third_party)
+target_compile_options(lizard_rxs PRIVATE ${LIZ_DESKTOP_WARN})
+target_link_libraries(lizard_rxs PUBLIC lizard_cam lizard_rx)
+
+add_library(lizard_desktop SHARED tx_jni.cpp rx_jni.cpp jni_util.cpp portal.cpp)   # ai: portal.cpp the file chooser; jni_util.cpp the faces' strings
 if(WIN32)
   set_target_properties(lizard_desktop PROPERTIES PREFIX "")   # ai: lizard_desktop.dll, the name the Gradle bundle takes
   target_link_libraries(lizard_desktop PRIVATE ole32 uuid)   # ai: the shell's file dialog (portal.cpp)
@@ -83,7 +128,7 @@ foreach(d IN LISTS JNI_INCLUDE_DIRS)
   target_compile_options(lizard_desktop PRIVATE "-ffile-prefix-map=${d}=jdk" "-ffile-prefix-map=${r}=jdk")
 endforeach()
 target_compile_options(lizard_desktop PRIVATE ${LIZ_DESKTOP_WARN})
-target_link_libraries(lizard_desktop PRIVATE lizard_presenter lizard_tx ${JAVA_AWT_LIBRARY})
+target_link_libraries(lizard_desktop PRIVATE lizard_presenter lizard_tx lizard_rxs ${JAVA_AWT_LIBRARY})
 # ai: no RUNPATH to the builder's JDK (a JDK in a home folder named it in the bundled library); the app's JVM has
 # ai: loaded jawt before this library (Native.kt)
 set_target_properties(lizard_desktop PROPERTIES SKIP_BUILD_RPATH ON)
@@ -105,4 +150,30 @@ if(UNIX AND NOT APPLE)
   target_compile_options(lizard_present PRIVATE ${LIZ_DESKTOP_WARN})
   target_compile_definitions(lizard_present PRIVATE LIZ_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/../../liblizard/out")
   target_link_libraries(lizard_present PRIVATE lizard_presenter lizard_tx ${X11_X11_LIB} ${X11_Xrandr_LIB})
+endif()
+
+# ai: lizard_receive (2026-10-25, receive.cpp): the receiver headless on every system, as lizard_present is the
+# ai: sender's: the cameras listed, one read into a receiver with a stats line a second, a file written out; its
+# ai: header has its arguments. cam_check (cam_check.cpp): the cameras' checks, each backend against a fake device
+# ai: (sim/fake_v4l2.cpp, sim/fake_mf.cpp) painting the simulated screen, the conversions and the trigger's clock.
+add_executable(lizard_receive receive.cpp)
+target_compile_options(lizard_receive PRIVATE ${LIZ_DESKTOP_WARN})
+target_compile_definitions(lizard_receive PRIVATE LIZ_ASSETS="${LZ}/out")
+target_link_libraries(lizard_receive PRIVATE lizard_rxs)
+if(MINGW)
+  target_link_options(lizard_receive PRIVATE -municode)   # ai: its wmain (receive.cpp): the arguments in UTF-16
+endif()
+set(LIZ_CHECK_SOURCES cam_check.cpp check_luma.cpp check_scene.cpp check_session.cpp check_v4l2.cpp check_mf.cpp check_avf.cpp)
+if(UNIX AND NOT APPLE)
+  list(APPEND LIZ_CHECK_SOURCES sim/fake_v4l2.cpp)
+elseif(WIN32)
+  list(APPEND LIZ_CHECK_SOURCES sim/fake_mf.cpp)
+endif()
+add_executable(cam_check ${LIZ_CHECK_SOURCES})
+target_include_directories(cam_check SYSTEM PRIVATE ${LZ}/core/third_party)
+target_compile_options(cam_check PRIVATE ${LIZ_DESKTOP_WARN})
+target_compile_definitions(cam_check PRIVATE LIZ_ASSETS="${LZ}/out")
+target_link_libraries(cam_check PRIVATE lizard_rxs)
+if(WIN32)
+  target_link_libraries(cam_check PRIVATE windowscodecs)   # ai: the fake source's MJPEG frames (WIC's JPEG encoder)
 endif()

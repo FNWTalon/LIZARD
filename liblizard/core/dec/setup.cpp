@@ -4,14 +4,17 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <set>
 
 namespace lizard {
 
+// ai: The tree's files by their UTF-8 paths (fs::u8path): Windows reads a narrow path in the ANSI code page, so a tree
+// ai: under a folder named outside it (the app's, under %LOCALAPPDATA%) held no variant there (2026-10-25).
 ReadFile readDir(const std::string& root) {
   return [root](const std::string& path) {
-    std::ifstream f(root + "/" + path, std::ios::binary);
+    std::ifstream f(std::filesystem::u8path(root + "/" + path), std::ios::binary);
     if (!f) throw wg::Error("no " + root + "/" + path);
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
   };
@@ -37,7 +40,7 @@ std::string setupName(const std::string& variant) { return "setup/" + variant + 
 
 std::vector<std::string> variantsIn(const std::string& root, const std::vector<std::string>& variants) {
   std::vector<std::string> out;
-  for (const auto& v : variants) if (std::ifstream(root + "/" + setupName(v))) out.push_back(v);
+  for (const auto& v : variants) if (std::ifstream(std::filesystem::u8path(root + "/" + setupName(v)))) out.push_back(v);
   return out;
 }
 

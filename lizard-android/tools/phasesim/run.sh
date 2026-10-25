@@ -14,7 +14,7 @@ KC=$(jar $K/kotlin-compiler-embeddable "kotlin-compiler-embeddable-2.1.20.jar");
 [ -n "$KC" ] && [ -n "$KS" ] || { echo "no Kotlin 2.1.20 compiler in the Gradle cache (build the app once: ./build.sh apk)" >&2; exit 2; }
 CP="$KC:$KS:$(jar $K/kotlin-script-runtime '*.jar'):$(jar $K/kotlin-reflect/1.6.10 '*.jar'):$(jar $K/kotlin-daemon-embeddable '*.jar'):$(find $C/org.jetbrains.intellij.deps -name '*.jar' | grep -v sources | tr '\n' ':')$(jar org.jetbrains.kotlinx 'kotlinx-coroutines-core-jvm*.jar'):$(jar org.jetbrains/annotations 'annotations-*.jar')"
 OUT=$(mktemp -d)
-java -cp "$CP" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler -no-stdlib -cp "$KS" "${PHASE_LOCK:-$H/../../app/src/main/java/dev/lizard/receiver/PhaseLock.kt}" "${PHASE_SIM:-$H/Sim.kt}" -d "$OUT" 2>&1 | grep -i "error:\|caused by" | head -8
+java -cp "$CP" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler -no-stdlib -cp "$KS" "${PHASE_LOCK:-$H/../../../liblizard/kotlin/PhaseLock.kt}" "${PHASE_SIM:-$H/Sim.kt}" -d "$OUT" 2>&1 | grep -i "error:\|caused by" | head -8
 java -Dphasesim.dir="$DATA" -cp "$OUT:$KS" SimKt "$@"; rc=$?
 rm -rf "${OUT:?}"
 exit $rc
