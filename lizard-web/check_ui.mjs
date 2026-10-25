@@ -189,6 +189,12 @@ const SIZES = [
     const f = await evaluate(s, `({ full: document.body.classList.contains("full"), api: !!document.fullscreenElement, main: document.querySelector("main").getBoundingClientRect().width, iw: innerWidth })`);
     await screenshot(s, `${OUT}/send-${z.name}-full.png`);
     check(f.full && Math.abs(f.main - f.iw) < 1, `send ${z.name}: Fullscreen shows <main> alone (${f.main.toFixed(0)} of ${f.iw} px wide, the API ${f.api ? "in fullscreen" : "refused, body.full alone"})`);
+    // ai: a click on the code keeps full screen (2026-10-24, send.mjs); only the fallback, with no API behind it, leaves on one
+    if (f.api) {
+      await evaluate(s, `document.querySelector("main").click()`);
+      await sleep(300);
+      check(await evaluate(s, `document.body.classList.contains("full") && !!document.fullscreenElement`), `send ${z.name}: a click on the code keeps full screen`);
+    }
     await evaluate(s, f.api ? `document.exitFullscreen()` : `document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))`);
     await sleep(500);
     check(!(await evaluate(s, `document.body.classList.contains("full")`)), `send ${z.name}: body.full cleared when ${f.api ? "fullscreen ends (fullscreenchange)" : "Escape is pressed"}`);

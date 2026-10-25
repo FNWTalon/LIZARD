@@ -838,8 +838,8 @@ async function walkDrop(roots) {
 
 // ai: Fullscreen: body.full shows <main> alone (the room grows, the ResizeObserver re-picks), and the page asks for
 // ai: real fullscreen where there is one. Its end, by Escape or the browser, clears body.full through fullscreenchange
-// ai: (until 2026-09-26 the first Escape left body.full set); a tap on the code or Escape leaves too. Where there is no
-// ai: Fullscreen API (an iPhone) or it is refused, body.full alone is the fallback.
+// ai: (until 2026-09-26 the first Escape left body.full set); Escape or F leaves too. Where there is no Fullscreen API
+// ai: (an iPhone) or it is refused, body.full alone is the fallback.
 const fsElement = () => document.fullscreenElement ?? document.webkitFullscreenElement ?? null;
 function enterFull() {
   document.body.classList.add("full"); image = null;
@@ -856,8 +856,13 @@ $("fs").onclick = enterFull;
 // ai: the sidebar collapser (ui.mjs): <main> grows, and the ResizeObserver re-picks as for Fullscreen
 collapser($("collapse"), "send:collapsed");
 sideResizer("send:side");   // ai: the column's edge dragged to resize it (2026-10-05); <main> re-picks as for a resized window
-// ai: A tap on the middle leaves fullscreen, or, while its hint asks for a file, opens the picker (the page's only one).
-main.addEventListener("click", () => { if (document.body.classList.contains("full")) leaveFull(); else if (!$("hint").hidden) $("file").click(); });
+// ai: A tap on the middle, while its hint asks for a file, opens the picker (the page's only one). In full screen it
+// ai: does nothing (2026-10-24, owner: "clicking on the sender should not remove fullscreen"), except in the fallback,
+// ai: body.full with no browser full screen behind it, where a phone has no Escape and the tap is the only way back.
+main.addEventListener("click", () => {
+  if (document.body.classList.contains("full")) { if (!fsElement()) leaveFull(); }
+  else if (!$("hint").hidden) $("file").click();
+});
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("full")) leaveFull(); });
 // ai: Keys as video players have them (2026-10-23): Space, K or the media key play and pause (playPause), F full screen
 // ai: and back (Escape leaves, above), the media key Stop stops, Ctrl+O (Cmd+O) adds files where files are sent. None
