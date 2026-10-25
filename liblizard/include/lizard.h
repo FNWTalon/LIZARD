@@ -244,8 +244,10 @@ LIZ_API void liz_rx_clear(liz_rx *r);
 /* ai: What the native apps run: a receiver decoding camera frames on its own threads (the GPU decoder in batches, or
  * ai: the C on a pool of workers) into a transfer, and a sender painting frames ahead on its own threads (the GPU's
  * ai: encoder, or the C on several). The GPU paths read their kernels and nets from an assets directory (share/lizard
- * ai: as installed); without one, or with no Vulkan device that runs them, the CPU does the work. A wasm build has no
- * ai: engines (LIZ_E_UNSUPPORTED). Their stats are JSON, the field names the apps' (not a stable interface). */
+ * ai: as installed); without one, or with no Vulkan device that runs them, the CPU does the work, and the receiver's
+ * ai: LIZ_DECODER_AUTO decodes on the CPU on a software Vulkan device too (Vulkan's CPU type: lavapipe, SwiftShader),
+ * ai: where LIZ_DECODER_GPU still runs. A wasm build has no engines (LIZ_E_UNSUPPORTED). Their stats are JSON, the
+ * ai: field names the apps' (not a stable interface). */
 
 enum { LIZ_DECODER_AUTO = 0, LIZ_DECODER_GPU = 1, LIZ_DECODER_CPU = 2 };
 typedef struct {
@@ -254,7 +256,10 @@ typedef struct {
   const char *store_dir;   /* ai: where the file is kept, under store_dir/lizard-xfer (unfinished transfers kept there to resume) */
   const char *device;      /* ai: a substring of the Vulkan device's name to use; NULL the first discrete, else the first */
   const char *precision;   /* ai: the GPU decoder's nets: "auto" (NULL), "int8", "f16" or "f32" */
-  int decoder;             /* ai: LIZ_DECODER_* */
+  /* ai: LIZ_DECODER_*: AUTO the GPU decoder where a device runs a variant the assets hold and is no software Vulkan
+   * ai: device, else the C (its stats' gpuWhy says why); GPU the GPU decoder on any device that runs it, a software one
+   * ai: too, else liz_receiver_new fails (LIZ_E_UNSUPPORTED; LIZ_E_ARG with no assets); CPU the C */
+  int decoder;
   int cpu_threads;         /* ai: the CPU decoder's workers; 0 its own rule (one, more while frames are lost) */
   int layout;              /* ai: 1 the centre square, 2 the two squares of a 2:1 region (liz_layout_rects) */
   void (*log)(void *user, const char *line);   /* ai: NULL none; called from the receiver's threads */
@@ -282,7 +287,9 @@ LIZ_API void liz_receiver_batch_cap(liz_receiver *r, int frames);
 /* ai: the received file's path once whole and verified, else "" */
 LIZ_API const char *liz_receiver_file(liz_receiver *r);
 LIZ_API void liz_receiver_clear(liz_receiver *r);
-/* ai: Android: the camera's reader closed, every frame handed back (the GPU lets go of that reader's buffers) */
+/* ai: The camera's stream closed (Android: its reader), every frame handed back: the GPU lets go of that reader's
+ * ai: buffers, and the stats' window ends with the stream (its figures 0 until the next stream's first second has
+ * ai: closed, that window the next stream's alone). */
 LIZ_API void liz_receiver_camera_closed(liz_receiver *r);
 
 enum { LIZ_PAINTER_CPU = 0, LIZ_PAINTER_GPU = 1, LIZ_PAINTER_AUTO = 2 };

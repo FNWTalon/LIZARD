@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
@@ -14,8 +15,10 @@
 namespace lizard {
 
 namespace {
+// ai: by its UTF-8 path (fs::u8path): Windows reads a narrow one in the ANSI code page, so the app's tree under a
+// ai: %LOCALAPPDATA% with a letter past ASCII (a user folder with an accented name) was "missing" there (2026-10-25)
 std::vector<uint8_t> readFile(const std::string& path) {
-  std::ifstream f(path, std::ios::binary);
+  std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
   if (!f) throw std::runtime_error("the GPU sender's " + path + " is missing");
   return std::vector<uint8_t>(std::istreambuf_iterator<char>(f), {});
 }

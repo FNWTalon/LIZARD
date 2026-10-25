@@ -15,6 +15,7 @@ struct AHardwareBuffer;
 namespace lizard {
 
 class Replay;   // ai: replay.h
+class XferRx;   // ai: xfer_rx.h
 
 struct ReceiverConfig {
   // ai: the generated tree (liblizard/out's setup, blobs, spv, or an install's share/lizard, which may hold some of the
@@ -22,7 +23,10 @@ struct ReceiverConfig {
   std::string assets;
   std::string cacheDir;    // ai: the pipeline cache and scratch; empty, no pipeline cache
   std::string storeDir;    // ai: the transfer's chunks and the received file
-  std::string decoder = "auto";   // ai: auto (the best GPU variant, else the C on the CPU), gpu, cpu
+  // ai: auto: the GPU decoder's best variant where the device runs one and is no software device (Vulkan's CPU type:
+  // ai: lavapipe, SwiftShader; 2026-10-25), else the C on the CPU, why in its stats' gpuWhy; gpu: the GPU decoder on
+  // ai: any device, a software one too, else an error; cpu: the C
+  std::string decoder = "auto";
   int cpuThreads = 0;             // ai: the CPU decoder's workers: 0 the pool's own rule (cpu/pool.h), else that many
   std::string precision = "auto"; // ai: auto (the best the device runs of the variants the assets hold), int8, f16, f32
   std::string device;             // ai: a substring of the Vulkan device's name; empty, LIZ_VK_DEVICE's, else the first discrete
@@ -48,13 +52,22 @@ struct CameraFrame {
 class Receiver {
  public:
   static std::unique_ptr<Receiver> create(const ReceiverConfig& c, std::function<void(uint64_t tag)> release);
+  // ai: A receiver that goes on with from's transfer (2026-10-25, for a change of decoder or layout while a transfer is
+  // ai: in hand, the PC receiver's): the transfer in hand, its store with a file it finished, the dedupe and the blocks
+  // ai: taken shared with from, and no store opened on c.storeDir (one of its own would let the finished folders go, a
+  // ai: file from finishes meanwhile with them, and the file would be taken again from the light). from may go on
+  // ai: feeding the transfer until it is let go: the transfer takes one frame at a time from either (xfer_rx.h). The
+  // ai: transfer keeps the log it was made with (the first receiver's config's), which must outlive the new receiver.
+  static std::unique_ptr<Receiver> create(const ReceiverConfig& c, std::function<void(uint64_t tag)> release, Receiver& from);
   virtual ~Receiver() = default;
   // ai: Never blocks on the device: a frame that cannot be taken is released at once (dropped, counted).
   virtual void push(const CameraFrame& f) = 0;
   // ai: The page's snapshot as JSON: state, decoder, fps (camera, processed), goodput, blocks, the transfer's
   // ai: progress and file, the format last read, the GPU's ms a frame; the field names the web receiver's stats row uses
   // ai: where they mean the same (lizard-web/recv.mjs). `windowSecs`: the length of the window the goodput and
-  // ai: the registered share are over; `B` and `cap` (the GPU decoder): the batcher's size and batchCap's n.
+  // ai: the registered share are over (a window opens at a stream's first frame and closes a second or more on, at the
+  // ai: next frame the C is handed or decodes, the next batch the GPU delivers; the figures 0 until a stream's first
+  // ai: closes: cameraClosed); `B` and `cap` (the GPU decoder): the batcher's size and batchCap's n.
   virtual std::string stats() = 0;
   // ai: The newest frames with no JSON, for a reader that asks at every capture (the app's phase lock, Engine.kt):
   // ai: [the version the last read word names, 0 before any, then 8 doubles a frame for every frame of the stats'
@@ -76,15 +89,26 @@ class Receiver {
   // ai: Whether frames must come with their luma plane (the CPU decoder reads bytes; the GPU's takes the camera's
   // ai: buffer in place): the caller sets its camera up by this.
   virtual bool wantsLuma() const = 0;
-  // ai: The camera's reader closed, every frame of it handed back (2026-10-02): the GPU decoder drops its imports of
-  // ai: that reader's buffers (CameraIngest::cameraClosed) and an ingest error with them, so a camera started again
-  // ai: reads afresh; nothing for the C, which copies each frame's luma.
+  // ai: The camera's stream closed (its reader, a stop), every frame of it handed back (2026-10-02): the GPU decoder
+  // ai: drops its imports of that reader's buffers (CameraIngest::cameraClosed) and an ingest error with them, so a
+  // ai: camera started again reads afresh. On both decoders the stats window ends with the stream (2026-10-25): the
+  // ai: window open at the close is dropped and the last one's figures with it (they read 0, as a new receiver's,
+  // ai: until the next stream's first window closes), and the next window opens at the next frame's arrival, as a
+  // ai: receiver's first does at its first frame: the first window after a restart is that stream's own, never one
+  // ai: over the time off. A frame of the stream before still in the decoder at the close counts in no window (its
+  // ai: blocks go to the transfer and its row to the series as ever). The transfer, the held word, the totals and the
+  // ai: series stay.
   virtual void cameraClosed() {}
   // ai: Save replays (replay.h, 2026-10-03): from now on each frame the decoder is handed goes to r as well, in the
   // ai: order the decoder takes them, while r->live(); null stops. The GPU decoder's are read off its ring with their
   // ai: batch (FrontHalf::run's keep), the C's copied as a worker takes them; 2:1's halves are a frame each. The caller
   // ai: ends the run (Replay::finish).
   virtual void record(std::shared_ptr<Replay>) {}
+
+ private:
+  // ai: the transfer this receiver feeds, for create's from; null where it has none, and create then gives the new
+  // ai: receiver a transfer of its own
+  virtual std::shared_ptr<XferRx> transfer() const { return nullptr; }
 };
 
 }  // namespace lizard

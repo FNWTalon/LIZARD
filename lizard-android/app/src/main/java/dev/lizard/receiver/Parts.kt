@@ -1,5 +1,6 @@
 package dev.lizard.receiver
 
+import dev.lizard.readout.Readout
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background

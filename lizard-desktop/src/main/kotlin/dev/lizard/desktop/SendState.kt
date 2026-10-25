@@ -53,8 +53,8 @@ import kotlin.math.roundToInt
 // ai: (Screen.kt's SwingPanel), on which the presenter's swapchain draws; white, and nothing painted over the
 // ai: presenter's pictures by AWT. Its size in device px is the room the format is picked from; it tells the state when
 // ai: it has a window (addNotify), is shown or resized, and, before that window goes (removeNotify: a dispose, a window
-// ai: made again), stops the presenter on it. A click on it does nothing in full screen (2026-10-24, owner: "clicking on
-// ai: the sender should not remove fullscreen"; Escape, F, F11 and the rail's collapser leave it); the Idle
+// ai: made again), stops the presenter on it. A click on it does nothing in full screen (2026-10-24: Escape, F, F11 and
+// ai: the rail's collapser leave it); the Idle
 // ai: (2026-10-07, the web's hint in the middle of its page and the app's code box) it is the file's area: the soft fill, the file icon and "Choose files" over the link "or a folder", or the choice's
 // ai: name once one is chosen, or "Test stream"; a click opens the file dialog (the link, the folder chooser), and files
 // ai: and folders dropped on it are taken (the test stream off; several, or a folder, one tar since 2026-10-16). AWT
@@ -143,7 +143,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         val cx = width / 2.0; val cy = height / 2.0 - 16
         drawIcon(g2, FILE_ICON, cx - 12, cy - 12)
         val text = if (s.test) "Test stream" else if (s.reading) "Reading the files" else "Choose files"
-        g2.font = Font(Font.SANS_SERIF, Font.PLAIN, 14)
+        g2.font = face(Font.PLAIN, 14)
         val fm = g2.fontMetrics
         g2.drawString(text, (cx - fm.stringWidth(text) / 2.0).toFloat(), (cy + 12 + 8 + fm.ascent).toFloat())
         // ai: a folder instead (the web's hint link), underlined in the text's colour under the line
@@ -173,7 +173,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         scroll = scroll.coerceIn(0, maxOf(0, total - avail))
         var y = if (total <= avail) (height - total) / 2 else 16 - scroll
         val got = ArrayList<Pair<Rectangle, () -> Unit>>()
-        val name = Font(Font.SANS_SERIF, Font.BOLD, 15); val sub = Font(Font.SANS_SERIF, Font.PLAIN, 13)
+        val name = face(Font.BOLD, 15); val sub = face(Font.PLAIN, 13)
         for ((i, it) in items.withIndex()) {
             g2.color = SOFT; g2.fillRoundRect(x0, y + 12, 40, 40, 20, 20)
             g2.color = FG; drawIcon(g2, if (it.dir) FOLDER_ICON else FILE_ICON, x0 + 8.0, y + 20.0)
@@ -194,7 +194,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
             y += rowH
         }
         y += 12
-        g2.font = Font(Font.SANS_SERIF, Font.BOLD, 14)
+        g2.font = face(Font.BOLD, 14)
         val fm = g2.fontMetrics
         val buttons = listOf<Pair<String, () -> Unit>>("Add files" to { s.chooseFile() }, "Add a folder" to { s.chooseFolder() }, "Clear" to { s.clearPicks() })
         // ai: centred under the list (2026-10-23; from its left edge before, which read off centre)
@@ -224,6 +224,13 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     }
 
     companion object {
+        // ai: Inter (Parts.kt's face, the web's) for the text AWT paints here, the variable file at its default instance,
+        // ai: bold derived; the platform's sans where it does not load (2026-10-25: that sans read beside Compose's
+        // ai: Inter until then)
+        private val inter: Font? = runCatching {
+            CodeCanvas::class.java.getResourceAsStream("/fonts/inter/InterVariable.ttf")?.use { Font.createFont(Font.TRUETYPE_FONT, it) }
+        }.getOrNull()
+        private fun face(style: Int, size: Int): Font = inter?.deriveFont(style, size.toFloat()) ?: Font(Font.SANS_SERIF, style, size)
         private val FG = java.awt.Color(0x11, 0x11, 0x11)
         private val MUTED = java.awt.Color(0x66, 0x66, 0x66)
         private val SOFT = java.awt.Color(0xF1, 0xF1, 0xF1)
@@ -623,6 +630,14 @@ class SendState {
     }
     // ai: the window closing: the run stopped and the made transfer let go
     fun close() { closing = true; stop(); dropMade() }
+    // ai: Send left for another screen (App.go, 2026-10-25; the Android app's go()): full screen left while its canvas
+    // ai: still has a window, the tip put away, the run stopped (the presenter's canvas leaves the window with the
+    // ai: screen); the made transfer kept for a return
+    fun leave() {
+        if (full) toggleFull()
+        askBrightness = false; edgeRail = false
+        if (sending) stop()
+    }
 
     private fun fail(why: String) { stop(); phase = Phase.Error(why) }
 

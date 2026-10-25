@@ -1,5 +1,6 @@
 package dev.lizard.receiver
 
+import dev.lizard.phase.PhaseLock
 import kotlin.math.roundToInt
 import android.annotation.SuppressLint
 import android.content.Context
@@ -745,7 +746,8 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         Native.heldBy(this).let { if (it > 0) Log.w(TAG, "$it frames still held as the reader closes") }
         // ai: the receiver drops its imports of this reader's buffers (2026-10-02): kept across a stop and start, it
         // ai: imported each new reader's buffers beside the old, and the third camera opening in one receiver (a file,
-        // ai: Receive again, a file, Receive again) ran its descriptor pool out: "Reading stopped"
+        // ai: Receive again, a file, Receive again) ran its descriptor pool out: "Reading stopped". It also ends the
+        // ai: receiver's stats window (2026-10-25): the figures read 0 until the next stream's first second closes.
         synchronized(lock) { if (handle != 0L) Native.cameraClosed(handle) }
         r.close()
     }

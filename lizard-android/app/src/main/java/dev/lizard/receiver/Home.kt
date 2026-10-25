@@ -1,5 +1,6 @@
 package dev.lizard.receiver
 
+import dev.lizard.readout.Readout
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement

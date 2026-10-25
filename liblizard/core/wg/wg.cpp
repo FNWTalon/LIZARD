@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -151,6 +152,7 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   VkPhysicalDeviceProperties props;
   vkGetPhysicalDeviceProperties(pick, &props);
   d->name = props.deviceName;
+  d->type = props.deviceType;
   d->apiVersion = std::min(props.apiVersion, app.apiVersion);
   d->vendorId = props.vendorID;
   d->deviceId = props.deviceID;
@@ -373,9 +375,11 @@ void Device::waitIdle() { check(vkDeviceWaitIdle(dev), "vkDeviceWaitIdle"); }
 
 // ai: The pipeline cache from a file this device wrote before (Vulkan refuses another device's or driver's through
 // ai: the header), and back to it at the end: a second start compiles nothing (STATUS "The ramp at the start").
+// ai: The path is UTF-8 (fs::u8path): Windows reads a narrow one in the ANSI code page, which a folder named outside
+// ai: it does not survive (2026-10-25).
 void Device::loadCache(const std::string& path) {
   cachePath = path;
-  std::ifstream f(path, std::ios::binary);
+  std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
   if (!f) return;
   std::vector<char> data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
   if (data.size() < 32) return;
@@ -396,10 +400,19 @@ void Device::saveCache() {
   if (vkGetPipelineCacheData(dev, cache, &n, nullptr) != VK_SUCCESS || !n) return;
   std::vector<char> data(n);
   if (vkGetPipelineCacheData(dev, cache, &n, data.data()) != VK_SUCCESS) return;
-  std::ofstream f(cachePath + ".tmp", std::ios::binary);
-  f.write(data.data(), (std::streamsize)n);
-  f.close();
-  std::rename((cachePath + ".tmp").c_str(), cachePath.c_str());
+  // ai: written whole to the side, then put in the file's place by std::filesystem::rename, which replaces it on every
+  // ai: system (Windows: MoveFileExW's replace); the C runtime's rename refuses an existing file on Windows, so there a
+  // ai: cache once saved was never saved again (2026-10-25)
+  // ai: (~Device calls this: nothing may throw out of it, a path Windows cannot convert included)
+  try {
+    const std::filesystem::path to = std::filesystem::u8path(cachePath), tmp = std::filesystem::u8path(cachePath + ".tmp");
+    std::ofstream f(tmp, std::ios::binary);
+    f.write(data.data(), (std::streamsize)n);
+    f.close();
+    std::error_code ec;
+    if (f) std::filesystem::rename(tmp, to, ec);
+    else std::filesystem::remove(tmp, ec);
+  } catch (const std::exception&) {}
 }
 
 // ai: A buffer: device-local, or host-visible and cached for MAP_READ (the readbacks); zero-filled at the next

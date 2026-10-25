@@ -1,4 +1,4 @@
-package dev.lizard.receiver
+package dev.lizard.phase
 
 import kotlin.math.abs
 
@@ -38,6 +38,14 @@ import kotlin.math.abs
 // ai: clock): a hold of each capture's start at one point of it, and a scan of every point a step apart, a line each,
 // ai: ending as a hold at the middle of the longest run of points that read as well as the best.
 // ai: Every call is on the engine's thread.
+// ai: Plain JVM (2026-10-25, from the Android app's tree): the Android app and the desktop app both compile this file,
+// ai: each build adding liblizard/kotlin to its sources. The desktop's lever is a camera's software trigger, fired on a
+// ai: schedule the host keeps (lizard-desktop/native/camera/trigger.h; the session's rxTrigger and rxDelay): a delay of
+// ai: x moves that schedule x later, as one long frame moves Camera2's. A capture's time is its trigger's deadline,
+// ai: exact about the schedule the delays move; the exposure starts when the trigger arrives, so the host's lateness in
+// ai: sending it stays in the capture's phase as a jitter only the pilots see (a time that carried the lateness made the
+// ai: lock answer it as the schedule's own place: a frame less it asked, a capture skipped). Only the simulated camera
+// ai: takes one so far; a UVC camera has none, and the lock is off for it.
 class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GRID_NS, private val bandNs: Long = BAND_NS) {
     enum class Mode { Off, Hold, Scan, Track }
     // ai: r, rSd: the pilots' reading over the even blocks and its standard error; r2, r2Sd: over the odd (NaN: none)

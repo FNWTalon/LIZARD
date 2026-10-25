@@ -55,9 +55,11 @@ import java.awt.Window
 
 // ai: The sender's window, the web's page in landscape (lizard-web/send.html): a column on the left (the web's 20rem;
 // ai: its collapser folds it to a 56 dp rail with Pause or Play and the code's capacity, as the web's rail), a hairline,
-// ai: and the code area on the right, white, the presenter's canvas. Full screen shows the code area alone.
+// ai: and the code area on the right, white, the presenter's canvas. Full screen shows the code area alone. Since the
+// ai: app's screens (2026-10-25, App.kt): the bar's swap to the receiver (the web's #swap, "Receiver"), and Home at the
+// ai: rail's foot (the web's: Home from the collapsed rail's last square alone in landscape).
 @Composable
-fun SendScreen(s: SendState, window: ComposeWindow) {
+fun SendScreen(s: SendState, window: ComposeWindow, onSwap: () -> Unit = {}, onHome: () -> Unit = {}) {
     MaterialTheme(colorScheme = LizardColours, typography = LizardType) {
         // ai: files and folders dropped on the column are added as on the code area (SendState.dropped), the area's
         // ai: outline shown while a drag is over the window (2026-10-23)
@@ -71,9 +73,9 @@ fun SendScreen(s: SendState, window: ComposeWindow) {
             // ai: full screen: the code alone (2026-10-23, as the web's and the app's; the rail beside it before), the rail
             // ai: over its left edge while the pointer is near it (EdgeRail)
             if (!s.full) {
-                if (s.railShown) Rail(onClick = { s.toggleRail() }) { RailSquares(s) }
+                if (s.railShown) Rail(onClick = { s.toggleRail() }, foot = { Square { IconBtn(Icons.back, "Home", onClick = onHome) } }) { RailSquares(s) }
                 else Column(Modifier.width(320.dp).fillMaxHeight()) {
-                    Box(Modifier.padding(horizontal = 16.dp)) { TopBar("Send") { CollapseBtn(false) { s.toggleRail() } } }
+                    Box(Modifier.padding(horizontal = 16.dp)) { TopBar("Send") { SwapBtn("Receiver", onSwap); CollapseBtn(false) { s.toggleRail() } } }
                     Box(Modifier.weight(1f).fillMaxWidth()) {
                         val scroll = rememberScrollState()
                         Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = 16.dp)) { Side(s, window) }

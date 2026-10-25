@@ -7,13 +7,59 @@ import kotlin.math.roundToInt
 // ai: What the sender keeps between runs (the web's send:<id> keys): the encoder (auto, gpu, cpu), the payload (file,
 // ai: test), the blocks a frame (0 auto, else 1 to 128), pictures a second, the code's size (25 to 100%), the spacing and
 // ai: the margin (modules, Pick's bounds), the ring (-1 the default, else 0 to 3, kept as its cells since 2026-10-10), the codes, VSync, the folds and the rail, and
-// ai: whether the brightness tip was taken before a first send (SendState.requestStart). forget():
-// ai: a run that neither reads nor keeps them, every setting at its default (the test hook's, SenderTest.kt).
+// ai: whether the brightness tip was taken before a first send (SendState.requestStart); the receiver's and Home's in a
+// ai: node of their own (Rx, 2026-10-25). forget(): a run that neither reads nor keeps either node's, every setting at
+// ai: its default (the test hooks', SenderTest.kt and ReceiverTest.kt); the receiver's set in the run held in memory.
 object Prefs {
     private var off = false
     private val node by lazy { Preferences.userRoot().node("dev/lizard/sender") }
     private val p get() = if (off) null else node
     fun forget() { off = true }
+
+    // ai: The receiver's (2026-10-25, the web's recv:<id> keys, the Android app's "lizard" preferences): the camera (its
+    // ai: id, camera.h Info::id), each camera's own resolution ("WxH") and rate, its zoom a crop at a time (as the app's
+    // ai: zoom@<id>/<layout>), its exposure (us) and gain where they were set (none: the camera's own, automatic where it
+    // ai: can be), the crop (1:1, 2:1), the decoder (auto, gpu, cpu), the batch size (1 to 32), the folds and the rail,
+    // ai: Show statistics; and Home's first-run tips seen. A key is at most Preferences.MAX_KEY_LENGTH (80): a camera's
+    // ai: id past 48 characters (a long /dev/v4l/by-id path) is keyed by its hash. Under forget() the node is the run's
+    // ai: own, in memory (2026-10-25): nothing kept from before is read and nothing is written, but a setting made in
+    // ai: the run holds for the run, as a user's would (a camera's zoom, exposure and gain set again at its next open).
+    object Rx {
+        private val node by lazy { Preferences.userRoot().node("dev/lizard/receiver") }
+        private val mem = java.util.concurrent.ConcurrentHashMap<String, String>()
+        // ai: the stored text of a key (Preferences keeps every value as text: putInt's and putBoolean's as toString)
+        private fun get(k: String): String? = if (off) mem[k] else node.get(k, null)
+        private fun put(k: String, v: String?) {
+            if (off) { if (v == null) mem.remove(k) else mem[k] = v } else if (v == null) node.remove(k) else node.put(k, v)
+        }
+        private fun str(k: String, d: String) = get(k) ?: d
+        private fun num(k: String): Double? = get(k)?.toDoubleOrNull()
+        private fun putNum(k: String, v: Double?) = put(k, v?.toString())
+        private fun int(k: String, d: Int) = get(k)?.trim()?.toIntOrNull() ?: d
+        private fun bool(k: String, d: Boolean) = when (get(k)?.lowercase()) { "true" -> true; "false" -> false; else -> d }
+        private fun idKey(id: String) = if (id.length <= 48) id else
+            java.security.MessageDigest.getInstance("SHA-256").digest(id.toByteArray()).joinToString("") { "%02x".format(it) }.take(32)
+
+        var camera: String get() = str("camera", ""); set(v) { put("camera", v) }
+        fun res(cam: String) = str("res@${idKey(cam)}", "")
+        fun fps(cam: String) = num("fps@${idKey(cam)}") ?: 0.0
+        fun mode(cam: String, res: String, fps: Double) { put("res@${idKey(cam)}", res); putNum("fps@${idKey(cam)}", fps) }
+        fun zoom(cam: String, layout: String) = num("zoom@${idKey(cam)}/$layout")
+        fun zoom(cam: String, layout: String, v: Double) = putNum("zoom@${idKey(cam)}/$layout", v)
+        // ai: null: the camera's own (automatic where it can be)
+        fun exposure(cam: String) = num("exposure@${idKey(cam)}")
+        fun exposure(cam: String, us: Double?) = putNum("exposure@${idKey(cam)}", us)
+        fun gain(cam: String) = num("gain@${idKey(cam)}")
+        fun gain(cam: String, v: Double?) = putNum("gain@${idKey(cam)}", v)
+        var layout: String get() = str("layout", "1:1").let { if (it == "2:1") it else "1:1" }; set(v) { put("layout", v) }
+        var decoder: String get() = str("decoder", "auto").let { if (it == "gpu" || it == "cpu") it else "auto" }; set(v) { put("decoder", v) }
+        var batch: Int get() = int("batch", 32).coerceIn(1, 32); set(v) { put("batch", v.toString()) }
+        var settingsOpen: Boolean get() = bool("recvSettings", false); set(v) { put("recvSettings", v.toString()) }
+        var toolsOpen: Boolean get() = bool("recvTools", false); set(v) { put("recvTools", v.toString()) }
+        var collapsed: Boolean get() = bool("recvCollapsed", false); set(v) { put("recvCollapsed", v.toString()) }
+        var stats: Boolean get() = bool("stats", false); set(v) { put("stats", v.toString()) }
+        var tipsSeen: Boolean get() = bool("tipsSeen", false); set(v) { put("tipsSeen", v.toString()) }
+    }
     private fun str(k: String, d: String) = p?.get(k, d) ?: d
     private fun int(k: String, d: Int) = p?.getInt(k, d) ?: d
     private fun bool(k: String, d: Boolean) = p?.getBoolean(k, d) ?: d

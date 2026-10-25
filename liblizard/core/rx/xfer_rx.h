@@ -1,9 +1,11 @@
 // ai: The transfer's receiving end, native, the app's threaded form: CRC-verified
 // ai: blocks in, a file out, each chunk checked against the file's BLAKE3 root. Its two parts are xfer_rx_core.h's
 // ai: (since 2026-10-03; the same chain, no thread of its own): XferJudge on the producer's thread (frame, take) and
-// ai: XferRxCore on this object's worker thread, its store files under storeDir. Threads: one producer calls take,
-// ai: frame, clear and drain; any one other thread may call progress. Wirehair solves and BLAKE3 run on the worker, so
-// ai: take never waits on them.
+// ai: XferRxCore on this object's worker thread, its store files under storeDir. Threads: take, frame, clear and
+// ai: forget from any thread, one at a time under the transfer's own lock (2026-10-25: two receivers feed one transfer
+// ai: while one takes over from the other, receiver.h create's from; each receiver held a lock of its own until then);
+// ai: progress, taken and drain from any thread. Wirehair solves and BLAKE3 run on the worker, so take never waits on
+// ai: them.
 #pragma once
 #include <array>
 #include <atomic>
@@ -55,6 +57,7 @@ class XferRx {
   void run();
 
   std::function<void(const std::string&)> log_;
+  std::mutex prod_;   // ai: the producers' side: take, frame, clear and forget, the judge with them, one at a time
   // ai: shared: the queue, the worker's progress snapshot
   std::mutex mu_;
   std::condition_variable cv_, idle_;

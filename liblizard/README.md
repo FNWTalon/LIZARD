@@ -15,8 +15,9 @@ One C API (`include/lizard.h`), three bindings over it:
 
 macOS has no preset and has never been built.
 
-Beside them, `kotlin/` holds plain-JVM code the Android app and the desktop sender compile into themselves: `Tar.kt`,
-how several files or a folder become one transfer (a tar, `research/SPEC.md` 9.6) and how a receiver unpacks one.
+Beside them, `kotlin/` holds plain-JVM code the Android app and the desktop app compile into themselves: `Tar.kt`,
+how several files or a folder become one transfer (a tar, `research/SPEC.md` 9.6) and how a receiver unpacks one;
+`PhaseLock.kt`, the camera's phase lock against the display; `Readout.kt`, the receive screen's words and figures.
 
 ## Layers
 
@@ -66,7 +67,9 @@ Options: `LIZ_GPU` (the Vulkan engines; off in wasm), `LIZ_JNI`, `LIZ_TESTS`, `L
 WebAssembly 1.0, the `wasm-mvp` preset), `LIZ_GPU_TREE` (the generated GPU
 files) and `LIZ_GPU_VARIANTS` (the decoder variants installed: all six by default, 21 MB; one alone 10 MB for `f32-sg`
 to 14 MB for `int8-sg`, the sender's files included). The receiver decodes with the best variant the device runs of
-those its assets hold; where they hold none it runs, `auto` decodes on the CPU (the log says why) and `gpu` fails.
+those its assets hold; where they hold none it runs, `auto` decodes on the CPU (the log says why) and `gpu` fails. On a
+software Vulkan device (Vulkan's CPU type: lavapipe, SwiftShader) `auto` decodes on the CPU too, its stats' `gpuWhy`
+naming the device, and `gpu` still runs there.
 `f32` and `f32-sg` hold no back half for the 1536 picture (the setups are made for 32 KB of workgroup memory, and f32
 needs 33,792 B there): a GPU decoder on them finds LIZARD-576 and up but reads none of their blocks, so an install of
 one variant that reads every format is `f16-sg` or `int8-sg`.

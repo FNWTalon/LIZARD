@@ -1,4 +1,4 @@
-package dev.lizard.receiver
+package dev.lizard.readout
 
 import java.util.Locale
 import kotlin.math.ceil
@@ -9,7 +9,8 @@ import kotlin.math.roundToInt
 // ai: left) in Kotlin: one wording on every surface (2026-10-01). The user's figures are progress, size, speed and time
 // ai: left; the format's name and the registered
 // ai: share are the lab line's, in Developer Tools. 1 KB = 1000 B, a figure kept on its line (a no-break space), digits as the
-// ai: web prints them whatever the phone's locale. Pure: no Android in here.
+// ai: web prints them whatever the phone's locale. Pure: no Android in here. The Android app and the desktop app both
+// ai: compile this file (liblizard/kotlin, 2026-10-25).
 object Readout {
     // ai: A name's stem and the ending kept whole when the line cuts it (2026-10-23, Parts.kt NameLine): a bundle's
     // ai: " and N more.tar" (Tar.kt Bundle), else an extension of at most 10 characters, else nothing; the web's

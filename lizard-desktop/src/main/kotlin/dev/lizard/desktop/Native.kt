@@ -1,16 +1,17 @@
 package dev.lizard.desktop
 
 import java.io.File
-import java.security.MessageDigest
 
-// ai: The native sender (lizard-desktop/native/tx_jni.cpp over liblizard/core's lizard_tx): a sender on a mapped file or the
-// ai: test stream, its painters (the C on the CPU, or the Vulkan painter: liblizard/core/tx/gpu_painter), and the
-// ai: presenter (lizard-desktop/native/presenter.cpp), which takes the sender's frames in order and shows them on the code
-// ai: area's canvas through its own Vulkan swapchain, FIFO. load() first: it extracts the bundled library and the GPU
-// ai: painter's kernels and tables (build.gradle.kts `bundle`) to a folder named by their hash under the cache
-// ai: (Native.cache: ~/.cache/lizard-sender on Linux), loads the JDK's jawt (the presenter finds the canvas's window
-// ai: through it) and then the library. On macOS the bundle also carries MoltenVK, put beside the library, where the
-// ai: library's Vulkan loader finds it.
+// ai: The app's native side (lizard-desktop/native over liblizard/core): the sender (tx_jni.cpp over lizard_tx: a sender on
+// ai: a mapped file or the test stream, its painters, the C on the CPU or the Vulkan painter, liblizard/core/tx/
+// ai: gpu_painter), the presenter (presenter.cpp, which takes the sender's frames in order and shows them on the code
+// ai: area's canvas through its own Vulkan swapchain, FIFO), the desktop's file chooser and full screen, and the
+// ai: receiver (rx_jni.cpp over rx_session.h: a camera into liblizard/core's Receiver, the GPU decoder or the C). load()
+// ai: first: it extracts the bundled library, the GPU painter's kernels and tables and the decoder's setups, blobs and
+// ai: modules (build.gradle.kts `bundle`) to a folder under the cache named by the hash the build wrote at the top of
+// ai: files.txt (Native.cache: ~/.cache/lizard-sender on Linux), loads the JDK's jawt (the presenter finds the canvas's
+// ai: window through it) and then the library. On macOS the bundle also carries MoltenVK, put beside the library, where
+// ai: the library's Vulkan loader finds it.
 object Native {
     // ai: path: the file to send ("" for the test stream); name and type as its header carries them; 0, why in txError()
     @JvmStatic external fun txCreate(path: String, name: String, type: String): Long
@@ -48,8 +49,57 @@ object Native {
     @JvmStatic external fun presentStats(p: Long): String
     @JvmStatic external fun presentStop(p: Long)
 
-    // ai: the GPU painter's tree (setup/send.json, blobs/, spv/send_*.spv), as liblizard/out holds it
+    // ai: The receiver (2026-10-25, native/rx_jni.cpp over native/rx_session.h): a camera (native/camera/camera.h: V4L2,
+    // ai: Media Foundation or AVFoundation for UVC devices; the simulated camera for the tests) feeding liblizard/core's
+    // ai: Receiver. Every string crosses as the text it is (UTF-16 here, UTF-8 there), every JSON as rx_session.h
+    // ai: describes it; a refusal is its sentence ("" none). Calls that can wait, never on the UI thread (ReceiveState's
+    // ai: own thread, the lock's for its trigger): rxCameras (a listing opens each device), rxCreate and rxConfigure (a
+    // ai: receiver made), rxOpen, rxStart, and the camera calls that queue behind them (rxSet, rxStop, rxClose,
+    // ai: rxTrigger), rxClear and rxForget (the transfer's worker), rxReplayEnd; rxCaptures blocks the lock's thread
+    // ai: (Lock.kt). rxStats, rxCamera, rxPreview, rxSeries and rxDelay wait on nothing.
+    // ai: the cameras every backend sees: {"cameras": [{id, name, backend, detail}], "notes": [why a backend saw none]}
+    @JvmStatic external fun rxCameras(): String
+    // ai: a session with its receiver (decoder auto|gpu|cpu, precision auto|int8|f16|f32, layout 1:1|2:1): 0, why in txError()
+    @JvmStatic external fun rxCreate(assets: String, cacheDir: String, storeDir: String, decoder: String, precision: String, layout: String): Long
+    @JvmStatic external fun rxConfigure(h: Long, decoder: String, layout: String): String
+    @JvmStatic external fun rxOpen(h: Long, id: String): String
+    @JvmStatic external fun rxClose(h: Long)
+    // ai: the camera open: {info, modes, pick, controls, trigger}, {} none (rx_session.h camera)
+    @JvmStatic external fun rxCamera(h: Long): String
+    @JvmStatic external fun rxSet(h: Long, control: String, value: Double, automatic: Boolean): String
+    @JvmStatic external fun rxStart(h: Long, mode: Int): String
+    @JvmStatic external fun rxStop(h: Long)
+    // ai: the receiver's stats (liblizard/core/rx/receiver.h) with the camera's line in "camera"
+    @JvmStatic external fun rxStats(h: Long): String
+    // ai: Receiver::series: [the held word's version, then 8 a frame: ms, verified, new, found, r, rSd, r2, r2Sd]
+    @JvmStatic external fun rxSeries(h: Long, sinceMs: Double): DoubleArray
+    // ai: the captures pushed since the last call, (ns, 1 delayed else 0) pairs, waiting up to timeoutMs; empty on the
+    // ai: timeout, a stop or rxWake
+    @JvmStatic external fun rxCaptures(h: Long, timeoutMs: Int): LongArray
+    @JvmStatic external fun rxWake(h: Long)
+    // ai: the camera's software trigger every periodNs (0: back to free run), and the schedule moved later by ns
+    @JvmStatic external fun rxTrigger(h: Long, periodNs: Long): String
+    @JvmStatic external fun rxDelay(h: Long, ns: Long)
+    // ai: the newest frame's crop newer than `since`, at most `side` px on its long side, into out (sized side x side):
+    // ai: [seq, w, h], or null where none came
+    @JvmStatic external fun rxPreview(h: Long, since: Long, side: Int, out: ByteArray): LongArray?
+    // ai: the received file's path once verified, else ""; clear forgets the transfer and its file; forget one by root
+    @JvmStatic external fun rxFile(h: Long): String
+    @JvmStatic external fun rxClear(h: Long)
+    @JvmStatic external fun rxForget(h: Long, root: String)
+    @JvmStatic external fun rxBatchCap(h: Long, n: Int)
+    // ai: Save replays (core/rx/replay.h): a run's folder of the newest `frames` frames the decoder takes; rxRecord(h, 0)
+    // ai: stops; rxReplayEnd ends the run: {"frames", "bytes", "error"}
+    @JvmStatic external fun rxReplayNew(dir: String, run: String, frames: Int): Long
+    @JvmStatic external fun rxRecord(h: Long, replay: Long)
+    @JvmStatic external fun rxReplayEnd(replay: Long, rxStats: String, rows: String, more: String): String
+    @JvmStatic external fun rxDestroy(h: Long)
+
+    // ai: the GPU tree (setup/send.json, the decoder's six setups, blobs/, spv/), as liblizard/out holds it
     lateinit var assets: String
+        private set
+    // ai: this build's folder under the cache (the pipeline cache's place: old builds' go with their folders)
+    lateinit var buildDir: File
         private set
 
     private val os = System.getProperty("os.name").lowercase()
@@ -62,19 +112,32 @@ object Native {
         mac -> File(System.getProperty("user.home"), "Library/Caches/lizard-sender")
         else -> File(System.getenv("XDG_CACHE_HOME")?.takeIf { it.isNotEmpty() } ?: File(System.getProperty("user.home"), ".cache").path, "lizard-sender")
     }
+    // ai: The app's data (2026-10-25), never under the cache, whose folders load() prunes: the receiver's store (the
+    // ai: transfers kept to resume) and the received files' list. LIZ_DATA names another (the tests').
+    val data: File = System.getenv("LIZ_DATA")?.takeIf { it.isNotEmpty() }?.let { File(it) } ?: when {
+        windows -> File(System.getenv("LOCALAPPDATA")?.takeIf { it.isNotEmpty() } ?: System.getProperty("user.home"), "LIZARD-data")
+        mac -> File(System.getProperty("user.home"), "Library/Application Support/LIZARD")
+        else -> File(System.getenv("XDG_DATA_HOME")?.takeIf { it.isNotEmpty() } ?: File(System.getProperty("user.home"), ".local/share").path, "lizard")
+    }
 
+    // ai: files.txt (build.gradle.kts bundle): "hash <h>", then the bundle's names. <h>, made at the build since
+    // ai: 2026-10-25, names this build's folder under the cache (a launch read and hashed the whole bundle to name it
+    // ai: before: 70 MB with a debug library, 22 MB with a release one): once its .done is there no file of the bundle
+    // ai: is read; else each is copied out of the jar in turn, .done last.
     fun load() {
-        val names = javaClass.getResourceAsStream("/lizard/files.txt")?.bufferedReader()?.readLines()?.filter { it.isNotBlank() }
+        val lines = javaClass.getResourceAsStream("/lizard/files.txt")?.bufferedReader()?.readLines()?.filter { it.isNotBlank() }
             ?: error("the app carries no native files (build.gradle.kts bundle)")
-        val bytes = names.associateWith { javaClass.getResourceAsStream("/lizard/$it")!!.readBytes() }
-        val md = MessageDigest.getInstance("SHA-256")
-        for ((k, v) in bytes) { md.update(k.toByteArray()); md.update(v) }
-        val hash = md.digest().joinToString("") { "%02x".format(it) }.take(16)
+        val hash = lines.firstOrNull()?.let { Regex("hash ([0-9a-f]{16})").matchEntire(it)?.groupValues?.get(1) }
+            ?: error("the app's files.txt names no hash (build.gradle.kts bundle)")
+        val names = lines.drop(1)
         val root = cache
         val dir = File(root, hash)
         val done = File(dir, ".done")
         if (!done.exists()) {
-            for ((k, v) in bytes) File(dir, k).apply { parentFile.mkdirs(); writeBytes(v) }
+            for (k in names) {
+                val src = javaClass.getResourceAsStream("/lizard/$k") ?: error("the app carries no $k, which its files.txt names")
+                src.use { s -> File(dir, k).apply { parentFile.mkdirs() }.outputStream().use { s.copyTo(it, 1 shl 20) } }
+            }
             done.writeText(hash)
         }
         // ai: the folders of older builds go, but the newest two besides this one's: an instance of an older build still
@@ -83,6 +146,7 @@ object Native {
         root.listFiles()?.filter { it.isDirectory && it.name != hash }?.sortedByDescending { it.lastModified() }?.drop(2)
             ?.forEach { runCatching { it.deleteRecursively() } }
         assets = File(dir, "assets").path
+        buildDir = dir
         val lib = names.first { it.startsWith("native/") && it.contains("lizard_desktop") }
         System.loadLibrary("jawt")
         System.load(File(dir, lib).absolutePath)

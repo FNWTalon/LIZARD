@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <map>
@@ -730,8 +731,10 @@ void Presenter::Impl::setup() {
   pci.queueFamilyIndex = qf;
   vkCheck(D.vkCreateCommandPool(dev, &pci, nullptr, &pool), "vkCreateCommandPool");
   {
+    // ai: by its UTF-8 path (fs::u8path): Windows reads a narrow one in the ANSI code page, so under a profile folder
+    // ai: with a letter past ASCII (the app's tree under %LOCALAPPDATA%) the code was never shown (2026-10-25)
     const std::string path = sender->assets() + "/spv/send_expand.spv";
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
     std::vector<char> code((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     if (code.empty() || code.size() % 4) throw std::runtime_error("no expand kernel at " + path);
     VkShaderModuleCreateInfo smi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
@@ -767,7 +770,11 @@ void Presenter::Impl::setup() {
     vkCheck(D.vkCreateDescriptorPool(dev, &dpi, nullptr, &dpool), "vkCreateDescriptorPool");
   }
   if (!opt.csv.empty()) {
+#if defined(_WIN32)
+    csv = _wfopen(std::filesystem::u8path(opt.csv).c_str(), L"w");   // ai: a UTF-8 path, as the expand kernel's
+#else
     csv = std::fopen(opt.csv.c_str(), "w");
+#endif
     if (!csv) throw std::runtime_error(opt.csv + " could not be written");
     std::fprintf(csv, "id,picture,fresh,acquired_ms,submitted_ms,shown_ms,queued\n");
   }

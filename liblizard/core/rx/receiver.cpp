@@ -67,7 +67,8 @@ double sideOf(const float* c) {
   return e / 4;
 }
 
-// ai: Each pushed frame's camera timestamp by its tag, until its result comes back, and the newest SERIES frames as
+// ai: Each pushed frame's camera timestamp and stream (the receiver's count of cameraClosed calls when it came) by its
+// ai: tag, until its result comes back, and the newest SERIES frames as
 // ai: [ms on the camera's clock, verified blocks, new blocks, 1 where the finder registered a symbol, the pilots' r and
 // ai: its standard error over the even blocks, then over the odd (SPEC 7.3; null where none were read)] for the stats
 // ai: ("series", about two seconds, so a reader
@@ -76,12 +77,16 @@ double sideOf(const float* c) {
 // ai: display shows (the app's PhaseLock.kt; STATUS "A delay for the camera's phase").
 constexpr size_t SERIES = 150;
 struct Stamps {
-  std::map<uint64_t, int64_t> ns;
+  struct At { int64_t ns; uint64_t stream; };
+  std::map<uint64_t, At> ns;
   std::deque<std::array<double, 8>> series;
-  void put(uint64_t tag, int64_t t) { ns[tag] = t; while (ns.size() > 512) ns.erase(ns.begin()); }
+  void put(uint64_t tag, int64_t t, uint64_t stream) { ns[tag] = {t, stream}; while (ns.size() > 512) ns.erase(ns.begin()); }
+  // ai: whether the frame tagged `tag` came in stream s (one no longer kept, 512 pushes on, is taken for an earlier
+  // ai: stream's: no frame waits in either decoder that long)
+  bool in(uint64_t tag, uint64_t s) const { auto it = ns.find(tag); return it != ns.end() && it->second.stream == s; }
   std::array<double, 8> row(uint64_t tag, size_t blocks, int fresh, bool found, int pilotBlocks, float pilotR, float pilotSd, float pilotR2, float pilotSd2) const {
     auto it = ns.find(tag);
-    return {it == ns.end() ? 0 : it->second / 1e6, (double)blocks, (double)fresh, found ? 1.0 : 0.0, pilotBlocks ? (double)pilotR : NAN, pilotBlocks ? (double)pilotSd : NAN,
+    return {it == ns.end() ? 0 : it->second.ns / 1e6, (double)blocks, (double)fresh, found ? 1.0 : 0.0, pilotBlocks ? (double)pilotR : NAN, pilotBlocks ? (double)pilotSd : NAN,
             pilotBlocks ? (double)pilotR2 : NAN, pilotBlocks ? (double)pilotSd2 : NAN};
   }
   void add(const std::array<double, 8>& r) { series.push_back(r); while (series.size() > SERIES) series.pop_front(); }
@@ -103,9 +108,12 @@ struct Stamps {
 
 class GpuReceiver : public Receiver {
  public:
-  GpuReceiver(const ReceiverConfig& c, std::function<void(uint64_t)> release) : cfg(c), releaseFn(std::move(release)) {}
+  // ai: transfer: another receiver's to go on with (Receiver::create's from), null for one of its own (made in start)
+  GpuReceiver(const ReceiverConfig& c, std::function<void(uint64_t)> release, std::shared_ptr<XferRx> transfer)
+      : cfg(c), releaseFn(std::move(release)), xfer(std::move(transfer)) {}
   ~GpuReceiver() override;
-  bool start(std::string& why);
+  // ai: software: whether a device of type CPU may run it (Receiver::create: gpu's, not auto's)
+  bool start(std::string& why, bool software);
   void push(const CameraFrame& f) override;
   std::string stats() override;
   std::vector<double> series(double sinceMs) override { std::lock_guard<std::mutex> l(mu); return stamps.since(held, sinceMs); }
@@ -121,15 +129,17 @@ class GpuReceiver : public Receiver {
     std::lock_guard<std::mutex> l(mu);
     if (cfg.log) cfg.log("camera closed: " + std::to_string(n) + " imported buffers let go" + (error.empty() ? "" : ", the error \"" + error + "\"" + (error.rfind("ingest: ", 0) == 0 ? " cleared" : " kept")));
     if (error.rfind("ingest: ", 0) == 0) error.clear();
+    endWindow();
   }
 
  private:
+  std::shared_ptr<XferRx> transfer() const override { return xfer; }
   ReceiverConfig cfg;
   std::function<void(uint64_t)> releaseFn;
   std::unique_ptr<wg::Device> dev;
   std::unique_ptr<FrontHalf> fh;
   std::unique_ptr<CameraIngest> ci;
-  std::unique_ptr<XferRx> xfer;
+  std::shared_ptr<XferRx> xfer;
   std::string variant, error;
   std::atomic<bool> stop{false};
   std::thread decoderThread, releaserThread;
@@ -163,14 +173,19 @@ class GpuReceiver : public Receiver {
   float lensNow[4] = {0, 0, 0, 0};   // ai: the newest frame's lens report (CameraFrame::lens), for the replay's GPU-kept frames; under mu
   // ai: fresh: data ids new to the dedupe (the series' and the lock's); useful: what goodputKBs counts (rateFold)
   struct Win { int arrived = 0, dropped = 0, processed = 0, found = 0, words = 0, test = 0; long blocks = 0, fresh = 0, useful = 0; double gpuMs = 0, gpuFrames = 0, side = 0, held = 0, heldMax = 0; int heldN = 0; } win, last;
-  uint64_t takenSeen = 0;   // ai: the transfer's taken() at the last window's close
+  uint64_t takenSeen = 0;   // ai: the transfer's taken() at the last window's close, or at its opening
   double winStart = 0;
+  // ai: the window's stream (receiver.h cameraClosed): stream counts the camera's closes, and a frame's figures go to
+  // ai: the window of the stream it came in (Stamps); opened: a window runs, from a stream's first frame (openWindow,
+  // ai: in push) to the camera's close (endWindow), so none before a receiver's first frame or between two streams
+  uint64_t stream = 0;
+  bool opened = false;
   long totalBlocks = 0, totalFrames = 0;
   json lastWord;
   std::shared_ptr<Replay> rec;   // ai: Save replays (record), under mu
-  // ai: the transfer's one producer (XferRx): the decoder thread's frames and clear(), which the app calls from another
-  // ai: thread (a received file deleted, 2026-10-10: the dedupe was cleared unlocked while a batch was delivered)
-  std::mutex deliverMu;
+  // ai: the decoder thread's frames and clear(), which the app calls from another thread, go into the transfer one at
+  // ai: a time under its own lock (xfer_rx.h; 2026-10-10 a lock here: the dedupe was cleared unlocked while a batch
+  // ai: was delivered)
   void decoderLoop();
   void releaserLoop();
   void drop(uint64_t tag) { releaseFn(tag); }
@@ -184,6 +199,8 @@ class GpuReceiver : public Receiver {
   struct Kept { std::shared_ptr<Replay> replay; int n = 0; };
   void deliver(BatchOut& out, const Kept& k);
   void rollWindow(double now);
+  void openWindow(double now);
+  void endWindow();
 };
 
 GpuReceiver::~GpuReceiver() {
@@ -197,12 +214,20 @@ GpuReceiver::~GpuReceiver() {
   for (auto& r : stagingReplay) if (r) r->release(1);
 }
 
-bool GpuReceiver::start(std::string& why) {
+bool GpuReceiver::start(std::string& why, bool software) {
   auto log = cfg.log ? cfg.log : [](const std::string&) {};
   // ai: LIZ_VK_DEVICE (a substring of a device's name) picks the device on a machine with several, as the check
   // ai: tools take it; unset on a phone. Before 2026-09-30 the receiver took the first device whatever it named, so
   // ai: `receive` on the desktop ran on the 4090 under LIZ_VK_DEVICE=AMD.
   dev = wg::Device::create(!cfg.device.empty() ? cfg.device : getenv("LIZ_VK_DEVICE") ? getenv("LIZ_VK_DEVICE") : "", false, log);
+  // ai: A device of type CPU (lavapipe, SwiftShader) runs the kernels as threads on the cores the C decodes on, slower
+  // ai: by far: auto takes the C there, before any pipeline is built (2026-10-25: the PC receiver's auto on a machine
+  // ai: whose one Vulkan device is llvmpipe, the Windows test VM's, took 11.6 s for a batch of one frame and the screen
+  // ai: read nothing). gpu still runs on it, as the checks ask.
+  if (!software && dev->type == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+    why = "a software Vulkan device: " + dev->name;
+    return false;
+  }
   if (!cfg.cacheDir.empty()) dev->loadCache(cfg.cacheDir + "/pipeline.cache");   // ai: none, no cache (the library's default)
   // ai: The best variant the device runs of those the assets hold (2026-10-04): an install may hold some of the six
   // ai: (variantsIn). Before, the device's best was asked for whatever the assets held: an install of f32-sg alone
@@ -229,9 +254,8 @@ bool GpuReceiver::start(std::string& why) {
   fh = FrontHalf::create(*dev, readDir(cfg.assets), variant, budget, 0, log);
   ci = CameraIngest::create(*dev, readDir(cfg.assets));
   fh->ingest = ci.get();
-  xfer = std::make_unique<XferRx>(cfg.storeDir, log);
+  if (!xfer) xfer = std::make_shared<XferRx>(cfg.storeDir, log);
   dev->saveCache();
-  winStart = fh->now();
   batchSize = std::max(1, fh->size());
   decoderThread = std::thread([this] { decoderLoop(); });
   releaserThread = std::thread([this] { releaserLoop(); });
@@ -253,8 +277,9 @@ void GpuReceiver::push(const CameraFrame& f) {
   bool dropped = false;
   {
     std::lock_guard<std::mutex> l(mu);
+    if (!opened) openWindow(now);
     win.arrived++;
-    stamps.put(f.tag, f.timestampNs);
+    stamps.put(f.tag, f.timestampNs, stream);
     for (int i = 0; i < 4; i++) lensNow[i] = f.lens[i];
     if (side == failedW) dropped = true;
     else {
@@ -438,7 +463,7 @@ void GpuReceiver::deliver(BatchOut& out, const Kept& k) {
         {
           std::lock_guard<std::mutex> l(mu);
           auto it = stamps.ns.find(fo.tag);
-          if (it != stamps.ns.end()) ms = it->second / 1e6;
+          if (it != stamps.ns.end()) ms = it->second.ns / 1e6;
         }
         // ai: the axis word back to pixels for the replay's meta (0, the centre, as none)
         const float ax = fo.axis ? 0.5f * ((float)(fo.axis & 0xffffu) - 32768) : NAN, ay = fo.axis ? 0.5f * ((float)(fo.axis >> 16) - 32768) : NAN;
@@ -450,26 +475,32 @@ void GpuReceiver::deliver(BatchOut& out, const Kept& k) {
     if (fo.empty) continue;
     std::vector<Block> blocks;
     for (auto& r : fo.records) { Block b; memcpy(b.bytes.data(), r.payload.data(), b.bytes.size()); blocks.push_back(b); }
-    FrameVerdict v;
-    {
-      std::lock_guard<std::mutex> d(deliverMu);
-      v = xfer->frame(blocks);
-    }
+    const FrameVerdict v = xfer->frame(blocks);
     std::lock_guard<std::mutex> l(mu);
-    win.processed++;
-    win.found += fo.finder.found == 1;
-    if (fo.finder.found == 1) win.side += sideOf(fo.finder.corners.data());
-    win.blocks += (long)fo.records.size();
-    win.fresh += v.fresh;
-    if (v.test) win.useful += v.fresh;
+    // ai: a frame of a stream the camera has closed since (staged or in flight at the close) counts in no window; its
+    // ai: blocks, its row, the totals and the word as every frame's
+    if (stamps.in(fo.tag, stream)) {
+      win.processed++;
+      win.found += fo.finder.found == 1;
+      if (fo.finder.found == 1) win.side += sideOf(fo.finder.corners.data());
+      win.blocks += (long)fo.records.size();
+      win.fresh += v.fresh;
+      if (v.test) { win.useful += v.fresh; win.test++; }
+      win.words += fo.hasWord;
+    }
     stamps.frame(fo.tag, fo.records.size(), v.fresh, fo.finder.found == 1, fo.pilotBlocks, fo.pilotR, fo.pilotSd, fo.pilotR2, fo.pilotSd2);
-    if (v.test) win.test++;
     totalBlocks += (long)fo.records.size();
     totalFrames++;
-    if (fo.hasWord) { win.words++; held = fo.word.version; lastWord = {{"version", fo.word.version}, {"fps", fo.word.fps}, {"ring", fo.ring}}; }
+    if (fo.hasWord) { held = fo.word.version; lastWord = {{"version", fo.word.version}, {"fps", fo.word.fps}, {"ring", fo.ring}}; }
   }
   std::lock_guard<std::mutex> l(mu);
-  if (out.gpuMs) { win.gpuMs += *out.gpuMs; win.gpuFrames += out.carried; }
+  // ai: the batch's GPU time, a frame's share for each of its frames of the window's stream (an empty one's too)
+  if (out.gpuMs && out.carried > 0) {
+    int own = 0;
+    for (const auto& fo : out.frames) own += stamps.in(fo.tag, stream);
+    own = std::min(own, out.carried);
+    win.gpuMs += *out.gpuMs * own / out.carried; win.gpuFrames += own;
+  }
   // ai: a batch delivered is the decoder working: an error from before (an ingest a plan has since covered, a batch
   // ai: that failed once) no longer describes it. One that keeps failing sets it again before the next delivery.
   error.clear();
@@ -483,7 +514,7 @@ void GpuReceiver::deliver(BatchOut& out, const Kept& k) {
 static long rateFold(XferRx& x, uint64_t& seen) { const uint64_t t = x.taken(); const long d = (long)(t - seen); seen = t; return d; }
 
 void GpuReceiver::rollWindow(double now) {
-  if (now - winStart < 1000) return;
+  if (!opened || now - winStart < 1000) return;
   win.useful += rateFold(*xfer, takenSeen);
   last = win;
   const double dt = (now - winStart) / 1000;
@@ -492,6 +523,13 @@ void GpuReceiver::rollWindow(double now) {
   win = Win{};
   winStart = now;
 }
+
+// ai: push, mu held: a stream's first frame opens its window at its arrival, nothing in it from before (the releaser's
+// ai: hold times of the stream before, the transfer's blocks taken before it)
+void GpuReceiver::openWindow(double now) { opened = true; win = Win{}; winStart = now; takenSeen = xfer->taken(); }
+
+// ai: cameraClosed, mu held: the stream's figures end with it (receiver.h cameraClosed)
+void GpuReceiver::endWindow() { stream++; opened = false; win = last = Win{}; lastSecs = 1; lastFrames = 0; }
 
 std::string GpuReceiver::stats() {
   auto p = xfer->progress();
@@ -517,8 +555,8 @@ std::string GpuReceiver::stats() {
 }
 
 std::string GpuReceiver::file() { auto p = xfer->progress(); return p.done ? p.path : ""; }
-void GpuReceiver::clear() { { std::lock_guard<std::mutex> d(deliverMu); xfer->clear(); } std::lock_guard<std::mutex> l(mu); lastWord = nullptr; held = 0; }
-void GpuReceiver::forget(const std::string& root) { std::lock_guard<std::mutex> d(deliverMu); xfer->forget(root); }
+void GpuReceiver::clear() { xfer->clear(); std::lock_guard<std::mutex> l(mu); lastWord = nullptr; held = 0; }
+void GpuReceiver::forget(const std::string& root) { xfer->forget(root); }
 
 // ai: The C on the CPU (cpu/pool.h: the web's worker pool natively): a frame's crop is copied to an idle worker or the
 // ai: frame is lost, never queued; each worker decodes blind on its own decoder; the held word is the last word any
@@ -528,7 +566,8 @@ constexpr int CPU_NMAX = 1536;   // ai: every picture of the ladder (sim/phy.mjs
 
 class CpuReceiver : public Receiver {
  public:
-  CpuReceiver(const ReceiverConfig& c, std::function<void(uint64_t)> release, std::string gpuWhy);
+  // ai: transfer: GpuReceiver's note
+  CpuReceiver(const ReceiverConfig& c, std::function<void(uint64_t)> release, std::string gpuWhy, std::shared_ptr<XferRx> transfer);
   // ai: The workers stop before the transfer they feed goes, and while `pool` still points at the pool: a frame in a
   // ai: worker's hand ends in done(), whose rollWindow ticks the pool (a reset alone cleared the pointer first, a race
   // ai: ThreadSanitizer found through the library, 2026-10-03).
@@ -538,19 +577,21 @@ class CpuReceiver : public Receiver {
   std::vector<double> series(double sinceMs) override { std::lock_guard<std::mutex> l(mu); return stamps.since(held.load(), sinceMs); }
   void batchCap(int) override {}   // ai: a frame at a time already
   std::string file() override { auto p = xfer->progress(); return p.done ? p.path : ""; }
-  void clear() override { { std::lock_guard<std::mutex> d(deliverMu); xfer->clear(); } std::lock_guard<std::mutex> l(mu); lastWord = nullptr; held = 0; }
-  void forget(const std::string& root) override { std::lock_guard<std::mutex> d(deliverMu); xfer->forget(root); }
+  void clear() override { xfer->clear(); std::lock_guard<std::mutex> l(mu); lastWord = nullptr; held = 0; }
+  void forget(const std::string& root) override { xfer->forget(root); }
   bool wantsLuma() const override { return true; }
   void record(std::shared_ptr<Replay> r) override { std::lock_guard<std::mutex> l(mu); rec = std::move(r); }
+  void cameraClosed() override { std::lock_guard<std::mutex> l(mu); endWindow(); }
 
  private:
+  std::shared_ptr<XferRx> transfer() const override { return xfer; }
   ReceiverConfig cfg;
   std::function<void(uint64_t)> releaseFn;
   std::string gpuWhy, error;
-  std::unique_ptr<XferRx> xfer;
+  // ai: the workers' frames go into it one at a time under its own lock (xfer_rx.h)
+  std::shared_ptr<XferRx> xfer;
   std::unique_ptr<CpuPool> pool;
   std::mutex mu;           // ai: guards the stats window, the word and the error
-  std::mutex deliverMu;    // ai: one frame's blocks into the transfer at a time (XferRx takes one producer)
   // ai: The series in capture order. The pool's workers finish out of it (a capture that holds a change runs its
   // ai: LDPC to the cap while the next one is done), and a reader that asks at every capture (the phase lock since
   // ai: 2026-10-01) would take the later frame and never see the earlier. `flight`: the tags offered and not yet
@@ -574,23 +615,27 @@ class CpuReceiver : public Receiver {
   // ai: lost to busy workers
   Stamps stamps;
   struct Win { int arrived = 0, dropped = 0, processed = 0, found = 0, words = 0, test = 0, repeat = 0, skips = 0; long blocks = 0, fresh = 0, useful = 0; double ms = 0, side = 0; } win, last;
-  uint64_t takenSeen = 0;   // ai: the transfer's taken() at the last window's close
+  uint64_t takenSeen = 0;   // ai: the transfer's taken() at the last window's close, or at its opening
   double winStart = 0, repeatShare = 0;
   int lastMsFrames = 0;    // ai: the frames last.ms is summed over (last.processed is a rate)
   double lastSecs = 1;     // ai: the last window's length: what a count over it is a rate of (GpuReceiver's note)
+  uint64_t stream = 0;     // ai: the window's stream and whether one runs (GpuReceiver's note)
+  bool opened = false;
   long totalBlocks = 0, totalFrames = 0;
   json lastWord;
   std::shared_ptr<Replay> rec;   // ai: Save replays (record), under mu
   static double now() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
   void done(CpuFrameOut&& out);
   void rollWindow(double t);
+  // ai: mu held, as GpuReceiver's: a stream's first frame opens the window (push); cameraClosed ends it
+  void openWindow(double t) { opened = true; win = Win{}; winStart = t; takenSeen = xfer->taken(); }
+  void endWindow() { stream++; opened = false; win = last = Win{}; lastMsFrames = 0; lastSecs = 1; repeatShare = 0; }
 };
 
-CpuReceiver::CpuReceiver(const ReceiverConfig& c, std::function<void(uint64_t)> release, std::string why)
-    : cfg(c), releaseFn(std::move(release)), gpuWhy(std::move(why)) {
+CpuReceiver::CpuReceiver(const ReceiverConfig& c, std::function<void(uint64_t)> release, std::string why, std::shared_ptr<XferRx> transfer)
+    : cfg(c), releaseFn(std::move(release)), gpuWhy(std::move(why)), xfer(std::move(transfer)) {
   auto log = cfg.log ? cfg.log : [](const std::string&) {};
-  xfer = std::make_unique<XferRx>(cfg.storeDir, log);
-  winStart = now();
+  if (!xfer) xfer = std::make_shared<XferRx>(cfg.storeDir, log);
   pool = std::make_unique<CpuPool>(CPU_NMAX, 0, cfg.cpuThreads, [this](CpuFrameOut&& o) { done(std::move(o)); }, log);
   log(std::string("receiver: the C on the CPU, ") + (cpu_simd() ? "vector" : "scalar") + " paths, up to " + std::to_string(pool->ceiling()) + " threads" +
       (gpuWhy.empty() ? "" : " (no GPU decoder: " + gpuWhy + ")"));
@@ -600,7 +645,12 @@ void CpuReceiver::push(const CameraFrame& f) {
   const double t = now();
   int lost = 0;
   std::shared_ptr<Replay> r;
-  { std::lock_guard<std::mutex> l(mu); stamps.put(f.tag, f.timestampNs); r = rec; }
+  {
+    std::lock_guard<std::mutex> l(mu);
+    if (!opened) openWindow(t);
+    stamps.put(f.tag, f.timestampNs, stream);
+    r = rec;
+  }
   if (!f.luma) {
     std::lock_guard<std::mutex> l(mu);
     error = "the CPU decoder reads a luma plane, and the camera's frame came without one";
@@ -637,32 +687,32 @@ void CpuReceiver::push(const CameraFrame& f) {
 void CpuReceiver::done(CpuFrameOut&& out) {
   std::vector<Block> blocks(out.blockBytes ? out.blocks.size() / out.blockBytes : 0);
   for (size_t b = 0; b < blocks.size(); b++) memcpy(blocks[b].bytes.data(), out.blocks.data() + b * out.blockBytes, blocks[b].bytes.size());
-  FrameVerdict v;
-  {
-    std::lock_guard<std::mutex> l(deliverMu);
-    v = xfer->frame(blocks);
-  }
+  const FrameVerdict v = xfer->frame(blocks);
   std::lock_guard<std::mutex> l(mu);
-  win.processed++;
-  win.found += out.found;
-  if (out.found) win.side += sideOf(out.quad);
-  win.blocks += (long)blocks.size();
-  win.fresh += v.fresh;
-  if (v.test) win.useful += v.fresh;
+  // ai: a frame of a stream the camera has closed since (a worker's at the close) counts in no window (GpuReceiver's
+  // ai: deliver)
+  if (stamps.in(out.tag, stream)) {
+    win.processed++;
+    win.found += out.found;
+    if (out.found) win.side += sideOf(out.quad);
+    win.blocks += (long)blocks.size();
+    win.fresh += v.fresh;
+    if (v.test) { win.useful += v.fresh; win.test++; }
+    win.ms += out.ms;
+    if (!v.fresh && v.seen) win.repeat++;
+    win.words += out.hasWord;
+  }
   ready.emplace(out.tag, stamps.row(out.tag, blocks.size(), v.fresh, out.found, out.pilotBlocks, out.pilotR, out.pilotSd, out.pilotR2, out.pilotSd2));
   flushRows();
-  win.ms += out.ms;
-  if (v.test) win.test++;
-  if (!v.fresh && v.seen) win.repeat++;
   totalBlocks += (long)blocks.size();
   totalFrames++;
-  if (out.hasWord) { win.words++; held = out.version; lastWord = {{"version", out.version}, {"fps", out.fps}, {"ring", out.ring}}; }
+  if (out.hasWord) { held = out.version; lastWord = {{"version", out.version}, {"fps", out.fps}, {"ring", out.ring}}; }
   rollWindow(now());
 }
 
 // ai: mu held. A second's window closed: its rates for the page, its repeat share and lost frames for the pool.
 void CpuReceiver::rollWindow(double t) {
-  if (t - winStart < 1000) return;
+  if (!opened || t - winStart < 1000) return;
   const double dt = (t - winStart) / 1000;
   win.useful += rateFold(*xfer, takenSeen);
   last = win;
@@ -698,17 +748,27 @@ std::string CpuReceiver::stats() {
 }  // namespace
 
 // ai: cpu: the C. gpu: the GPU decoder, or an error. auto: the GPU decoder where the device runs a variant the assets
-// ai: hold, else the C, which every device runs.
-std::unique_ptr<Receiver> Receiver::create(const ReceiverConfig& c, std::function<void(uint64_t tag)> release) {
+// ai: hold and is not the CPU itself (VK_PHYSICAL_DEVICE_TYPE_CPU, 2026-10-25), else the C, which every device runs;
+// ai: why it is not the GPU's goes to the C's stats as gpuWhy ("a software Vulkan device: llvmpipe (...)"). transfer:
+// ai: the one to go on with (create's from), null for one of its own.
+static std::unique_ptr<Receiver> made(const ReceiverConfig& c, std::function<void(uint64_t tag)> release, std::shared_ptr<XferRx> transfer) {
   std::string why;
   if (c.decoder != "cpu") {
     try {
-      auto r = std::make_unique<GpuReceiver>(c, release);
-      if (r->start(why)) return r;
+      auto r = std::make_unique<GpuReceiver>(c, release, transfer);
+      if (r->start(why, c.decoder == "gpu")) return r;
     } catch (const std::exception& e) { why = e.what(); }
     if (c.decoder == "gpu") throw std::runtime_error(why);
   }
-  return std::make_unique<CpuReceiver>(c, std::move(release), why);
+  return std::make_unique<CpuReceiver>(c, std::move(release), why, std::move(transfer));
+}
+
+std::unique_ptr<Receiver> Receiver::create(const ReceiverConfig& c, std::function<void(uint64_t tag)> release) {
+  return made(c, std::move(release), nullptr);
+}
+
+std::unique_ptr<Receiver> Receiver::create(const ReceiverConfig& c, std::function<void(uint64_t tag)> release, Receiver& from) {
+  return made(c, std::move(release), from.transfer());
 }
 
 }  // namespace lizard

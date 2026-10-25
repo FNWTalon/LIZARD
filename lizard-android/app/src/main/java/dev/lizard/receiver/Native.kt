@@ -29,7 +29,9 @@ object Native {
     // ai: frame is staged and a lane is free whatever this is, never waiting to fill a batch
     @JvmStatic external fun batchCap(h: Long, n: Int)
     @JvmStatic external fun file(h: Long): String
-    // ai: the camera's reader closed, every frame of it handed back: the GPU decoder drops its imports of its buffers
+    // ai: the camera's reader closed, every frame of it handed back: the GPU decoder drops its imports of its buffers, and
+    // ai: on both decoders the stats' window ends with the stream (its figures 0 until the next stream's first second has
+    // ai: closed, that window the next stream's alone: liblizard/include/lizard.h liz_receiver_camera_closed)
     @JvmStatic external fun cameraClosed(h: Long)
     // ai: the transfer in hand forgotten, the held word with it (2026-10-07): the received file deleted from the app
     @JvmStatic external fun clear(h: Long)

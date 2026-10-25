@@ -43,7 +43,7 @@ struct PresentOptions {
   bool whole = false;      // ai: whole device pixels a sample, nearest (present.cpp --fit whole); else stretch, linear
   bool vsync = false;      // ai: the monitor held at a refresh fps divides while presenting (setVsync)
   std::function<void(const std::string&)> log;
-  std::string csv;         // ai: a CSV line a present (lizard_present --log), "" none
+  std::string csv;         // ai: a CSV line a present into this file, a UTF-8 path (lizard_present --log), "" none
 };
 
 class Presenter {

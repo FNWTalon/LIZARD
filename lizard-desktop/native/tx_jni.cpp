@@ -1,7 +1,8 @@
 // ai: The desktop sender's JNI face (dev.lizard.desktop.Native): lizard-android/app/src/main/cpp/jni.cpp's Tx without its
 // ai: window code: a sender made on a mapped file or the test stream, configured, and its frames put on the screen by the
 // ai: native presenter (presenter.h, 2026-10-04) in the app's code area, an AWT canvas whose native window JAWT hands over.
-// ai: The Kotlin side loads jawt before this library (it links libjawt).
+// ai: The Kotlin side loads jawt before this library (it links libjawt). Strings and the error channel (txError) are
+// ai: jni_util.h's, shared with the receiver's face (rx_jni.cpp, 2026-10-25).
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -21,10 +22,13 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cwchar>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
+#include "jni_util.h"
 #include "portal.h"
 #include "presenter.h"
 #include "sender.h"
@@ -34,6 +38,10 @@
 
 #include <jawt.h>
 #include <jawt_md.h>
+
+using lizard::jni::jstr;
+using lizard::jni::setError;
+using lizard::jni::str;
 
 namespace {
 // ai: A sender and the mutex every call into it holds: configure here on the UI's thread, take on the presenter's
@@ -99,13 +107,6 @@ struct Pres {
   }
 };
 lizard::Presenter* pr(jlong h) { return reinterpret_cast<Pres*>(h)->p.get(); }
-std::string str(JNIEnv* e, jstring s) {
-  if (!s) return "";
-  const char* c = e->GetStringUTFChars(s, nullptr);
-  std::string o(c ? c : "");
-  if (c) e->ReleaseStringUTFChars(s, c);
-  return o;
-}
 #if defined(__APPLE__)
 // ai: the five numbers of a place (macos.h Place), a missing or short array the empty place
 lizard::mac::Place placeOf(JNIEnv* e, jfloatArray a) {
@@ -117,15 +118,7 @@ lizard::mac::Place placeOf(JNIEnv* e, jfloatArray a) {
   return p;
 }
 #endif
-std::mutex gErrorMu;
-std::string gError;
-void setError(const std::string& m) {
-  std::lock_guard<std::mutex> l(gErrorMu);
-  gError = m;
-}
 }  // namespace
-
-#define FN(ret, name) extern "C" JNIEXPORT ret JNICALL Java_dev_lizard_desktop_Native_##name
 
 // ai: path: the file to send ("" for the test stream); name and type as its header carries them. 0, with the reason in
 // ai: txError(), where it cannot go.
@@ -147,17 +140,14 @@ FN(jlong, txCreate)(JNIEnv* e, jclass, jstring path, jstring name, jstring type)
   return reinterpret_cast<jlong>(t.release());
 }
 
-FN(jstring, txError)(JNIEnv* e, jclass) {
-  std::lock_guard<std::mutex> l(gErrorMu);
-  return e->NewStringUTF(gError.c_str());
-}
+FN(jstring, txError)(JNIEnv* e, jclass) { return jstr(e, lizard::jni::lastError()); }
 
 // ai: The device and the GPU painter made ahead, off the UI thread: "" or why there is none. The device carries what the
 // ai: presenter needs of it (the window's surface, the swapchain, present_wait): the code is shown from it (2026-10-07).
 FN(jstring, txPrepare)(JNIEnv* e, jclass, jlong h, jstring assets) {
   const std::string a = str(e, assets);
   std::lock_guard<std::mutex> l(tx(h)->mu);
-  return e->NewStringUTF(tx(h)->s->prepareGpu(a, "", &lizard::Presenter::deviceExtras()).c_str());
+  return jstr(e, tx(h)->s->prepareGpu(a, "", &lizard::Presenter::deviceExtras()));
 }
 
 // ai: The format to paint (n, sub-channels, span, the rate the word states, codes side by side and the gap between them
@@ -185,7 +175,7 @@ FN(jstring, txConfigure)(JNIEnv* e, jclass, jlong h, jint n, jint subch, jint sp
   } catch (...) {
     r = "the format could not be set";
   }
-  return e->NewStringUTF(r.c_str());
+  return jstr(e, r);
 }
 
 // ai: The blocks a frame of subch sub-channels carries under the format's rate profile (src/focus.h focus_blocks_for),
@@ -198,7 +188,7 @@ FN(jstring, txStats)(JNIEnv* e, jclass, jlong h) {
     std::lock_guard<std::mutex> l(tx(h)->mu);
     s = tx(h)->s->stats();
   }
-  return e->NewStringUTF(s.c_str());
+  return jstr(e, s);
 }
 
 // ai: After presentStop on every presenter of this sender.
@@ -273,8 +263,16 @@ FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jf
   o.edge = edge;
   o.whole = whole == JNI_TRUE;
   o.vsync = vsync == JNI_TRUE;
-  // ai: LIZ_PRESENT_CSV=<path>: a line a present (lizard_present --log's), for reading a run's cadence around a resize
+  // ai: LIZ_PRESENT_CSV=<path>: a line a present (lizard_present --log's), for reading a run's cadence around a resize;
+  // ai: the path in UTF-8, as the presenter opens it (Windows: read wide, since getenv gives the ANSI code page)
+#if defined(_WIN32)
+  if (const wchar_t* c = _wgetenv(L"LIZ_PRESENT_CSV")) {
+    const std::vector<jchar> u(c, c + std::wcslen(c));
+    o.csv = lizard::jni::utf8(u.data(), u.size());
+  }
+#else
   if (const char* c = std::getenv("LIZ_PRESENT_CSV")) o.csv = c;
+#endif
   o.log = [](const std::string& m) { std::fprintf(stderr, "lizard: %s\n", m.c_str()); };
   std::string err;
   try {
@@ -304,7 +302,7 @@ FN(void, presentVsync)(JNIEnv*, jclass, jlong p, jboolean on) { if (p) pr(p)->se
 FN(void, presentSize)(JNIEnv*, jclass, jlong p, jfloat size, jfloat edge) { if (p) pr(p)->setSize(size, edge); }
 FN(void, presentPause)(JNIEnv*, jclass, jlong p, jboolean on) { if (p) pr(p)->setPaused(on == JNI_TRUE); }
 // ai: presenter.h stats(): the last second's window as JSON
-FN(jstring, presentStats)(JNIEnv* e, jclass, jlong p) { return e->NewStringUTF(p ? pr(p)->stats().c_str() : ""); }
+FN(jstring, presentStats)(JNIEnv* e, jclass, jlong p) { return jstr(e, p ? pr(p)->stats() : std::string()); }
 FN(void, presentStop)(JNIEnv*, jclass, jlong p) { delete reinterpret_cast<Pres*>(p); }
 
 // ai: The desktop's file chooser (2026-10-23, portal.cpp). windowOf: the window manager's window around the canvas (the
@@ -338,7 +336,7 @@ FN(jobjectArray, portalPick)(JNIEnv* e, jclass, jlong window, jstring title, jbo
   if (!r.answered) { setError(r.error); return nullptr; }
   jobjectArray out = e->NewObjectArray(static_cast<jsize>(r.uris.size()), e->FindClass("java/lang/String"), nullptr);
   for (size_t i = 0; i < r.uris.size(); i++) {
-    jstring u = e->NewStringUTF(r.uris[i].c_str());
+    jstring u = jstr(e, r.uris[i]);
     e->SetObjectArrayElement(out, static_cast<jsize>(i), u);
     e->DeleteLocalRef(u);
   }

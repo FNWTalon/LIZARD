@@ -49,7 +49,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures { compose = true }
-    // ai: the plain-JVM code the desktop sender shares (liblizard/kotlin: Tar.kt, the bundles' tar)
+    // ai: the plain-JVM code the desktop app shares (liblizard/kotlin: Tar.kt, the bundles' tar; PhaseLock.kt, the
+    // ai: camera's phase lock; Readout.kt, the receive screen's words and figures)
     sourceSets.getByName("main").kotlin.srcDir(rootProject.layout.projectDirectory.dir("../liblizard/kotlin"))
     // ai: the setup's tables, blobs and SPIR-V stored, not deflated: copied out once, and a stored entry streams
     androidResources { noCompress += listOf("spv", "bin", "json") }
