@@ -54,6 +54,47 @@ export function wordCode(W) {
   return { W, bytes, base, rows };
 }
 
+// ai: The word's gate (2026-10-25, research STATUS "The ring's word: the C's RS reader against the GPU's search"): the
+// ai: best word is taken if it disagrees with few enough of the cells that count, the cells at |q| >= TAU of the sides
+// ai: counted. The sides counted are tried three ways (GATE_CHOICES): all four, all but the one with the least sum of
+// ai: |q|, all but the two least; the word is taken if any of the three passes. A glared side reads its signs as a coin
+// ai: at |q| about 0.33 where a clean one reads 0.5 (scripts/exp/fmt_word.mjs DAMAGE), so no threshold on a cell finds
+// ai: it, and one fixed share of the best side's sum was too thin a cut (scripts/gpu/word_check.mjs: a glared side at
+// ai: 0.758 of the best kept, a clean one at 0.74 dropped). E[m] is the most disagreements on m cells that keep the
+// ai: union bound (every word of the ring within E[m] of a random hard word on those m cells) at BUDGET / GATE_CHOICES,
+// ai: so the three together stay at BUDGET, the C's own false-word rate in that ring (SPEC 5.4: 7.8e-6 with RS(8,3)'s
+// ai: last root, 1.8e-7 with three roots left); -1 where no count does. Which cells count depends on the magnitudes
+// ai: alone, which a garbage frame's signs do not, so the bound holds for each choice as it stands. SIDE_KEEP is the
+// ai: search's: F8 zeroes a side under SIDE_KEEP of the best side's sum, at most the two least, before it scores
+// ai: (0.75, the best of 0.85, 0.75 and 0.70 on the lab's damage sweep).
+export const TAU = 0.1, SIDE_KEEP = 0.75, GATE_CHOICES = 3;
+export const BUDGET = { 16: 7.8e-6, 32: 1.8e-7, 64: 1.8e-7, 128: 1.8e-7 };
+export function gateTable(W) {
+  const nb = 4 * W, words = VERSION_MAX * 256, E = new Int16Array(nb + 1).fill(-1), budget = BUDGET[W] / GATE_CHOICES;
+  for (let m = 0; m <= nb; m++) {
+    let s = 0, c = 1;
+    for (let d = 0; d <= m; d++) { s += c; if ((words * s) / 2 ** m > budget) break; E[m] = d; c = (c * (m - d)) / (d + 1); }
+  }
+  return E;
+}
+// ai: The sides as F8 orders them: the bit of the least sum of |q| among the sides not in `skip` (ties to the lower side).
+export function leastSide(sums, skip) {
+  let b = 0, v = Infinity;
+  for (let s = 0; s < 4; s++) if (!((skip >> s) & 1) && sums[s] < v) { v = sums[s]; b = 1 << s; }
+  return b;
+}
+// ai: The three ways the gate counts sides (bit s for side s), and the sides the search keeps.
+export function gateChoices(sums) {
+  const d1 = leastSide(sums, 0), d2 = d1 | leastSide(sums, d1);
+  return [15, 15 & ~d1, 15 & ~d2];
+}
+export function searchKeep(sums) {
+  const top = SIDE_KEEP * Math.max(...sums), d2 = gateChoices(sums)[2] ^ 15;
+  let low = 0;
+  for (let s = 0; s < 4; s++) if (sums[s] < top) low |= 1 << s;
+  return 15 & ~(low & d2);
+}
+
 // ai: The versions whose picture is n (sim/lizard_pick.mjs N_FOR), first and last: the word names the version, and the
 // ai: version the picture (gpu/tables.mjs PICTURES).
 export function versionRange(n) {
