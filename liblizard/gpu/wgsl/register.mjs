@@ -341,7 +341,7 @@ const sideCount = (D) => `
         var rss = 0.0;
         for (var k = 0u; k < nn; k++) {
           let n = (sd * (nn - 1u) + k) % count;
-          let r = resid[f * ${RESID}u + n];
+          let r = rw[n];
           let done = (k == 0u && sd > 0u) || (k == nn - 1u && sd == 3u);
           let w = select(r.z, 1.0, done);
           if (w <= 0.0) { continue; }
@@ -464,14 +464,15 @@ const lensFit = /* wgsl */ `
     let fwh = vec2f(f32(F.w), f32(F.h));
     let lR = max(max(length(LA), length(vec2f(fwh.x, 0.0) - LA)), max(length(vec2f(0.0, fwh.y) - LA), length(fwh - LA)));
     let lir = 1.0 / max(lR, 1.0);
-    if (li == 0u) {
-      // ai: the fit's frame: the weighted nodes' box and their range of |q|^2; the axis inside the corners' quad or not
+    // ai: the fit's frame: the weighted nodes' box and their range of |q|^2, every lane a share of the nodes and lane 0
+    // ai: the lanes' (a min, a max and a count: the same in any order); the axis inside the corners' quad or not
+    {
       var lo = vec2f(3.0e38);
       var hi = vec2f(-3.0e38);
       var smin = 3.0e38;
       var smax = 0.0;
       var nw = 0u;
-      for (var n = 0u; n < count; n++) {
+      for (var n = li; n < count; n += 64u) {
         if (!(resid[f * ${RESID}u + n].z > 0.0)) { continue; }
         let p = pn[n];
         lo = min(lo, p);
@@ -481,6 +482,23 @@ const lensFit = /* wgsl */ `
         smin = min(smin, s);
         smax = max(smax, s);
         nw += 1u;
+      }
+      LR[li] = vec4f(lo, hi);
+      LQ[li] = vec4f(smin, smax, f32(nw), 0.0);
+    }
+    workgroupBarrier();
+    if (li == 0u) {
+      var lo = LR[0].xy;
+      var hi = LR[0].zw;
+      var smin = LQ[0].x;
+      var smax = LQ[0].y;
+      var nw = u32(LQ[0].z);
+      for (var s = 1u; s < 64u; s++) {
+        lo = min(lo, LR[s].xy);
+        hi = max(hi, LR[s].zw);
+        smin = min(smin, LQ[s].x);
+        smax = max(smax, LQ[s].y);
+        nw += u32(LQ[s].z);
       }
       let nq = (count + 4u) / 4u;
       var pos = 0u;
@@ -511,6 +529,15 @@ const lensFit = /* wgsl */ `
       LS[li] = acc;
     }
     workgroupBarrier();
+    // ai: the 16 lanes' sums put together a lane an entry, in lane order as lane 0 added them
+    if (LF.on != 0u) {
+      for (var e = li; e < 77u; e += 64u) {
+        var a = 0.0;
+        for (var s = 0u; s < 16u; s++) { a += LS[s][e]; }
+        LP[e] = a;
+      }
+    }
+    workgroupBarrier();
     if (li == 0u && LF.on != 0u) {
       var Ns = array<array<f32, ${LENS_P}>, ${LENS_P}>();
       var bs = array<f32, ${LENS_P}>();
@@ -518,7 +545,7 @@ const lensFit = /* wgsl */ `
       var Ln = array<array<f32, ${LENS_P}>, ${LENS_P}>();
       var z = array<f32, ${LENS_P}>();
       var Ap = array<f32, 77>();
-      for (var s = 0u; s < 16u; s++) { let row = LS[s]; ${Array.from({ length: 77 }, (_, i) => `Ap[${i}] += row[${i}];`).join(" ")} }
+      ${Array.from({ length: 77 }, (_, i) => `Ap[${i}] = LP[${i}];`).join(" ")}
       ${(() => { const s = []; for (let a = 0; a < LENS_P; a++) for (let b = a; b < LENS_P; b++) s.push(`Ns[${a}][${b}] = Ap[${lensIdx(a, b)}]; Ns[${b}][${a}] = Ap[${lensIdx(a, b)}];`); return s.join("\n      "); })()}
       ${Array.from({ length: LENS_P }, (_, a) => `Dg[${a}] = 1.0 / sqrt(max(Ns[${a}][${a}], 1e-30));`).join("\n      ")}
       ${Array.from({ length: LENS_P }, (_, a) => `${Array.from({ length: LENS_P }, (_, b) => `Ns[${a}][${b}] *= Dg[${a}] * Dg[${b}];`).join(" ")}\n      Ns[${a}][${a}] = Ns[${a}][${a}] * 1.0001 + 1e-9; bs[${a}] = Ap[${66 + a}] * Dg[${a}];`).join("\n      ")}
@@ -570,7 +597,9 @@ const lensFit = /* wgsl */ `
     let lz = LZ;
     for (var n = li; n < count; n += 64u) {
       let r = resid[f * ${RESID}u + n];
-      resid[f * ${RESID}u + n] = vec4f(r.xy - lensAt(lz, pn[n]), r.zw);
+      let v = vec4f(r.xy - lensAt(lz, pn[n]), r.zw);
+      resid[f * ${RESID}u + n] = v;
+      rw[n] = v;
     }
     storageBarrier();
     workgroupBarrier();
@@ -724,6 +753,11 @@ var<workgroup> LT: array<array<f32, ${LENS_P}>, 4>;
 var<workgroup> LK: array<u32, 4>;
 var<workgroup> LR: array<vec4f, 64>;
 var<workgroup> LZ: Lens;
+// ai: the lanes' (smin, smax, nodes) for the fit's frame, the 16 lanes' sums put together, and the nodes' residuals as
+// ai: the sides read and replace them (lane 0's loops on workgroup memory rather than on resid's, a read at a time)
+var<workgroup> LQ: array<vec4f, 64>;
+var<workgroup> LP: array<f32, 77>;
+var<workgroup> rw: array<vec4f, ${NODES_MAX}>;
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
   let f = wg.x;
@@ -755,6 +789,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   // ai: rule takes a constant on nearly every side there (STATUS "A side's degree by AICc").
   // The sides run in order on one lane, as the fit was measured: a side's first node is the corner the side
   // before has just replaced by its own fit (weight 1), and the mean of the two fits is what the corner keeps.
+  // ai: Read from rw, the residuals' copy in workgroup memory, and written to both.
   if (li == 0u) {
     let nn = (count + 4u) / 4u;
     for (var sd = 0u; sd < 4u; sd++) {
@@ -765,7 +800,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
       var nw = 0u;
       for (var k = 0u; k < nn; k++) {
         let n = (sd * (nn - 1u) + k) % count;
-        let r = resid[f * ${RESID}u + n];
+        let r = rw[n];
         // ai: a corner the side before has already replaced counts with weight 1 (its zw hold the measured residual)
         let done = (k == 0u && sd > 0u) || (k == nn - 1u && sd == 3u);
         let w = select(r.z, 1.0, done);
@@ -787,7 +822,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
         let n = (sd * (nn - 1u) + k) % count;
         let x = 2.0 * f32(k) / f32(nn - 1u) - 1.0;
         // A corner belongs to two sides; it takes the mean of the two fits.
-        let prev = resid[f * ${RESID}u + n];
+        let prev = rw[n];
         var fitted = vec2f(0.0);
         var xq = 1.0;
         ${unroll(SIDE_MAX, (i) => `fitted += vec2f(cxB[${i}], cyB[${i}]) * xq; xq *= x;`)}
@@ -795,7 +830,9 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
         let done = twoSided || (k == nn - 1u && sd == 3u);
         // ai: zw keeps the node's measured residual (already moved there by the side before, at a corner): nothing
         // ai: downstream reads it (sample.mjs takes xy), the probe does.
-        resid[f * ${RESID}u + n] = vec4f(select(fitted, 0.5 * (prev.xy + fitted), twoSided), select(prev.xy, prev.zw, done));
+        let out = vec4f(select(fitted, 0.5 * (prev.xy + fitted), twoSided), select(prev.xy, prev.zw, done));
+        resid[f * ${RESID}u + n] = out;
+        rw[n] = out;
       }
     }
     // The last corner (left side's end) is the first node: it ends up with the left side's fit alone.

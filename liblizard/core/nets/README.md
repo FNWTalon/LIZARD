@@ -7,6 +7,11 @@ What is here (2026-09-30):
   native 0.358, the native kept, 2,390 blocks). Not in the manifest by default (`LIZ_NETS_CLS=1`): it adds 1.5 to 1.8 s to a cold start and leans on a
   compiler with the faults listed below. Where it is listed, the host adopts it only after its first-batch check
   (`../dec/front.cpp` measureTwins: the web int8 kernel's outputs bit for bit, and the fastest form).
+  Measured again on 2026-10-24 (the S26, int8-sg, 96 frames, a fresh pipeline cache a run, three runs): the kernel's
+  cold compile is about 7 s (setup 12.9 s with it against 5.8 s without), and the small classifier costs 0.104, 0.120
+  and 0.103 ms a frame against the web int8 kernel's 0.112, 0.111 and 0.112, since the cascade's small net now reads
+  far fewer patches than the 1,024 above: about 0.008 ms a frame, kept in two runs of three, the frame 2.33 to 2.34 ms
+  either way. Off by default for that.
 - `bench_coop.comp`, `bench_dot.comp`, `bench_h16.comp`: the multiply-add microbenchmarks (`lizard_gpu_check bench`).
 - Set aside: the large classifier (cnn-v1: its f16 form already costs 0.108 ms a frame) and the proposer's network
   (`archive/stash/coopmat-proposer/`: exact, 5.4 times slower than the web's kernel).

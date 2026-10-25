@@ -7,11 +7,21 @@
 #include <algorithm>
 #include <cstdio>
 #include <set>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 
 // ai: LIZ_DUMP_S, read once: where the lab's spectrum dump goes (null: none)
 static const char* dumpPath() { static const char* p = getenv("LIZ_DUMP_S"); return p && *p ? p : nullptr; }
+// ai: LIZ_DUMP_S_EVERY=<k> (1 unset): every k-th batch's frames dumped; LIZ_DUMP_S_MAX=<n> (unset: no cap): no more
+// ai: than n frames (2026-10-24: a live 2:1 run at 1536 writes 1.3 MB a half, 150 MB a second, on the phone)
+static long dumpEnv(const char* k, long dflt) { const char* v = getenv(k); return v && *v ? std::max(0L, atol(v)) : dflt; }
+static std::atomic<long> gDumpBatch{0}, gDumpFrames{0};
+static bool dumpThisBatch() {
+  static const long every = std::max(1L, dumpEnv("LIZ_DUMP_S_EVERY", 1)), most = dumpEnv("LIZ_DUMP_S_MAX", 0);
+  return gDumpBatch++ % every == 0 && (!most || gDumpFrames < most);
+}
+static bool dumpRoom() { static const long most = dumpEnv("LIZ_DUMP_S_MAX", 0); return !most || gDumpFrames < most; }
 
 namespace lizard {
 
@@ -796,7 +806,7 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   // ai: LIZ_DUMP_S=<file> (a lab dump, 2026-10-08; scripts/exp/gpu_channel.mjs): each frame's spectrum S (the back half's
   // ai: transform output, the soft stage's input: cbytes an entry, sStride entries a frame, in the disc's order) copied
   // ai: out beside the readback, written with the frame's shift, pilots and verified ids at finishBatch
-  if (dumpPath()) {
+  if (dumpPath() && dumpThisBatch()) {
     const json& T = S->back()["transform"];
     const uint64_t bytes = T["cbytes"].get<uint64_t>() * T["sStride"].get<uint64_t>() * (uint64_t)nb;
     if (!ln.dumpBuf || ln.dumpBuf->size < bytes) ln.dumpBuf = dev.createBuffer(bytes, wg::MAP_READ | wg::COPY_DST, "dumpS", false);
@@ -982,6 +992,8 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
       for (int i = 0; i < nb; i++) {
         const auto& fo = out.frames[i];
         if (fo.empty || fo.version <= 0) continue;
+        if (!dumpRoom()) break;
+        gDumpFrames++;
         const uint32_t head[6] = {0x44505347u, (uint32_t)fo.tag, (uint32_t)fo.version, (uint32_t)fo.n, (uint32_t)cb, (uint32_t)ss};
         const float fl[4] = {pilots[Bb * blocksMax + 2 * i], pilots[Bb * blocksMax + 2 * i + 1], fo.pilotR, fo.pilotR2};
         const uint32_t nrec = (uint32_t)fo.records.size();
