@@ -358,6 +358,9 @@ Device::~Device() {
   if (dev) vkDeviceWaitIdle(dev);
   writes.clear();
   inits.clear();
+  // ai: an upload's staging buffer waits here until a submit takes it; one queued after the last submit would otherwise
+  // ai: be destroyed with the members, after vkDestroyDevice (a segfault in the driver's vkDestroyBuffer on the S26)
+  staging.clear();
   if (cache) { saveCache(); vkDestroyPipelineCache(dev, cache, nullptr); }
   if (pool) vkDestroyCommandPool(dev, pool, nullptr);
   if (pool2) vkDestroyCommandPool(dev, pool2, nullptr);
