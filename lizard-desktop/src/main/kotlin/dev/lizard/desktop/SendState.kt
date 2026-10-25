@@ -53,9 +53,9 @@ import kotlin.math.roundToInt
 // ai: (Screen.kt's SwingPanel), on which the presenter's swapchain draws; white, and nothing painted over the
 // ai: presenter's pictures by AWT. Its size in device px is the room the format is picked from; it tells the state when
 // ai: it has a window (addNotify), is shown or resized, and, before that window goes (removeNotify: a dispose, a window
-// ai: made again), stops the presenter on it. A click on it leaves full screen, as a tap on the web's code does; the
-// ai: Idle (2026-10-07, the web's hint in the middle of its page and the app's code box) it
-// ai: is the file's area: the soft fill, the file icon and "Choose files" over the link "or a folder", or the choice's
+// ai: made again), stops the presenter on it. A click on it does nothing in full screen (2026-10-24, owner: "clicking on
+// ai: the sender should not remove fullscreen"; Escape, F, F11 and the rail's collapser leave it); the Idle
+// ai: (2026-10-07, the web's hint in the middle of its page and the app's code box) it is the file's area: the soft fill, the file icon and "Choose files" over the link "or a folder", or the choice's
 // ai: name once one is chosen, or "Test stream"; a click opens the file dialog (the link, the folder chooser), and files
 // ai: and folders dropped on it are taken (the test stream off; several, or a folder, one tar since 2026-10-16). AWT
 // ai: paints that itself, since nothing of Compose can be drawn over a heavyweight canvas.
@@ -79,8 +79,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         addHierarchyListener { e -> if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) s.areaChanged() }
         addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
-                if (s.full) s.toggleFull()
-                else if (chooses()) {
+                if (!s.full && chooses()) {
                     if (listing()) hits.firstOrNull { it.first.contains(e.point) }?.second?.invoke()
                     else if (folderLink?.contains(e.point) == true) s.chooseFolder() else s.chooseFile()
                 }
@@ -342,7 +341,7 @@ class SendState {
 
     var phase by mutableStateOf<Phase>(Phase.Idle)
     var paused by mutableStateOf(false)
-    // ai: Full screen (the Fullscreen button, F11; Escape, F11 or a click on the code leaves), as other apps have it
+    // ai: Full screen (the Fullscreen button, F or F11; Escape, F, F11 or the rail's collapser leaves), as other apps have it
     // ai: (2026-10-23): the window manager's own (Main.kt fullscreen), the code alone in it as the web's and the app's;
     // ai: the manager's word followed (fullFromManager). Until then the column folded to the rail, which a toggle opened
     // ai: there, and the presenter bypassed the compositor.

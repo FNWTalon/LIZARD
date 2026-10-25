@@ -70,7 +70,6 @@ import kotlin.math.roundToInt
 import java.util.Locale
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.foundation.interaction.MutableInteractionSource
 
 // ai: Send (2026-10-01): the web sender's job on the phone, the C on the CPU or the GPU painting (`painter` below;
 // ai: liblizard/core/tx/sender.h). A file chosen here or shared to LIZARD from another app is copied into the cache and
@@ -528,8 +527,9 @@ internal fun MainActivity.SendScreen() {
     // ai: one code view for both layouts: a turn of the phone moves the surface rather than making another
     val code = remember { movableContentOf<Modifier> { m -> CodeBox(m) } }
     // ai: Fullscreen (2026-10-06, the web's #fs): the code alone on the page's white, as large as the screen allows,
-    // ai: the system bars hidden; a tap on it or Back brings the screen back (the bars too, unless a send keeps them
-    // ai: hidden). The code's surface moves, not remade (movableContentOf).
+    // ai: the system bars hidden; Back brings the screen back (the bars too, unless a send keeps them hidden), and a tap
+    // ai: on it does nothing since 2026-10-24 (owner: "clicking on the sender should not remove fullscreen"). The code's
+    // ai: surface moves, not remade (movableContentOf).
     var full by remember { mutableStateOf(false) }
     if (full) {
         BackHandler { full = false }
@@ -538,8 +538,7 @@ internal fun MainActivity.SendScreen() {
             c.hide(WindowInsetsCompat.Type.systemBars())
             onDispose { if (send.phase != SendState.Phase.On && send.phase != SendState.Phase.Preparing) c.show(WindowInsetsCompat.Type.systemBars()) }
         }
-        BoxWithConstraints(Modifier.fillMaxSize().background(Bg).clickable(indication = null, interactionSource = remember { MutableInteractionSource() }) { full = false },
-            contentAlignment = Alignment.Center) {
+        BoxWithConstraints(Modifier.fillMaxSize().background(Bg), contentAlignment = Alignment.Center) {
             val a = s.aspect.toFloat()
             val w = minOf(maxWidth, maxHeight * a)
             code(Modifier.size(w, w / a))
