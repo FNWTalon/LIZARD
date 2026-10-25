@@ -263,6 +263,7 @@ int focus_rx_assemble(const uint8_t *bytes, int stride, const uint8_t *verdicts,
   return fready ? focus_assemble(&F, bytes, stride, verdicts, its, est, blocks, ok, &R, quad, orient, score) : 0;
 }
 int focus_fmt_check_out(const float *q) { return fready ? focus_fmt_check(&F, q) : 0; }
+int focus_fmt_soft_out(float *out) { return fready ? focus_fmt_soft(&F, out) : 0; }
 // The sampled grid's origin and step in module coordinates, what state_dump hands a sampler after an
 // acquisition, for a sampler that runs without one.
 void focus_grid_out(float *out) { out[0] = F.margin + 0.5f / F.scale; out[1] = 1.0f / F.scale; }
