@@ -17,6 +17,15 @@
 # build would paint other bytes.
 set -e
 cd "$(dirname "$0")"
+# CMake 3.22 or later for the module's builds: the PATH's where it is one, else fetched with pip into .tools/cmake (no
+# root; a build image with Python and no CMake, as Cloudflare Pages' are, builds unattended)
+if [ "$1" != app ] && [ "$1" != native ]; then
+  v=$(cmake --version 2>/dev/null | sed -n 's/^cmake version \([0-9]*\)\.\([0-9]*\).*/\1 \2/p')
+  if [ -z "$v" ] || [ "$(echo "$v" | awk '{ print ($1 > 3 || ($1 == 3 && $2 >= 22)) }')" != 1 ]; then
+    [ -x .tools/cmake/cmake/data/bin/cmake ] || python3 -m pip install -q --target .tools/cmake "cmake>=3.22"
+    PATH="$PWD/.tools/cmake/cmake/data/bin:$PATH"; export PATH
+  fi
+fi
 if [ "$1" = app ]; then
   # The installed app (2026-10-01, a content-hashed PWA): the codec's module as the default build left it, so build that
   # first when the C or a shim changed. An optional second argument names another out dir (relative to liblizard/).
