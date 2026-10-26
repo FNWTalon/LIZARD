@@ -17,7 +17,7 @@ import kotlin.system.exitProcess
 // ai: is set, else the first listed); mode (an index into the camera's modes, or WxH@fps); layout 1:1 or 2:1; decoder
 // ai: auto, gpu or cpu; steps, comma separated <seconds>:<action> from the first answer, each as its control does it:
 // ai: start, stop (Start and Stop camera), swap (the bar's swap: to Send, or back to Receive), home (Home), receive
-// ai: (Home's Receive), layout=1:1|2:1, decoder=auto|gpu|cpu, res=<W>x<H> and fps=<rate> (Settings' menus), zoom=<v>,
+// ai: (Home's Receive), layout=1:1|2:1, decoder=auto|gpu|cpu, res=<W>x<H>, format=<name> and fps=<rate> (Settings' menus), zoom=<v>,
 // ai: exposure=<us>|auto and gain=<v>|auto (Settings' bars, a value the camera's own units); logged on stderr as "step
 // ai: <s>: <action>". Each second's stats go to stderr as "rx: <stats JSON>". A camera stopped by a step, away from
 // ai: Receive, or by itself once a file is in, is no failure; one stopped by an error is.
@@ -136,7 +136,9 @@ class ReceiverTest private constructor(private val secs: Double, private val kv:
             // ai: Resolution and Frame rate as their menus take them: a size or a rate the camera offers (a restart; the
             // ai: mode key's choice gives way to the menus' from then on)
             "res" -> if (r.info?.modes?.any { it.size == v } == true) { r.testMode = null; r.chooseRes(v) } else fail("LIZ_RECEIVER_TEST: step $act: no such size")
-            "fps" -> v.toDoubleOrNull()?.takeIf { f -> r.info?.modes?.any { it.size == r.mode?.size && kotlin.math.abs(it.fps - f) < 0.01 } == true }
+            "format" -> if (r.info?.modes?.any { it.size == r.mode?.size && it.format == v } == true) { r.testMode = null; r.chooseFormat(v) }
+                else fail("LIZ_RECEIVER_TEST: step $act: no such format at this size")
+            "fps" -> v.toDoubleOrNull()?.takeIf { f -> r.info?.modes?.any { it.size == r.mode?.size && it.format == r.mode?.format && kotlin.math.abs(it.fps - f) < 0.01 } == true }
                 ?.let { r.testMode = null; r.chooseFps(it) } ?: fail("LIZ_RECEIVER_TEST: step $act: no such rate at this size")
             // ai: the bars as a drag leaves them: a value in the camera's units, or auto (the first step) for exposure and gain
             "zoom" -> v.toDoubleOrNull()?.let { r.zoomTo(it) } ?: fail("LIZ_RECEIVER_TEST: step $act")

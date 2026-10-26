@@ -242,12 +242,13 @@ class ReceiveState(private val app: App) {
         opened = ""; openInfo = null
     }
 
-    // ai: the mode kept for a camera (its resolution and rate where it offers them, uncompressed first), else the
-    // ai: session's pick (camera.h pick: 1920 x 1080 at 60 or the nearest)
+    // ai: the mode kept for a camera (its resolution, rate and format where it offers them; a format not kept,
+    // ai: uncompressed first), else the session's pick (camera.h pick: 1920 x 1080 at 60 or the nearest)
     private fun keptMode(ci: CamInfo): Mode {
         val res = Prefs.Rx.res(ci.id)
         val fps = Prefs.Rx.fps(ci.id)
-        return ci.modes.filter { it.size == res && abs(it.fps - fps) < 0.01 }.minByOrNull { if (it.compressed) 1 else 0 }
+        val at = ci.modes.filter { it.size == res && abs(it.fps - fps) < 0.01 }
+        return at.firstOrNull { it.format == Prefs.Rx.format(ci.id) } ?: at.minByOrNull { if (it.compressed) 1 else 0 }
             ?: ci.modes.getOrNull(ci.pick) ?: ci.modes.firstOrNull() ?: throw Refused("the camera offers no mode")
     }
     // ai: the test hook's: an index, or "WxH@fps"
@@ -380,22 +381,35 @@ class ReceiveState(private val app: App) {
             }
         }
     }
+    // ai: Resolution, Format and Frame rate (Settings' menus): each keeps what it can of the other two, the format first
+    // ai: (a size or rate the format has not falls back to the rate kept, uncompressed first, then the fastest)
     fun chooseRes(res: String) {
         val ci = info ?: return
         val at = ci.modes.filter { it.size == res }
         val want = mode?.fps ?: 0.0
-        val m = at.filter { abs(it.fps - want) < 0.01 }.minByOrNull { if (it.compressed) 1 else 0 }
+        val fmt = mode?.format
+        val m = at.firstOrNull { it.format == fmt && abs(it.fps - want) < 0.01 }
+            ?: at.filter { it.format == fmt }.maxByOrNull { it.fps }
+            ?: at.filter { abs(it.fps - want) < 0.01 }.minByOrNull { if (it.compressed) 1 else 0 }
             ?: at.sortedWith(compareByDescending<Mode> { it.fps }.thenBy { it.compressed }).firstOrNull() ?: return
+        pickMode(ci, m)
+    }
+    fun chooseFormat(format: String) {
+        val ci = info ?: return
+        val cur = mode ?: return
+        val at = ci.modes.filter { it.size == cur.size && it.format == format }
+        val m = at.firstOrNull { abs(it.fps - cur.fps) < 0.01 } ?: at.maxByOrNull { it.fps } ?: return
         pickMode(ci, m)
     }
     fun chooseFps(f: Double) {
         val ci = info ?: return
         val cur = mode ?: return
-        val m = ci.modes.filter { it.size == cur.size && abs(it.fps - f) < 0.01 }.minByOrNull { if (it.compressed) 1 else 0 } ?: return
+        val at = ci.modes.filter { it.size == cur.size && abs(it.fps - f) < 0.01 }
+        val m = at.firstOrNull { it.format == cur.format } ?: at.minByOrNull { if (it.compressed) 1 else 0 } ?: return
         pickMode(ci, m)
     }
     private fun pickMode(ci: CamInfo, m: Mode) {
-        Prefs.Rx.mode(ci.id, m.size, m.fps)
+        Prefs.Rx.mode(ci.id, m.size, m.fps, m.format)
         mode = m
         if (running) { stop(); start() }
     }

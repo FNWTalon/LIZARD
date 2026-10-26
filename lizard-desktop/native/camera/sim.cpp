@@ -1,8 +1,9 @@
 // ai: The simulated camera (2026-10-25, backends.h simList and simOpen): sim/scene.h's screen filmed by a camera that
 // ai: runs as a real backend's does, for every test of the receiver where no camera is. Listed only where
 // ai: LIZ_CAMERA_SIM is set, its value the scene's spec plus the camera's own keys: camfps (its rate, 60), camppm (its
-// ai: clock against the host's, 0), format (grey, yuyv, nv12 or mjpeg: the bytes its frames come in, so luma.h's and
-// ai: jpeg.h's paths run as a real camera's would).
+// ai: clock against the host's, 0), format (grey, yuyv, nv12 or mjpeg, or several comma separated, each a mode at both
+// ai: sizes as a real camera lists its formats: the bytes its frames come in, so luma.h's and jpeg.h's paths run as a
+// ai: real camera's would).
 // ai: Capture k begins at the stream's start + k / (camfps (1 + camppm 1e-6)) and is handed over once its exposure and
 // ai: readout are over (sleepUntil, then the render); one handed over past the next one's hand-over time drops that
 // ai: next one, counted. Frame::ns is the capture's start on steadyNs's clock.
@@ -15,6 +16,7 @@
 #include <mutex>
 #include <sstream>
 #include <thread>
+#include <vector>
 
 #include "backends.h"
 #include "jpeg.h"
@@ -46,7 +48,7 @@ bool number(const std::string& text, double& v) {
 // ai: the camera's own keys out of the spec, the rest left for sim::parse
 struct Own {
   double fps = 60, ppm = 0;
-  const Form* form = &kForms[0];
+  std::vector<const Form*> forms{&kForms[0]};
 };
 bool split(const std::string& spec, Own& own, std::string& rest, std::string& why) {
   std::istringstream in(spec);
@@ -63,9 +65,16 @@ bool split(const std::string& spec, Own& own, std::string& rest, std::string& wh
     if (key == "camfps") { if (!take(1, 1000, "a rate from 1 to 1000")) return false; own.fps = x; }
     else if (key == "camppm") { if (!take(-100000, 100000, "ppm from -100000 to 100000")) return false; own.ppm = x; }
     else if (key == "format") {
-      own.form = nullptr;
-      for (const Form& f : kForms) if (val == f.key) own.form = &f;
-      if (!own.form) { why = "format=" + val + ": grey, yuyv, nv12 or mjpeg"; return false; }
+      own.forms.clear();
+      std::istringstream list(val);
+      std::string one;
+      while (std::getline(list, one, ',')) {
+        const Form* form = nullptr;
+        for (const Form& f : kForms) if (one == f.key) form = &f;
+        if (!form || std::find(own.forms.begin(), own.forms.end(), form) != own.forms.end()) { why = "format=" + val + ": grey, yuyv, nv12 or mjpeg, each once"; return false; }
+        own.forms.push_back(form);
+      }
+      if (own.forms.empty()) { why = "format=: grey, yuyv, nv12 or mjpeg"; return false; }
     }
     else { if (!rest.empty()) rest += ' '; rest += tok; }
   }
@@ -88,17 +97,18 @@ class SimCamera : public Camera {
 
   std::vector<Mode> modes() override {
     std::vector<Mode> m;
-    for (const uint32_t div : {1u, 2u}) {
-      Mode x;
-      x.width = o_.width / div;
-      x.height = o_.height / div;
-      x.fps = x.fpsMin = own_.fps;
-      x.format = own_.form->name;
-      x.pix = own_.form->pix;
-      x.compressed = x.pix == Pix::MJPEG;
-      x.key = own_.form->fourcc;
-      m.push_back(x);
-    }
+    for (const Form* form : own_.forms)
+      for (const uint32_t div : {1u, 2u}) {
+        Mode x;
+        x.width = o_.width / div;
+        x.height = o_.height / div;
+        x.fps = x.fpsMin = own_.fps;
+        x.format = form->name;
+        x.pix = form->pix;
+        x.compressed = x.pix == Pix::MJPEG;
+        x.key = form->fourcc;
+        m.push_back(x);
+      }
     return m;
   }
 

@@ -44,7 +44,10 @@ object Prefs {
         var camera: String get() = str("camera", ""); set(v) { put("camera", v) }
         fun res(cam: String) = str("res@${idKey(cam)}", "")
         fun fps(cam: String) = num("fps@${idKey(cam)}") ?: 0.0
-        fun mode(cam: String, res: String, fps: Double) { put("res@${idKey(cam)}", res); putNum("fps@${idKey(cam)}", fps) }
+        fun format(cam: String) = str("format@${idKey(cam)}", "")
+        fun mode(cam: String, res: String, fps: Double, format: String) {
+            put("res@${idKey(cam)}", res); putNum("fps@${idKey(cam)}", fps); put("format@${idKey(cam)}", format)
+        }
         fun zoom(cam: String, layout: String) = num("zoom@${idKey(cam)}/$layout")
         fun zoom(cam: String, layout: String, v: Double) = putNum("zoom@${idKey(cam)}/$layout", v)
         // ai: null: the camera's own (automatic where it can be)

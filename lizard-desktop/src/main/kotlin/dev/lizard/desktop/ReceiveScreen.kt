@@ -141,7 +141,10 @@ private fun ReceiveSettings(r: ReceiveState) {
         if (ci != null && m != null) {
             val sizes = ci.modes.distinctBy { it.size }.sortedBy { it.w.toLong() * it.h }
             Select("Resolution", m.size, sizes.map { it.size to "${it.w} x ${it.h}" }) { r.chooseRes(it) }
-            val rates = ci.modes.filter { it.size == m.size }.map { it.fps }.distinctBy { ReceiveState.fpsText(it) }.sorted()
+            // ai: the pixel formats at this size, where there is a choice (a webcam's uncompressed one against its Motion-JPEG)
+            val formats = ci.modes.filter { it.size == m.size }.map { it.format }.distinct()
+            if (formats.size > 1) Select("Format", m.format, formats.map { it to it }) { r.chooseFormat(it) }
+            val rates = ci.modes.filter { it.size == m.size && it.format == m.format }.map { it.fps }.distinctBy { ReceiveState.fpsText(it) }.sorted()
             Select("Frame rate", ReceiveState.fpsText(m.fps), rates.map { ReceiveState.fpsText(it) to ReceiveState.fpsText(it) }) { v ->
                 rates.firstOrNull { ReceiveState.fpsText(it) == v }?.let { r.chooseFps(it) }
             }
