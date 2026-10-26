@@ -149,7 +149,7 @@ private fun BrightnessTip(s: SendState, owner: ComposeWindow) {
     val textH = with(LocalDensity.current) { measurer.measure(TIP, style, constraints = Constraints(maxWidth = (w - 40.dp).roundToPx())).size.height.toDp() }
     val h = 20.dp + textH + 16.dp + 40.dp + 16.dp
     val state = rememberDialogState(WindowPosition(owner.x.dp + (owner.width.dp - w) / 2, owner.y.dp + (owner.height.dp - h) / 2), DpSize(w, h))
-    DialogWindow({ s.answerBrightness(false) }, state, title = "LIZARD sender", undecorated = true, resizable = false) {
+    DialogWindow({ s.answerBrightness(false) }, state, title = "LIZARD", undecorated = true, resizable = false) {
         Column(Modifier.fillMaxSize().background(Bg).border(1.dp, Line).padding(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 16.dp)) {
             Text(TIP, style = style)
             Spacer(Modifier.weight(1f))

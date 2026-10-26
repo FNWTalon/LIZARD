@@ -21,8 +21,7 @@ import java.awt.event.KeyEvent
 import java.io.File
 
 // ai: The app's screens (2026-10-25, the PC receiver: the desktop app is LIZARD, the web's three pages and the Android
-// ai: app's screens in one window): Home, Send and Receive, the window titled by the one shown as the web's pages are
-// ai: ("LIZARD", "LIZARD sender", "LIZARD receiver").
+// ai: app's screens in one window): Home, Send and Receive, the window titled LIZARD on each.
 enum class Screen { Home, Send, Receive }
 
 // ai: The app (one window): the screen shown, the sender's state and the receiver's, and what is the window's. Between
@@ -68,8 +67,6 @@ class App {
     fun close() { send.close(); runCatching { hide?.invoke() }; recv.close() }
 }
 
-private fun titleOf(s: Screen) = when (s) { Screen.Home -> "LIZARD"; Screen.Send -> "LIZARD sender"; Screen.Receive -> "LIZARD receiver" }
-
 // ai: The window: the screen shown, the sender's keys while it is Send's, full screen as the sender asks it; the test
 // ai: hooks run inside it (SenderTest.kt, ReceiverTest.kt).
 @Composable
@@ -77,7 +74,7 @@ fun ApplicationScope.LizardWindow(app: App, sendTest: SenderTest?, recvTest: Rec
     val s = app.send
     val ws = rememberWindowState(width = 1280.dp, height = 800.dp)
     var before by remember { mutableStateOf(WindowPlacement.Floating) }
-    Window(onCloseRequest = { app.close(); exitApplication() }, state = ws, title = titleOf(app.screen), icon = rememberVectorPainter(Icons.mark)) {
+    Window(onCloseRequest = { app.close(); exitApplication() }, state = ws, title = "LIZARD", icon = rememberVectorPainter(Icons.mark)) {
         // ai: the frame white before Compose's first frame (2026-10-07): AWT's default grey showed until Skia drew
         remember { window.background = java.awt.Color.WHITE; window.contentPane.background = java.awt.Color.WHITE }
         // ai: Keys wherever the focus is (the canvas takes none), as video players have them (2026-10-23; F11 and Escape

@@ -156,7 +156,7 @@ jobs:
         run: |
           v=$(cd lizard-desktop && ./gradlew -q --no-daemon releaseVersion)
           mkdir -p dist
-          cp lizard-desktop/build/compose/binaries/main/deb/*.deb "dist/lizard-sender-$v-alpha-linux-amd64.deb"
+          cp lizard-desktop/build/compose/binaries/main/deb/*.deb "dist/lizard-$v-alpha-linux-amd64.deb"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -222,7 +222,7 @@ jobs:
         run: |
           v=$(cd lizard-desktop && ./gradlew -q --no-daemon releaseVersion | tr -d '\r')
           mkdir -p dist
-          cp lizard-desktop/build/compose/binaries/main/msi/*.msi "dist/lizard-sender-$v-alpha-windows-x64.msi"
+          cp lizard-desktop/build/compose/binaries/main/msi/*.msi "dist/lizard-$v-alpha-windows-x64.msi"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -341,7 +341,7 @@ jobs:
         run: |
           v=$(cd lizard-desktop && ./gradlew -q --no-daemon releaseVersion)
           mkdir -p dist
-          cp lizard-desktop/build/compose/binaries/main/dmg/*.dmg "dist/lizard-sender-$v-alpha-macos-arm64.dmg"
+          cp lizard-desktop/build/compose/binaries/main/dmg/*.dmg "dist/lizard-$v-alpha-macos-arm64.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
