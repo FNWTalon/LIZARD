@@ -158,7 +158,8 @@ class GpuReceiver : public Receiver {
   Stamps stamps;
   float lensNow[4] = {0, 0, 0, 0};   // ai: the newest frame's lens report (CameraFrame::lens), for the replay's GPU-kept frames; under mu
   // ai: fresh: data ids new to the dedupe (the series' and the lock's); useful: what goodputKBs counts (rateFold)
-  struct Win { int arrived = 0, dropped = 0, processed = 0, found = 0, words = 0, test = 0; long blocks = 0, fresh = 0, useful = 0; double gpuMs = 0, gpuFrames = 0, side = 0, held = 0, heldMax = 0; int heldN = 0; } win, last;
+  // ai: bx0..by1: the box of the codes found in the window, camera pixels from the frame's centre (the app's focus region)
+  struct Win { int arrived = 0, dropped = 0, processed = 0, found = 0, words = 0, test = 0; long blocks = 0, fresh = 0, useful = 0; double gpuMs = 0, gpuFrames = 0, side = 0, held = 0, heldMax = 0; int heldN = 0; double bx0 = 1e30, by0 = 1e30, bx1 = -1e30, by1 = -1e30; } win, last;
   uint64_t takenSeen = 0;   // ai: the transfer's taken() at the last window's close, or at its opening
   double winStart = 0;
   // ai: the window's stream (receiver.h cameraClosed): stream counts the camera's closes, and a frame's figures go to
@@ -469,6 +470,16 @@ void GpuReceiver::deliver(BatchOut& out, const Kept& k) {
       win.processed++;
       win.found += fo.finder.found == 1;
       if (fo.finder.found == 1) win.side += sideOf(fo.finder.corners.data());
+      // ai: the code's corners from the frame's centre: the crop's corners less its axis point (the axis word: half
+      // ai: pixels each + 32768; 0 the crop's centre)
+      if (fo.finder.found == 1) {
+        double ax = fo.w / 2.0, ay = fo.h / 2.0;
+        if (fo.axis) { ax = ((double)(fo.axis & 0xffff) - 32768) / 2; ay = ((double)(fo.axis >> 16) - 32768) / 2; }
+        for (int q = 0; q < 4; q++) {
+          const double x = fo.finder.corners[2 * q] - ax, y = fo.finder.corners[2 * q + 1] - ay;
+          win.bx0 = std::min(win.bx0, x); win.by0 = std::min(win.by0, y); win.bx1 = std::max(win.bx1, x); win.by1 = std::max(win.by1, y);
+        }
+      }
       win.blocks += (long)fo.records.size();
       win.fresh += v.fresh;
       if (v.test) { win.useful += v.fresh; win.test++; }
@@ -528,6 +539,7 @@ std::string GpuReceiver::stats() {
     {"error", error}, {"decoder", "gpu " + variant}, {"zeroCopy", !!ci}, {"layout", cfg.layout},
     {"capturedFps", last.arrived}, {"processedFps", last.processed}, {"dropped", last.dropped},
     {"foundShare", last.found / n}, {"side", last.found ? last.side / last.found : 0},
+    {"codeBox", last.bx1 > last.bx0 ? json::array({last.bx0, last.by0, last.bx1, last.by1}) : json()},
     {"heldMs", last.heldN ? last.held / last.heldN : 0}, {"heldMaxMs", last.heldMax}, {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.useful * 469 / 1000.0 / lastSecs},
     {"gpuMs", last.gpuFrames ? last.gpuMs / last.gpuFrames : 0}, {"B", fh ? batchSize : 0}, {"cap", cap.load()},
     {"bandVersion", lastWord.is_null() ? json() : lastWord["version"]}, {"word", lastWord},
