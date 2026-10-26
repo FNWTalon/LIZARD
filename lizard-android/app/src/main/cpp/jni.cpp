@@ -431,6 +431,7 @@ struct Tx {
   int ringSide = 0, ringW = 0, ringFps = 0, dstW = 0, dstH = 0;
   bool ringFailed = false;     // ai: the vsync present refused here (txPost -1): the window's queue for this sender
   std::shared_ptr<GpuRing> gring;   // ai: the GPU-filled ring (GpuRing), where the device takes storage images on hardware buffers
+  std::shared_ptr<GpuRing> gringOld;   // ai: the ring before a size change, its last picture on screen until the new ring's first post
   bool gpuExpand = false;      // ai: probeStorage's answer, at txPrepare
   uint64_t ahbUsage = 0;
   std::string assets;
@@ -438,6 +439,13 @@ struct Tx {
 };
 Tx* tx(jlong h) { return reinterpret_cast<Tx*>(h); }
 void dropRing(Tx* t) {
+  if (t->gringOld) {
+    ASurfaceTransaction* tr = ASurfaceTransaction_create();
+    ASurfaceTransaction_reparent(tr, t->gringOld->sc, nullptr);
+    ASurfaceTransaction_apply(tr);
+    ASurfaceTransaction_delete(tr);
+    t->gringOld.reset();
+  }
   if (t->gring) {
     ASurfaceTransaction* tr = ASurfaceTransaction_create();
     ASurfaceTransaction_reparent(tr, t->gring->sc, nullptr);
@@ -691,8 +699,24 @@ bool makeGpuRing(Tx* t, int side, int width) {
 // ai: ns; false, counted behind, where none is filled (the picture on screen stays).
 bool postGpu(Tx* t, int side, int width, int64_t vsync, int64_t expected, int64_t vsyncNs, int w, int h) {
   if (!t->gring || t->ringSide != side || t->ringW != width) {
-    dropRing(t);
-    if (!makeGpuRing(t, side, width)) { t->ringFailed = true; return false; }
+    // ai: a new size (a setting changed mid-send, the code's room): the ring whose picture is on screen stays, its
+    // ai: filler stopped, until the new ring posts its first buffer, whose transaction takes it off (a new surface
+    // ai: shows black until its first fill, tens of ms, which flashed the code at every change); a ring that never
+    // ai: posted has nothing on screen and goes at once
+    if (t->gring && !t->gringOld && t->gring->last >= 0) {
+      { std::lock_guard<std::mutex> l(t->gring->m); t->gring->stop = true; }
+      t->gring->cv.notify_all();
+      if (t->gring->filler.joinable()) t->gring->filler.join();
+      t->gringOld = std::move(t->gring);
+    } else if (t->gring) {
+      ASurfaceTransaction* tr = ASurfaceTransaction_create();
+      ASurfaceTransaction_reparent(tr, t->gring->sc, nullptr);
+      ASurfaceTransaction_apply(tr);
+      ASurfaceTransaction_delete(tr);
+      t->gring.reset();
+    }
+    t->ringSide = t->ringW = t->ringFps = t->dstW = t->dstH = 0;
+    if (!makeGpuRing(t, side, width)) { dropRing(t); t->ringFailed = true; return false; }
   }
   GpuRing& r = *t->gring;
   int k = -1;
@@ -723,6 +747,7 @@ bool postGpu(Tx* t, int side, int width, int64_t vsync, int64_t expected, int64_
     t->ringFps = t->fps;
   }
   if (auto f = setFrameTimeline(); f && vsync > 0) f(tr, vsync);
+  if (t->gringOld) ASurfaceTransaction_reparent(tr, t->gringOld->sc, nullptr);   // ai: the old picture off as the new goes on
   {
     std::lock_guard<std::mutex> l(r.m);
     ASurfaceTransaction_setOnComplete(tr, new GDone{t->gring, r.last, expected}, onGDone);
@@ -731,6 +756,7 @@ bool postGpu(Tx* t, int side, int width, int64_t vsync, int64_t expected, int64_
   }
   ASurfaceTransaction_apply(tr);
   ASurfaceTransaction_delete(tr);
+  t->gringOld.reset();   // ai: its completions still owed hold it until they come
   return true;
 }
 void dropWindow(JNIEnv* e, Tx* t) {
