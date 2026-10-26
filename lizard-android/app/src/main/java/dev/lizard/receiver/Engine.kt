@@ -313,6 +313,10 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     // ai: request issued again with the new ratio, the camera kept open (a restart cost half a second and the phase
     // ai: lock's footing). Null with no session. A drag posts many values: the engine thread takes the newest once.
     private var rezoom: ((Float) -> Unit)? = null
+    // ai: the autofocus region on the code: refocus sets it on the running request (null with no session or on a lens
+    // ai: without autofocus regions); focusBox the code's box it was last set from
+    private var refocus: ((DoubleArray) -> Unit)? = null
+    private var focusBox: DoubleArray? = null
     @Volatile private var zoomAsked = 1f
     private val zoomPosted = java.util.concurrent.atomic.AtomicBoolean(false)
     fun zoom(z: Float) {
@@ -587,6 +591,31 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                             try { cs.setRepeatingRequest(b.build(), told, h) } catch (e: Exception) { Log.w(TAG, "zoom: ${e.message}") }
                         }
                     }
+                    // ai: focus on the code: the receiver's box of the codes it found in the last second (the stats' codeBox,
+                    // ai: camera pixels from the frame's centre) becomes the autofocus region, so the camera's own contrast
+                    // ai: autofocus judges the code and not the room. 3A regions are in the post-zoom field's coordinates
+                    // ai: (CONTROL_ZOOM_RATIO's rule), scaled to the active array; the stream is that field's largest
+                    // ai: centred part of its shape. At an angle the found share went 67 to 97% on the S26.
+                    val afMax = ch.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
+                    val active = ch.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                    focusBox = null
+                    refocus = if (afMax < 1 || active == null) null else { box ->
+                        if (g == gen) {
+                            val wa = active.width(); val ha = active.height()
+                            val k = minOf(wa.toDouble() / size.width, ha.toDouble() / size.height)
+                            val x0 = (wa / 2.0 + box[0] * k).roundToInt().coerceIn(0, wa - 1)
+                            val y0 = (ha / 2.0 + box[1] * k).roundToInt().coerceIn(0, ha - 1)
+                            val x1 = (wa / 2.0 + box[2] * k).roundToInt().coerceIn(x0 + 1, wa)
+                            val y1 = (ha / 2.0 + box[3] * k).roundToInt().coerceIn(y0 + 1, ha)
+                            b.set(CaptureRequest.CONTROL_AF_REGIONS, arrayOf(android.hardware.camera2.params.MeteringRectangle(x0, y0, x1 - x0, y1 - y0,
+                                android.hardware.camera2.params.MeteringRectangle.METERING_WEIGHT_MAX)))
+                            try {
+                                cs.setRepeatingRequest(b.build(), told, h)
+                                Log.i(TAG, "focus: on the code, %d,%d to %d,%d of the %dx%d array".format(x0, y0, x1, y1, wa, ha))
+                            } catch (e: Exception) { Log.w(TAG, "focus: ${e.message}") }
+                        }
+                    }
+                    if (refocus == null) Log.i(TAG, "focus: no autofocus region on this lens (max regions $afMax)")
                     ok(fmt)
                     phase(Phase.On)
                 }
@@ -609,8 +638,21 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     // ai: of the third best of them (and an eighth of the word's), and the ceiling is their mean, 469 B a block, at
     // ai: the painted rate or the camera's if that is lower. tools/phone/ladder.py makes the table by format.
     private var rxSeen = 0.0   // ai: the newest capture already counted, ms on the camera's clock (engine thread)
+    // ai: the focus region follows the code's box where it moved by more than a tenth of its size (a dead band, so a
+    // ai: hand's jitter does not reissue the repeating request each second)
+    private fun aimFocus(box: DoubleArray) {
+        val f = refocus ?: return
+        val span = maxOf(box[2] - box[0], box[3] - box[1])
+        if (span <= 0) return
+        val old = focusBox
+        if (old != null && (0 until 4).all { Math.abs(box[it] - old[it]) <= 0.1 * span }) return
+        focusBox = box
+        f(box)
+    }
+
     private fun rx(): String? {
         val j = try { org.json.JSONObject(stats()) } catch (_: Exception) { return null }
+        j.optJSONArray("codeBox")?.let { a -> if (a.length() == 4) aimFocus(DoubleArray(4) { a.optDouble(it) }) }
         val a = j.optJSONArray("series")
         val blocks = ArrayList<Int>()
         var newest = rxSeen; var first = Double.MAX_VALUE; var all = 0
@@ -739,6 +781,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     private fun closeCamera() {
         gen++
         rezoom = null
+        refocus = null
         opening = false
         if (cameraSlow != null) main.post { cameraSlow = null }
         if (device != null) Log.i(TAG, "close camera")
