@@ -369,6 +369,10 @@ void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H) {
       ln.scoreGroup2 = dev.createBindGroup(P("score").bgl, lv2);
       ln.voteGroup2 = group(P("vote"), {ln.frames2Buf, ln.readingsBuf, ln.accBuf, ln.p5Uni}, false);
       ln.gatherGroup2 = group(P("gather"), {ln.frames2Buf, ln.readingsBuf, ln.accBuf, ln.candBuf, ln.quadsBuf, ln.p5Uni}, false);
+      // ai: F5d over the second round's frame records (wgsl/finder.mjs COMPLETE): the levels, readings, quads, P5
+      auto lvc = ln.lvEntries(true);
+      lvc.insert(lvc.end(), {ln.readingsBuf, ln.quadsBuf, ln.p5Uni});
+      ln.completeGroup2 = dev.createBindGroup(P("complete").bgl, lvc);
       ln.redoGroup = group(P("redo"), {ln.framesBuf, ln.selBuf, ln.frames2Buf, ln.accBuf, ln.readingsBuf, ln.candBuf, ln.quadsBuf, ln.p5Uni}, false);
     }
     ln.nodesGroups.clear();
@@ -761,6 +765,8 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
     net(classify, ln.classifyGroup2, cascade["keep"].get<uint32_t>());
     step(P("vote"), ln.voteGroup2, ceilDiv((uint32_t)cap, C.VOTE_READS), n);
     step(P("gather"), ln.gatherGroup2, n);
+    // ai: F5d (wgsl/finder.mjs COMPLETE), a workgroup a (frame, quad): on a frame neither round found four corners of
+    step(P("complete"), ln.completeGroup2, C.K * n);
     step(P("score"), ln.scoreGroup2, C.HYP * n);
     step(P("pick"), ln.pickGroup2, n);
   }

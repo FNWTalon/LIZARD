@@ -57,7 +57,7 @@ struct Lane {
   GroupP refitGroup, refitPostGroup, pickGroup;   // ai: refitPostGroup: the tree's front.refitPost
   // ai: the finder's second round (decoder.mjs, gpu/wgsl/finder.mjs REDO): its frame records and its groups over them
   BufP frames2Buf;
-  GroupP pickGroup2, redoGroup, selGroup2, classifyGroup2, classify0Group2, rankGroup2, scoreGroup2, voteGroup2, gatherGroup2;
+  GroupP pickGroup2, redoGroup, selGroup2, classifyGroup2, classify0Group2, rankGroup2, scoreGroup2, voteGroup2, gatherGroup2, completeGroup2;
   std::shared_ptr<wg::QuerySet> qs, qsProfile;
   BufP qsBuf, qsProfileBuf;
   // ai: ensure()'s, at the lane's W x H

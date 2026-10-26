@@ -24,7 +24,7 @@ import { PYRAMID, PYRAMID_BLOCK, HIST_BINS } from "./wgsl/pyramid.mjs";
 import { SAMPLE } from "./wgsl/sample.mjs";
 import { SLOTS, axisWord } from "./wgsl/common.mjs";
 import { SELECT } from "./wgsl/bank.mjs";
-import { VOTE, GATHER, SCORE, PICK, REDO, K, CELL, HYP, RING_COUNT, VOTE_READS } from "./wgsl/finder.mjs";
+import { VOTE, GATHER, COMPLETE, SCORE, PICK, REDO, K, CELL, HYP, RING_COUNT, VOTE_READS } from "./wgsl/finder.mjs";
 import { NODES, REFIT, REFIT_POST, NODES_MAX, LIGHT_MAX, RESID, WINDOW, SUB, REFIT_DBG, ringOrder } from "./wgsl/register.mjs";
 import { WORD, wordUniform, wordPoints, wordLattice, heldUniform } from "./wgsl/word.mjs";
 import { gridOf, slotOf } from "./tables.mjs";
@@ -421,7 +421,7 @@ export class FrontHalf {
     // ai: activations stored as halves (under 18,692 B; WebGPU promises only 16 KB) gets its FitError: no GPU decoder
     // ai: there, and the receiver decodes with the C.
     const bank = (async () => { this.bank = await import("./bank_fcn2.mjs"); await this.bank.build(this); })();
-    const [pyramid, sampler, large, small, rank, twinLarge, twinSmall, vote, gather, score, pick, redo, nodesP, refit, refitPost, wordP, select] = await Promise.all([
+    const [pyramid, sampler, large, small, rank, twinLarge, twinSmall, vote, gather, complete, score, pick, redo, nodesP, refit, refitPost, wordP, select] = await Promise.all([
       // ai: The pyramid and each frame's grey levels in one kernel (wgsl/pyramid.mjs): the layer, the frame records,
       // ai: levels 1 to 4, the histogram (read back with the batch: the native receiver's grey range, core/dec/front.h
       // ai: hist), the levels' dims.
@@ -438,6 +438,8 @@ export class FrontHalf {
       // ai: centre peaks (cand) and their quads.
       P(VOTE, ["ro", "ro", "rw", "uniform"]),
       P(GATHER, ["ro", "ro", "ro", "rw", "rw", "uniform"]),
+      // ai: F5d: a quad of three corners completed from the ring's sides (the levels, readings, quads, P5)
+      P(COMPLETE, [...LV, "ro", "rw", "uniform"]),
       P(SCORE, [...LV, "ro", "ro", "rw", "uniform"]),
       P(PICK, ["ro", "ro", "ro", "rw", "rw", "rw", "uniform"]),
       // ai: The second round's frame records and its frames' resets: frames, sel, frames2, acc, readings, cand, quads.
@@ -453,7 +455,7 @@ export class FrontHalf {
       P(SELECT, ["ro", "ro", "rw", "rw", "uniform"]),
       bank,
     ]);
-    Object.assign(this, { pyramid, sampler, vote, gather, score, pick, redo, nodesP, refit, refitPost, wordP, select });
+    Object.assign(this, { pyramid, sampler, vote, gather, complete, score, pick, redo, nodesP, refit, refitPost, wordP, select });
     this.classify = large.pipe;
     this.weightsBuf = large.buf;
     this.arch = large.plan.name;
@@ -686,6 +688,7 @@ export class FrontHalf {
       this.scoreGroup2 = group(this.score, [this.quadsBuf, this.planBuf, this.scoreBuf, this.planUni], 7, this.lvEntries2);
       this.voteGroup2 = group(this.vote, [this.frames2Buf, this.readingsBuf, this.accBuf, this.p5Uni]);
       this.gatherGroup2 = group(this.gather, [this.frames2Buf, this.readingsBuf, this.accBuf, this.candBuf, this.quadsBuf, this.p5Uni]);
+      this.completeGroup2 = group(this.complete, [this.readingsBuf, this.quadsBuf, this.p5Uni], 7, this.lvEntries2);
       this.redoGroup = group(this.redo, [this.framesBuf, this.selBuf, this.frames2Buf, this.accBuf, this.readingsBuf, this.candBuf, this.quadsBuf, this.p5Uni]);
       this.nodesGroups = this.rounds.map((r) => group(this.nodesP, [this.nodesBuf, this.tmplBuf, this.mapsBuf, this.selBuf, this.measBuf, r], 7));
       this.wordGroup = group(this.wordP, [this.mapsBuf, this.selBuf, this.residBuf, this.wordPtsBuf, this.resultBuf, this.wordUni, this.wordLatUni, this.heldUni], 7);
@@ -1169,6 +1172,8 @@ export class FrontHalf {
         else net(this.classify, this.classifyGroup2, this.cap);
         step(this.vote, this.voteGroup2, ceilDiv(this.cap, VOTE_READS), nb);
         step(this.gather, this.gatherGroup2, nb);
+        // ai: F5d (wgsl/finder.mjs COMPLETE), a workgroup a (frame, quad): on a frame neither round found four corners of
+        step(this.complete, this.completeGroup2, K * nb);
         step(this.score, this.scoreGroup2, HYP * nb);
         step(this.pick, this.pickGroup2, nb);
       }

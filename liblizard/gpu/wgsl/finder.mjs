@@ -64,6 +64,9 @@ fn look(l: u32, f: u32, p: vec2f) -> f32 {
   let i = vec2i(q0);
   return mix(mix(pix(l, f, i.x, i.y), pix(l, f, i.x + 1, i.y), a.x), mix(pix(l, f, i.x, i.y + 1), pix(l, f, i.x + 1, i.y + 1), a.x), a.y);
 }
+// ai: Whether level-0 point p lies on frame f (a symbol's corner may not: COMPLETE). Reads outside it are the edge's
+// ai: clamped pixels, which say nothing of the symbol.
+fn onFrame(f: u32, p: vec2f) -> bool { let F = frames[f]; return p.x >= 0.0 && p.y >= 0.0 && p.x < f32(F.w) && p.y < f32(F.h); }
 // The level where a module of u level-0 pixels is 1.5 to 3 pixels: the blur a module-sized feature wants.
 fn levelFor(u: f32) -> u32 { return u32(clamp(floor(log2(max(u, 1.0) / 1.5)), 0.0, 4.0)); }
 fn dir(a: f32) -> vec2f { return vec2f(cos(a), sin(a)); }
@@ -333,8 +336,12 @@ fn cornerOf(f: u32, i: u32, c: vec4f, u: f32, alpha: f32) -> u32 {
 }
 // ai: The image position of the reading slot q's key holds.
 fn slotAt(f: u32, pk: u32, q: u32) -> vec2f { return readings[3u * (f * P.cap + (atomicLoad(&slotK[16u * pk + 4u * q + 3u]) & 8191u))].xy; }
-// ai: The centre the slots' corners put the symbol at: with all four the crossing of the diagonals (a projective
-// ai: square's centre), else the middle of the one filled diagonal pair (p02: slots 0 and 2, p13: 1 and 3).
+// ai: The centre the slots' corners put the symbol at (p02: slots 0 and 2 filled, p13: 1 and 3): with all four the
+// ai: crossing of the diagonals; with one diagonal pair and one corner of the other, where the pair's line crosses that
+// ai: corner's own diagonal (its reading's ray); with the pair alone its middle. Both crossings are the square's
+// ai: centre under any perspective. The pair's middle is so only seen square on: at 45 degrees on the simulator it
+// ai: lay 80 to 122 px off the centre, so the third corner, whose ray passes through the centre, fell outside the band
+// ai: about it and the quad kept two corners.
 fn centreOf(f: u32, pk: u32, p02: bool, p13: bool) -> vec2f {
   let a = slotAt(f, pk, 0u);
   let b = slotAt(f, pk, 2u);
@@ -344,7 +351,20 @@ fn centreOf(f: u32, pk: u32, p02: bool, p13: bool) -> vec2f {
   let s = g - e;
   let den = r.x * s.y - r.y * s.x;
   if (p02 && p13 && abs(den) > 1e-3) { return a + ((e.x - a.x) * s.y - (e.y - a.y) * s.x) / den * r; }
-  return select(0.5 * (e + g), 0.5 * (a + b), p02);
+  let mid = select(0.5 * (e + g), 0.5 * (a + b), p02);
+  // ai: the filled pair's line (A, d) and the other diagonal's one corner (slot q1), where there is one
+  let A = select(e, a, p02);
+  let d = select(s, r, p02);
+  var q1 = 4u;
+  for (var q = select(0u, 1u, p02); q < 4u; q += 2u) { if (atomicLoad(&slotK[16u * pk + 4u * q]) != 0u) { q1 = q; } }
+  if (q1 == 4u) { return mid; }
+  let rq = readings[3u * (f * P.cap + (atomicLoad(&slotK[16u * pk + 4u * q1 + 3u]) & 8191u))];
+  let beta = rq.w + PI / 4.0;
+  let inward = -vec2f(cos(beta), sin(beta));
+  let dn = inward.x * d.y - inward.y * d.x;
+  if (abs(dn) < 1e-3 * length(d)) { return mid; }
+  let t = ((A.x - rq.x) * d.y - (A.y - rq.y) * d.x) / dn;
+  return select(mid, rq.xy + t * inward, t > 0.0);
 }
 // ai: F5c: the quad of peak pk (c).
 fn gather(f: u32, pk: u32, c: vec4f, lane: u32) {
@@ -529,6 +549,277 @@ fn hypH(quad: array<vec4f, 4>, o: u32, M: f32) -> array<f32, 9> {
 }
 `;
 
+// ai: F5d (2026-10-17): a quad of three corners completed from the ring. A corner mark the crop cuts is no mark the
+// ai: network reads, so GATHER keeps three corners and SCORE reads no quad of fewer than four: a symbol whole on the
+// ai: frame but for that corner was never registered (on a 2:1 replay of 2026-10-17, 57 of the 150 halves whose code
+// ai: crossed the crop's edge were found). The reference finds such a symbol from its straight sides
+// ai: (liblizard/src/acquire.c fit_lines). Here, from each of the two corners next to the missing one, the ring (depths
+// ai: 1 and 2 dark, 3 modules of light outside it and 2 inside: SPEC 4.3) is read across at STATIONS stations along
+// ai: the side by correlation with that profile, on what the frame holds of it, a line fitted through them; the two
+// ai: lines meet at the ring's corner, and the missing mark's centre lies (c - 2, c - 2) modules in from it.
+// ai: - The side's first direction is one of two, the one whose first pass holds more stations: the three corners'
+// ai:   parallelogram, or the known side at the same corner reflected across the mark's diagonal (alpha). Under strong
+// ai:   tilt (the simulator's) the parallelogram's far corner was 40 modules off and the reflection a degree to a few;
+// ai:   at 2.2x zoom (the replay) the parallelogram was within a degree and the reflection 10 off where the known
+// ai:   mark is half cut too.
+// ai: - Three passes a side, each about the line the one before fitted: the first 12% of the side (3 modules either
+// ai:   side of the guess), 40%, all of it (1.5 modules); a pass that cannot fit keeps the line before it (a side running
+// ai:   off the frame toward the missing corner leaves its far stations unread).
+// ai: - A station takes the outermost offset whose correlation is a local maximum at NCC_MIN or more: the timing band
+// ai:   3.5 modules inside the ring has the same light, dark, light profile where its cell is dark.
+// ai: A workgroup a (frame, quad), after the finder's second round's GATHER (REDO), on the frames neither round found:
+// ai: a frame holding a quad of four is left as it is, so is a quad of fewer than three corners, and one whose sides
+// ai: do not read or whose corner lands far from the other three's frame. What it makes is a quad of four that SCORE
+// ai: judges as any other.
+export const STATIONS = 32;
+const PROFILE = 13;          // ai: samples across the ring, half a module apart, from 3.25 modules outside its centre
+const NCC_MIN = 0.6;         // ai: a station holds where the profile's correlation reaches it
+const PASSES = [[0.12, 3.0], [0.4, 1.5], [1.0, 1.5]];   // ai: a pass's share of the side and its reach, modules
+export const COMPLETE = DIMS + LEVEL_BINDINGS + LEVELS + /* wgsl */ `
+struct P5 { cap: u32, gx: u32, gy: u32, p0: u32, modules: vec4f }
+@group(0) @binding(7) var<storage, read> readings: array<vec4f>;
+@group(0) @binding(8) var<storage, read_write> quads: array<vec4f>;
+@group(0) @binding(9) var<uniform> P: P5;
+var<workgroup> go: u32;
+var<workgroup> ri: array<atomic<u32>, 4>;    // ai: a known corner's reading, its index + 1 (GATHER copies its position)
+var<workgroup> G: array<vec4f, 6>;           // ai: (Pa, Pb), (Po, Pm0), (ua, ub, uo, um), (m, c, 0, 0), the first directions
+var<workgroup> st: array<vec4f, ${2 * STATIONS}>;   // ai: a station's ring point and weight
+var<workgroup> line: array<vec4f, 2>;        // ai: a side's fitted ring line: a point on it, its direction
+var<workgroup> kept: array<u32, 2>;           // ai: the stations the side's line holds
+// ai: The template across the ring at sample s, half a module apart from 3.25 modules outside its centre: light, dark,
+// ai: light (the margin and rim, the ring, the gap).
+fn tmpl(s: u32) -> f32 { let r = -3.25 + 0.5 * f32(s); return select(1.0, -1.0, r >= -1.0 && r < 1.0); }
+// ai: The profile's correlation with centre C on the samples frame f holds, or -2 where it holds under 8 of them or not
+// ai: the ring's inner half and the gap (samples 5 to 12): a ring along the frame's edge can lie half off it, its inner
+// ai: edge on it, 1 module from its centre as anywhere.
+fn ringNcc(f: u32, l: u32, C: vec2f, n: vec2f, u: f32) -> f32 {
+  // ai: one pass of running sums, with no private arrays and no return inside the loop: the Adreno's compiler
+  // ai: faulted on the arrays-and-early-return form (2026-10-17)
+  var k = 0.0;
+  var sv = 0.0;
+  var sv2 = 0.0;
+  var sumT = 0.0;
+  var sumT2 = 0.0;
+  var svt = 0.0;
+  var bad = false;
+  for (var s = 0u; s < ${PROFILE}u; s++) {
+    let p = C - (-3.25 + 0.5 * f32(s)) * u * n;
+    let inside = onFrame(f, p);
+    bad = bad || (!inside && s >= 5u);
+    let w = select(0.0, 1.0, inside);
+    let v = look(l, f, p);
+    let t = tmpl(s);
+    k += w; sv += w * v; sv2 += w * v * v; sumT += w * t; sumT2 += w * t * t; svt += w * v * t;
+  }
+  if (bad || k < 8.0) { return -2.0; }
+  let cov = svt - sv * sumT / k;
+  let vv = sv2 - sv * sv / k;
+  let tv = sumT2 - sumT * sumT / k;
+  return cov / sqrt(max(vv * tv, 1e-12));
+}
+// ai: The ring about X (its expected centre) along the outward normal n, offsets +-reach modules a quarter module
+// ai: apart: the outermost local maximum of the correlation at NCC_MIN or more, and its correlation (0: none).
+fn ringAt(f: u32, X: vec2f, n: vec2f, u: f32, reach: f32) -> vec3f {
+  let l = levelFor(u);
+  let steps = i32(round(reach * 4.0));
+  var a = ringNcc(f, l, X - (0.25 * f32(steps + 1)) * u * n, n, u);
+  var b = ringNcc(f, l, X - (0.25 * f32(steps)) * u * n, n, u);
+  var best = -2.0;
+  var at = 0.0;
+  for (var i = -steps; i <= steps; i++) {
+    let c = ringNcc(f, l, X + (0.25 * f32(i + 1)) * u * n, n, u);
+    // ai: b is offset i; a the one inside it, c the one outside; the last that holds is the outermost
+    if (b >= ${NCC_MIN} && b >= a && b >= c) {
+      var dt = 0.0;
+      let e = a + c - 2.0 * b;
+      if (a > -2.0 && c > -2.0 && e < 0.0) { dt = clamp(0.5 * (a - c) / e, -0.5, 0.5); }
+      best = b;
+      at = 0.25 * (f32(i) + dt);
+    }
+    a = b; b = c;
+  }
+  return vec3f(X + at * u * n, select(0.0, best, best >= ${NCC_MIN}));
+}
+// ai: A weighted line through a side's stations by total least squares, then again without those over a module off
+// ai: it; written to line[side] (and its stations to kept[side]) where it holds need stations or more and spans a
+// ai: quarter of the pass's length, else line[side] kept as it was.
+fn fitSide(side: u32, u: f32, span: f32, need: u32) -> bool {
+  var ok = array<u32, ${STATIONS}>();
+  for (var j = 0u; j < ${STATIONS}u; j++) { ok[j] = select(0u, 1u, st[side * ${STATIONS}u + j].z > 0.0); }
+  var o = vec2f(0.0);
+  var d = vec2f(1.0, 0.0);
+  for (var ps = 0u; ps < 2u; ps++) {
+    var sw = 0.0;
+    var m = vec2f(0.0);
+    for (var j = 0u; j < ${STATIONS}u; j++) { let p = st[side * ${STATIONS}u + j]; if (ok[j] != 0u) { sw += p.z; m += p.z * p.xy; } }
+    if (sw <= 0.0) { return false; }
+    m /= sw;
+    var cxx = 0.0; var cxy = 0.0; var cyy = 0.0;
+    for (var j = 0u; j < ${STATIONS}u; j++) {
+      let p = st[side * ${STATIONS}u + j];
+      if (ok[j] == 0u) { continue; }
+      let e = p.xy - m;
+      cxx += p.z * e.x * e.x; cxy += p.z * e.x * e.y; cyy += p.z * e.y * e.y;
+    }
+    let th = 0.5 * atan2(2.0 * cxy, cxx - cyy);
+    o = m;
+    d = vec2f(cos(th), sin(th));
+    if (ps == 0u) {
+      for (var j = 0u; j < ${STATIONS}u; j++) {
+        let e = st[side * ${STATIONS}u + j].xy - o;
+        if (ok[j] != 0u && abs(e.x * d.y - e.y * d.x) > u) { ok[j] = 0u; }
+      }
+    }
+  }
+  var n = 0u;
+  var tmin = 1e30;
+  var tmax = -1e30;
+  for (var j = 0u; j < ${STATIONS}u; j++) {
+    if (ok[j] == 0u) { continue; }
+    n++;
+    let t = dot(st[side * ${STATIONS}u + j].xy - o, d);
+    tmin = min(tmin, t); tmax = max(tmax, t);
+  }
+  if (n < max(need, 6u) || tmax - tmin < 0.25 * span) { return false; }
+  line[side] = vec4f(o, d);
+  kept[side] = n;
+  return true;
+}
+@compute @workgroup_size(${2 * STATIONS}, 1, 1)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let f = wg.x / ${K}u;
+  let base = 5u * wg.x;
+  if (li == 0u) {
+    // ai: a frame the first round missed (valid 1) and of which neither round holds a quad of four (GATHER's 4; a quad
+    // ai: completed here is written as 5, which SCORE reads as four and a sibling workgroup's test here does not)
+    var four = false;
+    for (var q = 0u; q < ${K}u; q++) { four = four || quads[5u * (f * ${K}u + q) + 4u].w == 4.0; }
+    go = select(0u, 1u, frames[f].valid == 1u && quads[base + 4u].w == 3.0 && !four);
+    for (var q = 0u; q < 4u; q++) { atomicStore(&ri[q], 0u); }
+  }
+  if (workgroupUniformLoad(&go) == 0u) { return; }
+  // ai: each known corner's reading, by its position, for its module size and the mark's diagonal
+  for (var i = li; i < P.cap; i += ${2 * STATIONS}u) {
+    let r = readings[3u * (f * P.cap + i)];
+    for (var q = 0u; q < 4u; q++) {
+      let c = quads[base + q];
+      if (c.w > 0.0 && r.x == c.x && r.y == c.y && r.z > 0.0) { atomicMax(&ri[q], i + 1u); }
+    }
+  }
+  workgroupBarrier();
+  if (li == 0u) {
+    var m = 0u;
+    for (var q = 0u; q < 4u; q++) { if (quads[base + q].w == 0.0) { m = q; } }
+    let a = (m + 1u) % 4u;
+    let b = (m + 3u) % 4u;
+    let o = (m + 2u) % 4u;
+    let ia = atomicLoad(&ri[a]);
+    let ib = atomicLoad(&ri[b]);
+    let io = atomicLoad(&ri[o]);
+    if (ia == 0u || ib == 0u || io == 0u) { go = 0u; }
+    else {
+      let ra = readings[3u * (f * P.cap + ia - 1u)];
+      let rb = readings[3u * (f * P.cap + ib - 1u)];
+      let ro = readings[3u * (f * P.cap + io - 1u)];
+      let Pa = ra.xy;
+      let Pb = rb.xy;
+      let Po = ro.xy;
+      G[0] = vec4f(Pa, Pb);
+      G[1] = vec4f(Po, Pa + Pb - Po);
+      G[2] = vec4f(ra.z, rb.z, ro.z, clamp(ra.z + rb.z - ro.z, 0.5 * min(ra.z, rb.z), 2.0 * max(ra.z, rb.z)));
+      G[3] = vec4f(f32(m), quads[base + a].z, 0.0, 0.0);
+      // ai: each side's two first directions: the known side at its corner (toward o) reflected across the mark's
+      // ai: diagonal, and toward the parallelogram's corner
+      for (var sd = 0u; sd < 2u; sd++) {
+        let P0 = select(Pa, Pb, sd == 1u);
+        let al = select(ra.w, rb.w, sd == 1u);
+        let k = normalize(Po - P0);
+        let e = -dir(al + 0.25 * 3.14159265);
+        G[4u + sd] = vec4f(2.0 * dot(k, e) * e - k, normalize(Pa + Pb - Po - P0));
+      }
+      kept[0] = 0u;
+      kept[1] = 0u;
+    }
+  }
+  if (workgroupUniformLoad(&go) == 0u) { return; }
+  let side = li / ${STATIONS}u;
+  let j = li % ${STATIONS}u;
+  let P0 = select(G[0].xy, G[0].zw, side == 1u);
+  let Pm0 = G[1].zw;
+  let u0 = select(G[2].x, G[2].y, side == 1u);
+  let um = G[2].w;
+  let c = G[3].y;
+  let Q = 0.25 * (G[0].xy + G[0].zw + G[1].xy + Pm0);
+  let L = distance(P0, Pm0);
+  // ai: the ring runs from 12 modules past a corner (the break beside the mark at 11) to 12 before the next
+  let t0 = (13.0 - c) * u0;
+  let t1 = L - (13.0 - c) * um;
+  let span = t1 > t0 + 8.0 * u0;
+  // ai: the outward normal's side, from the first guess (both guesses lie within degrees of each other)
+  var n0 = vec2f(-G[4u + side].y, G[4u + side].x);
+  if (dot(n0, P0 - Q) < 0.0) { n0 = -n0; }
+  // ai: the first pass from each guess; the side keeps the fit that holds more stations
+  for (var g = 0u; g < 2u; g++) {
+    let dd = select(G[4u + side].xy, G[4u + side].zw, g == 1u);
+    var n = vec2f(-dd.y, dd.x);
+    if (dot(n, n0) < 0.0) { n = -n; }
+    var hit = vec3f(0.0);
+    if (span) {
+      let t = mix(t0, t1, (f32(j) + 0.5) / ${STATIONS}.0 * ${PASSES[0][0]});
+      let uu = mix(u0, um, t / L);
+      hit = ringAt(f, P0 + t * dd + (c - 2.0) * uu * n, n, uu, ${PASSES[0][1]});
+    }
+    st[li] = vec4f(hit.xy, hit.z, 0.0);
+    workgroupBarrier();
+    if (j == 0u) { fitSide(side, 0.5 * (u0 + um), (t1 - t0) * ${PASSES[0][0]}, kept[side] + 1u); }
+    workgroupBarrier();
+  }
+  if (workgroupUniformLoad(&kept[0]) == 0u || workgroupUniformLoad(&kept[1]) == 0u) { return; }
+  // ai: the passes after, each about the line the one before kept: the station's foot on it, the normal its own
+  ${PASSES.slice(1).map(([frac, reach]) => `{
+    var hit = vec3f(0.0);
+    if (span) {
+      let t = mix(t0, t1, (f32(j) + 0.5) / ${STATIONS}.0 * ${frac});
+      let uu = mix(u0, um, t / L);
+      let ln = line[side];
+      var nn = vec2f(-ln.w, ln.z);
+      if (dot(nn, n0) < 0.0) { nn = -nn; }
+      let B = P0 + t * normalize(Pm0 - P0);
+      hit = ringAt(f, ln.xy + dot(B - ln.xy, ln.zw) * ln.zw, nn, uu, ${reach});
+    }
+    st[li] = vec4f(hit.xy, hit.z, 0.0);
+    workgroupBarrier();
+    if (j == 0u) { fitSide(side, 0.5 * (u0 + um), (t1 - t0) * ${frac}, 6u); }
+    workgroupBarrier();
+  }`).join("\n  ")}
+  if (li == 0u) {
+    // ai: the two ring lines' crossing, the ring's corner (module (2, 2) from the missing corner)
+    let A = line[0];
+    let Bl = line[1];
+    let den = A.z * Bl.w - A.w * Bl.z;
+    if (abs(den) < 0.2) { return; }
+    let s = ((Bl.x - A.x) * Bl.w - (Bl.y - A.y) * Bl.z) / den;
+    let R = A.xy + s * A.zw;
+    var ta = A.zw;
+    if (dot(ta, G[0].xy - R) < 0.0) { ta = -ta; }
+    var tb = Bl.zw;
+    if (dot(tb, G[0].zw - R) < 0.0) { tb = -tb; }
+    let Pm = R + (c - 2.0) * um * (ta + tb);
+    // ai: a crossing far from where the other three corners put it is not this symbol's
+    if (distance(Pm, Pm0) > 0.25 * distance(G[0].xy, G[0].zw)) { return; }
+    let m = u32(G[3].x);
+    quads[base + m] = vec4f(Pm, c, 1.0);
+    let qm = quads[base + 4u];
+    let p0 = quads[base].xy;
+    let p1 = quads[base + 1u].xy;
+    let p2 = quads[base + 2u].xy;
+    let p3 = quads[base + 3u].xy;
+    let uq = 0.25 * (distance(p0, p1) + distance(p1, p2) + distance(p2, p3) + distance(p3, p0)) / (P.modules[u32(qm.x)] - 2.0 * quads[base].z);
+    quads[base + 4u] = vec4f(qm.x, uq, qm.z, 5.0);
+  }
+}
+`;
+
 // ai: F6a: every hypothesis (quad, orientation, ring) through the track read, one workgroup each. The read is
 // the format's: the solid line and the gap every 16 modules give the contrast, the Manchester pair nearest each
 // step gives the threshold (a pair is one dark and one light cell), and each track cell adds its sign's agreement,
@@ -563,7 +854,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   let at = PL.at[rg];
   let M = f32(at.w);
   if (li == 0u) {
-    ok = select(0u, 1u, frames[f].valid != 0u && qm.w == 4.0);
+    ok = select(0u, 1u, frames[f].valid != 0u && (qm.w == 4.0 || qm.w == 5.0));
     if (ok == 1u) {
       let h = hypH(array<vec4f, 4>(quads[base], quads[base + 1u], quads[base + 2u], quads[base + 3u]), o, M);
       for (var j = 0; j < 9; j++) { H[j] = h[j]; }
@@ -585,8 +876,13 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   for (var s = li; s < at.y; s += 64u) {
     let b = at.x + 4u * s;
     if (!near(plan[b].xy, M)) { continue; }
-    acc += vec4f(look(l, f, applyH(Hl, plan[b].xy)), look(l, f, applyH(Hl, plan[b + 1u].xy)),
-                 look(l, f, applyH(Hl, plan[b + 2u].xy)) + look(l, f, applyH(Hl, plan[b + 3u].xy)), 1.0);
+    // ai: a step whose points the frame does not hold (a corner past the crop, COMPLETE's) reads nothing
+    let q0 = applyH(Hl, plan[b].xy);
+    let q1 = applyH(Hl, plan[b + 1u].xy);
+    let q2 = applyH(Hl, plan[b + 2u].xy);
+    let q3 = applyH(Hl, plan[b + 3u].xy);
+    if (!(onFrame(f, q0) && onFrame(f, q1) && onFrame(f, q2) && onFrame(f, q3))) { continue; }
+    acc += vec4f(look(l, f, q0), look(l, f, q1), look(l, f, q2) + look(l, f, q3), 1.0);
   }
   sums[li] = acc;
   workgroupBarrier();
@@ -603,7 +899,9 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   for (var j = li; j < at.z; j += 64u) {
     let pt = plan[at.x + 4u * at.y + j];
     if (!near(pt.xy, M)) { continue; }
-    q += pt.z * clamp((thr - look(l, f, applyH(Hl, pt.xy))) / max(con, 1e-3), -0.5, 0.5);
+    let qp = applyH(Hl, pt.xy);
+    if (!onFrame(f, qp)) { continue; }
+    q += pt.z * clamp((thr - look(l, f, qp)) / max(con, 1e-3), -0.5, 0.5);
     nq += 1.0;
   }
   sums[li] = vec4f(q, nq, 0.0, 0.0);

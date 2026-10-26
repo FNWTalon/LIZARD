@@ -121,6 +121,13 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   // The module size here, from the map, picks the level.
   let c = toImage(M, node.xy);
   let u = 0.5 * (distance(toImage(M, node.xy + vec2f(1.0, 0.0)), c) + distance(toImage(M, node.xy + vec2f(0.0, 1.0)), c));
+  // ai: a node the frame does not hold (2 modules in from its edge) is not measured: a symbol COMPLETE registered
+  // ai: with a corner past the crop (wgsl/finder.mjs); a whole symbol's nodes, 3.5 modules inside it, never are
+  let F0 = frames[f];
+  if (c.x < 2.0 * u || c.y < 2.0 * u || c.x > f32(F0.w) - 2.0 * u || c.y > f32(F0.h) - 2.0 * u) {
+    if (li == 0u) { meas[f * ${NODES_MAX}u + n] = vec4f(c, 0.0, 0.0); }
+    return;
+  }
   let L = lvlOf(levelFor(u), f);
   let first = u32(node.z);
   let pts = u32(node.w);
