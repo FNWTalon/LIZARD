@@ -479,8 +479,8 @@ fun SwapBtn(label: String, onClick: () -> Unit) =
 // ai: spans the thumb's centre from one end to the other (the Slider lays it out so), so the fill ends at the thumb.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun Bar(value: Float, range: ClosedFloatingPointRange<Float>, steps: Int, choose: (Float) -> Unit) {
-    Slider(value, choose, modifier = Modifier.fillMaxWidth(), steps = steps, valueRange = range,
+fun Bar(value: Float, range: ClosedFloatingPointRange<Float>, steps: Int, done: (() -> Unit)? = null, choose: (Float) -> Unit) {
+    Slider(value, choose, modifier = Modifier.fillMaxWidth(), steps = steps, valueRange = range, onValueChangeFinished = done,
         thumb = { Box(Modifier.size(20.dp).background(Fg, CircleShape)) },
         track = { st ->
             val span = st.valueRange.endInclusive - st.valueRange.start

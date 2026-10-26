@@ -265,21 +265,29 @@ class SendState(private val a: MainActivity) {
     }
     // ai: a provider's name as one part of a path: no separator, none empty
     private fun plainName(n: String) = n.replace('/', '_').ifEmpty { "file" }
-    fun chooseBlocks(b: Int) { blocks = b.coerceIn(0, 128).let { if (it == 1) 0 else it }; prefs.edit().putInt("sendBlocks", blocks).apply(); if (phase == Phase.On) reconfigure() }
-    fun chooseRate(r: Int) { rate = r.coerceIn(1, 60); prefs.edit().putInt("sendFps", rate).apply(); if (phase == Phase.On) reconfigure() }
+    // ai: a slider's value is kept as it moves and applied to a running send when it is let go (settle): each
+    // ai: configure is a new format, its first frames tens of ms away, and one a drag step kept the code flashing
+    private var unsettled = false
+    fun settle() { if (unsettled) { unsettled = false; if (phase == Phase.On) reconfigure() } }
+    fun chooseBlocks(b: Int) { val n = b.coerceIn(0, 128).let { if (it == 1) 0 else it }; if (n == blocks) return; blocks = n; prefs.edit().putInt("sendBlocks", blocks).apply(); unsettled = true }
+    fun chooseRate(r: Int, now: Boolean = true) { rate = r.coerceIn(1, 60); prefs.edit().putInt("sendFps", rate).apply(); unsettled = true; if (now) settle() }
     fun chooseVsync(on: Boolean) {
         vsyncOn = on
         if (on && rate !in Pick.FPS) rate = Pick.fpsOf(rate)
         prefs.edit().putBoolean("sendVsync", on).putInt("sendFps", rate).apply()
         if (phase == Phase.On) reconfigure()
     }
-    fun chooseBrightness(b: Int) { brightness = b.coerceIn(1, 100) }
+    // ai: the window holds the brightness while sending (screenFor), so a move mid-send is applied at once
+    fun chooseBrightness(b: Int) {
+        brightness = b.coerceIn(1, 100)
+        if (phase == Phase.On) a.window.let { w -> w.attributes = w.attributes.apply { screenBrightness = brightness / 100f } }
+    }
     fun pause(p: Boolean) { if (phase == Phase.On) paused = p }
     // ai: what the code offers at most, KB/s: blocks a frame x 469 B x pictures a second; null before the first configure
     val capacityKBs get() = if (picked > 0) codes * (if (stats.blocks > 0) stats.blocks else Native.blocksFor(picked)) * 469.0 * rate / 1000 else null
     fun choosePainter(p: String) { painter = p; prefs.edit().putString("sendPainter", p).apply(); if (phase == Phase.On) reconfigure() }
     fun chooseCodes(c: Int) { codes = c.coerceIn(1, 2); prefs.edit().putInt("sendCodes", codes).apply(); if (phase == Phase.On) reconfigure() }
-    fun chooseGap(g: Int) { gap = g.coerceIn(0, 64); prefs.edit().putInt("sendGap", gap).apply(); if (phase == Phase.On) reconfigure() }
+    fun chooseGap(g: Int) { gap = g.coerceIn(0, 64); prefs.edit().putInt("sendGap", gap).apply(); unsettled = true }
     // ai: one code's room in the view, px: the box's height, or its width's share where that is less
     private fun roomOf() = min((vw / aspect).toInt(), vh)
     // ai: the column's edge let go (2026-10-05): the format re-picked for the box it left
@@ -575,9 +583,9 @@ internal fun MainActivity.SendScreen() {
                 Group("Code") {
                     // ai: the slider sets the format's size (its sub-channels / 8); its title the blocks that size carries under the
                     // ai: format's rate profile and their bytes (2026-10-07)
-                    AutoSlider("Blocks", s.blocks, s.picked / 8, 2..128, { n -> val b = Native.blocksFor(8 * n); "$b, ${"%.1f".format(Locale.ROOT, b * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
+                    AutoSlider("Blocks", s.blocks, s.picked / 8, 2..128, { n -> val b = Native.blocksFor(8 * n); "$b, ${"%.1f".format(Locale.ROOT, b * 469 / 1000.0)}\u00a0KB" }, { s.settle() }) { s.chooseBlocks(it) }
                     if (s.vsyncOn) Select("FPS", s.rate, Pick.FPS.map { it to "$it" }) { s.chooseRate(it) }
-                    else Field("FPS", "${s.rate}") { Bar(s.rate.toFloat(), 1f..60f, 58) { v -> val r = v.roundToInt(); if (r != s.rate) s.chooseRate(r) } }
+                    else Field("FPS", "${s.rate}") { Bar(s.rate.toFloat(), 1f..60f, 58, { s.settle() }) { v -> val r = v.roundToInt(); if (r != s.rate) s.chooseRate(r, now = false) } }
                     // ai: one code, or two side by side for a receiver's 2:1 crop (the web's #codes)
                     Select("Codes", s.codes, listOf(1 to "One", 2 to "Two")) { s.chooseCodes(it) }
                 }
@@ -590,7 +598,7 @@ internal fun MainActivity.SendScreen() {
                         Bar(s.brightness.toFloat(), 1f..100f, 98) { v -> val n = v.roundToInt(); if (n != s.brightness) s.chooseBrightness(n) }
                     }
                     // ai: the gap between two codes (the web's #gap)
-                    if (s.codes == 2) Field("Gap", "${s.gap} modules") { Bar(s.gap.toFloat(), 0f..64f, 63) { v -> val g = v.roundToInt(); if (g != s.gap) s.chooseGap(g) } }
+                    if (s.codes == 2) Field("Gap", "${s.gap} modules") { Bar(s.gap.toFloat(), 0f..64f, 63, { s.settle() }) { v -> val g = v.roundToInt(); if (g != s.gap) s.chooseGap(g) } }
                 }
             }
         }
@@ -779,11 +787,11 @@ private fun sendLab(s: SendState): String {
 // ai: ("Auto" before the first configure), every step right of it a count by hand. value the setting, shown what auto
 // ai: takes now (0 while unknown), range the counts; the step left of them auto.
 @Composable
-private fun AutoSlider(title: String, value: Int, shown: Int, range: IntRange, text: (Int) -> String, choose: (Int) -> Unit) {
+private fun AutoSlider(title: String, value: Int, shown: Int, range: IntRange, text: (Int) -> String, done: () -> Unit, choose: (Int) -> Unit) {
     val auto = value == 0
     val b = if (auto) shown else value
     val lo = range.first - 1
     Field(title, if (auto) (if (b > 0) "Auto, ${text(b)}" else "Auto") else text(b)) {
-        Bar((if (auto) lo else value).toFloat(), lo.toFloat()..range.last.toFloat(), range.last - lo - 1) { val v = it.roundToInt(); choose(if (v < range.first) 0 else v) }
+        Bar((if (auto) lo else value).toFloat(), lo.toFloat()..range.last.toFloat(), range.last - lo - 1, done) { val v = it.roundToInt(); choose(if (v < range.first) 0 else v) }
     }
 }
