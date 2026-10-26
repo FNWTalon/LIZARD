@@ -6,7 +6,7 @@ carried up to about 4 MB/s (see [Status](#status)).
 
 - **Demo:** [fosslabs.dev](https://fosslabs.dev)
 - **How it works:** [an example on video](https://www.youtube.com/shorts/pjcAtQ7GcVQ)
-- **Apps:** [0.5 (alpha)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.5): the Android app, and the desktop sender for Linux, Windows and macOS
+- **Apps:** [0.5 (alpha)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.5): the Android app, and the desktop app for Linux, Windows and macOS, which sends and, on `main` since 0.5 (not yet in a release), also receives through a USB or built-in camera
 
 ## The idea
 
@@ -407,8 +407,9 @@ Everything was built and measured on Linux x86-64. The desktop app also runs on 
 Silicon, through MoltenVK); there its sender has been checked only on virtual machines (Windows on a software Vulkan
 driver, macOS on a build service's machine), each screenshot of it read back by the decoder, which says it sends but
 not how steadily it paces on real hardware. The desktop app's receiver (UVC cameras through V4L2, Media Foundation or
-AVFoundation) has been checked only against fake camera devices and a simulated camera filming a simulated screen; no
-rate with a real camera has been measured yet.
+AVFoundation) is checked against fake camera devices and a simulated camera filming a simulated screen; with a real
+camera it has run once, a 2013 USB webcam (a Logitech C930e on Linux) reading 90 to 120 kB/s (reported, not logged),
+which no phase lock helps: a webcam cannot delay a single frame, so a sender for one paints at most half its rate.
 
 ## Layout
 
