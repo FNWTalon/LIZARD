@@ -1,9 +1,10 @@
 // ai: Types for index.mjs, liblizard's WebAssembly binding (the C API in ../../include/lizard.h says what each does).
 
-/** Loads the module once. build: "auto" (the SIMD build where the engine has WebAssembly SIMD, else the MVP build),
- *  "simd" or "mvp". The first call decides. */
+/** Loads the module once. build: "auto" (the SIMD build where the engine has WebAssembly SIMD and wasm's exception
+ *  handling, else the MVP build), "simd" or "mvp". The first call decides; calls made while it loads share it. */
 export declare function init(moduleOptions?: object, options?: { build?: "auto" | "simd" | "mvp" }): Promise<unknown>;
-/** Whether this engine has WebAssembly SIMD, which the default build needs (else init loads the MVP build). */
+/** Whether this engine has WebAssembly SIMD, which the default build needs with wasm's exception handling (else init
+ *  loads the MVP build). */
 export declare function hasSimd(): boolean;
 export declare class LizardError extends Error {
   readonly name: "LizardError";
@@ -11,19 +12,18 @@ export declare class LizardError extends Error {
   readonly code: number;
 }
 
-export declare const BLOCK: 473, ID_BYTES: 4, PAYLOAD: 469, MAX_BLOCKS: 128, RINGS: 4, RING_DEFAULT: -1, GAP_MODULES: 12;
+export declare const BLOCK: 473, ID_BYTES: 4, PAYLOAD: 469, MIN_BLOCKS: 2, MAX_BLOCKS: 128, RINGS: 3, RING_DEFAULT: -1, GAP_MODULES: 12;
 export type PixelFormat = "grey" | "rgbx" | "rgba" | "bgra";
 
 export declare function version(): string;
-export declare function abi(): number;
 /** Whether the codec's vector paths (WebAssembly SIMD) are in the loaded build: false in the MVP build. */
 export declare function simd(): boolean;
 
 export interface Format {
-  /** The format's size, 1 to 128 (LIZARD-8 to LIZARD-1024); a symbol carries the rate profile's blocks
+  /** The format's size, 2 to 128 (LIZARD-16 to LIZARD-1024); a symbol carries the rate profile's blocks
    *  (frameBlocks over codes). */
   blocks: number;
-  /** 0 to 3 (the 32, 64, 128 or 256 ring), -1 the default (the 128). */
+  /** 0 to 2 (the 64, 128 or 256 ring), -1 the default (the 128). */
   ring?: number;
   /** The display rate the symbol's word states, 1 to 255 (default 60). */
   fps?: number;
@@ -36,6 +36,8 @@ export interface Geometry {
 export declare function ringCells(ring?: number): number;
 export declare function geometry(format: Format): Geometry;
 export declare function roomFor(blocks: number, ring?: number): number;
+/** The blocks a symbol of that size carries (the rate profile's), 0 for a size no format has. */
+export declare function blocksFor(blocks: number): number;
 export declare function pick(w: number, h: number, options?: { codes?: 1 | 2; ring?: number; top?: number }): number;
 
 export declare class Encoder {
@@ -76,7 +78,11 @@ export declare class Decoder {
 export declare function layoutRects(w: number, h: number, layout?: 1 | 2): { x: number; y: number; w: number; h: number }[];
 export declare function streamFill(id: number): Uint8Array;
 
-export interface TxInfo { test: boolean; length: number; chunks: number; lap: number; root: string }
+export interface TxInfo {
+  test: boolean; length: number; chunks: number; lap: number; root: string;
+  /** The file's bytes as they go: every chunk's zstd frame, or its own bytes. */
+  sent: number;
+}
 export declare class Tx {
   static file(bytes: Uint8Array, name?: string, type?: string): Tx;
   static test(firstId?: number): Tx;
@@ -89,6 +95,8 @@ export interface Verdict { seen: number; bad: number; judged: number; fresh: num
 export interface Progress {
   header: boolean; done: boolean; length: number; bytesIn: number; fraction: number;
   chunks: number; verified: number; rejected: number; solveMs: number;
+  /** The file's bytes as they go (0 until the manifest has said them), and how many of them are in. */
+  sent: number; sentIn: number;
 }
 export declare class Rx {
   constructor(options?: { maxBytes?: number });

@@ -18,8 +18,7 @@
 // ai:   subtraction (2026-09-29: with the frame's words flat and the wrap taken mod n a tap, 7.35 ms of the iGPU's
 // ai:   13.6 at LIZARD-1024).
 // ai: A copy (every pixel's taps the C's on-sample one, [0, 0, 1, 0, 0, 0], wherever the ring's span divides n: every
-// ai: picture in the 32 and 64 rings, 384, 768 and 1536 in the 96, all but 384 in the 128, 20 of the 24 pairs, SPEC
-// ai: 6.8): RSV is not run and RSH reads the picture at the one tap's sample on both axes, the value the two passes
+// ai: picture in the 64 ring, all but 384 in the 128, 512, 1024 and 1536 in the 256, 14 of the 18 pairs, SPEC 6.8): RSV is not run and RSH reads the picture at the one tap's sample on both axes, the value the two passes
 // ai: would have given exactly (rshSource({ copy: true })).
 // ai: PRESENT, a render pass onto the canvas: pixel (x, y) shows the frame's byte (x / whole, y / whole), grey.
 // ai: The tolerance: the square within one grey level of the C's (its FFT's rounding differs), the border equal.
@@ -57,7 +56,7 @@ struct G { a: vec4u, b: vec4u, c: vec4u }
 // ai: whitening a bit a slot), UV (ro, a coefficient's S entry), S (rw, the disc), P (uniform, wgsl/back_ldpc.mjs
 // ai: PARAMS_AT): sizes[0] = (blocks, UV offset, 0, 0), sizes[1 + c] = (first block, first sub-channel, blocks, 0) of
 // ai: code c in CODES' order (0 blocks: a code the format has none of), dims = (blocks, sStride, symbols, c0 + 4
-// ai: codes), pw the CRC's powers; lay unread. Dispatch (blocks, 1, symbols): frames x codes of an encode. The pilots
+// ai: codes), pw the CRC's powers. Dispatch (blocks, 1, symbols): frames x codes of an encode. The pilots
 // ai: (SPEC 7.3): a frame's count is c0 (the encode's first frame's) + its place in the encode, mod 4, the frame
 // ai: symbol r / codes; bit 0 on an even block, bit 1 on an odd.
 export const PAINT_THREADS = 128;

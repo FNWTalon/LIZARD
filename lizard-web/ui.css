@@ -124,7 +124,6 @@ pre.readout{font-size:12px;color:var(--fg)}
 .dialog{border:0;border-radius:12px;padding:20px 20px 16px;max-width:22rem;background:var(--bg);color:var(--fg);box-shadow:0 8px 32px rgba(0,0,0,.25);font-size:15px;line-height:1.45}
 .dialog::backdrop{background:rgba(0,0,0,.35)}
 .dialog p{margin:0 0 16px}
-.dialog li+li{margin-top:6px}
 .row.end{justify-content:flex-end}
 .pop{position:fixed;inset:auto auto 8px 64px;margin:0;max-width:18rem;border:0;border-radius:12px;padding:12px 16px;background:var(--card);color:var(--fg);box-shadow:0 4px 16px rgba(0,0,0,.18);font-size:14px;line-height:1.4}
 
@@ -183,13 +182,9 @@ details.dev label{display:grid;gap:4px;font-size:14px;color:var(--muted);margin:
 .blocks{display:flex;flex-direction:column;gap:4px;margin:0}.blocks .row{display:flex;align-items:center;gap:12px;justify-content:space-between}
 /* ai: a slider's title and value in the fields' label style (2026-10-02) */
 .blocks .row>span{font-size:14px;color:var(--muted)}
-.blocks label.inline{display:flex;align-items:center;gap:8px;white-space:nowrap;align-self:flex-start;color:var(--fg);font-size:15px;margin:0 0 8px}
 /* ai: the Code group's first field right under its heading */
 #f-focus>.grid{margin-top:0}#f-focus>.grid>.blocks:first-child{margin-top:0}
 .item .s:empty{display:none}
-/* ai: the auto box (2026-10-02 to 2026-10-05, on its own row above blocks a frame; no page has one since): a plain 18 px
-   checkbox, not the fields' 48 px fill */
-.blocks input[type=checkbox]{width:18px;height:18px;min-height:0;padding:0;margin:0;accent-color:var(--fg)}
 #blocksOut,#fpsOut{color:var(--muted);font-variant-numeric:tabular-nums}
 details.dev fieldset{border:0;margin:16px 0 0;padding:0;min-width:0}
 /* ai: About, a tool page's last row, under Developer Tools (2026-10-02) */

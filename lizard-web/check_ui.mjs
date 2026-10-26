@@ -17,9 +17,10 @@
 // ai:   4. Home in the same profile at the four sizes: the received file listed, Save holding its bytes, Open, the tips
 // ai:      card shown on a fresh profile and remembered once dismissed, Settings, Delete emptying the received files.
 // ai: All pages: no horizontal scroll, Settings (#dev) closed on a fresh profile and remembered over a reload, a menu's
-// ai: setting kept over a reload with a URL preset winning its own load (the sender's ring, the receiver's GPU crop and
-// ai: decoder), no
-// ai: console error but the ones the start errors put there on purpose.
+// ai: setting kept over a reload with a URL preset winning its own load (the sender's ring, the receiver's frame rate),
+// ai: no console error but the ones the start errors put there on purpose. The sender's blocks label before the first
+// ai: paint (send.html's inline script) the rate profile's, as send.mjs draws it; a kept 32 ring and a kept one block a
+// ai: frame (LIZARD-8), neither a format since 2026-10-25, read as the 128 ring and auto.
 // ai: node lizard-web/check_ui.mjs, from anywhere (about 70 s, a few of them making the clips). APP=1 runs the same
 // ai: against the built app (lizard-web/app/, node lizard-web/pwa/build.mjs first), its worker serving the pages. Exit 1 on a failure.
 import { spawn } from "node:child_process";
@@ -179,6 +180,20 @@ const SIZES = [
       // ai: the page's defaults, LIZARD-480 at 60 (2026-10-01)
       const defaults = await evaluate(s, `[document.getElementById("subch").value, document.getElementById("fps").value].join()`);
       check(defaults === "480,60", `send ${z.name}: the defaults LIZARD-480 at 60 (${defaults})`);
+      // ai: the blocks label at the first paint, before send.mjs has its codec (DOMContentLoaded, the module still
+      // ai: awaiting the wasm), and after: LIZARD-480's 59 blocks under the rate profile both times
+      await s.send("Page.addScriptToEvaluateOnNewDocument", { source: `document.addEventListener("DOMContentLoaded", () => { window.__firstBlocks = document.getElementById("blocksOut")?.textContent ?? null; });` });
+      await navigate(s, SEND);
+      await until(s, `typeof window.__firstBlocks === "string" && document.getElementById("blocksOut").textContent === "59, 27.7 KB"`, 10000, "the blocks label").catch(() => {});
+      const label = await evaluate(s, `[window.__firstBlocks, document.getElementById("blocksOut").textContent].join(" / ")`);
+      check(label === "59, 27.7 KB / 59, 27.7 KB", `send ${z.name}: the blocks label before the first paint and after the codec, LIZARD-480 (${label})`);
+      // ai: settings kept from before 2026-10-25: the 32 ring and LIZARD-8 are no format's
+      await evaluate(s, `localStorage.setItem("send:ring", "32"); localStorage.setItem("send:subch", "8")`);
+      await navigate(s, SEND);
+      await until(s, `document.getElementById("subch").value === "auto"`, 10000, "a kept LIZARD-8 refused").catch(() => {});
+      const kept = await evaluate(s, `[document.getElementById("ring").value, document.getElementById("subch").value, document.getElementById("blocksOut").textContent, localStorage.getItem("send:subch")].join()`);
+      check(kept === "128,auto,Auto,auto", `send ${z.name}: a kept 32 ring and LIZARD-8 read as the 128 ring and auto, auto kept (${kept})`);
+      await evaluate(s, `localStorage.removeItem("send:ring"); localStorage.removeItem("send:subch")`);
       await evaluate(s, `document.getElementById("dev").open = false`);
       await navigate(s, `${SEND}?subch=auto&fps=24&payload=test&auto`);
       await until(s, `/^LIZARD-\\d+/.test(document.getElementById("tx").textContent)`, 20000, "the test stream painted");
@@ -360,9 +375,8 @@ const SIZES = [
       await until(s, `localStorage.getItem("recv:dev") === "1"`, 5000, "the panel's open state stored");
       await navigate(s, BASE);
       check(await evaluate(s, `document.getElementById("dev").open`), `${z.name}: Advanced's open state remembered over a reload`);
-      await remembered(s, BASE, "gcrop", "tracked", "full", z.name);
-      // ai: the decoder's switch, in Settings since 2026-10-01 (#dev since 2026-10-02, kept as its other menus are)
-      await remembered(s, BASE, "dec", "cpu", "auto", z.name);
+      // ai: a Settings menu (#dev), kept as the sender's are (the decoder's and the GPU crop's went 2026-10-25)
+      await remembered(s, BASE, "fps", "30", "60", z.name);
     }
     await evaluate(s, `document.getElementById("dev").open = false`);
   }

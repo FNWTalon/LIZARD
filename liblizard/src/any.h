@@ -23,7 +23,6 @@ typedef struct {
   int held;                // whether the held configuration stood in for its word
   int builds;              // pictures built since the init (a caller timing its first frames)
   const focus_t *last;     // the codec that finished it
-  int version;             // ai: the version it was finished at (its word's, or the held one), 0 none
 } focus_any_t;
 
 // ai: a: zeroed, or a receiver to set up again. nmax: the largest picture it decodes (1536, the ladder's top, in every
@@ -31,8 +30,9 @@ typedef struct {
 int focus_any_init(focus_any_t *a, int nmax);
 void focus_any_free(focus_any_t *a);
 // ai: One frame. blocks and ok hold focus_any_top(a) blocks. held: the sub-channel count / 8 of the last word the
-// ai: caller read (its version field), 0 for none. Returns the blocks decoded; a->which, a->n and a->held say what
-// ai: happened, res what the registration found.
+// ai: caller read (its version field), 0 for none; a held version no format has (outside OB_FMT_VERSION_MIN ..
+// ai: OB_FMT_VERSION_MAX) decodes nothing and is not reported as held. Returns the blocks decoded; a->which, a->n and
+// ai: a->held say what happened, res what the registration found.
 int focus_any_frame(focus_any_t *a, const uint8_t *img, int iw, int ih, float gamma, int mesh, uint8_t *blocks, uint8_t *ok, int held, ob_result_t *res);
 // ai: The most blocks a frame this receiver finishes can hold: the most any sub-channel count whose picture fits nmax
 // ai: carries under the format's rate profile (focus.h focus_blocks_for).

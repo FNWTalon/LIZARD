@@ -3,10 +3,10 @@
  * ai:     frames 0000.gray on, w x h grey bytes each: a recording, or paint's) pushed at 60 frames a second through
  * ai:     liz_receiver, laps over it until its file is whole and verified (the receiver's own BLAKE3 check against the
  * ai:     header's root), or 4 laps;
- * ai:   lizard_engine paint <run dir> [frames] [blocks]: a run made with the library alone (the project's recordings are
- * ai:     not published): a 400 kB file painted by liz_sender on the CPU (64 frames at the size 40, LIZARD-320, 38
- * ai:     blocks a frame, by default), each frame on white a quarter taller than it, the code in the centre square, as
- * ai:     the C test reads one;
+ * ai:   lizard_engine paint <assets> <run dir> [frames] [blocks]: a run made with the library alone (the project's
+ * ai:     recordings are not published): a 400 kB file painted by liz_sender on the CPU (64 frames at the size 40,
+ * ai:     LIZARD-320, 38 blocks a frame, by default; the frames go through the GPU's ring, so the assets too), each frame
+ * ai:     on white a quarter taller than it, the code in the centre square, as the C test reads one;
  * ai:   lizard_engine send <assets> <gpu|cpu|auto> [device]: a 3 MB file painted by liz_sender (LIZARD-480, two codes)
  * ai:     and every frame read back by liz_decode into a memory liz_rx: whole, its bytes and root the sender's.
  * ai: Exit 1 on a failure. The lab runs GPU jobs under its scripts/tools/gpulock.sh share. */
@@ -111,7 +111,7 @@ static void make_dirs(const char *dir) {
   if (*p) make_dir(p);
 }
 
-static int paint(const char *run, int frames, int blocks) {
+static int paint(const char *assets, const char *run, int frames, int blocks) {
   if (frames < 1) { printf("FAIL %d frames\n", frames); return 1; }
   const size_t bytes = 400000;
   uint8_t *data = malloc(bytes);
@@ -119,7 +119,7 @@ static int paint(const char *run, int frames, int blocks) {
   for (size_t i = 0; i < bytes; i++) { s ^= s << 13; s ^= s >> 7; s ^= s << 17; data[i] = (uint8_t)(s >> 32); }
   liz_sender *snd = liz_sender_new(data, bytes, "run.bin", "", 0);
   liz_format f = {blocks, LIZ_RING_DEFAULT, 60, 1};
-  if (!snd || liz_sender_configure(snd, &f, LIZ_PAINTER_CPU, 4, NULL, NULL) != LIZ_OK) {
+  if (!snd || liz_sender_configure(snd, &f, LIZ_PAINTER_CPU, 4, assets, NULL) != LIZ_OK) {
     printf("FAIL sender: %s\n", liz_last_error()); return 1;
   }
   liz_geometry g;
@@ -198,9 +198,9 @@ static int send(const char *assets, const char *painter, const char *device) {
 
 int main(int argc, char **argv) {
   if (argc >= 5 && !strcmp(argv[1], "receive")) return receive(argv[2], argv[3], argv[4], argc > 5 ? argv[5] : NULL);
-  if (argc >= 3 && !strcmp(argv[1], "paint")) return paint(argv[2], argc > 3 ? atoi(argv[3]) : 64, argc > 4 ? atoi(argv[4]) : 40);
+  if (argc >= 4 && !strcmp(argv[1], "paint")) return paint(argv[2], argv[3], argc > 4 ? atoi(argv[4]) : 64, argc > 5 ? atoi(argv[5]) : 40);
   if (argc >= 4 && !strcmp(argv[1], "send")) return send(argv[2], argv[3], argc > 4 ? argv[4] : NULL);
-  fprintf(stderr, "lizard_engine receive <assets> <run dir> <gpu|cpu|auto> [device] | paint <run dir> [frames] [blocks] |"
+  fprintf(stderr, "lizard_engine receive <assets> <run dir> <gpu|cpu|auto> [device] | paint <assets> <run dir> [frames] [blocks] |"
                   " send <assets> <gpu|cpu|auto> [device]\n");
   return 2;
 }

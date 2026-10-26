@@ -110,7 +110,6 @@ struct Elems {
 template <class T> T* h(jlong v) { return reinterpret_cast<T*>(v); }
 
 jstring version(JNIEnv* e, jclass) { return e->NewStringUTF(liz_version()); }
-jint abi(JNIEnv*, jclass) { return liz_abi(); }
 jboolean simd(JNIEnv*, jclass) { return liz_simd() ? JNI_TRUE : JNI_FALSE; }
 jint ringCells(JNIEnv* e, jclass, jint ring) { return ok(e, liz_ring_cells(ring)); }
 void geometry(JNIEnv* e, jclass, jint blocks, jint ring, jint fps, jint codes, jintArray out) {
@@ -423,7 +422,6 @@ jstring senderStats(JNIEnv* e, jclass, jlong v) { return e->NewStringUTF(liz_sen
 #define M(name, sig) {const_cast<char*>(#name), const_cast<char*>(sig), reinterpret_cast<void*>(name)}
 const JNINativeMethod METHODS[] = {
     M(version, "()Ljava/lang/String;"),
-    M(abi, "()I"),
     M(simd, "()Z"),
     M(ringCells, "(I)I"),
     M(geometry, "(IIII[I)V"),

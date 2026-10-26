@@ -22,8 +22,8 @@
 // blocks before the sender repeats one. 16 bits would repeat at 45%.
 // Why 14 bits of chunk. 16,383 chunks: 16 GiB at 1 MiB a chunk, 64 GiB at 4 MiB, 256 GiB at 16 MiB. A file of
 // several GB at a few MiB a chunk is two thousand or so.
-// Why the control range is at the top: chunk 0's ids are then 0 .. 2^18 - 1, the ids today's one-fountain file mode
-// sends, so a one-chunk file goes out under the ids it always had.
+// Why the control range is at the top: a data block's id is then its chunk and symbol as they are, chunk 0's
+// running 0 .. 2^18 - 1 from zero, and no data id has to step round a control one.
 // The header's id is the same for every transfer and a manifest block's for every transfer with that many chunks, so
 // a receiver that drops a block whose id it has seen misses the next file: a control block is new when its bytes are.
 //

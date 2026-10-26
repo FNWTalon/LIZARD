@@ -1,4 +1,5 @@
-// JS face of build/ob.wasm for the harness.
+// The JS face of the codec's own exports (src/wasm.c) in the library's WebAssembly module, which build/ob.mjs names
+// (liblizard/build.sh: bindings/wasm/dist/lizard.mjs).
 import create from "../build/ob.mjs";
 
 // OB_BUILD names ANOTHER build's ob.mjs, as a path relative to liblizard/, so a harness run can be held against a
@@ -10,11 +11,11 @@ import create from "../build/ob.mjs";
 // stops both demo pages before they run. The static import above is what the browser takes, and the dynamic one
 // is only ever reached under node with the variable set.
 const ALT = typeof process !== "undefined" && process.env && process.env.OB_BUILD;
-let M, createFn;
-async function loader() {
-  createFn ??= ALT ? (await import(`../${ALT}`)).default : create;
-  return createFn;
-}
+let M, base;
+// ai: The default build's instance, one a worker or a script: the codec's exports and Wirehair's and zstd's
+// ai: (sim/fountain.mjs, sim/zstd.mjs) are one module since 2026-10-25, so they share it. OB_BUILD's module (an A/B) is
+// ai: init()'s alone; the shims stay the default build's (a build from before has none).
+export function baseModule() { return (base ??= create()); }
 // The margin the codec paints round the frame, in modules (src/focus.h FOCUS_QUIET), read from the codec by init(): a
 // live binding, undefined until then. Not a top-level await: a worker whose imports await loses the messages that
 // arrive meanwhile (lizard-web/recv-worker.mjs read nothing that way), and a page that only wants the arithmetic would pay
@@ -22,7 +23,7 @@ async function loader() {
 export let QUIET;
 export async function init() {
   if (!M) {
-    M = await (await loader())();
+    M = ALT ? await (await import(`../${ALT}`)).default() : await baseModule();
     // ai: the camera's report's lab switch (LIZ_LENS=axis, src/focus.h focus_lens_set: the lens model without the
     // ai: report), which the wasm has no environment to read: handed in at load, as the native hosts read it from theirs
     const lens = typeof process !== "undefined" && process.env ? process.env.LIZ_LENS : null;
@@ -43,7 +44,7 @@ const setAxis = (axis, lens) => {
 };
 
 // Stage times since the last call, ms, summed over the decodes in between (slots: PROF_* in src/internal.h).
-const STAGES = { luma: [0], binarize: [1], finder: [2], mesh: [3], sample: [13], demap: [14, 16], fft: [15], ldpc: [17] };
+const STAGES = { luma: [0], binarize: [1], finder: [2], mesh: [3], sample: [4], demap: [5, 7], fft: [6], ldpc: [8] };
 export function prof() {
   const out = {};
   for (const [name, slots] of Object.entries(STAGES)) out[name] = slots.reduce((t, i) => t + M._ob_prof(i), 0);
@@ -105,7 +106,7 @@ export class FocusAny {
     this.pImg = 0; this.imgCap = 0;
   }
   // ai: held: the version field (sub-channels / 8) of the last word the caller read, 0 for none; a frame whose own word
-  // ai: does not read is decoded at it. Returns n (blocks decoded), ring (the ring that registered, 0 to 3, or -1),
+  // ai: does not read is decoded at it. Returns n (blocks decoded), ring (the ring that registered, 0 to 2, or -1),
   // ai: pictureN (the picture finished, 0 for none), held (whether the held configuration stood in), fmt (the word this
   // ai: frame read, or null), builds (pictures built since the setup), ok and blocks (as many as the finished version's own codec carries,
   // ai: its rate profile's blocks), pilot (what the pilots read: { r, sd, r2, sd2, blocks }, or null). rgba: img is a
@@ -120,46 +121,38 @@ export class FocusAny {
     return { n, ring: M._focus_any_which(), pictureN: M._focus_any_n(), held: !!M._focus_any_held(), builds: M._focus_any_builds?.() ?? 0, found: M.HEAP32[r >> 2],
       quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
       fmt: Focus.fmtOf(M._focus_any_fmt()), ok: M.HEAPU8.slice(this.pOk, this.pOk + T), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + T * this.blockBytes),
-      msDetect: M.HEAPF32[(r + 180) >> 2], pilot: pilotOf(M._focus_any_pilot_get) };
+      msDetect: M.HEAPF32[(r + 52) >> 2], pilot: pilotOf(M._focus_any_pilot_get) };
   }
   // ai: This object's heap buffers; the codecs are the module's, replaced by the next FocusAny.
   free() { for (const k of ["pBlocks", "pOk", "pImg"]) { if (this[k]) M._free(this[k]); this[k] = 0; } this.imgCap = 0; }
 }
 
-// FOCUS (src/focus.c). mode 0 = the paper (RS per sub-channel), 1 = soft LLRs into LDPC.
+// The picture's codec (src/focus.c). mode: 1 (src/focus.h FOCUS_LDPC), the only code there is.
 export class Focus {
   // Sub-channels to a block by LDPC rate index (1/2, 2/3, 3/4, 7/8), chosen so every rate carries about the same payload: 640 bits a sub-channel.
   static SUBS = { 2: 12, 3: 9, 4: 8, 6: 7 };
   // tilt: dB by which the last sub-channel is sent below the first (src/focus.h). A sender's choice: a receiver need not be told.
   // tiers: [[rate, blocks], ...] from the lowest frequencies outwards, in place of subch and rate: runs of blocks at
   // different code rates, every block with the same payload, so one at a lower rate takes more sub-channels (SUBS).
-  // corner: side in modules of the solid corner mark (src/layout.h). Left out it is the default, 12 gapped;
-  // NEGATIVE asks for none, which is what the experiments that measure the mark's own effect pass. cornerFilled:
-  // keep depth 3 light through it, which is what makes it detectable. centre: one mark at the picture's
-  // middle instead of four at the corners, for archive/build-scratch-2026-09/mark_race.mjs.
-  // span: modules across the picture, 0 for the default ring (src/focus.h FOCUS_RING_DEFAULT), 2 B for ring B; another number is an experiment's override.
-  // bitmap: how a block's bits lie on its coefficients (src/focus.h FOCUS_BITMAP_*), left out for the format's own.
-  // A capture painted before 2026-09-23 was painted with none (0): sim/phy.mjs recordedSpec says so for a replay.
-  // ai: The border is always LIZARD's (ring, marks, band): FOCUS's own finder frame and its `thin` switch were deleted
-  // ai: on 2026-09-26, so a `thin` key is ignored. A build from before then (OB_BUILD, an A/B) still takes the switch
-  // ai: after span, and gets 1, the border every build since paints.
-  constructor(n, subch, mode, { clip = 2, span = 0, tilt = 0, tiers = null, corner = 0, cornerFilled = 0, centre = 0, edge = 0, trackAlt = 0, border = 0, bitmap } = {}) {
-    const was = M._focus_setup.length === 13 ? [1] : [];
+  // span: modules across the picture, 0 for the default ring (src/focus.h FOCUS_RING_DEFAULT), 2 B for ring B (any other
+  // span is refused).
+  // bitmap: how a block's bits lie on its coefficients, src/focus.h FOCUS_BITMAP (the only map): left out, or that
+  // number, which a spec may name; any other is refused. The border is always LIZARD's (ring, marks, band).
+  constructor(n, subch, mode, { clip = 2, span = 0, tilt = 0, tiers = null, bitmap } = {}) {
+    if (mode !== 1) throw new Error(`focus: mode ${mode}: 1 (soft LDPC) is the only code`);
     if (tiers) {
-      // ai: as many tiers as this build's focus_setup_tiers takes (three a tier, after ten), four in the format's
-      const slots = Math.floor((M._focus_setup_tiers.length - 10 - was.length) / 3) || 3;
-      if (tiers.length > slots) throw new Error(`focus: ${tiers.length} tiers, this build takes ${slots}`);
-      const a = [...tiers, ...Array(slots).fill([0, 0])].slice(0, slots).flatMap(([r, b]) => [r, b, b ? Focus.SUBS[r] : 0]);
-      this.blockBytes = M._focus_setup_tiers(n, clip, span, ...was, tilt, corner, cornerFilled, centre, edge, trackAlt, border, ...a);
+      // ai: four tiers a setup (src/focus.h FOCUS_TIERS), three numbers each, after n, clip, span and tilt
+      if (tiers.length > 4) throw new Error(`focus: ${tiers.length} tiers, a setup takes 4`);
+      const a = [...tiers, ...Array(4).fill([0, 0])].slice(0, 4).flatMap(([r, b]) => [r, b, b ? Focus.SUBS[r] : 0]);
+      this.blockBytes = M._focus_setup_tiers(n, clip, span, tilt, ...a);
     }
-    else this.blockBytes = M._focus_setup(n, subch, mode, clip, span, ...was, tilt, corner, cornerFilled, centre, edge, trackAlt, border);
+    else this.blockBytes = M._focus_setup(n, subch, clip, span, tilt);
     if (this.blockBytes < 0) throw new Error(`focus ${n}/${tiers ? JSON.stringify(tiers) : subch}/${mode} rejected`);
-    // A build from before the bit map (OB_BUILD, an A/B) has no switch and paints with none.
-    if (bitmap !== undefined && mode === 1 && M._focus_bitmap_set && M._focus_bitmap_set(bitmap)) throw new Error(`bit map ${bitmap} rejected`);
-    this.bitmap = mode === 1 && M._focus_bitmap_get ? M._focus_bitmap_get() : 0;
+    this.bitmap = M._focus_bitmap_get();
+    if (bitmap !== undefined && bitmap !== this.bitmap) throw new Error(`bit map ${bitmap} rejected: the codec's is ${this.bitmap}`);
     this.subch = M._focus_subch();
-    this.blocks = M._focus_blocks(); this.side = M._focus_side(); this.cell = M._focus_cell ? M._focus_cell() : 0;   // samples a module
-    this.quiet = M._focus_quiet ? M._focus_quiet() : undefined;   // the margin the codec paints, modules (src/focus.h FOCUS_QUIET)
+    this.blocks = M._focus_blocks(); this.side = M._focus_side(); this.cell = M._focus_cell();   // samples a module
+    this.quiet = M._focus_quiet();   // the margin the codec paints, modules (src/focus.h FOCUS_QUIET)
     this.pBlocks = M._malloc(this.blocks * this.blockBytes); this.pOk = M._malloc(this.blocks);
     this.pDrive = M._malloc(4 * this.side * this.side); this.pImg = 0; this.imgCap = 0;
   }
@@ -244,9 +237,8 @@ export class Focus {
     // locate pass needs it to know what to crop to.
     return { n, found: M.HEAP32[r >> 2], quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
       fmt: Focus.fmtOf(M._focus_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
-      // mark: the best corner or centre mark the finder saw, x, y and module size (src/ob.h), or null.
-      mark: (() => { const m = [200, 204, 208].map((o) => M.HEAPF32[(r + o) >> 2]); return m[2] > 0 ? m : null; })(),
-      msDetect: M.HEAPF32[(r + 180) >> 2], msSample: M.HEAPF32[(r + 184) >> 2], msDecode: M.HEAPF32[(r + 188) >> 2],
+      // mark: the best corner mark the finder saw, x, y and module size (src/ob.h), or null.
+      mark: markOf(r), ...msOf(r),
       // ai: pilot: what the block tails read (src/focus.h focus_pilot), { r, sd, r2, sd2, blocks }, or null
       pilot: pilotOf(M._focus_pilot_get) };
   }
@@ -354,8 +346,7 @@ export class Focus {
     const n = M._focus_rx_ldpc(this.pLlr, this.pEst, this.pBlocks, this.pOk), r = M._ob_last();
     return { n, found: M.HEAP32[r >> 2], quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
       fmt: Focus.fmtOf(M._focus_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
-      mark: (() => { const m = [200, 204, 208].map((o) => M.HEAPF32[(r + o) >> 2]); return m[2] > 0 ? m : null; })(),
-      msDetect: M.HEAPF32[(r + 180) >> 2], msSample: M.HEAPF32[(r + 184) >> 2], msDecode: M.HEAPF32[(r + 188) >> 2] };
+      mark: markOf(r), ...msOf(r) };
   }
   // The code's own shape and its layered schedule, which gpu/back/ldpc.mjs allocates against, plus which
   // sub-channels each block owns. Read once a configuration, not once a frame.
@@ -380,23 +371,6 @@ export class Focus {
     for (const q of [pD, pLay, pFirst, pCount]) M._free(q);
     return { code, first, count };
   }
-  // The decode finished from what a GPU back half left: packed payload bytes at `stride` a block, a verdict a
-  // block (1 passed, 2 declined, 3 never converged, 4 CRC), the LDPC's iteration counts and the gate's estimates.
-  // No registration is consumed; quad, orient and score say what was registered so ob_last reports it.
-  rxAssemble(bytes, stride, verdicts, its, est, quad, orient = 0, score = 1) {
-    const T = this.blocks;
-    this.pAsm ??= { bytes: M._malloc(T * 512), verd: M._malloc(T), its: M._malloc(T), est: M._malloc(4 * T), quad: M._malloc(32) };
-    const a = this.pAsm;
-    M.HEAPU8.set(bytes.subarray(0, T * stride), a.bytes);
-    M.HEAPU8.set(verdicts.subarray(0, T), a.verd);
-    for (let b = 0; b < T; b++) M.HEAPU8[a.its + b] = Math.max(-128, Math.min(127, its ? its[b] : 1)) & 255;
-    M.HEAPF32.set(est ? est.subarray(0, T) : new Float32Array(T), a.est >> 2);
-    M.HEAPF32.set(quad, a.quad >> 2);
-    const nb = M._focus_rx_assemble(a.bytes, stride, a.verd, a.its, a.est, this.pBlocks, this.pOk, a.quad, orient, score), r = M._ob_last();
-    return { n: nb, found: M.HEAP32[r >> 2], quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
-      fmt: Focus.fmtOf(M._focus_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
-      mark: null, msDetect: 0, msSample: 0, msDecode: 0 };
-  }
   // ai: The soft word values the last decode or rxAcquire read off the band (src/focus.h focus_fmt_soft): { cells, q }
   // ai: with q 4 x cells long, side * cells + cell, > 0 dark; null where the read stopped at its contrast floor.
   fmtSoft() {
@@ -416,10 +390,12 @@ export class Focus {
     const n = M._focus_rx_finish(this.pGrid ?? 0, this.pBlocks, this.pOk), r = M._ob_last();
     return { n, found: M.HEAP32[r >> 2], quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
       fmt: Focus.fmtOf(M._focus_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
-      mark: (() => { const m = [200, 204, 208].map((o) => M.HEAPF32[(r + o) >> 2]); return m[2] > 0 ? m : null; })(),
-      msDetect: M.HEAPF32[(r + 180) >> 2], msSample: M.HEAPF32[(r + 184) >> 2], msDecode: M.HEAPF32[(r + 188) >> 2] };
+      mark: markOf(r), ...msOf(r) };
   }
 }
+// ai: What ob_last holds (src/ob.h ob_result_t, its fields' offsets): the finder's best corner mark, and the stage times.
+const markOf = (r) => { const m = [64, 68, 72].map((o) => M.HEAPF32[(r + o) >> 2]); return m[2] > 0 ? m : null; };
+const msOf = (r) => ({ msDetect: M.HEAPF32[(r + 52) >> 2], msSample: M.HEAPF32[(r + 56) >> 2], msDecode: M.HEAPF32[(r + 60) >> 2] });
 // What ob_test_sample and focus_rx_acquire write: H, g0, step, the mesh nodes (OB_MAX_NODES = 40 each way) and
 // their shifts, the decoder's gamma table, and one trailing ms the test hook uses.
 Focus.STATE = 9 + 2 + 2 * 40 + 2 * 40 * 40 + 256 + 1;

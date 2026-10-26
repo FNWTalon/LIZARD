@@ -27,7 +27,7 @@ namespace lizard::sim {
 
 namespace {
 
-// ai: steadyNs's clock (camera/trigger.h: std::chrono::steady_clock, CLOCK_MONOTONIC here)
+// ai: steadyNs's clock (camera/clock.h: std::chrono::steady_clock, CLOCK_MONOTONIC here)
 int64_t nowNs() {
   using namespace std::chrono;
   return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();

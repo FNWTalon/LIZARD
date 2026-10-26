@@ -1,4 +1,4 @@
-# The Android app built from a clean checkout: the codec (Emscripten), naga, the GPU tree, then Gradle's release
+# The Android app built from a clean checkout: the codec (Emscripten), wgsl2spv (naga), the GPU tree, then Gradle's release
 # variant. Every run keeps the APK and its licenses as an artifact. On a tag, and where the repository holds the
 # signing key (the secret ANDROID_DEBUG_KEYSTORE, base64 of the keystore the release variant signs with), they are
 # also attached to that tag's release, made as a draft pre-release where none exists. Without the key the APK is
@@ -46,14 +46,13 @@ jobs:
           ~/emsdk/emsdk install "$EMSDK_VERSION"
           ~/emsdk/emsdk activate "$EMSDK_VERSION"
 
-      - name: naga and wgsl2spv (cached)
+      - name: wgsl2spv (cached)
         uses: actions/cache@v4
         with:
           path: |
-            liblizard/.tools
             liblizard/gen/wgsl2spv/target
             ~/.cargo/registry
-          key: naga-30.0.1-${{ runner.os }}-${{ hashFiles('liblizard/gen/wgsl2spv/Cargo.lock') }}
+          key: wgsl2spv-${{ runner.os }}-${{ hashFiles('liblizard/gen/wgsl2spv/Cargo.lock') }}
 
       - name: The NDK and CMake
         run: |
@@ -65,7 +64,7 @@ jobs:
           source ~/emsdk/emsdk_env.sh
           liblizard/build.sh
 
-      - name: naga
+      - name: wgsl2spv
         run: lizard-android/build.sh tools
 
       - name: The GPU tree

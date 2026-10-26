@@ -108,7 +108,13 @@ val fonts by tasks.registering(Sync::class) {
         into("fonts")
     }
 }
-sourceSets.main { resources.srcDir(bundle); resources.srcDir(buildInfo); resources.srcDir(fonts); kotlin.srcDir(layout.projectDirectory.dir("../liblizard/kotlin")) }
+// ai: liblizard/kotlin's plain-JVM code the Android app shares (Tar.kt, Readout.kt, Pick.kt); PhaseLock.kt, the Android
+// ai: camera's phase lock, is left out: no camera here takes a capture's timing
+sourceSets.main {
+    resources.srcDir(bundle); resources.srcDir(buildInfo); resources.srcDir(fonts)
+    kotlin.srcDir(layout.projectDirectory.dir("../liblizard/kotlin"))
+    kotlin.exclude("PhaseLock.kt")
+}
 
 // ai: after packageDeb: the native library's own Depends added (packaging/deb-deps.sh says which and why)
 val debDeps by tasks.registering(Exec::class) {

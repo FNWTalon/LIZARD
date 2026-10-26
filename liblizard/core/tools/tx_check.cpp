@@ -10,9 +10,10 @@
 // ai: The GPU's painter (2026-10-02, tx/gpu_painter.h), its kernels and manifest from LIZ_ASSETS (out, liblizard/out run from liblizard/, by default):
 // ai:   tx_check gputables <dir>   tx/send_tables.cpp's tables against gen/send_tables_ref.mjs's, every format in its
 // ai:       index, section by section (exact; the twiddles to a float's last bit)
-// ai:   tx_check gpucheck <subch> [ring 0-3, the 128's 2] [frames]   the GPU's frames of the test stream's blocks against
+// ai:   tx_check gpucheck <subch> [ring] [frames]   the GPU's frames of the test stream's blocks against
 // ai:       the C's paint at the same counts (the border to the byte, the square within a grey level: the web's auto
-// ai:       rule), then its GPU ms a frame over encodes of its most
+// ai:       rule), then its GPU ms a frame over encodes of its most; ring an index into src/focus.h FOCUS_RING, the
+// ai:       default ring (FOCUS_RING_DEFAULT, the 128) unset
 // ai:   LIZ_PAINTER=gpu|auto tx_check paint ...   the Sender painting on the GPU (or auto), every frame read blind as before
 // ai:   LIZ_CODES=2 [LIZ_GAP=<modules>] tx_check paint ...   two codes a frame (2026-10-03), the gap between them set
 // ai:       (2026-10-04, TxFormat.gap; GAP_MODULES unset), each read blind at its own offset
@@ -50,12 +51,6 @@ extern "C" {
 using namespace lizard;
 
 namespace {
-// ai: sim/lizard_pick.mjs N_FOR: the first picture size of at least 3 R_RING(subch)
-int nFor(int subch) {
-  const double r = std::sqrt(2 * 320.0 * subch / M_PI);
-  for (int n : {256, 384, 512, 768, 1024, 1536}) if (n >= 3 * r) return n;
-  return 1536;
-}
 struct Mapped {
   const uint8_t* p = nullptr;
   size_t n = 0;
@@ -80,7 +75,6 @@ std::vector<uint8_t> slurp(const std::string& path) {
   fclose(f);
   return b;
 }
-constexpr int RINGS[4] = {32, 64, 128, 256};   // ai: src/focus.c FOCUS_RING (the 96 in the 256's place until 2026-10-10)
 // ai: count frames of the test stream's blocks from id 0, blocks x 473 B each (id then SHAKE256 of it)
 std::vector<uint8_t> testBlocks(int count, int blocks) {
   std::vector<uint8_t> b(static_cast<size_t>(count) * blocks * 473);
@@ -122,7 +116,7 @@ int main(int argc, char** argv) {
     f.codes = argc > 5 ? atoi(argv[5]) : 1;
     std::vector<uint8_t> buf;
     auto to = [&](int subch) {
-      f.n = nFor(subch); f.subch = subch;
+      f.subch = subch;
       const double t0 = nowMs();
       const std::string e = s.configure(f);
       const double t1 = nowMs();
@@ -131,7 +125,7 @@ int main(int argc, char** argv) {
       while (!s.ready()) std::this_thread::sleep_for(std::chrono::microseconds(100));
       const double t2 = nowMs();
       for (int k = 0; k < 8; k++) while (!s.take(buf.data(), s.width() * 4)) std::this_thread::sleep_for(std::chrono::microseconds(100));
-      printf("LIZARD-%d (n %d) on the %s: configure %.1f ms, first frame %.1f ms after it\n", subch, f.n, s.painter().c_str(), t1 - t0, t2 - t1);
+      printf("LIZARD-%d (n %d) on the %s: configure %.1f ms, first frame %.1f ms after it\n", subch, s.n(), s.painter().c_str(), t1 - t0, t2 - t1);
     };
     const int a = atoi(argv[2]), b = atoi(argv[3]);
     to(a);
@@ -147,7 +141,7 @@ int main(int argc, char** argv) {
     // ai: LIZ_TYPE=<media type>: the header's type, as the apps send a file's (2026-10-10; "" before, so no check painted one)
     Sender s(test ? nullptr : m->p, test ? 0 : m->n, test ? "" : std::filesystem::path(argv[2]).filename().string(), getenv("LIZ_TYPE") ? getenv("LIZ_TYPE") : "");
     TxFormat f;
-    f.n = nFor(subch); f.subch = subch; f.span = getenv("LIZ_SPAN") ? atoi(getenv("LIZ_SPAN")) : 128; f.fps = 60; f.threads = threads;
+    f.subch = subch; f.span = getenv("LIZ_SPAN") ? atoi(getenv("LIZ_SPAN")) : 128; f.fps = 60; f.threads = threads;
     // ai: LIZ_CODES=2: two codes a frame, each read blind on its own (the desktop sender's 2:1, 2026-10-03)
     f.codes = getenv("LIZ_CODES") ? atoi(getenv("LIZ_CODES")) : 1;
     f.gap = getenv("LIZ_GAP") ? atoi(getenv("LIZ_GAP")) : GAP_MODULES;
@@ -196,12 +190,12 @@ int main(int argc, char** argv) {
     const double ms = nowMs() - t0;
     if (const char* ro = getenv("LIZ_RUN_OUT")) {
       nlohmann::json meta = {{"w", W}, {"h", W}, {"frames", frames * codes}, {"source", "tx_check paint"},
-                             {"config", {{"spec", {{"n", f.n}, {"subch", wantSubch}, {"span", f.span}}}}}};
+                             {"config", {{"spec", {{"n", s.n()}, {"subch", wantSubch}, {"span", f.span}}}}}};
       FILE* fo = fopen((std::string(ro) + "/meta.json").c_str(), "wb");
       if (fo) { const std::string m = meta.dump(); fwrite(m.data(), 1, m.size(), fo); fclose(fo); }
     }
     printf("paint: LIZARD-%d x %d n %d, %d x %d px (gap %d px), %d painters: %d frames, %ld of %ld blocks verified, words %d, %.1f frames a second taken\n",
-           wantSubch, codes, f.n, FW, W, gap, threads, frames, verified, total, words, 1000.0 * frames / ms);
+           wantSubch, codes, s.n(), FW, W, gap, threads, frames, verified, total, words, 1000.0 * frames / ms);
     printf("stats: %s\n", s.stats().c_str());
     if (!test) {
       rx->drain();
@@ -230,7 +224,7 @@ int main(int argc, char** argv) {
       const int subch = e["subch"], ring = e["ring"], n = e["n"];
       const std::string name = e["name"];
       focus_t f{};
-      if (focus_init(&f, n, subch, 1, 2.0f, 2 * RINGS[ring], 0.f, 0, 0, 0, 0, 0, 0)) { printf("FAIL %s: the codec refused it\n", name.c_str()); bad++; continue; }
+      if (ring < 0 || ring >= FOCUS_RINGS || focus_init(&f, n, subch, 2.0f, 2 * FOCUS_RING[ring], 0.f)) { printf("FAIL %s: the codec refused it\n", name.c_str()); bad++; continue; }
       focus_fmt_fps(&f, 60);
       SendTables t;
       const std::string te = sendTables(f, k, 4, t, e.value("codes", 1));
@@ -262,17 +256,18 @@ int main(int argc, char** argv) {
     return bad ? 1 : 0;
   }
   if (mode == "gpucheck" && argc >= 3) {
-    const int subch = atoi(argv[2]), ring = argc > 3 ? atoi(argv[3]) : 2, frames = argc > 4 ? atoi(argv[4]) : 8, codes = argc > 5 ? atoi(argv[5]) : 1;
+    const int subch = atoi(argv[2]), ring = argc > 3 ? atoi(argv[3]) : FOCUS_RING_DEFAULT, frames = argc > 4 ? atoi(argv[4]) : 8, codes = argc > 5 ? atoi(argv[5]) : 1;
+    if (ring < 0 || ring >= FOCUS_RINGS) { printf("FAIL ring %d: an index of FOCUS_RING, 0 to %d\n", ring, FOCUS_RINGS - 1); return 1; }
     std::unique_ptr<GpuPainter> g;
     try { g = GpuPainter::create(assets(), [](const std::string& m) { printf("%s\n", m.c_str()); }); }
     catch (const std::exception& e) { printf("FAIL no GPU painter: %s\n", e.what()); return 1; }
-    const std::string ce = g->configure(nFor(subch), subch, 2 * RINGS[ring], 60, 4, codes);
+    const std::string ce = g->configure(subch, 2 * FOCUS_RING[ring], 60, 4, codes);
     if (!ce.empty()) { printf("FAIL configure: %s\n", ce.c_str()); return 1; }
     const int V = subch / 8 * codes, R = g->frames();
     const auto blocks = testBlocks(std::max(frames, R), V);
     const auto c = g->check(blocks.data(), frames);
     printf("check, %d frames of LIZARD-%d x %d in the %d ring on %s: border %ld pixels apart, the square %ld pixels apart, at most %d levels: %s\n",
-           frames, subch, codes, RINGS[ring], g->device().c_str(), c.borderDiff, c.squareDiff, c.squareMax, c.ok ? "ok" : "FAILED");
+           frames, subch, codes, FOCUS_RING[ring], g->device().c_str(), c.borderDiff, c.squareDiff, c.squareMax, c.ok ? "ok" : "FAILED");
     std::vector<std::vector<uint8_t>> out(R);
     double gpu = 0, wall = 0;
     const int encodes = 16;
@@ -308,13 +303,13 @@ int main(int argc, char** argv) {
     const int subch = atoi(argv[2]), frames = argc > 3 ? atoi(argv[3]) : 32;
     Sender s(nullptr, 0, "", "");
     TxFormat f;
-    f.n = nFor(subch); f.subch = subch; f.span = 128; f.fps = 60; f.threads = 1;
+    f.subch = subch; f.span = 128; f.fps = 60; f.threads = 1;
     if (!s.configure(f).empty()) return 1;
     std::vector<uint8_t> rgba(static_cast<size_t>(s.side()) * s.side() * 4);
     const double t0 = nowMs();
     for (int k = 0; k < frames; k++) while (!s.take(rgba.data(), s.side() * 4)) std::this_thread::sleep_for(std::chrono::microseconds(100));
     const double ms = nowMs() - t0;
-    printf("bench: LIZARD-%d n %d, %d px a side: %.2f ms a frame on one painter (%s)\n", subch, f.n, s.side(), ms / frames, s.stats().c_str());
+    printf("bench: LIZARD-%d n %d, %d px a side: %.2f ms a frame on one painter (%s)\n", subch, s.n(), s.side(), ms / frames, s.stats().c_str());
     return 0;
   }
   fprintf(stderr, "usage: tx_check ids <file> <frames> <T> <out> | paint <file|-> <subch> [frames] [threads] [store] | bench <subch> [frames]\n");

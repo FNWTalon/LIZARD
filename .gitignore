@@ -16,7 +16,6 @@ build/
 /liblizard/gen/wgsl2spv/target/
 /liblizard/bindings/wasm/dist/
 /lizard-web/app/
-/lizard-android/.stash/
 .gradle/
 .kotlin/
 local.properties
@@ -33,8 +32,6 @@ __pycache__/
 # Lab tools for one phone and one desk: they need the lab's recordings, scripts/ or a rig unit
 /server.sh
 /lizard-web/rig.sh
-/lizard-web/check_gpu_worker.mjs
-/lizard-web/check_gpu_worker.html
 /lizard-android/tools/phone/
 /liblizard/test/neon_check.sh
 /liblizard/test/neon_frames.mjs

@@ -11,10 +11,10 @@ const U = globalThis.GPUBufferUsage;
 export const REC_WORDS = 121;
 export const REC_BYTES = 4 * REC_WORDS;
 
-// ai: sizes[s] = { n, subch, blocks } at the size's index (sel[f].z), null where not served. cap: records the result
-// ai: buffer holds a batch (0: B x blocksMax, every block of every frame).
-export async function build(device, { B, sizes, cap = 0 }) {
-  const dims = derived(sizes, { B, cap }), { served, blocksMax, recCap } = dims;
+// ai: sizes[s] = { n, subch, blocks } at the size's index (sel[f].z), null where not served. REC holds every block of
+// ai: every frame (B x blocksMax records).
+export async function build(device, { B, sizes }) {
+  const dims = derived(sizes, { B }), { served, blocksMax, recCap } = dims;
   const bytes = { V: 4 * B * blocksMax, ITS: 4 * B * blocksMax, REC: 4 + REC_BYTES * recCap };
   return {
     B, sizes, served, dims, blocksMax, recCap, bytes,
@@ -30,7 +30,7 @@ export async function build(device, { B, sizes, cap = 0 }) {
 }
 
 // The records of one readback laid out a block: REC bytes (count first) to per frame verdict, iterations and
-// payload arrays the C's focus_assemble takes (Focus.rxAssemble). Frames beyond those in the batch are ignored.
+// payload arrays. Frames beyond those in the batch are ignored.
 export function unpackRecords(recBytes, vWords, itsWords, { B, blocksMax, recCap }) {
   const dv = new DataView(recBytes.buffer, recBytes.byteOffset, recBytes.byteLength);
   const count = Math.min(dv.getUint32(0, true), recCap);

@@ -46,7 +46,7 @@
 #include "camera/backends.h"
 #include "camera/camera.h"
 #include "camera/mf_source.h"
-#include "camera/trigger.h"
+#include "camera/clock.h"
 #include "json.hpp"
 #include "rx_session.h"
 #include "sim/fake_mf.h"

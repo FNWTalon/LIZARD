@@ -79,6 +79,17 @@ void throwJava(JNIEnv* e, const char* cls, const std::string& msg) {
   if (c) e->ThrowNew(c, msg.c_str());
 }
 
+// ai: a message as a JSON string's contents: quotes and backslashes escaped, control characters as spaces
+std::string jsonText(const std::string& s) {
+  std::string q;
+  for (const char ch : s) {
+    if (ch == '"' || ch == '\\') { q += '\\'; q += ch; }
+    else if (static_cast<unsigned char>(ch) < 0x20) q += ' ';
+    else q += ch;
+  }
+  return q;
+}
+
 }  // namespace
 
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
@@ -114,14 +125,14 @@ static void applyDebugEnv() {
   }
 }
 
+// ai: the precision is the config's default, auto (the decoder times the classifiers' forms on its first batch)
 extern "C" JNIEXPORT jlong JNICALL Java_dev_lizard_receiver_Native_create(JNIEnv* e, jclass, jstring assets,
-    jstring cacheDir, jstring storeDir, jstring decoder, jstring precision, jstring layout) {
+    jstring cacheDir, jstring storeDir, jstring decoder, jstring layout) {
   lizard::ReceiverConfig c;
   c.assets = str(e, assets);
   c.cacheDir = str(e, cacheDir);
   c.storeDir = str(e, storeDir);
   c.decoder = str(e, decoder);
-  c.precision = str(e, precision);
   c.layout = str(e, layout);
   applyDebugEnv();
   c.log = [](const std::string& s) { LOGI("%s", s.c_str()); };
@@ -236,20 +247,16 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_replayEnd(J
   const std::string why = (*p)->error();
   delete p;
   if (n < 0) { throwJava(e, "java/lang/IllegalStateException", why); return nullptr; }
-  std::string quoted;
-  for (const char ch : why) {
-    if (ch == '"' || ch == '\\') { quoted += '\\'; quoted += ch; }
-    else if ((unsigned char)ch < 0x20) quoted += ' ';
-    else quoted += ch;
-  }
-  const std::string out = "{\"frames\":" + std::to_string(n) + ",\"bytes\":" + std::to_string(bytes) + ",\"error\":\"" + quoted + "\"}";
+  const std::string out = "{\"frames\":" + std::to_string(n) + ",\"bytes\":" + std::to_string(bytes) + ",\"error\":\"" + jsonText(why) + "\"}";
   return e->NewStringUTF(out.c_str());
 }
 
 // ai: The sender (2026-10-01; liblizard/core/tx/sender.h): a handle is a Tx, the
 // ai: Sender over the picked file mapped read-only (the app copies the document into its cache first), or over nothing
-// ai: for the test stream; each frame goes straight into the SurfaceView's window, its buffers sized to the painted
-// ai: frame and scaled to the view by the compositor.
+// ai: for the test stream. On Android 13 and up each frame is posted for its vsync (txPost: the GPU ring, GpuRing, or
+// ai: the CPU-copied Ring); below 13, and where the device or the surface refuses that present, each frame goes into
+// ai: the SurfaceView's window (txPresent), its buffers sized to the painted frame and scaled to the view by the
+// ai: compositor.
 namespace {
 // ai: The vsync-locked present (2026-10-02). Android never
 // ai: tears, but a buffer posted into the window from the main thread is shown at whichever refresh the compositor
@@ -422,12 +429,12 @@ struct Tx {
   int fps = 0;                 // ai: the rate voted on the ring's surface: the configured one under VSync, else 0 (no vote)
   std::shared_ptr<Ring> ring;  // ai: the vsync-locked present's surface and buffers (none on the window path)
   int ringSide = 0, ringW = 0, ringFps = 0, dstW = 0, dstH = 0;
-  bool ringFailed = false;     // ai: no child surface or buffers here: the window path for this sender
+  bool ringFailed = false;     // ai: the vsync present refused here (txPost -1): the window's queue for this sender
   std::shared_ptr<GpuRing> gring;   // ai: the GPU-filled ring (GpuRing), where the device takes storage images on hardware buffers
   bool gpuExpand = false;      // ai: probeStorage's answer, at txPrepare
   uint64_t ahbUsage = 0;
   std::string assets;
-  std::string error;
+  std::string error;           // ai: why the vsync present was refused (txPostStats' error)
 };
 Tx* tx(jlong h) { return reinterpret_cast<Tx*>(h); }
 void dropRing(Tx* t) {
@@ -740,13 +747,13 @@ bool presentVsynced(Tx* t, int side, int width, int64_t vsync, int w, int h) {
     dropRing(t);
     auto r = std::make_shared<Ring>();
     r->sc = ASurfaceControl_createFromWindow(t->win, "lizard-send");
-    if (!r->sc) { t->ringFailed = true; return false; }
+    if (!r->sc) { t->error = "no child surface"; t->ringFailed = true; return false; }
     AHardwareBuffer_Desc d{};
     d.width = static_cast<uint32_t>(width); d.height = static_cast<uint32_t>(side); d.layers = 1;
     d.format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
     d.usage = AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE | AHARDWAREBUFFER_USAGE_COMPOSER_OVERLAY;
     r->slots.resize(4);
-    for (auto& x : r->slots) if (AHardwareBuffer_allocate(&d, &x.b)) { x.b = nullptr; t->ringFailed = true; return false; }
+    for (auto& x : r->slots) if (AHardwareBuffer_allocate(&d, &x.b)) { x.b = nullptr; t->error = "no hardware buffers for the ring"; t->ringFailed = true; return false; }
     t->ring = r; t->ringSide = side; t->ringW = width; t->dstW = t->dstH = 0;
   }
   if (!t->s->ready()) return false;
@@ -836,7 +843,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_dev_lizard_receiver_Native_txCreate(JNIE
 
 extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txError(JNIEnv* e, jclass) { return e->NewStringUTF(gTxError.c_str()); }
 
-// ai: The format to paint (n, sub-channels, span, the rate the word states, painters) and where (painter: 0 the CPU, 1
+// ai: The format to paint (sub-channels, span, the rate the word states, painters; the picture is the format's) and where (painter: 0 the CPU, 1
 // ai: the GPU, 2 auto; assets: the app's generated tree, the GPU's kernels and tables): "" or the codec's refusal.
 // ai: codes: 1, or 2 side by side for a receiver's 2:1 crop, gap modules apart (2026-10-05; the app sent one before)
 // ai: vsynced: the frames posted for their vsyncs (Send.kt, Android 13 on): with the GPU ring the painters keep no
@@ -845,9 +852,9 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txError(JNI
 // ai: is free again).
 // ai: vsync (2026-10-23, Send.kt SendState.vsync): the rate voted on the ring's surface, which moves the panel to a mode
 // ai: it divides; off, a vote of 0, the system's choice
-extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txConfigure(JNIEnv* e, jclass, jlong h, jint n, jint subch, jint span, jint fps, jint threads, jint painter, jstring assets, jint codes, jint gap, jboolean vsynced, jboolean vsync) {
+extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txConfigure(JNIEnv* e, jclass, jlong h, jint subch, jint span, jint fps, jint threads, jint painter, jstring assets, jint codes, jint gap, jboolean vsynced, jboolean vsync) {
   lizard::TxFormat f;
-  f.n = n; f.subch = subch; f.span = span; f.fps = fps; f.threads = threads; f.painter = painter; f.assets = str(e, assets); f.codes = codes; f.gap = gap;
+  f.subch = subch; f.span = span; f.fps = fps; f.threads = threads; f.painter = painter; f.assets = str(e, assets); f.codes = codes; f.gap = gap;
   f.aheadSecs = 1.0;
   f.aheadBytes = 96ull << 20;
   f.margin = 2;
@@ -872,24 +879,33 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txPrepare(J
 
 // ai: A picture due at the vsync `vsync` (its frame timeline, expected on screen at `expected` ns; `vsyncNs` the
 // ai: display's period): the next filled buffer of the GPU ring posted for it (postGpu), or on a device without the
-// ai: ring the CPU-copied present as before (presentVsynced). True when one was posted.
-extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_txPost(JNIEnv* e, jclass, jlong h, jobject surface, jlong vsync, jlong expected, jlong vsyncNs, jint w, jint hh) {
+// ai: ring the CPU-copied present (presentVsynced). 1 when one was posted, 0 when none was this vsync, -1 when the
+// ai: vsync present is refused here (no ring, child surface or buffers, or the ring's filler failed; why in
+// ai: txPostStats' error): its child surface let go, so the window's own queue (txPresent) shows, and refused for
+// ai: the rest of this sender.
+extern "C" JNIEXPORT jint JNICALL Java_dev_lizard_receiver_Native_txPost(JNIEnv* e, jclass, jlong h, jobject surface, jlong vsync, jlong expected, jlong vsyncNs, jint w, jint hh) {
   Tx* t = tx(h);
   const int side = t->s->side(), width = t->s->width();
-  if (!surface || !side || !width || w <= 0 || hh <= 0) return JNI_FALSE;
+  if (!surface || !side || !width || w <= 0 || hh <= 0) return 0;
   if (!t->surface || !e->IsSameObject(t->surface, surface)) {
     dropWindow(e, t);
     t->win = ANativeWindow_fromSurface(e, surface);
-    if (!t->win) return JNI_FALSE;
+    if (!t->win) return 0;
     t->surface = e->NewGlobalRef(surface);
   }
-  if (t->ringFailed) return JNI_FALSE;
-  if (t->gpuExpand) return postGpu(t, side, width, vsync, expected, vsyncNs, w, hh) ? JNI_TRUE : JNI_FALSE;
-  return presentVsynced(t, side, width, vsync, w, hh) ? JNI_TRUE : JNI_FALSE;
+  if (!t->ringFailed) {
+    const bool posted = t->gpuExpand ? postGpu(t, side, width, vsync, expected, vsyncNs, w, hh) : presentVsynced(t, side, width, vsync, w, hh);
+    if (posted) return 1;
+    if (!t->ringFailed) return 0;
+    __android_log_print(ANDROID_LOG_INFO, "lizard", "send: the vsync present refused: %s", t->error.c_str());
+  }
+  dropRing(t);
+  return -1;
 }
 
 // ai: The GPU ring's tally since the last call, JSON: posted (transactions), shown (present fences read), held
-// ai: ({vsyncs: pictures}), late, behind, filled (buffers waiting), slots, gpu (the ring in use), error.
+// ai: ({vsyncs: pictures}), late, behind, filled (buffers waiting), slots, gpu (the ring in use), error (why the vsync
+// ai: present was refused, "" while it is not: a failure of the ring's filler is met by the next post, txPost -1).
 extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txPostStats(JNIEnv* e, jclass, jlong h) {
   Tx* t = tx(h);
   std::string o = "{\"gpu\":" + std::string(t->gring ? "true" : "false");
@@ -902,22 +918,22 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txPostStats
          ",\"filled\":" + std::to_string(filled) + ",\"slots\":" + std::to_string(r.slots.size()) + ",\"held\":{";
     bool first = true;
     for (auto& [k, n] : r.held) { o += std::string(first ? "" : ",") + "\"" + std::to_string(k) + "\":" + std::to_string(n); first = false; }
-    o += "},\"error\":\"" + r.error + "\"";
+    o += "}";
     r.posts = r.shownN = r.late = r.behind = 0;
     r.held.clear();
   }
-  return e->NewStringUTF((o + "}").c_str());
+  return e->NewStringUTF((o + ",\"error\":\"" + jsonText(t->error) + "\"}").c_str());
 }
 
 // ai: The blocks a frame of subch sub-channels carries under the format's rate profile (src/focus.h focus_blocks_for),
 // ai: for the Blocks slider's figures before a configure
 extern "C" JNIEXPORT jint JNICALL Java_dev_lizard_receiver_Native_blocksFor(JNIEnv*, jclass, jint subch) { return focus_blocks_for(subch); }
 
-// ai: The next frame onto the surface, if it is painted: true when one was posted. On the main thread, at the display's
-// ai: pace (Send.kt's Choreographer); a surface other than the last one is taken up afresh. vsync: the frame timeline's
-// ai: id to present at (Android 13 on; the vsync-locked present, Ring above, into the view's w x h), or 0 for the
-// ai: window's own queue as before.
-extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_txPresent(JNIEnv* e, jclass, jlong h, jobject surface, jlong vsync, jint w, jint hh) {
+// ai: The next frame into the surface's own queue, if it is painted: true when one was posted. On the main thread, at
+// ai: the display's pace (Send.kt's frame callback: below Android 13, or where txPost refused the vsync present); a
+// ai: surface other than the last one is taken up afresh. The painters keep host frames for it (txConfigure's vsynced
+// ai: false).
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_txPresent(JNIEnv* e, jclass, jlong h, jobject surface) {
   Tx* t = tx(h);
   const int side = t->s->side(), width = t->s->width();
   if (!surface || !side || !width) return JNI_FALSE;
@@ -927,7 +943,6 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_txPresent(
     if (!t->win) return JNI_FALSE;
     t->surface = e->NewGlobalRef(surface);
   }
-  if (vsync > 0 && !t->ringFailed && w > 0 && hh > 0) return presentVsynced(t, side, width, vsync, w, hh) ? JNI_TRUE : JNI_FALSE;
   // ai: the window's own queue: its buffers the frame's size, stretched to the view, which is laid out at about its shape
   if (t->geom != side || t->geomW != width) {
     if (ANativeWindow_setBuffersGeometry(t->win, width, side, WINDOW_FORMAT_RGBA_8888)) return JNI_FALSE;

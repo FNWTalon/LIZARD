@@ -24,8 +24,8 @@ export async function senderSetup() {
   const { GAP_MODULES, sendTab } = await imp("gpu/encoder.mjs");
   const modules = { paint: paintSource(), tpose: tposeSource(), rsv: rsvSource(), rsh: rshSource(), rshCopy: rshSource({ copy: true }) };
   for (const n of SIZES) {
-    modules[`irows${n}`] = irowsSource({ n, prec: "f32" });
-    modules[`ipic${n}`] = ipicSource({ n, prec: "f32" });
+    modules[`irows${n}`] = irowsSource({ n });
+    modules[`ipic${n}`] = ipicSource({ n });
   }
   // ai: the codes from the codec (the wasm's, as the web's encoder reads them), in CODES' order: the paint's uniform
   // ai: names a tier by its place there
@@ -36,7 +36,7 @@ export async function senderSetup() {
   const manifest = {
     modules: Object.keys(modules).map((k) => `send_${k}`), sizes: SIZES, slots: SLOTS, paramsAt: PARAMS_AT,
     tposeTile: TPOSE_TILE, rsvThreads: RSV_THREADS, rshThreads: RSH_THREADS, blockBytes: 480, payload: PAYLOAD, clip: CLIP, gapModules: GAP_MODULES,
-    bitmap: rt.bitmap, codes: CODES.map(({ rate, subs }) => ({ rate, subs })), pw: Array.from(crcPowers(PAYLOAD)), tab: { blob: `blobs/${tabHash}.bin`, words: tab.length },
+    codes: CODES.map(({ rate, subs }) => ({ rate, subs })), pw: Array.from(crcPowers(PAYLOAD)), tab: { blob: `blobs/${tabHash}.bin`, words: tab.length },
   };
   return { modules, manifest, tab: { hash: tabHash, bytes: tabBytes } };
 }

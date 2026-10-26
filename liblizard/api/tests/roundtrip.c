@@ -1,5 +1,6 @@
 /* ai: The C API end to end, through lizard.h alone (2026-10-03):
- * ai:   1. every format (128 block counts x 4 rings x 1 or 2 codes): an encoder made, its geometry the arithmetic's;
+ * ai:   1. every format (127 block counts, LIZ_MIN_BLOCKS to LIZ_MAX_BLOCKS, x LIZ_RINGS rings x 1 or 2 codes): an
+ * ai:      encoder made, its geometry the arithmetic's; one block a frame refused;
  * ai:   2. the picker and the room against the web's (a table tests/pick_ref.mjs printed from sim/lizard_pick.mjs), when
  * ai:      its path is given;
  * ai:   3. the test stream in every ring, one code and two, painted and read back: every block verified, every frame the
@@ -38,7 +39,7 @@ static void formats(void) {
   int made = 0;
   for (int codes = 1; codes <= 2; codes++)
     for (int ring = 0; ring < LIZ_RINGS; ring++)
-      for (int b = 1; b <= LIZ_MAX_BLOCKS; b++) {
+      for (int b = LIZ_MIN_BLOCKS; b <= LIZ_MAX_BLOCKS; b++) {
         liz_format f = {b, ring, 60, codes};
         liz_geometry g, e;
         liz_encoder *enc = liz_encoder_new(&f);
@@ -46,12 +47,15 @@ static void formats(void) {
         if (!enc) continue;
         CHECK(liz_geometry_of(&f, &g) == LIZ_OK && liz_encoder_geometry(enc, &e) == LIZ_OK && !memcmp(&g, &e, sizeof g),
               "LIZARD-%d ring %d: geometry", 8 * b, ring);
-        CHECK(g.width == codes * g.side + (codes - 1) * g.gap && g.frame_blocks == codes * liz_blocks_for(b) && liz_blocks_for(b) >= 1 && liz_blocks_for(b) <= b, "LIZARD-%d: frame size", 8 * b);
+        CHECK(g.width == codes * g.side + (codes - 1) * g.gap && g.frame_blocks == codes * liz_blocks_for(b) && liz_blocks_for(b) >= 2 && liz_blocks_for(b) <= b, "LIZARD-%d: frame size", 8 * b);
         liz_encoder_free(enc);
         made++;
       }
   liz_format bad = {0, 0, 60, 1};
   CHECK(!liz_encoder_new(&bad) && liz_last_error()[0], "a format of 0 blocks refused, with a message");
+  liz_format one = {1, 0, 60, 1};
+  CHECK(!liz_encoder_new(&one) && liz_last_error()[0], "a format of 1 block (LIZARD-8) refused, with a message");
+  CHECK(liz_blocks_for(1) == 0 && liz_room_for(1, 0) < 0 && liz_pick(4000, 4000, 1, 0, 1) < 0, "one block is no format");
   printf("formats: %d encoders made, their geometry the arithmetic's\n", made);
 }
 
@@ -84,7 +88,7 @@ static void picker(const char *path) {
 }
 
 /* ai: a frame painted, then read as a camera frame would hold it: on white, a quarter taller than the frame (a symbol cut
- * ai: to its 2-module margin is missed now and then, 2 of 200 in the 32 ring, where a surround reads every one), one code
+ * ai: to its 2-module margin is missed now and then, where a surround reads every one), one code
  * ai: in a square read by its centre (layout 1), two in a 2:1 canvas read by its halves (layout 2) */
 static int read_frame(liz_decoder *d, const uint8_t *frame, const liz_geometry *g, int codes, int *held, uint8_t *verified,
                       uint8_t *canvas) {
@@ -234,8 +238,7 @@ static int dump(const char *dir) {
 
 int main(int argc, char **argv) {
   if (argc > 2 && !strcmp(argv[1], "--dump")) return dump(argv[2]);
-  printf("lizard %s, ABI %d, vector paths %d\n", liz_version(), liz_abi(), liz_simd());
-  CHECK(liz_abi() == LIZ_ABI, "the ABI the header names");
+  printf("lizard %s, vector paths %d\n", liz_version(), liz_simd());
   formats();
   if (argc > 1 && argv[1][0]) picker(argv[1]);
   liz_decoder *d = liz_decoder_new(0);

@@ -9,10 +9,9 @@
 // ai: block's edge, and a read clamped at the frame's edge lands on the pixel beside it, in the same block. Every mean
 // ai: is summed as the separate passes summed it (from 0, the upper row then the lower, each left then right, then a
 // ai: quarter), so the levels are theirs bit for bit (scripts/pages/gpu_selftest_stages.mjs hashes them).
-// ai: The grey levels, for the receiver's stats row (greyRange, greyMedian, greyClipHi, greyClipLo): a HIST_BINS-bin
-// ai: histogram of the middle half of the frame's crop, every second pixel each way, the pixels lizard-web/recv-worker.mjs
-// ai: and lizard-web/recv-gpu-worker.mjs levelsOf count on a luma frame, so a frame that came as a VideoFrame (F0: its luma
-// ai: never reaches the CPU) reports the same fields. Of the four pixels a level-1 pixel reads, the one on the
+// ai: The grey levels, for the native receiver (core/dec/front.h hist), whose camera frames never reach the CPU: a
+// ai: HIST_BINS-bin histogram of the middle half of the frame's crop, every second pixel each way, the pixels
+// ai: lizard-web/recv-worker.mjs counts on a luma frame. Of the four pixels a level-1 pixel reads, the one on the
 // ai: window's parity is counted in workgroup bins, then the bins a workgroup filled are added to the frame's. It writes
 // ai: only its own buffer: no decode stage reads it. Dispatched (ceil(W / 64), ceil(H / 64), frames); the histogram is
 // ai: cleared before each batch.

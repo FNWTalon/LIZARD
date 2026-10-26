@@ -5,21 +5,15 @@
 
 // W[j] = exp(-2 pi i j / rows), j < rows / 2. One table serves every stage: a stage of length len steps through it
 // by rows / len. Computed in double, which the old recurrence (one multiply per butterfly) was not.
-// st: the radix of each stage, the SHORTEST len first. Any factor of 2 or 4 left over by the radix goes first, so
-// every stage after it is the full radix. 512 is 8^3, so radix 8 divides it exactly; radix 4 takes it as 2 x 4^4.
-// ai: A size with a factor of 3 (384, 768, 1536) takes one radix-3 stage, the shortest, ahead of the powers of two,
-// ai: at either radix; every power of two keeps the schedule above.
+// st: the radix of each stage, the SHORTEST len first: 2 throughout, and a size with a factor of 3 (384, 768, 1536)
+// takes one radix-3 stage, the shortest, ahead of them.
 // swp: the input permutation as a list of row swaps. The digit reversal stops being its own inverse as soon as the
 // radices differ, so it cannot be applied by walking i < rev[i] the way bit reversal can; the plan works the swaps
 // out once, by putting the right row in each place in turn, and the transform just performs them.
-typedef struct { int rows, radix, nst, nswp; float *wr, *wi; int *swp; int st[16], len[16]; } plan_t;
+typedef struct { int rows, nst, nswp; float *wr, *wi; int *swp; int st[16], len[16]; } plan_t;
 // ai: each thread's own (a native receiver transforms on several): a plan is built on first use and a ninth size
 // ai: replaces the eighth, neither of which two threads could share
 static _Thread_local plan_t plans[8];
-static int radix_want = 2;
-
-void fft_set_radix(int r) { radix_want = r == 4 ? r : 2; }   // 8 once rows8x exists; do_stage's arrays are already sized for it
-int fft_get_radix(void) { return radix_want; }
 
 // ai: 2^k or 3 x 2^k: the sizes a stage list can be made of.
 static int size_ok(int rows) {
@@ -27,30 +21,27 @@ static int size_ok(int rows) {
   return rows >= 1 && !(rows & (rows - 1));
 }
 
-static int stage_list(int rows, int radix, int *st) {
-  int k = 0, bits = 0;
+static int stage_list(int rows, int *st) {
+  int k = 0;
   if (rows % 3 == 0) { st[k++] = 3; rows /= 3; }
-  for (int t = rows; t > 1; t >>= 1) bits++;
-  const int per = radix == 8 ? 3 : radix == 4 ? 2 : 1, lead = bits % per;
-  if (lead) st[k++] = 1 << lead;
-  for (int b = lead; b < bits; b += per) st[k++] = radix;
+  for (int t = rows; t > 1; t >>= 1) st[k++] = 2;
   return k;
 }
 
-static const plan_t *plan_for(int rows, int radix) {
+static const plan_t *plan_for(int rows) {
   if (!size_ok(rows)) return NULL;
   int slot = 0;
-  for (; slot < 8 && plans[slot].rows; slot++) if (plans[slot].rows == rows && plans[slot].radix == radix) return &plans[slot];
+  for (; slot < 8 && plans[slot].rows; slot++) if (plans[slot].rows == rows) return &plans[slot];
   if (slot == 8) slot = 7;   // more sizes than slots: the last one is rebuilt. FOCUS uses one size.
   plan_t *p = &plans[slot];
   free(p->wr); free(p->wi); free(p->swp);
-  p->rows = rows; p->radix = radix;
+  p->rows = rows;
   p->wr = malloc((size_t)(rows / 2 + 1) * sizeof(float)); p->wi = malloc((size_t)(rows / 2 + 1) * sizeof(float));
   p->swp = malloc((size_t)2 * rows * sizeof(int));
   int *rev = malloc((size_t)rows * sizeof(int)), *at = malloc((size_t)rows * sizeof(int)), *cur = malloc((size_t)rows * sizeof(int));
   if (!p->wr || !p->wi || !p->swp || !rev || !at || !cur) { free(rev); free(at); free(cur); p->rows = 0; return NULL; }
   for (int j = 0; j < rows / 2; j++) { double a = -2 * 3.14159265358979323846 * j / rows; p->wr[j] = (float)cos(a); p->wi[j] = (float)sin(a); }
-  p->nst = stage_list(rows, radix, p->st);
+  p->nst = stage_list(rows, p->st);
   for (int s = 0, L = 1; s < p->nst; s++) { L *= p->st[s]; p->len[s] = L; }
   // The input goes to its digit-reversed place: the digits of i in the stages' own radices, read back to front.
   for (int i = 0; i < rows; i++) {
@@ -141,77 +132,10 @@ static inline void rows4(float *r[4], float *m[4], int cols, float wr, float wi,
   }
 }
 
-// One radix-4 butterfly across four rows, every column: three complex multiplies where two fused radix-2 stages
-// spend four, and the rotation by -i inside the four-point core is a swap and a sign rather than a multiply. The
-// memory traffic is the same as rows4's. It is about 15% fewer real operations, not the 25% the multiply count
-// alone suggests: the adds outnumber the multiplies and do not shrink.
-// s is the sign of that internal rotation, +1 forward and -1 inverse, so no branch reaches the loop.
-static void rows4x(float *const r[4], float *const m[4], int cols, const float *w, float s, int unit) {
-  const float w1r = w[0], w1i = w[1], w2r = w[2], w2i = w[3], w3r = w[4], w3i = w[5];
-  int x = 0;
-#ifdef OB_SIMD
-  const v128_t vs = wasm_f32x4_splat(s), vns = wasm_f32x4_splat(-s);
-  // k = 0: every twiddle is 1 and the butterfly is the four-point core alone, no multiply at all. Worth its own
-  // path because it is one butterfly in h, and h is 2 in the shortest stage: half of them.
-  if (unit) {
-    for (; x + 4 <= cols; x += 4) {
-      const v128_t ar = wasm_v128_load(r[0] + x), ai = wasm_v128_load(m[0] + x);
-      const v128_t br = wasm_v128_load(r[1] + x), bi = wasm_v128_load(m[1] + x);
-      const v128_t cr = wasm_v128_load(r[2] + x), ci = wasm_v128_load(m[2] + x);
-      const v128_t dr = wasm_v128_load(r[3] + x), di = wasm_v128_load(m[3] + x);
-      const v128_t t0r = wasm_f32x4_add(ar, cr), t0i = wasm_f32x4_add(ai, ci), t1r = wasm_f32x4_sub(ar, cr), t1i = wasm_f32x4_sub(ai, ci);
-      const v128_t t2r = wasm_f32x4_add(br, dr), t2i = wasm_f32x4_add(bi, di), t3r = wasm_f32x4_sub(br, dr), t3i = wasm_f32x4_sub(bi, di);
-      const v128_t rr = wasm_f32x4_mul(vs, t3i), ri = wasm_f32x4_mul(vns, t3r);
-      wasm_v128_store(r[0] + x, wasm_f32x4_add(t0r, t2r)); wasm_v128_store(m[0] + x, wasm_f32x4_add(t0i, t2i));
-      wasm_v128_store(r[1] + x, wasm_f32x4_add(t1r, rr));  wasm_v128_store(m[1] + x, wasm_f32x4_add(t1i, ri));
-      wasm_v128_store(r[2] + x, wasm_f32x4_sub(t0r, t2r)); wasm_v128_store(m[2] + x, wasm_f32x4_sub(t0i, t2i));
-      wasm_v128_store(r[3] + x, wasm_f32x4_sub(t1r, rr));  wasm_v128_store(m[3] + x, wasm_f32x4_sub(t1i, ri));
-    }
-  } else
-  // Twiddled rows first and in pairs, so that b, d and their twiddles are done with before c and a are loaded.
-  // Holding all eight rows and all six twiddle splats at once is fourteen live vectors, which spills where there
-  // are sixteen registers, and that gave back more than the multiply saving.
-  for (; x + 4 <= cols; x += 4) {
-    v128_t t2r, t2i, t3r, t3i;
-    {
-      const v128_t br = wasm_v128_load(r[1] + x), bi = wasm_v128_load(m[1] + x);
-      const v128_t v1r = wasm_f32x4_splat(w1r), v1i = wasm_f32x4_splat(w1i);
-      const v128_t b2r = wasm_f32x4_sub(wasm_f32x4_mul(br, v1r), wasm_f32x4_mul(bi, v1i)), b2i = wasm_f32x4_add(wasm_f32x4_mul(br, v1i), wasm_f32x4_mul(bi, v1r));
-      const v128_t dr = wasm_v128_load(r[3] + x), di = wasm_v128_load(m[3] + x);
-      const v128_t v3r = wasm_f32x4_splat(w3r), v3i = wasm_f32x4_splat(w3i);
-      const v128_t d2r = wasm_f32x4_sub(wasm_f32x4_mul(dr, v3r), wasm_f32x4_mul(di, v3i)), d2i = wasm_f32x4_add(wasm_f32x4_mul(dr, v3i), wasm_f32x4_mul(di, v3r));
-      t2r = wasm_f32x4_add(b2r, d2r); t2i = wasm_f32x4_add(b2i, d2i); t3r = wasm_f32x4_sub(b2r, d2r); t3i = wasm_f32x4_sub(b2i, d2i);
-    }
-    const v128_t cr = wasm_v128_load(r[2] + x), ci = wasm_v128_load(m[2] + x);
-    const v128_t v2r = wasm_f32x4_splat(w2r), v2i = wasm_f32x4_splat(w2i);
-    const v128_t c2r = wasm_f32x4_sub(wasm_f32x4_mul(cr, v2r), wasm_f32x4_mul(ci, v2i)), c2i = wasm_f32x4_add(wasm_f32x4_mul(cr, v2i), wasm_f32x4_mul(ci, v2r));
-    const v128_t ar = wasm_v128_load(r[0] + x), ai = wasm_v128_load(m[0] + x);
-    const v128_t t0r = wasm_f32x4_add(ar, c2r), t0i = wasm_f32x4_add(ai, c2i), t1r = wasm_f32x4_sub(ar, c2r), t1i = wasm_f32x4_sub(ai, c2i);
-    const v128_t rr = wasm_f32x4_mul(vs, t3i), ri = wasm_f32x4_mul(vns, t3r);
-    wasm_v128_store(r[0] + x, wasm_f32x4_add(t0r, t2r)); wasm_v128_store(m[0] + x, wasm_f32x4_add(t0i, t2i));
-    wasm_v128_store(r[1] + x, wasm_f32x4_add(t1r, rr));  wasm_v128_store(m[1] + x, wasm_f32x4_add(t1i, ri));
-    wasm_v128_store(r[2] + x, wasm_f32x4_sub(t0r, t2r)); wasm_v128_store(m[2] + x, wasm_f32x4_sub(t0i, t2i));
-    wasm_v128_store(r[3] + x, wasm_f32x4_sub(t1r, rr));  wasm_v128_store(m[3] + x, wasm_f32x4_sub(t1i, ri));
-  }
-#endif
-  for (; x < cols; x++) {
-    const float ar = r[0][x], ai = m[0][x], br = r[1][x], bi = m[1][x], cr = r[2][x], ci = m[2][x], dr = r[3][x], di = m[3][x];
-    const float b2r = unit ? br : br * w1r - bi * w1i, b2i = unit ? bi : br * w1i + bi * w1r;
-    const float c2r = unit ? cr : cr * w2r - ci * w2i, c2i = unit ? ci : cr * w2i + ci * w2r;
-    const float d2r = unit ? dr : dr * w3r - di * w3i, d2i = unit ? di : dr * w3i + di * w3r;
-    const float t0r = ar + c2r, t0i = ai + c2i, t1r = ar - c2r, t1i = ai - c2i;
-    const float t2r = b2r + d2r, t2i = b2i + d2i, t3r = b2r - d2r, t3i = b2i - d2i;
-    const float rr = s * t3i, ri = -s * t3r;
-    r[0][x] = t0r + t2r; m[0][x] = t0i + t2i;
-    r[1][x] = t1r + rr;  m[1][x] = t1i + ri;
-    r[2][x] = t0r - t2r; m[2][x] = t0i - t2i;
-    r[3][x] = t1r - rr;  m[3][x] = t1i - ri;
-  }
-}
-
 // ai: One radix-3 butterfly across three rows, every column, for the sizes with a factor of 3. With b and c twiddled,
 // ai: t1 = b + c and t2 = b - c: out0 = a + t1, out1 = a - t1 / 2 - s i (sqrt 3 / 2) t2, out2 the same with + s i.
-// ai: s as in rows4x, +1 forward and -1 inverse. The vector and scalar loops do the same float ops in the same order.
+// ai: s is the sign of the rotation, +1 forward and -1 inverse, so no branch reaches the loop. The vector and scalar
+// ai: loops do the same float ops in the same order.
 static void rows3(float *const r[3], float *const m[3], int cols, const float *w, float s, int unit) {
   const float w1r = w[0], w1i = w[1], w2r = w[2], w2i = w[3], k = s * 0.86602540378443864676f, nk = -k;
   int x = 0;
@@ -246,7 +170,7 @@ static void rows3(float *const r[3], float *const m[3], int cols, const float *w
   }
 }
 
-// One stage of the mixed-radix schedule, over the rows [from, from + span). The short stages are run group by group
+// One stage of the mixed-radix schedule (2 or 3), over the rows [from, from + span). The short stages are run group by group
 // while a group sits in the first-level cache, exactly as the radix-2 schedule does.
 static void do_stage(const plan_t *p, float *re, float *im, int rows, int cols, int pitch, int inverse, float sgn, int s, int from, int span) {
   const int len = p->len[s], r = p->st[s], h = len / r, step = rows / len;
@@ -257,17 +181,15 @@ static void do_stage(const plan_t *p, float *re, float *im, int rows, int cols, 
       rows2(re + (size_t)(i0 + k) * pitch, im + (size_t)(i0 + k) * pitch, re + (size_t)(i0 + k + h) * pitch, im + (size_t)(i0 + k + h) * pitch, cols, w[0], w[1], k == 0);
       continue;
     }
-    float *r4[8], *m4[8];
-    for (int j = 0; j < r; j++) { r4[j] = re + (size_t)(i0 + k + j * h) * pitch; m4[j] = im + (size_t)(i0 + k + j * h) * pitch; }
-    for (int j = 1; j < r; j++) tw_of(p, rows, j * k * step, inverse, &w[2 * j - 2], &w[2 * j - 1]);
-    if (r == 3) rows3(r4, m4, cols, w, sgn, k == 0);
-    else rows4x(r4, m4, cols, w, sgn, k == 0);
+    float *r3[3], *m3[3];
+    for (int j = 0; j < 3; j++) { r3[j] = re + (size_t)(i0 + k + j * h) * pitch; m3[j] = im + (size_t)(i0 + k + j * h) * pitch; }
+    for (int j = 1; j < 3; j++) tw_of(p, rows, j * k * step, inverse, &w[2 * j - 2], &w[2 * j - 1]);
+    rows3(r3, m3, cols, w, sgn, k == 0);
   }
 }
 
-// radix 4 (and the leading radix-2 stage a size like 512 needs): fft_set_radix picks it, scripts/exp/fft_bench.mjs and
-// scripts/pages/fft.html time it. Same output as the radix-2 path to a few last bits, not to the byte.
-// ai: Every size with a factor of 3 runs here too, at either radix: its radix-3 stage has no place in the schedule below.
+// ai: The sizes with a factor of 3: their radix-3 stage has no place in the power-of-two schedule below. Same
+// ai: arithmetic as that schedule's butterflies, a stage a pass.
 static void fft_cols_mixed(const plan_t *p, float *re, float *im, int rows, int cols, int pitch, int inverse) {
   for (int s = 0; s < p->nswp; s++) {
     float *a = re + (size_t)p->swp[2 * s] * pitch, *b = re + (size_t)p->swp[2 * s + 1] * pitch;
@@ -285,9 +207,9 @@ static void fft_cols_mixed(const plan_t *p, float *re, float *im, int rows, int 
 }
 
 void fft_cols(float *re, float *im, int rows, int cols, int pitch, int inverse) {
-  const plan_t *p = plan_for(rows, radix_want);
+  const plan_t *p = plan_for(rows);
   if (!p) return;
-  if (p->radix != 2 || (rows & (rows - 1))) { fft_cols_mixed(p, re, im, rows, cols, pitch, inverse); return; }
+  if (rows & (rows - 1)) { fft_cols_mixed(p, re, im, rows, cols, pitch, inverse); return; }
   for (int s = 0; s < p->nswp; s++) {
     float *a = re + (size_t)p->swp[2 * s] * pitch, *b = re + (size_t)p->swp[2 * s + 1] * pitch;
     float *c = im + (size_t)p->swp[2 * s] * pitch, *d = im + (size_t)p->swp[2 * s + 1] * pitch;
@@ -326,13 +248,4 @@ void fft_cols(float *re, float *im, int rows, int cols, int pitch, int inverse) 
   }
   #undef ROW
   #undef WI
-}
-
-void fft2d(float *re, float *im, int n, int inverse) {
-  // Along y, turn the plane over, along y again (which was x), turn it back. Sixty-four columns at a time.
-  for (int pass = 0; pass < 2; pass++) {
-    for (int x0 = 0; x0 < n; x0 += 64) fft_cols(re + x0, im + x0, n, n - x0 < 64 ? n - x0 : 64, n, inverse);
-    for (int y = 0; y < n; y++) for (int x = y + 1; x < n; x++) { float t = re[y * n + x]; re[y * n + x] = re[x * n + y]; re[x * n + y] = t; t = im[y * n + x]; im[y * n + x] = im[x * n + y]; im[x * n + y] = t; }
-  }
-  if (inverse) { float s = 1.0f / ((float)n * n); for (int i = 0; i < n * n; i++) { re[i] *= s; im[i] *= s; } }
 }

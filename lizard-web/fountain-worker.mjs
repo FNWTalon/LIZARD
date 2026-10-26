@@ -46,7 +46,7 @@ class OpfsStore {
       if (h.kind !== "directory" || !(await hasFile(h, "header"))) await dir.removeEntry(name, { recursive: true }).catch(() => {});
     return new OpfsStore(dir);
   }
-  constructor(dir) { this.kind = "opfs"; this.keeps = true; this.dir = dir; this.cur = null; this.id = ""; this.h = new Map(); this.out = null; this.man = null; this.ver = null; this.rec = new Uint8Array(REC); this.n = 0; }
+  constructor(dir) { this.kind = "opfs"; this.keeps = true; this.dir = dir; this.cur = null; this.id = ""; this.h = new Map(); this.out = null; this.man = null; this.ver = null; this.rec = new Uint8Array(REC); }
   async handle(c) {
     let e = this.h.get(c);
     if (!e) { e = { h: await (await this.cur.getFileHandle(`c${c}`, { create: true })).createSyncAccessHandle(), size: 0 }; e.h.truncate(0); this.h.set(c, e); }
@@ -87,7 +87,6 @@ class OpfsStore {
     }
     return { found: true, manifest, verified, chunks };
   }
-  async begin(length) { return this.open(`t${this.n++}`, new Uint8Array(0), length); }
   // ai: the transfer in hand let go whole, its folder too
   async clear() { const id = this.id; this.closeAll(); if (id) await this.dir.removeEntry(id, { recursive: true }).catch(() => {}); }
   async park() { this.closeAll(); }
@@ -102,7 +101,6 @@ class OpfsStore {
   async drop(c) { const e = this.h.get(c); if (!e) return; e.h.close(); this.h.delete(c); await this.cur.removeEntry(`c${c}`).catch(() => {}); }
   async truncate(c, n) { const e = this.h.get(c); if (!e || e.size <= n * REC) return; e.h.truncate(n * REC); e.size = n * REC; }
   async writeOut(off, bytes) { this.out.h.write(bytes, { at: off }); }
-  async readOut(off, len) { const b = new Uint8Array(len); this.out.h.read(b, { at: off }); return b; }
   async noteManifest(m, bytes) {
     this.man ??= await this.sync("manifest");
     const r = new Uint8Array(REC); put32(r, 0, m); r.set(bytes.subarray(0, PAYLOAD), ID_BYTES);

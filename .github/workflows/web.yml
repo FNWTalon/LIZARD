@@ -42,12 +42,10 @@ jobs:
           ~/emsdk/emsdk install "$EMSDK_VERSION"
           ~/emsdk/emsdk activate "$EMSDK_VERSION"
 
-      - name: The codec, the fountain and the compression
+      - name: The codec, the fountain and the compression (one module)
         run: |
           source ~/emsdk/emsdk_env.sh
           liblizard/build.sh
-          liblizard/build.sh wirehair
-          liblizard/build.sh zstd
 
       - name: The web app
         run: liblizard/build.sh app

@@ -1,8 +1,8 @@
 // A: the picture to the spectrum's disc (gpu/back/DESIGN.md sections 1 to 3). Four shaders: GATE lists the batch's
 // frames by picture size and writes the indirect args; PASS1 transforms picture columns along y, two real columns
 // to a complex FFT, and leaves the column means and the detrend partials; REDUCE turns the partials into the five
-// surface coefficients; PASS2 transforms the kept rows along x and stores the disc, detrended. PASS1 comes in two
-// variants: one reads the sampler's grid, the fused one samples the frame itself (DESIGN section 12).
+// surface coefficients; PASS2 transforms the kept rows along x and stores the disc, detrended. PASS1 samples the frame
+// itself (DESIGN section 10).
 //
 // The FFT is Stockham, radix 8 (4 or 2 for the last stage), eight points a thread in registers, one exchange through
 // workgroup memory a stage. All stages read before any writes and write before any reads, so one buffer serves.
@@ -32,20 +32,21 @@ export function stagesOf(n) {
 const FRAME = /* wgsl */ `
 struct Frame { w: u32, h: u32, size: u32, valid: u32 }
 `;
-// ai: The per size uniform pass 1, reduce and pass 2 share (transform.mjs lane). p5 held the size's V until a frame's
-// ai: rows came from LISTS (listsRows, 2026-09-26); p11 pads to 48 B.
+// ai: The per size uniform pass 1, reduce and pass 2 share (transform.mjs lane), 48 B. Words 0, 4, 5, 10 and 11 are
+// ai: read by no pass (the grid pass 1's gridStride, the size's n, its V before listsRows) and written 0; the native
+// ai: host fills the struct by position (core/dec/front.cpp backLane).
 const PARAMS = /* wgsl */ `
-struct Params { gridStride: u32, yStride: u32, partStride: u32, size: u32, n: u32, p5: u32, m2: f32, sx2: f32, sq2: f32, sStride: u32, p10: u32, p11: u32 }
+struct Params { p0: u32, yStride: u32, partStride: u32, size: u32, p4: u32, p5: u32, m2: f32, sx2: f32, sq2: f32, sStride: u32, p10: u32, p11: u32 }
 `;
 
-// Per size: workgroups pass 1 takes a frame (n / CPW), the rows pass 2 takes (V), the blocks a frame (the slot B and C
-// ai: may dispatch from), and 0 where the size is not built: a frame whose size index is SLOTS or more, or names an
-// ai: unbuilt size, is left off every list. ARGS is u32 [SLOTS][12]: pass 1, reduce, pass 2, blocks.
+// Per size: workgroups pass 1 takes a frame (n / CPW), the rows pass 2 takes (V), the blocks a frame, and 0 where the
+// ai: size is not built: a frame whose size index is SLOTS or more, or names an unbuilt size, is left off every list.
+// ai: ARGS is u32 [SLOTS][9]: pass 1's, reduce's and pass 2's indirect dispatches.
 // ai: A frame's size is its picture slot, sel.z, which F8 sets from the version it decodes at (gpu/wgsl/word.mjs); a
 // ai: frame is listed only with sel.y = 1 + that version (a found frame with no word and nothing held has sel.y 0).
 // ai: V is the size's most rows; pass 2's slot of ARGS takes the rows its listed frames need (listsRows) instead.
-// With zero set the gate also zeroes the batch's counters, verdicts, iteration counts and record count, so the
-// composed chain needs no clearBuffer and can be appended to an open compute pass (back.mjs).
+// The gate also zeroes the batch's counters, verdicts, iteration counts and record count, so the composed chain needs
+// no clearBuffer and can be appended to an open compute pass (back.mjs).
 // ai: LISTS is u32 [SLOTS][1 + B], then (w, h) of every frame from word SLOTS (1 + B) (listsHead): the fused pass 1
 // ai: clamps its bilinear reads to the frame's own edge, and taking the size from here keeps that pass at 8 storage
 // ai: buffers.
@@ -60,7 +61,7 @@ struct Params { gridStride: u32, yStride: u32, partStride: u32, size: u32, n: u3
 // ai: stay a size's whole picture.
 // ai: Then from listsHead + 4 B each frame's ring (listsRing, sel.x): the fused pass 1 takes the pair's grid and the
 // ai: ring's lattice from its PIC by it (PICTURE).
-export const ARGS_WORDS = 12;
+export const ARGS_WORDS = 9;
 // ai: ARGS whole, u32 words: ARGS_WORDS a picture slot.
 export const argsWords = SLOTS * ARGS_WORDS;
 export const listsHead = (B) => SLOTS * (1 + B);
@@ -68,13 +69,13 @@ export const listsWords = (B) => listsHead(B) + 5 * B;
 export const listsBlocks = (B) => listsHead(B) + 2 * B;
 export const listsRows = (B) => listsHead(B) + 3 * B;
 export const listsRing = (B) => listsHead(B) + 4 * B;
-export const ARGS_SLOT = { pass1: 0, reduce: 3, pass2: 6, blocks: 9 };
+export const ARGS_SLOT = { pass1: 0, reduce: 3, pass2: 6 };
 // ai: The gate's uniform in u32 words: at[s] = (n / CPW, V, blocks, 0) a slot, then the rows table flat, entry
 // ai: c SLOTS + s the rows c blocks take at slot s (transform.mjs fills it), padded to whole vec4u. counts: block
 // ai: counts 0 to the largest built size's blocks.
 export const gateRowsAt = (c, s) => 4 * SLOTS + c * SLOTS + s;
 export const gateWords = (counts) => 4 * SLOTS + 4 * Math.ceil((counts * SLOTS) / 4);
-export function gateSource(B, { zero = false, blkStride = 0, counts } = {}) {
+export function gateSource(B, { blkStride, counts } = {}) {
   if (!(counts > 1)) throw new Error(`gate: rows table of ${counts} block counts`);
   return FRAME + /* wgsl */ `
 struct Gate { at: array<vec4u, ${SLOTS}>, rows: array<vec4u, ${Math.ceil((counts * SLOTS) / 4)}> }
@@ -83,19 +84,19 @@ struct Gate { at: array<vec4u, ${SLOTS}>, rows: array<vec4u, ${Math.ceil((counts
 @group(0) @binding(2) var<storage, read_write> lists: array<u32>;
 @group(0) @binding(3) var<storage, read_write> args: array<u32>;
 @group(0) @binding(4) var<uniform> G: Gate;
-${zero ? `@group(0) @binding(5) var<storage, read_write> counts: array<u32>;
+@group(0) @binding(5) var<storage, read_write> counts: array<u32>;
 @group(0) @binding(6) var<storage, read_write> V: array<u32>;
 @group(0) @binding(7) var<storage, read_write> ITS: array<u32>;
-@group(0) @binding(8) var<storage, read_write> rec: array<u32>;` : ``}
+@group(0) @binding(8) var<storage, read_write> rec: array<u32>;
 const B: u32 = ${B}u;
 const LS: u32 = ${B + 1}u;
 const SLOTS: u32 = ${SLOTS}u;
 const HEAD: u32 = ${listsHead(B)}u;
 @compute @workgroup_size(64)
 fn main(@builtin(local_invocation_index) t: u32) {
-${zero ? `  for (var i: u32 = t; i < ${8 * B}u; i += 64u) { counts[i] = 0u; }
+  for (var i: u32 = t; i < ${8 * B}u; i += 64u) { counts[i] = 0u; }
   for (var i: u32 = t; i < ${B * blkStride}u; i += 64u) { V[i] = 0u; ITS[i] = 0u; }
-  if (t == 0u) { rec[0] = 0u; }` : ``}
+  if (t == 0u) { rec[0] = 0u; }
   if (t != 0u) { return; }
   // ai: pass 2's workgroups a frame gather here as the frames are listed: the most rows any frame of the size needs.
   for (var s: u32 = 0u; s < SLOTS; s++) { lists[s * LS] = 0u; args[s * ${ARGS_WORDS}u + 6u] = 0u; }
@@ -125,7 +126,6 @@ ${zero ? `  for (var i: u32 = t; i < ${8 * B}u; i += 64u) { counts[i] = 0u; }
     args[a] = G.at[s].x; args[a + 1u] = 1u; args[a + 2u] = c;
     args[a + 3u] = 1u; args[a + 4u] = 1u; args[a + 5u] = c;
     args[a + 7u] = 1u; args[a + 8u] = c;
-    args[a + 9u] = G.at[s].z; args[a + 10u] = 1u; args[a + 11u] = c;
   }
 }
 `;
@@ -172,9 +172,9 @@ export const store = (prec) => ({
 // The stages after the first, for one or more FFTs side by side (lanes = [[registers, exchange buffer], ...]; the
 // lanes share every barrier and every twiddle). Stage s at Ns reads buf[j + r n / R], twiddles by
 // exp(-2 pi i r k / (Ns R)), k = j mod Ns, and writes buf[(j / Ns) Ns R + k + r Ns].
-// Twiddles (tw): "chain" reads the base twiddle from the table and gets the rest by multiplication (the default);
-// "table" reads every twiddle; "sincos" computes the base one. All three are measured in test_transform.mjs.
-export function laterStages(n, prec, twmode = "chain", lanes = [["v", "buf"]]) {
+// Twiddles: the base twiddle from the table, the rest by multiplication (reading every one, or computing the base,
+// measured slower, 2026-09-24).
+export function laterStages(n, prec, lanes = [["v", "buf"]]) {
   const { ld, st } = store(prec);
   const T = n / 8, stages = stagesOf(n);
   let Ns = stages[0], out = "";
@@ -190,13 +190,9 @@ export function laterStages(n, prec, twmode = "chain", lanes = [["v", "buf"]]) {
     for (let q = 0; q < per; q++) {
       const j = per === 1 ? "tid" : `(tid + ${q * T}u)`;
       out += `  {\n    let j: u32 = ${j};\n    let k: u32 = j & ${Ns - 1}u;\n`;
-      if (twmode === "sincos") out += `    let ang: f32 = -6.283185307179586 * f32(k) / ${Ns * R}.0;\n    let w1: vec2f = vec2f(cos(ang), sin(ang));\n`;
-      else out += `    let w1: vec2f = tw[k * ${step}u];\n`;
-      if (twmode === "table") { for (let r = 2; r < R; r++) out += `    let w${r}: vec2f = tw[k * ${r * step}u];\n`; }
-      else {
-        if (R >= 4) out += `    let w2: vec2f = cmul(w1, w1);\n    let w3: vec2f = cmul(w2, w1);\n`;
-        if (R === 8) out += `    let w4: vec2f = cmul(w2, w2);\n    let w5: vec2f = cmul(w4, w1);\n    let w6: vec2f = cmul(w3, w3);\n    let w7: vec2f = cmul(w4, w3);\n`;
-      }
+      out += `    let w1: vec2f = tw[k * ${step}u];\n`;
+      if (R >= 4) out += `    let w2: vec2f = cmul(w1, w1);\n    let w3: vec2f = cmul(w2, w1);\n`;
+      if (R === 8) out += `    let w4: vec2f = cmul(w2, w2);\n    let w5: vec2f = cmul(w4, w1);\n    let w6: vec2f = cmul(w3, w3);\n    let w7: vec2f = cmul(w4, w3);\n`;
       out += `    let d: u32 = (j - k) * ${R}u + k;\n`;
       for (const [v, buf] of lanes) {
         for (let r = 1; r < R; r++) out += `    ${v}[${q * R + r}] = cmul(${v}[${q * R + r}], w${r});\n`;
@@ -246,8 +242,8 @@ export const V8 = "array<vec2f, 8>(vec2f(0.0), vec2f(0.0), vec2f(0.0), vec2f(0.0
 // columns are 16 contiguous bytes of every strip row, so they come in as one vec4f load a row (the scalar version
 // touched the same 32 cache lines four times a row and pass 1 was 95% of the iGPU's time); the two pairs of a quad
 // are transformed side by side, so Y(v) for the four columns leaves as one 16 B store (f16) or two (f32).
-// ai: Params: gridStride (f32 a frame), yStride (complex a frame), partStride (vec4 a frame), the size index, n,
-// ai: m2 = mean of cx^2, sx2, sq2 and sStride.
+// ai: Params: yStride (complex a frame), partStride (vec4 a frame), the size index, m2 = mean of cx^2, sx2, sq2 and
+// ai: sStride.
 // ai: Rows 1 to R - 1 of Y are stored, R the frame's rows from LISTS (listsRows): the rows past it hold no
 // ai: coefficient of the blocks the frame decodes.
 // ai: A column's mean rides in its PART record's w (pass 2 reads it for row v = 0), so pass 1 binds no Y0.
@@ -263,13 +259,12 @@ struct Picture { ring: array<vec4f, ${RING_COUNT}>, lat: array<vec4f, ${(RING_CO
 @group(0) @binding(9) var<uniform> PIC: Picture;
 fn latAt(i: u32) -> f32 { return PIC.lat[i >> 2u][i & 3u]; }
 `;
-// ai: A fused sampler's head for frame f listed in `lists` (LISTS or LISTS2): its edge, map, ring's grid and lattice.
+// ai: A fused sampler's head for frame f listed in `lists` (LISTS): its edge, map, ring's grid and lattice.
 export const pictureHead = (lists, B) => `  let fw: i32 = i32(${lists}[${listsHead(B)}u + 2u * f]);\n  let fh: i32 = i32(${lists}[${listsHead(B)}u + 2u * f + 1u]);\n  let M: array<f32, 16> = maps[f];\n  let pr: vec4f = PIC.ring[${lists}[${listsRing(B)}u + f]];\n  let g0: f32 = pr.x;\n  let gstep: f32 = pr.y;\n  let nn: u32 = u32(pr.z);\n  let first: u32 = u32(pr.w);\n  let cn: Corners = corners(f, nn);\n  let lz: Lens = lensOf(f);\n`;
 // Workgroup memory pass 1 declares for a size: the two exchange buffers and 16 B a thread of partials.
 export const pass1WorkgroupBytes = (n, prec) => 2 * n * (prec === "f16" ? 4 : 8) + 16 * (n / 8);
-export function pass1Source({ n, prec, B, cpw = CPW, tw = "chain" }) {
-  if (cpw % 4) throw new Error(`pass 1 takes columns four at a time: cpw ${cpw}`);
-  const { ty, ld } = store(prec);
+export function pass1Source({ n, prec, B }) {
+  const cpw = CPW, { ty, ld } = store(prec);
   const T = n / 8, quads = cpw / 4, f16 = prec === "f16";
   const lanes = [["v0", "buf0"], ["v1", "buf1"]];
   let body = "";
@@ -304,7 +299,7 @@ export function pass1Source({ n, prec, B, cpw = CPW, tw = "chain" }) {
     body += `    }\n`;
     // Each column's mean comes out before the transform and travels on its own as Z(0) (DESIGN section 3).
     for (let r = 0; r < 8; r++) body += `    v0[${r}] = z[${r}].xy - mean.xy;\n    v1[${r}] = z[${r}].zw - mean.zw;\n`;
-    body += firstStage(prec, lanes) + laterStages(n, prec, tw, lanes);
+    body += firstStage(prec, lanes) + laterStages(n, prec, lanes);
     // Separate each pair by conjugate symmetry (src/focus.c unpack_turn), scaled by 1 / n, rows 1 .. V - 1.
     // ai: V is the frame's own rows (listsRows), read at the head.
     body += `    for (var vv: u32 = 1u + tid; vv < rowsF; vv += T) {\n`;
@@ -407,7 +402,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) tid: 
 // Pass 2 for one picture size: a workgroup takes row v of one frame (v = 0 from the column means, PART's w, in
 // f32), transforms it along x and stores its compact disc row, the detrend subtracted in the C's units before the
 // 1 / n^2.
-export function pass2Source({ n, prec, B, tw = "chain" }) {
+export function pass2Source({ n, prec, B }) {
   const { ty, ld } = store(prec);
   const T = n / 8, f16 = prec === "f16";
   return (f16 ? "enable f16;\n" : "") + PARAMS + /* wgsl */ `
@@ -443,7 +438,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) tid: 
     let ybase: u32 = f * P.yStride + (vv - 1u) * N;
     for (var r: u32 = 0u; r < 8u; r++) { v[r] = ${ld("yb", "ybase + tid + r * T")}; }
   }
-` + firstStage(prec) + laterStages(n, prec, tw) + /* wgsl */ `
+` + firstStage(prec) + laterStages(n, prec) + /* wgsl */ `
   let row: vec4u = rows.r[vv];
   let c0: vec4f = coef[f * 2u];
   let c1: vec4f = coef[f * 2u + 1u];

@@ -1,5 +1,5 @@
 // ai: The native transfer's check stream (liblizard/core/tools/xfer_check.cpp): a random multi-chunk file sent by the web's
-// ai: sender (liblizard/sim/xfer.mjs XferSender over Wirehair, liblizard/build/wirehair.mjs) through a lossy channel, written as
+// ai: sender (liblizard/sim/xfer.mjs XferSender over Wirehair, sim/fountain.mjs: the codec's module's) through a lossy channel, written as
 // ai: flat 473-byte blocks (the id little-endian, then 469 payload bytes), and the web's receiving chain run on the same
 // ai: stream as the reference: blockJudge (sim/phy.mjs) a frame of 40 blocks, the page's dedupe (lizard-web/recv.mjs take),
 // ai: the fountain worker's live-header rule (lizard-web/fountain-worker.mjs take) and XferReceiver in memory.

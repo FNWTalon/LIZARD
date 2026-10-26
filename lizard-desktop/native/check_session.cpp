@@ -10,9 +10,8 @@
 // ai: followed by the receiver's last log lines):
 // ai:   test         the test stream: within 10 s the state is test and blocks are verified, blocks a second printed;
 // ai:                the stats' camera line (null before a camera opens, then the camera's); over the 2.5 s after the
-// ai:                first read the frames the camera handed over (its own count) the frames the session handed the
-// ai:                receiver, the session's measured rate and the receiver's captured one rates some second of those
-// ai:                frames had; about 60 where the machine has the room
+// ai:                first read the session's measured rate and the receiver's captured one rates some second of the
+// ai:                camera's frames had by its own count; about 60 where the machine has the room
 // ai:   preview      on test's session: a picture of the crop's shape (the centre square), at most the side asked,
 // ai:                never enlarged, seq rising
 // ai:   1080         test on the full-HD camera (1920 x 1080 at 60, the sender page's code of size 60), the camera's
@@ -22,12 +21,6 @@
 // ai:   halves       2:1 with the screen's two codes (size 8 each, which a 480 x 480 half resolves): captures whose
 // ai:                two halves both read, and the preview 2:1
 // ai:   gpu          1080 on the GPU decoder: run only with LIZ_CHECK_GPU=1, under scripts/tools/gpulock.sh share
-// ai:   trigger      the simulated camera's software trigger: trigger(16,650,000) gives captures at their triggers'
-// ai:                deadlines, none stamped before the call, a whole number of periods apart exactly (one period,
-// ai:                16.65 ms, where the machine has the room, but for deadlines the trigger's clock skipped), a delay
-// ai:                of 3 ms exactly one capture delayed, 3 ms past them; the schedule begun again a millisecond before a deadline, and
-// ai:                from 33.3 ms just after one: its captures stamped after the call, on its grid, at their own
-// ai:                triggers (the trigger's latency as before)
 // ai:   reconfigure  a 1 MB file part in on 1:1, the receiver made again for 2:1 and back: the transfer goes on (one
 // ai:                header read, no resume) and finishes, byte-equal; with the file in, 2:1 and back keep it (file(),
 // ai:                the stats) and nothing is taken again
@@ -67,7 +60,7 @@
 #include <thread>
 #include <vector>
 
-#include "camera/trigger.h"
+#include "camera/clock.h"
 #include "checks.h"
 #include "json.hpp"
 #include "rx_session.h"
@@ -93,7 +86,7 @@ using json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
 // ai: A scene a case films (2026-10-25): its sim::parse keys and the simulated camera's free rate (camfps); spec its
-// ai: LIZ_CAMERA_SIM value, with a case's own keys after (file=, trigger=1, codes=)
+// ai: LIZ_CAMERA_SIM value, with a case's own keys after (file=, codes=)
 struct Cam {
   std::string scene;
   int fps = 60;
@@ -111,7 +104,7 @@ const Cam SMALL{"blocks=16 fps=30 hz=60 w=960 h=540"};
 const Cam PAIR{"blocks=8 codes=2 fps=30 hz=60 w=960 h=540"};
 const Cam HD{"blocks=60 fps=30 hz=60 w=1920 h=1080"};
 const std::string SCENE = SMALL.spec();   // ai: the LIZ_CAMERA_SIM value of the cases that film SMALL as it is
-const char* const CASES[] = {"test", "preview", "1080", "file", "halves", "gpu", "trigger", "reconfigure", "kept", "live", "soft"};
+const char* const CASES[] = {"test", "preview", "1080", "file", "halves", "gpu", "reconfigure", "kept", "live", "soft"};
 
 double since(Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); }
 void sleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
@@ -356,18 +349,18 @@ std::string previewHolds(RxSession& s, uint32_t fw, uint32_t fh, bool two, std::
   return "";
 }
 
-// ai: The rates a second of frames had, from their times (oldest first, from index `from` on): each stretch from a
-// ai: frame to the first frame a second or more after it, as the session's and the receiver's windows close, its frames
-// ai: after the first over its length; the least and the most (0 and 0 where no stretch is a second long).
-void secondRates(const std::vector<int64_t>& ns, size_t from, double& lo, double& hi) {
+// ai: The rates a second the camera's frames came at, from its own count read at each poll (time, frames; oldest
+// ai: first, from index `from` on): each stretch from a poll to the first poll a second or more after it, its frames
+// ai: over its length; the least and the most (0 and 0 where no stretch is a second long).
+void secondRates(const std::vector<std::pair<double, double>>& polls, size_t from, double& lo, double& hi) {
   lo = 1e300;
   hi = 0;
   size_t k = from;
-  for (size_t j = from; j < ns.size(); j++) {
+  for (size_t j = from; j < polls.size(); j++) {
     k = std::max(k, j + 1);
-    while (k < ns.size() && ns[k] - ns[j] < 1'000'000'000) k++;
-    if (k >= ns.size()) break;
-    const double rate = double(k - j) * 1e9 / double(ns[k] - ns[j]);
+    while (k < polls.size() && polls[k].first - polls[j].first < 1) k++;
+    if (k >= polls.size()) break;
+    const double rate = (polls[k].second - polls[j].second) / (polls[k].first - polls[j].first);
     lo = std::min(lo, rate);
     hi = std::max(hi, rate);
   }
@@ -376,11 +369,10 @@ void secondRates(const std::vector<int64_t>& ns, size_t from, double& lo, double
 
 // ai: The test stream read on `decoder` from `scene`; the preview checked on the same session where asked. The frames
 // ai: along the session (2026-10-25), from the first read to the end (2.5 s), whatever rate the machine lets the camera
-// ai: give: the camera's own count of frames handed over (its stats) the frames the session handed the receiver
-// ai: (captures(): each one's time), to within the 2 a poll can catch in flight; the session's measured rate and the
-// ai: receiver's captured rate each a rate some second of those frames had (secondRates over the span, within a frame
-// ai: and 3%: the session times a frame as it arrives, after its render, captures() as it was captured); and the rate
-// ai: about the camera's 60 where the machine renders the scene with room (Room).
+// ai: give: the session's measured rate and the receiver's captured rate each a rate some second of the camera's own
+// ai: count of frames handed over had (its stats read at each poll, secondRates over the span, within two frames and
+// ai: 3%: a poll reads the count a frame early or late at either end of a second); and the rate about the camera's 60
+// ai: where the machine renders the scene with room (Room).
 bool testStream(Run& r, const char* c, const std::string& decoder, const Cam& scene, bool preview) {
   const Room room = measure(scene);
   if (!room.why.empty()) return r.fail(c, "the scene's render was not measured: " + room.why);
@@ -396,16 +388,15 @@ bool testStream(Run& r, const char* c, const std::string& decoder, const Cam& sc
   if (!begin(*s, spec, fw, fh, why)) return r.fail(c, why, &log);
   const auto t0 = Clock::now();
   double read = -1, next = 1, readFrames = 0, at = 0;
-  // ai: the times of the frames the session handed the receiver, drained before each poll's stats
-  std::vector<int64_t> handed;
-  size_t readHanded = 0;
+  // ai: each poll's time and the camera's own count of frames handed over then
+  std::vector<std::pair<double, double>> polls;
+  size_t readPoll = 0;
   json j;
   while (since(t0) < 10) {
     sleepMs(100);
-    const std::vector<int64_t> v = s->captures(0);
-    for (size_t i = 0; i + 1 < v.size(); i += 2) handed.push_back(v[i]);
     j = statsOf(*s);
     at = since(t0);
+    polls.emplace_back(at, num(sub(j, "camera"), "frames"));
     const double total = num(sub(j, "totals"), "blocks");
     if (at >= next) {
       next += 1;
@@ -417,7 +408,7 @@ bool testStream(Run& r, const char* c, const std::string& decoder, const Cam& sc
     if (read < 0 && text(j, "state") == "test" && total > 0) {
       read = at;
       readFrames = num(sub(j, "camera"), "frames");
-      readHanded = handed.size();
+      readPoll = polls.size() - 1;
     }
     if (read >= 0 && at - read >= 2.5) break;
   }
@@ -427,16 +418,13 @@ bool testStream(Run& r, const char* c, const std::string& decoder, const Cam& sc
   if (text(cam, "id") != "sim:0" || !cam.value("streaming", false))
     return r.fail(c, "the stats' camera line is not the streaming sim:0: " + cam.dump(), &log);
   const double fps = num(cam, "fps"), captured = num(j, "capturedFps"), span = at - read;
-  const double own = num(cam, "frames") - readFrames, reached = double(handed.size() - readHanded), gave = own / std::max(0.001, span);
+  const double own = num(cam, "frames") - readFrames, gave = own / std::max(0.001, span);
   double lo = 0, hi = 0;
-  secondRates(handed, readHanded, lo, hi);
-  const double least = lo * 0.97 - 1, most = hi * 1.03 + 1;
+  secondRates(polls, readPoll, lo, hi);
+  const double least = lo * 0.97 - 2, most = hi * 1.03 + 2;
   const std::string seconds = "the " + fmt("%.1f", lo) + " to " + fmt("%.1f", hi) + " a second its frames came at over the " + fmt("%.1f", span) + " s";
   std::vector<std::string> bad;
   if (own <= 0) bad.push_back("the camera gave no frame in the " + fmt("%.1f", span) + " s after the first read, by its own count");
-  else if (std::fabs(own - reached) > 2)
-    bad.push_back(fmt("%.0f", own) + " frames handed over by the camera's own count in the " + fmt("%.1f", span) + " s after the first read, " + fmt("%.0f", reached) +
-                  " handed to the receiver");
   if (hi <= 0) bad.push_back("no second of frames in the " + fmt("%.1f", span) + " s after the first read");
   else {
     if (fps < least || fps > most) bad.push_back("the session measured the camera at " + fmt("%.1f", fps) + " fps, outside " + seconds);
@@ -451,7 +439,7 @@ bool testStream(Run& r, const char* c, const std::string& decoder, const Cam& sc
   const double perSec = num(j, "blocks") / std::max(0.001, num(j, "windowSecs"));
   r.ok(c, "the test stream read " + fmt("%.1f", read) + " s after the start, " + fmt("%.0f", perSec) + " blocks a second on " + text(j, "decoder") + "; the camera " +
               fmt("%.1f", gave) + " a second by its own count (" + fmt("%.0f", num(cam, "frames")) + " frames, " + fmt("%.0f", num(cam, "dropped")) + " dropped), " +
-              fmt("%.0f", reached) + " of its " + fmt("%.0f", own) + " over the last " + fmt("%.1f", span) + " s handed to the receiver, its seconds " + fmt("%.1f", lo) +
+              fmt("%.0f", own) + " over the last " + fmt("%.1f", span) + " s, its seconds " + fmt("%.1f", lo) +
               " to " + fmt("%.1f", hi) + "; " + fmt("%.1f", fps) + " fps by the session, " + fmt("%.1f", captured) + " captured and " + fmt("%.0f", num(j, "processedFps")) +
               " processed a second by the receiver (simulated: " + spec + ", a " + std::to_string(fw) + " x " + std::to_string(fh) + " camera; " + room.said() + ")");
   if (preview) {
@@ -523,148 +511,6 @@ bool halvesCase(Run& r) {
   if (w.empty()) r.ok("preview", "2:1: " + said);
   else r.fail("preview", "2:1: " + w, &log);
   return true;
-}
-
-// ai: The trigger's spacing (2026-10-25): a capture carries its trigger's deadline (trigger.h TriggerClock), so every
-// ai: gap between captures is a whole number of periods exactly, the 3 ms delay added once, whatever the host's
-// ai: lateness in sending each trigger (until that day a capture carried the moment its trigger went out, and a host
-// ai: whose timer sent triggers 1 to 3 ms late fed the phase lock that lateness as the camera's own: trigger.h); a gap
-// ai: of k periods is k - 1 deadlines the clock skipped (its thread held off the CPU past a period: the stats'
-// ai: missed) or triggers whose captures the camera lost, its render past the period (this machine's). Where the
-// ai: machine renders the scene with room (Room): no capture lost, so every period past one is a skipped deadline (where
-// ai: none was skipped, every gap one period and the delayed capture one period and the delay, 19.65 ms, after the one
-// ai: before it).
-// ai: The captures are the schedule's own from the trigger() call on (rx_session.h captures, 2026-10-25: the free
-// ai: run's capture in flight came first, stamped before the schedule, and was let go here by hand): none stamped
-// ai: before the call. Then the schedule begun again twice where a capture of the one before could take a trigger of
-// ai: the new one (camera/sim.cpp, 2026-10-25): at the same period a millisecond before a deadline (a trigger being
-// ai: fired), and from a 33.3 ms schedule just after a deadline (that trigger's capture still exposing when the new
-// ai: one's first trigger fires); after each, every capture stamped after the call, its gaps on the new grid, and the
-// ai: trigger's latency (the median arrival less the trigger's time out) within 5 ms of the first schedule's: a
-// ai: capture given the trigger after its own reads a period less.
-bool triggerCase(Run& r) {
-  const char* c = "trigger";
-  const Room room = measure(SMALL);
-  if (!room.why.empty()) return r.fail(c, "the scene's render was not measured: " + room.why);
-  Log log;
-  std::string why;
-  uint32_t fw = 0, fh = 0;
-  const std::string spec = SMALL.spec("trigger=1");
-  auto s = simulated(r, c, spec, "cpu", "1:1", log, fw, fh, why);
-  if (!s) return r.fail(c, why, &log);
-  const json cam = json::parse(s->camera());
-  if (!cam.value("trigger", false)) return r.fail(c, "the simulated camera with trigger=1 says it takes no trigger", &log);
-  constexpr int64_t P = 16'650'000, D = 3'000'000;
-  // ai: the free run going first, so that a capture of it is being exposed at the call (one begun at the start's
-  // ai: heels finds none)
-  sleepMs(200);
-  const int64_t began = cam::steadyNs();
-  if (!s->trigger(P, why)) return r.fail(c, "trigger(16,650,000): " + why, &log);
-  std::vector<std::pair<int64_t, bool>> got;
-  const auto take = [&](double secs) {
-    for (const auto t = Clock::now(); since(t) < secs;) {
-      const std::vector<int64_t> v = s->captures(100);
-      for (size_t i = 0; i + 1 < v.size(); i += 2) got.emplace_back(v[i], v[i + 1] != 0);
-    }
-  };
-  take(1.2);
-  const size_t before = got.size();
-  size_t early = 0;
-  for (const auto& g : got) early += g.first < began;
-  if (early)
-    return r.fail(c, std::to_string(early) + " of the " + std::to_string(before) + " captures after trigger() stamped before the call, the first " +
-                         fmt("%.3f", (got[0].first - began) / 1e6) + " ms after it", &log);
-  // ai: enough gaps to judge: of 72 triggers in 1.2 s, 40 with room, 20 without
-  if (before < (room.roomy() ? 40u : 20u))
-    return r.fail(c, std::to_string(before) + " captures in 1.2 s at a trigger every 16.65 ms (" + room.said() + ")", &log);
-  for (const auto& g : got)
-    if (g.second) return r.fail(c, "a capture delayed before any delay was asked", &log);
-  s->delay(D);
-  take(0.8);
-  const json t = sub(sub(statsOf(*s), "camera"), "trigger");
-  // ai: a gap's whole periods of per (one at least), and whether it is them and plus exactly
-  const auto periods = [](int64_t g, int64_t per) { return std::max<int64_t>(1, (g + per / 2) / per); };
-  const auto onGrid = [&](int64_t g, int64_t plus, int64_t per) { return g - plus == periods(g - plus, per) * per; };
-  std::vector<int64_t> gaps;
-  for (size_t i = 1; i < before; i++) gaps.push_back(got[i].first - got[i - 1].first);
-  std::vector<int64_t> sorted = gaps;
-  std::sort(sorted.begin(), sorted.end());
-  const double median = sorted[sorted.size() / 2] / 1e6;
-  // ai: every gap judged: on its grid, and its periods past one (the delayed gap's past one period and the delay)
-  int64_t extra = 0;
-  size_t overOne = 0, off = 0, delayed = 0, at = 0;
-  const auto judge = [&](int64_t g, int64_t plus) {
-    off += !onGrid(g, plus, P);
-    extra += periods(g - plus, P) - 1;
-    overOne += periods(g - plus, P) > 1;
-  };
-  for (int64_t g : gaps) judge(g, 0);
-  for (size_t i = before; i < got.size(); i++) {
-    if (got[i].second) {
-      delayed++;
-      at = i;
-    }
-    judge(got[i].first - got[i - 1].first, got[i].second ? D : 0);
-  }
-  const size_t judged = gaps.size() + (got.size() - before);
-  const int64_t missed = int64_t(num(t, "missed"));
-  std::vector<std::string> bad;
-  if (off) bad.push_back(std::to_string(off) + " gaps off a whole number of periods (the delayed one less 3 ms)");
-  if (room.roomy() && extra > missed)
-    bad.push_back("captures a median " + fmt("%.3f", median) + " ms apart, " + std::to_string(extra) + " periods past one in " +
-                  std::to_string(overOne) + " of " + std::to_string(judged) + " gaps, " + std::to_string(missed) + " of them deadlines the clock skipped");
-  const int64_t gapNs = delayed == 1 ? got[at].first - got[at - 1].first : 0;
-  const double gap = gapNs / 1e6;
-  if (delayed != 1) bad.push_back(std::to_string(delayed) + " captures delayed after one delay of 3 ms");
-  // ai: the schedule begun again (the case's header): from a schedule of period per, offset from one of its deadlines
-  // ai: (a capture's time is its trigger's deadline); "" or why, how it went in said
-  const double lat0 = num(t, "latencyUs") / 1e3;
-  const auto drain = [&](double secs) {
-    std::vector<int64_t> ns;
-    for (const auto t1 = Clock::now(); since(t1) < secs;) {
-      const std::vector<int64_t> v = s->captures(50);
-      for (size_t i = 0; i + 1 < v.size(); i += 2) ns.push_back(v[i]);
-    }
-    return ns;
-  };
-  const auto again = [&](int64_t per, int64_t offset, std::string& said) -> std::string {
-    if (per != P && !s->trigger(per, why)) return "trigger(" + std::to_string(per) + "): " + why;
-    const std::vector<int64_t> was = drain(0.4);
-    if (was.empty()) return "no capture of the schedule before it in 0.4 s";
-    int64_t due = was.back();
-    while (due + offset < cam::steadyNs() + 3'000'000) due += per;
-    cam::sleepUntil(due + offset);
-    const int64_t at = cam::steadyNs();
-    if (!s->trigger(P, why)) return "trigger(16,650,000) again: " + why;
-    const std::vector<int64_t> ns = drain(0.6);
-    const json t2 = sub(sub(statsOf(*s), "camera"), "trigger");
-    const double lat = num(t2, "latencyUs") / 1e3;
-    size_t before2 = 0, off2 = 0;
-    for (size_t i = 0; i < ns.size(); i++) {
-      before2 += ns[i] < at;
-      if (i) off2 += !onGrid(ns[i] - ns[i - 1], 0, P);
-    }
-    said = fmt("%.3f", (at - due) / 1e6) + " ms from a deadline: " + std::to_string(ns.size()) + " captures in 0.6 s, the first " +
-           fmt("%.3f", ns.empty() ? 0.0 : (ns[0] - at) / 1e6) + " ms after the call, the latency " + fmt("%.3f", lat) + " ms";
-    if (ns.size() < (room.roomy() ? 20u : 10u)) return "too few captures (" + said + ")";
-    if (before2) return std::to_string(before2) + " captures stamped before the call (" + said + ")";
-    if (off2) return std::to_string(off2) + " gaps off the period's grid (" + said + ")";
-    if (!(std::fabs(lat - lat0) <= 5)) return "the trigger's latency " + fmt("%.3f", lat) + " ms against the first schedule's " + fmt("%.3f", lat0) + " (" + said + ")";
-    return "";
-  };
-  std::string same, longer;
-  if (const std::string w = again(P, -1'000'000, same); !w.empty()) bad.push_back("begun again a millisecond before a deadline: " + w);
-  if (const std::string w = again(2 * P, 500'000, longer); !w.empty()) bad.push_back("begun again at 16.65 ms after a 33.3 ms schedule: " + w);
-  if (!bad.empty()) {
-    std::string all;
-    for (const auto& b : bad) all += (all.empty() ? "" : "; ") + b;
-    return r.fail(c, all + " (the trigger's stats " + t.dump() + "; " + room.said() + ")", &log);
-  }
-  return r.ok(c, "no capture stamped before the schedule, the first " + fmt("%.3f", (got[0].first - began) / 1e6) + " ms after trigger(); captures a median " +
-                     fmt("%.3f", median) + " ms apart (" + std::to_string(overOne) + " of " + std::to_string(judged) + " gaps more than a period, " +
-                     std::to_string(missed) + " deadlines the clock skipped, every gap a whole number of periods exactly), one capture delayed, " +
-                     fmt("%.3f", gap) + " ms after the one before it; the trigger's stats " + t.dump() +
-                     "; begun again at the same period " + same + "; at 16.65 ms from 33.3 ms " + longer + " (simulated: " + spec + "; " + room.said() + ")");
 }
 
 // ai: The transfer across reconfigures (rx_session.h reconfigure, receiver.h create's from): a 1 MB file part in on
@@ -1006,7 +852,7 @@ int session(const Args& a) {
     bool known = false;
     for (const char* k : CASES) known |= w == k;
     if (!known) {
-      std::fprintf(stderr, "cam_check session: no case %s (test, preview, 1080, file, halves, gpu, trigger, reconfigure, kept, live, soft)\n", w.c_str());
+      std::fprintf(stderr, "cam_check session: no case %s (test, preview, 1080, file, halves, gpu, reconfigure, kept, live, soft)\n", w.c_str());
       return 2;
     }
   }
@@ -1042,7 +888,6 @@ int session(const Args& a) {
       setEnv("LIZ_VK_DEVICE", "llvmpipe");
     }
   }
-  if (on("trigger")) triggerCase(r);
   if (on("reconfigure")) reconfigureCase(r);
   if (on("kept")) {
     keptSim(r);

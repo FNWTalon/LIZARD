@@ -3,6 +3,9 @@
 // ai: Each function names the JS it ports; where the port differs, an ai: comment says so and why.
 #include "front.h"
 #include "camera.h"
+extern "C" {
+#include "focus.h"
+}
 
 #include <algorithm>
 #include <cstdio>
@@ -31,11 +34,11 @@ static constexpr double MiB = 1 << 20;
 Consts Consts::of(const json& c) {
   Consts k;
   k.LEVELS = c["LEVELS"]; k.COUNTERS = c["COUNTERS"]; k.RESULT = c["RESULT"]; k.SEL_WORDS = c["SEL_WORDS"]; k.TS_MAX = c["TS_MAX"]; k.TS_PLAIN = c["TS_PLAIN"];
-  k.VOTE_READS = c["VOTE_READS"]; k.TS_INGEST = c["TS_INGEST"]; k.RING_SLACK = c["RING_SLACK"]; k.K = c["K"]; k.CELL = c["CELL"]; k.HYP = c["HYP"]; k.RING_COUNT = c["RING_COUNT"];
+  k.VOTE_READS = c["VOTE_READS"]; k.RING_SLACK = c["RING_SLACK"]; k.K = c["K"]; k.CELL = c["CELL"]; k.HYP = c["HYP"]; k.RING_COUNT = c["RING_COUNT"];
   k.NODES_MAX = c["NODES_MAX"]; k.RESID = c["RESID"]; k.REFIT_DBG = c["REFIT_DBG"]; k.HIST_BINS = c["HIST_BINS"]; k.PYRAMID_BLOCK = c["PYRAMID_BLOCK"];
-  k.TAU = c["TAU"]; k.EPS = c["EPS"]; k.TAU_TRACK = c["TAU_TRACK"];
-  k.TILE = c["TILE"]; k.KEEP = c["KEEP"]; k.B_CEIL = c["B_CEIL"]; k.CAP_MS = c["CAP_MS"];
-  k.TWIN_FRAMES = c["TWIN_FRAMES"]; k.TWIN_ROUNDS = c["TWIN_ROUNDS"]; k.VERSION_MAX = c["VERSION_MAX"]; k.SLOTS = c["SLOTS"];
+  k.TAU = c["TAU"]; k.EPS = c["EPS"];
+  k.TILE = c["TILE"]; k.B_CEIL = c["B_CEIL"]; k.CAP_MS = c["CAP_MS"];
+  k.TWIN_FRAMES = c["TWIN_FRAMES"]; k.TWIN_ROUNDS = c["TWIN_ROUNDS"]; k.VERSION_MIN = c["VERSION_MIN"]; k.VERSION_MAX = c["VERSION_MAX"]; k.SLOTS = c["SLOTS"];
   k.ARGS_WORDS = c["ARGS_WORDS"]; k.argsWords = c["argsWords"]; k.COUNTS = c["COUNTS"]; k.REC_BYTES = c["REC_BYTES"]; k.PAYLOAD = c["PAYLOAD"];
   for (auto& [n, v] : c["ARGS_SLOT"].items()) k.ARGS_SLOT[n] = v;
   return k;
@@ -55,7 +58,7 @@ std::vector<wg::Resource> Lane::lvEntries(bool second) const {
 
 // ai: decoder.mjs FrontHalf.create, the part a native caller does: the setup's objects built (its create() ran in
 // ai: gen.mjs), the nets taken as the tree names them, the back half at B_CEIL.
-std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const std::string& variant, double budget, int restart, std::function<void(const std::string&)> log) {
+std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const std::string& variant, double budget, std::function<void(const std::string&)> log) {
   std::unique_ptr<FrontHalf> fh(new FrontHalf(d));
   fh->log = log ? log : [](const std::string&) {};
   fh->variant = variant;
@@ -65,30 +68,32 @@ std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const
   // ai: what every tree gen.mjs writes since 2026-10-21 carries: the cascade, the finder's second round and F7's tail
   if (T["cascade"].is_null() || T["front"].value("redo", json()).is_null() || T["front"].value("refitPost", json()).is_null() || !T["consts"].contains("VOTE_READS"))
     throw wg::Error("the setup predates the finder's second round and F7's tail (liblizard/gen/gen.mjs before 2026-10-21): generate it again");
+  // ai: the smallest version a word names (LIZARD-16's 2 since 2026-10-25): a tree before it reads a word of version 1
+  // ai: in F8, which a host refuses as a held version
+  if (!T["consts"].contains("VERSION_MIN"))
+    throw wg::Error("the setup predates one block a frame's removal (liblizard/gen/gen.mjs before 2026-10-25: its F8 takes a word of version 1): generate it again");
   fh->C = Consts::of(T["consts"]);
-  fh->precision = T["precision"];
-  fh->floatPrecision = T["floatPrecision"];
+  // ai: the finder's rings the C's (src/focus.h FOCUS_RING): a ring index from the GPU names the same ring in a replay's
+  // ai: meta and the receiver's rows (2026-10-25, the 32 ring archived: a tree of four rings beside a C of three would
+  // ai: label every ring one off)
+  bool rings = fh->C.RING_COUNT == FOCUS_RINGS;
+  for (uint32_t r = 0; rings && r < fh->C.RING_COUNT; r++) rings = T["modules"][r].get<double>() == 2 * FOCUS_RING[r] + 30;
+  if (!rings) throw wg::Error("the setup's finder has " + std::to_string(fh->C.RING_COUNT) + " rings, not the codec's " + std::to_string(FOCUS_RINGS) + " (liblizard/gen/gen.mjs on another tree): generate it again");
   fh->nets = T["nets"];
   fh->cap = T["cap"];
-  fh->reg = T["register"];
   fh->nodesMax = T["nodesMax"];
   fh->bankKeep = T["bankKeep"];
   fh->coarseFrom = T["front"]["coarseFrom"].get<uint32_t>();
   for (int i = 0; i < 4; i++) fh->modules[i] = T["modules"][i];
   fh->cascade = T["cascade"];
   fh->S->build(fh->C.B_CEIL);
-  // ai: the format's rate profile's stage (2026-10-07): a tree from before it has none, and its one-rate kernels no
-  // ai: longer read the format
-  if (!fh->S->back().contains("rule")) throw wg::Error("the setup has no rate profile's stage (liblizard/gen/gen.mjs before 2026-10-07): generate it again");
-  for (auto& r : fh->S->applyNativeNets()) fh->log("native net built: " + r);
   fh->backShared = 0;
   fh->classify = fh->P("classify");
   fh->weightsBuf = fh->FBP("weightsBuf");
   fh->classify0 = fh->P("classify0"); fh->weightsBuf0 = fh->FBP("weightsBuf0");
   fh->twinForms = T["front"]["twins"];
-  // ai: LIZ_TWINS=int8: the classifiers' int8 twins from the start, unmeasured (the web's twins "int8"): a check of
-  // ai: the twins' own outputs (a native net's against the web's) reads them on the first batch. LIZ_TWINS=small (or
-  // ai: large): that net's twin alone, the other net in its float form (what the S26 keeps: its large twin is 26
+  // ai: LIZ_TWINS=int8: the classifiers' int8 twins from the start, unmeasured (the web's twins "int8"). LIZ_TWINS=small
+  // ai: (or large): that net's twin alone, the other net in its float form (what the S26 keeps: its large twin is 26
   // ai: times its f16 form), so a timing run is in its steady state from the first batch.
   const std::string tw = getenv("LIZ_TWINS") ? getenv("LIZ_TWINS") : "";
   if ((tw == "int8" || tw == "small" || tw == "large") && !fh->twinForms.is_null()) {
@@ -112,7 +117,6 @@ std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const
   fh->bt.fh = fh.get();
   fh->bt.budget = budget;
   fh->bt.capMs = fh->C.CAP_MS;
-  fh->bt.restart = restart;
   fh->log("setup " + variant + " built in " + std::to_string((int)(fh->now() - t0)) + " ms: nets bank " + fh->nets["bank"].dump() + ", small " + fh->nets["small"].dump() + ", large " + fh->nets["large"].dump() +
           (fh->twinForms.is_null() ? "" : " (the classifiers' int8 twins measured on the first batch)"));
   return fh;
@@ -147,37 +151,37 @@ std::unique_ptr<Lane> FrontHalf::lane(int Bl) {
   ln->B = Bl;
   ln->slotsG = std::max(Bl, S->backB);
   using namespace wg;
-  auto mk = [&](uint64_t size, uint32_t usage, const char* name) { return dev.createBuffer(size, usage, dev.traceOut ? std::string("n") + name + std::to_string(dev.nextId++) : ""); };
-  ln->peaksBuf = mk(16 * cap * B, STORAGE | COPY_SRC | COPY_DST, "peaksBuf");
-  ln->selUni = mk(16, UNIFORM | COPY_DST, "selUni");
-  ln->framesBuf = mk(16ull * ln->slotsG, STORAGE | COPY_DST, "framesBuf");
-  ln->mapsBuf = mk(64 * B, STORAGE | COPY_DST | COPY_SRC, "mapsBuf");
-  ln->countsBuf = mk(4ull * C.COUNTERS * B, STORAGE | COPY_DST | COPY_SRC, "countsBuf");
-  ln->readingsBuf = mk(48 * cap * B, STORAGE | COPY_DST | COPY_SRC, "readingsBuf");
-  ln->candBuf = mk(16ull * C.K * B, STORAGE | COPY_DST | COPY_SRC, "candBuf");
-  ln->quadsBuf = mk(16ull * 5 * C.K * B, STORAGE | COPY_DST | COPY_SRC, "quadsBuf");
-  ln->scoreBuf = mk(4ull * C.HYP * B, STORAGE | COPY_DST | COPY_SRC, "scoreBuf");
-  ln->selBuf = mk(4ull * C.SEL_WORDS * ln->slotsG, STORAGE | COPY_DST, "selBuf");
-  ln->resultBuf = mk(4ull * C.RESULT * B, STORAGE | COPY_DST | COPY_SRC, "resultBuf");
-  ln->heldUni = mk(16, UNIFORM | COPY_DST, "heldUni");
-  ln->p5Uni = mk(32, UNIFORM | COPY_DST, "p5Uni");
-  ln->ldUni = mk(80, UNIFORM | COPY_DST, "ldUni");
-  ln->measBuf = mk(16ull * C.NODES_MAX * B, STORAGE | COPY_DST | COPY_SRC, "measBuf");
-  ln->residBuf = mk(16ull * C.RESID * B, STORAGE | COPY_DST | COPY_SRC, "residBuf");
-  ln->refitDbg = mk(4ull * C.REFIT_DBG * B, STORAGE | COPY_SRC | COPY_DST, "refitDbg");
-  ln->histBuf = mk(4ull * C.HIST_BINS * B, STORAGE | COPY_DST | COPY_SRC, "histBuf");
-  ln->logitBuf = mk(4 * cap * B, STORAGE, "logitBuf");
-  ln->listBuf = mk(4ull * cascade["keep"].get<uint32_t>() * B, STORAGE, "listBuf");
+  auto mk = [&](uint64_t size, uint32_t usage) { return dev.createBuffer(size, usage); };
+  ln->peaksBuf = mk(16 * cap * B, STORAGE | COPY_SRC | COPY_DST);
+  ln->selUni = mk(16, UNIFORM | COPY_DST);
+  ln->framesBuf = mk(16ull * ln->slotsG, STORAGE | COPY_DST);
+  ln->mapsBuf = mk(64 * B, STORAGE | COPY_DST | COPY_SRC);
+  ln->countsBuf = mk(4ull * C.COUNTERS * B, STORAGE | COPY_DST | COPY_SRC);
+  ln->readingsBuf = mk(48 * cap * B, STORAGE | COPY_DST | COPY_SRC);
+  ln->candBuf = mk(16ull * C.K * B, STORAGE | COPY_DST | COPY_SRC);
+  ln->quadsBuf = mk(16ull * 5 * C.K * B, STORAGE | COPY_DST | COPY_SRC);
+  ln->scoreBuf = mk(4ull * C.HYP * B, STORAGE | COPY_DST | COPY_SRC);
+  ln->selBuf = mk(4ull * C.SEL_WORDS * ln->slotsG, STORAGE | COPY_DST);
+  ln->resultBuf = mk(4ull * C.RESULT * B, STORAGE | COPY_DST | COPY_SRC);
+  ln->heldUni = mk(16, UNIFORM | COPY_DST);
+  ln->p5Uni = mk(32, UNIFORM | COPY_DST);
+  ln->ldUni = mk(80, UNIFORM | COPY_DST);
+  ln->measBuf = mk(16ull * C.NODES_MAX * B, STORAGE | COPY_DST | COPY_SRC);
+  ln->residBuf = mk(16ull * C.RESID * B, STORAGE | COPY_DST | COPY_SRC);
+  ln->refitDbg = mk(4ull * C.REFIT_DBG * B, STORAGE | COPY_SRC | COPY_DST);
+  ln->histBuf = mk(4ull * C.HIST_BINS * B, STORAGE | COPY_DST | COPY_SRC);
+  ln->logitBuf = mk(4 * cap * B, STORAGE);
+  ln->listBuf = mk(4ull * cascade["keep"].get<uint32_t>() * B, STORAGE);
   auto refit = P("refit"), pick = P("pick");
   ln->refitGroup = dev.createBindGroup(refit.bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni"), ln->refitDbg});
   // ai: decoder.mjs lane: F7's last step on REFIT's bindings
   ln->refitPostGroup = dev.createBindGroup(P("refitPost").bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni"), ln->refitDbg});
   ln->pickGroup = dev.createBindGroup(pick.bgl, {ln->framesBuf, ln->quadsBuf, ln->scoreBuf, ln->mapsBuf, ln->selBuf, ln->resultBuf, FBP("pickUni")});
-  ln->frames2Buf = mk(16 * B, STORAGE, "frames2Buf");
+  ln->frames2Buf = mk(16 * B, STORAGE);
   ln->pickGroup2 = dev.createBindGroup(pick.bgl, {ln->frames2Buf, ln->quadsBuf, ln->scoreBuf, ln->mapsBuf, ln->selBuf, ln->resultBuf, FBP("pickUni")});
   if (dev.features.timestamps) {
     ln->qs = dev.createQuerySet(C.TS_PLAIN);
-    ln->qsBuf = mk(8ull * C.TS_PLAIN, QUERY_RESOLVE | COPY_SRC, "qsBuf");
+    ln->qsBuf = mk(8ull * C.TS_PLAIN, QUERY_RESOLVE | COPY_SRC);
   }
   ln->laneBytes = dev.allocated - a0;
   return ln;
@@ -210,15 +214,15 @@ void FrontHalf::backLane(Lane& ln) {
   const uint64_t Bb = bk["B"].get<uint64_t>(), cb = T["cbytes"].get<uint64_t>();
   const uint64_t a0 = dev.allocated;
   auto b = std::make_unique<BackLane>();
-  auto mk = [&](uint64_t size, uint32_t usage, const char* name) { return dev.createBuffer(size, usage, dev.traceOut ? std::string("n") + name + std::to_string(dev.nextId++) : ""); };
+  auto mk = [&](uint64_t size, uint32_t usage) { return dev.createBuffer(size, usage); };
   const uint64_t listsWords = C.SLOTS * (1 + Bb) + 5 * Bb;
-  b->lists = mk(4 * listsWords, STORAGE | COPY_SRC, "lists");
-  b->args = mk(4ull * C.argsWords, STORAGE | INDIRECT | COPY_SRC, "args");
-  b->part = mk(16 * T["partStride"].get<uint64_t>() * Bb, STORAGE | COPY_SRC, "part");
-  b->coef = mk(32 * Bb, STORAGE | COPY_SRC, "coef");
-  b->y = mk(cb * T["yStride"].get<uint64_t>() * Bb, STORAGE | COPY_SRC, "y");
-  b->s = mk(cb * T["sStride"].get<uint64_t>() * Bb, STORAGE | COPY_SRC, "s");
-  b->counts = mk(4 * 8 * Bb, STORAGE | COPY_SRC | COPY_DST, "bcounts");
+  b->lists = mk(4 * listsWords, STORAGE | COPY_SRC);
+  b->args = mk(4ull * C.argsWords, STORAGE | INDIRECT | COPY_SRC);
+  b->part = mk(16 * T["partStride"].get<uint64_t>() * Bb, STORAGE | COPY_SRC);
+  b->coef = mk(32 * Bb, STORAGE | COPY_SRC);
+  b->y = mk(cb * T["yStride"].get<uint64_t>() * Bb, STORAGE | COPY_SRC);
+  b->s = mk(cb * T["sStride"].get<uint64_t>() * Bb, STORAGE | COPY_SRC);
+  b->counts = mk(4 * 8 * Bb, STORAGE | COPY_SRC | COPY_DST);
   b->params.assign(C.SLOTS, nullptr);
   b->red.assign(C.SLOTS, nullptr);
   b->p2.assign(C.SLOTS, nullptr);
@@ -227,10 +231,11 @@ void FrontHalf::backLane(Lane& ln) {
   for (auto& sj : T["built"]) {
     const int s = sj;
     const json& tb = T["sizes"][s];
-    auto p = mk(48, UNIFORM | COPY_DST, "tparams");
+    auto p = mk(48, UNIFORM | COPY_DST);
     uint32_t u[12] = {};
     float* f = (float*)u;
-    u[0] = (uint32_t)ln.gridStride; u[1] = T["yStride"]; u[2] = T["partStride"]; u[3] = (uint32_t)s; u[4] = tb["n"]; u[5] = 0;
+    // ai: the transform's Params (back_transform.mjs): words 0 and 4 (once the grid's stride and n) read by no pass, 0
+    u[0] = 0; u[1] = T["yStride"]; u[2] = T["partStride"]; u[3] = (uint32_t)s; u[4] = 0; u[5] = 0;
     f[6] = tb["m2"].get<float>(); f[7] = tb["sx2"].get<float>(); f[8] = tb["sq2"].get<float>(); u[9] = T["sStride"];
     dev.writeBuffer(*p, 0, u, 48);
     b->params[s] = p;
@@ -238,19 +243,19 @@ void FrontHalf::backLane(Lane& ln) {
     b->p2[s] = dev.createBindGroup(S->bgl(T["p2Bgl"]), {b->lists, S->bufPtr(T["twBufs"][s]), b->part, b->y, b->coef, S->bufPtr(T["x12Bufs"][s]), S->bufPtr(T["rowsBufs"][s]), b->s, b->counts, p});
   }
   // ai: soft.mjs lane
-  b->L = mk(so["bytes"]["L"].get<uint64_t>(), STORAGE | COPY_SRC, "L");
-  b->BLK = mk(so["bytes"]["BLK"].get<uint64_t>(), STORAGE | COPY_SRC, "BLK");
-  b->PILOT = mk(so["bytes"]["PILOT"].get<uint64_t>(), STORAGE | COPY_SRC, "PILOT");
+  b->L = mk(so["bytes"]["L"].get<uint64_t>(), STORAGE | COPY_SRC);
+  b->BLK = mk(so["bytes"]["BLK"].get<uint64_t>(), STORAGE | COPY_SRC);
+  b->PILOT = mk(so["bytes"]["PILOT"].get<uint64_t>(), STORAGE | COPY_SRC);
   // ai: ldpc.mjs lane
-  b->V = mk(ld["bytes"]["V"].get<uint64_t>(), STORAGE | COPY_SRC | COPY_DST, "V");
-  b->ITS = mk(ld["bytes"]["ITS"].get<uint64_t>(), STORAGE | COPY_SRC | COPY_DST, "ITS");
-  b->REC = mk(ld["bytes"]["REC"].get<uint64_t>(), STORAGE | COPY_SRC | COPY_DST, "REC");
+  b->V = mk(ld["bytes"]["V"].get<uint64_t>(), STORAGE | COPY_SRC | COPY_DST);
+  b->ITS = mk(ld["bytes"]["ITS"].get<uint64_t>(), STORAGE | COPY_SRC | COPY_DST);
+  b->REC = mk(ld["bytes"]["REC"].get<uint64_t>(), STORAGE | COPY_SRC | COPY_DST);
   // ai: transform.mjs bindGate (zero)
   b->gate = dev.createBindGroup(S->bgl(T["gateBgl"]), {ln.framesBuf, ln.selBuf, b->lists, b->args, S->bufPtr(T["gateUni"]), b->counts, b->V, b->ITS, b->REC});
   // ai: the rate profile's steps (gpu/back/tiers.mjs exportFor): a bind a lane buffer by name or a setup buffer by id
   {
     const json* st = &bk["rule"];
-    b->EP = mk((*st)["bytes"]["EP"].get<uint64_t>(), STORAGE | COPY_SRC, "EP");
+    b->EP = mk((*st)["bytes"]["EP"].get<uint64_t>(), STORAGE | COPY_SRC);
     const std::map<std::string, BufP> laneBufs = {{"S", b->s}, {"LISTS", b->lists}, {"L", b->L}, {"EP", b->EP}, {"BLK", b->BLK}, {"BCOUNTS", b->counts},
                                                   {"PILOT", b->PILOT}, {"V", b->V}, {"ITS", b->ITS}, {"REC", b->REC}};
     auto group = [&](const json& step) {
@@ -280,29 +285,29 @@ void FrontHalf::bindPicture(Lane& ln) {
   b.picture = ln.tex.get();
 }
 
-// ai: decoder.mjs ensure(W, H, nmax): capacity for frames up to W x H and pictures up to nmax; grows, never shrinks.
-// ai: No grid (the fused pass 1 samples the picture), so gridStride only sizes the back half's params, as on the web.
-void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H, uint32_t nmax) {
+// ai: decoder.mjs ensure(W, H): capacity for frames up to W x H; grows, never shrinks. No grid (the fused pass 1
+// ai: samples the picture, F9 is not ported), so no picture size enters a lane.
+void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H) {
   using namespace wg;
   const uint64_t a0 = dev.allocated, B = ln.B;
-  auto mk = [&](uint64_t size, uint32_t usage, const char* name) { return dev.createBuffer(size, usage, dev.traceOut ? std::string("n") + name + std::to_string(dev.nextId++) : ""); };
+  auto mk = [&](uint64_t size, uint32_t usage) { return dev.createBuffer(size, usage); };
   bool texChanged = false;
   if (W > ln.W || H > ln.H) {
     ln.W = std::max(W, ln.W);
     ln.H = std::max(H, ln.H);
-    ln.tex = dev.createTexture(ln.W, ln.H, (uint32_t)B, dev.traceOut ? "ntex" + std::to_string(dev.nextId++) : "");
+    ln.tex = dev.createTexture(ln.W, ln.H, (uint32_t)B);
     texChanged = true;
     ln.level.clear();
     for (uint32_t l = 1; l < C.LEVELS; l++) {
       const uint32_t w = ceilDiv(ln.W, 1u << l), h = ceilDiv(ln.H, 1u << l);
-      ln.level.push_back({w, h, mk(4ull * w * h * B, STORAGE, "level")});
+      ln.level.push_back({w, h, mk(4ull * w * h * B, STORAGE)});
     }
     auto dimsAt = [&](uint32_t l) { return l == 0 ? std::make_pair(ln.W, ln.H) : std::make_pair(ln.level[l - 1].w, ln.level[l - 1].h); };
     uint32_t slots = 0;
     std::vector<uint32_t> bases;
     for (uint32_t l = 0; l < C.LEVELS; l++) { auto [w, h] = dimsAt(l); bases.push_back(slots); slots += ceilDiv(w, 16) * ceilDiv(h, 16) * (uint32_t)bankKeep; }
     ln.slots = slots;
-    ln.rawBuf = mk(16ull * slots * B, STORAGE | COPY_DST, "rawBuf");
+    ln.rawBuf = mk(16ull * slots * B, STORAGE | COPY_DST);
     {
       uint32_t u[4] = {slots, (uint32_t)cap, 0, 0};
       memcpy(&u[2], &C.TAU, 4);
@@ -319,13 +324,13 @@ void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H, uint32_t nmax) {
     ln.fcn2Levels.clear();
     for (uint32_t l = 1; l < C.LEVELS; l++) {
       auto [w, h] = dimsAt(l);
-      auto uni = mk(32, UNIFORM | COPY_DST, "fcn2Uni");
+      auto uni = mk(32, UNIFORM | COPY_DST);
       uint32_t u[8] = {l, w, h, slots, 0, 0, bases[l], ceilDiv(w, C.TILE)};
       memcpy(&u[4], &C.TAU, 4);
       memcpy(&u[5], &C.EPS, 4);
       dev.writeBuffer(*uni, 0, u, 32);
       BufP plane;
-      if (xplane) plane = mk(int8 ? (uint64_t)((w + 3) & ~3u) * h * B : (uint64_t)(store == "f32" ? 4 : 2) * (w + (w & 1)) * h * B, STORAGE, "fcn2Plane");
+      if (xplane) plane = mk(int8 ? (uint64_t)((w + 3) & ~3u) * h * B : (uint64_t)(store == "f32" ? 4 : 2) * (w + (w & 1)) * h * B, STORAGE);
       auto group = [&](const BufP& frames) { return dev.createBindGroup(fcn2.bgl, {plane ? plane : ln.level[l - 1].buf, frames, ln.rawBuf, ln.countsBuf, uni}); };
       auto xgroup = [&](const BufP& frames) { return plane ? dev.createBindGroup(fcn2X.bgl, {ln.level[l - 1].buf, frames, plane, uni}) : GroupP(); };
       const bool fine = l < coarseFrom;
@@ -338,7 +343,7 @@ void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H, uint32_t nmax) {
     }
     ln.gx = ceilDiv(ln.W, C.CELL);
     ln.gy = ceilDiv(ln.H, C.CELL);
-    ln.accBuf = mk(4ull * C.RING_COUNT * ln.gx * ln.gy * B, STORAGE | COPY_DST, "accBuf");
+    ln.accBuf = mk(4ull * C.RING_COUNT * ln.gx * ln.gy * B, STORAGE | COPY_DST);
     {
       uint32_t p5[8] = {(uint32_t)cap, ln.gx, ln.gy, 0};
       memcpy(&p5[4], modules.data(), 16);
@@ -372,29 +377,18 @@ void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H, uint32_t nmax) {
     // ai: decoder.mjs pyrGroup: the layer, the frame records, levels 1 to 4, the histogram and the levels' dims
     ln.pyrGroup = dev.createBindGroup(P("pyramid").bgl, {ln.tex.get(), ln.framesBuf, ln.level[0].buf, ln.level[1].buf, ln.level[2].buf, ln.level[3].buf, ln.histBuf, ln.ldUni});
   }
-  // ai: gridStride: the picture capacity a frame, which the back half's params are sized by; the back lane is made
-  // ai: again when it grows (its params hold it). No grid buffer: F9 is not ported.
-  if ((uint64_t)nmax * nmax > ln.gridStride) {
-    ln.gridStride = (uint64_t)nmax * nmax;
-    ln.readBuf.reset();
-    const uint64_t b0 = dev.allocated;
-    ln.back.reset();
+  // ai: the lane's back lane, made once (decoder.mjs: the BackHalf lane, made once)
+  if (!ln.back) {
     backLane(ln);
-    ln.backBytes = dev.allocated > b0 ? ln.back->bytes : ln.back->bytes;
     texChanged = true;
   }
   if (texChanged || ln.back->picture != ln.tex.get()) bindPicture(ln);
   if (!ln.readBuf) {
-    // ai: counters, finder results, histograms, the back half's readback, the timestamps (and the ring's ingest pairs,
-    // ai: which the native ring has none of: kept in the size so the offsets are the web's)
-    const uint64_t bytes = 4ull * C.COUNTERS * B + 4ull * C.RESULT * B + 4ull * C.HIST_BINS * B + S->back()["readBytes"].get<uint64_t>() + 8ull * C.TS_MAX + 8ull * C.TS_INGEST * B;
-    ln.readBuf = mk(bytes, MAP_READ | COPY_DST, "readBuf");
+    // ai: counters, finder results, the back half's readback, the timestamps
+    const uint64_t bytes = 4ull * C.COUNTERS * B + 4ull * C.RESULT * B + S->back()["readBytes"].get<uint64_t>() + 8ull * C.TS_MAX;
+    ln.readBuf = mk(bytes, MAP_READ | COPY_DST);
   }
   ln.laneBytes += dev.allocated - a0;
-}
-
-bool FrontHalf::needsPlan(uint32_t w, uint32_t h) const {
-  return !planned || w > planned->W || h > planned->H || nmaxFind > planned->nmax;
 }
 
 // ai: decoder.mjs plan: the lanes planned for every shape seen so far and this one, a frame priced with a one-frame
@@ -402,7 +396,7 @@ bool FrontHalf::needsPlan(uint32_t w, uint32_t h) const {
 void FrontHalf::plan(uint32_t w, uint32_t h) {
   const double t0 = now();
   const Planned p = planned.value_or(Planned{});
-  const uint32_t W = std::max(p.W, w), H = std::max(p.H, h), nmax = std::max(p.nmax, nmaxFind);
+  const uint32_t W = std::max(p.W, w), H = std::max(p.H, h);
   lanes.clear();
   destroyRing();
   const auto& L = dev.limits;
@@ -412,7 +406,7 @@ void FrontHalf::plan(uint32_t w, uint32_t h) {
     std::unique_ptr<Lane> probe;
     try {
       probe = lane(1);
-      ensure(*probe, W, H, nmax);
+      ensure(*probe, W, H);
     } catch (const wg::OutOfMemory& e) {
       probe.reset();
       if (Bb == 1) throw wg::Error(std::string("out of memory for a one-frame lane: ") + e.what());
@@ -448,7 +442,7 @@ void FrontHalf::plan(uint32_t w, uint32_t h) {
     if (Bmax >= Bb) break;
     buildBack(Bmax);
   }
-  planned = Planned{W, H, nmax};
+  planned = Planned{W, H};
   makeLanes(bt.lanes);
   bt.start();
   bt.planMs = now() - t0;
@@ -465,7 +459,7 @@ void FrontHalf::makeLanes(int n) {
       if (S->backB != Bmax) buildBack(Bmax);
       B = Bmax;
       for (int i = 0; i < n; i++) lanes.push_back(lane(Bmax));
-      for (auto& l : lanes) ensure(*l, planned->W, planned->H, planned->nmax);
+      for (auto& l : lanes) ensure(*l, planned->W, planned->H);
       makeRing(Bmax + (int)C.RING_SLACK, planned->W, planned->H);
       dev.flush();
       break;
@@ -488,7 +482,7 @@ void FrontHalf::makeRing(int R, uint32_t W, uint32_t H) {
   std::lock_guard<std::mutex> lock(ringMu);
   Ring r;
   r.R = R; r.W = W; r.H = H;
-  r.tex = dev.createTexture(W, H, (uint32_t)R, dev.traceOut ? "nring" + std::to_string(dev.nextId++) : "", true);
+  r.tex = dev.createTexture(W, H, (uint32_t)R, "", true);
   r.slots.assign(R, nullptr);
   r.staging.assign(R, nullptr);
   for (int i = 0; i < R; i++) r.store.push_back(std::make_unique<Slot>());
@@ -528,13 +522,12 @@ Slot* FrontHalf::enqueueLuma(const uint8_t* bytes, uint32_t w, uint32_t h, uint3
   // ai: Only the bytes here: this may be the camera's thread, and the device records on the decoder's (wg.h
   // ai: "Threads"). The batch that takes the slot copies the staging into its layer (run), and takeSlot hands a
   // ai: slot out again only once that batch's copies are done, so the staging is free to write.
-  if (!r.staging[id]) r.staging[id] = dev.createBuffer((uint64_t)r.W * r.H, wg::MAP_WRITE, dev.traceOut ? "nstage" + std::to_string(dev.nextId++) : "");
+  if (!r.staging[id]) r.staging[id] = dev.createBuffer((uint64_t)r.W * r.H, wg::MAP_WRITE);
   auto& st = *r.staging[id];
   for (uint32_t y = 0; y < h; y++) memcpy(st.mapped + (uint64_t)y * w, bytes + (uint64_t)y * stride, w);
   s->luma = true;
   s->id = id; s->w = w; s->h = h; s->tag = tag; s->ready = 0; s->axis = 0;
   r.slots[id] = s;
-  r.staged++;
   return s;
 }
 
@@ -549,7 +542,6 @@ Slot* FrontHalf::enqueueCamera(CameraIngest& ci, AHardwareBuffer* hb, uint32_t x
   s->ready = ci.ingest(hb, x, y, w, h, *r.tex, (uint32_t)id);
   s->id = id; s->w = w; s->h = h; s->tag = tag; s->luma = false; s->axis = 0;
   r.slots[id] = s;
-  r.staged++;
   return s;
 }
 
@@ -557,7 +549,7 @@ void FrontHalf::release(Slot* s) {
   std::lock_guard<std::mutex> lock(ringMu);
   if (!ring || !s || s->id < 0) return;
   auto& r = *ring;
-  if (r.slots[s->id] == s) { r.slots[s->id] = nullptr; r.staged--; }
+  if (r.slots[s->id] == s) r.slots[s->id] = nullptr;
 }
 
 Lane* FrontHalf::freeLane() {
@@ -626,7 +618,8 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   const int nb = (int)slots.size();
   if (!nb) throw wg::Error("a batch of no slots");
   if (nb > B) throw wg::Error(std::to_string(nb) + " frames in a batch of " + std::to_string(B));
-  if (held < 0 || held > (int)C.VERSION_MAX) throw wg::Error("held " + std::to_string(held));
+  if (held < 0 || (held > 0 && held < (int)C.VERSION_MIN) || held > (int)C.VERSION_MAX)
+    throw wg::Error("held " + std::to_string(held) + ": 0, or a version " + std::to_string(C.VERSION_MIN) + " to " + std::to_string(C.VERSION_MAX));
   Lane* lnp = freeLane();
   if (!lnp) throw wg::Error(std::to_string(lanes.size()) + " batches in flight already");
   Lane& ln = *lnp;
@@ -634,7 +627,7 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   f->t0 = now();
   uint32_t W = 1, H = 1;
   for (auto* s : slots) if (s) { W = std::max(W, s->w); H = std::max(H, s->h); }
-  ensure(ln, W, H, nmaxFind);
+  ensure(ln, W, H);
   const uint64_t Bl = ln.B;
   { uint32_t hu[4] = {(uint32_t)held, 0, 0, 0}; dev.writeBuffer(*ln.heldUni, 0, hu, 16); }
   {
@@ -688,7 +681,6 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
     for (int i = 0; i < nb; i++) if (slots[i]) slots[i]->reading = copies;
   }
   auto e = dev.encoder();
-  f->host["upload"] = now() - f->t0;
   auto clear = [&](const BufP& b) { e.clearBuffer(*b, 0, (b->size / Bl) * nb); };
   clear(ln.countsBuf); clear(ln.peaksBuf);
   clear(ln.rawBuf); clear(ln.resultBuf); clear(ln.residBuf); clear(ln.histBuf);
@@ -772,26 +764,25 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
     step(P("score"), ln.scoreGroup2, C.HYP * n);
     step(P("pick"), ln.pickGroup2, n);
   }
-  if (reg) for (size_t r = 0; r < ln.nodesGroups.size(); r++) {
+  for (size_t r = 0; r < ln.nodesGroups.size(); r++) {
     begin(r ? "nodes2" : "nodes1");
     step(P("nodesP"), ln.nodesGroups[r], (uint32_t)nodesMax, n);
     begin(r ? "refit2" : "refit1");
     step(P("refit"), ln.refitGroup, n);
   }
   // ai: decoder.mjs batch: the last round's residuals, lens and side fits (REFIT_POST), in its refit's pass
-  if (reg && ln.nodesGroups.size() > 1) step(P("refitPost"), ln.refitPostGroup, n);
+  if (ln.nodesGroups.size() > 1) step(P("refitPost"), ln.refitPostGroup, n);
   begin("word");
   step(P("wordP"), ln.wordGroup, n);
   encodeBack(e, ln, nb, begin);
   e.endPass();
-  // ai: the readback's layout (the GPU back half's): counters, finder results, histograms, the back half's (REC, V,
-  // ai: ITS, BCOUNTS), timestamps
-  const uint64_t cntBytes = 4ull * C.COUNTERS * nb, resBytes = 4ull * C.RESULT * nb, histBytes = 4ull * C.HIST_BINS * nb;
-  f->cntOff = 0; f->resOff = cntBytes; f->histOff = f->resOff + resBytes; f->backOff = f->histOff + histBytes;
+  // ai: the readback's layout (the GPU back half's): counters, finder results, the back half's (REC, V, ITS, BCOUNTS,
+  // ai: PILOT), timestamps
+  const uint64_t cntBytes = 4ull * C.COUNTERS * nb, resBytes = 4ull * C.RESULT * nb;
+  f->cntOff = 0; f->resOff = cntBytes; f->backOff = f->resOff + resBytes;
   f->tsOff = f->backOff + S->back()["readBytes"].get<uint64_t>();
   e.copyBufferToBuffer(*ln.countsBuf, 0, *ln.readBuf, f->cntOff, cntBytes);
   e.copyBufferToBuffer(*ln.resultBuf, 0, *ln.readBuf, f->resOff, resBytes);
-  e.copyBufferToBuffer(*ln.histBuf, 0, *ln.readBuf, f->histOff, histBytes);
   {
     // ai: back.mjs readback: REC, V, ITS, BCOUNTS, PILOT in that order
     const json& by = S->back()["bytes"];
@@ -826,7 +817,6 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   for (auto* s : slots) if (s) { f->tags.push_back(s->tag); f->axes.push_back(s->axis); release(s); } else { f->tags.push_back(0); f->axes.push_back(0); }
   f->slots = slots;
   f->submitted = now();
-  f->host["encode"] = f->submitted - f->t0 - f->host["upload"];
   f->lane = &ln;
   f->nb = nb;
   f->W = W; f->H = H;
@@ -857,12 +847,10 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
   BatchOut out;
   f->ticket->wait();
   out.done = now();
-  f->host["map"] = out.done - f->submitted;
   const uint8_t* all = dev.read(*ln.readBuf, 0, f->readBytes);
   const int nb = f->nb;
   const uint32_t* counts = (const uint32_t*)(all + f->cntOff);
   const float* res = (const float*)(all + f->resOff);
-  const uint32_t* hist = (const uint32_t*)(all + f->histOff);
   if (!f->stages.empty()) {
     const uint64_t* ts = (const uint64_t*)(all + f->tsOff);
     double sum = 0;
@@ -883,7 +871,6 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
   const uint64_t Bb = bk["B"], blocksMax = bk["dims"]["blocksMax"], recCap = bk["dims"]["recCap"];
   const uint8_t* rec = all + f->backOff;
   const uint64_t recBytes = bk["bytes"]["REC"], vBytes = bk["bytes"]["V"];
-  const uint32_t* V = (const uint32_t*)(rec + recBytes);
   const uint32_t* bcounts = (const uint32_t*)(rec + recBytes + 2 * vBytes);
   const float* pilots = (const float*)(rec + recBytes + 2 * vBytes + bk["bytes"]["BCOUNTS"].get<uint64_t>());
   uint32_t count;
@@ -908,7 +895,6 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
     auto& fo = out.frames[i];
     fo.counts.assign(counts + C.COUNTERS * i, counts + C.COUNTERS * (i + 1));
     fo.backCounts.assign(bcounts + C.COUNTS * i, bcounts + C.COUNTS * (i + 1));
-    for (uint64_t b = 0; b < blocksMax; b++) fo.verdicts[std::min<uint32_t>(V[i * blocksMax + b], 4)]++;
     fo.tag = f->tags[i];
     fo.axis = f->axes[i];
     if (!f->slots[i]) { fo.empty = true; continue; }
@@ -918,19 +904,16 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
     fo.size = fo.version > 0 ? slotOf(fo.version) : -1;
     fo.n = fo.size >= 0 ? pics[fo.size]["n"].get<int>() : 0;
     fo.held = r[30] == 1;
-    fo.finder.found = r[0]; fo.finder.score = r[1]; fo.finder.ring = r[2]; fo.finder.orient = r[3]; fo.finder.quad = r[4];
-    for (int k = 0; k < 9; k++) fo.finder.H[k] = r[8 + k];
+    fo.finder.found = r[0]; fo.finder.ring = r[2];
     for (int k = 0; k < 8; k++) fo.finder.corners[k] = r[17 + k];
-    for (int k = 0; k < 4; k++) fo.finder.depths[k] = r[25 + k];
-    if (r[5] > 0) { fo.hasWord = true; fo.word.version = (int)r[5]; fo.word.fps = (int)r[6]; fo.word.score = r[7]; }
-    fo.hist.assign(hist + C.HIST_BINS * i, hist + C.HIST_BINS * (i + 1));
+    if (r[5] > 0) { fo.hasWord = true; fo.word.version = (int)r[5]; fo.word.fps = (int)r[6]; }
     // ai: decoder.mjs pilotOf: over the blocks the version carries, where the soft stage ran (its count column 6)
     // ai: the even blocks (bit 0 of the painted count) and the odd (bit 1), each its own mean and standard error
     // ai: the blocks the frame carries: its version's under the format's rate profile (gpu/back/tiers.mjs blocks)
     const json& rb = bk["rule"]["blocks"];
     const int nblk = fo.version > 0 && fo.version < (int)rb.size() ? rb[fo.version].get<int>() : fo.version;
     if (fo.version > 0 && fo.backCounts.size() > 6 && fo.backCounts[6] > 0) {
-      // ai: a parity with no blocks (version 1: one block, an even one) reads NaN, as focus_pilot's does
+      // ai: a parity with no finite pilot reads NaN, as focus_pilot's does
       fo.pilotR = fo.pilotSd = fo.pilotR2 = fo.pilotSd2 = NAN;
       for (int g = 0; g < 2; g++) {
         double s = 0, s2 = 0;
@@ -963,10 +946,7 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
   }
   out.carried = nb;
   out.deviceMs = out.gpuMs ? *out.gpuMs : out.done - std::max(f->submitted, lastDone);
-  out.idle = f->submitted >= lastDone;
   lastDone = std::max(lastDone, out.done);
-  f->host["read"] = now() - out.done;
-  out.host = f->host;
   bt.observe(nb, out.deviceMs, !ln.watched);
   ln.watched = true;
   ln.busy = false;
@@ -1047,7 +1027,7 @@ void FrontHalf::measureLdpc(Lane& ln, int nb) {
   ldpcForm = 0;
   for (uint32_t i = 1; i < A; i++) if (best[i] < best[ldpcForm]) ldpcForm = (int)i;
   const json& forms = st["ldpcForms"];
-  ldpcTimes = {{"frames", nb}, {"by", "timestamps"}};
+  json ldpcTimes = {{"frames", nb}, {"by", "timestamps"}};
   for (uint32_t i = 0; i < A; i++) ldpcTimes[forms[i].get<std::string>()] = best[i];
   ldpcTimes["kept"] = forms[ldpcForm];
   log("LDPC forms timed on " + std::to_string(nb) + " frames: " + ldpcTimes.dump());
@@ -1075,34 +1055,6 @@ void FrontHalf::measureTwins(Lane& ln, int nb) {
     twin.x = ceilDiv(slots, twin.pipe.P);
     arms.push_back(now);
     arms.push_back(twin);
-    // ai: A native kernel for this twin (Setup::natives) is a third form, if it is the twin's arithmetic on this
-    // ai: device: both run on the lane's first nb frames (the same peaks, and for the large net the same list) with
-    // ai: the outputs cleared first, and every word they wrote must be the same. Not the same: not used.
-    auto nn = S->natives.find(std::string("front.twins.") + net + ".pipe");
-    if (nn != S->natives.end()) {
-      Arm nat{net, "int8 native", nn->second.pipe, nn->second.weights ? nn->second.weights : twin.buf, nullptr, ceilDiv(slots, nn->second.pipe.P), {}};
-      nat.group = netGroup(ln, nat.pipe, *nat.buf, small);
-      const uint64_t rb = ln.readingsBuf->size / ln.B * nb, lb = small ? ln.logitBuf->size / ln.B * nb : 0;
-      auto keep = dev.createBuffer(2 * (rb + lb), wg::MAP_READ | wg::COPY_DST);
-      auto e = dev.encoder();
-      for (int k = 0; k < 2; k++) {
-        const Arm& a = k ? nat : twin;
-        e.clearBuffer(*ln.readingsBuf, 0, rb);
-        if (small) e.clearBuffer(*ln.logitBuf, 0, lb);
-        e.beginComputePass();
-        e.setPipeline(*a.pipe.p);
-        e.setBindGroup(*a.group);
-        e.dispatch(a.x, (uint32_t)nb);
-        e.endPass();
-        e.copyBufferToBuffer(*ln.readingsBuf, 0, *keep, k * (rb + lb), rb);
-        if (small) e.copyBufferToBuffer(*ln.logitBuf, 0, *keep, k * (rb + lb) + rb, lb);
-      }
-      dev.submit(e)->wait();
-      const uint8_t* got = dev.read(*keep, 0, keep->size);
-      const bool same = !memcmp(got, got + rb + lb, rb + lb);
-      log(std::string("native net front.twins.") + net + (same ? ": the int8 twin's outputs on " + std::to_string(nb) + " frames, bit for bit" : ": not the int8 twin's outputs on this device, not used"));
-      if (same) arms.push_back(nat);
-    }
   }
   const uint32_t R = C.TWIN_ROUNDS, A = (uint32_t)arms.size();
   auto qs = dev.createQuerySet(2 * A * R);
@@ -1144,22 +1096,13 @@ void FrontHalf::measureTwins(Lane& ln, int nb) {
     }
     nets[net] = keep->precision;
   }
-  twins = out;
   for (auto& l : lanes) bindNets(*l);
   log("int8 twins measured on " + std::to_string(nb) + " frames: " + out.dump());
   log("nets: bank " + nets["bank"].dump() + ", small " + nets["small"].dump() + ", large " + nets["large"].dump());
 }
 
-json FrontHalf::report() const {
-  return {{"size", bt.size}, {"ceiling", bt.ceiling}, {"Bmax", bt.Bmax}, {"lanes", bt.lanes}, {"inflight", bt.inflight}, {"bound", bt.bound}, {"perFrame", bt.perFrame}, {"capMs", bt.capMs}, {"budget", bt.budget}, {"planMs", bt.planMs}};
-}
-
 // ai: decoder.mjs Batcher
-void Batcher::log(const std::string& m) {
-  events.push_back(m);
-  if (events.size() > 16) events.pop_front();
-  fh->log("batch auto: " + m);
-}
+void Batcher::log(const std::string& m) { fh->log("batch auto: " + m); }
 
 std::pair<int, std::string> Batcher::limitFor(int n) const {
   const double slot = slotBytes;
@@ -1186,10 +1129,10 @@ void Batcher::laned(int n, int B, const std::string& why) {
 
 void Batcher::start() {
   const int prev = size;
-  const int best = restart ? std::min(restart, Bmax) : prev > 0 ? std::min(prev, Bmax) : Bmax;
-  bound = restart ? "restarted at " + std::to_string(best) + " after the device was lost" : best < Bmax ? std::to_string(best) + ", the size the watch had come to before this plan" : BmaxWhy;
+  const int best = prev > 0 ? std::min(prev, Bmax) : Bmax;
+  bound = best < Bmax ? std::to_string(best) + ", the size the watch had come to before this plan" : BmaxWhy;
   size = best;
-  ceiling = restart ? best : Bmax;
+  ceiling = Bmax;
   over = 0; spare = 0;
   char m[300];
   snprintf(m, sizeof m, "batch auto: %d frames a batch (lanes of %d, %.0f MB each; %s)", best, Bmax, perFrame * Bmax / MiB, bound.c_str());

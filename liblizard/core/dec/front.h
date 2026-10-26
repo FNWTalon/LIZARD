@@ -1,7 +1,7 @@
 // ai: The GPU decoder's host, ported from the web's (liblizard/gpu/decoder.mjs FrontHalf and Batcher; the back half's
 // ai: lanes and dispatches from liblizard/gpu/back/{back,transform,soft,ldpc}.mjs; the proposer's from
 // ai: liblizard/gpu/bank_fcn2.mjs). What create() builds comes from the setup (setup.h); what a lane holds and what a
-// ai: batch records are ported here, name for name, so the two can be read side by side and their traces compared.
+// ai: batch records are ported here, name for name, so the two can be read side by side.
 // ai: Not ported: the probe, F9 and the grid (the fused pass 1 samples the frame), told frames (maps: the receiver is
 // ai: blind), the wasm back half.
 //
@@ -13,7 +13,6 @@
 #include <cmath>
 #include <array>
 #include <chrono>
-#include <deque>
 #include <mutex>
 #include <optional>
 
@@ -23,11 +22,11 @@ namespace lizard {
 
 // ai: The constants the web host states (gen.mjs exports them with the setup).
 struct Consts {
-  uint32_t VOTE_READS, LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, TS_INGEST, RING_SLACK, K, CELL, HYP, RING_COUNT, NODES_MAX, RESID, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK;
-  float TAU, EPS, TAU_TRACK;
-  uint32_t TILE, KEEP, B_CEIL;
+  uint32_t VOTE_READS, LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, RING_SLACK, K, CELL, HYP, RING_COUNT, NODES_MAX, RESID, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK;
+  float TAU, EPS;
+  uint32_t TILE, B_CEIL;
   double CAP_MS;
-  uint32_t TWIN_FRAMES, TWIN_ROUNDS, VERSION_MAX, SLOTS, ARGS_WORDS, argsWords, COUNTS, REC_BYTES, PAYLOAD;
+  uint32_t TWIN_FRAMES, TWIN_ROUNDS, VERSION_MIN, VERSION_MAX, SLOTS, ARGS_WORDS, argsWords, COUNTS, REC_BYTES, PAYLOAD;
   std::map<std::string, uint32_t> ARGS_SLOT;
   static Consts of(const json& c);
 };
@@ -54,7 +53,6 @@ struct Lane {
   BufP dumpBuf;   // ai: LIZ_DUMP_S's copy of the back half's spectrum, made on the first batch that dumps
   bool busy = false, watched = false;
   uint32_t W = 0, H = 0;
-  uint64_t gridStride = 0;
   BufP peaksBuf, selUni, framesBuf, mapsBuf, countsBuf, readingsBuf, candBuf, quadsBuf, scoreBuf, selBuf, resultBuf, heldUni, p5Uni, ldUni, measBuf, residBuf, refitDbg, histBuf, logitBuf, listBuf;
   GroupP refitGroup, refitPostGroup, pickGroup;   // ai: refitPostGroup: the tree's front.refitPost
   // ai: the finder's second round (decoder.mjs, gpu/wgsl/finder.mjs REDO): its frame records and its groups over them
@@ -75,7 +73,6 @@ struct Lane {
   BufP readBuf;
   BufP keepBuf;   // ai: run's keep: the kept frames' bytes, read back with the batch; let go by a batch that keeps none
   std::unique_ptr<BackLane> back;
-  uint64_t backBytes = 0;   // ai: the back lane's device bytes (plan prices them a frame of bh.B)
   uint64_t laneBytes = 0;
   std::vector<wg::Resource> lvEntries(bool second = false) const;
 };
@@ -109,17 +106,15 @@ struct FrameOut {
   uint64_t tag = 0;   // ai: the caller's, as enqueued
   int ring = -1, version = 0, n = 0, size = -1;
   bool held = false;
-  struct { float found = 0, score = 0, ring = -1, orient = 0, quad = 0; std::array<float, 9> H{}; std::array<float, 8> corners{}; std::array<float, 4> depths{}; } finder;
+  struct { float found = 0, ring = -1; std::array<float, 8> corners{}; } finder;
   bool hasWord = false;
-  struct { int version = 0, fps = 0; float score = 0; } word;
+  struct { int version = 0, fps = 0; } word;
   std::vector<uint32_t> counts;       // ai: COUNTERS a frame
   std::vector<uint32_t> backCounts;   // ai: the back half's COUNTS a frame
-  std::array<int, 5> verdicts{};      // ai: blocks a verdict: 0 not run, 1 verified, 2 declined, 3 stall or cap, 4 CRC
   std::vector<Record> records;        // ai: the frame's verified blocks
-  std::vector<uint32_t> hist;         // ai: HIST_BINS
   // ai: the pilots (SPEC 7.3; decoder.mjs pilotOf): the mean of the soft stage's per-block r over the even blocks the
   // ai: frame's version carries (pilotR: bit 0 of the painted count) and over the odd (pilotR2: bit 1), with their
-  // ai: standard errors, where the soft stage ran on it (pilotBlocks 0: none; a parity with no blocks NaN, version 1's odd)
+  // ai: standard errors, where the soft stage ran on it (pilotBlocks 0: none; NaN where no block of a parity was read)
   int pilotBlocks = 0;
   float pilotR = 0, pilotSd = 0, pilotR2 = 0, pilotSd2 = 0;
   // ai: the frame as the ring held it, w x h bytes in rows of w, where its batch kept it (run's keep: Save replays)
@@ -133,8 +128,6 @@ struct BatchOut {
   std::optional<double> gpuMs;
   double deviceMs = 0, done = 0;
   int carried = 0;
-  bool idle = false;
-  std::map<std::string, double> host;
   std::vector<std::pair<std::string, double>> stageMs;
 };
 
@@ -146,13 +139,11 @@ class FrontHalf;
 struct Batcher {
   FrontHalf* fh = nullptr;
   double budget = 0, capMs = 400;
-  int restart = 0;
   int size = 0, ceiling = 0, Bmax = 0, lanes = 2, inflight = 2;
   double perFrame = 0, shared = 0, room = 0, slotBytes = 0, planMs = 0;
   int cap = 0;
   std::string capWhy, bound, BmaxWhy;
   int over = 0, spare = 0;
-  std::deque<std::string> events;
   void log(const std::string& m);
   std::pair<int, std::string> limitFor(int n) const;
   void laned(int n, int B, const std::string& why);
@@ -169,12 +160,11 @@ struct InFlight {
   std::vector<uint32_t> axes;   // ai: each slot's axis word, as the batch ran it
   int nb = 0;
   uint32_t W = 0, H = 0;
-  uint64_t cntOff = 0, resOff = 0, histOff = 0, backOff = 0, tsOff = 0, readBytes = 0;
+  uint64_t cntOff = 0, resOff = 0, backOff = 0, tsOff = 0, readBytes = 0;
   uint64_t dumpBytes = 0;   // ai: LIZ_DUMP_S: the spectrum's bytes this batch copied out, 0 when not dumping
   uint32_t nq = 0;
   std::vector<std::string> stages;   // ai: profiled: the stage a timestamp pair each
   double submitted = 0, t0 = 0;
-  std::map<std::string, double> host;
   // ai: run's keep: the batch's first `kept` frames as the ring held them, copied out with the slots' copies into the
   // ai: lane's keepBuf (`keep`: each one's place and size), and the first where LIZ_DUMP wants it (dump)
   int kept = 0;
@@ -187,40 +177,35 @@ struct InFlight {
 class FrontHalf {
  public:
   // ai: variant: from variantsFor(); B auto always (the receiver's); budget: device memory the decoder may hold
-  // ai: (the web's is maxBufferSize; here a share of the device's own memory, Decoder chooses); nmax: the largest
-  // ai: picture a frame may name (1536, the ladder's top).
-  static std::unique_ptr<FrontHalf> create(wg::Device& d, ReadFile read, const std::string& variant, double budget, int restart = 0, std::function<void(const std::string&)> log = nullptr);
+  // ai: (the web's is maxBufferSize; here a share of the device's own memory, Decoder chooses).
+  static std::unique_ptr<FrontHalf> create(wg::Device& d, ReadFile read, const std::string& variant, double budget, std::function<void(const std::string&)> log = nullptr);
 
   wg::Device& dev;
   std::unique_ptr<Setup> S;
   Consts C;
   Batcher bt;
   std::function<void(const std::string&)> log;
-  std::string precision, floatPrecision, variant;
+  std::string variant;
   json nets;
   int cap = 256, nodesMax = 0, bankKeep = 4;
   uint32_t coarseFrom = 0;   // ai: the tree's front.coarseFrom: the bank's first round from this level
-  bool reg = true;
   std::array<float, 4> modules{};
-  json cascade;   // ai: { keep, rest, precision } or null
-  uint32_t nmaxFind = 1536;
+  json cascade;   // ai: { keep, precision } or null
 
   // ai: the nets now in use (measureTwins may swap a classifier for its int8 twin)
   Pipe classify, classify0;
   BufP weightsBuf, weightsBuf0;
   json twinForms;   // ai: the twins still to measure (null once measured)
-  json twins;       // ai: the measurement
   // ai: the LDPC kernel's form in use (gpu/back/tiers.mjs exportFor: 0 the rule's "ldpc" steps, k its "ldpcAlts"[k - 1]),
-  // ai: the forms still to be timed on the first batch, and the timing
+  // ai: and whether the forms are still to be timed on the first batch
   int ldpcForm = 0;
   bool ldpcPending = false;
-  json ldpcTimes;
 
   int B = 0;        // ai: the lanes' size
   std::vector<std::unique_ptr<Lane>> lanes;
-  struct Planned { uint32_t W = 0, H = 0, nmax = 0; };
+  struct Planned { uint32_t W = 0, H = 0; };
   std::optional<Planned> planned;
-  struct Ring { int R = 0; uint32_t W = 0, H = 0; std::shared_ptr<wg::Texture> tex; std::vector<Slot*> slots; std::vector<std::unique_ptr<Slot>> store; std::vector<BufP> staging; int head = 0, staged = 0; };
+  struct Ring { int R = 0; uint32_t W = 0, H = 0; std::shared_ptr<wg::Texture> tex; std::vector<Slot*> slots; std::vector<std::unique_ptr<Slot>> store; std::vector<BufP> staging; int head = 0; };
   std::optional<Ring> ring;
   double lastDone = 0;
   double lastDump = 0;   // ai: LIZ_DUMP's last frame written (front.cpp run)
@@ -231,7 +216,6 @@ class FrontHalf {
   int inflightMax() const { return bt.inflight; }
   double now() const { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - epoch).count(); }
 
-  bool needsPlan(uint32_t w, uint32_t h) const;
   void plan(uint32_t w, uint32_t h);
   // ai: A frame of luma onto the ring (the web's writeTexture path: recordings, the desktop): rows of w bytes,
   // ai: `stride` apart. Null when every slot is staged.
@@ -241,7 +225,6 @@ class FrontHalf {
   Slot* enqueueCamera(class CameraIngest& ci, AHardwareBuffer* hb, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t tag = 0);
   CameraIngest* ingest = nullptr;   // ai: the camera ingest whose timeline a batch waits on (set by the receiver)
   std::mutex ringMu;
-  int staged() { std::lock_guard<std::mutex> l(ringMu); return ring ? ring->staged : 0; }
   void release(Slot* s);
   Lane* freeLane();
   // ai: A batch of staged slots on a free lane: recorded and submitted. held: the held version (0 none).
@@ -254,7 +237,6 @@ class FrontHalf {
   BatchOut finish(std::unique_ptr<InFlight> f);
   // ai: the readback buffers of kept frames let go on every lane no batch is using (decoder thread)
   void dropKeep();
-  json report() const;
 
  private:
   explicit FrontHalf(wg::Device& d) : dev(d) {}
@@ -263,7 +245,7 @@ class FrontHalf {
   wg::Buffer& FB(const char* k) { return S->buf(S->tree["front"]["buffers"][k]); }
   BufP FBP(const char* k) { return S->bufPtr(S->tree["front"]["buffers"][k]); }
   std::unique_ptr<Lane> lane(int B);
-  void ensure(Lane& ln, uint32_t W, uint32_t H, uint32_t nmax);
+  void ensure(Lane& ln, uint32_t W, uint32_t H);
   void bindNets(Lane& ln);
   GroupP netGroup(Lane& ln, const Pipe& pipe, wg::Buffer& buf, bool small, bool second = false);
   void backLane(Lane& ln);

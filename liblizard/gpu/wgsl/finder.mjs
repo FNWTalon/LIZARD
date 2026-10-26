@@ -7,8 +7,7 @@
 // ai: line continued at depths 1-2, a light gap at 3-4, a 6 x 6 dark core at [5, 11) and a light edge 1 module wide
 // ai: inside it, centre 8 modules in from each edge. Blurred until the gap
 // ai: fuses it is a solid 10 x 10 square, centre 6 in. Adjacent centres are M - 16 (or M - 12) modules apart on a
-// ai: symbol M modules a side: M = 94, 158, 286 or 542 (the rings of 32, 64, 128 and 256 band cells; 222, the 96's,
-// ai: until 2026-10-10).
+// ai: symbol M modules a side: M = 158, 286 or 542 (the rings of 64, 128 and 256 band cells).
 import { DIMS } from "./common.mjs";
 import { RINGS as RING_CELLS } from "../../sim/lizard_pick.mjs";
 
@@ -17,7 +16,7 @@ export const CENTRE = [8, 6];
 export const K = 4;          // vote peaks a frame, so quads a frame
 export const CELL = 16;      // accumulator cell, level-0 pixels
 export const ORIENT = 8;     // 4 rotations x mirror
-// ai: The rings a hypothesis may be (sim/lizard_pick.mjs RINGS): an accumulator and a module count each. Four at most:
+// ai: The rings a hypothesis may be (sim/lizard_pick.mjs RINGS, three): an accumulator and a module count each. Four at most:
 // ai: the stages' uniforms hold the rings' module counts, node counts and lattices in one vec4 (P5, Pick, register.mjs
 // ai: Fit and Round, sample.mjs Lattice, gpu/decoder.mjs).
 export const RING_COUNT = RING_CELLS.length;

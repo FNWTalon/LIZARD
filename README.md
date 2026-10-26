@@ -32,58 +32,43 @@ In signal-processing terms this is OFDM, the modulation used by Wi-Fi and 4G/5G,
 ## What a frame looks like
 
 ```
- ▄▄▄▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄▄▄▄
- ██▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀██
- ██  ▄▄▄▄▄▄    ▄▄  ▄▄    ▄▄    ▄▄  ▄▄  ▄▄▄▄    ▄▄    ▄▄  ▄▄▄▄  ▄▄  ▄▄    ▄▄▄▄▄▄    ▄▄▄▄▄▄  ██
- ██  ██████    ▀▀  ▀▀    ▀▀    ▀▀  ▀▀  ▀▀▀▀    ▀▀    ▀▀  ▀▀▀▀  ▀▀  ▀▀    ▀▀▀▀▀▀    ██████  ██
- ██  ██████                                                                        ██████  ██
- ▀▀  ▀▀▀▀▀▀                                                                        ▀▀▀▀▀▀  ▀▀
- ██         ┌────────────────────────────────────────────────────────────────────┐         ██
- ██         │                                                                    │     ▄▄  ██
- ██  ▄▄     │                                                                    │     ▀▀  ██
- ██  ██     │                                                                    │     ▄▄  ██
- ██  ▀▀     │                                                                    │     ▀▀  ██
- ██  ▄▄     │                                                                    │         ██
- ██  ██     │                                                                    │         ██
- ██  ▀▀     │                                                                    │         ██
- ██  ▄▄     │                                                                    │         ██
- ██  ██     │                                                                    │         ██
- ██  ▀▀     │                                                                    │     ▄▄  ██
- ██         │                                                                    │     ██  ██
- ██  ▄▄     │                                                                    │     ▀▀  ██
- ██  ██     │                                                                    │         ██
- ██  ██     │                                                                    │         ██
- ██  ▀▀     │                            the picture                             │     ▄▄  ██
- ██         │                                                                    │     ▀▀  ██
- ██         │                      grey, looks like noise;                       │     ▄▄  ██
- ██  ▄▄     │               its spatial frequencies carry the data               │     ▀▀  ██
- ██  ▀▀     │                                                                    │     ▄▄  ██
- ██  ▄▄     │                                                                    │     ▀▀  ██
- ██  ██     │                                                                    │         ██
- ██  ██     │                                                                    │     ▄▄  ██
- ██  ██     │                                                                    │     ██  ██
- ██  ▀▀     │                                                                    │     ▀▀  ██
- ██         │                                                                    │         ██
- ██  ▄▄     │                                                                    │     ▄▄  ██
- ██  ██     │                                                                    │     ██  ██
- ██  ▀▀     │                                                                    │     ▀▀  ██
- ██  ▄▄     │                                                                    │     ▄▄  ██
- ██  ▀▀     │                                                                    │     ▀▀  ██
- ██  ▄▄     │                                                                    │         ██
- ██  ██     │                                                                    │     ▄▄  ██
- ██  ▀▀     │                                                                    │     ▀▀  ██
- ██         └────────────────────────────────────────────────────────────────────┘         ██
- ▄▄  ▄▄▄▄▄▄                                                                        ▄▄▄▄▄▄  ▄▄
- ██  ██████                                                                        ██████  ██
- ██  ██████      ▄▄  ▄▄    ▄▄▄▄  ▄▄▄▄  ▄▄▄▄    ▄▄  ▄▄    ▄▄      ▄▄  ▄▄▄▄  ▄▄▄▄    ██████  ██
- ██  ▀▀▀▀▀▀      ▀▀  ▀▀    ▀▀▀▀  ▀▀▀▀  ▀▀▀▀    ▀▀  ▀▀    ▀▀      ▀▀  ▀▀▀▀  ▀▀▀▀    ▀▀▀▀▀▀  ██
- ██▄▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄▄██
- ▀▀▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀
+ ▄▄▄▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ██▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+ ██  ▄▄▄▄▄▄    ▄▄  ▄▄    ▄▄    ▄▄  ▄▄  ▄▄▄▄    ▄▄    ▄▄▄▄▄▄▄▄▄▄▄
+ ██  ██████    ▀▀  ▀▀    ▀▀    ▀▀  ▀▀  ▀▀▀▀    ▀▀    ▀▀▀▀▀▀▀▀▀▀▀
+ ██  ██████
+ ▀▀  ▀▀▀▀▀▀
+ ██         ┌───────────────────────────────────────────────────
+ ██         │
+ ██  ▄▄     │
+ ██  ██     │
+ ██  ▀▀     │   the picture
+ ██         │
+ ██         │   grey, looks like noise;
+ ██         │   its spatial frequencies
+ ██  ▄▄     │   carry the data
+ ██  ██     │
+ ██  ▀▀     │
+ ██         │
+ ██  ▄▄     │
+ ██  ▀▀     │
+ ██  ▄▄     │
+ ██  ▀▀     │
+ ██  ▄▄     │
+ ██  ▀▀     │
+ ██  ▄▄     │
+ ██  ▀▀     │
+ ██  ▄▄     │
+ ██  ▀▀     │
+ ██         │
+ ██  ▄▄     │
+ ██  ██     │
+ ██  ▀▀     │
 ```
 
-A real symbol, module for module: LIZARD-16 in the 32 ring, each character one module wide and two tall
-(`▀` the top module dark, `▄` the bottom, `█` both). The 128 ring, the default, has the same border with longer
-sides.
+The top-left corner of a real symbol, module for module: LIZARD-16 in the 64 ring (158 modules a side), each
+character one module wide and two tall (`▀` the top module dark, `▄` the bottom, `█` both). The 128 ring, the
+default, and the 256 ring have the same border with longer sides.
 
 - **The picture** is n x n samples (256 to 1536 a side, depending on how much the frame carries), drawn on the
   screen at whole pixels. Only data is ever painted inside it.
@@ -276,7 +261,7 @@ grows with its frequency), which is turned back before decoding.
   verified end to end.
 - **The decoder on the GPU.** Each frame needs finding, registering, a 2D FFT of up to 1536 x 1536 samples and LDPC
   decoding, up to 120 frames a second on a phone; a phone's GPU does that in a few milliseconds a frame. A C decoder
-  is the reference and runs where there is no suitable GPU.
+  is the reference and runs where there is no suitable GPU, and in the web receiver.
 
 ## Words used here
 
@@ -291,7 +276,7 @@ grows with its frequency), which is turned back before decoding.
 | code rate | the share of the sent bits that is data | code rate |
 | rate profile | which code rate each block gets, by its frequencies | unequal error protection |
 | version, LIZARD-k | how much a frame holds: LIZARD-k has k sub-channels and is version k / 8. LIZARD-592 holds 72 blocks, about 33.8 KB | QR version (capacity) |
-| ring | the border's size: 32, 64, 128 or 256 band cells a side, 128 by default. It does not depend on the version: any ring can carry any picture. A larger ring gives the picture more of the screen but asks for a steadier camera | none (a QR code's size follows its version) |
+| ring | the border's size: 64, 128 or 256 band cells a side, 128 by default. It does not depend on the version: any ring can carry any picture. A larger ring gives the picture more of the screen but asks for a steadier camera | none (a QR code's size follows its version) |
 | format word | the short Reed-Solomon-coded header in the border, naming the version and the frame rate | format information |
 | timing track | the known pattern in the border's band | timing pattern |
 | corner mark | the square at each corner of the border | finder pattern |
@@ -329,7 +314,7 @@ format's arithmetic. Its sections:
 | section | covers |
 |---|---|
 | 1 to 2 | what LIZARD is, its terms, its fixed constraints (luminance only, generic screens and cameras, a border that grows outwards only, a self-describing symbol), and what conformance means |
-| 3. The formats | the 128 versions (LIZARD-8 to LIZARD-1024: sub-channels in steps of 8), the rate profile that sets each block's code rate, the picture size each version takes, the four rings, capacity, and how a sender picks a version for a screen |
+| 3. The formats | the 127 versions (LIZARD-16 to LIZARD-1024: sub-channels in steps of 8), the rate profile that sets each block's code rate, the picture size each version takes, the three rings, capacity, and how a sender picks a version for a screen |
 | 4. The border | module by module: rim, ring, gap, band, guard, the corner marks, the timing track and the margin |
 | 5. The format word | its fields (magic, version, display rate), its Reed-Solomon code and where its cells sit in each ring |
 | 6. The picture | the coefficient order, QPSK, the transform, clipping to grey, resampling onto the painted grid and where a receiver samples |
@@ -348,8 +333,8 @@ between frames is the last format word it read: a frame whose own word is unread
 
 ### Receiving on the CPU (`liblizard/src/`)
 
-The reference decoder, in C. It runs as WebAssembly with SIMD in a pool of web workers, and natively in the Android
-app on NEON with a pool of threads:
+The reference decoder, in C. It runs as WebAssembly with SIMD in a pool of web workers (the web receiver's one
+decoder), and natively in the Android and desktop apps on a pool of threads (NEON on arm64):
 
 1. **Find.** The image goes to luma, and a local threshold makes a black and white copy for the finder alone. The
    corner marks are searched for at full, half and quarter scale. Each candidate quad is scored by reading the timing
@@ -366,10 +351,11 @@ app on NEON with a pool of threads:
 
 ### Receiving on the GPU (`liblizard/gpu/`)
 
-Designed from the format for the GPU, not ported from the C. It is written in WGSL and runs on WebGPU in a browser.
-Natively, the same WGSL is compiled to SPIR-V by naga and run by a C++ Vulkan host (`liblizard/core/`), which in the
-Android app takes camera frames with no copy. Frames go in batches: one batch is one submission and one readback. The
-nets and kernels run in int8 where a device supports it, else f16, else f32.
+Designed from the format for the GPU, not ported from the C. It is written in WGSL; its setup (the kernels' sizes,
+tables and nets) is built by its JavaScript host in `liblizard/gpu/`, and the WGSL is compiled to SPIR-V by naga and
+run by a C++ Vulkan host (`liblizard/core/`) in the Android and desktop apps; in the Android app it takes camera
+frames with no copy. The web receiver does not run it: it decodes with the C. Frames go in batches: one batch is one
+submission and one readback. The nets and kernels run in int8 where a device supports it, else f16, else f32.
 
 1. **Front half: find and register.**
    - A pyramid of each frame feeds a trained fully convolutional proposer, which marks likely corner marks.
@@ -408,7 +394,7 @@ and the author's monitors:
 |---|---|
 | Android app, two codes side by side (2:1 crop) | 3.8 MB/s median and 4.0 max over 13 minutes on a 1080p monitor (logged 2026-10-08): two LIZARD-592 codes of 70 blocks each at 60 pictures a second from the desktop sender, 96% of the blocks read on a clean capture |
 | Android app, one code | 1.3 to 1.6 MB/s logged (2026-10-01, before the code rate followed the frequency) |
-| Chrome on the same phone | about 0.55 to 0.8 MB/s (one code, before the code rate followed the frequency) |
+| Chrome on the same phone, through the web receiver's former GPU decoder | about 0.55 to 0.8 MB/s (one code, 2026-09-27, before the code rate followed the frequency). That decoder left the page on 2026-10-25; the page now decodes with the C, and no current figure for the page's C decoder on a phone exists |
 
 Once the Android app's phase lock holds, the rate stays: its holds, by hand, read 0 to 3% of captures short (one
 phone, two monitors). What moves the rate from there is the camera, not the decoder: the app asks the camera for its
@@ -428,7 +414,7 @@ rate with a real camera has been measured yet.
 
 | folder | what it is |
 |---|---|
-| `liblizard/` | the library: the C codec (`src/`, the format's reference), the GPU decoder (`gpu/`, WebGPU), the native engine (`core/`: the decoder on Vulkan, the C on the CPU, the transfer, the sender), the generator that compiles the GPU decoder for Vulkan (`gen/`), and a C API with WebAssembly and Kotlin bindings (`include/`, `api/`, `bindings/`) |
+| `liblizard/` | the library: the C codec (`src/`, the format's reference), the GPU decoder's WGSL and its host and the sender's WebGPU encoder (`gpu/`), the native engine (`core/`: the decoder on Vulkan, the C on the CPU, the transfer, the sender), the generator that compiles the GPU decoder for Vulkan (`gen/`), and a C API with WebAssembly and Kotlin bindings (`include/`, `api/`, `bindings/`) |
 | `lizard-web/` | the web app: sender and receiver pages, installable as a PWA |
 | `lizard-android/` | the Android app: receiver and sender, native Vulkan decoding |
 | `lizard-desktop/` | the desktop app: sender and receiver, a Compose Desktop app drawing the code through a native Vulkan presenter and reading a camera (V4L2, Media Foundation or AVFoundation) into the native decoders |
@@ -445,14 +431,18 @@ start from the codec built to WebAssembly; the Android app and the desktop app a
 from it. Node 22 or later (the web checks drive Chrome through Node's own WebSocket); tested with Node 22, Rust 1.93,
 CMake 3.28 and emsdk 6.0.9.
 
-**The codec** ([Emscripten](https://emscripten.org)):
+**The codec** ([Emscripten](https://emscripten.org) and CMake 3.22 or later):
 
 ```
 source <emsdk>/emsdk_env.sh
-liblizard/build.sh             # liblizard/build/ob.mjs and ob.wasm
-liblizard/build.sh wirehair    # liblizard/build/wirehair.mjs, the fountain code
-liblizard/build.sh zstd        # liblizard/build/zstd.mjs, the transfer's compression
+liblizard/build.sh             # liblizard/bindings/wasm/dist/lizard.mjs and lizard.wasm: the codec, the transfer, Wirehair and zstd
+liblizard/build.sh mvp         # the same module as WebAssembly 1.0 (lizard-mvp.*), the library's fallback without SIMD
 ```
+
+`liblizard/build/ob.mjs`, the path the pages and tools import the codec by, re-exports the module. The web pages
+load its SIMD build, which needs WebAssembly SIMD and wasm exception handling (the library's `init()` falls back to
+the MVP build elsewhere; [liblizard/README.md](liblizard/README.md)). `liblizard/build.sh wirehair` and
+`liblizard/build.sh zstd`, the steps that once built those two separately, now run the default build.
 
 **The web app.** Serve the repository's root over HTTP and open `lizard-web/index.html`; a camera needs HTTPS or
 localhost. `node lizard-web/server.mjs` serves it on 8080 and, with a self-signed certificate made by openssl, on 8443
@@ -479,7 +469,7 @@ with the packages `platforms;android-36`, `build-tools;35.0.0`, `ndk;27.1.122970
 or later).
 
 **The desktop app** needs CMake 3.22 or later (with `JAVA_HOME` naming a JDK where CMake does not find one for its
-JNI headers) and, on Linux, the X11, XRandR, Xcomposite and Xext development files; `packageDeb`
+JNI headers) and, on Linux, the X11 and XRandR development files; `packageDeb`
 also needs `dpkg-deb` and `fakeroot`. On Linux its receiver loads TurboJPEG (`libturbojpeg.so.0`) at run time for
 cameras that send MJPEG; Windows and macOS decode MJPEG themselves.
 

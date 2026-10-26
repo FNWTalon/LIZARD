@@ -1,9 +1,9 @@
 // ai: The receiver's JNI face (2026-10-25): dev.lizard.desktop.Native's rx functions over an RxSession (rx_session.h),
 // ai: whose pointer is the handle. No callback into the JVM: every native thread (the camera's capture thread, the
-// ai: receiver's, the trigger's schedule) stays C++ alone, and the app polls (rxStats, rxPreview) or blocks a thread of
-// ai: its own (rxCaptures, the phase lock's). No C++ exception crosses into the JVM: a refusal comes back as its
-// ai: sentence ("" none), rxCreate's and rxReplayNew's through txError's channel (jni_util.h) with 0. Strings are
-// ai: jni_util.h's true UTF-8 and UTF-16. The receiver's log goes to stderr, as the sender's presenter's does.
+// ai: receiver's) stays C++ alone, and the app polls (rxStats, rxPreview). No C++ exception crosses into the JVM: a
+// ai: refusal comes back as its sentence ("" none), rxCreate's and rxReplayNew's through txError's channel (jni_util.h)
+// ai: with 0. Strings are jni_util.h's true UTF-8 and UTF-16. The receiver's log goes to stderr, as the sender's
+// ai: presenter's does.
 #include <jni.h>
 
 #include <cmath>
@@ -54,12 +54,6 @@ void quietly(const char* what, F f) {
   }
 }
 
-jdoubleArray doubles(JNIEnv* e, const std::vector<double>& v) {
-  jdoubleArray a = e->NewDoubleArray(jsize(v.size()));
-  if (a && !v.empty()) e->SetDoubleArrayRegion(a, 0, jsize(v.size()), v.data());
-  return a;   // ai: null only with the VM's OutOfMemoryError pending
-}
-
 jlongArray longs(JNIEnv* e, const std::vector<jlong>& v) {
   jlongArray a = e->NewLongArray(jsize(v.size()));
   if (a && !v.empty()) e->SetLongArrayRegion(a, 0, jsize(v.size()), v.data());
@@ -80,15 +74,14 @@ FN(jstring, rxCameras)(JNIEnv* e, jclass) {
   return jstr(e, s);
 }
 
-// ai: decoder auto|gpu|cpu, precision auto|int8|f16|f32, layout 1:1|2:1; storeDir the transfer's (its lizard-xfer
-// ai: folder kept across sessions to resume); cacheDir the pipeline cache's ("" none). 0 with why in txError().
-FN(jlong, rxCreate)(JNIEnv* e, jclass, jstring assets, jstring cacheDir, jstring storeDir, jstring decoder, jstring precision, jstring layout) {
+// ai: decoder auto|gpu|cpu, layout 1:1|2:1; storeDir the transfer's (its lizard-xfer folder kept across sessions to
+// ai: resume); cacheDir the pipeline cache's ("" none). 0 with why in txError().
+FN(jlong, rxCreate)(JNIEnv* e, jclass, jstring assets, jstring cacheDir, jstring storeDir, jstring decoder, jstring layout) {
   lizard::RxSession::Config c;
   c.assets = str(e, assets);
   c.cacheDir = str(e, cacheDir);
   c.storeDir = str(e, storeDir);
   c.decoder = str(e, decoder);
-  c.precision = str(e, precision);
   c.layout = str(e, layout);
   c.log = logLine;
   try {
@@ -168,38 +161,6 @@ FN(jstring, rxStats)(JNIEnv* e, jclass, jlong h) {
   return jstr(e, s);
 }
 
-// ai: Receiver::series as a double[], asked at every capture by the phase lock: no JSON on that path
-FN(jdoubleArray, rxSeries)(JNIEnv* e, jclass, jlong h, jdouble sinceMs) {
-  std::vector<double> v{0};
-  if (h) quietly("series", [&] { v = rs(h)->series(sinceMs); });
-  return doubles(e, v);
-}
-
-// ai: blocks this thread (the lock's) up to timeoutMs: (ns, delayed) pairs
-FN(jlongArray, rxCaptures)(JNIEnv* e, jclass, jlong h, jint timeoutMs) {
-  std::vector<jlong> v;
-  if (h) quietly("captures", [&] {
-    for (const int64_t x : rs(h)->captures(timeoutMs)) v.push_back(jlong(x));
-  });
-  return longs(e, v);
-}
-
-FN(void, rxWake)(JNIEnv*, jclass, jlong h) {
-  if (h) quietly("wake", [&] { rs(h)->wake(); });
-}
-
-FN(jstring, rxTrigger)(JNIEnv* e, jclass, jlong h, jlong periodNs) {
-  if (!h) return jstr(e, "no receiver");
-  return jstr(e, refusal([&] {
-                std::string why;
-                return rs(h)->trigger(int64_t(periodNs), why) ? std::string() : why.empty() ? std::string("the camera refused its trigger") : why;
-              }));
-}
-
-FN(void, rxDelay)(JNIEnv*, jclass, jlong h, jlong ns) {
-  if (h) quietly("delay", [&] { rs(h)->delay(int64_t(ns)); });
-}
-
 // ai: The newest crop newer than `since` (a negative since: any), at most `side` px on its long side and never more
 // ai: than `out` holds (the side shrunk to fit a short array), its rows of w into out: [seq, w, h], or null.
 FN(jlongArray, rxPreview)(JNIEnv* e, jclass, jlong h, jlong since, jint side, jbyteArray out) {
@@ -277,8 +238,8 @@ FN(jstring, rxReplayEnd)(JNIEnv* e, jclass, jlong replay, jstring rxStats, jstri
   return jstr(e, o.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 }
 
-// ai: The camera stopped and closed, the lock's waits ended, then the receiver (rx_session.h): no other rx call on
-// ai: this handle during or after it (the lock's thread woken and joined first).
+// ai: The camera stopped and closed, then the receiver (rx_session.h): no other rx call on this handle during or after
+// ai: it.
 FN(void, rxDestroy)(JNIEnv*, jclass, jlong h) {
   if (h) quietly("destroy", [&] { delete rs(h); });
 }

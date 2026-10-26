@@ -3,15 +3,16 @@
 // ai: build their tables from, read from the wasm so the GPU never holds a code of its own.
 import { init, Focus } from "../../sim/ob.mjs";
 import { VERSIONS, CODES } from "../wgsl/back_tiers.mjs";
+import { VERSION_MIN } from "../wordcode.mjs";
 
-// ai: The codec's profiles and codes: profiles[v] = [{ c, firstBlock, sub0, count }] for v = 1 .. VERSIONS (the
-// ai: wasm's focus_tiers_for at 8 v), codes[c] in CODES' order (ldpcCode-shaped, from a codec holding a block of
-// ai: each), and the format's bit map mode.
+// ai: The codec's profiles and codes: profiles[v] = [{ c, firstBlock, sub0, count }] for v = VERSION_MIN .. VERSIONS
+// ai: (the wasm's focus_tiers_for at 8 v; profiles[0] and [1] null, no format of 0 or 1 block), codes[c] in CODES' order (ldpcCode-shaped, from a codec holding a block
+// ai: of each). The bit map is LINEAR, the format's one, in every table built from these.
 export async function ruleTables() {
   const M = await init();
   const pT = M._malloc(4 * 3 * 4);   // ai: up to FOCUS_TIERS (4) tiers of (rate, blocks, sub-channels)
-  const profiles = [null];
-  for (let v = 1; v <= VERSIONS; v++) {
+  const profiles = [null, null];
+  for (let v = VERSION_MIN; v <= VERSIONS; v++) {
     const n = M._focus_tiers_for(8 * v, pT);
     if (n < 1) throw new Error(`focus_tiers_for(${8 * v}) gave no profile`);
     const t = M.HEAP32.slice(pT >> 2, (pT >> 2) + 3 * n);
@@ -29,7 +30,7 @@ export async function ruleTables() {
   M._free(pT);
   const fc = new Focus(256, 0, 1, { tiers: CODES.map(({ rate }) => [rate, 1]) });
   try {
-    const bitmap = fc.bitmap, pD = M._malloc(64);
+    const pD = M._malloc(64);
     const codes = CODES.map((_, t) => {
       M._focus_ldpc_tables(t, pD, 0);
       const d = M.HEAP32.slice(pD >> 2, (pD >> 2) + 12);
@@ -42,7 +43,7 @@ export async function ruleTables() {
       return code;
     });
     M._free(pD);
-    return { profiles, codes, bitmap };
+    return { profiles, codes };
   } finally { fc.free(); }
 }
 

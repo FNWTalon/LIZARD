@@ -1,9 +1,11 @@
 package dev.lizard.desktop
 
+import dev.lizard.pick.Pick
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import dev.lizard.readout.Readout
 import dev.lizard.tar.Bundle
 import dev.lizard.tar.TAR_TYPE
 import dev.lizard.tar.TarEntry
@@ -181,8 +183,8 @@ class CodeCanvas(private val s: SendState) : Canvas() {
             g2.font = name; g2.color = FG
             g2.drawString(fit(g2, it.name, textW), x0 + 52, y + 12 + 17)
             g2.font = sub; g2.color = MUTED
-            val line = if (it.dir) "${it.files} ${if (it.files == 1) "file" else "files"} · ${Fmt.bytes(it.size)}${if (it.links > 0) ", ${it.links} ${if (it.links == 1) "link" else "links"} skipped" else ""}"
-                else Fmt.bytes(it.size)
+            val line = if (it.dir) "${it.files} ${if (it.files == 1) "file" else "files"} · ${Readout.bytes(it.size)}${if (it.links > 0) ", ${it.links} ${if (it.links == 1) "link" else "links"} skipped" else ""}"
+                else Readout.bytes(it.size)
             g2.drawString(fit(g2, line, textW), x0 + 52, y + 12 + 36)
             // ai: Remove: an x in a 40 px square at the row's end
             val rx = x0 + w - 40; val ry = y + 12
@@ -268,18 +270,18 @@ class CodeCanvas(private val s: SendState) : Canvas() {
 
 }
 
-// ai: The run (the web's send.mjs, lizard-android/.../Send.kt SendState): the settings, kept (Prefs), the sender and the
-// ai: presenter, and what the column shows. Start makes the sender (txCreate; the GPU painter's txPrepare off the UI
-// ai: thread where the encoder is not the CPU), then, once the code area has a size and is shown, picks the format from
-// ai: its room, configures, and starts the presenter on the canvas. A change of the area's size,
-// ai: Size, Gap, Ring, Codes or Blocks re-picks, and configures where the format changed (a configure drops the frames
-// ai: painted ahead; the transfer goes on, as the web's re-pick); Pictures a second configures (the word states it) and
-// ai: tells the presenter. Every Native call here is on the UI thread but txCreate and txPrepare; the native side holds
-// ai: one lock for configure and the presenter's take.
+// ai: The run (the web's send.mjs, lizard-android/.../Send.kt SendState): the settings, kept (Prefs), the sender and
+// ai: the presenter, and what the column shows. Start makes the sender (txCreate; txPrepare off the UI thread whatever
+// ai: the encoder: the presenter shows the code from the painter's device), then, once the code area has a size and is
+// ai: shown, picks the format from its room, configures, and starts the presenter on the canvas. A change of the area's
+// ai: size, Size, Spacing, Margin, Ring, Codes or Blocks re-picks, and configures where the format changed (a configure
+// ai: drops the frames painted ahead; the transfer goes on, as the web's re-pick); FPS configures (the word states it)
+// ai: and tells the presenter. Every Native call here is on the UI thread but txCreate and txPrepare; the native side
+// ai: holds one lock for configure and the presenter's take.
 class SendState {
     sealed interface Phase { data object Idle : Phase; data object Preparing : Phase; data object On : Phase; data class Error(val why: String) : Phase }
-    // ai: what is painted: the format configured
-    data class Format(val n: Int, val subch: Int, val span: Int, val fps: Int, val codes: Int, val gap: Int, val painter: Int)
+    // ai: what is painted: the format configured (its picture the sender's own, focus_n_for, in its stats)
+    data class Format(val subch: Int, val span: Int, val fps: Int, val codes: Int, val gap: Int, val painter: Int)
 
     // ai: What Start sends (2026-10-16): one file as itself, or several files or a folder as one tar
     // ai: (../liblizard/kotlin/Tar.kt Bundle, the web sender's rule), made from the selection (items); `reading` while
@@ -330,7 +332,8 @@ class SendState {
     var enc by mutableStateOf(Prefs.enc.let { if (it == "gpu" || it == "cpu") it else "auto" })
     // ai: the painter the sender runs on now, "gpu" or "cpu" ("" before a send): the Encoder chip auto marks (2026-10-05)
     val painterNow: String get() = sender?.str("painter") ?: ""
-    var blocks by mutableStateOf(Prefs.blocks.coerceIn(0, 128))
+    // ai: 0 auto, else 2 to 128 (a kept 1, one block a frame, which is no format, reads as auto)
+    var blocks by mutableStateOf(Prefs.blocks.coerceIn(0, 128).let { if (it == 1) 0 else it })
     var fps by mutableStateOf(if (Prefs.vsync) Pick.fpsOf(Prefs.fps) else Prefs.fps.coerceIn(1, 60))
     // ai: VSync (2026-10-23, on by default): while the code is shown its monitor holds a refresh the rate divides, the
     // ai: nearest 60 Hz, where its own does not (a 165 Hz laptop at 60: pictures of 3, 3, 2 and 3 refreshes), and is put
@@ -338,9 +341,9 @@ class SendState {
     // ai: a 1 to 60 slider without it; VSync turned on takes a slider's rate to the nearest chip.
     var vsync by mutableStateOf(Prefs.vsync)
     var size by mutableStateOf(Prefs.size.coerceIn(25, 100))
-    var spacing by mutableStateOf(Prefs.spacing.coerceIn(Pick.SPACING_MIN, Pick.SPACING_MAX))
-    var margin by mutableStateOf(Prefs.margin.coerceIn(Pick.QUIET, Pick.MARGIN_MAX))
-    var ring by mutableStateOf(Prefs.ring.let { if (it in 0..3) it else -1 })
+    var spacing by mutableStateOf(Prefs.spacing.coerceIn(Room.SPACING_MIN, Room.SPACING_MAX))
+    var margin by mutableStateOf(Prefs.margin.coerceIn(Pick.QUIET, Room.MARGIN_MAX))
+    var ring by mutableStateOf(Prefs.ring.let { if (it in Pick.RINGS.indices) it else -1 })
     var codes by mutableStateOf(if (Prefs.codes == 2) 2 else 1)
     var settingsOpen by mutableStateOf(Prefs.settingsOpen)
     var toolsOpen by mutableStateOf(Prefs.toolsOpen)
@@ -389,11 +392,11 @@ class SendState {
     val sending get() = phase == Phase.On || phase == Phase.Preparing
     val canStart get() = loadError.isEmpty() && !sending && (test || (choice != null && !reading))
     val railShown get() = collapsed
-    val ringIndex get() = if (ring in 0..3) ring else Pick.RING_DEFAULT
+    val ringIndex get() = if (ring in Pick.RINGS.indices) ring else Pick.RING_DEFAULT
     // ai: a symbol's room in the area, device px, the Size slider's share of it (send.mjs room)
-    val room get() = Pick.room(areaW, areaH, codes, ringIndex, spacing, margin) * size / 100.0
+    val room get() = Room.room(areaW, areaH, codes, ringIndex, spacing, margin) * size / 100.0
     // ai: the margin past the quiet zone the presenter keeps at the area's edges, for the ring configured
-    private val edge get() = Pick.edgeShare(fmt?.span ?: Pick.span(ringIndex), margin).toFloat()
+    private val edge get() = Room.edgeShare(fmt?.span ?: Pick.span(ringIndex), margin).toFloat()
     // ai: what auto takes in the area now (0 while it has no size): the configured format's while sending
     val autoBlocks get() = fmt?.takeIf { blocks == 0 }?.let { it.subch / 8 } ?: if (areaW > 0 && areaH > 0) Pick.pick(room, ringIndex) / 8 else 0
     // ai: what the code offers at most, KB/s: codes x blocks a frame x 469 B x the pictures a second it can show, the
@@ -684,7 +687,7 @@ class SendState {
             }
         }
     }
-    fun chooseBlocks(b: Int) { blocks = b.coerceIn(0, 128); Prefs.blocks = blocks }
+    fun chooseBlocks(b: Int) { blocks = b.coerceIn(0, 128).let { if (it == 1) 0 else it }; Prefs.blocks = blocks }
     fun chooseFps(v: Int) { fps = v.coerceIn(1, 60); Prefs.fps = fps }
     fun chooseVsync(on: Boolean) {
         vsync = on; Prefs.vsync = on
@@ -692,9 +695,9 @@ class SendState {
         if (p != 0L) Native.presentVsync(p, on)
     }
     fun chooseSize(v: Int) { size = v.coerceIn(25, 100); Prefs.size = size }
-    fun chooseSpacing(v: Int) { spacing = v.coerceIn(Pick.SPACING_MIN, Pick.SPACING_MAX); Prefs.spacing = spacing }
-    fun chooseMargin(v: Int) { margin = v.coerceIn(Pick.QUIET, Pick.MARGIN_MAX); Prefs.margin = margin }
-    fun chooseRing(v: Int) { ring = if (v in 0..3) v else -1; Prefs.ring = ring; repick() }
+    fun chooseSpacing(v: Int) { spacing = v.coerceIn(Room.SPACING_MIN, Room.SPACING_MAX); Prefs.spacing = spacing }
+    fun chooseMargin(v: Int) { margin = v.coerceIn(Pick.QUIET, Room.MARGIN_MAX); Prefs.margin = margin }
+    fun chooseRing(v: Int) { ring = if (v in Pick.RINGS.indices) v else -1; Prefs.ring = ring; repick() }
     fun chooseCodes(v: Int) { codes = if (v == 2) 2 else 1; Prefs.codes = codes; repick() }
     fun commitFps() {
         if (phase != Phase.On) return
@@ -732,7 +735,7 @@ class SendState {
         if (h == 0L || p != 0L || !canvas.isShowing || areaW <= 0 || areaH <= 0) return
         if (!configure()) return
         canvas.presenting = true
-        val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, false, vsync, canvas.place())
+        val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, vsync, canvas.place())
         if (pr == 0L) { fail("The code cannot be shown: ${Native.txError()}"); return }
         p = pr
         if (paused) Native.presentPause(p, true)
@@ -744,11 +747,11 @@ class SendState {
     private fun configure(): Boolean {
         if (h == 0L) return false
         val subch = if (blocks > 0) 8 * blocks else Pick.pick(room, ringIndex)
-        val f = Format(Pick.nFor(subch), subch, Pick.span(ringIndex), fps, codes, if (codes > 1) Pick.gapOf(spacing) else 0,
+        val f = Format(subch, Pick.span(ringIndex), fps, codes, if (codes > 1) Room.gapOf(spacing) else 0,
             when (enc) { "cpu" -> 0; "gpu" -> 1; else -> 2 })
         if (f == fmt) return true
         val threads = min(8, maxOf(1, Runtime.getRuntime().availableProcessors() - 2))
-        val err = Native.txConfigure(h, f.n, f.subch, f.span, f.fps, f.codes, f.gap, threads, f.painter, Native.assets)
+        val err = Native.txConfigure(h, f.subch, f.span, f.fps, f.codes, f.gap, threads, f.painter, Native.assets)
         if (err.isNotEmpty()) { fail(err); return false }
         fmt = f
         val st = parse(Native.txStats(h))
@@ -772,7 +775,7 @@ class SendState {
     // ai: what goes, "<compressed> (<raw> raw)" once the transfer is made, "<raw> raw" while it is being made (the web's
     // ai: and the app's the same)
     // ai: "raw" kept with its figure (a no-break space, 2026-10-23: "(47 KB / raw)" broke there)
-    private fun sizeText() = if (compressed > 0) "${Fmt.bytes(compressed)} (${Fmt.bytes(fileSize)}${Fmt.NB}raw)" else "${Fmt.bytes(fileSize)}${Fmt.NB}raw"
+    private fun sizeText() = if (compressed > 0) "${Readout.bytes(compressed)} (${Readout.bytes(fileSize)}\u00a0raw)" else "${Readout.bytes(fileSize)}\u00a0raw"
 
     // ai: The state line (the web's #state): what is sent, paused, or the error (red; Main.kt colours it). A line naming
     // ai: the file says so in three parts, the name between (2026-10-23), for Parts.kt NameLine to hold its head on one
@@ -795,7 +798,7 @@ class SendState {
         if (phase != Phase.On || paused) return ""
         val f = fmt ?: return ""
         val pr = present ?: return ""
-        return Fmt.rate(pr.num("shownFps") * f.codes * sentBlocks * 469 / 1000.0)
+        return Readout.rate(pr.num("shownFps") * f.codes * sentBlocks * 469 / 1000.0)
     }
 
     // ai: The readout (the web's #tx, Developer Tools): the format and why, the file, the frame on the surface, a frame's
@@ -806,7 +809,7 @@ class SendState {
         val pr = present
         val b = sentBlocks
         val l = mutableListOf<String>()
-        l += "LIZARD-${f.subch} ($b blocks${if (tiers.isNotEmpty()) ": $tiers" else ""}), picture ${f.n} samples in the ${f.span / 2}-cell ring" +
+        l += "LIZARD-${f.subch} ($b blocks${if (tiers.isNotEmpty()) ": $tiers" else ""}), picture ${sd.num("n").toInt()} samples in the ${f.span / 2}-cell ring" +
             if (blocks > 0) ", set by hand" else ", chosen from a ${room.roundToInt()} px room and nothing else"
         if (!runTest) l += "file $fileSize B${sd.num("sentBytes").toLong().let { if (it in 1 until fileSize) ", $it B as sent (zstd)" else "" }}: ${sd.num("chunks").toInt()} chunk${if (sd.num("chunks").toInt() == 1) "" else "s"}, " +
             "${sd.num("lap").toInt()} data blocks a pass, BLAKE3 ${sd.str("root").take(16)}..., header in the light" +
@@ -821,8 +824,7 @@ class SendState {
             val held = (pr["held"] as? JsonObject)?.entries?.sortedBy { it.key.toIntOrNull() ?: Int.MAX_VALUE }
                 ?.joinToString(", ") { "${it.key}: ${(it.value as? JsonPrimitive)?.contentOrNull ?: "?"}" }.orEmpty()
             l += "pictures by the refreshes each held: ${held.ifEmpty { "none" }}; missed ${pr.num("missed").toInt()}, behind the painter ${pr.num("behind").toInt()}"
-            l += "presenter: Vulkan on ${pr.str("device")}${if (pr.flag("paused")) ", paused" else ""}" +
-                when ((pr["direct"] as? JsonPrimitive)?.booleanOrNull) { true -> ", direct"; false -> ", composited"; null -> "" }
+            l += "presenter: Vulkan on ${pr.str("device")}${if (pr.flag("paused")) ", paused" else ""}"
         }
         l += (if (sd.str("painter") == "gpu") "encoder: GPU, ${sd.str("device")}, ${Fmt.f1(sd.num("paintMs"))} ms a frame"
             else "encoder: CPU, ${sd.num("painters").toInt()} painters, ${Fmt.f1(sd.num("paintMs"))} ms a frame on one" +

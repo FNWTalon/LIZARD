@@ -88,9 +88,11 @@ std::string GpuPainter::pipes(int n) {
   return "";
 }
 
-std::string GpuPainter::configure(int n, int subch, int span, int fps, int frames, int codes, int gap, int aheadFrames, uint64_t aheadBytes, int margin, bool ringOnly) {
+std::string GpuPainter::configure(int subch, int span, int fps, int frames, int codes, int gap, int aheadFrames, uint64_t aheadBytes, int margin, bool ringOnly) {
   if (fReady_) { focus_free(&f_); fReady_ = false; }
-  if (focus_init(&f_, n, subch, 1, txClip(), span, 0.f, 0, 0, 0, 0, 0, 0)) return "the codec refused LIZARD-" + std::to_string(subch) + " at n = " + std::to_string(n);
+  // ai: the format's picture (src/focus.h focus_n_for) and clip ratio, 2 (SPEC 6.7)
+  const int n = focus_n_for(subch);
+  if (focus_init(&f_, n, subch, 2.0f, span, 0.f)) return "the codec refused LIZARD-" + std::to_string(subch);
   fReady_ = true;
   focus_fmt_fps(&f_, fps);
   fps_ = fps;

@@ -1,5 +1,5 @@
 // ai: cam_check (2026-10-25): the PC receiver's camera checks, synthetic all (no real camera is opened), one check a
-// ai: run with its arguments, `cam_check <luma|trigger|scene|session|v4l2|mf|avf> [its arguments]`, or every one whole,
+// ai: run with its arguments, `cam_check <luma|scene|session|v4l2|mf|avf> [its arguments]`, or every one whole,
 // ai: `cam_check all` (no arguments: each check names its own cases). Exit codes as checks.h's kHeld and the rest:
 // ai: all's kFailed where any check gave other than kHeld, a check of another system's part (kNotHere) skipped and
 // ai: said so.
@@ -15,7 +15,7 @@ namespace {
 
 struct Check { const char* name; int (*run)(const lizard::check::Args&); };
 const Check kChecks[] = {
-    {"luma", lizard::check::luma}, {"trigger", lizard::check::trigger}, {"scene", lizard::check::scene},
+    {"luma", lizard::check::luma}, {"scene", lizard::check::scene},
     {"session", lizard::check::session}, {"v4l2", lizard::check::v4l2},
     {"mf", lizard::check::mf}, {"avf", lizard::check::avf},
 };

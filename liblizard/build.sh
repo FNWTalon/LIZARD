@@ -1,67 +1,62 @@
 #!/bin/sh
-# ./build.sh        -> build/ob.mjs + ob.wasm (needs emsdk: source <emsdk>/emsdk_env.sh)
-# NOSIMD=-DOB_SCALAR OUT=build/nosimd ./build.sh -> the same source without the vector paths, for a lab check that is
-#   not published (scripts/exp/simd_check.mjs)
-# ./build.sh native -> the C compiled natively under ASan and UBSan, warnings on, nothing kept (a compile check)
-# ./build.sh verify -> build/verify and build/verify-scalar, for a lab check that is not published (scripts/exp/points_check.mjs)
-# ./build.sh wirehair -> build/wirehair.mjs, the outer fountain for end-to-end runs
-# ./build.sh zstd     -> build/zstd.mjs, the transfer's compression (vendor/zstd through zstd/shim.c)
-# ./build.sh app -> ../lizard-web/app/, the installed web app (../lizard-web/pwa/build.mjs: content-addressed, its service worker; node only)
-# -ffp-contract=off: the reference is exact (2026-09-24), and a compiler that fuses a multiply and an add into
-# one FMA rounds once where the source rounds twice, so an FMA machine's build would paint other bytes.
+# ./build.sh          -> the codec's WebAssembly module (needs emsdk, source <emsdk>/emsdk_env.sh, and CMake 3.22 or later):
+#   the library's wasm target (CMakeLists.txt; the vector paths on WebAssembly SIMD) in build-native/wasm, written to
+#   bindings/wasm/dist/lizard.mjs and lizard.wasm: the C API and the codec's own exports (src/wasm.c), Wirehair and zstd
+#   inside. build/ob.mjs, the path the tree imports the codec by (sim/ob.mjs, the native generator), re-exports it.
+# ./build.sh mvp      -> the same module as WebAssembly 1.0 (dist/lizard-mvp.mjs and .wasm), the library's fallback for an
+#   engine without SIMD
+# ./build.sh scalar   -> build/nosimd/lizard.mjs: the module with the codec's scalar twins in place of its vector paths, for a
+#   lab check that is not published (scripts/exp/simd_check.mjs)
+# ./build.sh verify   -> build/verify and build/verify-scalar, for a lab check that is not published (scripts/exp/points_check.mjs)
+# ./build.sh wirehair, ./build.sh zstd -> the default build: Wirehair and zstd are in the module (for build lines that
+#   still name them)
+# ./build.sh native   -> the C compiled natively under ASan and UBSan, warnings on, nothing kept (a compile check)
+# ./build.sh app      -> ../lizard-web/app/, the installed web app (../lizard-web/pwa/build.mjs: content-addressed, its service worker; node only)
+# -ffp-contract=off (every target, CMakeLists.txt and core/CMakeLists.txt): the reference is exact (2026-09-24), and a
+# compiler that fuses a multiply and an add into one FMA rounds once where the source rounds twice, so an FMA machine's
+# build would paint other bytes.
 set -e
 cd "$(dirname "$0")"
-SRC="src/ldpc.c src/layout.c src/acquire.c src/fft.c src/rs.c src/fmt.c src/focus.c src/any.c src/shake.c src/xfer.c src/wasm.c vendor/blake3/blake3.c vendor/blake3/blake3_dispatch.c vendor/blake3/blake3_portable.c"
-# BLAKE3 for the transfer's hash (src/xfer.h): the official C, portable only, which is all wasm can run of it, so the
-# native check compiles the same paths. No threads.
-B3="-Ivendor/blake3 -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512 -DBLAKE3_USE_NEON=0"
 if [ "$1" = app ]; then
-  # The installed app (2026-10-01, a content-hashed PWA): build/ob.* and build/wirehair.mjs
-  # as they are, so build those first when the C or the shim changed. An optional second argument names another out dir
-  # (relative to liblizard/).
+  # The installed app (2026-10-01, a content-hashed PWA): the codec's module as the default build left it, so build that
+  # first when the C or a shim changed. An optional second argument names another out dir (relative to liblizard/).
   OUTDIR="${2:-../lizard-web/app}"
   case "$OUTDIR" in /*) ;; *) OUTDIR="$PWD/$OUTDIR" ;; esac
   exec node ../lizard-web/pwa/build.mjs "$OUTDIR"
 fi
-if [ "$1" = wirehair ]; then
-  # The project's own shim (wirehair/shim.cpp), compiled by path beside the vendored source.
-  WH=vendor/wirehair
-  mkdir -p build
-  em++ -std=c++17 -Oz -DWIREHAIR_BUILDING=1 -I $WH/include -I $WH \
-    $WH/wirehair.cpp $WH/gf256.cpp $WH/WirehairCodec.cpp $WH/WirehairTools.cpp $WH/codec/WirehairV2Codec.cpp \
-    $WH/codec/WirehairV2GF16.cpp $WH/codec/WirehairV2Peel.cpp $WH/codec/WirehairV2Plan.cpp $WH/codec/WirehairV2Policy.cpp \
-    $WH/codec/WirehairV2Precode.cpp $WH/codec/WirehairV2PrecodeDecode.cpp $WH/codec/WirehairV2PrecodeEncode.cpp \
-    $WH/codec/WirehairV2Profile.cpp $WH/codec/WirehairV2Seeds.cpp $WH/codec/WirehairV2Solve.cpp wirehair/shim.cpp \
-    -o build/wirehair.mjs -sMODULARIZE=1 -sEXPORT_ES6=1 -sSINGLE_FILE=1 -sALLOW_MEMORY_GROWTH=1 -sENVIRONMENT=node,web,worker \
-    -sEXPORTED_FUNCTIONS=_lizard_wh_init,_lizard_wh_encoder_create,_lizard_wh_decoder_create,_lizard_wh_encode,_lizard_wh_decode,_lizard_wh_recover,_lizard_wh_free,_malloc,_free \
-    -sEXPORTED_RUNTIME_METHODS=HEAPU8,getValue,setValue
-  ls -l build/wirehair.mjs
-  exit 0
-fi
-if [ "$1" = zstd ]; then
-  # zstd as one file (vendor/zstd/README.md) under the project's shim (zstd/shim.c), which pins the parameters.
-  mkdir -p build
-  emcc -Oz -DNDEBUG -I vendor/zstd vendor/zstd/zstd.c zstd/shim.c -o build/zstd.mjs \
-    -sMODULARIZE=1 -sEXPORT_ES6=1 -sSINGLE_FILE=1 -sALLOW_MEMORY_GROWTH=1 -sENVIRONMENT=node,web,worker \
-    -sEXPORTED_FUNCTIONS=_lizard_zstd_bound,_lizard_zstd_compress,_lizard_zstd_decompress,_malloc,_free \
-    -sEXPORTED_RUNTIME_METHODS=HEAPU8
-  ls -l build/zstd.mjs
-  exit 0
-fi
-if [ "$1" = verify ]; then
-  # The thin frame's point scans next to the plain scan they replaced, which aborts on any difference: scripts/exp/points_check.mjs.
-  # ./build.sh, not "$0": the cd above made a relative $0 (liblizard/build.sh from the root) point nowhere.
-  NOSIMD="-msimd128 -DOB_VERIFY_POINTS" OUT=build/verify ./build.sh
-  NOSIMD="-DOB_SCALAR -DOB_VERIFY_POINTS" OUT=build/verify-scalar ./build.sh
-  exit 0
-fi
 if [ "$1" = native ]; then
+  # BLAKE3 for the transfer's hash (src/xfer.h): the official C, portable only, which is all wasm can run of it, so the
+  # native check compiles the same paths. No threads.
+  SRC="src/ldpc.c src/layout.c src/acquire.c src/fft.c src/rs.c src/fmt.c src/focus.c src/any.c src/shake.c src/xfer.c src/wasm.c vendor/blake3/blake3.c vendor/blake3/blake3_dispatch.c vendor/blake3/blake3_portable.c"
+  B3="-Ivendor/blake3 -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512 -DBLAKE3_USE_NEON=0"
   gcc -O2 -g -ffp-contract=off -Wall -Wextra -fsanitize=address,undefined $B3 -c $SRC && rm -f ./*.o
   exit 0
 fi
-mkdir -p ${OUT:-build}
-emcc -O3 ${NOSIMD:--msimd128} -ffp-contract=off -DNDEBUG $B3 $SRC -o ${OUT:-build}/ob.mjs \
-  -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=node,web,worker -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=8388608 \
-  -sEXPORTED_FUNCTIONS=_focus_setup,_focus_setup_tiers,_focus_any_setup,_focus_any_rx,_focus_any_held,_focus_any_max_blocks,_focus_any_which,_focus_any_n,_focus_any_blocks,_focus_any_fmt,_focus_any_builds,_focus_bitmap_set,_focus_bitmap_get,_focus_subch,_focus_blocks,_focus_side,_focus_cell,_focus_quiet,_focus_fmt_rx_ptr,_focus_fmt_fps_set,_focus_parity_set,_focus_pilot_get,_focus_any_pilot_get,_focus_align_get,_focus_tx,_focus_tx_rgba,_focus_rs_geom,_focus_rx,_focus_dbg,_focus_dbg_sym,_focus_dbg_coef,_focus_blk_its,_focus_blk_est,_ob_heap_top,_ob_fft_bench,_fft_set_radix,_fft_get_radix,_ob_last,_ob_prof,_ob_prof_reset,_ob_luma_of,_ob_luma_strip,_ob_test_binarize,_ob_test_sample,_ob_test_marks,_ob_test_mesh_tables_out,_ob_test_fmt_plan,_ob_test_fmt_cells,_ob_test_thin_plan,_ob_test_thin_score_out,_ob_test_finder_out,_focus_rx_acquire,_focus_rx_acquire_quad,_focus_rx_finish,_focus_shape,_focus_pos_ptr,_focus_tables_out,_focus_rx_ldpc,_focus_block_subs,_focus_ldpc_tables,_focus_tiers_for,_focus_set_axis,_focus_set_lens,_focus_lens_set,_focus_rx_assemble,_focus_fmt_check_out,_focus_fmt_soft_out,_focus_grid_out,_ob_test_crc_hash,_ob_test_crc_gate_out,_ob_dbg_hash,_stream_fill,_xfer_layout,_xfer_id_of,_xfer_kind_of,_xfer_hdr_write,_xfer_hdr_parse,_xfer_mf_parse,_xfer_chunk_ok,_xfer_manifest_blocks,_xfer_manifest_write,_xfer_manifest_check,_xfer_root,_xfer_chunk_cv,_xfer_b3_hash,_xfer_b3_sub,_malloc,_free \
-  -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPF32,HEAP32
-ls -l ${OUT:-build}/ob.wasm
+# wasm <build tree> <out dir> <cache settings>: the module configured and built (emcmake, as the wasm presets' tree is);
+# every setting given, so a tree's cache never carries another build's
+wasm() {
+  tree=$1 out=$2; shift 2
+  mkdir -p "$out"
+  emcmake cmake -S . -B "$tree" -DCMAKE_BUILD_TYPE=Release -DLIZ_TESTS=OFF -DLIZ_WASM_DIST="$out" "$@" > /dev/null
+  cmake --build "$tree" -j "$(nproc 2>/dev/null || echo 4)"
+}
+case "$1" in
+  ""|wirehair|zstd)
+    wasm build-native/wasm "$PWD/bindings/wasm/dist" -DLIZ_WASM_MVP=OFF -DLIZ_SCALAR=OFF -DLIZ_VERIFY_POINTS=OFF
+    mkdir -p build
+    printf '%s\n%s\n' "// The codec's module (bindings/wasm/dist/lizard.mjs, liblizard/build.sh) at the path the tree imports it by." \
+      'export { default } from "../bindings/wasm/dist/lizard.mjs";' > build/ob.mjs
+    ls -l bindings/wasm/dist/lizard.wasm ;;
+  mvp)
+    wasm build-native/wasm-mvp "$PWD/bindings/wasm/dist" -DLIZ_WASM_MVP=ON -DLIZ_SCALAR=OFF -DLIZ_VERIFY_POINTS=OFF
+    ls -l bindings/wasm/dist/lizard-mvp.wasm ;;
+  scalar)
+    wasm build-native/wasm-scalar "$PWD/build/nosimd" -DLIZ_WASM_MVP=OFF -DLIZ_SCALAR=ON -DLIZ_VERIFY_POINTS=OFF
+    ls -l build/nosimd/lizard.wasm ;;
+  verify)
+    # The border finder's point scans next to the plain scan they replaced, which aborts on any difference: scripts/exp/points_check.mjs.
+    wasm build-native/wasm-verify "$PWD/build/verify" -DLIZ_WASM_MVP=OFF -DLIZ_SCALAR=OFF -DLIZ_VERIFY_POINTS=ON
+    wasm build-native/wasm-verify-scalar "$PWD/build/verify-scalar" -DLIZ_WASM_MVP=OFF -DLIZ_SCALAR=ON -DLIZ_VERIFY_POINTS=ON
+    ls -l build/verify/lizard.wasm build/verify-scalar/lizard.wasm ;;
+  *) echo "build.sh: no build $1 (none, mvp, scalar, verify, native, app; wirehair and zstd the default)" >&2; exit 2 ;;
+esac

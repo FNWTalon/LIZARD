@@ -13,9 +13,8 @@
 // ai:   tpose: the picture row-major again (wgsl/send.mjs);
 // ai:   rsv, rsh: the C's Lanczos-3 resample onto the ring's square with the C's own taps (sim/ob.mjs resampleGeom),
 // ai:     grey as focus_paint_rgba rounds it, and every pixel outside the square the border's byte (wgsl/send.mjs);
-// ai:     where every tap is the C's on-sample copy (the span divides n: every picture in the 32 and 64 rings, 384,
-// ai:     768 and 1536 in the 96, all but 384 in the 128, 20 of the 24 pairs) rsh alone, reading the picture (rsh's
-// ai:     copy form);
+// ai:     where every tap is the C's on-sample copy (the span divides n: every picture in the 64 ring, all but 384 in
+// ai:     the 128, 512, 1024 and 1536 in the 256, 14 of the 18 pairs) rsh alone, reading the picture (rsh's copy form);
 // ai:   present: a render pass onto the canvas, whole canvas pixels a frame pixel, a frame of a batch.
 // ai: The border (ring, marks, band, word, quiet margin) is the C's paint, taken once a configuration and again at each
 // ai: fps change from this module's own Focus on the importing thread's wasm, so it is the C's to the byte. The square
@@ -24,7 +23,7 @@
 // ai: rule: a sender's symbol need only decode (2026-09-29).
 // ai:
 // ai:   const enc = await GpuEncoder.create();                 // throws Unavailable: no WebGPU, no adapter
-// ai:   const cfg = await enc.configure({ spec, codes, fps, gap }); // spec { n, subch, span, bitmap }; gap: modules between codes; again at a re-pick
+// ai:   const cfg = await enc.configure({ spec, codes, fps, gap }); // spec { n, subch, span }; gap: modules between codes; again at a re-pick
 // ai:   const ctx = enc.attach(canvas);                        // a canvas with no 2D context
 // ai:   enc.encode(half, f0, blocks, count, cfg);              // frames f0 .. f0 + count - 1 of a half, count <= cfg.sub,
 // ai:                                                          // each codes x blocks x 473 B
@@ -60,13 +59,13 @@ import { init as initOb, Focus } from "../sim/ob.mjs";
 // ai: A block's 473 bytes in BLOCKS, padded to 120 words (wgsl/send.mjs paintSource).
 const BLOCK_BYTES = 480;
 
-// ai: The paint's TAB (wgsl/send.mjs paintSource) from the codec's codes (back/codes.mjs ruleTables: { codes, bitmap },
-// ai: the codes in CODES' order): word 0 the whitening's offset; 16 words a code at 16 + 16 c, (n, k, m, z, mb, rows,
+// ai: The paint's TAB (wgsl/send.mjs paintSource) from the codec's codes (back/codes.mjs ruleTables: { codes }, the
+// ai: codes in CODES' order): word 0 the whitening's offset; 16 words a code at 16 + 16 c, (n, k, m, z, mb, rows,
 // ai: lay, perm, subs, nt); a code's block rows' first entries (mb + 1), its entries (col | shift << 16), its bit map
 // ai: (slot i's codeword bit, np + perm[i], in the half i & 1 of word i >> 1, over the nt sent bits); the whitening, a
 // ai: bit a slot of the frame over 1024 sub-channels and a word past them. The same for every format: gen/sender.mjs
 // ai: bakes it for the native painter.
-export function sendTab({ codes, bitmap }) {
+export function sendTab({ codes }) {
   if (codes.length !== CODES.length) throw new Error(`the paint takes ${CODES.length} codes, got ${codes.length}`);
   let o = 16 + 16 * codes.length;
   const at = codes.map((c) => { const rows = o; o += c.mb + 1; const lay = o; o += c.slots; const pm = o; o += c.nt / 2; return { rows, lay, pm }; });
@@ -80,10 +79,11 @@ export function sendTab({ codes, bitmap }) {
     tab.set([c.n, c.k, c.m, c.z, c.mb, a.rows, a.lay, a.pm, CODES[q].subs, c.nt], 16 + 16 * q);
     for (let r = 0; r <= c.mb; r++) tab[a.rows + r] = c.lay[r];
     for (let e = 0; e < c.slots; e++) tab[a.lay + e] = c.lay[c.mb + 1 + 2 * e] | (c.lay[c.mb + 2 + 2 * e] << 16);
-    const p = perm(c.nt, c.k - c.np, bitmap);
+    const p = perm(c.nt);
     for (let i = 0; i < c.nt; i++) tab[a.pm + (i >> 1)] |= (c.np + p[i]) << (16 * (i & 1));
   });
-  if (bitmap) { const w = whiten(WHITE_SLOTS); for (let i = 0; i < WHITE_SLOTS; i++) if (w[i]) tab[WHITE + (i >> 5)] |= 1 << (i & 31); }
+  const w = whiten(WHITE_SLOTS);
+  for (let i = 0; i < WHITE_SLOTS; i++) if (w[i]) tab[WHITE + (i >> 5)] |= 1 << (i & 31);
   return tab;
 }
 // ai: The codec's codes and profiles, read once a page on the codec's chain (ruleTables sets up a codec of its own).
@@ -159,8 +159,8 @@ export class GpuEncoder {
       if (need > lim.maxComputeWorkgroupStorageSize) throw new Unavailable(`the ${n} picture's inverse needs ${need} B of workgroup memory, the device has ${lim.maxComputeWorkgroupStorageSize}`);
       if (n / 8 > lim.maxComputeInvocationsPerWorkgroup) throw new Unavailable(`the ${n} picture's inverse needs ${n / 8} invocations a workgroup`);
       const d = this.device, job = Promise.all([
-        computePipeline(d, { code: irowsSource({ n, prec: "f32" }), layout: this.pl("irows"), label: `send irows ${n}` }),
-        computePipeline(d, { code: ipicSource({ n, prec: "f32" }), layout: this.pl("ipic"), label: `send ipic ${n}` }),
+        computePipeline(d, { code: irowsSource({ n }), layout: this.pl("irows"), label: `send irows ${n}` }),
+        computePipeline(d, { code: ipicSource({ n }), layout: this.pl("ipic"), label: `send ipic ${n}` }),
       ]);
       job.catch(() => this.pipes.delete(n));
       this.pipes.set(n, job);
@@ -177,10 +177,10 @@ export class GpuEncoder {
   }
 
   // ai: A configuration: the format's tables, the border and the resampler from the C, every buffer a batch needs.
-  // ai: spec as the page's (n, subch, span, bitmap); codes symbols a frame, side by side; fps the rate the word states.
+  // ai: spec as the page's (n, subch, span); codes symbols a frame, side by side; fps the rate the word states.
   configure(opts) { return this.serial(() => this.configureNow(opts)); }
   async configureNow({ spec, codes = 1, fps = 0, gap = GAP_MODULES }) {
-    const { n, subch, span = 0, bitmap } = spec;
+    const { n, subch, span = 0 } = spec;
     const alive = () => { if (this.dead) throw new Unavailable("the encoder was destroyed"); };
     await initOb();
     alive();
@@ -192,11 +192,11 @@ export class GpuEncoder {
     codec.focus = null;
     codesOnce ??= await ruleTables();
     const rt = codesOnce, profile = rt.profiles[subch / 8];
-    if (!profile || (bitmap ?? rt.bitmap) !== rt.bitmap) throw new Unavailable(`the GPU encoder paints the format's codes and bit map, not LIZARD-${subch}'s${profile ? ` bit map ${bitmap}` : ""}`);
+    if (!profile) throw new Unavailable(`the GPU encoder paints the format's ladder (LIZARD-16 to -1024), not LIZARD-${subch}`);
     // ai: TAB, the encoder's for its life (the same for every format; release leaves it, destroy takes the device)
     if (!this.TAB) { const tab = sendTab(rt); this.TAB = this.device.createBuffer({ size: tab.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }); this.device.queue.writeBuffer(this.TAB, 0, tab); }
-    const [tb] = await transformTables([{ n, subch, bitmap }]);
-    const fc = new Focus(n, subch, 1, { span, bitmap });
+    const [tb] = await transformTables([{ n, subch }]);
+    const fc = new Focus(n, subch, 1, { span });
     let c = null;
     try {
       alive();

@@ -7,11 +7,11 @@
 // ai: needs a secure origin), and takes the pages' development logs, the only thing a page sends it (2026-09-26):
 // ai: nothing it answers is read by a
 // ai: page to decode or paint. POSTs: /api/stats (the receiver's row a second, the latest kept in memory alone: rows are
-// ai: logged only in a replay since 2026-10-09, research/rig/stats.jsonl no longer written), /api/selftest, /api/fft,
-// ai: /api/file. GETs for node scripts: /api/info, /api/stats (the last row, for lizard-web/check_rates.mjs).
+// ai: logged only in a replay since 2026-10-09, research/rig/stats.jsonl no longer written) and /api/file. GETs for node
+// ai: scripts: /api/info, /api/stats (the last row, for lizard-web/check_rates.mjs).
 import { createServer as http } from "node:http";
 import { createServer as https } from "node:https";
-import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync, appendFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { networkInterfaces } from "node:os";
 import { extname, join, normalize, resolve, sep } from "node:path";
@@ -53,19 +53,6 @@ async function handle(req, res) {
     if (req.method === "POST") return json({ ok: true });
     return json({ stats: Date.now() - statsAt < 5000 ? stats : {} });
   }   // a receiver that went away must not look live
-  // ai: The GPU self-test's report (gpu_selftest.html), a line each in research/rig/selftest.jsonl stamped with the rig's clock,
-  // ai: and its verdict printed here.
-  if (p === "/api/selftest" && req.method === "POST") {
-    const rep = JSON.parse(await body(req)), at = Date.now();
-    mkdirSync(RIG, { recursive: true });
-    appendFileSync(join(RIG, "selftest.jsonl"), JSON.stringify({ rigAt: at, ...rep }) + "\n");
-    const bad = rep.runs?.find((r) => r.error || r.errors?.length || r.lost || r.first), a = rep.adapter?.info ?? {};
-    const why = rep.error ?? (bad ? `${bad.precision}: ${bad.error ?? (bad.lost ? `lost ${bad.lost}` : bad.first ? `first difference ${bad.first.stage}: ${bad.first.first.note}` : bad.errors[0])}` : "every stage matches");
-    console.log(`\n--- GPU self-test, ${[a.vendor, a.architecture, a.description].filter(Boolean).join(" ") || "no adapter"}: ${why} (research/rig/selftest.jsonl)\n`);
-    return json({ ok: true });
-  }
-  // scripts/pages/fft.html's table, printed here so the phone's numbers do not have to be transcribed off its screen.
-  if (p === "/api/fft" && req.method === "POST") { console.log(`\n--- transform bench from the phone ---\n${await body(req)}\n`); return json({ ok: true }); }
   // ai: Uploads (a received file) only where asked for, RIG_UPLOADS=1 (check_rates.mjs): a rig on the LAN
   // ai: otherwise takes no writes. The pages record no replays since 2026-10-09 (the Android app's Save replays does).
   if (p === "/api/file" && req.method === "POST" && process.env.RIG_UPLOADS !== "1") { res.writeHead(403); return res.end("uploads off (RIG_UPLOADS=1)"); }

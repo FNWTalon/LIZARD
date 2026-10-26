@@ -23,11 +23,13 @@ typedef struct {
   int8_t *wr;         // check-to-bit messages, [slot][position]
 } ldpc_t;
 
+// ai: Rate indices 0 to LDPC_RATES - 1, the format's four with a code: 2 (1/2), 3 (2/3), 4 (3/4), 6 (7/8); the name and
+// ai: value of any other index are NULL and 0.
 extern const char *const ldpc_rate_name[LDPC_RATES];
 double ldpc_rate_value(int rate);
 
 // The code at z = n_max / 48 and the given rate index: the format's table where one matches (z, rate, seed 1),
-// else generated (48 columns, no puncturing). Returns 0 on success.
+// else generated (48 columns, no puncturing). Returns 0 on success, -1 for a rate index with no code.
 int ldpc_init(ldpc_t *c, int n_max, int rate, uint32_t seed);
 // The generator: shift[r][j] for the mb block rows of the code at circulant size z (the profile row, the seed's
 // xorshift draws, the cycle score), -1 where there is no edge. Returns mb, or -1. It builds every code but the
@@ -44,8 +46,6 @@ void ldpc_encode(const ldpc_t *c, const uint8_t *data, uint8_t *codeword);
 int ldpc_decode(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_iter);
 // The same with a way out for a block that is going nowhere (ldpc.c). Returns -3 when it took it.
 int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_iter, int stall_it, float stall_ratio);
-// The same code decoded one check at a time. Kept as the reference the block-row schedule is measured against (test/ldpc_sched.c).
-int ldpc_decode_serial(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_iter);
 
 // The code's shape (12 ints: n, k, m, z, zp, mb, kb, norm, slots_max, slots_total, slots, np) and its block-row
 // tables, for a decoder running somewhere else. See ldpc.c.

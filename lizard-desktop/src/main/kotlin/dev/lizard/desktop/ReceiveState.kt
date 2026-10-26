@@ -38,22 +38,22 @@ import kotlin.math.roundToInt
 // ai: session (Native.rx*, native/rx_session.h) made on the first start, a camera in it and its stream into the
 // ai: receiver, what Receive shows. Every session call that can wait (create, configure, open, start, stop, set,
 // ai: forget, the file taken out of the store) runs on one thread of its own ("lizard-rx") in the order asked, so a
-// ai: start, a stop and a receiver's rebuild never interleave; the stats a quarter second and the preview about 30 times a
-// ai: second on the UI thread (rxStats, rxPreview, which wait on nothing); the phase lock on its own (Lock.kt). The
-// ai: phases are the app's Engine.Phase: Starting (the session made, the camera opened and its stream begun), Loading
-// ai: (the stream runs, the receiver not yet past "starting": its first plan, or a new receiver for another decoder or
-// ai: crop), On, Idle, Error. A result of work begun before a newer start or stop is dropped (gen). The session and
-// ai: any transfer partly in outlive a stop and the screen: leaving Receive stops the camera and closes it (another app
-// ai: may want it); the app's close destroys the session, the camera's controls put back by its stop. Settings: the
-// ai: camera (stop, open, start), resolution and rate (stop, start), decoder and crop (a new receiver, rxConfigure: the
-// ai: camera stopped and started again around it in its mode), zoom, exposure and gain (rxSet whenever a camera is
-// ai: open: the session sets it at once while the camera runs, keeps it while it does not, and sets every one kept
-// ai: again after each start, since each backend puts back at stop what was set; the kept ones handed to it at each
-// ai: open), batch size (rxBatchCap); each kept (Prefs.Rx). A verified file is taken out of the store and filed into
-// ai: Downloads (Received.kt) where no list entry holds its root and no filing of it is under way (what is filed decides,
-// ai: as the app's keep: a file deleted, or moved out of Downloads, and received again is filed again), and the camera
-// ai: stops then (once a root, as the web's and the app's, so a start after it reads on). The filings, Home's deletes and
-// ai: a replay's end run on a thread of their own ("lizard-files") that the app's close waits for. A camera whose stream
+// ai: start, a stop and a receiver's rebuild never interleave; the stats a quarter second and the preview about 30
+// ai: times a second on the UI thread (rxStats, rxPreview, which wait on nothing). The phases are the app's
+// ai: Engine.Phase: Starting (the session made, the camera opened and its stream begun), Loading (the stream runs, the
+// ai: receiver not yet past "starting": its first plan, or a new receiver for another decoder or crop), On, Idle,
+// ai: Error. A result of work begun before a newer start or stop is dropped (gen). The session and any transfer partly
+// ai: in outlive a stop and the screen: leaving Receive stops the camera and closes it (another app may want it); the
+// ai: app's close destroys the session, the camera's controls put back by its stop. Settings: the camera (stop, open,
+// ai: start), resolution and rate (stop, start), decoder and crop (a new receiver, rxConfigure: the camera stopped and
+// ai: started again around it in its mode), zoom, exposure and gain (rxSet whenever a camera is open: the session sets
+// ai: it at once while the camera runs, keeps it while it does not, and sets every one kept again after each start,
+// ai: since each backend puts back at stop what was set; the kept ones handed to it at each open), batch size
+// ai: (rxBatchCap); each kept (Prefs.Rx). A verified file is taken out of the store and filed into Downloads
+// ai: (Received.kt) where no list entry holds its root and no filing of it is under way (what is filed decides, as the
+// ai: app's keep: a file deleted, or moved out of Downloads, and received again is filed again), and the camera stops
+// ai: then (once a root, as the web's and the app's, so a start after it reads on). The filings, Home's deletes and a
+// ai: replay's end run on a thread of their own ("lizard-files") that the app's close waits for. A camera whose stream
 // ai: ended by itself, or that did not start, is closed as well as stopped, so the next Start opens it again by its id
 // ai: (one unplugged and plugged in again is a new device behind the same id). The figures of the receiver's last
 // ai: second show only while they are this stream's (the stats' "live", rx_session.h): none while the camera is off, as
@@ -75,7 +75,7 @@ class ReceiveState(private val app: App) {
     class Control(val id: String, val name: String, val unit: String, val min: Double, val max: Double, val step: Double, val def: Double,
                   val value: Double, val canAuto: Boolean, val isAuto: Boolean)
     class CamInfo(val id: String, val name: String, val backend: String, val detail: String, val modes: List<Mode>, val pick: Int,
-                  val controls: List<Control>, val trigger: Boolean) {
+                  val controls: List<Control>) {
         fun control(id: String) = controls.firstOrNull { it.id == id && it.max > it.min }
     }
 
@@ -112,7 +112,6 @@ class ReceiveState(private val app: App) {
     var fileNote by mutableStateOf("")
     var partials by mutableStateOf<List<Partials.Entry>>(emptyList())
     val runs = mutableStateListOf<Run>()
-    val lock = Lock()
 
     // ai: the test hook's (ReceiverTest.kt): a camera that must be listed, and a mode by index or "WxH@fps"
     var testCamera: String? = null
@@ -169,20 +168,18 @@ class ReceiveState(private val app: App) {
         if (hh != 0L) {
             if (made != key) {
                 takeOut()
-                lock.end()
                 val why = Native.rxConfigure(hh, dec, lay)
                 // ai: a refusal leaves the receiver in hand unknown here (rx_session.h reconfigure: the new one where the
                 // ai: camera did not start again, the old one where the new one could not be made), so the next call
                 // ai: configures again, which the session ends at once where the receiver in hand already matches
                 if (why.isNotEmpty()) { made = ""; throw Refused(why) }
                 made = key
-                if (streaming) lock.start(hh, openInfo?.trigger == true)
             }
             return hh
         }
         val store = File(Native.data, "store").apply { mkdirs() }
         val cache = File(Native.buildDir, "pipeline").apply { mkdirs() }
-        val made1 = Native.rxCreate(Native.assets, cache.path, store.path, dec, "auto", lay)
+        val made1 = Native.rxCreate(Native.assets, cache.path, store.path, dec, lay)
         if (made1 == 0L) throw Refused(Native.txError().ifEmpty { "no receiver" })
         h = made1
         made = key
@@ -218,7 +215,7 @@ class ReceiveState(private val app: App) {
                 c.num("value"), c.flag("canAuto"), c.flag("isAuto")) }
         }
         return CamInfo(i.str("id"), i.str("name"), i.str("backend"), i.str("detail"), modes, (j["pick"] as? JsonPrimitive)?.contentOrNull?.toDoubleOrNull()?.toInt() ?: -1,
-            controls, j.flag("trigger"))
+            controls)
     }
 
     // ai: the camera open (the one before stopped and closed by the session), what it offers read, and what is kept for
@@ -227,7 +224,7 @@ class ReceiveState(private val app: App) {
     // ai: named open here until both the open and its description have come back.
     private fun openCam(hh: Long, id: String, lay: String): CamInfo {
         openInfo?.takeIf { opened == id }?.let { return it }
-        if (streaming) { lock.end(); Native.rxStop(hh); streaming = false }
+        if (streaming) { Native.rxStop(hh); streaming = false }
         opened = ""; openInfo = null
         val why = Native.rxOpen(hh, id)
         if (why.isNotEmpty()) throw Refused(why)
@@ -262,8 +259,8 @@ class ReceiveState(private val app: App) {
     }
 
     // ai: Start camera (the session's thread): the cameras listed, the session, the chosen one opened (the kept id where
-    // ai: listed, else the first) with its kept settings handed over, its mode started (the session sets them then),
-    // ai: the lock begun where it takes a trigger. A start that fails closes the camera too: a device unplugged leaves
+    // ai: listed, else the first) with its kept settings handed over, its mode started (the session sets them then). A
+    // ai: start that fails closes the camera too: a device unplugged leaves
     // ai: the camera open on what the system tore down (V4L2's fd answers ENODEV for good, AVFoundation's device object
     // ai: never connects again), and the next Start opens it again by its id.
     private fun begin(my: Int, w: Want) {
@@ -277,11 +274,10 @@ class ReceiveState(private val app: App) {
             val id = w.camera?.takeIf { c -> cams.any { it.id == c } } ?: if (w.strict) throw Refused("${w.camera} is not listed") else cams[0].id
             val ci = openCam(hh, id, w.layout)
             val m = w.mode?.let { modeOf(ci, it) ?: throw Refused("the camera offers no mode $it") } ?: keptMode(ci)
-            if (streaming) { lock.end(); Native.rxStop(hh); streaming = false }
+            if (streaming) { Native.rxStop(hh); streaming = false }
             val why = Native.rxStart(hh, m.index)
             if (why.isNotEmpty()) throw Refused(why)
             streaming = true
-            lock.start(hh, ci.trigger)
             post { info = ci }
             post(my) {
                 camera = id; mode = m
@@ -301,9 +297,8 @@ class ReceiveState(private val app: App) {
     // ai: the camera open as the session describes it now (rxCamera: its controls' values as last read; never waits),
     // ai: "{}" with none (the test hook's last line)
     fun cameraNow(): String = h.takeIf { it != 0L }?.let { runCatching { Native.rxCamera(it) }.getOrNull() } ?: "{}"
-    // ai: the stream ended (the session's thread): the lock first, then the camera's stop
+    // ai: the stream ended (the session's thread): the camera's stop
     private fun halt() {
-        lock.end()
         val hh = h
         if (hh != 0L && streaming) Native.rxStop(hh)
         streaming = false
@@ -605,7 +600,6 @@ class ReceiveState(private val app: App) {
         // ai: a stream that ended by itself (a camera unplugged, a device error): the camera closed as well as stopped, so
         // ai: the next Start opens it again by its id
         if (ended.isNotEmpty() && (phase == Phase.On || phase == Phase.Loading)) { stop(); task { closeCam() }; phase = Phase.Error("The camera stopped: $ended") }
-        lock.wordFps = (j?.get("word") as? JsonObject)?.num("fps")?.toInt() ?: 0
         // ai: the receiver let that root go (a clear, a new receiver): a copy of it received later is asked for anew
         if (skip.isNotEmpty() && skip != root) skip = ""
         if (r.verified && root.isNotEmpty()) {
@@ -643,10 +637,10 @@ class ReceiveState(private val app: App) {
         if (bm.installPixels(ImageInfo(w, ht, ColorType.GRAY_8, ColorAlphaType.OPAQUE), buf, w)) preview = bm.asComposeImageBitmap()
     }
 
-    // ai: Save replays: a run while the switch is on and the camera reads (Native.data/replays/<run>, the app's run name,
-    // ai: the newest REPLAY_FRAMES frames the decoder takes), ended when either stops: its rows (the stats a second with
-    // ai: the lock's state, the newest REPLAY_ROWS) and the app's fields (camera, settings, build) into its meta. A run
-    // ai: that ends with frames lets the finished runs before it go, as the app's; the folder is the replay.
+    // ai: Save replays: a run while the switch is on and the camera reads (Native.data/replays/<run>, the app's run
+    // ai: name, the newest REPLAY_FRAMES frames the decoder takes), ended when either stops: its rows (the stats a
+    // ai: second, the newest REPLAY_ROWS) and the app's fields (camera, settings, build) into its meta. A run that ends
+    // ai: with frames lets the finished runs before it go, as the app's; the folder is the replay.
     private val rows = ArrayDeque<String>()
     private var beginning = false
     private var replayRefused = false          // ai: a run the session would not begin: none asked again until the switch moves
@@ -657,7 +651,7 @@ class ReceiveState(private val app: App) {
         val want = replays && phase == Phase.On
         if (want && mine == null && !beginning && !replayRefused) beginReplay()
         else if (!want && mine != null) endReplay(mine)
-        if (mine != null && tick % 4 == 0) { rows.addLast(rowOf(s)); while (rows.size > REPLAY_ROWS) rows.removeFirst() }
+        if (mine != null && tick % 4 == 0) { rows.addLast(s); while (rows.size > REPLAY_ROWS) rows.removeFirst() }
     }
     private val replaysDir get() = File(Native.data, "replays")
     // ai: the runs on disk at the first look: the newest whole one (its meta.json written) listed, the rest deleted
@@ -723,22 +717,11 @@ class ReceiveState(private val app: App) {
         val ci = info; val m = mode
         val cam = if (ci == null) JsonNull else JsonObject(mapOf("id" to JsonPrimitive(ci.id), "name" to JsonPrimitive(ci.name),
             "backend" to JsonPrimitive(ci.backend), "detail" to JsonPrimitive(ci.detail), "format" to JsonPrimitive(m?.format ?: ""),
-            "size" to JsonPrimitive(m?.size ?: ""), "fps" to JsonPrimitive(m?.fps ?: 0.0), "trigger" to JsonPrimitive(ci.trigger)))
+            "size" to JsonPrimitive(m?.size ?: ""), "fps" to JsonPrimitive(m?.fps ?: 0.0)))
         return JsonObject(mapOf("camera" to cam, "zoom" to num(zoom), "exposure" to num(exposure), "gain" to num(gain), "layout" to JsonPrimitive(layout),
             "decoder" to JsonPrimitive(decoder), "batch" to JsonPrimitive(batch), "app" to JsonPrimitive(app.about))).toString()
     }
     private fun num(v: Double?): JsonElement = if (v == null || v.isNaN()) JsonNull else JsonPrimitive(v)
-    // ai: the lock's state as the app's rows carry it ("phase": arm, state, the leaks, gain, pace, ...); null while off
-    fun lockJson(): JsonElement {
-        val p = lock.state ?: return JsonNull
-        return JsonObject(mapOf("arm" to JsonPrimitive(p.arm), "state" to JsonPrimitive(p.what), "a" to num(p.a), "b" to num(p.b), "k" to num(p.k),
-            "se" to num(p.se), "n" to JsonPrimitive(p.n), "gain" to num(p.gain), "pace" to num(p.pace), "stood" to JsonPrimitive(p.stood),
-            "edge" to JsonPrimitive(p.edge), "flatMs" to num(p.flatMs), "delays" to JsonPrimitive(p.delays)))
-    }
-    private fun rowOf(s: String): String {
-        val j = parse(s) ?: return s
-        return JsonObject(j + ("phase" to lockJson())).toString()
-    }
 
     // ai: What Receive shows
     val line: Readout.Line get() = Readout.line(on, phase == Phase.Starting, phase == Phase.Loading, (phase as? Phase.Error)?.why, rx,
@@ -747,11 +730,11 @@ class ReceiveState(private val app: App) {
     val lab: String get() = Readout.lab(live, rx)
     // ai: the preview's box: the crop's shape (1:1; 2:1 along the camera's long side)
     val cropRatio: Float get() = if (layout != "2:1") 1f else if ((mode?.h ?: 0) > (mode?.w ?: 1)) 0.5f else 2f
-    // ai: One hint, the first that holds, while the camera runs and a word is read (2026-10-25): a camera
-    // ai: with no trigger, whose timing nothing steers, reads a sender at most half its rate without its captures
-    // ai: spanning two pictures (the web's rule), so its rate, the one it agreed to at start where it names one (else the
-    // ai: mode's), under twice the word's names the most the sender should paint; then a camera whose measured rate
-    // ai: (the session's, from its fourth frame) is under the word's less one misses pictures.
+    // ai: One hint, the first that holds, while the camera runs and a word is read (2026-10-25): a camera, whose timing
+    // ai: nothing steers, reads a sender at most half its rate without its captures spanning two pictures (the web's
+    // ai: rule), so its rate, the one it agreed to at start where it names one (else the mode's), under twice the
+    // ai: word's names the most the sender should paint; then a camera whose measured rate (the session's, from its
+    // ai: fourth frame) is under the word's less one misses pictures.
     val hint: String get() {
         if (!on) return ""
         val j = stats ?: return ""
@@ -759,7 +742,7 @@ class ReceiveState(private val app: App) {
         if (rx.bandVersion <= 0 || wf <= 0) return ""
         val cam = j["camera"] as? JsonObject
         val camFps = cam?.num("agreedFps")?.takeIf { it > 0 } ?: mode?.fps ?: 0.0
-        if (info?.trigger != true && camFps > 0 && camFps < 2 * wf) {
+        if (camFps > 0 && camFps < 2 * wf) {
             val n = floor(camFps / 2).toInt()
             if (n >= 1) return "Set the sender to at most $n fps for this camera."
         }
@@ -767,15 +750,9 @@ class ReceiveState(private val app: App) {
         if (measured > 0 && measured < wf - 1) return "This camera runs slower than the code changes, so some of it is missed."
         return ""
     }
-    // ai: the lock's line for the readout: its arm, state, the leaks it holds at, gain, pace and delays; else why it is off
-    val lockLine: String get() {
-        val p = lock.state ?: return if (lock.why.isEmpty()) "on, no decision yet" else "off: ${lock.why}"
-        val pct = { x: Double -> if (x.isNaN()) "-" else "${(100 * x).roundToInt()}%" }
-        return "${p.arm} ${p.what}: ${pct(p.a)} before, ${pct(p.b)} after; gain ${f(p.gain, 2)}, pace ${f(p.pace, 0)} us a second, ${p.delays} delays"
-    }
 
     // ai: The readout (Developer Tools; the app's devReadout): a labelled line or two a part, from the stats (receiver.cpp
-    // ai: stats, the session's camera line in "camera"), the camera's mode and the lock; a part with nothing to say left
+    // ai: stats, the session's camera line in "camera") and the camera's mode; a part with nothing to say left
     // ai: out. The receiver's figures of its last second (the decoder's ms, captured, decoded, found, the rate, the
     // ai: window's blocks) only while live: a camera that is off has none, and a stream's read 0 until its first second
     // ai: has closed; the held word, the totals and the file stand.
@@ -800,9 +777,7 @@ class ReceiveState(private val app: App) {
             if (cam != null && running) "${f(cam.num("fps"), 1)} frames a second" + (if (now) ", ${f(j.num("capturedFps"), 0)} captured, " +
                 "${f(j.num("processedFps"), 0)} decoded, ${j.num("dropped").toInt()} dropped a second" else "") else null,
             if (cam != null && running) "${cam.num("frames").toLong()} frames, ${cam.num("dropped").toLong()} dropped, ${cam.num("corrupt").toLong()} corrupt, " +
-                "${f(cam.num("convertMs"), 2)} ms to luma" else null,
-            (cam?.get("trigger") as? JsonObject)?.takeIf { running }?.let { t -> "trigger every ${f(t.num("periodNs") / 1e6, 3)} ms: ${t.num("fired").toLong()} fired, " +
-                "${t.num("lost").toLong()} lost, ${f(t.num("lateUs"), 0)} us late at most, ${f(t.num("jitterUs"), 0)} us apart" })
+                "${f(cam.num("convertMs"), 2)} ms to luma" else null)
         if (j != null) {
             val word = j["word"] as? JsonObject
             val v = word?.num("version")?.toInt() ?: 0
@@ -819,7 +794,6 @@ class ReceiveState(private val app: App) {
                     ", chunks ${file.num("chunksVerified").toInt()} of ${file.num("chunks").toInt()} verified${if (file.flag("verified")) ", whole" else ""}"
             })
         }
-        put("lock", lockLine)
         j?.str("error")?.takeIf { it.isNotEmpty() }?.let { put("error", it) }
         return out.joinToString("\n")
     }

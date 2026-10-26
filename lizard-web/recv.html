@@ -7,17 +7,18 @@
   /* What is looked at is #shot, the canvas whose pixels go to the decoder, not the camera element (recv.mjs, blit).
      The video stays underneath at full size, occluded but composited: requestVideoFrameCallback fires on
      presentation, and display: none, visibility: hidden or a 1 px box stop the frame loop on some engine.
-     recv.mjs sets #view's aspect ratio and width from the crop. Under F0 (#view.f0, recv.mjs preview) the canvas is
-     hidden and the video, cropped by the box's ratio, is what is looked at: the decoder takes that crop on the GPU. */
+     recv.mjs sets #view's aspect ratio and width from the crop. While frames go to the decoder as VideoFrames (#view.vf,
+     recv.mjs preview) the canvas is hidden and the video, cropped by the box's ratio, is what is looked at: the decoder
+     takes that crop in its worker. */
   /* ai: svh where the browser has it, so a phone's address bar showing does not push the button below the fold. */
   #view{position:relative;width:min(100%,calc(55vh * var(--ratio,1)));width:min(100%,calc(55svh * var(--ratio,1)));aspect-ratio:var(--ratio,1);margin:0 auto;overflow:hidden;background:var(--soft)}
   /* ai: square corners (2026-10-02; 12 px rounded before) */
   #view video,#view canvas{position:absolute;inset:0;display:block;width:100%;height:100%}
   #view video{object-fit:cover}
-  #view.f0 canvas{visibility:hidden}
+  #view.vf canvas{visibility:hidden}
   /* contain: a bitmap of another shape than the box (the instant after the crop is switched) is letterboxed, never stretched. The background still covers the video. */
   #view canvas{background:var(--soft);object-fit:contain}
-  /* ai: over every canvas, the GL grab's too (recv.mjs appends it after this) */
+  /* ai: over the canvas */
   #idle{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;margin:0}
   /* ai: over the camera until a decoder answers its first frame (recv.mjs showState): opaque, so the camera is not shown
      while nothing reads it; the video keeps playing beneath (the frame loop needs it composited) */
@@ -77,21 +78,16 @@
   <dialog id="first" class="dialog"><p>Browsers have severely limited performance and lack support for many critical features. Use the Android app for higher speed and stability. In a browser, set the sender to at most half the camera's frame rate.</p><div class="row end"><button id="firstCancel" type="button">Cancel</button><button id="firstStart" class="primary" type="button">Start camera</button></div></dialog>
   <section class="settings">
     <!-- ai: Settings and Developer Tools, two rows that open (2026-10-02): Settings (#dev, its open state and every menu in it
-         kept) holds the decoder, the camera and the GPU decoder's crop; Developer Tools (#logs) the lab line and the readouts;
-         About the last row. -->
+         kept) holds the camera; Developer Tools (#logs) the lab line and the readouts; About the last row. -->
   <details class="dev" id="dev"><summary>Settings</summary>
-    <!-- ai: the decoder, the user's to switch (2026-10-01): auto takes the GPU where WebGPU runs on a real adapter, else the CPU pool (recv.mjs gpuWanted) -->
-    <!-- ai: every control a labelled field, its options bare (2026-10-02; the Camera and GPU decoder groups and their
-         prefixed options, "camera: auto (rear)", "rate: 60 first", before) -->
+    <!-- ai: every control a labelled field, its options bare (2026-10-02) -->
     <div class="grid">
-      <!-- ai: no Auto entries (2026-10-05): the decoder GPU and CPU, the cameras, the rates 30 and 60; with none chosen the
-           page's default runs, held by a hidden option named after what it runs (recv.mjs showDecoder, showCamera). The
-           camera's field shows once a camera has opened, or one was chosen here before. -->
-      <label>Decoder <select id="dec"><option value="auto" selected hidden disabled>GPU</option><option value="gpu">GPU</option><option value="cpu">CPU</option></select></label>
+      <!-- ai: no Auto entries (2026-10-05): the cameras, the rates 30 and 60; with none chosen the page's default runs,
+           held by a hidden option named after what it runs (recv.mjs showCamera). The camera's field shows once a camera
+           has opened, or one was chosen here before. -->
       <label id="camRow" hidden>Camera <select id="cam"><option value="auto" selected hidden disabled>Camera</option></select></label>
       <label>Resolution <select id="res"><option value="1280x720">1280 x 720</option><option value="1920x1080" selected>1920 x 1080</option><option value="2560x1440">2560 x 1440</option><option value="3840x2160">3840 x 2160</option></select></label>
       <label>Frame rate <select id="fps"><option value="auto" selected hidden disabled>60</option><option value="30">30</option><option value="60">60</option></select></label>
-      <label>GPU crop <select id="gcrop"><option value="full" selected>Full square</option><option value="tracked">Tracked</option></select></label>
     </div>
   </details>
   <!-- ai: Developer Tools ("Advanced" until 2026-10-03): the lab line and the readouts (no replay recording since

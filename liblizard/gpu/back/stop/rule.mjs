@@ -1,8 +1,8 @@
 // ai: The learned LDPC stop rule for the decoder (scripts/gpu/back/stop/README.md; the trainer is scripts/gpu/back/stop/fit.py): its weights file read and checked
 // ai: (readStop, loadStop), folded into the form the kernel runs exactly as scripts/gpu/back/stop/net.py fold() folds it (the same float64
 // ai: operations in the same order, then one rounding to float32), the words the kernel reads (netWords, laid out for
-// ai: gpu/wgsl/back_ldpc.mjs), and that form's arithmetic in float32 (scoreF32, gives), which gpu/back/ref_ldpc.mjs's
-// ai: decoders apply. The rule: after iteration t (1 to 29), with x = (bad, low, first, prev, t, est) (the violated
+// ai: gpu/wgsl/back_tiers.mjs tldpc), and that form's arithmetic in float32 (scoreF32, which
+// ai: scripts/gpu/back/stop/check_rule.mjs holds the folded form to). The rule: after iteration t (1 to 29), with x = (bad, low, first, prev, t, est) (the violated
 // ai: checks now, their running minimum, after iteration 1, after the iteration before, t, the block's estimate BLK.x),
 // ai: h1 = relu(W1 x + b1), h2 = relu(W2 h1 + b2), s = w3 . h2; give up when s < T. The order of operations (the
 // ai: kernel's): a hidden unit starts at its bias and adds weight times input in input order, s adds the products
@@ -89,5 +89,3 @@ export function scoreF32(rule, x) {
   return s;
 }
 
-// ai: The rule's decision after iteration t: give up.
-export const gives = (rule, x) => scoreF32(rule, x) < rule.T;

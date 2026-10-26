@@ -11,8 +11,7 @@
  * ai: Layers 1 to 3 start no thread and keep no state between calls but their handles'. A handle is used from one
  * ai: thread at a time; different handles from different threads at once.
  * ai:
- * ai: The format is never frozen: a sender and a receiver need the same release of this library (liz_version), and
- * ai: LIZ_ABI changes with any change to these declarations.
+ * ai: The format is never frozen: a sender and a receiver need the same release of this library (liz_version).
  * ai:
  * ai: Errors: a function returns LIZ_OK (0) or a count, or a negative LIZ_E_*; one returning a handle returns NULL. In
  * ai: either case liz_last_error() is a message for the calling thread's last failure. Strings the library returns are
@@ -41,9 +40,6 @@ extern "C" {
 #define LIZ_API
 #endif
 
-#define LIZ_ABI 1
-
-LIZ_API int liz_abi(void);
 LIZ_API const char *liz_version(void);
 LIZ_API const char *liz_last_error(void);
 /* ai: the calling thread's last failure's LIZ_E_* code (LIZ_OK after a call that succeeded): what a NULL handle meant */
@@ -67,8 +63,9 @@ enum {
   LIZ_BLOCK = 473,         /* ai: a block: the id and the payload */
   LIZ_ID_BYTES = 4,        /* ai: the id, little-endian */
   LIZ_PAYLOAD = 469,
+  LIZ_MIN_BLOCKS = 2,      /* ai: the smallest format's size (LIZARD-16): one block a frame is no format */
   LIZ_MAX_BLOCKS = 128,    /* ai: the largest format's size (LIZARD-1024; its symbol carries liz_blocks_for(128)) */
-  LIZ_RINGS = 4,           /* ai: the borders: rings of 32, 64, 128 or 256 cells a side */
+  LIZ_RINGS = 3,           /* ai: the borders: rings of 64, 128 or 256 cells a side */
   LIZ_RING_DEFAULT = -1,   /* ai: the senders' default ring, the 128 */
   LIZ_GAP_MODULES = 12,    /* ai: two codes side by side are this many modules apart */
   LIZ_QUIET = 2            /* ai: the margin painted round a symbol, in modules */
@@ -83,9 +80,10 @@ typedef enum {
 
 /* ---- 1. format arithmetic ---------------------------------------------------------------------------------------- */
 
-/* ai: blocks: the format's size, 1 to 128 (LIZARD-8 to LIZARD-1024: the number is 8 x blocks), the version its word
+/* ai: blocks: the format's size, 2 to 128 (LIZARD-16 to LIZARD-1024: the number is 8 x blocks), the version its word
  * ai: names; a symbol of it carries liz_blocks_for(blocks) blocks, the code's rate following the frequency (7/8 on its
- * ai: lowest sub-channels, then 3/4 and 2/3, 1/2 on its highest: 51 at LIZARD-432); ring: 0 to 3 or LIZ_RING_DEFAULT;
+ * ai: lowest sub-channels, then 3/4 and 2/3, 1/2 on its highest: 51 at LIZARD-432); ring: 0 to LIZ_RINGS - 1 (the 64,
+ * ai: 128 and 256 rings) or LIZ_RING_DEFAULT;
  * ai: fps: 1 to 255, the display rate the symbol's word states; codes: 1, or 2 symbols side by side (one format, one
  * ai: word, the frame's blocks split between them, the first code the first ones). */
 typedef struct {
@@ -100,17 +98,17 @@ typedef struct {
   int n, span, pxm, side, width, height, gap, frame_blocks;
 } liz_geometry;
 
-/* ai: the cells a side of ring r (0 to 3; LIZ_RING_DEFAULT the default's), or LIZ_E_ARG */
+/* ai: the cells a side of ring r (0 to LIZ_RINGS - 1; LIZ_RING_DEFAULT the default's), or LIZ_E_ARG */
 LIZ_API int liz_ring_cells(int ring);
 LIZ_API int liz_geometry_of(const liz_format *format, liz_geometry *out);
 /* ai: The pixels a side a symbol of this many blocks needs on a display for its outer coefficients to keep 2.7 pixels
  * ai: a cycle (the web sender's ROOM_FOR); a negative error for an argument out of range. */
 LIZ_API double liz_room_for(int blocks, int ring);
-/* ai: The blocks a symbol of a format's size (blocks, 1 to 128) carries: the format's rate profile's count; 0 outside. */
+/* ai: The blocks a symbol of a format's size (blocks, 2 to 128) carries: the format's rate profile's count; 0 outside. */
 LIZ_API int liz_blocks_for(int blocks);
 /* ai: The largest size (blocks) a symbol may have, at most top_blocks, for codes symbols in a room of w x h display
  * ai: pixels (the web sender's pickVersion: each symbol's room is the width over codes and the gaps, against the
- * ai: height); at least 1. */
+ * ai: height); at least LIZ_MIN_BLOCKS; top_blocks 2 to 128. */
 LIZ_API int liz_pick(double w, double h, int codes, int ring, int top_blocks);
 
 /* ---- 2. the per-frame codec -------------------------------------------------------------------------------------- */
@@ -133,7 +131,7 @@ LIZ_API int liz_decoder_max_blocks(const liz_decoder *d);
 
 typedef struct {
   int found;          /* ai: a symbol registered */
-  int ring;           /* ai: the ring that registered, 0 to 3; -1 none */
+  int ring;           /* ai: the ring that registered, 0 to LIZ_RINGS - 1; -1 none */
   int n;              /* ai: the picture it was finished at; 0 not finished */
   int word;           /* ai: the frame's own word read */
   int blocks;         /* ai: the size of the format it was decoded at, its version (0 none) */
@@ -144,7 +142,8 @@ typedef struct {
   float quad[8];      /* ai: its corners in the image, x y x y ..., top left, top right, bottom right, bottom left */
   int pilot_blocks;   /* ai: blocks the pilots were read over (0 none) */
   float pilot_r[2];   /* ai: the pilots' readings over the even blocks and the odd: their signs the picture's count;
-                         ai: NaN for a parity with no block (a one-block symbol has no odd reading, so no side) */
+                         ai: NaN where no block's pilots were read (pilot_blocks 0); every format has blocks of both
+                         ai: parities, so a frame read reads both */
   float pilot_sd[2];  /* ai: their standard errors (NaN with its reading) */
 } liz_decoded;
 
@@ -275,7 +274,8 @@ LIZ_API void liz_receiver_free(liz_receiver *r);
 LIZ_API int liz_receiver_push(liz_receiver *r, const uint8_t *luma, int w, int h, int stride, int64_t timestamp_ns, uint64_t tag);
 /* ai: Android: a camera AHardwareBuffer (YUV), read by the GPU in place; it stays the caller's until release(tag). */
 LIZ_API int liz_receiver_push_hardware_buffer(liz_receiver *r, void *ahardwarebuffer, int w, int h, int64_t timestamp_ns, uint64_t tag);
-/* ai: 1 where frames must come as luma planes (the CPU decoder), 0 where hardware buffers are read in place */
+/* ai: 1 where frames must come as luma planes (the CPU decoder, or the GPU's on a device without the zero-copy ingest),
+ * ai: 0 where hardware buffers are read in place */
 LIZ_API int liz_receiver_wants_luma(liz_receiver *r);
 LIZ_API const char *liz_receiver_stats(liz_receiver *r);
 /* ai: The frames decoded since since_ms (on the camera's clock), 8 doubles each into out (at most cap doubles), after

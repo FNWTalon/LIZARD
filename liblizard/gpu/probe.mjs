@@ -1,8 +1,8 @@
 // ai: The self-test's view of a batch (scripts/pages/gpu_selftest.mjs): what every stage left in its buffers, copied out in
 // ai: the batch's own encoder after its passes and read back beside the batch's readback. Only a decoder made with
-// ai: probe: true has one (FrontHalf.create), and only a batch run with probe: true uses it; the receiver asks for
+// ai: probe: true has one (FrontHalf.create), and only a batch run with probe: true uses it; a receiver asks for
 // ai: neither. Such a decoder gives the pyramid levels, the accumulator and the cascade's logits and list COPY_SRC, a
-// ai: buffer flag no stage reads. The input layer keeps the receiver's usage flags (a texture's can change its layout):
+// ai: buffer flag no stage reads. The input layer keeps a receiver's usage flags (a texture's can change its layout):
 // ai: it is read through textureLoad, as every stage reads it, into a buffer of packed bytes.
 import { DIMS } from "./wgsl/common.mjs";
 import { SCORE, HYP } from "./wgsl/finder.mjs";

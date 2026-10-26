@@ -1,6 +1,6 @@
 # ai: The desktop app's native library (2026-10-03): liblizard/core's sender (lizard_tx: the transfer, the C's
 # ai: painters, the Vulkan painter) behind a JNI face for the Kotlin app (lizard-desktop/src), and the presenter that
-# ai: puts its frames on screen (presenter.h, 2026-10-04: the app's canvas through JAWT; lizard_present's own window);
+# ai: puts its frames on screen (presenter.h, 2026-10-04: the app's canvas through JAWT);
 # ai: since 2026-10-25 the receiver beside it (rx_session.h over the core's lizard_rx, the cameras in camera/).
 cmake_minimum_required(VERSION 3.22)
 # ai: macOS 12 on, as the app's Info.plist says (LSMinimumSystemVersion): with no target set the library was built for
@@ -29,15 +29,12 @@ if(NOT MSVC)
   set(LIZ_DESKTOP_WARN -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 endif()
 
-# ai: the presenter: X11 (XRandR for the mode's refresh; Composite and Shape to tell a composited window from one
-# ai: shown direct) on Linux; Win32 under _WIN32; on macOS a CAMetalLayer over the canvas (macos.mm), MoltenVK's
+# ai: the presenter: X11 (XRandR for the mode's refresh) on Linux; Win32 under _WIN32; on macOS a CAMetalLayer over
+# ai: the canvas (macos.mm) for MoltenVK's surface
 if(UNIX AND NOT APPLE)
   find_package(X11 REQUIRED)
   if(NOT X11_Xrandr_FOUND)
     message(FATAL_ERROR "the presenter needs XRandR (libxrandr-dev)")
-  endif()
-  if(NOT X11_Xcomposite_FOUND OR NOT X11_Xshape_FOUND)
-    message(FATAL_ERROR "the presenter needs Xcomposite and Xshape (libxcomposite-dev, libxext-dev)")
   endif()
 endif()
 # ai: the JNI library: JAWT for the canvas's window (JAVA_AWT_LIBRARY; the app loads jawt first). MinGW from Linux
@@ -73,7 +70,7 @@ endif()
 if(UNIX AND NOT APPLE)
   target_compile_definitions(lizard_presenter PRIVATE LIZ_X11=1)
   target_include_directories(lizard_presenter SYSTEM PRIVATE ${X11_INCLUDE_DIR})
-  target_link_libraries(lizard_presenter PUBLIC ${X11_X11_LIB} ${X11_Xrandr_LIB} ${X11_Xcomposite_LIB} ${X11_Xext_LIB})
+  target_link_libraries(lizard_presenter PUBLIC ${X11_X11_LIB} ${X11_Xrandr_LIB})
 endif()
 
 # ai: The receiver (2026-10-25). lizard_api_static: the C API's layers 1 to 3 (liblizard/api) as a static library, the
@@ -88,7 +85,7 @@ add_library(lizard_api_static STATIC ${LZ}/api/api.cpp ${LZ}/api/format.cpp ${LZ
 target_include_directories(lizard_api_static PUBLIC ${LZ}/include)
 target_compile_definitions(lizard_api_static PUBLIC LIZ_STATIC PRIVATE LIZ_VERSION_STRING="desktop")
 target_link_libraries(lizard_api_static PUBLIC lizard_codec lizard_xfer_core)
-set(LIZ_CAM_SOURCES camera/camera.cpp camera/luma.cpp camera/jpeg.cpp camera/trigger.cpp camera/sim.cpp sim/scene.cpp)
+set(LIZ_CAM_SOURCES camera/camera.cpp camera/luma.cpp camera/jpeg.cpp camera/clock.cpp camera/sim.cpp sim/scene.cpp)
 if(UNIX AND NOT APPLE)
   list(APPEND LIZ_CAM_SOURCES camera/v4l2.cpp)
 elseif(WIN32)
@@ -141,21 +138,10 @@ endif()
 # ai: whose flags link MinGW's runtime into the DLL, so the one file the app bundles loads on a clean Windows machine
 # ai: (2026-10-04: libstdc++-6, libgcc_s_seh-1 and libwinpthread-1 were needed beside it)
 
-# ai: lizard_present (2026-10-03, to test whether the browser was to blame): the sender's frames full screen on one monitor
-# ai: through the presenter, no browser and no UI; present.cpp's header has its arguments. The GPU painter's kernels and
-# ai: tables from ../../liblizard/out unless --assets names another tree.
-if(UNIX AND NOT APPLE)
-  add_executable(lizard_present present.cpp)
-  target_include_directories(lizard_present SYSTEM PRIVATE ${X11_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../liblizard/core/third_party)
-  target_compile_options(lizard_present PRIVATE ${LIZ_DESKTOP_WARN})
-  target_compile_definitions(lizard_present PRIVATE LIZ_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/../../liblizard/out")
-  target_link_libraries(lizard_present PRIVATE lizard_presenter lizard_tx ${X11_X11_LIB} ${X11_Xrandr_LIB})
-endif()
-
-# ai: lizard_receive (2026-10-25, receive.cpp): the receiver headless on every system, as lizard_present is the
-# ai: sender's: the cameras listed, one read into a receiver with a stats line a second, a file written out; its
-# ai: header has its arguments. cam_check (cam_check.cpp): the cameras' checks, each backend against a fake device
-# ai: (sim/fake_v4l2.cpp, sim/fake_mf.cpp) painting the simulated screen, the conversions and the trigger's clock.
+# ai: lizard_receive (2026-10-25, receive.cpp): the receiver headless on every system: the cameras listed, one read into
+# ai: a receiver with a stats line a second, a file written out; its header has its arguments. cam_check (cam_check.cpp):
+# ai: the cameras' checks, each backend against a fake device (sim/fake_v4l2.cpp, sim/fake_mf.cpp) painting the
+# ai: simulated screen, the conversions and the clock's sleep.
 add_executable(lizard_receive receive.cpp)
 target_compile_options(lizard_receive PRIVATE ${LIZ_DESKTOP_WARN})
 target_compile_definitions(lizard_receive PRIVATE LIZ_ASSETS="${LZ}/out")

@@ -148,20 +148,20 @@ fun TopBar(title: String?, onBack: (() -> Unit)?, actions: @Composable RowScope.
 
 // ai: An icon button: a 24 dp icon in a round 48 dp target, no border, the press a soft circle.
 @Composable
-fun IconBtn(icon: Int, label: String, tint: Color = Fg, enabled: Boolean = true, onClick: () -> Unit) {
+fun IconBtn(icon: Int, label: String, enabled: Boolean = true, onClick: () -> Unit) {
     Box(Modifier.size(48.dp).clip(CircleShape).clickable(enabled = enabled, role = Role.Button, onClick = onClick).semantics { contentDescription = label },
         contentAlignment = Alignment.Center) {
-        Icon(painterResource(icon), contentDescription = null, Modifier.size(24.dp), tint = if (enabled) tint else tint.copy(alpha = .38f))
+        Icon(painterResource(icon), contentDescription = null, Modifier.size(24.dp), tint = if (enabled) Fg else Fg.copy(alpha = .38f))
     }
 }
 
-// ai: The sidebar collapser (2026-10-02, after the web's): an icon button whose chevrons point to where the panel goes;
-// ai: `left` the panel's side (Receive's column; the sending screen's panel is on the right). Landscape only, as the web's.
+// ai: The sidebar collapser (2026-10-02, after the web's): an icon button whose chevrons point to where the panel goes,
+// ai: the panel on the left (Receive's column, and Send's since 2026-10-05). Landscape only, as the web's.
 @Composable
-fun CollapseBtn(collapsed: Boolean, left: Boolean = true, onClick: () -> Unit) {
+fun CollapseBtn(collapsed: Boolean, onClick: () -> Unit) {
     Box(Modifier.size(48.dp).clip(CircleShape).clickable(role = Role.Button, onClick = onClick)
         .semantics { contentDescription = if (collapsed) "Show sidebar" else "Hide sidebar" }, contentAlignment = Alignment.Center) {
-        Icon(painterResource(R.drawable.ic_collapse), contentDescription = null, Modifier.size(24.dp).rotate(if (collapsed == left) 180f else 0f), tint = Fg)
+        Icon(painterResource(R.drawable.ic_collapse), contentDescription = null, Modifier.size(24.dp).rotate(if (collapsed) 180f else 0f), tint = Fg)
     }
 }
 
@@ -169,9 +169,9 @@ fun CollapseBtn(collapsed: Boolean, left: Boolean = true, onClick: () -> Unit) {
 // ai: the caller's squares (Receive's: the camera, the rate, the file in; 2026-10-02), and `foot`, squares at the
 // ai: bottom (Receive's Home, 2026-10-05, out of the bar so expanding the panel puts no back arrow under the finger).
 @Composable
-fun Rail(left: Boolean = true, onClick: () -> Unit, foot: @Composable () -> Unit = {}, squares: @Composable () -> Unit = {}) {
+fun Rail(onClick: () -> Unit, foot: @Composable () -> Unit = {}, squares: @Composable () -> Unit = {}) {
     Column(Modifier.width(56.dp).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) { CollapseBtn(true, left, onClick) }
+        Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) { CollapseBtn(true, onClick) }
         HorizontalDivider(color = Line)
         squares()
         Spacer(Modifier.weight(1f))
@@ -411,13 +411,13 @@ fun Fold(title: String, open: Boolean, onToggle: () -> Unit, content: @Composabl
 
 // ai: Settings' fields one rhythm (2026-10-02): 16 dp apart
 // ai: (Fields; every fold's whole content since 2026-10-10, its readouts and buttons too, none spaced on its own), each its title over its control (14 sp, the web's label, 2026-10-06), the title row 36 dp whatever is
-// ai: in it (the value on the right, `end` at its end), a group's heading (Group) 8 dp over its first
+// ai: in it (the value on the right), a group's heading (Group) 8 dp over its first
 // ai: field.
 @Composable
 fun Fields(content: @Composable ColumnScope.() -> Unit) = Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
 
 @Composable
-fun Field(title: String, value: String = "", end: (@Composable () -> Unit)? = null, content: @Composable () -> Unit) {
+fun Field(title: String, value: String = "", content: @Composable () -> Unit) {
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().heightIn(min = 36.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             // ai: the title on one line whatever the value's length; the value the rest of the row, cut at its end
@@ -425,7 +425,6 @@ fun Field(title: String, value: String = "", end: (@Composable () -> Unit)? = nu
             Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                 if (value.isNotEmpty()) Text(value, style = MaterialTheme.typography.bodyMedium, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            end?.invoke()
         }
         Spacer(Modifier.height(4.dp))
         content()

@@ -19,7 +19,7 @@ import kotlin.math.roundToInt
 import org.json.JSONObject
 
 // ai: Settings, as the web's pages hold them since 2026-10-02. Receive: under
-// ai: the transfer, Settings (the decoder and its batch size, the camera: lens, resolution, zoom, crop, phase lock), Developer Tools (Save
+// ai: the transfer, Settings (the decoder and its batch size, the camera: lens, resolution, zoom, crop), Developer Tools (Save
 // ai: replays, the lab line, the readout: the decoder, camera, code, file, lock and heat a line each) and About, the camera running beside
 // ai: them. Home: the tips again, the received files with Delete all, About. The Settings screen, reached by a gear on
 // ai: Home and Receive, went with them. Options bare, no descriptions.
@@ -96,7 +96,7 @@ private fun MainActivity.devReadout(): String {
     if (j != null) {
         val dec = j.optString("decoder")
         put("decoder", if (dec.startsWith("gpu")) "GPU ${dec.removePrefix("gpu").trim()}${if (j.optBoolean("zeroCopy")) ", zero-copy" else ""}, " +
-                "batches up to ${j.optInt("cap", j.optInt("B"))}, ${f(j.optDouble("gpuMs", 0.0), 2)} ms of GPU a frame"
+                "batches up to ${j.optInt("cap")}, ${f(j.optDouble("gpuMs", 0.0), 2)} ms of GPU a frame"
             else if (dec == "cpu") "CPU, ${j.optInt("threads")} of ${j.optInt("threadsMax")} threads${if (j.optBoolean("simd")) ", NEON" else ""}, " +
                 "${f(j.optDouble("cpuMs", 0.0), 1)} ms a frame" else dec,
             j.optString("gpuWhy").takeIf { dec == "cpu" && it.isNotEmpty() }?.let { "no GPU: $it" })

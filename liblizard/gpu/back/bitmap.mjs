@@ -1,6 +1,6 @@
 // The bit map (perm, inverse) and the whitening (PRBS-23), regenerated in JS from src/focus.c and src/ldpc.c (nothing
-// here is exported by the wasm); the disc layout of S and the UV gather table the soft values read; and a block's
-// systematic codeword and data bits (the C's encoder), which the profile stage's checks paint with.
+// here is exported by the wasm); and a block's systematic codeword and data bits (the C's encoder), which the profile
+// stage's checks paint with.
 
 // x^23 + x^18 + 1 from the all-ones state, one bit a slot of the frame in pos order (focus.c whiten_fill).
 export function whiten(count) {
@@ -13,20 +13,14 @@ export function whiten(count) {
 const gcd = (a, b) => { while (b) { const t = a % b; a = b; b = t; } return a; };
 
 // Slot i of a block carries sent bit perm[i], codeword bit np + perm[i] (focus.c perm_fill; np the bits a code never
-// sends, 93 at 7/8 since 2026-10-08, 0 elsewhere): n is the sent length nt, k the sent data bits. Modes are
-// src/focus.h FOCUS_BITMAP_*: 0 none and 1 white leave the order alone; 2 spread, 3 linear (the format's), 4 inner.
-export function perm(n, k, mode) {
-  const p = new Int32Array(n), m = n - k;
-  if (mode === 2) {
-    let dc = 0, pc = 0;
-    for (let i = 0; i < n; i++) p[i] = Math.floor((i + 1) * m / n) > Math.floor(i * m / n) ? k + pc++ : dc++;
-  } else if (mode === 3) {
-    let P = Math.floor(0.3819660113 * n + 0.5);
-    while (gcd(P, n) !== 1) P++;
-    for (let i = 0; i < n; i++) p[i] = (i * P) % n;
-  } else if (mode === 4) {
-    for (let i = 0; i < n; i++) p[i] = i < m ? k + i : i - m;
-  } else for (let i = 0; i < n; i++) p[i] = i;
+// sends, 93 at 7/8 since 2026-10-08, 0 elsewhere): n is the sent length nt. The format's one bit map, LINEAR (src/focus.h
+// FOCUS_BITMAP): slot i takes bit i P mod n, P the integer nearest n over the golden ratio squared, stepped up until
+// prime to n.
+export function perm(n) {
+  const p = new Int32Array(n);
+  let P = Math.floor(0.3819660113 * n + 0.5);
+  while (gcd(P, n) !== 1) P++;
+  for (let i = 0; i < n; i++) p[i] = (i * P) % n;
   return p;
 }
 
@@ -34,45 +28,6 @@ export function inverse(p) {
   const inv = new Int32Array(p.length);
   for (let i = 0; i < p.length; i++) inv[p[i]] = i;
   return inv;
-}
-
-// pos entry p to (u, v) (focus.c init: pos = (v / bw) n bw + ((u + n) % n) bw + v % bw).
-export function decodePos(pos, n, bw) {
-  const u = new Int32Array(pos.length), v = new Int32Array(pos.length);
-  for (let i = 0; i < pos.length; i++) {
-    const p = pos[i], vb = Math.floor(p / (n * bw)), rem = p % (n * bw), uw = Math.floor(rem / bw);
-    v[i] = vb * bw + rem % bw;
-    u[i] = uw < n / 2 ? uw : uw - n;
-  }
-  return { u, v };
-}
-
-// S's layout (DESIGN.md section 3): row v at off[v]; v = 0 holds u = 1..umax[0], v > 0 holds u = 0..umax[v] then
-// u = -umax[v]..-1. Built from pos itself, so it is whatever the C's disc is; every pos entry maps to exactly one
-// entry of S and the count is npos (checked here, every format: the disc has no holes and is symmetric in u).
-// uv[i] is the S index of pos[i]: what part B gathers through.
-export function discLayout(shape, pos) {
-  const { n, bw, npos } = shape, { u, v } = decodePos(pos, n, bw);
-  let vmax = 0;
-  for (let i = 0; i < npos; i++) if (v[i] > vmax) vmax = v[i];
-  const V = vmax + 1, umax = new Int32Array(V).fill(-1), uneg = new Int32Array(V);
-  for (let i = 0; i < npos; i++) {
-    if (v[i] < 0 || (v[i] === 0 && u[i] <= 0)) throw new Error(`pos ${i}: (u ${u[i]}, v ${v[i]}) outside the half disc`);
-    if (u[i] >= 0) umax[v[i]] = Math.max(umax[v[i]], u[i]); else uneg[v[i]] = Math.max(uneg[v[i]], -u[i]);
-  }
-  const off = new Uint32Array(V + 1);
-  for (let r = 0; r < V; r++) {
-    if (r > 0 && umax[r] !== uneg[r]) throw new Error(`row v ${r}: u runs to ${umax[r]} and -${uneg[r]}`);
-    off[r + 1] = off[r] + (r === 0 ? umax[0] : umax[r] + 1 + uneg[r]);
-  }
-  if (off[V] !== npos) throw new Error(`disc holds ${off[V]} entries, pos ${npos}`);
-  const uv = new Uint32Array(npos), seen = new Uint8Array(npos);
-  for (let i = 0; i < npos; i++) {
-    const r = v[i], e = off[r] + (u[i] >= 0 ? (r === 0 ? u[i] - 1 : u[i]) : umax[r] + 1 + u[i] + uneg[r]);
-    if (seen[e]) throw new Error(`S entry ${e} claimed twice`);
-    seen[e] = 1; uv[i] = e;
-  }
-  return { V, off, umax, uv, count: npos, u, v };
 }
 
 // CRC-32, reflected 0xEDB88320, init and final xor 0xffffffff (src/layout.c ob_crc32).

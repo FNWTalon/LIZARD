@@ -30,7 +30,7 @@
 
 #include "avf_test.h"
 #include "backends.h"
-#include "trigger.h"
+#include "clock.h"
 #endif
 
 namespace lizard::check {
@@ -148,8 +148,8 @@ void frameCase(Out& o, const char* name, OSType type, uint32_t w, uint32_t h) {
       bad = fmt("no luma, or rows %u bytes apart for %u samples", f.stride, f.width);
       return;
     }
-    if (f.ns != ns || f.seq != seq || f.delayed) {
-      bad = "the time, the count or delayed changed on the way";
+    if (f.ns != ns || f.seq != seq) {
+      bad = "the time or the count changed on the way";
       return;
     }
     // ai: the backend holds the buffer locked for this call, so its plane's address is readable here

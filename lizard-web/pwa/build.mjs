@@ -2,12 +2,13 @@
 // ai: (lizard-web/index.html, send.html, recv.html) and the files they reach, on a scheme ported from another project:
 // ai: build output, never edited by hand.
 // ai:   1. crawl: from the three pages, every file a page or a shipped module names by a literal (an import specifier,
-// ai:      new URL(..., import.meta.url), a fetched path; referrer-relative, under liblizard/ (the nets' paths,
-// ai:      "gpu/cnn/weights.safetensors"), or a bare name beside the referrer), comments left out so a path in one
-// ai:      ships nothing; the codec and the fountain (BUILT, liblizard/build.sh's output) among them, or no app;
+// ai:      new URL(..., import.meta.url), a fetched path; referrer-relative, or a bare name beside the referrer), comments
+// ai:      left out so a path in one ships nothing; the codec's module (BUILT, liblizard/build.sh's output, Wirehair and
+// ai:      zstd inside) among them, or no app;
 // ai:   2. copy: the pages to the root, their references re-pointed, and every other file under assets/ at its path under
 // ai:      the project's root (assets/lizard-web/recv.mjs, assets/liblizard/sim/phy.mjs,
-// ai:      assets/liblizard/gpu/cnn/weights.safetensors), so the modules' relative references hold as they are; into each page's head the manifest, the theme colour and the build;
+// ai:      assets/liblizard/gpu/back/stop/stop_78.safetensors), so the modules' relative references hold as they are;
+// ai:      into each page's head the manifest, the theme colour and the build;
 // ai:   3. strip comments (strip.mjs; not the emscripten glue), then parse every module again (node --check);
 // ai:   4. content-address assets/ (hash.mjs): name.<hash>.ext, every reference rewritten, in dependency order;
 // ai:   5. the worker (service-worker.js, the template here): its cache name, its shell (the pages, the manifest, every
@@ -22,35 +23,32 @@ import { fileURLToPath } from "node:url";
 import { strip } from "./strip.mjs";
 import { hashTree, verifyTree, findTokens, walk } from "./hash.mjs";
 
-// ai: ROOT: the project's root, which every source path below is relative to and assets/ mirrors; LIB: the base of a
-// ai: path the nets' literals name ("gpu/cnn/weights.safetensors", liblizard/gpu's bank_fcn2.mjs and gpuqueue.mjs
-// ai: load them from liblizard/).
-const HERE = dirname(fileURLToPath(import.meta.url)), WEB = resolve(HERE, ".."), ROOT = resolve(WEB, ".."), LIB = "liblizard";
+// ai: ROOT: the project's root, which every source path below is relative to and assets/ mirrors.
+const HERE = dirname(fileURLToPath(import.meta.url)), WEB = resolve(HERE, ".."), ROOT = resolve(WEB, "..");
 const OUT = resolve(WEB, process.argv[2] ?? "app");
 const PAGES = ["lizard-web/index.html", "lizard-web/send.html", "lizard-web/recv.html"];
-// ai: what ships: the pages' own kinds of file, the codec's wasm and the nets
+// ai: what ships: the pages' own kinds of file, the codec's wasm and the sender's LDPC stop nets
 const SHIP = new Set([".html", ".css", ".mjs", ".js", ".svg", ".wasm", ".safetensors", ".json", ".woff2"]);
 const SCAN = new Set([".html", ".css", ".mjs", ".js", ".svg"]);
-// ai: emscripten's output (-O3): no comments, and its own string literals are the bare names it loads
-const GLUE = new Set(["liblizard/build/ob.mjs", "liblizard/build/wirehair.mjs", "liblizard/build/zstd.mjs"]);
+// ai: emscripten's output (-O3): no comments, and its own string literals are the bare names it loads (lizard.wasm)
+const GLUE = new Set(["liblizard/bindings/wasm/dist/lizard.mjs"]);
 // ai: liblizard/build.sh's output, built and not in git: the crawl drops a name whose file is not there, so before
-// ai: 2026-10-04 an app was built without the codec and the fountain where they were not built. Each must ship.
-const BUILT = { "liblizard/build/ob.mjs": "liblizard/build.sh", "liblizard/build/ob.wasm": "liblizard/build.sh", "liblizard/build/wirehair.mjs": "liblizard/build.sh wirehair",
-  "liblizard/build/zstd.mjs": "liblizard/build.sh zstd" };
+// ai: 2026-10-04 an app was built without the codec and the fountain where they were not built. Each must ship: the
+// ai: path the tree imports the codec by (build/ob.mjs) and the module it names, Wirehair and zstd inside since
+// ai: 2026-10-25. The library's WebAssembly 1.0 fallback (dist/lizard-mvp.mjs) is its loader's (bindings/wasm/index.mjs),
+// ai: which no page imports: the app is SIMD-only.
+const BUILT = { "liblizard/build/ob.mjs": "liblizard/build.sh", "liblizard/bindings/wasm/dist/lizard.mjs": "liblizard/build.sh", "liblizard/bindings/wasm/dist/lizard.wasm": "liblizard/build.sh" };
 const fail = (msg) => { console.error(`build: ${msg}`); process.exit(1); };
 const isFile = (p) => { try { return statSync(p).isFile(); } catch { return false; } };
 
 // --- 1. crawl -----------------------------------------------------------------------
-// ai: A token's file in the source tree, by the three bases hash.mjs takes in the built one; a query or fragment is the
-// ai: page's, not the file's (Home's "recv.html?auto").
+// ai: A token's file in the source tree, by the bases hash.mjs takes in the built one (referrer-relative, a bare name
+// ai: beside the referrer); a query or fragment is the page's, not the file's (Home's "recv.html?auto").
 function sourceRef(rel, token) {
   const tok = token.split(/[?#]/)[0];
   if (!tok || /^[a-z][a-z0-9+.-]*:/i.test(tok) || tok.startsWith("/")) return null;
-  const here = posix.dirname(rel) === "." ? "" : posix.dirname(rel);
-  const cands = tok.includes("/") ? [posix.normalize(posix.join(here, tok)), posix.normalize(posix.join(LIB, tok))] : [posix.join(here, tok)];
-  const hits = [...new Set(cands)].filter((c) => !c.startsWith("..") && SHIP.has(posix.extname(c)) && isFile(join(ROOT, c)));
-  if (hits.length > 1) fail(`an ambiguous reference in ${rel}: ${token} -> ${hits.join(", ")}`);
-  return hits[0] ?? null;
+  const here = posix.dirname(rel) === "." ? "" : posix.dirname(rel), c = posix.normalize(posix.join(here, tok));
+  return !c.startsWith("..") && SHIP.has(posix.extname(c)) && isFile(join(ROOT, c)) ? c : null;
 }
 const shipped = new Set(), queue = [...PAGES];
 while (queue.length) {

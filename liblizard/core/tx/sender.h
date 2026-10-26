@@ -21,8 +21,9 @@
 
 namespace lizard {
 
-// ai: The symbol (lizard-web/send.mjs spec): n the picture, subch the sub-channels (the version is subch / 8), span
-// ai: the ring's (2 x its cells), fps the display rate the word states; threads the painters. painter (2026-10-02, the
+// ai: The symbol (lizard-web/send.mjs spec): subch the sub-channels (the version is subch / 8; 0 is no format, refused),
+// ai: span the ring's (2 x its cells; 0 the default ring, src/focus.h FOCUS_RING_DEFAULT), fps the display rate the word
+// ai: states; the picture is the format's (focus_n_for(subch): a receiver takes it from the version); threads the painters. painter (2026-10-02, the
 // ai: web's encoder switch): 0 the C on the CPU, 1 the GPU (gpu_painter.h; its absence an error), 2 auto: the GPU where
 // ai: it builds and its first frames are the C's (the border to the byte, the square within a grey level), else the
 // ai: CPU; assets the tree the GPU's kernels and tables come from (liblizard/out as the app ships it). codes (2026-10-03, the
@@ -36,7 +37,7 @@ namespace lizard {
 // ai: frame in host memory too, for a host that takes frames by take() (Android's present, the C API; the desktop
 // ai: presenter takes slots and sets it off).
 struct TxFormat {
-  int n = 512, subch = 96, span = 128, fps = 60, threads = 3, painter = 0, codes = 1, gap = GAP_MODULES;
+  int subch = 0, span = 0, fps = 60, threads = 3, painter = 0, codes = 1, gap = GAP_MODULES;
   std::string assets, device;
   double aheadSecs = 1.0;
   uint64_t aheadBytes = 128ull << 20;
@@ -69,6 +70,8 @@ class Sender {
   // ai: the frame's width (codes symbols and the gaps between them; side() with one code).
   int side() const { return side_; }
   int width() const { return width_; }
+  // ai: The format's picture, n samples a side (focus_n_for(subch)), 0 before a configure.
+  int n() const { return n_; }
   // ai: The next frame in order, RGBA width() x side(), into dst rows `stride` bytes apart, if it is painted: true, and
   // ai: it is the screen's now (its count advances); false and dst untouched if the painters are behind. From the host
   // ai: copy the painters keep under TxFormat.hostFrames (grey, made RGBA as it is copied); without it, false.
@@ -104,7 +107,7 @@ class Sender {
   std::unique_ptr<XferTx> xfer_;
   uint32_t nextId_;                 // ai: the test stream's next id (a random first one)
   TxFormat fmt_;
-  int side_ = 0, width_ = 0, gap_ = 0, blocks_ = 0, blockBytes_ = 0, gen_ = 0;
+  int n_ = 0, side_ = 0, width_ = 0, gap_ = 0, blocks_ = 0, blockBytes_ = 0, gen_ = 0;
   std::string label_, error_, tiers_;   // ai: tiers_: the format's rate profile as text (the stats' tiers)
   std::mutex mu_;
   std::mutex xferMu_;               // ai: the transfer's state: the producer fills a frame under it, stats reads under it

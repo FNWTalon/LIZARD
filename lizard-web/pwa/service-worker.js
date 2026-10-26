@@ -39,9 +39,9 @@ function cacheFor(path) {
 // ai: the assets its own html names). A miss is a URL outside the shell (the rig's /api, a page the app does not carry)
 // ai: and falls through to the host. recv.html?auto finds recv.html through ignoreSearch, and is answered under its own
 // ai: URL, query and all (2026-10-01, the one change to the ported worker): a stored response carries the URL it was
-// ai: stored under, and a worker's location (a module's import.meta.url too) is its response's URL, so the GPU worker
-// ai: asked for as recv-gpu-worker.mjs?prec=f16 read no switches from location.search. A response made from the stored
-// ai: one has no URL of its own, and the browser gives it the request's.
+// ai: stored under, and a page's location (a module's import.meta.url too) is its response's URL, so recv.html?auto or
+// ai: send.html?shared answered with the stored response would read no query from location.search. A response made from
+// ai: the stored one has no URL of its own, and the browser gives it the request's.
 // ai: A path with no extension is also looked up as its .html page (2026-10-03, the app on Cloudflare Pages, which
 // ai: serves send.html at /send and sends a visit there before this worker controls the page): offline, /send is the
 // ai: page send.html is.

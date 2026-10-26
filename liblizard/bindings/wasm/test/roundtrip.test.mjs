@@ -16,8 +16,12 @@ const BUILD = process.env.LIZ_WASM_BUILD ?? "simd";
 await liz.init(undefined, { build: BUILD });
 
 test("version and vector paths", () => {
-  assert.equal(liz.abi(), 1);
   assert.match(liz.version(), /^\d+\.\d+\.\d+$/);
+  // ai: one block a frame is no format (LIZARD-16 the smallest), and a ring past the three is none
+  assert.throws(() => liz.geometry({ blocks: 1 }));
+  assert.throws(() => new liz.Encoder({ blocks: 1 }));
+  assert.throws(() => liz.geometry({ blocks: 2, ring: liz.RINGS }));
+  assert.equal(liz.blocksFor(1), 0);
   assert.equal(liz.simd(), BUILD !== "mvp", BUILD === "mvp" ? "the MVP build's scalar paths" : "the codec's vector paths in the wasm build");
 });
 
@@ -31,14 +35,14 @@ test("the format arithmetic is the web sender's", { skip: noSim }, async () => {
   await (await import(new URL("ob.mjs", sim))).init();
   const { ROOM_FOR, pickVersion, MODULES, OB_QUIET, N_FOR } = await import(new URL("lizard_pick.mjs", sim));
   let rows = 0;
-  for (let r = 0; r < 4; r++)
-    for (let b = 1; b <= 128; b++) {
+  for (let r = 0; r < liz.RINGS; r++)
+    for (let b = liz.MIN_BLOCKS; b <= liz.MAX_BLOCKS; b++) {
       assert.equal(liz.roomFor(b, r), ROOM_FOR(8 * b, r), `room for ${b} blocks, ring ${r}`);
       assert.equal(liz.geometry({ blocks: b, ring: r }).n, N_FOR(8 * b));
       rows++;
     }
   for (const codes of [1, 2])
-    for (let r = 0; r < 4; r++)
+    for (let r = 0; r < liz.RINGS; r++)
       for (let w = 200; w <= 4000; w += 173)
         for (let h = 200; h <= 2200; h += 211) {
           const gf = codes > 1 ? ((codes - 1) * 12) / (MODULES(256, r) + 2 * OB_QUIET) : 0;
@@ -46,7 +50,8 @@ test("the format arithmetic is the web sender's", { skip: noSim }, async () => {
           assert.equal(liz.pick(w, h, { codes, ring: r }), pickVersion(room, 1024, r).subch / 8, `pick ${w} x ${h}`);
           rows++;
         }
-  assert.ok(rows > 2000);
+  // ai: every size in every ring, then 22 widths by 10 heights, one code and two, in every ring
+  assert.equal(rows, liz.RINGS * (liz.MAX_BLOCKS - liz.MIN_BLOCKS + 1) + 2 * liz.RINGS * 22 * 10);
 });
 
 // ai: the frame on white, as a camera frame holds it (the C test's): a quarter taller than the frame, square for one code
@@ -60,7 +65,7 @@ function canvas(frame, g, codes = 2) {
 
 test("the test stream in every ring, one code and two", () => {
   for (const codes of [1, 2])
-    for (let ring = 0; ring < 4; ring++) {
+    for (let ring = 0; ring < liz.RINGS; ring++) {
       // ai: a fixed first id: the C's own misses of a clean frame (about 1 in 200) are measured elsewhere
       const s = new liz.Sender({ test: true, firstId: 1 + 1000 * ring + 100 * codes }, { blocks: 26, ring, codes });
       const r = new liz.Receiver({ layout: codes });
@@ -100,9 +105,14 @@ test("a 5 MB file through two codes, the native library's root", () => {
     const got = r.push(c, cw, ch, { fmt: "grey" });
     assert.ok(!got.verdict.test && !got.verdict.bad);
   }
-  const f = r.file;
+  const f = r.file, p = r.rx.progress;
   assert.ok(f, `whole after ${frames} frames`);
   assert.equal(f.root, s.info.root);
+  // ai: liz_tx_info's and liz_progress's last fields read where the C writes them
+  assert.ok(s.info.sent > 0 && s.info.sent <= s.info.length + 64, `the bytes as they go, ${s.info.sent}`);
+  assert.equal(p.sent, s.info.sent, "the receiver's bytes as they go, the sender's");
+  assert.equal(p.sentIn, p.sent, "all of them in");
+  assert.equal(liz.blocksFor(60), s.geometry.frameBlocks / 2, "the profile's blocks a symbol");
   assert.equal(f.name, "roundtrip.bin");
   assert.deepEqual(Buffer.from(f.bytes), Buffer.from(bytes));
   s.free(); r.free();
@@ -111,7 +121,7 @@ test("a 5 MB file through two codes, the native library's root", () => {
 test("this build's paint against the native build's", { skip: !process.env.LIZ_NATIVE_DUMP }, () => {
   const dir = process.env.LIZ_NATIVE_DUMP;
   for (const codes of [1, 2])
-    for (let ring = 0; ring < 4; ring++) {
+    for (let ring = 0; ring < liz.RINGS; ring++) {
       const native = new Uint8Array(readFileSync(`${dir}/paint-26-${ring}-${codes}.grey`));
       const s = new liz.Sender({ test: true, firstId: 1 }, { blocks: 26, ring, codes }), g = s.geometry;
       const mine = s.frame("grey").data;

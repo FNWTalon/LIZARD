@@ -13,8 +13,8 @@ class LizardException(val code: Int, message: String) : RuntimeException(message
 
 enum class PixelFormat(internal val code: Int, val bytes: Int) { GREY(1, 1), RGBX(2, 4), RGBA(3, 4), BGRA(4, 4) }
 
-// ai: blocks, the format's size (1 to 128: LIZARD-8 to -1024; a symbol carries the rate profile's blocks, the
-// ai: geometry's frameBlocks over codes); ring 0 to 3 (the 32, 64, 128 or 256 ring) or RING_DEFAULT; the
+// ai: blocks, the format's size (2 to 128: LIZARD-16 to -1024; a symbol carries the rate profile's blocks, the
+// ai: geometry's frameBlocks over codes); ring 0 to RINGS - 1 (the 64, 128 or 256 ring) or RING_DEFAULT; the
 // ai: display rate its word states; codes, 1 or 2 symbols side by side
 data class Format(val blocks: Int, val ring: Int = Lizard.RING_DEFAULT, val fps: Int = 60, val codes: Int = 1)
 
@@ -26,13 +26,13 @@ object Lizard {
   const val BLOCK = 473
   const val ID_BYTES = 4
   const val PAYLOAD = 469
+  const val MIN_BLOCKS = 2
   const val MAX_BLOCKS = 128
-  const val RINGS = 4
+  const val RINGS = 3
   const val RING_DEFAULT = -1
   const val GAP_MODULES = 12
 
   val version: String get() = Native.version()
-  val abi: Int get() = Native.abi()
   // ai: whether the codec's vector paths (NEON) are in this build
   val simd: Boolean get() = Native.simd()
 

@@ -1,5 +1,5 @@
-// ai: The receiver (receiver.h): the web's GpuQueue (lizard-web/gpuqueue.mjs) over the native decoder, with the
-// ai: camera's frames ingested on arrival (core/ingest/camera.h). Three threads besides the caller's:
+// ai: The receiver (receiver.h): a queue of camera frames over the native decoder, the frames ingested on arrival
+// ai: (core/ingest/camera.h). Three threads besides the caller's:
 // ai:   the camera's (push): a frame onto the ring at once (its ingest submitted on the ingest queue), or dropped;
 // ai:   the releaser: each camera buffer handed back (release(tag)) once its ingest has run, so a buffer is held for
 // ai:     about a millisecond, never behind a batch;
@@ -7,6 +7,7 @@
 // ai:     every frame then staged (since 2026-10-08: nothing held back to fill a batch), two in flight, finishes them,
 // ai:     keeps the held word, and hands each frame's verified blocks to the transfer.
 #include "receiver.h"
+#include "crops.h"
 #include "replay.h"
 #include "front.h"
 #include "camera.h"
@@ -30,7 +31,7 @@ namespace lizard {
 
 namespace {
 
-// ai: Batches' worth staged past which a new frame is dropped (gpuqueue.mjs). A batch is never waited for (2026-10-08):
+// ai: Batches' worth staged past which a new frame is dropped. A batch is never waited for (2026-10-08):
 // ai: a launch goes as soon as a frame is staged and a lane is free and takes every frame staged then, so a GPU that
 // ai: keeps up decodes each frame alone, its reading at the phase lock a frame after its capture, and one that falls
 // ai: behind decodes what arrived meanwhile together. Waiting for 32 held a reading half a second and more and a hot
@@ -38,27 +39,11 @@ namespace {
 // ai: the S26 11.0 ms of GPU at the 1536 picture against 8.3 ms of arrivals).
 constexpr int STAGE_BATCHES = 2;
 
-// ai: The crops of a camera frame (ReceiverConfig.layout): 1:1 the centre square (the web's cropAtSource or
-// ai: baseRect); 2:1 the centre region twice as long as it is high along the frame's long side, its two halves (each a
-// ai: square, each submitted as a frame).
-struct Crops { int n; uint32_t side, x[2], y[2]; };
 // ai: Where the camera's optical axis falls in crop k: the frame's centre less the crop's corner (the lens's own
 // ai: centre is the array's within a few pixels on the S26's calibration). A 2:1 half's is the middle of its inner
 // ai: edge, a 1:1 square's its centre; both decoders fit the lens about it (liblizard/src/acquire.c, register.mjs LENS).
 inline void axisOf(const CameraFrame& f, const Crops& c, int k, float* a) { a[0] = 0.5f * f.width - c.x[k]; a[1] = 0.5f * f.height - c.y[k]; }
-Crops cropsOf(const CameraFrame& f, const std::string& layout) {
-  Crops c{};
-  const bool two = layout == "2:1", wide = f.width >= f.height;
-  const uint32_t lo = std::min(f.width, f.height), hi = std::max(f.width, f.height);
-  c.side = two ? std::min(lo, hi / 2) : lo;
-  c.n = two ? 2 : 1;
-  for (int k = 0; k < c.n; k++) {
-    const uint32_t along = (hi - c.n * c.side) / 2 + k * c.side, across = (lo - c.side) / 2;
-    c.x[k] = wide ? along : across;
-    c.y[k] = wide ? across : along;
-  }
-  return c;
-}
+Crops cropsOf(const CameraFrame& f, const std::string& layout) { return lizard::cropsOf(f.width, f.height, layout == "2:1"); }
 
 // ai: the symbol's side in camera pixels, the mean of its quad's four edges
 double sideOf(const float* c) {
@@ -121,7 +106,9 @@ class GpuReceiver : public Receiver {
   std::string file() override;
   void clear() override;
   void forget(const std::string& root) override;
-  bool wantsLuma() const override { return false; }
+  // ai: the camera's buffer is read in place only through the zero-copy ingest; a device without it (camera.h) takes
+  // ai: the frame's luma plane, uploaded (enqueueLuma)
+  bool wantsLuma() const override { return !ci; }
   void record(std::shared_ptr<Replay> r) override { std::lock_guard<std::mutex> l(mu); rec = std::move(r); }
   void cameraClosed() override {
     std::unique_lock<std::shared_mutex> planHeld(planMu);   // ai: no push inside an enqueue meanwhile
@@ -150,9 +137,8 @@ class GpuReceiver : public Receiver {
   // ai: frame goes to that replay with its batch, whatever replay runs by then, so a run's end gets every frame the
   // ai: decoder took before it (Replay::finish waits for them)
   std::deque<std::shared_ptr<Replay>> stagingReplay;
-  // ai: The crop the plan must cover: the largest side the camera has sent (gpuqueue.mjs needsPlan: a frame larger
-  // ai: than the ring plans the lanes and the ring again for it; a smaller one goes onto the ring as it is, at its
-  // ai: own size). planned: the lanes and ring cover shapeW; false from the first frame, and again when a larger
+  // ai: The crop the plan must cover: the largest side the camera has sent (a frame larger than the ring plans the
+  // ai: lanes and the ring again for it; a smaller one goes onto the ring as it is, at its own size). planned: the lanes and ring cover shapeW; false from the first frame, and again when a larger
   // ai: crop arrives (the camera reopened at a higher resolution), until the decoder thread has planned. failedW: a
   // ai: side whose plan threw (out of memory): its frames are dropped without asking again, until the side changes.
   uint32_t shapeW = 0, failedW = 0;
@@ -251,7 +237,7 @@ bool GpuReceiver::start(std::string& why, bool software) {
   variant = variants[0];
   // ai: the web's budget on the S26 (Chrome's maxBufferSize, 2 GiB): the lanes, the ring and the tables within it
   const double budget = std::min<double>(2.0 * (1ull << 30), (double)dev->limits.maxBufferSize);
-  fh = FrontHalf::create(*dev, readDir(cfg.assets), variant, budget, 0, log);
+  fh = FrontHalf::create(*dev, readDir(cfg.assets), variant, budget, log);
   ci = CameraIngest::create(*dev, readDir(cfg.assets));
   fh->ingest = ci.get();
   if (!xfer) xfer = std::make_shared<XferRx>(cfg.storeDir, log);
@@ -263,8 +249,8 @@ bool GpuReceiver::start(std::string& why, bool software) {
   return true;
 }
 
-// ai: gpuqueue.mjs push, place and stage: the shape planned on the decoder thread, a frame
-// ai: dropped before it touches the device once STAGE_BATCHES batches' worth are staged, else onto the ring.
+// ai: A frame staged: the shape planned on the decoder thread, a frame dropped before it touches the device once
+// ai: STAGE_BATCHES batches' worth are staged, else onto the ring.
 void GpuReceiver::push(const CameraFrame& f) {
   const double now = fh->now();
   const Crops cr = cropsOf(f, cfg.layout);
@@ -286,8 +272,8 @@ void GpuReceiver::push(const CameraFrame& f) {
       if (side > shapeW) { shapeW = side; planned = false; failedW = 0; }
       if (!planned) {
         // ai: no ring covers this crop yet (the first frame, or a larger one than the plan's): the decoder thread
-        // ai: plans on shapeW, and frames meanwhile are dropped, never held (the web holds HOLD_MAX; the camera's pool
-        // ai: here is the reader's images, handed back at once)
+        // ai: plans on shapeW, and frames meanwhile are dropped, never held (the camera's pool is the reader's images,
+        // ai: handed back at once)
         cv.notify_all();
         dropped = true;
       } else if ((int)staging.size() + crops > STAGE_BATCHES * batchSize) dropped = true;
@@ -343,8 +329,8 @@ void GpuReceiver::releaserLoop() {
 }
 
 // ai: The plan on the first shape, then a launch whenever a frame is staged while fewer than inflight compute and a
-// ai: lane is free, taking every frame staged then up to the batcher's size or the cap (gpuqueue.mjs maybeLaunch's
-// ai: wait for a full batch went 2026-10-08), and the oldest finished in order.
+// ai: lane is free, taking every frame staged then up to the batcher's size or the cap (no wait for a full batch since
+// ai: 2026-10-08), and the oldest finished in order.
 void GpuReceiver::decoderLoop() {
   std::deque<std::unique_ptr<InFlight>> flight;
   std::deque<Kept> flightKept;   // ai: beside each batch in flight, the frames it keeps and for which replay
@@ -732,7 +718,7 @@ std::string CpuReceiver::stats() {
   json j = {
     {"state", !error.empty() ? "error" : last.test ? "test" : p.done ? "received" : p.live ? "receiving" : lastWord.is_null() ? "looking" : "found"},
     {"error", error}, {"decoder", "cpu"}, {"zeroCopy", false}, {"layout", cfg.layout},
-    {"threads", pool->size()}, {"threadsReady", pool->ready()}, {"threadsMax", pool->ceiling()}, {"simd", cpu_simd() != 0}, {"gpuWhy", gpuWhy},
+    {"threads", pool->size()}, {"threadsMax", pool->ceiling()}, {"simd", cpu_simd() != 0}, {"gpuWhy", gpuWhy},
     {"capturedFps", last.arrived}, {"processedFps", last.processed}, {"dropped", last.dropped},
     {"foundShare", last.found / n}, {"side", last.found ? last.side / last.found : 0},
     {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.useful * 469 / 1000.0 / lastSecs}, {"repeatShare", repeatShare},

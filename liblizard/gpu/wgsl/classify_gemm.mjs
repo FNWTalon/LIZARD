@@ -843,7 +843,7 @@ function partsQ8(plan, offsets, arch, { lw, slot, stop, subgroups, dump, G }) {
 }
 
 // offsets: what packWeights here returned (its `offsets`); the layout key must match the arch and precision.
-// role, keep, rest: as classify.mjs. The dispatch is the decoder's (ceil(cap / P) or ceil(keep / P) workgroups a
+// role, keep: as classify.mjs. The dispatch is the decoder's (ceil(cap / P) or ceil(keep / P) workgroups a
 // frame); a workgroup takes the `P` slots from wg.x * P and returns at once when the first is past the frame's count.
 // subgroups: the device was created with the "subgroups" feature (adjacent lanes then reduce a K-split by
 // shuffles; measured 11% faster on the iGPU and 17% on the 4090). budget, pad: see classifyPlan.
@@ -851,7 +851,7 @@ function partsQ8(plan, offsets, arch, { lw, slot, stop, subgroups, dump, G }) {
 // ("cut", "conv1", .., "fc1"): the reading is then garbage, and the time is that phase's share.
 // ai: int8: the int8 form, offsets from packWeightsInt8 (the layout key `<arch>:int8`). dump (int8 only, a check
 // ai: build): a thirteenth binding, dbg (u32), receives each patch's Xq, codes, fc1 output and z (dumpLayoutQ8).
-export const classifySource = (offsets, arch, { f16 = false, int8 = false, role = null, keep = 0, rest = "small", budget = BUDGET, pad = 1, patches = 0, partials = RED_MIN, subgroups = false, unroll = 1, stop = null, dump = false } = {}) => {
+export const classifySource = (offsets, arch, { f16 = false, int8 = false, role = null, keep = 0, budget = BUDGET, pad = 1, patches = 0, partials = RED_MIN, subgroups = false, unroll = 1, stop = null, dump = false } = {}) => {
   const plan = classifyPlan(arch, { f16, int8, budget, pad, patches, partials, subgroups, unroll }), T = f16 ? "f16" : "f32", P = plan.P, G = WG / P;
   if (!offsets?.gemm || offsets.key !== plan.layout.key) throw new Error(`classify_gemm: weights packed for ${offsets?.key ?? "classify.mjs"}, the shader is ${plan.layout.key}; pack with classify_gemm.mjs packWeights${int8 ? "Int8" : ""}`);
   if (role === "second" && !(keep > 0)) throw new Error(`cascade keep ${keep}`);
@@ -976,9 +976,9 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
       let pr = 1.0 / (1.0 + exp(-z0));
       let o3 = 3u * (f * P.cap + i);
       ${role === "first" ? "score[f * P.cap + i] = z0;" : ""}
-      ${role === "first" && rest === "zero" ? "" : /* wgsl */ `readings[o3] = vec4f(pw.xy, uw * exp(z3), t - PI / 4.0);
+      readings[o3] = vec4f(pw.xy, uw * exp(z3), t - PI / 4.0);
       readings[o3 + 1u] = vec4f(pr, 0.0, 0.0, 0.0);
-      readings[o3 + 2u] = vec4f(select(0.0, 1.0, z4 > 0.0), pw.w, f32(levelFor(uw)), 1.0);`}
+      readings[o3 + 2u] = vec4f(select(0.0, 1.0, z4 > 0.0), pw.w, f32(levelFor(uw)), 1.0);
     }
   }
 }

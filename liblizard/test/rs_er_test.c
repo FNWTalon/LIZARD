@@ -1,4 +1,5 @@
-// Errors-and-erasures decoding and the interleaved (SIMD) syndromes against the plain decoder.
+// Errors-and-erasures decoding: every word within the bound decoded back, and no word (random bytes, any erasures)
+// decoded to anything but a codeword (2026-10-25: a locator whose degree fell below its length did).
 #include "../src/rs.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,19 +18,20 @@ int main(void) {
     int r = rs_decode_er(cw, n, nroots, eras, s);
     if (r < 0 || memcmp(cw, good, (size_t)n)) { if (++fails < 5) printf("FAIL n=%d nroots=%d s=%d e=%d r=%d\n", n, nroots, s, e, r); }
   }
-  // Interleaved: m codewords, syndromes all at once, decode each.
-  for (int t = 0; t < 600; t++, trials++) {
-    int m = 1 + rnd() % 40, n = 30 + rnd() % 220, nroots = 2 + 2 * (rnd() % 20); if (nroots >= n - 2) nroots = (n - 4) & ~1;
-    uint8_t *buf = malloc((size_t)m * n), *good = malloc((size_t)m * n), *syn = malloc((size_t)m * nroots), cw[255];
-    for (int c = 0; c < m; c++) { for (int i = 0; i < n - nroots; i++) cw[i] = (uint8_t)rnd(); rs_encode(cw, n - nroots, nroots); for (int j = 0; j < n; j++) buf[j * m + c] = cw[j]; }
-    memcpy(good, buf, (size_t)m * n);
-    for (int c = 0; c < m; c++) { int e = rnd() % (nroots / 2 + 1); for (int k = 0; k < e; k++) buf[(rnd() % n) * m + c] ^= (uint8_t)(1 + rnd() % 255); }
-    rs_syndromes_il(buf, m, n, nroots, syn);
-    int bad = 0;
-    for (int c = 0; c < m; c++) if (rs_decode_il(buf, m, n, nroots, c, syn, NULL, 0) < 0) bad = 1;
-    if (bad || memcmp(buf, good, (size_t)m * n)) { if (++fails < 5) printf("FAIL interleaved m=%d n=%d nroots=%d\n", m, n, nroots); }
-    free(buf); free(good); free(syn);
+  // ai: Garbage: whatever rs_decode_er accepts must be a codeword (its data bytes re-encode to its parity).
+  int accepted = 0;
+  for (int t = 0; t < 4000; t++, trials++) {
+    int n = 8 + rnd() % 120, nroots = 2 + rnd() % 30; if (nroots >= n - 2) nroots = n - 3;
+    uint8_t cw[255], re[255]; int eras[255];
+    for (int i = 0; i < n; i++) { cw[i] = (uint8_t)rnd(); eras[i] = i; }
+    for (int i = n - 1; i > 0; i--) { int k = rnd() % (i + 1), x = eras[i]; eras[i] = eras[k]; eras[k] = x; }
+    const int s = rnd() % (nroots + 1);
+    if (rs_decode_er(cw, n, nroots, eras, s) < 0) continue;
+    accepted++;
+    memcpy(re, cw, (size_t)(n - nroots)); rs_encode(re, n - nroots, nroots);
+    if (memcmp(re, cw, (size_t)n)) { if (++fails < 5) printf("FAIL garbage n=%d nroots=%d erasures %d: decoded to a word that is no codeword\n", n, nroots, s); }
   }
+  printf("garbage: %d of 4000 random words decoded (each held to be a codeword)\n", accepted);
   printf("%d trials, %d failures\n", trials, fails);
   return fails != 0;
 }

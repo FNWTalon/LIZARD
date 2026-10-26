@@ -34,7 +34,7 @@
 #include <type_traits>
 #include <vector>
 
-#include "trigger.h"
+#include "clock.h"
 
 namespace lizard::sim {
 

@@ -8,8 +8,7 @@
 // ai:   exposure, gain, focus and zoom as the device has them at start, no backend sets them: the camera's own
 // ai:   automatic where it runs one, else the value it holds, which on a UVC device may be one another program left
 // ai:   (a manual focus stays manual); the user's values (Settings: zoom, exposure, gain) set by the session after
-// ai:   each start (rx_session.h set); the phase lock never sets any of them (it moves a triggered camera's schedule,
-// ai:   trigger.h);
+// ai:   each start (rx_session.h set);
 // ai:   what start and set changed put back at stop, since a UVC device keeps its controls for the next app (so a
 // ai:   user's setting lasts one stream: the session sets the user's values again after each start, rx_session.h set).
 #include "camera.h"
@@ -26,9 +25,6 @@ const char* pixName(Pix p) {
     case Pix::Unknown: return "Unknown";
     case Pix::Grey8: return "Grey8";
     case Pix::Grey16: return "Grey16";
-    case Pix::Mono10p: return "Mono10p";
-    case Pix::Mono12p: return "Mono12p";
-    case Pix::Mono12Packed: return "Mono12Packed";
     case Pix::YUYV: return "YUYV";
     case Pix::UYVY: return "UYVY";
     case Pix::YVYU: return "YVYU";
@@ -38,10 +34,8 @@ const char* pixName(Pix p) {
     case Pix::I420: return "I420";
     case Pix::YV12: return "YV12";
     case Pix::Bayer8: return "Bayer8";
-    case Pix::Bayer16: return "Bayer16";
     case Pix::RGB24: return "RGB24";
     case Pix::BGR24: return "BGR24";
-    case Pix::RGBA32: return "RGBA32";
     case Pix::BGRA32: return "BGRA32";
     case Pix::MJPEG: return "MJPEG";
   }

@@ -26,11 +26,9 @@ import android.content.Context
 // ai: The camera's rate is no switch since 2026-10-01: [60,60], else the highest fixed range (Engine.pickFps).
 // ai: Resolution is a lens's and zoom a lens's in each crop (2026-10-04; the crop too since 2026-10-18): resolution is
 // ai: kept as "resolution@<camera id>" and zoom as "zoom@<camera id>/<layout>" for the back camera the camera switch
-// ai: resolves to (Engine.rearId), and choosing another lens or crop brings its own back (MainActivity.change). Where
-// ai: none is saved, zoom reads the lens's one zoom of before the crops' ("zoom@<camera id>"), else the default;
-// ai: resolution the default. A save writes the lens's and crop's keys, gives the other crop the zoom it read until then
-// ai: where it has none of its own, and drops the lens's one zoom. Where the phone has no back camera they stay under
-// ai: plain keys ("resolution", "zoom/<layout>"). The other switches are the app's, under their plain keys.
+// ai: resolves to (Engine.rearId), and choosing another lens or crop brings its own back (MainActivity.change); where
+// ai: none is saved, the default. Where the phone has no back camera they stay under plain keys ("resolution",
+// ai: "zoom/<layout>"). The other switches are the app's, under their plain keys.
 data class Settings(
     val decoder: String = "auto",
     val layout: String = "1:1",
@@ -49,9 +47,7 @@ data class Settings(
         val e = p.edit()
             .putString("decoder", decoder).putString("layout", layout).putString("camera", camera)
             .putString("batch", batch).putString("stats", stats)
-        e.putString(key("resolution", cam), resolution)
-        for (l in LAYOUTS) if (l != layout && !p.contains(zoomKey(cam, l))) e.putString(zoomKey(cam, l), zoomOf(p, cam, l))
-        e.putString(zoomKey(cam, layout), zoom).remove(key("zoom", cam))
+        e.putString(key("resolution", cam), resolution).putString(zoomKey(cam, layout), zoom)
         e.apply()
     }
 
@@ -59,7 +55,7 @@ data class Settings(
     fun forCamera(ctx: Context, cam: String?): Settings {
         val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         return copy(resolution = p.getString(key("resolution", cam), null) ?: Settings().resolution,
-            zoom = zoomOf(p, cam, layout))
+            zoom = p.getString(zoomKey(cam, layout), null) ?: Settings().zoom)
     }
 
     companion object {
@@ -69,9 +65,6 @@ data class Settings(
 
         private fun key(k: String, cam: String?) = if (cam == null) k else "$k@$cam"
         private fun zoomKey(cam: String?, layout: String) = "${key("zoom", cam)}/$layout"
-        // ai: the zoom kept for cam in a crop: its own, else the lens's one zoom of before the crops' (2026-10-18), else the default
-        private fun zoomOf(p: android.content.SharedPreferences, cam: String?, layout: String) =
-            p.getString(zoomKey(cam, layout), null) ?: p.getString(key("zoom", cam), null) ?: Settings().zoom
 
         // ai: rearId: the camera switch's value to the back camera it opens (Engine.rearId); the switch then holds that
         // ai: id (none where the phone has no back camera)

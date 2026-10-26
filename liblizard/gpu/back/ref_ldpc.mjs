@@ -1,37 +1,19 @@
-// The LDPC's stop rules and the CRC-32 split's powers, shared by the rate profile's stage (tiers.mjs,
+// The LDPC's learned stop for a code and the CRC-32 split's powers, shared by the rate profile's stage (tiers.mjs,
 // wgsl/back_tiers.mjs) and the sender's paint (../encoder.mjs, wgsl/send.mjs).
-// ai: The JS reference decoder that held the one-rate kernel to the C (decodeStall, the tracer, finishBlocks) and the
-// ai: split's self-check went 2026-10-22 with that kernel and its tests.
 import { loadStop, ruleUrlFor } from "./stop/rule.mjs";
 
 export const PAYLOAD = 473;                   // bytes a block, the id first
-export const STALL_RATIO = Math.fround(0.95);
-export const STALL_IT = 9;
 
-// ai: The stop rules (DESIGN section 6): a rule is { name, stall, funnel, net }, what wgsl/back_tiers.mjs builds a
-// ai: code's kernel from.
-// ai: - "learned", the first read's since 2026-09-28: after iterations 1 to 29, the MLP of stop/ (net, from
-// ai:   stop/stop.safetensors) on (bad, low, first, prev, t, est) gives up when its score is under its threshold. It
-// ai:   replaced the funnel (the C's stall test and seven checkpoints of the running minimum, 2026-09-24 to 28), which
-// ai:   gave up 4 verified blocks of the three dumps where the rule gives up none (scripts/gpu/back/stop/README.md).
-// ai: - "c", the C's rule: the stall test (after iteration 9, the count above 0.95 of the count after iteration 1) and
-// ai:   the cap of 30. The check that the GPU's min-sum arithmetic is the C's: under it the GPU gives the C's verdict and
-// ai:   iterations on every block (a page's ?ldpcstop=c).
-export const FIRST_READ = ["learned", "c"];
-export const DEFAULT_STOP = "learned";
-export const C_RULE = Object.freeze({ name: "c", stall: true, funnel: [], net: null });
-// ai: The rule a name gives for a code with m checks (a checkpoint's count is ceil(fraction m)); "learned" loads that
-// ai: code's weights file (stop/rule.mjs ruleUrlFor, loadStop, once a file; the 7/8 and 1/2 codes' since 2026-10-07).
-export async function stopRule(name, m) {
-  if (name === "c") return C_RULE;
-  if (name === "learned") {
-    const net = await loadStop(ruleUrlFor(m));
-    if (net.m !== m) throw new Error(`stop rule: the file for ${m} checks was trained on a code of ${net.m}`);
-    return { name, stall: false, funnel: [], net };
-  }
-  throw new Error(`ldpc stop rule ${name}: one of ${FIRST_READ.join(", ")}`);
+// ai: A code's learned stop (DESIGN section 6), what wgsl/back_tiers.mjs builds the code's kernel from: after
+// ai: iterations 1 to 29 the MLP of stop/ on (bad, low, first, prev, t, est) gives up when its score is under its
+// ai: threshold, each code its own file by its m checks (stop/rule.mjs ruleUrlFor, loadStop, once a file). It replaced
+// ai: the funnel and the C's stall test on 2026-09-28 (scripts/gpu/back/stop/README.md).
+export async function stopFor(m) {
+  const net = await loadStop(ruleUrlFor(m));
+  if (net.m !== m) throw new Error(`stop rule: the file for ${m} checks was trained on a code of ${net.m}`);
+  return net;
 }
-// ---- the CRC-32 split (DESIGN section 7, as built) ----
+// ---- the CRC-32 split (DESIGN section 7) ----
 //
 // The reflected bitwise step is multiplication by x in GF(2)[x] / P with x^0 at bit 31. Both halves of the
 // algorithm are linear in the message, so the CRC of 473 bytes is the XOR over 4-byte chunks of (chunk from a

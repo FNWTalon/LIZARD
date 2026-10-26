@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
@@ -16,7 +15,7 @@ std::string SendConsts::load(const std::string& manifest, const std::vector<uint
   try { j = nlohmann::json::parse(manifest); } catch (const std::exception& e) { return std::string("the sender's manifest: ") + e.what(); }
   if (!j.contains("tab") || !j.contains("codes")) return "the sender's manifest predates the rate profile (no tab or codes): regenerate liblizard/out";
   slots = j["slots"]; tposeTile = j["tposeTile"]; rsvThreads = j["rsvThreads"]; rshThreads = j["rshThreads"];
-  blockBytes = j["blockBytes"]; bitmap = j["bitmap"];
+  blockBytes = j["blockBytes"];
   const auto& p = j["paramsAt"];
   paramsSizes = p["sizes"]; paramsDims = p["dims"]; paramsPw = p["pw"]; paramsWords = p["words"];
   pw = j["pw"].get<std::vector<uint32_t>>();
@@ -42,15 +41,6 @@ void uvOf(int p, int n, int bw, int& u, int& v) {
 }
 uint32_t bitsOf(float x) { uint32_t b; std::memcpy(&b, &x, 4); return b; }
 }  // namespace
-
-float txClip() {
-  static const float c = [] {
-    const char* e = getenv("LIZ_CLIP");
-    const float v = e ? strtof(e, nullptr) : 2.0f;
-    return v >= 1.0f && v <= 4.0f ? v : 2.0f;
-  }();
-  return c;
-}
 
 std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTables& t, int codes, int gap) {
   t = SendTables{};
@@ -122,7 +112,6 @@ std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTa
   // ai: the paint's uniform: block count at slot 0; each tier at slot 1 + its code's place in TAB (first block, first
   // ai: sub-channel, blocks; src/focus.c init lays the tiers out from the lowest frequencies in order); dims (blocks,
   // ai: npos, symbols an encode, parity | codes << 2: set an encode)
-  if (f.bitmap != k.bitmap) return "the codec's bit map " + std::to_string(f.bitmap) + " is not the paint's " + std::to_string(k.bitmap);
   t.pu.assign(k.paramsWords, 0);
   t.pu[k.paramsSizes] = static_cast<uint32_t>(f.blocks);
   for (int q = 0, b = 0, sub = 0; q < f.tiers; q++) {

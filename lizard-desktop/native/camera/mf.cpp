@@ -62,7 +62,7 @@
 #include <type_traits>
 
 #include "luma.h"
-#include "trigger.h"
+#include "clock.h"
 
 namespace lizard::cam {
 

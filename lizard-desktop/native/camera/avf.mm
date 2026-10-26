@@ -48,7 +48,7 @@
 #include "avf_test.h"
 #include "backends.h"
 #include "luma.h"
-#include "trigger.h"
+#include "clock.h"
 
 namespace lizard::cam {
 class AvfCamera;
@@ -155,7 +155,7 @@ int64_t hostNs() {
 }
 
 // ai: steadyNs's clock less the host clock, the tightest of four back-to-back brackets (the reads tens of ns apart, so
-// ai: a preempted one is outvoted). steadyNs is std::chrono::steady_clock (trigger.h), which Apple's libc++ reads from
+// ai: a preempted one is outvoted). steadyNs is std::chrono::steady_clock (clock.h), which Apple's libc++ reads from
 // ai: CLOCK_MONOTONIC_RAW, mach_continuous_time's: it runs on while the Mac sleeps, so the two differ by the sleep
 // ai: since boot. Read at each frame, so a sleep while streaming moves it too.
 int64_t hostToSteady() {

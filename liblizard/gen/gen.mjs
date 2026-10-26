@@ -1,10 +1,10 @@
-// ai: The Android decoder's setup, taken from the web decoder itself: the web host (liblizard/gpu/decoder.mjs
-// ai: FrontHalf.create, with every option the receiver's lizard-web/gpuqueue.mjs openGpu names) is built on a recording
-// ai: device (mockgpu.mjs) once a variant, and what it made is written out: every shader module's WGSL (rewritten where
-// ai: naga reads WGSL otherwise than Tint, `nagaWgsl`) compiled to SPIR-V by naga, every bind group layout and
-// ai: pipeline, every static buffer with the bytes the host wrote into it, and the values the lanes and batches are
-// ai: made from (`exportTree`). The native host (core/dec/) builds exactly these objects and ports only what a lane and
-// ai: a batch do. Nothing here decodes; the tables come from liblizard/build/ob.wasm as the web's do.
+// ai: The native decoder's setup, taken from the WGSL decoder's own host: liblizard/gpu/decoder.mjs FrontHalf.create,
+// ai: with the options the native receiver runs (main's call below), is built on a recording device (mockgpu.mjs) once
+// ai: a variant, and what it made is written out: every shader module's WGSL (rewritten where naga reads WGSL otherwise
+// ai: than Tint, `nagaWgsl`) compiled to SPIR-V by naga, every bind group layout and pipeline, every static buffer with
+// ai: the bytes the host wrote into it, and the values the lanes and batches are made from (`exportTree`). The native
+// ai: host (core/dec/) builds exactly these objects and ports only what a lane and a batch do. Nothing here decodes; the
+// ai: tables come from the codec's wasm module (sim/ob.mjs over liblizard/build/ob.mjs) as the web's do.
 //
 // ai: A variant is (precision, subgroups): precision the web's precisionChain choice (int8: the int8 proposer, the
 // ai: classifiers f16 with their int8 twins built beside; f16; f32), subgroups whether the classifiers reduce by
@@ -14,12 +14,12 @@
 //   node liblizard/gen/gen.mjs [out]      (lizard-android/build.sh gen; out defaults to liblizard/out)
 // ai: Writes out/setup/<variant>.json, out/blobs/<hash>.bin (the buffers' bytes), out/wgsl/<hash>.wgsl (as the web host made it),
 // ai: out/naga/<hash>.wgsl (as naga reads it) and out/spv/<hash>.spv, and out/gen.json (the variants, the modules, the
-// ai: tools' versions and the gpu sources' hash that made them). Needs, each checked before anything runs: ../build/ob.mjs
-// ai: and ob.wasm (liblizard's ./build.sh); wgsl2spv and naga (lizard-android/build.sh tools); SPIRV-Tools' spirv-val (and
-// ai: spirv-opt under LIZ_SPIRV_OPT=1) and shaderc's glslc, the Android NDK's or else the PATH's.
-import { installGlobals, Recorder, mockAdapter, hash } from "./mockgpu.mjs";
+// ai: gpu sources' hash that made them). Needs, each checked before anything runs: ../build/ob.mjs and the module it
+// ai: names, ../bindings/wasm/dist/lizard.wasm (liblizard's ./build.sh); wgsl2spv (lizard-android/build.sh tools);
+// ai: SPIRV-Tools' spirv-val and shaderc's glslc, the Android NDK's or else the PATH's.
+import { installGlobals, Recorder, mockAdapter } from "./mockgpu.mjs";
 import { senderSetup } from "./sender.mjs";
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, realpathSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, realpathSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
@@ -35,8 +35,8 @@ const imp = (p) => import(new URL(p, LIB).href);
 const MAIN = (() => { try { return fileURLToPath(import.meta.url) === realpathSync(process.argv[1]); } catch { return false; } })();
 
 const NDK = process.env.ANDROID_NDK_HOME || `${process.env.ANDROID_HOME || `${homedir()}/Android/Sdk`}/ndk/27.1.12297006`;
-// ai: SPIRV-Tools' spirv-val (and spirv-opt under LIZ_SPIRV_OPT) and shaderc's glslc: the Android NDK's shader-tools
-// ai: where there is an NDK, else the system's on the PATH
+// ai: SPIRV-Tools' spirv-val and shaderc's glslc: the Android NDK's shader-tools where there is an NDK, else the
+// ai: system's on the PATH
 const EXE = process.platform === "win32" ? ".exe" : "";
 const shaderTool = (name) => {
   const ndk = join(NDK, "shader-tools", { darwin: "darwin-x86_64", win32: "windows-x86_64" }[process.platform] ?? "linux-x86_64", name + EXE);
@@ -46,52 +46,46 @@ const shaderTool = (name) => {
 };
 // ai: wgsl2spv (gen/wgsl2spv, naga 30 as a library: lizard-android/build.sh tools builds it) in place of naga-cli, whose
 // ai: writer zeroes workgroup memory from one invocation and bounds every loop (wgsl2spv/src/main.rs says what that
-// ai: cost); naga-cli (../.tools/bin/naga) only for its version line.
-export const TOOLS = { wgsl2spv: fileURLToPath(new URL(`./wgsl2spv/target/release/wgsl2spv${EXE}`, HERE)), naga: fileURLToPath(new URL(`../.tools/bin/naga${EXE}`, HERE)), val: shaderTool("spirv-val"), opt: shaderTool("spirv-opt"), glslc: shaderTool("glslc") };
-// ai: spirv-opt -O on the SPIR-V: off unless LIZ_SPIRV_OPT=1. Tint's SPIR-V reaches the driver as written, and -O
-// ai: unrolled the fused pass 1 and F8's word to three times their size (2026-09-29).
-const OPT = process.env.LIZ_SPIRV_OPT === "1";
+// ai: cost). The SPIR-V reaches the driver as it validates: spirv-opt -O unrolled the fused pass 1 and F8's word to three
+// ai: times their size (2026-09-29).
+export const TOOLS = { wgsl2spv: fileURLToPath(new URL(`./wgsl2spv/target/release/wgsl2spv${EXE}`, HERE)), val: shaderTool("spirv-val"), glslc: shaderTool("glslc") };
 
-// ai: What a run needs, checked before the gpu modules load (sim/ob.mjs imports ../build/ob.mjs): every one missing,
-// ai: each with where it comes from.
+// ai: What a run needs, checked before the gpu modules load (sim/ob.mjs imports ../build/ob.mjs, which names the
+// ai: codec's module): every one missing, each with where it comes from.
+const WASM = new URL("bindings/wasm/dist/lizard.wasm", LIB);
 if (MAIN) {
   const ndk = (or) => `the Android NDK's shader-tools: ANDROID_NDK_HOME; or ${or} on the PATH`;
   const missing = [
-    [fileURLToPath(new URL("build/ob.mjs", LIB)), "liblizard/build.sh"], [fileURLToPath(new URL("build/ob.wasm", LIB)), "liblizard/build.sh"],
-    [TOOLS.wgsl2spv, "lizard-android/build.sh tools"], [TOOLS.naga, "lizard-android/build.sh tools"],
-    [TOOLS.val, ndk("SPIRV-Tools")], ...(OPT ? [[TOOLS.opt, ndk("SPIRV-Tools")]] : []), [TOOLS.glslc, ndk("shaderc")],
+    [fileURLToPath(new URL("build/ob.mjs", LIB)), "liblizard/build.sh"], [fileURLToPath(WASM), "liblizard/build.sh"],
+    [TOOLS.wgsl2spv, "lizard-android/build.sh tools"], [TOOLS.val, ndk("SPIRV-Tools")], [TOOLS.glslc, ndk("shaderc")],
   ].filter(([p]) => !existsSync(p));
   if (missing.length) { console.error(missing.map(([p, from]) => `no ${p} (${from})`).join("\n")); process.exit(1); }
 }
 
-const { FrontHalf, CAP, CAP_MS, B_CEIL, LEVELS, COUNTERS, TAU, EPS, TAU_TRACK } = await imp("gpu/decoder.mjs");
+const { FrontHalf, CAP_MS, B_CEIL, LEVELS, COUNTERS, TAU, EPS, INSTALLED, receiverOptions, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, RING_SLACK, TWIN_FRAMES, TWIN_ROUNDS } =
+  await imp("gpu/decoder.mjs");
 const { formatTables, PICTURES } = await imp("gpu/tables.mjs");
 const { loadNet } = await imp("gpu/cnn/netfile.mjs");
-const { CASCADE } = await imp("gpu/wgsl/classify.mjs");
 const { K, CELL, HYP, RING_COUNT, VOTE_READS } = await imp("gpu/wgsl/finder.mjs");
 const { NODES_MAX, RESID, REFIT_DBG } = await imp("gpu/wgsl/register.mjs");
 const { HIST_BINS, PYRAMID_BLOCK } = await imp("gpu/wgsl/pyramid.mjs");
-const { KEEP } = await imp("gpu/wgsl/bank.mjs");
 const { TILE } = await imp("gpu/wgsl/bank_fcn2.mjs");
 const { SLOTS } = await imp("gpu/wgsl/common.mjs");
 const { ARGS_WORDS, ARGS_SLOT, argsWords } = await imp("gpu/wgsl/back_transform.mjs");
-const { VERSION_MAX } = await imp("gpu/wordcode.mjs");
+const { VERSION_MIN, VERSION_MAX } = await imp("gpu/wordcode.mjs");
 const { COUNTS } = await imp("gpu/back/back.mjs");
 const { REC_BYTES } = await imp("gpu/back/ldpc.mjs");
 const { PAYLOAD } = await imp("gpu/back/ref_ldpc.mjs");
 
-// ai: The receiver's classifiers (lizard-web/gpuqueue.mjs INSTALLED): cnn-v1, and cnn-v3 as the cascade's first net
-// ai: (CASCADE.weights is a path under liblizard/ since 2026-10-01, as the app's build needs it).
-const LARGE = "gpu/cnn/weights.safetensors", SMALL = CASCADE.weights;
+// ai: The classifiers the native receiver runs (gpu/decoder.mjs INSTALLED): cnn-v1, and cnn-v3 as the cascade's first
+// ai: net, paths under liblizard/ (as the app's build needs them).
+const LARGE = INSTALLED.large, SMALL = INSTALLED.small;
 // ai: The device the setup is made for: 32 KB of workgroup memory (every phone we know, and what Chrome gives the
 // ai: desktop's GPUs), the rest generous; plan()'s memory limits are the real device's, read at run time.
 const LIMITS = { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 2 ** 31, maxComputeWorkgroupStorageSize: 32768, maxStorageBuffersPerShaderStage: 16, maxTextureArrayLayers: 2048, maxComputeInvocationsPerWorkgroup: 256 };
 const FEATURES = ["timestamp-query", "shader-f16", "subgroups"];
 export const VARIANTS = ["int8", "f16", "f32"].flatMap((precision) => [true, false].map((subgroups) => ({ precision, subgroups, name: `${precision}${subgroups ? "-sg" : ""}` })));
 const BACK_B = [B_CEIL, 16, 8, 4, 2, 1];
-// ai: The ingest shader (F0, a render pass over a texture_external): the native app writes luma into the layer
-// ai: itself, so it is neither exported nor compiled.
-const SKIP = (code) => /texture_external/.test(code);
 
 // ai: The WGSL as naga 30 reads it: Tint takes three constructs naga does not, each rewritten here to the same
 // ai: arithmetic:
@@ -154,7 +148,7 @@ function exportBack(bh) {
   return {
     B: bh.B, precision: bh.precision, dims: plain(bh.dims), bytes: bh.bytes, readBytes: bh.readBytes,
     transform: {
-      built: t.built, zero: t.zero, cbytes: t.cbytes, yStride: t.yStride, sStride: t.sStride, partStride: t.partStride, nmax: t.nmax,
+      built: t.built, cbytes: t.cbytes, yStride: t.yStride, sStride: t.sStride, partStride: t.partStride,
       gate: idOf(t.gate), gateBgl: idOf(t.gateBgl), p1fBgl: idOf(t.p1fBgl), redBgl: idOf(t.redBgl), p2Bgl: idOf(t.p2Bgl),
       pass1f: perSlot(t.pass1f), reduce: perSlot(t.reduce), pass2: perSlot(t.pass2),
       twBufs: perSlot(t.twBufs), x12Bufs: perSlot(t.x12Bufs), rowsBufs: perSlot(t.rowsBufs), picUnis: perSlot(t.picUnis), gateUni: idOf(t.gateUni),
@@ -171,28 +165,27 @@ function exportBack(bh) {
 
 // ai: What the lanes and batches read of the front half (gpu/decoder.mjs lane, ensure, batch; gpu/bank_fcn2.mjs
 // ai: ensure, dispatch), with the host's constants, so the native code restates none of them.
-function exportTree(fh, v, tables) {
+function exportTree(fh, v) {
   const tf = fh.twinForms;
   const twin = (t) => (t ? { pipe: pbNet(t.pipe), buf: idOf(t.buf), precision: t.w.precision } : null);
   const f = fh.fcn2Form;
   return {
     variant: v.name, precision: fh.precision, floatPrecision: fh.floatPrecision, subgroups: v.subgroups, features: fh.features, nets: fh.nets,
-    consts: { LEVELS, COUNTERS, RESULT: 32, SEL_WORDS: 4, TS_MAX: 80, TS_PLAIN: 2, TS_INGEST: 2, RING_SLACK: 4, K, CELL, HYP, RING_COUNT, VOTE_READS, NODES_MAX, RESID, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK, TAU, EPS, TAU_TRACK,
-      TILE, KEEP, B_CEIL, CAP_MS, TWIN_FRAMES: 2, TWIN_ROUNDS: 3, VERSION_MAX, SLOTS, ARGS_WORDS, ARGS_SLOT, argsWords, COUNTS, REC_BYTES, PAYLOAD },
-    cap: fh.cap, register: fh.register, nodesMax: fh.nodesMax, modules: Array.from(fh.modules), bankKeep: fh.bank.KEEP,
-    cascade: fh.cascade ? { keep: fh.cascade.keep, rest: fh.cascade.rest, precision: fh.cascade.weights.precision } : null, weightsPrecision: fh.weights.precision,
+    consts: { LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, RING_SLACK, K, CELL, HYP, RING_COUNT, VOTE_READS, NODES_MAX, RESID, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK, TAU, EPS,
+      TILE, B_CEIL, CAP_MS, TWIN_FRAMES, TWIN_ROUNDS, VERSION_MIN, VERSION_MAX, SLOTS, ARGS_WORDS, ARGS_SLOT, argsWords, COUNTS, REC_BYTES, PAYLOAD },
+    cap: fh.cap, nodesMax: fh.nodesMax, modules: Array.from(fh.modules), bankKeep: fh.bank.KEEP,
+    cascade: fh.cascade ? { keep: fh.cascade.keep, precision: fh.cascade.weights.precision } : null, weightsPrecision: fh.weights.precision,
     front: {
       pyramid: pb(fh.pyramid), classify: pbNet(fh.classify), classify0: pbNet(fh.classify0), rank: pb(fh.rank),
       vote: pb(fh.vote), gather: pb(fh.gather), score: pb(fh.score), pick: pb(fh.pick), nodesP: pb(fh.nodesP), refit: pb(fh.refit), refitPost: pb(fh.refitPost), wordP: pb(fh.wordP), select: pb(fh.select),
-      // ai: the finder's second round (gpu/wgsl/finder.mjs REDO; gpu/bank_fcn2.mjs COARSE_FROM, 0: one round)
-      redo: pb(fh.redo), coarseFrom: fh.bank.COARSE_FROM ?? 0,
+      // ai: the finder's second round (gpu/wgsl/finder.mjs REDO; gpu/bank_fcn2.mjs COARSE_FROM)
+      redo: pb(fh.redo), coarseFrom: fh.bank.COARSE_FROM,
       fcn2: pb(fh.fcn2), fcn2X: pb(fh.fcn2X), fcn2Form: { TX: f.TX, TY: f.TY, XB: f.XB, walk: f.walk, xplane: f.xplane, int8: f.int8, store: f.store, name: f.name },
-      buffers: Object.fromEntries(["sizesBuf", "planBuf", "planUni", "p4Uni", "pickUni", "nodesBuf", "tmplBuf", "latticeBuf", "latUni", "wordPtsBuf", "wordUni", "wordLatUni", "fitUni", "weightsBuf", "weightsBuf0"].map((k) => [k, idOf(fh[k])])),
+      buffers: Object.fromEntries(["planBuf", "planUni", "p4Uni", "pickUni", "nodesBuf", "tmplBuf", "wordPtsBuf", "wordUni", "wordLatUni", "fitUni", "weightsBuf", "weightsBuf0"].map((k) => [k, idOf(fh[k])])),
       rounds: fh.rounds.map(idOf),
       twins: tf ? { large: twin(tf.large), small: twin(tf.small) } : null,
     },
     pictures: PICTURES.map(({ n, subch, lo, hi }) => ({ n, subch, lo, hi })),
-    rings: tables.rings.map((t) => ({ nodeX: Array.from(t.nodeX), nodeY: Array.from(t.nodeY), modules: t.modules, span: t.span, margin: t.margin })),
     backs: {},
   };
 }
@@ -346,8 +339,8 @@ function run(cmd, args) {
 // ai: One module: the web's WGSL, naga's reading of it, then wgsl2spv to SPIR-V 1.3 (its options in its main.rs) with
 // ai: naga's bound checks off (`--unchecked`: index, buffer and image, since 2026-09-30: an index out of range is
 // ai: undefined behaviour here, where WebGPU clamps it), the capabilities no compute module uses cut, validated for
-// ai: Vulkan 1.3 (workgroup memory zeroed by its initializer is 1.3's), optimised only with LIZ_SPIRV_OPT=1. The
-// ai: sender's kernels also declare their workgroup size as the builtin constant (declareWorkgroupSize, for MoltenVK).
+// ai: Vulkan 1.3 (workgroup memory zeroed by its initializer is 1.3's). The sender's kernels also declare their
+// ai: workgroup size as the builtin constant (declareWorkgroupSize, for MoltenVK).
 function compile(h, code) {
   const [w, n, raw, spv] = [`wgsl/${h}.wgsl`, `naga/${h}.wgsl`, `spv/${h}.raw.spv`, `spv/${h}.spv`].map((p) => fileURLToPath(new URL(p, OUT)));
   writeFileSync(w, code);
@@ -357,8 +350,7 @@ function compile(h, code) {
   patchBitcasts(raw);
   if (h.startsWith("send_")) declareWorkgroupSize(raw);
   run(TOOLS.val, ["--target-env", "vulkan1.3", raw]);
-  if (OPT) { run(TOOLS.opt, ["-O", "--target-env=vulkan1.3", raw, "-o", spv]); run(TOOLS.val, ["--target-env", "vulkan1.3", spv]); }
-  else writeFileSync(spv, readFileSync(raw));
+  writeFileSync(spv, readFileSync(raw));
   return { bytes: statSync(spv).size };
 }
 
@@ -369,7 +361,7 @@ function sourcesHash() {
   const walk = (dir) => { for (const f of readdirSync(dir).sort()) { const p = `${dir}/${f}`; if (statSync(p).isDirectory()) walk(p); else if (/\.(mjs|safetensors)$/.test(f)) h.update(f).update(readFileSync(p)); } };
   for (const d of ["gpu/wgsl", "gpu/back", "gpu/cnn", "gpu"]) { const dir = fileURLToPath(new URL(d, LIB)); for (const f of readdirSync(dir).sort()) { const p = `${dir}/${f}`; if (statSync(p).isFile() && /\.(mjs|safetensors)$/.test(f)) h.update(`${d}/${f}`).update(readFileSync(p)); } }
   walk(fileURLToPath(new URL("gpu/cnn/proposer", LIB))); walk(fileURLToPath(new URL("gpu/back/stop", LIB)));
-  h.update(readFileSync(new URL("build/ob.wasm", LIB)));
+  h.update(readFileSync(WASM));
   return h.digest("hex").slice(0, 16);
 }
 
@@ -382,10 +374,9 @@ async function main() {
     const rec = new Recorder(), log = [];
     const adapter = mockAdapter(rec, { features: FEATURES, limits: LIMITS });
     const fh = await FrontHalf.create(adapter, tables, {
-      B: "auto", capMs: CAP_MS, inflight: "auto", restart: 0, cap: CAP, register: true, weights: large, precision: v.precision, subgroups: v.subgroups,
-      bank: "fcn2", cascade: { weights: small, keep: CASCADE.keep, rest: CASCADE.rest }, back: "gpu", backN: 1536, log: (m) => log.push(m), probe: false, twins: null,
+      ...receiverOptions(large, small), precision: v.precision, subgroups: v.subgroups, backN: 1536, log: (m) => log.push(m), probe: false, twins: null,
     });
-    const tree = exportTree(fh, v, tables);
+    const tree = exportTree(fh, v);
     tree.backs[fh.bh.B] = exportBack(fh.bh);
     for (const B of BACK_B.filter((b) => b !== fh.bh.B)) { await fh.buildBack(B, true); tree.backs[B] = exportBack(fh.bh); }
     tree.log = log.filter((m) => !m.startsWith("built in "));   // ai: no wall-clock line: two gens write the same tree
@@ -401,7 +392,6 @@ async function main() {
   console.log(`${blobs.size} blobs, ${(blobBytes / 1024).toFixed(0)} KB`);
   const compiled = {}, failed = [];
   for (const [h, code] of modules) {
-    if (SKIP(code)) continue;
     try { compiled[h] = compile(h, code); } catch (e) { if (!e.tool) throw e; failed.push({ h, message: e.message }); }
   }
   // ai: The sender's GPU encoder (gen/sender.mjs, 2026-10-02): its kernels as out/spv/send_<name>.spv, its manifest
@@ -434,8 +424,17 @@ async function main() {
   }
   const spvBytes = Object.values(compiled).reduce((a, c) => a + c.bytes, 0);
   console.log(`${modules.size} modules: ${Object.keys(compiled).length} compiled (${(spvBytes / 1024).toFixed(0)} KB of SPIR-V), ${failed.length} failed`);
-  const naga = run(TOOLS.naga, ["--version"]).trim();
-  writeFileSync(new URL("gen.json", OUT), JSON.stringify({ sources: sourcesHash(), naga, writer: "wgsl2spv (naga 30.0.1: zero-init native, no loop bounding, bound checks off)", spirvOpt: OPT, variants: summary, modules: Object.keys(compiled), failed: failed.map((f) => f.h) }, null, 1));
+  // ai: What an earlier run wrote and this one did not (a module or a blob no setup names now) let go, so a tree
+  // ai: copied whole (the desktop's bundle, an install) carries no stale file. Only gen's own names: a file put in
+  // ai: spv/ by hand (bench_dot.spv) stays.
+  const kept = new Set([...VARIANTS.map((v) => `setup/${v.name}.json`), "setup/send.json", ...[...blobs.keys(), send.tab.hash].map((h) => `blobs/${h}.bin`)]);
+  for (const h of [...modules.keys(), ...Object.keys(send.modules).map((k) => `send_${k}`)]) for (const f of [`wgsl/${h}.wgsl`, `naga/${h}.wgsl`, `spv/${h}.raw.spv`, `spv/${h}.spv`]) kept.add(f);
+  for (const [dir, names] of [[ingestDir, "ingest_"], [txDir, "send_"]]) for (const f of readdirSync(dir).filter((f) => f.endsWith(".comp"))) kept.add(`spv/${names}${f.replace(/\.comp$/, "")}.spv`);
+  const ours = { setup: /\.json$/, blobs: /^[0-9a-f]{16}\.bin$/, wgsl: /\.wgsl$/, naga: /\.wgsl$/, spv: /^([0-9a-f]{16}(\.raw)?|send_\w+|ingest_\w+)\.spv$/ };
+  let gone = 0;
+  for (const [d, re] of Object.entries(ours)) for (const f of readdirSync(new URL(`${d}/`, OUT))) if (re.test(f) && !kept.has(`${d}/${f}`)) { rmSync(new URL(`${d}/${f}`, OUT)); gone++; }
+  if (gone) console.log(`${gone} files of an earlier run let go`);
+  writeFileSync(new URL("gen.json", OUT), JSON.stringify({ sources: sourcesHash(), writer: "wgsl2spv (naga 30.0.1: zero-init native, no loop bounding, bound checks off)", variants: summary, modules: Object.keys(compiled), failed: failed.map((f) => f.h) }, null, 1));
   if (failed.length) process.exit(1);
 }
 

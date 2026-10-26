@@ -9,7 +9,7 @@ extern "C" {
 
 typedef struct cpu_dec cpu_dec_t;
 
-// ai: What a frame's decode found. ring: the ring that registered (0 to 3), -1 none. n: the picture it was finished
+// ai: What a frame's decode found. ring: the ring that registered (an index into src/focus.h FOCUS_RING), -1 none. n: the picture it was finished
 // ai: at, 0 not finished. held: the caller's held word stood in for the frame's own. word: the frame's own word read
 // ai: (version = sub-channels / 8, fps the display rate it states). total: the blocks the version it was finished at
 // ai: carries under the rate profile (ok[] and blocks[] hold that many). quad: the symbol's corners in the image, TL
@@ -20,7 +20,6 @@ typedef struct {
   float quad[8];
   int pilot_blocks;
   float pilot_r[2], pilot_sd[2];
-  float ms_detect, ms_sample, ms_decode;
 } cpu_frame_t;
 
 // ai: nmax: the largest picture decoded (1536 for every format; smaller saves memory). NULL where the codec refuses.
@@ -45,9 +44,11 @@ void cpu_dec_block_stats(const cpu_dec_t *d, const int8_t **its, const float **e
 // ai: values behind the decode where the frame was finished, else 1). From one thread at a time only.
 void cpu_hash_arm(void);
 uint32_t cpu_hash_take(void);
-// ai: The codec's stage timers for the calling thread (internal.h PROF_*), ms since the last reset: acquire's parts,
-// ai: sample, detrend, transform, LLR, LDPC.
-double cpu_prof_ms(int i);
+// ai: The codec's stage timers for the calling thread (internal.h PROF_*), ms since the last reset, by stage: acquire's
+// ai: parts, then the picture's (sample, detrend, transform, LLR, LDPC).
+enum { CPU_PROF_BINARIZE, CPU_PROF_MESH, CPU_PROF_POINTS, CPU_PROF_TURN, CPU_PROF_FIT, CPU_PROF_SCORE, CPU_PROF_MARKS, CPU_PROF_TRACK,
+       CPU_PROF_SAMPLE, CPU_PROF_DETREND, CPU_PROF_FFT, CPU_PROF_LLR, CPU_PROF_LDPC, CPU_PROF_N };
+double cpu_prof_ms(int stage);
 void cpu_prof_reset(void);
 // ai: 1 where the codec's vector paths are compiled in (simd.h), else 0.
 int cpu_simd(void);

@@ -5,11 +5,10 @@
 // ai: where LIZARD differs:
 // ai:   - ES modules: import specifiers, new URL("...", import.meta.url), and a backtick literal with no ${} are
 // ai:     references like any quoted string;
-// ai:   - three bases, tried together (one that lands on a shipped file wins; two that land on two is an error):
+// ai:   - two bases:
 // ai:       referrer-relative   "../liblizard/sim/phy.mjs", "./recv-worker.mjs"
-// ai:       library-relative    "gpu/cnn/weights.safetensors", a path under liblizard/, which assets/liblizard/ mirrors
-// ai:       a bare name         "ob.wasm" in the emscripten glue: a file in the referrer's own folder
-// ai:   - verify also reads a template literal's head: `./recv-gpu-worker.mjs${q}` names a file the rewrite cannot reach
+// ai:       a bare name         "lizard.wasm" in the emscripten glue: a file in the referrer's own folder
+// ai:   - verify also reads a template literal's head: `./recv-worker.mjs${q}` names a file the rewrite cannot reach
 // ai:     (a literal with ${} is no reference), so it fails the build here rather than 404ing on a phone. A path built
 // ai:     from pieces (`./bank_${name}.mjs`) names no file whole and passes verify: the built app's own runs are its
 // ai:     check (lizard-web/check_app.mjs, APP=1 on the rig's checks). A file's name in a message or a shader's comment is
@@ -27,7 +26,6 @@ import { tmpdir } from "node:os";
 export const HASH_LEN = 10;
 export const HASHED_RE = new RegExp(`\\.[0-9a-f]{${HASH_LEN}}\\.[^.]+$`);
 const RENAME_PREFIX = "assets/";
-const LIB_ROOT = "assets/liblizard";
 const TEXT_EXT = new Set([".html", ".css", ".mjs", ".js", ".webmanifest", ".svg", ".json"]);
 
 export class HashError extends Error {}
@@ -67,12 +65,8 @@ export function findTokens(rel, text) {
 // ai: The shipped file a token names, or null. No scheme, fragment or root-absolute path is ours.
 function resolveRef(referrerRel, token, known) {
   if (/^[a-z][a-z0-9+.-]*:/i.test(token) || token.startsWith("#") || token.startsWith("/")) return null;
-  const dir = posix.dirname(referrerRel), here = dir === "." ? "" : dir, candidates = [];
-  if (!token.includes("/")) candidates.push(posix.join(here, token));
-  else candidates.push(posix.normalize(posix.join(here, token)), posix.normalize(posix.join(LIB_ROOT, token)));
-  const hits = [...new Set(candidates)].filter((c) => !c.startsWith("..") && c.startsWith(RENAME_PREFIX) && known.has(c));
-  if (hits.length > 1) throw new HashError(`ambiguous reference in ${referrerRel}: ${token} -> ${hits.join(", ")}`);
-  return hits[0] ?? null;
+  const dir = posix.dirname(referrerRel), here = dir === "." ? "" : dir, c = posix.normalize(posix.join(here, token));
+  return !c.startsWith("..") && c.startsWith(RENAME_PREFIX) && known.has(c) ? c : null;
 }
 
 const sha256 = (buf) => createHash("sha256").update(buf).digest("hex");
@@ -195,7 +189,6 @@ function selfTest() {
     'import { phy } from "../liblizard/sim/phy.mjs";',
     'import { fob } from "../liblizard/sim/fob.mjs";',
     'const w = new Worker(new URL("./recv-worker.mjs", import.meta.url), { type: "module" });',
-    'const NET = "gpu/cnn/weights.safetensors";',
     "const bank = () => import(`./bank.mjs`);",
     'const page = "send.html";',
   ].join("\n"));
@@ -205,7 +198,6 @@ function selfTest() {
   write("assets/liblizard/sim/fob.mjs", "export const fob = 1;");
   write("assets/liblizard/build/ob.mjs", 'var f = "ob.wasm"; export default () => new URL("ob.wasm", import.meta.url);');
   write("assets/liblizard/build/ob.wasm", "WASM");
-  write("assets/liblizard/gpu/cnn/weights.safetensors", "NET");
   let threw = null;
   try { hashTree(tmp); } catch (e) { threw = e; }
   check("the tree hashes", !threw, threw?.message);
@@ -213,13 +205,12 @@ function selfTest() {
   const find = (dir, prefix) => readdirSync(join(tmp, dir)).find((f) => f.startsWith(prefix) && HASHED_RE.test(f));
   const W = "assets/lizard-web", L = "assets/liblizard";
   const recv = find(W, "recv."), phy = find(`${L}/sim`, "phy."), fob = find(`${L}/sim`, "fob."), ob = find(`${L}/build`, "ob.") && readdirSync(join(tmp, `${L}/build`)).find((f) => /^ob\.[0-9a-f]{10}\.mjs$/.test(f));
-  const wasm = readdirSync(join(tmp, `${L}/build`)).find((f) => /^ob\.[0-9a-f]{10}\.wasm$/.test(f)), net = find(`${L}/gpu/cnn`, "weights."), worker = find(W, "recv-worker."), bank = find(W, "bank."), css = find(W, "ui."), icon = find(W, "icon.");
-  check("every asset renamed with its hash", [recv, phy, fob, ob, wasm, net, worker, bank, css, icon].every(Boolean));
+  const wasm = readdirSync(join(tmp, `${L}/build`)).find((f) => /^ob\.[0-9a-f]{10}\.wasm$/.test(f)), worker = find(W, "recv-worker."), bank = find(W, "bank."), css = find(W, "ui."), icon = find(W, "icon.");
+  check("every asset renamed with its hash", [recv, phy, fob, ob, wasm, worker, bank, css, icon].every(Boolean));
   const r = recv ? read(`${W}/${recv}`) : "";
   check("an import specifier follows", r.includes(`"../liblizard/sim/${phy}"`), r);
   check("fob.mjs is not mangled by ob.mjs's rewrite", r.includes(`"../liblizard/sim/${fob}"`), r);
   check("a worker's new URL follows", r.includes(`new URL("./${worker}"`), r);
-  check("a library-relative path follows", r.includes(`"gpu/cnn/${net}"`), r);
   check("a backtick literal follows", r.includes(`\`./${bank}\``), r);
   check("a page's name is left alone", r.includes('"send.html"'), r);
   const o = ob ? read(`${L}/build/${ob}`) : "";

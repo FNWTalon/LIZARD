@@ -43,7 +43,7 @@ T* guardNew(F&& f) {
 
 inline void need(bool ok, const std::string& what) { if (!ok) throw Error(LIZ_E_ARG, what); }
 
-// ai: the ring's index from the API's (0 to 3, or LIZ_RING_DEFAULT)
+// ai: the ring's index from the API's (0 to LIZ_RINGS - 1, or LIZ_RING_DEFAULT)
 int ringIndex(int ring);
 // ai: a format's geometry, its arguments checked (format.cpp)
 liz_geometry geometryOf(const liz_format& f);

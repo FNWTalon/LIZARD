@@ -5,7 +5,7 @@
 // ai: default stride named: the backend's own), and two bottom-up RGB ones, RGB24 320x240 at 30 (a plain buffer)
 // ai: and RGB32 320x240 at 15 (a 2D buffer: Lock2D's pitch negative). The type current on the stream's handler at
 // ai: Start is the one sent.
-// ai: A frame falls due every 1 / fps from Start on the host's steady clock (trigger.h's sleepUntil) and goes out as
+// ai: A frame falls due every 1 / fps from Start on the host's steady clock (clock.h's sleepUntil) and goes out as
 // ai: a sample where a request waits, else it is lost, as a camera's are; its time is the capture's in 100 ns since
 // ai: Start, as a device source stamps it. The pictures are a moving gradient (fakeMfGradient, 17 a cycle) or the
 // ai: caller's paint (the simulated screen); MJPG frames are WIC's JPEG encoder at 4:2:2 from the grey picture, their

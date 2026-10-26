@@ -75,6 +75,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.lizard.readout.Readout
 import kotlin.math.floor
 
 // ai: The look of the web's pages and the Android app (lizard-web/ui.css; lizard-android/.../Parts.kt, ported without Android
@@ -88,8 +89,6 @@ val Bg = Color(0xFFFFFFFF)
 val Muted = Color(0xFF666666)
 val Line = Color(0xFFE4E4E4)
 val Soft = Color(0xFFF1F1F1)
-// ai: a pressed or hovered soft fill (the web's --soft-2)
-val Soft2 = Color(0xFFE6E6E6)
 val Card = Color(0xFFF6F6F6)
 val Bad = Color(0xFFB00020)
 // ai: a finished transfer (the web's --good, 2026-10-25 with the receiver): the received line and the rail's check
@@ -148,7 +147,6 @@ object Icons {
     val more = stroked("more", circle(12f, 5f, 1f), circle(12f, 12f, 1f), circle(12f, 19f, 1f))
     val info = stroked("info", circle(12f, 12f, 10f), "M12 16v-4M12 8h.01")
     val back = stroked("back", "M19 12H5M12 19l-7-7 7-7")
-    val x = stroked("x", "M18 6L6 18M6 6l12 12")
     val mark = ImageVector.Builder("mark", 64.dp, 64.dp, 64f, 64f).apply {
         addPath(addPathNodes("M0 0h64v64h-64z"), fill = SolidColor(Color.White))
         // ai: the ink spans 70% of the square (2026-10-10, the standard lizard-web/icon.svg states)
@@ -162,11 +160,11 @@ object Icons {
 
 // ai: A line that names a file (2026-10-23; the web's ui.mjs sayName, the Android app's NameLine): its head, up to the
 // ai: name and a comma after it, on one line, the name's stem cut with an ellipsis where the column is too narrow and
-// ai: its ending kept whole (nameParts); the rest after it there where it fits, else under it.
+// ai: its ending kept whole (Readout.nameParts); the rest after it there where it fits, else under it.
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun NameLine(before: String, name: String, after: String, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
-    val (stem, end) = nameParts(name)
+    val (stem, end) = Readout.nameParts(name)
     val comma = after.startsWith(",")
     val rest = (if (comma) after.drop(1) else after).trim()
     FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -176,13 +174,6 @@ fun NameLine(before: String, name: String, after: String, style: TextStyle, colo
         }
         if (rest.isNotEmpty()) Text(rest, style = style, color = color)
     }
-}
-// ai: a name's stem and the ending kept whole when the line cuts it: a bundle's " and N more.tar" (Tar.kt Bundle), else
-// ai: an extension of at most 10 characters, else nothing
-fun nameParts(name: String): Pair<String, String> {
-    Regex("^(.+)( and \\d+ more\\.tar)$", RegexOption.DOT_MATCHES_ALL).find(name)?.let { return it.groupValues[1] to it.groupValues[2] }
-    val dot = name.lastIndexOf('.')
-    return if (dot > 0 && name.length - dot <= 10) name.substring(0, dot) to name.substring(dot) else name to ""
 }
 
 // ai: The top bar (the web's .bar): the screen's title, the actions on the right, the last one out in the gutter so its
@@ -200,10 +191,10 @@ fun TopBar(title: String, actions: @Composable RowScope.() -> Unit = {}) {
 
 // ai: An icon button: a 24 dp icon in a round 40 dp target, no border, the press a soft circle.
 @Composable
-fun IconBtn(icon: ImageVector, label: String, tint: Color = Fg, enabled: Boolean = true, turn: Float = 0f, onClick: () -> Unit) {
+fun IconBtn(icon: ImageVector, label: String, enabled: Boolean = true, turn: Float = 0f, onClick: () -> Unit) {
     Box(Modifier.size(40.dp).clip(CircleShape).clickable(enabled = enabled, role = Role.Button, onClick = onClick).semantics { contentDescription = label },
         contentAlignment = Alignment.Center) {
-        Icon(icon, contentDescription = null, Modifier.size(24.dp).rotate(turn), tint = if (enabled) tint else tint.copy(alpha = .38f))
+        Icon(icon, contentDescription = null, Modifier.size(24.dp).rotate(turn), tint = if (enabled) Fg else Fg.copy(alpha = .38f))
     }
 }
 
@@ -229,11 +220,11 @@ fun Rail(onClick: () -> Unit, foot: @Composable () -> Unit = {}, squares: @Compo
 @Composable
 fun Square(content: @Composable () -> Unit) = Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) { content() }
 
-// ai: A rate in a rail's square: its figure over its unit (Fmt.rate's no-break space the cut); empty for null
+// ai: A rate in a rail's square: its figure over its unit (Readout.rate's no-break space the cut); empty for null
 @Composable
 fun RateSquare(kbs: Double?) = Square {
     if (kbs != null) {
-        val p = Fmt.rate(kbs).split(Fmt.NB)
+        val p = Readout.rate(kbs).split('\u00a0')
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(p[0], style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = Fg)
             Text(p.getOrElse(1) { "" }, style = MaterialTheme.typography.labelSmall, color = Muted)
@@ -280,28 +271,27 @@ fun Spinner() = CircularProgressIndicator(Modifier.size(28.dp), color = Fg, stro
 // ai: A choice among several (the web's select, 2026-10-25 on the desktop; Settings' chips everywhere until then): a
 // ai: field's title over a 40 dp field on the soft fill, 8 dp corners, the chosen option's label and a chevron, a click
 // ai: opening the options as a menu as wide as the field, the chosen one on the soft fill (as a native select's open
-// ai: list marks it). `blank` shows where no option is the value; an option `enabledFor` says no to is greyed and
-// ai: inert; `onOpen` runs as the menu opens (a list read again then).
+// ai: list marks it). `blank` shows where no option is the value; `onOpen` runs as the menu opens (a list read again
+// ai: then).
 @Composable
-fun <T> Select(title: String, value: T, options: List<Pair<T, String>>, blank: String = "", enabled: Boolean = true,
-               enabledFor: (T) -> Boolean = { true }, onOpen: () -> Unit = {}, onChoose: (T) -> Unit) {
+fun <T> Select(title: String, value: T, options: List<Pair<T, String>>, blank: String = "", onOpen: () -> Unit = {}, onChoose: (T) -> Unit) {
     var open by remember { mutableStateOf(false) }
     var width by remember { mutableStateOf(0) }
     val density = LocalDensity.current
     Field(title) {
         Box(Modifier.fillMaxWidth()) {
             Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).onSizeChanged { width = it.width }.clip(RoundedCornerShape(8.dp)).background(Soft)
-                .clickable(enabled = enabled, role = Role.Button) { onOpen(); open = true }.padding(start = 12.dp, end = 12.dp),
+                .clickable(role = Role.Button) { onOpen(); open = true }.padding(start = 12.dp, end = 12.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 Text(options.firstOrNull { it.first == value }?.second ?: blank, style = MaterialTheme.typography.bodyLarge,
-                    color = if (enabled) Fg else Fg.copy(alpha = .38f), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                    color = Fg, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                 Icon(Icons.chevron, contentDescription = null, Modifier.size(18.dp), tint = Muted)
             }
             DropdownMenu(open, { open = false }, Modifier.width(with(density) { width.toDp() }).heightIn(max = 480.dp),
                 shape = RoundedCornerShape(12.dp), containerColor = Bg, shadowElevation = 0.dp, border = BorderStroke(1.dp, Line)) {
                 for ((k, label) in options) DropdownMenuItem({ Text(label, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    { open = false; if (k != value) onChoose(k) }, if (k == value) Modifier.background(Soft) else Modifier, enabled = enabledFor(k),
-                    colors = MenuDefaults.itemColors(textColor = Fg, disabledTextColor = Fg.copy(alpha = .38f)))
+                    { open = false; if (k != value) onChoose(k) }, if (k == value) Modifier.background(Soft) else Modifier,
+                    colors = MenuDefaults.itemColors(textColor = Fg))
             }
         }
     }
@@ -423,13 +413,13 @@ fun Fold(title: String, open: Boolean, onToggle: () -> Unit, content: @Composabl
 }
 
 // ai: Settings' fields one rhythm (2026-10-02; the web's headers and spacing were inconsistent): 16 dp apart
-// ai: (Fields), each its title over its control, the title row 36 dp whatever is in it (the value on the right, `end`
-// ai: at its end), a group's heading (Group) 8 dp over its first field.
+// ai: (Fields), each its title over its control, the title row 36 dp whatever is in it (the value on the right), a
+// ai: group's heading (Group) 8 dp over its first field.
 @Composable
 fun Fields(content: @Composable ColumnScope.() -> Unit) = Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp), content = content)
 
 @Composable
-fun Field(title: String, value: String = "", end: (@Composable () -> Unit)? = null, content: @Composable () -> Unit) {
+fun Field(title: String, value: String = "", content: @Composable () -> Unit) {
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().heightIn(min = 36.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             // ai: the title on one line whatever the value's length; the value the rest of the row, cut at its end
@@ -437,7 +427,6 @@ fun Field(title: String, value: String = "", end: (@Composable () -> Unit)? = nu
             Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
                 if (value.isNotEmpty()) Text(value, style = MaterialTheme.typography.bodyMedium, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            end?.invoke()
         }
         Spacer(Modifier.height(4.dp))
         content()

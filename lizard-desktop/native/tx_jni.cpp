@@ -150,13 +150,13 @@ FN(jstring, txPrepare)(JNIEnv* e, jclass, jlong h, jstring assets) {
   return jstr(e, tx(h)->s->prepareGpu(a, "", &lizard::Presenter::deviceExtras()));
 }
 
-// ai: The format to paint (n, sub-channels, span, the rate the word states, codes side by side and the gap between them
+// ai: The format to paint (sub-channels, span, the rate the word states, codes side by side and the gap between them
 // ai: in modules, painters) and where (painter: 0 the CPU, 1 the GPU, 2 auto; assets: the GPU's kernels and tables): ""
 // ai: or the refusal. A presenter running on this sender shows the last picture until the new format's first is painted.
-FN(jstring, txConfigure)(JNIEnv* e, jclass, jlong h, jint n, jint subch, jint span, jint fps, jint codes, jint gap, jint threads, jint painter,
+FN(jstring, txConfigure)(JNIEnv* e, jclass, jlong h, jint subch, jint span, jint fps, jint codes, jint gap, jint threads, jint painter,
                          jstring assets) {
   lizard::TxFormat f;
-  f.n = n; f.subch = subch; f.span = span; f.fps = fps; f.codes = codes; f.gap = gap; f.threads = threads; f.painter = painter;
+  f.subch = subch; f.span = span; f.fps = fps; f.codes = codes; f.gap = gap; f.threads = threads; f.painter = painter;
   f.assets = str(e, assets);
   // ai: the frames stay on the device for the presenter (no host copies), a second of them ahead within 256 MB, the
   // ai: swapchain's images + 1 of margin (2026-10-07)
@@ -238,13 +238,13 @@ static bool canvasTarget(JNIEnv* e, jobject canvas, lizard::PresentTarget& targe
 
 // ai: The presenter on a canvas (a heavyweight java.awt.Component, displayable: its native window made), the sender's
 // ai: frames on it: fps pictures a second asked, size the code's share of the room (0.25 to 1), edge the light kept
-// ai: at each edge (presenter.h PresentOptions), whole pixels or stretched, the device the sender's (txPrepare). JAWT
+// ai: at each edge (presenter.h PresentOptions), the frame stretched, the device the sender's (txPrepare). JAWT
 // ai: is held only to read the window's handle. 0, with why in txError(), where it cannot start. presentStop before the
 // ai: canvas goes or the sender is destroyed.
 // ai: place: macOS's layer over the canvas (x, y, w, h in points from the top left of the window's content, the
 // ai: backing scale; presentPlace when it moves), ignored elsewhere.
 // ai: vsync: the monitor held at a refresh fps divides while presenting (presenter.h setVsync; presentVsync after).
-FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jfloat size, jfloat edge, jboolean whole, jboolean vsync, jfloatArray place) {
+FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jfloat size, jfloat edge, jboolean vsync, jfloatArray place) {
   if (!h) { setError("no sender"); return 0; }
   auto out = std::make_unique<Pres>();
   lizard::PresentTarget target;
@@ -261,9 +261,8 @@ FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jf
   o.fps = fps;
   o.size = size;
   o.edge = edge;
-  o.whole = whole == JNI_TRUE;
   o.vsync = vsync == JNI_TRUE;
-  // ai: LIZ_PRESENT_CSV=<path>: a line a present (lizard_present --log's), for reading a run's cadence around a resize;
+  // ai: LIZ_PRESENT_CSV=<path>: a line a present, for reading a run's cadence around a resize;
   // ai: the path in UTF-8, as the presenter opens it (Windows: read wide, since getenv gives the ANSI code page)
 #if defined(_WIN32)
   if (const wchar_t* c = _wgetenv(L"LIZ_PRESENT_CSV")) {

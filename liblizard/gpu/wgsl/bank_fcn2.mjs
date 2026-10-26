@@ -74,7 +74,7 @@ function roundHalf(x) {
 // (1 + sum of dilations: the map at a pixel reads X within halo - 1, and the non-maximum ring adds one).
 export function fcn2Plan(json) {
   const arch = json.arch;
-  if (arch?.norm !== "pixel") throw new Error(`proposer weights ${json.spec ?? ""}: not version 2 (arch.norm ${JSON.stringify(arch?.norm)}); a file without norm is v1 (bank fcn)`);
+  if (arch?.norm !== "pixel") throw new Error(`proposer weights ${json.spec ?? ""}: not version 2 (arch.norm ${JSON.stringify(arch?.norm)})`);
   const K = arch.window, R = (K - 1) / 2;
   if (!(Number.isInteger(K) && K % 2 === 1 && K >= 3)) throw new Error(`proposer weights: window ${K} is not an odd box`);
   const halo = 1 + arch.layers.reduce((a, l) => a + l.dil, 0);
@@ -163,8 +163,8 @@ export function fcn2Layout(P, { TX = 1, TY = 1, halves = false, int8 = false, st
 
 // The forms a device can be given, best first: f16 when the decoder runs f16; else f32 storage, then halves stored.
 // Within a storage, the largest region first; the X plane before the fused kernel, its larger X block first. A form's
-// bytes are its larger kernel's. `force`: { packed, f32, region: "32x16", fused, plane, xblock: "32x32" } narrows it;
-// force.walk sets the regions a network workgroup walks.
+// bytes are its larger kernel's. `force`: { packed, f32, region: "32x16", fused, xblock: "32x32" } narrows it (the
+// forms a smaller device would be given, run on one where a larger fits).
 // ai: int8 (a q8 file, which no float form runs): store "int8", the plane form only; force.packed, f32 or fused
 // ai: leave it no form.
 export function fcn2Forms(json, { f16 = false, int8 = false, force = {} } = {}) {
@@ -173,13 +173,13 @@ export function fcn2Forms(json, { f16 = false, int8 = false, force = {} } = {}) 
   const P = fcn2Plan(json);
   const regions = REGIONS.filter(([tx, ty]) => !force.region || force.region === `${TILE * tx}x${TILE * ty}`);
   const stores = int8 ? (force.packed || force.f32 ? [] : ["int8"]) : f16 ? ["f16"] : force.packed ? ["packed"] : force.f32 ? ["f32"] : ["f32", "packed"];
-  const planes = int8 ? (force.fused ? [] : [true]) : force.fused ? [false] : force.plane ? [true] : [true, false];
+  const planes = int8 ? (force.fused ? [] : [true]) : force.fused ? [false] : [true, false];
   const out = [];
   const xblocks = XBLOCKS.filter((b) => !force.xblock || force.xblock === `${b[0]}x${b[1]}`);
   for (const store of stores) for (const [TX, TY] of regions) for (const xplane of planes) for (const XB of xplane ? xblocks : [null]) {
     const halves = store === "f16" || store === "packed", net = fcn2Layout(P, { TX, TY, halves, int8, stage: xplane ? "net" : "all" });
     const bytes = Math.max(net.bytes, xplane ? fcn2Layout(P, { stage: "x", XB }).bytes : 0);
-    out.push({ store, TX, TY, xplane, XB, walk: xplane ? +(force.walk ?? WALK) : 1, f16: store === "f16", packed: store === "packed", int8, bytes, name: `${store} ${TILE * TX}x${TILE * TY}${xplane ? ` plane ${XB[0]}x${XB[1]}` : ""}` });
+    out.push({ store, TX, TY, xplane, XB, walk: xplane ? WALK : 1, f16: store === "f16", packed: store === "packed", int8, bytes, name: `${store} ${TILE * TX}x${TILE * TY}${xplane ? ` plane ${XB[0]}x${XB[1]}` : ""}` });
   }
   return out;
 }

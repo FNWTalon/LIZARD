@@ -11,5 +11,5 @@
 
 The outer fountain code of a transfer: a receiver rebuilds a chunk from any N + 0.02 of its blocks on average, whichever
 frames it missed. Only the V2 API is used (`../../wirehair/shim.cpp`), whose 32-byte wire profile pins the encoding.
-`-DWIREHAIR_BUILDING=1` is passed by the builds (`../../build.sh wirehair`, `../../core/CMakeLists.txt`) rather than
-patched in.
+`-DWIREHAIR_BUILDING=1` is passed by the build (`../../core/CMakeLists.txt`, the transfer's library, which the native
+builds and the WebAssembly module link) rather than patched in.

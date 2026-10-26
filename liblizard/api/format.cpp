@@ -18,12 +18,12 @@ static constexpr double T_DISPLAY_CYCLE = 2.7, PI = 3.14159265358979323846;
 
 int ringIndex(int ring) {
   if (ring == LIZ_RING_DEFAULT) return FOCUS_RING_DEFAULT;
-  need(ring >= 0 && ring < FOCUS_RINGS, "ring is 0 to 3 or LIZ_RING_DEFAULT, not " + std::to_string(ring));
+  need(ring >= 0 && ring < FOCUS_RINGS, "ring is 0 to " + std::to_string(FOCUS_RINGS - 1) + " or LIZ_RING_DEFAULT, not " + std::to_string(ring));
   return ring;
 }
 static int spanOf(int r) { return 2 * FOCUS_RING[r]; }
 static int modulesOf(int r) { return spanOf(r) + 2 * OB_MARGIN; }
-static void needBlocks(int blocks) { need(blocks >= 1 && blocks <= LIZ_MAX_BLOCKS, "blocks is 1 to 128, not " + std::to_string(blocks)); }
+static void needBlocks(int blocks) { need(blocks >= LIZ_MIN_BLOCKS && blocks <= LIZ_MAX_BLOCKS, "blocks is 2 to 128 (LIZARD-16 to LIZARD-1024), not " + std::to_string(blocks)); }
 
 liz_geometry geometryOf(const liz_format& f) {
   needBlocks(f.blocks);
@@ -70,7 +70,7 @@ LIZ_API double liz_room_for(int blocks, int ring) {
   return rc < 0 ? rc : v;
 }
 
-LIZ_API int liz_blocks_for(int blocks) { return blocks >= 1 && blocks <= LIZ_MAX_BLOCKS ? focus_blocks_for(8 * blocks) : 0; }
+LIZ_API int liz_blocks_for(int blocks) { return blocks >= LIZ_MIN_BLOCKS && blocks <= LIZ_MAX_BLOCKS ? focus_blocks_for(8 * blocks) : 0; }
 
 LIZ_API int liz_pick(double w, double h, int codes, int ring, int top) {
   return guard([&] {
@@ -79,8 +79,9 @@ LIZ_API int liz_pick(double w, double h, int codes, int ring, int top) {
     const int r = ringIndex(ring);
     const double gapFrac = codes > 1 ? (codes - 1) * double(LIZ_GAP_MODULES) / (modulesOf(r) + 2 * FOCUS_QUIET) : 0;
     const double room = std::max(64.0, std::min(w / (codes + gapFrac), h));
-    int best = 1;
-    for (int b = 1; b <= top; b++) if (roomFor(b, r) <= room) best = b;
+    // ai: no room for even the smallest: LIZARD-16, as the web sender's pickVersion
+    int best = LIZ_MIN_BLOCKS;
+    for (int b = LIZ_MIN_BLOCKS; b <= top; b++) if (roomFor(b, r) <= room) best = b;
     return best;
   });
 }

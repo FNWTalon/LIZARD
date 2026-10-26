@@ -1,7 +1,7 @@
 // ai: The decoder's setup, as liblizard/gen/gen.mjs wrote it from the web host: one
 // ai: variant's tree (setup/<variant>.json), its buffers' bytes (blobs/<hash>.bin) and its pipelines' SPIR-V
 // ai: (spv/<module>.spv), built on a wg device. Only the front half and the one back half in use (a batch size) are
-// ai: built; every object keeps the id the web host's recorder gave it, so a trace names the same objects.
+// ai: built; every object keeps the id the web host's recorder gave it.
 #pragma once
 #include "wg.h"
 #include "json.hpp"
@@ -33,7 +33,7 @@ struct Pipe {
 // ai: integer dot product (the int8 proposer); f16 needs f16 with 16-bit storage; -sg needs subgroup shuffles in
 // ai: compute. Empty when the device misses the floors every variant needs (32 KB of shared memory, 10 storage
 // ai: buffers a stage): the C decodes there.
-std::vector<std::string> variantsFor(const wg::Device& d, bool subgroups = true);
+std::vector<std::string> variantsFor(const wg::Device& d);
 // ai: Of variants, in their order, those a generated tree holds (setup/<variant>.json; an install carries a variant
 // ai: whole, its modules and blobs with it, cmake/gpu_files.cmake): an install may hold only some of the six
 // ai: (LIZ_GPU_VARIANTS, the AAR's lizardVariants), and the receiver chooses among those.
@@ -49,7 +49,6 @@ struct Setup {
   std::map<std::string, std::shared_ptr<wg::Pipeline>> pipelines;
   std::string variant;
   double buildMs = 0;
-  std::map<std::string, double> compileMs;   // ai: each pipeline's vkCreateComputePipelines, ms
 
   static std::unique_ptr<Setup> load(wg::Device& d, ReadFile read, const std::string& variant);
   // ai: The front half's objects and the back half at batch size B, built (a back half built before is dropped).
@@ -64,17 +63,6 @@ struct Setup {
   std::shared_ptr<wg::Pipeline> pipe(const std::string& id);
   Pipe pair(const json& pb);   // ai: a tree's { p, bgl } (null gives an empty Pipe)
   void makeOne(const std::string& id) { make({id}); }
-  // ai: The native nets (core/nets/, out/nets/manifest.json): a kernel on the device's cooperative-matrix units that
-  // ai: stands for one of the web's pipelines over the same bind group layout, with its own weights packing, built
-  // ai: where the device offers every matrix shape it needs. By role (the pipeline's path in the tree:
-  // ai: front.twins.small.pipe). The host adopts one only after checking it on the device (FrontHalf::measureTwins:
-  // ai: the same outputs as the web's int8 kernel on the first batch, bit for bit, and faster), since these kernels
-  // ai: lean on a driver's compiler that has miscompiled them before (core/nets/README.md).
-  struct NativeNet { Pipe pipe; std::shared_ptr<wg::Buffer> weights; };
-  std::map<std::string, NativeNet> natives;
-  // ai: Builds them; the roles built are listed. LIZ_NATIVE_NETS=0: none. LIZ_NATIVE_NETS=1 (a check's): each takes
-  // ai: its web pipeline's and weights' place in the setup outright, unchecked, and `natives` stays empty.
-  std::vector<std::string> applyNativeNets();
 
  private:
   void make(const std::vector<std::string>& ids);

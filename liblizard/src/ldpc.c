@@ -7,21 +7,22 @@
 // (count of heavy columns, heavy degree); the remaining data columns have degree 3.
 // Heavy/light mixes follow the published IRA profiles (a minority of high-degree columns
 // carries convergence, degree 3 carries the rate), with the heavy degree capped at mb.
-// norm is the min-sum scale in sixteenths. All of it is measured, test/ldpc_ablate.c: against
-// all-degree-3 columns the heavy minority is worth 8% of the channel at rate 1/2 and 1 to 3%
-// above 2/3, and low rates want a gentler normalization.
+// norm is the min-sum scale in sixteenths. All of it is measured (2026-09-19, the ablation now in
+// archive/ldpc-lab-rates/): against all-degree-3 columns the heavy minority is worth 8% of the channel at rate 1/2
+// and 1 to 3% above 2/3, and low rates want a gentler normalization.
+// ai: The rate indices are the format's four, 2, 3, 4 and 6 (1/2, 2/3, 3/4, 7/8); 0, 1 and 5 (1/4, 1/3, 5/6) were lab
+// ai: rates and have no profile since 2026-10-25 (archive/ldpc-lab-rates/), so no code is built at them.
 typedef struct { int mb, heavy, dh, norm; const char *name; double r; } profile_t;
 static const profile_t PROFILE[LDPC_RATES] = {
-  { 36, 10, 8, 14, "1/4", 0.25 },
-  { 32, 10, 8, 14, "1/3", 1.0 / 3 },
-  { 24, 10, 8, 13, "1/2", 0.5 },
-  { 16, 8, 12, 13, "2/3", 2.0 / 3 },
-  { 12, 8, 12, 13, "3/4", 0.75 },
-  {  8, 8,  8, 13, "5/6", 5.0 / 6 },
-  {  6, 6,  4, 13, "7/8", 0.875 },
+  [2] = { 24, 10, 8, 13, "1/2", 0.5 },
+  [3] = { 16, 8, 12, 13, "2/3", 2.0 / 3 },
+  [4] = { 12, 8, 12, 13, "3/4", 0.75 },
+  [6] = {  6, 6,  4, 13, "7/8", 0.875 },
 };
-const char *const ldpc_rate_name[LDPC_RATES] = { "1/4", "1/3", "1/2", "2/3", "3/4", "5/6", "7/8" };
-double ldpc_rate_value(int rate) { return PROFILE[rate].r; }
+const char *const ldpc_rate_name[LDPC_RATES] = { [2] = "1/2", [3] = "2/3", [4] = "3/4", [6] = "7/8" };
+double ldpc_rate_value(int rate) { return rate >= 0 && rate < LDPC_RATES ? PROFILE[rate].r : 0; }
+// ai: a rate index with a profile: one of the format's four
+static int rate_ok(int rate) { return rate >= 0 && rate < LDPC_RATES && PROFILE[rate].mb > 0; }
 
 static uint32_t rnd(uint32_t *s) { *s ^= *s << 13; *s ^= *s >> 17; *s ^= *s << 5; return *s; }
 static int mod(int a, int z) { a %= z; return a < 0 ? a + z : a; }
@@ -59,18 +60,9 @@ static int count_cycles(int mb, int z, int shift[][LDPC_NB], int r, int j, int s
   return six;
 }
 
-// Test hook: a degree profile to use instead of the table's, for the ablations in test/.
-int ldpc_override_heavy = -1, ldpc_override_dh = 0, ldpc_norm = 0;
-
-static profile_t profile(int rate) {
-  profile_t prof = PROFILE[rate];
-  if (ldpc_override_heavy >= 0) { prof.heavy = ldpc_override_heavy; prof.dh = ldpc_override_dh; }
-  return prof;
-}
-
 int ldpc_generate(int z, int rate, uint32_t seed, int shift[][LDPC_NB]) {
-  if (rate < 0 || rate >= LDPC_RATES || z < 8) return -1;
-  const profile_t prof = profile(rate), *p = &prof;
+  if (!rate_ok(rate) || z < 8) return -1;
+  const profile_t *p = &PROFILE[rate];
   int mb = p->mb, kb = LDPC_NB - mb;
   int rowdeg[LDPC_NB] = { 0 };
   for (int r = 0; r < mb; r++) for (int j = 0; j < LDPC_NB; j++) shift[r][j] = -1;
@@ -103,20 +95,19 @@ int ldpc_generate(int z, int rate, uint32_t seed, int shift[][LDPC_NB]) {
 
 int ldpc_init(ldpc_t *c, int n_max, int rate, uint32_t seed) {
   memset(c, 0, sizeof *c);
-  if (rate < 0 || rate >= LDPC_RATES) return -1;
-  const profile_t prof = profile(rate), *p = &prof;
+  if (!rate_ok(rate)) return -1;
+  const profile_t *p = &PROFILE[rate];
   int z = n_max / LDPC_NB;
   if (z < 8) return -1;
   // The format's codes are the tables (ldpc_base.h, one a rate of the rate profile, each with its own block rows, data
-  // columns and columns never sent); every other code, and the format's own under a test's profile override, is
-  // generated over 48 columns.
+  // columns and columns never sent); every other code is generated over 48 columns.
   static _Thread_local int shift[LDPC_NB][LDPC_NB];   // ai: scratch, a thread's own
   const ldpc_base_t *base = 0;
   for (int t = 0; t < LDPC_BASES_N; t++)
-    if (z == LDPC_BASES[t].z && rate == LDPC_BASES[t].rate && seed == LDPC_BASE_SEED && ldpc_override_heavy < 0) base = &LDPC_BASES[t];
+    if (z == LDPC_BASES[t].z && rate == LDPC_BASES[t].rate && seed == LDPC_BASE_SEED) base = &LDPC_BASES[t];
   int mb = base ? base->mb : p->mb, kb = base ? base->kb : LDPC_NB - mb, np = base ? base->np * z : 0;
   if (mb > LDPC_NB || kb > LDPC_NB) return -1;
-  c->z = z; c->mb = mb; c->kb = kb; c->rate = rate; c->norm = ldpc_norm ? ldpc_norm : p->norm;
+  c->z = z; c->mb = mb; c->kb = kb; c->rate = rate; c->norm = p->norm;
   c->n = (kb + mb) * z; c->k = kb * z; c->m = mb * z; c->np = np; c->nt = c->n - np;
   if (base) {
     for (int r = 0; r < mb; r++) for (int j = 0; j < LDPC_NB; j++) shift[r][j] = j < base->kb ? base->shift[r * base->kb + j] : -1;
@@ -174,54 +165,6 @@ void ldpc_encode(const ldpc_t *c, const uint8_t *data, uint8_t *cw) {
   }
 }
 
-static int syndrome_clear(const ldpc_t *c, const int16_t *L) {
-  for (int chk = 0; chk < c->m; chk++) {
-    int par = 0;
-    for (int e = c->row_ptr[chk]; e < c->row_ptr[chk + 1]; e++) par ^= L[c->col_idx[e]] < 0;
-    if (par) return 0;
-  }
-  return 1;
-}
-
-// Layered normalized min-sum, one check per layer. The sweep direction alternates because the
-// staircase only carries parity information one step against the sweep per pass.
-int ldpc_decode_serial(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_iter) {
-  int16_t *L = malloc((size_t)c->n * sizeof(int16_t));
-  int8_t *R = calloc((size_t)c->edges, 1);
-  int used = -1;
-  if (!L || !R) { free(L); free(R); return -1; }
-  for (int i = 0; i < c->n; i++) L[i] = llr[i];
-  for (int it = 0; it < max_iter; it++) {
-    for (int step = 0; step < c->m; step++) {
-      int chk = (it & 1) ? c->m - 1 - step : step;
-      int e0 = c->row_ptr[chk], e1 = c->row_ptr[chk + 1];
-      int min1 = 32767, min2 = 32767, arg = -1, sign = 0;
-      for (int e = e0; e < e1; e++) {
-        int q = L[c->col_idx[e]] - R[e];
-        L[c->col_idx[e]] = (int16_t)q;
-        int a = q < 0 ? -q : q;
-        sign ^= q < 0;
-        if (a < min1) { min2 = min1; min1 = a; arg = e; } else if (a < min2) min2 = a;
-      }
-      min1 = (min1 * c->norm) >> 4; min2 = (min2 * c->norm) >> 4;
-      if (min1 > 127) min1 = 127;
-      if (min2 > 127) min2 = 127;
-      for (int e = e0; e < e1; e++) {
-        int v = c->col_idx[e], q = L[v];
-        int mag = e == arg ? min2 : min1;
-        int r = (sign ^ (q < 0)) ? -mag : mag;
-        R[e] = (int8_t)r;
-        q += r;
-        L[v] = (int16_t)(q > 8191 ? 8191 : q < -8191 ? -8191 : q);
-      }
-    }
-    if (syndrome_clear(c, L)) { used = it + 1; break; }
-  }
-  for (int i = 0; i < c->n; i++) out[i] = L[i] < 0;
-  free(L); free(R);
-  return used;
-}
-
 // ---------------------------------------------------------------- block-row schedule
 //
 // The z checks of one block row share no bit: a circulant puts each data bit in one of them, and
@@ -232,8 +175,9 @@ int ldpc_decode_serial(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max
 
 #include "simd.h"
 
-// Q: ns rows of zp posteriors in check order. R: the matching messages. Same arithmetic as the
-// serial decoder, check by check; the scalar loop below is the reference for the vector one.
+// Q: ns rows of zp posteriors in check order. R: the matching messages. Layered normalized min-sum, check by check
+// (one check a layer, the sweep's direction alternating, measured against it on 2026-09-19: research/05); the scalar
+// loop below is the reference for the vector one.
 static void layer_kernel(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
 #ifdef OB_SIMD
   const v128_t big = wasm_i16x8_splat(32767), cap = wasm_i16x8_splat(2047), top = wasm_i16x8_splat(127), vn = wasm_i16x8_splat((int16_t)norm);

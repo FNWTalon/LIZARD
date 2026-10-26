@@ -9,8 +9,9 @@ From <https://github.com/BLAKE3-team/BLAKE3>, release 1.8.7 (2026-08-20), `c/` a
 
 Kept: `blake3.c`, `blake3_dispatch.c`, `blake3_portable.c`, `blake3.h`, `blake3_impl.h`, the three licence files, and
 `test_vectors/test_vectors.json`. Left out: the SSE, AVX and NEON kernels, the TBB file (threads) and the build files.
-The portable build is all wasm can run of it, and `liblizard/build.sh` compiles it with `-DBLAKE3_NO_SSE2
--DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512 -DBLAKE3_USE_NEON=0` so the native check compiles the same paths.
+The portable build is all wasm can run of it, and every build compiles it with `-DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41
+-DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512 -DBLAKE3_USE_NEON=0` (`liblizard/core/CMakeLists.txt`, the transfer's library, and
+`liblizard/build.sh native`), so the native builds run the same paths.
 
 Licence: public domain under CC0 1.0 (`LICENSE_CC0`), or Apache 2.0 (`LICENSE_A2`), or Apache 2.0 with LLVM exceptions
 (`LICENSE_A2LLVM`), at the user's choice.

@@ -74,13 +74,6 @@ void CpuPool::grow() {
   p->thread = std::thread([this, p] { run(p); });
 }
 
-int CpuPool::ready() const {
-  std::lock_guard<std::mutex> l(mu_);
-  int r = 0;
-  for (int i = 0; i < size_.load(); i++) r += workers_[i]->state == Worker::Idle || workers_[i]->state == Worker::Busy;
-  return r;
-}
-
 bool CpuPool::offer(const uint8_t* plane, uint32_t stride, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t tag, int held, double at, float ax, float ay, const float* lens) {
   Worker* got = nullptr;
   {

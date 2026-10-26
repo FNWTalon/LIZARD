@@ -1,9 +1,10 @@
 // ai: The GPU sender's tables as the web builds them (liblizard/gpu/encoder.mjs configureNow, shape, allocate), for
 // ai: `tx_check gputables` to hold core/tx/send_tables.cpp to (2026-10-02). A format a file set in <out>:
 // ai: <subch>_<ring>.<section>.bin, the sections rows, uv, tw, su, g, taps, border, pu, and index.json listing the
-// ai: formats with their n, W, q, sq, Vr and copy. The formats: every whole number of blocks in the 128 ring (the
-// ai: default) and a spread in the 32, 64 and 96, at 60 a second, encodes of 4 frames.
-//   node gen/send_tables_ref.mjs <out> [all]      (all: every block count in every ring, 512 formats)
+// ai: formats with their n, W, q, sq, Vr and copy. The formats: every whole number of blocks from 2 (LIZARD-16) in the
+// ai: default ring (sim/lizard_pick.mjs RING_DEFAULT, the 128) and a spread in the others (b % 9 === 2, which keeps
+// ai: LIZARD-16 and -1024: 15 a ring), at 60 a second, encodes of 4 frames.
+//   node gen/send_tables_ref.mjs <out> [all]      (all: every block count in every ring, 127 a ring)
 // ai:   CODES=2: two codes a frame side by side (gpu/encoder.mjs shape: FW, the gap, the paint's symbols FRAMES x codes)
 import { mkdirSync, writeFileSync } from "node:fs";
 
@@ -15,19 +16,20 @@ const { PARAMS_AT } = await imp("gpu/wgsl/back_ldpc.mjs");
 const { CODES } = await imp("gpu/wgsl/back_tiers.mjs");
 const { crcPowers, PAYLOAD } = await imp("gpu/back/ref_ldpc.mjs");
 const { clipLimit } = await imp("gpu/back/paint.mjs");
-const { N_FOR, RINGS, tiersFor } = await imp("sim/lizard_pick.mjs");
+const { N_FOR, RINGS, RING_DEFAULT, tiersFor } = await imp("sim/lizard_pick.mjs");
+const { GAP_MODULES } = await imp("gpu/encoder.mjs");
 await init();
 
 const out = process.argv[2], all = process.argv[3] === "all";
 if (!out) { console.error("usage: node gen/send_tables_ref.mjs <out> [all]"); process.exit(2); }
 mkdirSync(out, { recursive: true });
-const FRAMES = 4, FPS = 60, CODES_N = +(process.env.CODES ?? 1), GAP_MODULES = 12, formats = [];
-for (let ring = 0; ring < 4; ring++) for (let b = 1; b <= 128; b++) if (all || ring === 3 || b % 9 === 1 || b === 128) formats.push({ subch: 8 * b, ring });
+const FRAMES = 4, FPS = 60, CODES_N = +(process.env.CODES ?? 1), formats = [];
+for (let ring = 0; ring < RINGS.length; ring++) for (let b = 2; b <= 128; b++) if (all || ring === RING_DEFAULT || b % 9 === 2 || b === 128) formats.push({ subch: 8 * b, ring });
 const index = [];
 for (const { subch, ring } of formats) {
   const n = N_FOR(subch), span = 2 * RINGS[ring];
   const [tb] = await transformTables([{ n, subch }]);
-  const fc = new Focus(n, subch, 1, { span, bitmap: tb.bitmap });
+  const fc = new Focus(n, subch, 1, { span });
   fc.setFps(FPS);
   const g = fc.resampleGeom(), q = g.q, W = fc.side + 2 * fc.quiet * fc.cell, sq = g.o + fc.quiet * fc.cell;
   const gap = CODES_N > 1 ? GAP_MODULES * fc.cell : 0, FW = CODES_N * W + (CODES_N - 1) * gap, RW = Math.ceil(FW / 4), FS = 64 * Math.ceil((RW * W) / 64);

@@ -12,7 +12,8 @@ import java.util.concurrent.atomic.AtomicLong
 object Native {
     init { System.loadLibrary("liz") }
 
-    @JvmStatic external fun create(assets: String, cacheDir: String, storeDir: String, decoder: String, precision: String, layout: String): Long
+    // ai: decoder auto | gpu | cpu, layout 1:1 | 2:1 (Settings); the precision is the receiver's own choice, auto
+    @JvmStatic external fun create(assets: String, cacheDir: String, storeDir: String, decoder: String, layout: String): Long
     // ai: hb (zero copy) or luma (a direct buffer of the Y plane); throws IllegalArgumentException only before the
     // ai: receiver has the frame, and the caller then closes it itself. lens: the camera's report of its lens in the
     // ai: frame's px, [k1, k2, k3, f], or null (Engine.lensOf)
@@ -51,21 +52,22 @@ object Native {
 
     // ai: The sender (2026-10-01; liblizard/core/tx/sender.h, jni.cpp's Tx): a file (its path in the app's cache; "" for the test
     // ai: stream) to a handle, 0 with txError() saying why; the format to paint ("" or the codec's refusal; painter 0 the
-    // ai: CPU, 1 the GPU, 2 auto, assets the generated tree the GPU's kernels come from); the painted
-    // ai: frame's side; the next frame onto the surface when it is painted (on the main thread, at the display's pace;
-    // ai: vsync the frame timeline's id to present at, into the view's w x h2 pixels, or 0 for the window's queue);
-    // ai: the stats JSON; the handle let go.
+    // ai: CPU, 1 the GPU, 2 auto, assets the generated tree the GPU's kernels come from); the next frame into the
+    // ai: surface's own queue when it is painted (txPresent, on the main thread at the display's pace: below Android 13,
+    // ai: or once txPost has refused); the stats JSON; the handle let go.
     @JvmStatic external fun txCreate(path: String, name: String, type: String): Long
     @JvmStatic external fun txError(): String
-    @JvmStatic external fun txConfigure(h: Long, n: Int, subch: Int, span: Int, fps: Int, threads: Int, painter: Int, assets: String, codes: Int, gap: Int, vsynced: Boolean, vsync: Boolean): String
+    @JvmStatic external fun txConfigure(h: Long, subch: Int, span: Int, fps: Int, threads: Int, painter: Int, assets: String, codes: Int, gap: Int, vsynced: Boolean, vsync: Boolean): String
     @JvmStatic external fun txPrepare(h: Long, assets: String): String
     // ai: the blocks a frame of subch sub-channels carries (the format's rate profile, src/focus.h focus_blocks_for)
     @JvmStatic external fun blocksFor(subch: Int): Int
-    @JvmStatic external fun txPresent(h: Long, surface: android.view.Surface, vsync: Long, w: Int, h2: Int): Boolean
+    @JvmStatic external fun txPresent(h: Long, surface: android.view.Surface): Boolean
     // ai: the vsync path's post (2026-10-07, jni.cpp txPost): a picture due at the frame timeline `vsync` (expected on
-    // ai: screen at `expected` ns, the display's period `vsyncNs`): the next GPU-filled buffer posted for it, or the
-    // ai: CPU-copied present where the device has no GPU ring; and the ring's tally since the last call (JSON)
-    @JvmStatic external fun txPost(h: Long, surface: android.view.Surface, vsync: Long, expected: Long, vsyncNs: Long, w: Int, h2: Int): Boolean
+    // ai: screen at `expected` ns, the display's period `vsyncNs`, into the view's w x h2 pixels): the next GPU-filled
+    // ai: buffer posted for it, or the CPU-copied present where the device has no GPU ring. 1 posted, 0 none this vsync,
+    // ai: -1 the vsync present refused for the rest of this sender (why in txPostStats' error: the window's queue then);
+    // ai: and the ring's tally since the last call (JSON)
+    @JvmStatic external fun txPost(h: Long, surface: android.view.Surface, vsync: Long, expected: Long, vsyncNs: Long, w: Int, h2: Int): Int
     @JvmStatic external fun txPostStats(h: Long): String
     @JvmStatic external fun txStats(h: Long): String
     @JvmStatic external fun txDestroy(h: Long)

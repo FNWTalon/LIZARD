@@ -38,7 +38,7 @@ std::string typeBytes(const std::string& t) {
 }  // namespace
 
 XferTx::XferTx(const uint8_t* data, size_t length, const std::string& name, const std::string& type, int chunkLog2)
-    : data_(data), size_(size_t{1} << chunkLog2) {
+    : size_(size_t{1} << chunkLog2) {
   static std::once_flag wh;
   std::call_once(wh, [] { lizard_wh_init(); });
   xfer_header_t h{};

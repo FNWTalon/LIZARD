@@ -41,9 +41,10 @@
 // ai: Each wait is bounded (60 s for the re-pick, SwiftShader's compile and check at the new picture inside it; 30 s for
 // ai: the rate), and how long each change took to reach the canvas is printed. The C's blind decoder missed a few clean
 // ai: frames (2026-09-29, the C's own paint of the test stream, whole pixels in white: 8 of 2,000 at LIZARD-208 and 3 of
-// ai: 1,000 at LIZARD-480, each registered in the 32 ring, no word, no block, where a decoder told the version reads every
-// ai: block; 0 of 8,000 such frames since the finder's hold at equal significance, 2026-10-04, though 4 of 19,776 at
-// ai: LIZARD-416 on 1,296 px frames still read no word), which the case's twenty-odd grabs could meet: a grab on the
+// ai: 1,000 at LIZARD-480, each a false hold in the 32 ring, no word, no block, where a decoder told the version reads
+// ai: every block; 0 of 8,000 such frames since the finder's hold at equal significance, 2026-10-04, and the 32 ring gone
+// ai: since 2026-10-25, though 4 of 19,776 at LIZARD-416 on 1,296 px frames still read no word), which the case's
+// ai: twenty-odd grabs could meet: a grab on the
 // ai: way with no word is decoded told at the old and new versions, and read so it is printed as missed, not failed; a frame no decoder reads still fails. The first five
 // ai: cases judge one grab each blind, a missed one read told and grabbed again (below).
 // ai: Bundles (2026-10-16, tar.mjs): two files through the file input (one transfer, "check-send.bin and 1 more.tar")
@@ -289,8 +290,8 @@ for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file
 // ai: must read a word `ok` allows (the frames the change left in flight, or the new ones) with 0 bad. A grab the blind
 // ai: decoder reads no word on is decoded told at the sub-channel counts in subs (readTold): read so, with 0 bad and a
 // ai: word ok allows, it is a good frame the blind decoder missed (the C's blind decoder registered the wrong ring on a
-// ai: few clean frames, 2026-09-29, the C's own paint of the same ids alike; rarer since 2026-10-04, above), counted as
-// ai: missed; read by neither, it is
+// ai: few clean frames, 2026-09-29, the C's own paint of the same ids alike; rarer since 2026-10-04, and that ring gone
+// ai: since 2026-10-25, above), counted as missed; read by neither, it is
 // ai: a stray, a fault. A grab of the GPU canvas that saw nothing presented in 120 animation frames (GRAB throws) is
 // ai: counted as idle, not judged. before: the words read on the way, run-length ("60@24 x3"); ids: every id they verified.
 async function grabUntil(want, ok, subs, ms) {

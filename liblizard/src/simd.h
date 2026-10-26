@@ -119,12 +119,9 @@ OB_VFN v128_t wasm_u8x16_lt(v128_t a, v128_t b) { return OB_OF_U8(vcltq_u8(OB_U8
 OB_VFN v128_t wasm_i8x16_ne(v128_t a, v128_t b) { return OB_OF_U8(vmvnq_u8(vceqq_u8(OB_U8(a), OB_U8(b)))); }
 // ai: a - b, 0 where b is the larger.
 OB_VFN v128_t wasm_u8x16_sub_sat(v128_t a, v128_t b) { return OB_OF_U8(vqsubq_u8(OB_U8(a), OB_U8(b))); }
-OB_VFN v128_t wasm_u8x16_shr(v128_t a, uint32_t n) { return OB_OF_U8(vshlq_u8(OB_U8(a), vdupq_n_s8((int8_t)-(int)(n & 7)))); }
 // ai: Signed 16-bit lanes to bytes, saturating: to signed bytes, or (u8x16) to unsigned ones, a negative lane to 0.
 OB_VFN v128_t wasm_i8x16_narrow_i16x8(v128_t a, v128_t b) { return OB_OF_S8(vcombine_s8(vqmovn_s16(OB_S16(a)), vqmovn_s16(OB_S16(b)))); }
 OB_VFN v128_t wasm_u8x16_narrow_i16x8(v128_t a, v128_t b) { return OB_OF_U8(vcombine_u8(vqmovun_s16(OB_S16(a)), vqmovun_s16(OB_S16(b)))); }
-// ai: Byte i of the result is byte s[i] of a, and 0 where s[i] is 16 or more (TBL answers 0 out of range).
-OB_VFN v128_t wasm_i8x16_swizzle(v128_t a, v128_t s) { return OB_OF_U8(vqtbl1q_u8(OB_U8(a), OB_U8(s))); }
 // ai: Sixteen constant indices into a's bytes (0 to 15) then b's (16 to 31).
 #define wasm_i8x16_shuffle(a, b, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15) \
   vreinterpretq_s32_s8(__builtin_shufflevector(vreinterpretq_s8_s32(a), vreinterpretq_s8_s32(b), \

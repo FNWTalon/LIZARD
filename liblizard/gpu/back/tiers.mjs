@@ -1,6 +1,6 @@
 // ai: The format's rate profile on the GPU (2026-10-07; src/focus.h focus_tiers_for; the kernels and TAB's layout in
-// ai: ../wgsl/back_tiers.mjs): one stage a back half, run in place of the one-rate soft and LDPC dispatches. Every
-// ai: version's profile is a row of TAB, so any version at any picture slot decodes.
+// ai: ../wgsl/back_tiers.mjs): one stage a back half, its soft values and LDPC. Every version's profile is a row of
+// ai: TAB, so any version at any picture slot decodes.
 //
 //   const st = await RuleStage.build(bh);   // BackHalf.build does it (back.mjs)
 //   st.lane(ln); st.dispatchSoft(p, ln, frames); st.dispatchLdpc(p, ln, frames)
@@ -9,32 +9,36 @@
 import { N_FOR } from "../../sim/lizard_pick.mjs";
 import { whiten, perm, inverse } from "./bitmap.mjs";
 import { ruleTables } from "./codes.mjs";
-import { crcPowers, PAYLOAD, stopRule, DEFAULT_STOP, FIRST_READ } from "./ref_ldpc.mjs";
+import { crcPowers, PAYLOAD, stopFor } from "./ref_ldpc.mjs";
 import { netWords } from "./stop/rule.mjs";
+import { VERSION_MIN } from "../wordcode.mjs";
 import { talignSource, tsoftSource, tblocksSource, tldpcSource, tierShape, tierWgBytes, tierUniformWords, tabLayout, VERSIONS, CODES, TTW, WHITE_SLOTS, LDPC_FORMS } from "../wgsl/back_tiers.mjs";
 import { computePipeline } from "../pipeline.mjs";
 
 const U = globalThis.GPUBufferUsage ?? { COPY_SRC: 4, COPY_DST: 8, UNIFORM: 64, STORAGE: 128 };
 
-// ai: TAB's words (../wgsl/back_tiers.mjs tabLayout) and the codes' constants the kernels take. nets: a code's learned
-// ai: stop words each in CODES' order (null: that code gives up by the stall rule), one after another in NET (L.netAt).
+// ai: TAB's words (../wgsl/back_tiers.mjs tabLayout) and the codes' constants the kernels take. nets: each code's learned
+// ai: stop words in CODES' order, one after another in NET (L.netAt); none (scripts/gpu/back/check_tiers.mjs) leaves NET
+// ai: empty.
 export function ruleContents(rt, nets = []) {
   nets ??= [];
   const sizes = rt.codes.map((_, c) => nets[c]?.length ?? 0);
   const L = tabLayout(rt.codes, sizes.reduce((a, b) => a + b, 0)), tab = new Uint32Array(L.words);
   L.netAt = sizes.map((_, c) => L.NET + sizes.slice(0, c).reduce((a, b) => a + b, 0));
+  // ai: TT keeps its rows 0 to VERSIONS; rows 0 and 1 stay zero (blocks[1] 0), which the kernels read as a frame on no list
   const blocks = new Uint32Array(VERSIONS + 1);
-  for (let v = 1; v <= VERSIONS; v++) {
+  for (let v = VERSION_MIN; v <= VERSIONS; v++) {
     const o = L.TT + TTW * v;
     for (const t of rt.profiles[v]) { tab.set([t.firstBlock, t.sub0, t.count, 0], o + 4 + 4 * t.c); blocks[v] += t.count; }
     tab[o] = blocks[v];
   }
   rt.codes.forEach((code, c) => {
     // ai: codeword bit j's slot: the bit map over the nt sent bits, offset by the np never sent, which read 0xffff (no slot)
-    const inv = inverse(perm(code.nt, code.k - code.np, rt.bitmap));
+    const inv = inverse(perm(code.nt));
     for (let j = 0; j < code.n; j++) tab[L.inv[c] + (j >> 1)] |= (j < code.np ? 0xffff : inv[j - code.np]) << (16 * (j & 1));
   });
-  if (rt.bitmap) { const w = whiten(WHITE_SLOTS); for (let i = 0; i < WHITE_SLOTS; i++) if (w[i]) tab[L.WHITE + (i >> 5)] |= 1 << (i & 31); }
+  const w = whiten(WHITE_SLOTS);
+  for (let i = 0; i < WHITE_SLOTS; i++) if (w[i]) tab[L.WHITE + (i >> 5)] |= 1 << (i & 31);
   nets.forEach((w, c) => { if (w) tab.set(w, L.netAt[c]); });
   // ai: n here is the sent length (the codeword's slots; the tail and the pilots follow it), the bar at the sent rate k / nt
   const consts = rt.codes.map((code, c) => ({ n: code.nt, k: code.k, subs: CODES[c].subs, tail: (640 * CODES[c].subs - code.nt) / 2, bar: Math.fround(Math.fround(0.2 * code.k) / code.nt) }));
@@ -60,16 +64,11 @@ export class RuleStage {
   static async build(bh) {
     const device = bh.device, f16 = bh.precision === "f16";
     const rt = await ruleTables();
-    // ai: every code gives up by its own learned stop (since 2026-10-07; the 3/4 code's alone before, the 7/8 and 1/2
-    // ai: codes by the C's stall rule), or all by the stall rule under a page's ?ldpcstop=c (read here: the
-    // ai: arithmetic check and the A/B's other arm)
-    const forced = globalThis.location ? new URLSearchParams(globalThis.location.search).get("ldpcstop") : null, stop = forced ?? DEFAULT_STOP;
-    if (!FIRST_READ.includes(stop)) throw new Error(`ldpc stop ${stop}: one of ${FIRST_READ.join(", ")}`);
-    // ai: a code with no learned stop of its own gives up by the stall rule (every code of the format has one)
-    const rules = await Promise.all(rt.codes.map((code) => stopRule(stop, code.m)));
-    const { L, tab, blocks, consts } = ruleContents(rt, rules.map((r) => (r.net ? netWords(r.net) : null)));
+    // ai: every code gives up by its own learned stop (ref_ldpc.mjs stopFor)
+    const nets = await Promise.all(rt.codes.map((code) => stopFor(code.m)));
+    const { L, tab, blocks, consts } = ruleContents(rt, nets.map(netWords));
     // ai: the versions this back half serves: those whose picture it built (a 32 KB device in f32 builds no 1536)
-    const served = []; for (let v = 1; v <= VERSIONS; v++) if (bh.sizes.some((z) => z && z.n === N_FOR(8 * v))) served.push(v);
+    const served = []; for (let v = VERSION_MIN; v <= VERSIONS; v++) if (bh.sizes.some((z) => z && z.n === N_FOR(8 * v))) served.push(v);
     const maxBlocks = Math.max(...served.map((v) => blocks[v]));
     if (maxBlocks > bh.dims.blocksMax) throw new Error(`the rate profile's ${maxBlocks} blocks a frame pass the back half's ${bh.dims.blocksMax}`);
     const limit = device.limits.maxComputeWorkgroupStorageSize;
@@ -77,10 +76,10 @@ export class RuleStage {
     // ai: pipelines differ; the native host keeps the fastest on its device)
     const shapes = rt.codes.map((code) => tierShape(code, LDPC_FORMS[0]));
     const alts = LDPC_FORMS.slice(1).map((form) => rt.codes.map((code) => tierShape(code, form)));
-    for (const set of [shapes, ...alts]) set.forEach((sh, c) => { const need = tierWgBytes(sh, rules[c].net); if (need > limit) throw new Error(`the ${CODES[c].name} code (${sh.form}) needs ${need} B of workgroup memory, the device offers ${limit}`); });
+    for (const set of [shapes, ...alts]) set.forEach((sh, c) => { const need = tierWgBytes(sh, nets[c]); if (need > limit) throw new Error(`the ${CODES[c].name} code (${sh.form}) needs ${need} B of workgroup memory, the device offers ${limit}`); });
     const bgl = (types) => device.createBindGroupLayout({ entries: types.map((type, binding) => ({ binding, visibility: GPUShaderStage.COMPUTE, buffer: { type: type === "u" ? "uniform" : type === "r" ? "read-only-storage" : "storage" } })) });
     const st = new RuleStage();
-    Object.assign(st, { bh, blocks, layout: L, consts, codes: rt.codes, shapes, alts, stop });
+    Object.assign(st, { bh, blocks, layout: L, consts, codes: rt.codes, shapes, alts });
     st.alignBgl = bgl(["r", "r", "r", "w", "r", "u"]);
     st.softBgl = bgl(["r", "r", "r", "w", "w", "w", "r", "r", "u"]);
     st.blocksBgl = bgl(["r", "r", "w", "w", "r", "u"]);
@@ -96,11 +95,11 @@ export class RuleStage {
       computePipeline(device, { code: talignSource({ f16, ...args }), layout: pl(st.alignBgl), label: "talign" }),
       computePipeline(device, { code: tsoftSource({ f16, ...args }), layout: pl(st.softBgl), label: "tsoft" }),
       computePipeline(device, { code: tblocksSource(args), layout: pl(st.blocksBgl), label: "tblocks" }),
-      ...shapes.map((sh, c) => computePipeline(device, { code: tldpcSource(sh, { c, inv: L.inv[c], ...args, net: rules[c].net ? { hidden: rules[c].net.hidden, at: L.netAt[c] } : null }), layout: pl(st.ldpcBgl), label: `tldpc ${CODES[c].name}` })),
+      ...shapes.map((sh, c) => computePipeline(device, { code: tldpcSource(sh, { c, inv: L.inv[c], ...args, net: { hidden: nets[c].hidden, at: L.netAt[c] } }), layout: pl(st.ldpcBgl), label: `tldpc ${CODES[c].name}` })),
     ]);
-    st.ldpcAlts = await Promise.all(alts.map((set) => Promise.all(set.map((sh, c) => computePipeline(device, { code: tldpcSource(sh, { c, inv: L.inv[c], ...args, net: rules[c].net ? { hidden: rules[c].net.hidden, at: L.netAt[c] } : null }), layout: pl(st.ldpcBgl), label: `tldpc ${CODES[c].name} ${sh.form}` })))));
+    st.ldpcAlts = await Promise.all(alts.map((set) => Promise.all(set.map((sh, c) => computePipeline(device, { code: tldpcSource(sh, { c, inv: L.inv[c], ...args, net: { hidden: nets[c].hidden, at: L.netAt[c] } }), layout: pl(st.ldpcBgl), label: `tldpc ${CODES[c].name} ${sh.form}` })))));
     st.bytes = { EP: 8 * bh.B * bh.dims.subchMax };
-    bh.log(`rate profile (LDPC ${LDPC_FORMS.join(", ")}): ${shapes.map((sh, c) => `${CODES[c].name} n ${sh.n} z ${sh.z}, ${sh.threads} lanes, ${tierWgBytes(sh, rules[c].net)} B${rules[c].net ? `, the learned stop ${rules[c].net.hidden} x ${rules[c].net.hidden}` : ", the stall rule"}`).join("; ")}; TAB ${(tab.byteLength / 1024).toFixed(0)} KB; LIZARD-432 ${blocks[54]} blocks`);
+    bh.log(`rate profile (LDPC ${LDPC_FORMS.join(", ")}): ${shapes.map((sh, c) => `${CODES[c].name} n ${sh.n} z ${sh.z}, ${sh.threads} lanes, ${tierWgBytes(sh, nets[c])} B, the learned stop ${nets[c].hidden} x ${nets[c].hidden}`).join("; ")}; TAB ${(tab.byteLength / 1024).toFixed(0)} KB; LIZARD-432 ${blocks[54]} blocks`);
     return st;
   }
 

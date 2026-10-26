@@ -11,12 +11,11 @@
 // block ids chosen here by the transfer's schedule, so the page's baseId only counts blocks. It is made when the page's
 // file is picked ("prepare"), and a start names it by its pick; a start with bytes makes one there, as before.
 // ai: codes: symbols a frame, 1 or 2 (the page's "codes"). Two are painted side by side in one buffer, a gap of
-// ai: gapModules modules between them (the page's slider since 2026-10-03, GAP_MODULES unless given;
+// ai: gapModules modules between them (the page's slider since 2026-10-03, sent with every start and respec;
 // ai: 2026-09-30: widened by about 2 modules, then 2 more: 4; then 12, as the 8
 // ai: modules of white between the rims could not be seen; packed to their quiet zones from 2026-09-28, since with two
 // ai: codes the whole performance rests on packing), the first with the frame's first blocksPerFrame ids and the second
 // ai: with the next, one format and one word for both.
-// ai: The default gap is the same modules in the page's GPU encoder (gpu/encoder.mjs GAP_MODULES): change both.
 // ai: Under the page's GPU encoder (gpu/encoder.mjs, since 2026-09-29) frames are asked for a batch at a time
 // ai: ("frames": count frames from seq) and come back as their blocks alone, one buffer, frame after frame, each codes x
 // ai: blocksPerFrame x 473 bytes; the page encodes them.
@@ -36,10 +35,9 @@ function dropRun() {
   xs = null; xsPick = null;
 }
 const source = () => (id, out) => xs.block(id, out);
-// ai: the gap between two codes, in modules (the page's slider, start and respec's gap; GAP_MODULES unless given), and
-// ai: in the paint's pixels for this codec (phy.cell samples a module)
-export const GAP_MODULES = 12;
-let gapModules = GAP_MODULES;
+// ai: the gap between two codes, in modules (the page's slider, start and respec's gap), and in the paint's pixels for
+// ai: this codec (phy.cell samples a module)
+let gapModules = 0;
 const gapOf = (p) => gapModules * (p.cell || 0);
 
 async function handle(m) {
@@ -65,14 +63,14 @@ async function handle(m) {
       xs = new XferSender(new Uint8Array(m.bytes), { ...m.xfer, M: await initOb(), Encoder, Z });
       phy.setSource(source());
     }
-    fps = m.fps; phy.setFps?.(fps); codes = m.codes ?? 1; gapModules = m.gap ?? GAP_MODULES;
+    fps = m.fps; phy.setFps?.(fps); codes = m.codes ?? 1; gapModules = m.gap;
     postMessage({ type: "ready", gen: m.gen, label: phy.label, usefulBytes: phy.usefulBytes, blocksPerFrame: phy.blocksPerFrame, xfer: xs?.info() });
   } else if (m.type === "respec") {
     // A re-pick (the room changed): a new code for the same transfer. Refused if the block size would move, which
     // would break the fountain's stream, exactly as the page used to refuse it.
     const next = await makePhy(m.spec);
     if (next.usefulBytes !== phy.usefulBytes) { next.free(); postMessage({ type: "respec", gen: m.gen, ok: false }); return; }
-    phy.free(); phy = next; phy.setFps?.(fps); codes = m.codes ?? codes; gapModules = m.gap ?? gapModules;
+    phy.free(); phy = next; phy.setFps?.(fps); codes = m.codes ?? codes; gapModules = m.gap;
     if (xs) phy.setSource(source());
     postMessage({ type: "respec", gen: m.gen, ok: true, label: phy.label, blocksPerFrame: phy.blocksPerFrame });
   } else if (m.type === "fps") {

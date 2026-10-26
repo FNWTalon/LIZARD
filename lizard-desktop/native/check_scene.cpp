@@ -3,8 +3,8 @@
 // ai: the pilots read the picture's count; a capture across a change mixes the two pictures as the pilots' readings
 // ai: say; the default optics read most blocks at a good phase across a sweep of phases over a picture; a 2:1 pair
 // ai: reads both symbols; a render's wall time at 1920 x 1080; the display's clock and its pictures exact; a file's
-// ai: pictures received whole; the simulated camera (camera/sim.cpp) in each of its formats and through its trigger
-// ai: (MJPEG skipped saying why where no TurboJPEG loads and the receiver does without it: checks.h jpegOptional).
+// ai: pictures received whole; the simulated camera (camera/sim.cpp) in each of its formats (MJPEG skipped saying why
+// ai: where no TurboJPEG loads and the receiver does without it: checks.h jpegOptional).
 // ai: Every figure is the simulator's. `cam_check scene [case ...]` runs the cases named (parse, clean, straddle,
 // ai: sweep, pair, speed, clock, file, camera), all by default. The camera case sets LIZ_CAMERA_SIM itself and opens sim:0
 // ai: alone (never the registry's list, which would look at the system's cameras).
@@ -27,7 +27,6 @@
 #include "checks.h"
 #include "lizard.h"
 #include "sim/scene.h"
-#include "trigger.h"
 
 namespace lizard::check {
 namespace {
@@ -301,7 +300,7 @@ void caseClock() {
   };
   for (const Case& t : cases) {
     sim::Sender s;
-    s.blocks = 1;
+    s.blocks = LIZ_MIN_BLOCKS;   // ai: the smallest format, for a cheap scene
     s.fps = t.fps;
     sim::Display d;
     d.hz = t.hz;
@@ -409,10 +408,11 @@ void caseParse() {
   const char* c = "parse";
   struct Try { const char* spec; bool good; };
   const Try tries[] = {
-      {"blocks=128 ring=3 fps=255 codes=2 id=4294967295 hz=59.94 ppm=-50 phase=0 scan=1 response=0 sw=2560 sh=1440 share=0.5 "
+      {"blocks=128 ring=256 fps=255 codes=2 id=4294967295 hz=59.94 ppm=-50 phase=0 scan=1 response=0 sw=2560 sh=1440 share=0.5 "
        "surround=0 repeat=0.1 w=1280 h=720 fill=1.2 yaw=-30 tilt=20 roll=90 blur=0 exposure=0.1 shutter=global readout=0 "
        "gain=2 black=0 noise=0 shot=0 gamma=1 seed=9 file=/x", true},
-      {"", true}, {"blocks=0", false}, {"blocks=129", false}, {"blocks=1.5", false}, {"ring=4", false}, {"fps=0", false},
+      {"", true}, {"ring=auto", true}, {"ring=64", true}, {"blocks=0", false}, {"blocks=1", false}, {"blocks=129", false},
+      {"blocks=1.5", false}, {"ring=32", false}, {"ring=3", false}, {"ring=-1", false}, {"fps=0", false},
       {"codes=3", false}, {"hz=0", false}, {"share=0", false}, {"shutter=sideways", false}, {"blur=-1", false},
       {"exposure=0", false}, {"exposure=1,5", false}, {"file=", false}, {"yaw=95", false}, {"gain", false}, {"wobble=1", false},
   };
@@ -444,23 +444,18 @@ void caseParse() {
 
 // ai: ---- the simulated camera ----
 
-// ai: what a sink saw: each frame's time, delayed mark and arrival, and the first frames' luma
+// ai: what a sink saw: each frame's time, and the first frames' luma
 struct Seen {
   std::mutex mu;
-  std::vector<int64_t> ns, at;
-  std::vector<char> delayed, triggered;
+  std::vector<int64_t> ns;
   std::vector<std::vector<uint8_t>> luma;
   std::vector<int64_t> lumaNs;
   uint32_t w = 0, h = 0;
   size_t keep = 0;
   cam::Camera::Sink sink() {
     return [this](const cam::Frame& f) {
-      const int64_t t = now();
       std::lock_guard<std::mutex> l(mu);
       ns.push_back(f.ns);
-      at.push_back(t);
-      delayed.push_back(f.delayed);
-      triggered.push_back(f.triggered);
       w = f.width;
       h = f.height;
       if (luma.size() < keep) {
@@ -472,35 +467,6 @@ struct Seen {
     };
   }
 };
-
-// ai: The worst wall ms this machine takes to render one capture of a scene (the simulated camera's own work a capture:
-// ai: sim/scene.h render with 3 painters, as camera/sim.cpp makes the scene), over 0.6 s of captures on a grid of
-// ai: period ns, as check_session's Room measures it; -1 with why where the scene cannot be made. The camera drops a
-// ai: triggered capture whose hand-over fell more than a period behind, so where renders take over half the period
-// ai: (this machine slow or busy) captures go missing and their triggers count as lost.
-double worstRender(const std::string& scene, int64_t period, std::string& why) {
-  sim::Sender s;
-  sim::Display d;
-  sim::Optics o;
-  if (!sim::parse(scene, s, d, o, why)) return -1;
-  const auto sc = sim::Scene::create(s, d, o, 3, why);
-  if (!sc) return -1;
-  std::vector<uint8_t> px(size_t(o.width) * o.height);
-  const int64_t window = int64_t((o.exposureMs + (o.rolling ? o.readoutMs : 0)) * 1e6);
-  int64_t t = now();
-  sc->render(t - window, px.data(), o.width);   // ai: its pool's first touch, outside the figure
-  double worstMs = 0;
-  for (const int64_t end = t + 600'000'000; t < end;) {
-    t += period;
-    const int64_t n = now();
-    if (t < n) t += ((n - t) / period + 1) * period;
-    cam::sleepUntil(t);
-    const int64_t a = now();
-    sc->render(t - window, px.data(), o.width);
-    worstMs = std::max(worstMs, double(now() - a) * 1e-6);
-  }
-  return worstMs;
-}
 
 std::unique_ptr<cam::Camera> openSim(const char* c, const std::string& spec) {
   setEnv("LIZ_CAMERA_SIM", spec.c_str());
@@ -601,86 +567,6 @@ void caseCamera(liz_decoder* dec) {
                                  gaps, offGrid, compared,
                                  lossy ? fmt("PSNR %.1f dB at worst", worstDb).c_str() : fmt("%ld pixels differ", differ).c_str(),
                                  blocksRead, liz_blocks_for(s.blocks), st.convertMs);
-    if (good) ok(c, what); else bad(c, what);
-  }
-  // ai: the trigger: free run, then a schedule of 16.65 ms (a camera slightly faster than 60 Hz, the lock's), a delay of
-  // ai: 3 ms within it, then end() back to free run. Triggered frames carry their triggers' deadlines: spaced by a
-  // ai: whole number of periods exactly, whatever the trigger thread's lateness and the exposures' jitter (1 ms here,
-  // ai: so a frame stamped by its exposure, or by the moment its trigger went out, would show it); the delayed
-  // ai: trigger's frame alone marked, its interval the periods and the delay. Judged against this machine (2026-10-25, as
-  // ai: check_session's trigger case): where it renders the scene with room (every render within half the period,
-  // ai: worstRender) as before, no trigger lost and every period past one in an interval a deadline the clock skipped
-  // ai: (its stats' missed: its thread held off the CPU past a period), so every interval one period where none was;
-  // ai: else the captures the camera dropped show as intervals of whole periods too (two busy loops on each of the
-  // ai: check's two CPUs lost 1 to 3 triggers of 84). The intervals judged are between two triggered frames
-  // ai: (Frame::triggered), so a capture matched after end(), handed over free-running with its exposure's time, is
-  // ai: none of them.
-  {
-    const int64_t P = 16'650'000;
-    const std::string scene = "blocks=8 w=960 h=540";
-    std::string rwhy;
-    const double renderMs = worstRender(scene, P, rwhy);
-    if (renderMs < 0) { bad(c, "trigger: the scene's render not measured: " + rwhy); return; }
-    const bool roomy = renderMs <= double(P) * 1e-6 / 2;
-    auto camera = openSim(c, scene + " trigger=1 latency=0.05 jitter=1 camfps=60");
-    if (!camera) return;
-    cam::Trigger* trig = camera->trigger();
-    if (!trig) { bad(c, "trigger=1 but no trigger"); return; }
-    Seen seen;
-    std::string why;
-    const auto modes = camera->modes();
-    if (!camera->start(modes[0], seen.sink(), [](const std::string&) {}, why)) { bad(c, "trigger: start: " + why); return; }
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    if (!trig->begin(P, why)) { bad(c, "trigger: begin: " + why); camera->stop(); return; }
-    const int64_t begun = now();
-    std::this_thread::sleep_for(std::chrono::milliseconds(700));
-    trig->delay(3'000'000);
-    std::this_thread::sleep_for(std::chrono::milliseconds(700));
-    const std::string ts = trig->stats();
-    trig->end();
-    const int64_t ended = now();
-    std::this_thread::sleep_for(std::chrono::milliseconds(400));
-    camera->stop();
-    std::lock_guard<std::mutex> l(seen.mu);
-    // ai: the intervals between two triggered frames, from 100 ms after begin; and the free run's after end()
-    const int64_t D = 3'000'000;
-    long n = 0, offPeriod = 0, marked = 0, after = 0, longer = 0, extra = 0;
-    double markedGap = 0, worst = 0;
-    for (size_t i = 1; i < seen.ns.size(); i++) {
-      if (!seen.triggered[i - 1] || !seen.triggered[i] || seen.at[i - 1] < begun + 100'000'000) {
-        if (seen.at[i - 1] > ended + 100'000'000) after++;
-        continue;
-      }
-      const int64_t gap = seen.ns[i] - seen.ns[i - 1], plain = gap - (seen.delayed[i] ? D : 0);
-      const int64_t k = std::max<int64_t>(1, std::llround(double(plain) / double(P)));   // ai: its periods
-      const double off = std::abs(double(plain - k * P)) * 1e-3;
-      n++;
-      if (k > 1) longer++;
-      extra += long(k - 1);
-      if (seen.delayed[i]) { marked++; markedGap = double(gap) * 1e-6; }
-      worst = std::max(worst, off);
-      if (plain != k * P) offPeriod++;
-    }
-    long markedAll = 0;
-    for (char dl : seen.delayed) markedAll += dl;
-    const bool lost0 = ts.find("\"lost\":0,") != std::string::npos;
-    const size_t mi = ts.find("\"missed\":");
-    const long missed = mi == std::string::npos ? -1 : std::atol(ts.c_str() + mi + 9);
-    // ai: enough to judge: with room, the 78 the schedule gives in its 1.3 s and the 18 of free run in 0.3 s nearly
-    // ai: all; without, half of what this machine renders in those times
-    const double each = std::max(double(P) * 1e-6, renderMs);
-    const long least = roomy ? 61 : std::max(5L, long(1300 / each / 2)), leastAfter = roomy ? 11 : std::max(1L, long(300 / each / 2));
-    const bool good = n >= least && !offPeriod && marked == 1 && markedAll == 1 && after >= leastAfter &&
-                      missed >= 0 && (!roomy || (extra <= missed && lost0));
-    const std::string what = fmt("trigger at 16.65 ms, each exposure's latency spread 1 ms (sd): %ld triggered intervals, "
-                                 "%ld off a whole number of periods (the worst by %.3f us), %ld of more than one (%ld "
-                                 "periods past one, %ld deadlines the clock skipped), %ld frame%s delayed (its interval "
-                                 "%.3f ms), %ld free-run frames after end(); the scene rendered in up to %.1f ms here, %s; "
-                                 "the trigger's %s",
-                                 n, offPeriod, worst, longer, extra, missed, marked, marked == 1 ? "" : "s", markedGap, after, renderMs,
-                                 roomy ? "within half the period: none lost, every period past one a skipped deadline"
-                                       : "past half the period: the captures the camera dropped allowed",
-                                 ts.c_str());
     if (good) ok(c, what); else bad(c, what);
   }
   setEnv("LIZ_CAMERA_SIM", nullptr);
