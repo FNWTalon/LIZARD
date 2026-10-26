@@ -30,7 +30,6 @@ void clearError() { lastError[0] = '\0'; lastCode = LIZ_OK; }
 
 extern "C" {
 
-LIZ_API int liz_abi(void) { return LIZ_ABI; }
 // ai: the library's release, which is also the format's (the header says why)
 LIZ_API const char* liz_version(void) { return LIZ_VERSION_STRING; }
 LIZ_API const char* liz_last_error(void) { return liz::lastError; }

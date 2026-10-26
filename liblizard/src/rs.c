@@ -79,12 +79,17 @@ int rs_decode(uint8_t *cw, int n, int nroots) {
   return found;
 }
 
-// ---------------------------------------------------------------- errors and erasures, interleaved blocks
+// ---------------------------------------------------------------- errors and erasures
 
-// The work after the syndromes, on a codeword whose byte at position j is cw[j * stride]. Berlekamp-Massey
-// started from the erasure locator (so what it finds is the locator of errors and erasures together),
-// Chien search, Forney. Generator roots start at alpha^0, which is where the factor X in the value comes from.
-static int solve(uint8_t *cw, int stride, int n, int nroots, const uint8_t *S, const int *eras, int neras) {
+// The work after the syndromes: Berlekamp-Massey started from the erasure locator (so what it finds is the locator of
+// errors and erasures together), Chien search, Forney. Generator roots start at alpha^0, which is where the factor X in
+// the value comes from.
+// ai: A word is corrected only where the locator's degree is the register's length el (the errors and erasures it
+// ai: claims) and the Chien search finds that many roots: a locator whose degree fell below el (BM's last step cancelled
+// ai: its top terms) claims a correction it does not make, and the word it leaves is no codeword. Until 2026-10-25 the
+// ai: test was against the degree alone, so such a word came back as decoded with its syndromes nonzero: rs_decode's
+// ai: own test (found against L) is the same rule.
+static int solve(uint8_t *cw, int n, int nroots, const uint8_t *S, const int *eras, int neras) {
   if (neras > nroots) return -1;
   uint8_t lam[257] = { 1 }, b[257], t[257];
   for (int k = 0; k < neras; k++) {
@@ -105,7 +110,7 @@ static int solve(uint8_t *cw, int stride, int n, int nroots, const uint8_t *S, c
   }
   int deg = 0;
   for (int i = 0; i <= nroots; i++) if (lam[i]) deg = i;
-  if (deg > nroots || 2 * (deg - neras) + neras > nroots) return -1;
+  if (deg != el || 2 * (el - neras) + neras > nroots) return -1;
   int pos[256], found = 0;
   for (int j = 0; j < n; j++) {
     int e = (255 - (n - 1 - j)) % 255;
@@ -123,7 +128,7 @@ static int solve(uint8_t *cw, int stride, int n, int nroots, const uint8_t *S, c
     p = 1;
     for (int i = 1; i <= deg; i += 2) { den ^= mul(lam[i], p); p = mul(p, mul(xi, xi)); }
     if (!den) return -1;
-    cw[j * stride] ^= mul(mul(num, inv(den)), EXP[(n - 1 - j) % 255]);
+    cw[j] ^= mul(mul(num, inv(den)), EXP[(n - 1 - j) % 255]);
   }
   return found;
 }
@@ -137,52 +142,5 @@ int rs_decode_er(uint8_t *cw, int n, int nroots, const int *eras, int neras) {
     S[i] = s; any |= s;
   }
   if (!any && !neras) return 0;
-  return solve(cw, 1, n, nroots, S, eras, neras);
-}
-
-#include "simd.h"
-
-int rs_syndromes_il(const uint8_t *buf, int m, int n, int nroots, uint8_t *S) {
-  if (!ready) init();
-  uint8_t any = 0;
-  int c0 = 0;
-#ifdef OB_SIMD
-  // Sixteen codewords a pass. The last group may be short: its spare lanes read the next codewords' bytes
-  // (or, near the end of the buffer, a copy padded with zeros) and are thrown away.
-  const v128_t nib = wasm_i8x16_splat(15);
-  for (; c0 < m; c0 += 16) {
-    int lanes = m - c0 < 16 ? m - c0 : 16;
-    for (int i = 0; i < nroots; i++) {
-      uint8_t lo[16], hi[16];
-      for (int x = 0; x < 16; x++) { lo[x] = mul((uint8_t)x, EXP[i]); hi[x] = mul((uint8_t)(x << 4), EXP[i]); }
-      const v128_t tlo = wasm_v128_load(lo), thi = wasm_v128_load(hi);
-      v128_t s = wasm_i8x16_splat(0);
-      for (int j = 0; j < n; j++) {
-        v128_t r;
-        if (j * m + c0 + 16 <= m * n) r = wasm_v128_load(buf + j * m + c0);   // sixteen bytes from here are all inside the buffer
-        else { uint8_t tail[16] = { 0 }; memcpy(tail, buf + j * m + c0, (size_t)lanes); r = wasm_v128_load(tail); }
-        s = wasm_v128_xor(wasm_v128_xor(wasm_i8x16_swizzle(tlo, wasm_v128_and(s, nib)), wasm_i8x16_swizzle(thi, wasm_u8x16_shr(s, 4))), r);
-      }
-      uint8_t out[16];
-      wasm_v128_store(out, s);
-      for (int c = 0; c < lanes; c++) { S[(c0 + c) * nroots + i] = out[c]; any |= out[c]; }
-    }
-  }
-#else
-  for (; c0 < m; c0++) for (int i = 0; i < nroots; i++) {
-    uint8_t s = 0;
-    for (int j = 0; j < n; j++) s = mul(s, EXP[i]) ^ buf[j * m + c0];
-    S[c0 * nroots + i] = s; any |= s;
-  }
-#endif
-  return any != 0;
-}
-
-int rs_decode_il(uint8_t *buf, int m, int n, int nroots, int c, const uint8_t *S, const int *eras, int neras) {
-  if (!ready) init();
-  const uint8_t *s = S + c * nroots;
-  uint8_t any = 0;
-  for (int i = 0; i < nroots; i++) any |= s[i];
-  if (!any && !neras) return 0;
-  return solve(buf + c, m, n, nroots, s, eras, neras);
+  return solve(cw, n, nroots, S, eras, neras);
 }

@@ -1,7 +1,7 @@
 // ai: The SPEC.md conformance vectors (5.2 through the painted cells, 6.12 P2 and P3, 7.4, 9.3) against one build,
-// ai: plus digests over the whole ladder (layout cells at five rates, the drive, the coefficient order) to diff
-// ai: between two builds. A build from before the finder frame's deletion takes a thin argument; this passes 1 there.
-//   node test/vectors.mjs <path/to/ob.mjs>      from liblizard/, about 20 s
+// ai: plus digests over the ladder (layout cells at five rates, the drive, the coefficient order) to diff between two
+// ai: builds of today's interface (focus_setup's five arguments since 2026-10-25).
+//   node test/vectors.mjs [path/to/ob.mjs]      from liblizard/, about 20 s; default build/ob.mjs, the codec's module
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 
@@ -12,10 +12,9 @@ const hex = (u8) => Buffer.from(u8).toString("hex");
 let fails = 0;
 const want = (name, got, exp) => { const ok = got === exp; if (!ok) fails++; console.log(`${ok ? "ok  " : "FAIL"} ${name}: ${got}${ok ? "" : `  (SPEC ${exp})`}`); };
 
-const oldApi = M._focus_setup.length === 13;
 // ai: span 2B names ring B, 0 the default ring (the 128 since 2026-10-01). SPEC 6.12's vectors and the ladder's digests
 // ai: are the 64 ring's, so it is named: span 128.
-const setup = (n, subch, span = 128) => (oldApi ? M._focus_setup(n, subch, 1, 2, span, 1, 0, 0, 0, 0, 0, 0, 0) : M._focus_setup(n, subch, 1, 2, span, 0, 0, 0, 0, 0, 0, 0));
+const setup = (n, subch, span = 128) => M._focus_setup(n, subch, 2, span, 0);
 // ai: The tree's ladder (2^k and 3 x 2^k since 2026-09-27): a build from before it cannot build the 3 x 2^k sizes.
 const { N_FOR: nFor } = await import(resolve("sim/lizard_pick.mjs"));
 console.log(`${path}: focus_setup takes ${M._focus_setup.length} arguments`);
@@ -50,7 +49,6 @@ const greySquare = (e, a, b) => { const o = new Uint8Array((b - a) * (b - a)); l
 {
   const pDims = M._malloc(24);
   for (const [subch, B, fps, exp] of [
-    [16, 32, 0, "4c0200723f148394"],
     [512, 64, 24, "4c401843c236ee95dc072a1c61cb63fc"],
     [1024, 64, 240, "4c80f01a03b06a272bf125d409be9dd9"],
     [576, 64, 30, "4c481e8a5889b2ffdc13581b53702083"],
@@ -60,7 +58,7 @@ const greySquare = (e, a, b) => { const o = new Uint8Array((b - a) * (b - a)); l
   ]) {
     if (setup(nFor(subch), subch, 2 * B) < 0 || M._focus_fmt_fps_set(fps)) throw new Error(`setup LIZARD-${subch} ring ${B}`);
     M._ob_test_mesh_tables_out(pDims, 0, 0, 0, 0);
-    const d = M.HEAP32.slice(pDims >> 2, (pDims >> 2) + 6), S = d[2];
+    const d = M.HEAP32.slice(pDims >> 2, (pDims >> 2) + 5), S = d[2];
     const pX = M._malloc(4 * d[0]), pY = M._malloc(4 * d[1]), pK = M._malloc(S * S), pMark = M._malloc(4 * d[0] * d[1]);
     M._ob_test_mesh_tables_out(pDims, pX, pY, pK, pMark);
     const kind = M.HEAPU8.slice(pK, pK + S * S);
@@ -138,10 +136,11 @@ const greySquare = (e, a, b) => { const o = new Uint8Array((b - a) * (b - a)); l
     for (const fps of [24, 30, 60, 240, 0]) {
       if (M._focus_fmt_fps_set(fps)) throw new Error("fps");
       M._ob_test_mesh_tables_out(pDims, 0, 0, 0, 0);
-      const d = M.HEAP32.subarray(pDims >> 2, (pDims >> 2) + 6), w = d[2], h = d[3];
+      const d = M.HEAP32.subarray(pDims >> 2, (pDims >> 2) + 5), w = d[2], h = d[3];
       const pK = M._malloc(w * h);
       M._ob_test_mesh_tables_out(pDims, pX, pY, pK, pMark);
-      const dd = Array.from(M.HEAP32.subarray(pDims >> 2, (pDims >> 2) + 6));
+      // ai: nx, ny, w, h, corner (the layout's thin flag, always 1, sat before the corner until 2026-10-25)
+      const dd = Array.from(M.HEAP32.subarray(pDims >> 2, (pDims >> 2) + 5));
       cells.update(JSON.stringify([subch, fps, dd])).update(M.HEAPU8.subarray(pK, pK + w * h))
         .update(M.HEAPU8.subarray(pX, pX + 4 * dd[0])).update(M.HEAPU8.subarray(pY, pY + 4 * dd[1])).update(M.HEAPU8.subarray(pMark, pMark + 4 * dd[0] * dd[1]));
       M._free(pK);

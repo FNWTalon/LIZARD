@@ -18,7 +18,6 @@
 // ai:   forwardCodesC(q, xq)       the integer net on one patch's Xq: { xq, codes (Int8Array a conv, [c][y][x]), a
 // ai:                              (Float32Array, fc1's float output), out (Float64Array, the five outputs, fc2 in
 // ai:                              f64 in scripts/gpu/cnn/q8c.py fc64's order) }
-// ai:   forwardPatchQ8(doc, x)     forwardCodesC on quantiseInput(x), the document parsed once
 // ai:   readReferenceCQ81(bytes)   a CQ81 file: { count, side, planes: [{ ch, side }], F, O, patches (Uint8Array),
 // ai:                              x (Float32Array), xq (Int8Array), codes (Int8Array a plane), a, out (Float32Array) },
 // ai:                              each array over every patch in turn
@@ -117,14 +116,6 @@ export function forwardCodesC(q, xq) {
     out[o] = z;
   }
   return { xq, codes, a, out };
-}
-
-const parsed = new WeakMap();
-
-export function forwardPatchQ8(doc, x) {
-  let q = parsed.get(doc);
-  if (!q) { q = readQuantC(doc); parsed.set(doc, q); }
-  return forwardCodesC(q, quantiseInput(q, x));
 }
 
 export function readReferenceCQ81(bytes) {

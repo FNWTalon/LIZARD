@@ -18,19 +18,18 @@ object Native {
     @JvmStatic external fun txError(): String
     @JvmStatic external fun txPrepare(h: Long, assets: String): String
     // ai: painter: 0 the CPU, 1 the GPU, 2 auto; gap: modules between two codes; "" or the refusal
-    @JvmStatic external fun txConfigure(h: Long, n: Int, subch: Int, span: Int, fps: Int, codes: Int, gap: Int, threads: Int, painter: Int, assets: String): String
+    @JvmStatic external fun txConfigure(h: Long, subch: Int, span: Int, fps: Int, codes: Int, gap: Int, threads: Int, painter: Int, assets: String): String
     // ai: the blocks a frame of subch sub-channels carries (the format's rate profile, src/focus.h focus_blocks_for)
     @JvmStatic external fun blocksFor(subch: Int): Int
     @JvmStatic external fun txStats(h: Long): String
     @JvmStatic external fun txDestroy(h: Long)
 
-    // ai: The presenter on a displayable canvas, taking the sender tx's frames: 0, why in txError(). size the code's share
-    // ai: of the area's room (0.25 to 1), edge the light kept at each edge past the frame's own (Pick.edgeShare), whole
-    // ai: whole device pixels a sample (nearest) or stretched (linear), device a substring of a Vulkan device's name ("" the
-    // ai: first, LIZ_VK_DEVICE where set).
+    // ai: The presenter on a displayable canvas, taking the sender tx's frames on the sender's device (txPrepare): 0,
+    // ai: why in txError(). size the code's share of the area's room (0.25 to 1), edge the light kept at each edge past
+    // ai: the frame's own (Room.edgeShare); the frame stretched (linear).
     // ai: place: macOS's layer over the canvas (CodeCanvas.place), ignored elsewhere; presentPlace when the canvas moves.
     // ai: vsync: the monitor held at a refresh fps divides while presenting (presenter.h setVsync), presentVsync after.
-    @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, edge: Float, whole: Boolean, vsync: Boolean, place: FloatArray): Long
+    @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, edge: Float, vsync: Boolean, place: FloatArray): Long
     @JvmStatic external fun presentPlace(p: Long, place: FloatArray)
     // ai: the desktop's file chooser (2026-10-23, native/portal.cpp): the window manager's window around a canvas (0 none,
     // ai: on the UI thread), and the XDG portal's OpenFile attached to it (Windows: the shell's dialog), blocking until it
@@ -53,33 +52,23 @@ object Native {
     // ai: Media Foundation or AVFoundation for UVC devices; the simulated camera for the tests) feeding liblizard/core's
     // ai: Receiver. Every string crosses as the text it is (UTF-16 here, UTF-8 there), every JSON as rx_session.h
     // ai: describes it; a refusal is its sentence ("" none). Calls that can wait, never on the UI thread (ReceiveState's
-    // ai: own thread, the lock's for its trigger): rxCameras (a listing opens each device), rxCreate and rxConfigure (a
-    // ai: receiver made), rxOpen, rxStart, and the camera calls that queue behind them (rxSet, rxStop, rxClose,
-    // ai: rxTrigger), rxClear and rxForget (the transfer's worker), rxReplayEnd; rxCaptures blocks the lock's thread
-    // ai: (Lock.kt). rxStats, rxCamera, rxPreview, rxSeries and rxDelay wait on nothing.
+    // ai: own thread): rxCameras (a listing opens each device), rxCreate and rxConfigure (a receiver made), rxOpen,
+    // ai: rxStart, and the camera calls that queue behind them (rxSet, rxStop, rxClose), rxClear and rxForget (the
+    // ai: transfer's worker), rxReplayEnd. rxStats, rxCamera and rxPreview wait on nothing.
     // ai: the cameras every backend sees: {"cameras": [{id, name, backend, detail}], "notes": [why a backend saw none]}
     @JvmStatic external fun rxCameras(): String
-    // ai: a session with its receiver (decoder auto|gpu|cpu, precision auto|int8|f16|f32, layout 1:1|2:1): 0, why in txError()
-    @JvmStatic external fun rxCreate(assets: String, cacheDir: String, storeDir: String, decoder: String, precision: String, layout: String): Long
+    // ai: a session with its receiver (decoder auto|gpu|cpu, layout 1:1|2:1): 0, why in txError()
+    @JvmStatic external fun rxCreate(assets: String, cacheDir: String, storeDir: String, decoder: String, layout: String): Long
     @JvmStatic external fun rxConfigure(h: Long, decoder: String, layout: String): String
     @JvmStatic external fun rxOpen(h: Long, id: String): String
     @JvmStatic external fun rxClose(h: Long)
-    // ai: the camera open: {info, modes, pick, controls, trigger}, {} none (rx_session.h camera)
+    // ai: the camera open: {info, modes, pick, controls}, {} none (rx_session.h camera)
     @JvmStatic external fun rxCamera(h: Long): String
     @JvmStatic external fun rxSet(h: Long, control: String, value: Double, automatic: Boolean): String
     @JvmStatic external fun rxStart(h: Long, mode: Int): String
     @JvmStatic external fun rxStop(h: Long)
     // ai: the receiver's stats (liblizard/core/rx/receiver.h) with the camera's line in "camera"
     @JvmStatic external fun rxStats(h: Long): String
-    // ai: Receiver::series: [the held word's version, then 8 a frame: ms, verified, new, found, r, rSd, r2, r2Sd]
-    @JvmStatic external fun rxSeries(h: Long, sinceMs: Double): DoubleArray
-    // ai: the captures pushed since the last call, (ns, 1 delayed else 0) pairs, waiting up to timeoutMs; empty on the
-    // ai: timeout, a stop or rxWake
-    @JvmStatic external fun rxCaptures(h: Long, timeoutMs: Int): LongArray
-    @JvmStatic external fun rxWake(h: Long)
-    // ai: the camera's software trigger every periodNs (0: back to free run), and the schedule moved later by ns
-    @JvmStatic external fun rxTrigger(h: Long, periodNs: Long): String
-    @JvmStatic external fun rxDelay(h: Long, ns: Long)
     // ai: the newest frame's crop newer than `since`, at most `side` px on its long side, into out (sized side x side):
     // ai: [seq, w, h], or null where none came
     @JvmStatic external fun rxPreview(h: Long, since: Long, side: Int, out: ByteArray): LongArray?

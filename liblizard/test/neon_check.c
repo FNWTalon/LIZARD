@@ -10,9 +10,9 @@
 // ai:                                      bytes; a minute). A vector build only: on arm64 it holds the NEON wrappers
 // ai:                                      to the model, and built by emcc with -msimd128 it holds the model to
 // ai:                                      wasm's own instructions.
-// ai:   neon_check synth                   digests of the vector sites no blind decode reaches (the transform at
-// ai:                                      radix 4, RGBA to luma, the binarizer's ragged sizes, the interleaved RS
-// ai:                                      syndromes, the encoder and its painter), and every
+// ai:   neon_check synth                   digests of the vector sites no blind decode reaches (the transform on every
+// ai:                                      shape a stage takes, RGBA to luma, the binarizer's ragged sizes, the encoder
+// ai:                                      and its painter), and every
 // ai:                                      ring with every picture size painted, read blind and compared byte for
 // ai:                                      byte. No input files.
 // ai:   neon_check frames <list> [passes]  every frame of the list through focus_any_frame (one focus_any_t, nmax
@@ -43,7 +43,7 @@
 #include "any.h"
 #include "internal.h"
 #include "fft.h"
-#include "rs.h"
+#include "fft2d.h"
 #include "simd.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -212,16 +212,12 @@ static void unit_i(const lanes_t a, const lanes_t b, const lanes_t c, int it) {
       same("wasm_i16x8_shr", lanes(wasm_i16x8_shr(va, k)), w, 0, &a, 0);
       for (int i = 0; i < 8; i++) w.u16[i] = (uint16_t)(a.u16[i] >> (k & 15));
       same("wasm_u16x8_shr", lanes(wasm_u16x8_shr(va, k)), w, 0, &a, 0);
-      for (int i = 0; i < 16; i++) w.u8[i] = (uint8_t)(a.u8[i] >> (k & 7));
-      same("wasm_u8x16_shr", lanes(wasm_u8x16_shr(va, k)), w, 0, &a, 0);
       for (int i = 0; i < 8; i++) w.i16[i] = m_sar16(a.i16[i], 4);
       same("wasm_i16x8_shr 4", lanes(wasm_i16x8_shr(va, 4)), w, 0, &a, 0);
       for (int i = 0; i < 8; i++) w.i16[i] = m_sar16(a.i16[i], 15);
       same("wasm_i16x8_shr 15", lanes(wasm_i16x8_shr(va, 15)), w, 0, &a, 0);
       for (int i = 0; i < 8; i++) w.u16[i] = (uint16_t)(a.u16[i] >> 8);
-      same("wasm_u16x8_shr 8", lanes(wasm_u16x8_shr(va, 8)), w, 0, &a, 0);
-      for (int i = 0; i < 16; i++) w.u8[i] = (uint8_t)(a.u8[i] >> 4);
-      same("wasm_u8x16_shr 4", lanes(wasm_u8x16_shr(va, 4)), w, 0, &a, 0); }
+      same("wasm_u16x8_shr 8", lanes(wasm_u16x8_shr(va, 8)), w, 0, &a, 0); }
     for (int i = 0; i < 8; i++) { w.i8[i] = (int8_t)clampi(a.i16[i], -128, 127); w.i8[8 + i] = (int8_t)clampi(b.i16[i], -128, 127); }
     same("wasm_i8x16_narrow_i16x8", lanes(wasm_i8x16_narrow_i16x8(va, vb)), w, 0, &a, &b);
     for (int i = 0; i < 8; i++) { w.u8[i] = (uint8_t)clampi(a.i16[i], 0, 255); w.u8[8 + i] = (uint8_t)clampi(b.i16[i], 0, 255); }
@@ -249,10 +245,6 @@ static void unit_i(const lanes_t a, const lanes_t b, const lanes_t c, int it) {
     // ai: An unsigned extract of a byte of 128 or more stays positive.
     same_u32("wasm_u8x16_extract_lane 0", wasm_u8x16_extract_lane(va, 0), a.u8[0]); same_u32("wasm_u8x16_extract_lane 8", wasm_u8x16_extract_lane(va, 8), a.u8[8]);
     same_u32("wasm_u8x16_extract_lane 15", wasm_u8x16_extract_lane(va, 15), a.u8[15]);
-    // ai: swizzle: indices of every kind, 16 and up (and the ones with the top bit set) giving 0
-    { lanes_t s; for (int i = 0; i < 16; i++) { const uint32_t k = rnd() % 4; s.u8[i] = (uint8_t)(k == 0 ? rnd() : k == 1 ? 16 + rnd() % 3 : rnd() % 16); }
-      for (int i = 0; i < 16; i++) w.u8[i] = s.u8[i] < 16 ? a.u8[s.u8[i]] : 0;
-      same("wasm_i8x16_swizzle", lanes(wasm_i8x16_swizzle(va, vec(&s))), w, 0, &a, &s); }
     // ai: shuffle: the index lists the source uses, and three that draw on both operands every way
     #define SH(c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15) do { const int ix[16] = { c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15 }; \
       for (int i = 0; i < 16; i++) w.u8[i] = ix[i] < 16 ? a.u8[ix[i]] : b.u8[ix[i] - 16]; \
@@ -265,8 +257,7 @@ static void unit_i(const lanes_t a, const lanes_t b, const lanes_t c, int it) {
 }
 // ai: The whole domain where it is small enough to walk: every float through the three one-operand float operations
 // ai: and every int32 through the conversion (2^32 each, a minute on a phone), every 16-bit lane through abs, the
-// ai: narrowings and every shift count, every pair of bytes through the byte operations, every swizzle index in every
-// ai: lane, every bitmask.
+// ai: narrowings and every shift count, every pair of bytes through the byte operations, every bitmask.
 static void unit_full(void) {
   uint64_t bad[3] = { 0, 0, 0 };
   for (uint64_t u = 0; u < (1ULL << 32); u += 4) {
@@ -313,17 +304,8 @@ static void unit_full(void) {
       OP(wasm_u8x16_min, a.u8[l] < b.u8[l] ? a.u8[l] : b.u8[l]); OP(wasm_u8x16_max, a.u8[l] > b.u8[l] ? a.u8[l] : b.u8[l]);
       OP(wasm_u8x16_lt, a.u8[l] < b.u8[l] ? 0xff : 0); OP(wasm_i8x16_ne, a.u8[l] != b.u8[l] ? 0xff : 0); OP(wasm_u8x16_sub_sat, a.u8[l] > b.u8[l] ? a.u8[l] - b.u8[l] : 0);
       #undef OP
-      // ai: b as indices into a table of sixteen distinct bytes
-      for (int l = 0; l < 16; l++) a.u8[l] = (uint8_t)(x * 16 + l + 1);
-      for (int l = 0; l < 16; l++) w.u8[l] = b.u8[l] < 16 ? a.u8[b.u8[l]] : 0;
-      same("wasm_i8x16_swizzle, every index", lanes(wasm_i8x16_swizzle(vec(&a), vb)), w, 0, &a, &b);
     }
     for (int l = 0; l < 16; l++) a.u8[l] = (uint8_t)(x + 17 * l);
-    for (volatile uint32_t n = 0; n < 16; n++) {
-      const uint32_t k = n;
-      for (int l = 0; l < 16; l++) w.u8[l] = (uint8_t)(a.u8[l] >> (k & 7));
-      same("wasm_u8x16_shr, every byte and count", lanes(wasm_u8x16_shr(vec(&a), k)), w, 0, &a, 0);
-    }
     for (int l = 0; l < 8; l++) w.i16[l] = (int16_t)a.i8[l];
     same("wasm_i16x8_load8x8, every byte", lanes(wasm_i16x8_load8x8(&a)), w, 0, &a, 0);
     for (int l = 0; l < 8; l++) w.u16[l] = a.u8[l];
@@ -402,8 +384,7 @@ static void decode_one(rx_t *rx, const uint8_t *px, int w, int h, int held, int 
     d = dig(d, its, (size_t)o->total); d = dig(d, est, (size_t)o->total * sizeof(float));
   }
   o->stat = d;
-  d = DIG0; d = dig_int(d, o->got); d = dig_int(d, res.tiles_ok); d = dig(d, res.ok, sizeof res.ok); d = dig(d, res.iters, sizeof res.iters);
-  d = dig(d, &res.ber, sizeof res.ber); d = dig(d, &res.gmi, sizeof res.gmi); d = dig(d, rx->ok, (size_t)rx->top); d = dig(d, rx->blocks, (size_t)rx->top * rx->B);
+  d = DIG0; d = dig_int(d, o->got); d = dig_int(d, res.tiles_ok); d = dig(d, rx->ok, (size_t)rx->top); d = dig(d, rx->blocks, (size_t)rx->top * rx->B);
   o->blk = d;
 }
 static dig_t out_line(const char *kind, int idx, const char *name, const out_t *o, dig_t total) {
@@ -486,13 +467,11 @@ static int frames(const char *list, int passes) {
 
 static float rnd_f(void) { return (float)((int)(rnd() & 0xffff) - 32768) / 32768.0f; }
 
-// ai: The transform's kernels on every shape a stage takes: each radix, sizes on the radix-2 schedule and with the
-// ai: radix-3 stage, column counts that leave each remainder of a vector of four, both directions, a pitch wider
-// ai: than the block.
+// ai: The transform's kernels on every shape a stage takes: sizes on the radix-2 schedule and with the radix-3 stage,
+// ai: column counts that leave each remainder of a vector of four, both directions, a pitch wider than the block.
 static void synth_fft(void) {
   static const int ROWS[] = { 2, 4, 8, 12, 64, 96, 128, 256, 384, 512, 768, 1024, 1536 }, COLS[] = { 1, 2, 3, 4, 5, 7, 8, 32, 61, 64 };
-  for (int radix = 2; radix <= 4; radix += 2) {
-    fft_set_radix(radix);
+  {
     for (size_t r = 0; r < sizeof ROWS / sizeof *ROWS; r++) {
       const int rows = ROWS[r];
       dig_t d = DIG0;
@@ -505,7 +484,7 @@ static void synth_fft(void) {
         d = dig(d, re, (size_t)rows * pitch * sizeof(float)); d = dig(d, im, (size_t)rows * pitch * sizeof(float));
         free(re); free(im);
       }
-      printf("synth fft radix %d rows %4d: %016llx\n", radix, rows, (unsigned long long)d);
+      printf("synth fft rows %4d: %016llx\n", rows, (unsigned long long)d);
     }
     for (int n = 64; n <= 96; n += 32) {
       float *re = malloc((size_t)n * n * sizeof(float)), *im = malloc((size_t)n * n * sizeof(float));
@@ -515,11 +494,10 @@ static void synth_fft(void) {
       dig_t d = dig(dig(DIG0, re, (size_t)n * n * sizeof(float)), im, (size_t)n * n * sizeof(float));
       fft2d(re, im, n, 1);
       d = dig(dig(d, re, (size_t)n * n * sizeof(float)), im, (size_t)n * n * sizeof(float));
-      printf("synth fft2d radix %d n %d: %016llx\n", radix, n, (unsigned long long)d);
+      printf("synth fft2d n %d: %016llx\n", n, (unsigned long long)d);
       free(re); free(im);
     }
   }
-  fft_set_radix(2);   // ai: the reference's, for everything after
 }
 
 // ai: RGBA to luma at every remainder the sixteen-pixel loop leaves, against the formula too.
@@ -555,28 +533,6 @@ static void synth_binarize(void) {
   printf("synth binarize: %016llx\n", (unsigned long long)d);
 }
 
-// ai: The interleaved syndromes: codeword counts either side of a vector of sixteen, the short last group included.
-static void synth_rs(void) {
-  static const int MS[] = { 1, 2, 15, 16, 17, 31, 32, 33, 40 }, NS[] = { 8, 80, 255 }, RS[] = { 3, 16, 32 };
-  dig_t d = DIG0;
-  for (size_t a = 0; a < sizeof MS / sizeof *MS; a++) for (size_t b = 0; b < sizeof NS / sizeof *NS; b++) for (size_t c = 0; c < sizeof RS / sizeof *RS; c++) {
-    const int m = MS[a], n = NS[b], nroots = RS[c];
-    if (nroots >= n) continue;
-    uint8_t *buf = malloc((size_t)m * n), *S = calloc((size_t)m * nroots, 1);
-    rnd_seed((uint64_t)(m * 1000 + n * 10 + nroots));
-    for (int i = 0; i < m * n; i++) buf[i] = (uint8_t)rnd();
-    d = dig_int(d, rs_syndromes_il(buf, m, n, nroots, S)); d = dig(d, S, (size_t)m * nroots);
-    // ai: and real codewords, one of them damaged: all syndromes zero but that one's
-    uint8_t cw[255];
-    for (int k = 0; k < m; k++) { for (int i = 0; i < n - nroots; i++) cw[i] = (uint8_t)rnd(); rs_encode(cw, n - nroots, nroots); for (int i = 0; i < n; i++) buf[i * m + k] = cw[i]; }
-    buf[(n / 2) * m + m / 2] ^= 0x5a;
-    memset(S, 0, (size_t)m * nroots);
-    d = dig_int(d, rs_syndromes_il(buf, m, n, nroots, S)); d = dig(d, S, (size_t)m * nroots);
-    free(buf); free(S);
-  }
-  printf("synth rs syndromes: %016llx\n", (unsigned long long)d);
-}
-
 // ai: A symbol painted by the codec (focus_encode, focus_paint_rgba, then the painter's RGBA back to luma) on a
 // ai: white page, P pixels of it all round.
 static uint8_t *paint_page(const focus_t *f, const uint8_t *blocks, int P, int *side, dig_t *d) {
@@ -608,7 +564,7 @@ static int synth_pairs(void) {
   for (int r = 0; r < FOCUS_RINGS; r++) for (size_t s = 0; s < sizeof SUBCH / sizeof *SUBCH; s++) {
     const int subch = SUBCH[s], n = focus_n_for(subch);
     focus_t f;
-    if (focus_init(&f, n, subch, FOCUS_LDPC, 2, 2 * FOCUS_RING[r], 0, 0, 0, 0, 0, 0, 0)) { printf("focus_init %d in ring %d failed\n", subch, FOCUS_RING[r]); fails++; continue; }
+    if (focus_init(&f, n, subch, 2, 2 * FOCUS_RING[r], 0)) { printf("focus_init %d in ring %d failed\n", subch, FOCUS_RING[r]); fails++; continue; }
     uint8_t *blocks = malloc((size_t)f.blocks * f.block_bytes);
     for (int i = 0; i < f.blocks * f.block_bytes; i++) blocks[i] = (uint8_t)((uint32_t)((uint64_t)i * 2654435761ULL + (uint64_t)(r * 97 + subch)) >> 13);   // ai: scripts/exp/ring_pairs.mjs's payload
     dig_t enc = DIG0;
@@ -633,18 +589,18 @@ static int synth_pairs(void) {
   return fails;
 }
 
-// ai: The lab shapes scripts/exp/simd_check.mjs holds on wasm, told: a small picture, the paper's hard-decision RS, a power
+// ai: The lab shapes scripts/exp/simd_check.mjs holds on wasm, told: pictures off their format's own size, a power
 // ai: tilt, tiers at three code rates, and the resampled ring and picture pairs.
 static int synth_lab(void) {
-  static const struct { int n, subch, mode, span; float tilt; int tiers; } LAB[] = {
-    { 128, 8, FOCUS_LDPC, 128, 0, 0 }, { 256, 48, FOCUS_LDPC, 256, 0, 0 }, { 1024, 192, FOCUS_LDPC, 256, 0, 0 }, { 512, 64, FOCUS_RS, 256, 0, 0 },
-    { 512, 320, FOCUS_LDPC, 256, 9, 0 }, { 512, 0, FOCUS_LDPC, 256, 9, 1 }, { 384, 64, FOCUS_LDPC, 256, 0, 0 }, { 512, 96, FOCUS_LDPC, 192, 0, 0 }, { 768, 320, FOCUS_LDPC, 128, 0, 0 } };
+  static const struct { int n, subch, span; float tilt; int tiers; } LAB[] = {
+    { 256, 48, 256, 0, 0 }, { 1024, 192, 256, 0, 0 }, { 512, 320, 256, 9, 0 }, { 512, 0, 256, 9, 1 }, { 384, 64, 256, 0, 0 },
+    { 768, 144, 512, 0, 0 }, { 384, 64, 512, 0, 0 }, { 768, 320, 128, 0, 0 } };
   static const focus_tier_t TIERS[3] = { { 6, 8, 7 }, { 4, 12, 8 }, { 2, 12, 12 } };
   int fails = 0;
   for (size_t k = 0; k < sizeof LAB / sizeof *LAB; k++) {
     focus_t f;
-    const int bad = LAB[k].tiers ? focus_init_tiers(&f, LAB[k].n, TIERS, 3, 2, LAB[k].span, LAB[k].tilt, 0, 0, 0, 0, 0, 0)
-                                 : focus_init(&f, LAB[k].n, LAB[k].subch, LAB[k].mode, 2, LAB[k].span, LAB[k].tilt, 0, 0, 0, 0, 0, 0);
+    const int bad = LAB[k].tiers ? focus_init_tiers(&f, LAB[k].n, TIERS, 3, 2, LAB[k].span, LAB[k].tilt)
+                                 : focus_init(&f, LAB[k].n, LAB[k].subch, 2, LAB[k].span, LAB[k].tilt);
     if (bad) { printf("synth lab %zu: init failed\n", k); fails++; continue; }
     uint8_t *blocks = malloc((size_t)f.blocks * f.block_bytes), *got = calloc((size_t)f.blocks * f.block_bytes, 1), *ok = calloc((size_t)f.blocks, 1);
     rnd_seed(900 + k);
@@ -661,10 +617,10 @@ static int synth_lab(void) {
     focus_block_stats(&f, &its, &est);
     d = dig_int(d, n); d = dig(d, &spec, sizeof spec); d = dig(d, res.quad, sizeof res.quad); d = dig(d, &res.mark_score, sizeof res.mark_score); d = dig_int(d, res.orient);
     d = dig(d, ok, (size_t)f.blocks); d = dig(d, got, (size_t)f.blocks * f.block_bytes);
-    if (f.mode == FOCUS_LDPC) { d = dig(d, its, (size_t)f.blocks); d = dig(d, est, (size_t)f.blocks * sizeof(float)); }
+    d = dig(d, its, (size_t)f.blocks); d = dig(d, est, (size_t)f.blocks * sizeof(float));
     const int back = n == f.blocks && !memcmp(got, blocks, (size_t)f.blocks * f.block_bytes);
     if (!back) fails++;
-    printf("synth lab n %4d subch %3d mode %d span %3d tilt %g%s: %016llx, %d of %d blocks%s\n", LAB[k].n, f.subch, LAB[k].mode, LAB[k].span, (double)LAB[k].tilt, LAB[k].tiers ? " tiers" : "", (unsigned long long)d, n, f.blocks, back ? "" : "  FAILED");
+    printf("synth lab n %4d subch %3d span %3d tilt %g%s: %016llx, %d of %d blocks%s\n", LAB[k].n, f.subch, LAB[k].span, (double)LAB[k].tilt, LAB[k].tiers ? " tiers" : "", (unsigned long long)d, n, f.blocks, back ? "" : "  FAILED");
     free(img); free(blocks); free(got); free(ok); focus_free(&f);
   }
   return fails;
@@ -675,7 +631,6 @@ static int synth(void) {
   synth_fft();
   fails += synth_luma();
   synth_binarize();
-  synth_rs();
   fails += synth_lab();
   fails += synth_pairs();
   printf("synth: %s\n", fails ? "FAILED" : "every round trip came back");

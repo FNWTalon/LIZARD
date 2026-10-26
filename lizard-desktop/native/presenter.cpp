@@ -1,5 +1,5 @@
-// ai: The desktop sender's presenter (presenter.h): present.cpp's swapchain, slots, waits and tallies (2026-10-03) as a
-// ai: class with one thread of its own.
+// ai: The desktop sender's presenter (presenter.h): the test sender lizard_present's swapchain, slots, waits and tallies
+// ai: (2026-10-03) as a class with one thread of its own.
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -41,9 +41,7 @@
 #elif LIZ_X11
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
-#include <X11/extensions/Xcomposite.h>
 #include <X11/extensions/Xrandr.h>
-#include <X11/extensions/shape.h>
 #include <vulkan/vulkan_xlib.h>
 #elif defined(__APPLE__)
 #include <vulkan/vulkan_metal.h>
@@ -520,7 +518,7 @@ struct Presenter::Impl {
   std::atomic<int> fps{60};
   std::atomic<double> size{1.0};
   std::atomic<double> edge{0.0};
-  std::atomic<bool> whole{false}, paused{false}, quit{false};
+  std::atomic<bool> paused{false}, quit{false};
   // ai: VSync (setVsync), and a change of it or of fps for the loop to take at its next present
   std::atomic<bool> vsync{false}, vsyncDirty{false};
   std::mutex wakeMu;
@@ -530,17 +528,12 @@ struct Presenter::Impl {
 #if LIZ_X11 && !defined(_WIN32)
   // ai: two connections of the present thread's own: dpy the surface's (the driver's alone; AWT never calls
   // ai: XInitThreads, so no Xlib call of ours shares it with a driver thread's xcb), xq for the window queries (the size,
-  // ai: the mode, whether a compositor draws the window)
+  // ai: the mode)
   Display* dpy = nullptr;
   Display* xq = nullptr;
   Window xwin = 0;
   int randr = -1;   // ai: XRandR on xq: -1 not asked yet, 0 no, 1 yes
-  int shapes = -1;  // ai: Composite and Shape on xq: -1 not asked yet, 0 no, 1 yes
 #endif
-  // ai: whether the screen shows the window direct (the swapchain's flips reach the scanout: no compositor, or the
-  // ai: window unredirected) or a compositor draws it: -1 not known (no X11, no Composite), 0 composited, 1 direct.
-  // ai: Read once a second (queryDirect); a change is logged.
-  int direct = -1;
   // ai: the sender's device (wg's): the painter's frames and the presents on one GPU (2026-10-07); its handles below
   // ai: are that device's, freed by it, and this presenter frees only what it made on them
   wg::Device* W = nullptr;
@@ -577,7 +570,7 @@ struct Presenter::Impl {
   std::vector<VkDescriptorSet> dsets;
   std::vector<std::shared_ptr<wg::Buffer>> ringHeld;
   Waiter waiter;
-  Tally win, all;
+  Tally win;
   FILE* csv = nullptr;
 
   // ai: the loop's state (the present thread's alone)
@@ -602,7 +595,7 @@ struct Presenter::Impl {
   } held;
 
   std::mutex statsMu;
-  std::string statsJson, totalsJson, error;
+  std::string statsJson, error;
 
   void say(const std::string& m) { if (opt.log) opt.log(m); }
   uint32_t memType(uint32_t bits, VkMemoryPropertyFlags want) const {
@@ -637,7 +630,6 @@ struct Presenter::Impl {
   void freeSlot(Slot& s);
   VkExtent2D windowSize();
   void queryMode();
-  void queryDirect();
   void holdMode();
   void releaseMode();
   void rateMoved();
@@ -839,50 +831,6 @@ void Presenter::Impl::queryMode() {
   modeHz = hz;
 #elif defined(__APPLE__)
   modeHz = mac::layerRefreshHz(target.metalLayer);
-#endif
-}
-
-// ai: X11: is the window on the screen direct, or drawn by a compositor? A compositing manager owns _NET_WM_CM_S<screen>
-// ai: and draws into the composite overlay window; a window it unredirects (Mutter, Muffin, KWin and others cut it out
-// ai: of the overlay's bounding shape) shows direct, its swapchain flipping on its own monitor's vblank. The window's
-// ai: centre inside the overlay's shape: composited. No manager: direct. The overlay is asked for and released around
-// ai: each query, so this process never keeps it mapped past the manager's own hold (2026-10-07: full screen under
-// ai: Muffin was composited whenever another window stood above the sender in the stack, even on the other monitor,
-// ai: and its composite tore 3% of frames; the app keeps the window above the others while full screen).
-void Presenter::Impl::queryDirect() {
-#if LIZ_X11 && !defined(_WIN32)
-  if (shapes < 0) {
-    int ev = 0, er = 0;
-    shapes = XCompositeQueryExtension(xq, &ev, &er) && XShapeQueryExtension(xq, &ev, &er) ? 1 : 0;
-  }
-  int now = -1;
-  if (shapes) {
-    XWindowAttributes wa{};
-    if (!XGetWindowAttributes(xq, xwin, &wa)) return;
-    char sel[32];
-    std::snprintf(sel, sizeof sel, "_NET_WM_CM_S%d", XScreenNumberOfScreen(wa.screen));
-    if (!XGetSelectionOwner(xq, XInternAtom(xq, sel, False))) now = 1;
-    else {
-      int cx = 0, cy = 0;
-      Window child = 0;
-      XTranslateCoordinates(xq, xwin, wa.root, wa.width / 2, wa.height / 2, &cx, &cy, &child);
-      const Window cow = XCompositeGetOverlayWindow(xq, wa.root);
-      int n = 0, order = 0;
-      XRectangle* rs = cow ? XShapeGetRectangles(xq, cow, ShapeBounding, &n, &order) : nullptr;
-      bool covered = false;
-      for (int i = 0; i < n; i++)
-        if (cx >= rs[i].x && cx < rs[i].x + static_cast<int>(rs[i].width) && cy >= rs[i].y && cy < rs[i].y + static_cast<int>(rs[i].height)) covered = true;
-      if (rs) XFree(rs);
-      if (cow) XCompositeReleaseOverlayWindow(xq, wa.root);
-      XFlush(xq);
-      now = covered ? 0 : 1;
-    }
-  }
-  if (now != direct) {
-    direct = now;
-    if (now == 0) say("presenter: the compositor draws the window");
-    else if (now == 1) say("presenter: the screen shows the window direct");
-  }
 #endif
 }
 
@@ -1214,7 +1162,6 @@ void Presenter::Impl::drain() {
   const double refreshMs = 1000.0 / refreshHz();
   for (const Shown& s : waiter.take()) {
     win.add(s, refreshMs);
-    all.add(s, refreshMs);
     if (csv)
       std::fprintf(csv, "%llu,%llu,%d,%s,%s,%s,%d\n", static_cast<unsigned long long>(s.id), static_cast<unsigned long long>(s.picture),
                    s.fresh ? 1 : 0, fmt("%.3f", s.acquiredMs).c_str(), fmt("%.3f", s.submittedMs).c_str(), fmt("%.3f", s.shownMs).c_str(), s.queued);
@@ -1229,7 +1176,6 @@ void Presenter::Impl::window(double secs, bool last) {
   const double m = win.measuredHz(modeHz);
   if (m > 0) measured = m;
   queryMode();
-  queryDirect();
   if (!last) holdMode();
   const Slot* s = cur >= 0 ? &slots[cur] : nullptr;
   const double per = secs > 0 ? secs : 1;
@@ -1241,19 +1187,11 @@ void Presenter::Impl::window(double secs, bool last) {
                    ",\"paused\":" + (paused ? "true" : "false") + ",\"surface\":\"" +
                    std::to_string(c.extent.width) + "x" + std::to_string(c.extent.height) + "\",\"frame\":\"" +
                    std::to_string(s ? s->w : 0) + "x" + std::to_string(s ? s->h : 0) + "\",\"presentWait\":" + (presentWait ? "true" : "false") +
-                   (direct >= 0 ? std::string(",\"direct\":") + (direct ? "true" : "false") : std::string()) +
                    ",\"vsync\":" + (vsync ? "true" : "false") + ",\"modeFrom\":" + fmt("%.3f", held.on ? held.origHz : 0.0) +
                    ",\"device\":\"" + esc(name) + "\",\"error\":\"";
-  const double total = (nowMs() - t0) / 1000;
-  std::string tt = "{\"secs\":" + fmt("%.3f", total) + ",\"pictures\":" + std::to_string(all.pictures) + ",\"presents\":" +
-                   std::to_string(all.presents) + ",\"held\":" + all.heldJson() + ",\"missed\":" + std::to_string(all.missed) +
-                   ",\"behind\":" + std::to_string(all.behind) + ",\"queued\":" + fmt("%.1f", all.queuedN ? all.queuedSum / static_cast<double>(all.queuedN) : 0.0) +
-                   ",\"queuedMin\":" + std::to_string(std::max(0, all.queuedMin)) + ",\"unknown\":" + std::to_string(all.unknown) + ",\"hz\":" +
-                   fmt("%.3f", refreshHz()) + ",\"modeHz\":" + fmt("%.3f", modeHz) + "}";
   {
     std::lock_guard<std::mutex> l(statsMu);
     statsJson = st + esc(error) + "\",\"secs\":" + fmt("%.3f", secs) + "}";
-    totalsJson = tt;
   }
   win.reset();
   winPresents = 0;
@@ -1345,7 +1283,7 @@ void Presenter::Impl::presentOnce(bool live) {
         due = std::max(due + per, i + per);
       }
     }
-    if (!fresh && cur >= 0) { win.behind++; all.behind++; }
+    if (!fresh && cur >= 0) win.behind++;
   }
 
   VkCommandBuffer cb = cbs[fl];
@@ -1388,17 +1326,12 @@ void Presenter::Impl::presentOnce(bool live) {
   D.vkCmdClearColorImage(cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &white, 1, &whole1);
   if (cur >= 0) {
     // ai: where the picture goes: centred, the largest that fits with the edge's light round it, times the size share,
-    // ai: stretched (linear) as the page's fit=stretch; or whole device pixels a sample (nearest) where at least one fits
+    // ai: stretched (linear) as the page's fit=stretch
     const Slot& s = slots[cur];
     const double e = 2 * edge.load() * s.h;
     const double fit = std::min(static_cast<double>(c.extent.width) / (s.w + e), static_cast<double>(c.extent.height) / (s.h + e));
     const double share = std::clamp(size.load(), 0.25, 1.0);
-    double scale = fit * share;
-    VkFilter filter = VK_FILTER_LINEAR;
-    if (whole && fit >= 1) {
-      scale = std::max(1.0, std::floor(fit * share));
-      filter = VK_FILTER_NEAREST;
-    }
+    const double scale = fit * share;
     const int dw = std::min(static_cast<int>(c.extent.width), static_cast<int>(std::lround(s.w * scale)));
     const int dh = std::min(static_cast<int>(c.extent.height), static_cast<int>(std::lround(s.h * scale)));
     if (dw > 0 && dh > 0) {
@@ -1410,7 +1343,7 @@ void Presenter::Impl::presentOnce(bool live) {
       blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
       blit.dstOffsets[0] = {(static_cast<int>(c.extent.width) - dw) / 2, (static_cast<int>(c.extent.height) - dh) / 2, 0};
       blit.dstOffsets[1] = {blit.dstOffsets[0].x + dw, blit.dstOffsets[0].y + dh, 1};
-      D.vkCmdBlitImage(cb, s.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, filter);
+      D.vkCmdBlitImage(cb, s.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
     }
     slots[cur].usedBy = frame;
   }
@@ -1498,7 +1431,7 @@ void Presenter::Impl::teardown() {
   // ai: the device is the sender's: this presenter frees what it made on it and leaves the device and the instance
   if (dev && D.vkQueueWaitIdle) {
     qIdle();
-    // ai: the last window, however short (its secs say), and the run's totals with every present counted
+    // ai: the last window, however short (its secs say)
     if (t0 > 0) window((nowMs() - lastWin) / 1000, true);
     for (VkFence f : fences) if (f) D.vkDestroyFence(dev, f, nullptr);
     for (VkSemaphore a : acquired) if (a) D.vkDestroySemaphore(dev, a, nullptr);
@@ -1568,7 +1501,6 @@ std::unique_ptr<Presenter> Presenter::start(const PresentTarget& target, Sender*
   p->fps = std::clamp(opt.fps, 1, 240);
   p->size = std::clamp(opt.size, 0.25, 1.0);
   p->edge = std::clamp(opt.edge, 0.0, 1.0);
-  p->whole = opt.whole;
   // ai: VSync's first look on the present thread's first turn, after start returns (a mode change takes a second or
   // ai: two, which the caller, the UI's thread, would wait out here)
   p->vsync = opt.vsync;
@@ -1623,11 +1555,6 @@ void Presenter::setPaused(bool on) {
 std::string Presenter::stats() {
   std::lock_guard<std::mutex> l(p_->statsMu);
   return p_->statsJson;
-}
-
-std::string Presenter::totals() {
-  std::lock_guard<std::mutex> l(p_->statsMu);
-  return p_->totalsJson;
 }
 
 void Presenter::stop() {

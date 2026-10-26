@@ -1,18 +1,16 @@
-// ai: lizard_receive (2026-10-25): the PC receiver headless, as lizard_present is the sender: a camera (camera/
+// ai: lizard_receive (2026-10-25): the PC receiver headless: a camera (camera/
 // ai: camera.h) into a receiver (rx_session.h), a line a second, a received file moved out; on every system.
 // ai:   lizard_receive list
-// ai:     every camera every backend lists, a JSON line each ({info, modes, pick, controls, trigger}, the camera opened
+// ai:     every camera every backend lists, a JSON line each ({info, modes, pick, controls}, the camera opened
 // ai:     to read them; {info, error} where it would not open), then {"notes": [...]}: why a backend saw none
 // ai:   lizard_receive [--camera ID] [--mode INDEX|WxH[@FPS]] [--layout 1:1|2:1] [--decoder auto|gpu|cpu]
-// ai:                  [--precision auto|int8|f16|f32] [--assets DIR] [--store DIR] [--out DIR] [--secs S]
-// ai:                  [--trigger MS] [--set CONTROL=VALUE|auto]... [--json]
+// ai:                  [--assets DIR] [--store DIR] [--out DIR] [--secs S] [--set CONTROL=VALUE|auto]... [--json]
 // ai: The camera: the one named, else the simulated one (sim:0) where LIZ_CAMERA_SIM is set (nothing listed), else the
 // ai: first listed (list and this probe every /dev/video* unless LIZ_V4L2_NODES names the nodes: set and empty, none).
 // ai: Its mode: by index, or the first of that size and rate (a rate within half a frame a second; none given, any),
 // ai: else the nearest (camera.h pick for that size and rate); no --mode, pick's for 1920 x 1080 at 60. --set after the
 // ai: start (the camera rules are applied at start, so a value asked here wins; the session keeps it, rx_session.h
-// ai: set). --trigger: the camera's software trigger every MS ms, a free schedule (no phase lock: the app's Lock.kt
-// ai: steers one). The store: a fresh folder in the system's temp folder, removed at the end (kept where a verified
+// ai: set). The store: a fresh folder in the system's temp folder, removed at the end (kept where a verified
 // ai: file could not be moved out: the FAIL line says where the file is), unless --store names one (kept: a transfer
 // ai: cut short resumes there). --out is made before the camera starts (a path that cannot be a folder fails then).
 // ai: The GPU tree: --assets, else the build's liblizard/out. A line a
@@ -61,8 +59,8 @@ std::atomic<bool> gQuit{false};
 
 struct Args {
   bool list = false, json = false;
-  std::string camera, mode, layout = "1:1", decoder = "auto", precision = "auto", assets = LIZ_ASSETS, store, out = ".";
-  double secs = 0, triggerMs = 0;
+  std::string camera, mode, layout = "1:1", decoder = "auto", assets = LIZ_ASSETS, store, out = ".";
+  double secs = 0;
   std::vector<std::string> sets;
 };
 
@@ -70,8 +68,7 @@ struct Args {
   std::fprintf(stderr,
                "%s%susage: lizard_receive list\n"
                "       lizard_receive [--camera ID] [--mode INDEX|WxH[@FPS]] [--layout 1:1|2:1] [--decoder auto|gpu|cpu]\n"
-               "                      [--precision auto|int8|f16|f32] [--assets DIR] [--store DIR] [--out DIR] [--secs S]\n"
-               "                      [--trigger MS] [--set CONTROL=VALUE|auto]... [--json]\n",
+               "                      [--assets DIR] [--store DIR] [--out DIR] [--secs S] [--set CONTROL=VALUE|auto]... [--json]\n",
                why.c_str(), why.empty() ? "" : "\n");
   std::exit(2);
 }
@@ -97,21 +94,17 @@ Args parse(int argc, char** argv) {
       else if (k == "--mode") a.mode = v;
       else if (k == "--layout") a.layout = v;
       else if (k == "--decoder") a.decoder = v;
-      else if (k == "--precision") a.precision = v;
       else if (k == "--assets") a.assets = v;
       else if (k == "--store") a.store = v;
       else if (k == "--out") a.out = v;
       else if (k == "--secs") a.secs = std::stod(v);
-      else if (k == "--trigger") a.triggerMs = std::stod(v);
       else if (k == "--set") a.sets.push_back(v);
       else usage("unknown " + k);
     } catch (const std::logic_error&) { usage("not a number: " + k + " " + v); }
   }
   if (a.layout != "1:1" && a.layout != "2:1") usage("--layout is 1:1 or 2:1");
   if (a.decoder != "auto" && a.decoder != "gpu" && a.decoder != "cpu") usage("--decoder is auto, gpu or cpu");
-  if (a.precision != "auto" && a.precision != "int8" && a.precision != "f16" && a.precision != "f32") usage("--precision is auto, int8, f16 or f32");
   if (a.secs < 0) usage("--secs is 0 (no end) or more");
-  if (a.triggerMs < 0 || (a.triggerMs > 0 && a.triggerMs < 1)) usage("--trigger is a period of 1 ms or more");
   for (const auto& s : a.sets)
     if (s.find('=') == std::string::npos || s.front() == '=') usage("--set is CONTROL=VALUE or CONTROL=auto: " + s);
   return a;
@@ -344,7 +337,6 @@ static int run(int argc, char** argv) {
       c.assets = a.assets;
       c.storeDir = store.u8string();
       c.decoder = a.decoder;
-      c.precision = a.precision;
       c.layout = a.layout;
       c.log = [](const std::string& m) { std::fprintf(stderr, "lizard: %s\n", m.c_str()); };
       s = lizard::RxSession::create(c, why);
@@ -379,13 +371,10 @@ static int run(int argc, char** argv) {
         }
         if (!s->set(k, value, automatic, why)) fail("--set " + kv + ": " + why);
       }
-      if (a.triggerMs > 0 && !s->trigger(std::llround(a.triggerMs * 1e6), why)) fail(why);
       const json m = cam["modes"][size_t(mode)];
       const json st = parsed(s->stats());
-      char trig[64] = "";
-      if (a.triggerMs > 0) std::snprintf(trig, sizeof trig, ", a software trigger every %.3f ms", a.triggerMs);
-      std::printf("camera: %s (%s), mode %d: %.0f x %.0f %s at %.2f fps%s; decoder %s, %s; store %s\n", text(cam["info"], "name").c_str(), id.c_str(), mode,
-                  num(m, "w"), num(m, "h"), text(m, "format").c_str(), num(m, "fps"), trig, text(st, "decoder").c_str(), a.layout.c_str(),
+      std::printf("camera: %s (%s), mode %d: %.0f x %.0f %s at %.2f fps; decoder %s, %s; store %s\n", text(cam["info"], "name").c_str(), id.c_str(), mode,
+                  num(m, "w"), num(m, "h"), text(m, "format").c_str(), num(m, "fps"), text(st, "decoder").c_str(), a.layout.c_str(),
                   store.u8string().c_str());
       std::fflush(stdout);
 

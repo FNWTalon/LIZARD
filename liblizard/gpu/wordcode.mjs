@@ -1,9 +1,11 @@
 // The format word as a linear code, for the GPU reader (wgsl/word.mjs). The word is [0x4C, version, fps] and
-// ai: bytes - 3 Reed-Solomon parity bytes, one code a ring over every word cell: RS(8,3), (16,3), (32,3), (64,3) at W =
-// ai: 16, 32, 64, 128 word cells a side (the 96 ring's RS(24,3) at 48 until 2026-10-10) (src/fmt.c, src/rs.c: GF(256), polynomial 0x11D, roots alpha^0 upward, data first).
+// ai: bytes - 3 Reed-Solomon parity bytes, one code a ring over every word cell: RS(16,3), (32,3), (64,3) at W = 32, 64,
+// ai: 128 word cells a side, the 64, 128 and 256 rings (src/fmt.c, src/rs.c: GF(256), polynomial 0x11D, roots alpha^0
+// ai: upward, data first).
 // Reed-Solomon is linear over GF(2), so every valid word is BASE xor the rows of its version's and its fps's set bits,
-// ai: and there are VERSION_MAX x 256 of them a ring (any ring may carry any version since 2026-09-27): the reader
-// ai: scores them all against the soft bits and keeps the best, where the reference decodes hard bytes with erasures.
+// ai: and there are (VERSION_MAX - VERSION_MIN + 1) x 256 of them a ring, 32,512 (any ring may carry any version since
+// ai: 2026-09-27): the reader decodes the soft bits by ordered statistics over this code (wgsl/word.mjs), where the
+// ai: reference decodes hard bytes with erasures.
 //
 // Bit order is the reader's: q index side * W + cell, cell 0..W - 1 along the side; byte k lives on side k % 4 at
 // cells 8 (k / 4) .. + 7, most significant bit first (src/fmt.c ob_fmt_bit). Cells past the codeword are light.
@@ -14,13 +16,16 @@ const EXP = new Uint8Array(512), LOG = new Uint8Array(256);
 const mul = (a, b) => (a && b ? EXP[LOG[a] + LOG[b]] : 0);
 
 export const BYTES_MAX = 64;
-// ai: The largest version a word states (src/fmt.h OB_FMT_VERSION_MAX: LIZARD-1024's 128 blocks).
+// ai: The versions a word states (src/fmt.h OB_FMT_VERSION_MIN, OB_FMT_VERSION_MAX): LIZARD-16's 2 to LIZARD-1024's
+// ai: 128; the version byte's 1, LIZARD-8, is no format since 2026-10-25, refused as 0 and 129 to 255 are.
+export const VERSION_MIN = 2;
 export const VERSION_MAX = 128;
-// The codeword's length for W word cells a side (src/fmt.c ob_fmt_bytes).
-export const bytesFor = (W) => (W < 16 ? 0 : Math.min(4 * Math.floor(W / 8), BYTES_MAX));
+// The codeword's length for W word cells a side (src/fmt.c ob_fmt_bytes; no word under the 64 ring's 32 cells,
+// ai: src/fmt.h OB_FMT_SIDE_CELLS).
+export const bytesFor = (W) => (W < 32 ? 0 : Math.min(4 * Math.floor(W / 8), BYTES_MAX));
 
 // src/rs.c rs_encode, for the word's 3 data bytes and bytes - 3 roots.
-export function wordBytes(magic, version, fps, bytes = 8) {
+export function wordBytes(magic, version, fps, bytes) {
   const k = 3, nroots = bytes - k, cw = new Uint8Array(bytes), g = new Uint8Array(nroots + 1);
   cw[0] = magic; cw[1] = version; cw[2] = fps;
   g[0] = 1;
@@ -62,14 +67,16 @@ export function wordCode(W) {
 // ai: it, and one fixed share of the best side's sum was too thin a cut (scripts/gpu/word_check.mjs: a glared side at
 // ai: 0.758 of the best kept, a clean one at 0.74 dropped). E[m] is the most disagreements on m cells that keep the
 // ai: union bound (every word of the ring within E[m] of a random hard word on those m cells) at BUDGET / GATE_CHOICES,
-// ai: so the three together stay at BUDGET, the C's own false-word rate in that ring (SPEC 5.4: 7.8e-6 with RS(8,3)'s
-// ai: last root, 1.8e-7 with three roots left); -1 where no count does. Which cells count depends on the magnitudes
+// ai: so the three together stay at BUDGET, the C's own false-word rate in that ring (SPEC 5.4: 1.8e-7, three roots
+// ai: left); -1 where no count does. The bound counts the 32,768 words the version byte's 1 to 128 can name, an upper
+// ai: bound on the 32,512 a ring holds (version 1 refused): 1.8e-7 over 32,768 is 1.79e-7 over them. Which cells count depends on the magnitudes
 // ai: alone, which a garbage frame's signs do not, so the bound holds for each choice as it stands. SIDE_KEEP is the
 // ai: search's: F8 zeroes a side under SIDE_KEEP of the best side's sum, at most the two least, before it scores
 // ai: (0.75, the best of 0.85, 0.75 and 0.70 on the lab's damage sweep).
 export const TAU = 0.1, SIDE_KEEP = 0.75, GATE_CHOICES = 3;
-export const BUDGET = { 16: 7.8e-6, 32: 1.8e-7, 64: 1.8e-7, 128: 1.8e-7 };
+export const BUDGET = { 32: 1.8e-7, 64: 1.8e-7, 128: 1.8e-7 };
 export function gateTable(W) {
+  if (!(W in BUDGET)) throw new Error(`a ring of ${W} word cells a side: the gate holds ${Object.keys(BUDGET).join(", ")}`);
   const nb = 4 * W, words = VERSION_MAX * 256, E = new Int16Array(nb + 1).fill(-1), budget = BUDGET[W] / GATE_CHOICES;
   for (let m = 0; m <= nb; m++) {
     let s = 0, c = 1;
@@ -99,6 +106,6 @@ export function searchKeep(sums) {
 // ai: version the picture (gpu/tables.mjs PICTURES).
 export function versionRange(n) {
   let lo = 0, hi = -1;
-  for (let v = 1; v <= VERSION_MAX; v++) if (N_FOR(8 * v) === n) { if (!lo) lo = v; hi = v; }
+  for (let v = VERSION_MIN; v <= VERSION_MAX; v++) if (N_FOR(8 * v) === n) { if (!lo) lo = v; hi = v; }
   return [lo, hi];
 }

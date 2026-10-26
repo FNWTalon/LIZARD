@@ -1,10 +1,11 @@
-// A: detrend and transform, the host side (gpu/back/DESIGN.md sections 1 to 3, 10). Runs in node and in the browser:
-// sim/ob.mjs loads build/ob.wasm in both, and the format's tables are read from it rather than restated.
+// A: detrend and transform, the host side (gpu/back/DESIGN.md sections 1 to 3). Runs in node and in the browser:
+// sim/ob.mjs loads the codec's wasm (liblizard/build/ob.mjs) in both, and the format's tables are read from it rather
+// than restated.
 //
-// build(device, { B, tables, precision }) compiles the four shaders for every built picture size and holds the shared
-// tables; lane(...) makes one batch's buffers and bind groups over the front half's frames and sel buffers;
-// encode(enc, lane, { ts }) records gate, pass 1, reduce and pass 2 as four passes, and the dispatch*() calls append
-// the same work to a pass the caller holds open (back.mjs). Buffer names follow DESIGN section 2.
+// build(device, { B, tables, precision, blkStride, picture }) compiles the four shaders for every built picture size
+// and holds the shared tables; lane(...) makes one batch's buffers and bind groups over the front half's frames and
+// sel buffers; the dispatch*() calls append gate, pass 1, reduce and pass 2 to a pass the caller holds open (back.mjs).
+// Buffer names follow DESIGN section 2.
 // ai: Pass 1 is fused: it samples the frame through the front half's texture, maps and residuals (bindPicture), on the
 // ai: grid of the frame's (ring, picture) pair (`picture`: the front half's rings, where each ring puts a picture and
 // ai: its lattice). The grid pass 1, which read F9's sampled grid, went 2026-10-22.
@@ -54,7 +55,7 @@ export function discLayout(shape, pos) {
 
 // ai: rowsBy[c], c = 0 .. blocks: the disc rows (1 + the largest v) that the coefficients of a frame's first c blocks
 // ai: take, rowsBy[blocks] = V. Block b reads pos[i] for i in 8 b x 320 .. 8 (b + 1) x 320 (sub-channels 8b to
-// ai: 8b + 7, 320 coefficients each, as wgsl/back_soft.mjs gathers them), and every version is a prefix of its
+// ai: 8b + 7, 320 coefficients each, as wgsl/back_tiers.mjs tsoft gathers them), and every version is a prefix of its
 // ai: size's largest, so rowsBy[v] is version v's own V (scripts/gpu/back/check_rows.mjs holds every version of every size to it).
 export function rowsByCount({ n, bw, blocks, npos }, pos) {
   const per = npos / blocks, rowsBy = new Uint32Array(blocks + 1);
@@ -89,23 +90,21 @@ function detrendTables(m) {
   return { cx, qx, x12, sx2: Math.fround(sx2), sq2: Math.fround(sq2) };
 }
 
-// ai: The tables for every picture size, from the codec: sizes = [{ n, subch, bitmap, nt }] with a size's index its
-// ai: position (gpu/tables.mjs PICTURES) and null where a size is not built; bitmap left out is the format's own.
-// ai: A picture's tables do not depend on the ring it is painted in, so the codec is set up in its default ring.
-// Besides A's own tables each entry carries what B and C bind to: blocks, the bit map mode and the LDPC code. Read
-// once a build; the wasm holds one configuration at a time, so this is not called while another Focus is in use.
+// ai: The tables for every picture size, from the codec: sizes = [{ n, subch, nt }] with a size's index its position
+// ai: (gpu/tables.mjs PICTURES) and null where a size is not built. A picture's tables do not depend on the ring it
+// ai: is painted in, so the codec is set up in its default ring. Besides A's own tables each entry carries what the
+// ai: soft values bind to (UV, UC) and its blocks. Read once a build; the wasm holds one configuration at a time, so
+// ai: this is not called while another Focus is in use.
 export async function transformTables(sizes) {
   await init();
   return sizes.map((z) => {
     if (!z) return null;
     const { n, subch } = z, nt = z.nt ?? n;
     if (SIZES.indexOf(n) < 0) throw new Error(`picture size ${n}`);
-    // focus_setup puts the format's own bit map in place, so a size that names none gets that (a replay of a
-    // recording names its own, 0 before the bit map existed).
-    const fc = new Focus(n, subch, 1), bitmap = z.bitmap ?? fc.bitmap;
+    const fc = new Focus(n, subch, 1);
     // ai: blocks here are 8-sub-channel chunks, the gate's unit: a frame's version, whose rows and soft values a
     // ai: profile does not change (2026-10-07: the format's rate profile, src/focus.h focus_tiers_for, gives a frame
-    // ai: fewer blocks than chunks, gpu/back/tiers.mjs); code is the 3/4 code the one-rate stages are built with
+    // ai: fewer blocks than chunks, gpu/back/tiers.mjs)
     const shape = { ...fc.shape(), blocks: subch / 8 }, pos = fc.posTable(), tab = fc.tables();
     const disc = discLayout(shape, pos), rowsBy = rowsByCount(shape, pos);
     if (rowsBy[shape.blocks] !== disc.V) throw new Error(`${n}/${subch}: the blocks take ${rowsBy[shape.blocks]} rows of the disc's ${disc.V}`);
@@ -116,36 +115,34 @@ export async function transformTables(sizes) {
     const tw = new Float32Array(2 * nt);
     for (let m = 0; m < nt; m++) { const th = -2 * Math.PI * m / nt; tw[2 * m] = Math.cos(th); tw[2 * m + 1] = Math.sin(th); }
     fc.free();
-    return { n, subch, bitmap, blocks: shape.blocks, shape, pos, V: disc.V, rowsBy, rows: disc.rows, off: disc.off, UV: disc.UV, UC: disc.UC, npos: shape.npos, x12, tw, sx2, sq2, m2: sx2 / nt, cx, qx, nt };
+    return { n, subch, blocks: shape.blocks, shape, pos, V: disc.V, rowsBy, rows: disc.rows, off: disc.off, UV: disc.UV, UC: disc.UC, npos: shape.npos, x12, tw, sx2, sq2, m2: sx2 / nt, cx, qx, nt };
   });
 }
 
 // The usage flags by value, so the module loads in node (the tables and the layout are used there without a device).
 const U = globalThis.GPUBufferUsage ?? { MAP_READ: 1, COPY_SRC: 4, COPY_DST: 8, UNIFORM: 64, STORAGE: 128, INDIRECT: 256, QUERY_RESOLVE: 512 };
 
-export const PASSES = ["gate", "pass1", "reduce", "pass2"];
 export const argsOffset = (s, slot) => 4 * (ARGS_WORDS * s + ARGS_SLOT[slot]);
 
 export class Transform {
   // precision: "f16" stores Y and S and the workgroup exchange as f16 (needs shader-f16 on the device); "f32" otherwise.
-  // tw: how the butterflies get their twiddles (wgsl/back_transform.mjs laterStages): "chain", "table" or "sincos".
-  // zero: the gate also zeroes the chain's counters, verdicts, iteration counts and record count (blkStride entries
-  // a frame for V and ITS); the lane then binds the gate after those buffers exist (bindGate).
+  // ai: The gate also zeroes the chain's counters, verdicts, iteration counts and record count (blkStride entries a
+  // ai: frame for V and ITS); the lane binds the gate after those buffers exist (bindGate).
   // ai: picture: the rings, [{ span, margin, lattice }] a ring (gpu/tables.mjs formatTables rings: span, margin and
   // ai: nodeX), PIC a size holding each ring's grid for that size (gridOf) and lattice.
-  static async build(device, { B, tables, precision = "f32", cpw = CPW, tw = "chain", zero = false, blkStride = 0, picture }) {
+  static async build(device, { B, tables, precision = "f32", blkStride, picture }) {
     if (precision === "f16" && !device.features.has("shader-f16")) throw new Error("precision f16 without shader-f16");
     if (!picture) throw new Error("the transform samples the frame itself: picture, the front half's rings, is required");
+    if (!(blkStride > 0)) throw new Error(`blkStride ${blkStride}: the blocks a frame the gate zeroes`);
     const t = new Transform();
-    Object.assign(t, { device, B, tables, precision, cpw, tw, zero, blkStride, cbytes: precision === "f16" ? 4 : 8 });
+    Object.assign(t, { device, B, tables, precision, blkStride, cbytes: precision === "f16" ? 4 : 8 });
     t.built = tables.map((tb, s) => (tb ? s : -1)).filter((s) => s >= 0);
     if (!t.built.length) throw new Error("no size built");
-    const nmax = Math.max(...t.built.map((s) => tables[s].n));
     const d = device;
     const RO = "read-only-storage", RW = "storage", UN = "uniform";
     const entry = (binding, type) => ({ binding, visibility: GPUShaderStage.COMPUTE, buffer: { type } });
     const layout = (types) => d.createBindGroupLayout({ entries: types.map((type, binding) => entry(binding, type)) });
-    t.gateBgl = layout(zero ? [RO, RO, RW, RW, UN, RW, RW, RW, RW] : [RO, RO, RW, RW, UN]);
+    t.gateBgl = layout([RO, RO, RW, RW, UN, RW, RW, RW, RW]);
     // The fused pass 1: the frame texture, lists, twiddles, PART, Y, counters and params, then maps, resid and PIC.
     const texEntry = { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float", viewDimension: "2d-array" } };
     const fusedTail = [RO, RO, RW, RW, RW, UN, RO, RO, UN].map((type, k) => entry(k + 1, type));
@@ -155,14 +152,14 @@ export class Transform {
     const pipe = (bgl, code, label) => d.createComputePipelineAsync({ label, layout: d.createPipelineLayout({ bindGroupLayouts: [bgl] }), compute: { module: d.createShaderModule({ label, code }), entryPoint: "main" } });
     // ai: The gate's rows table: an entry a block count up to the largest built size's.
     const counts = 1 + Math.max(...t.built.map((s) => tables[s].blocks));
-    const jobs = [pipe(t.gateBgl, gateSource(B, { zero, blkStride, counts }), "back gate")];
+    const jobs = [pipe(t.gateBgl, gateSource(B, { blkStride, counts }), "back gate")];
     t.reduce = []; t.pass2 = []; t.pass1f = [];
     const set = (arr, s) => (p) => { arr[s] = p; };
     for (const s of t.built) {
-      const { nt: n } = tables[s], common = { n, prec: precision, B, cpw, tw };
+      const { nt: n } = tables[s];
       jobs.push(pipe(t.redBgl, reduceSource({ n, B }), `back reduce ${n}`).then(set(t.reduce, s)));
-      jobs.push(pipe(t.p2Bgl, pass2Source({ n, prec: precision, B, tw }), `back pass2 ${n}`).then(set(t.pass2, s)));
-      jobs.push(pipe(t.p1fBgl, pass1Source(common), `back pass1 fused ${n}`).then(set(t.pass1f, s)));
+      jobs.push(pipe(t.p2Bgl, pass2Source({ n, prec: precision, B }), `back pass2 ${n}`).then(set(t.pass2, s)));
+      jobs.push(pipe(t.p1fBgl, pass1Source({ n, prec: precision, B }), `back pass1 fused ${n}`).then(set(t.pass1f, s)));
     }
     const done = await Promise.all(jobs);
     t.gate = done[0];
@@ -191,32 +188,30 @@ export class Transform {
       });
       t.picUnis[s] = up(new Uint8Array(ab), U.UNIFORM);
     }
-    // ai: G (wgsl/back_transform.mjs gateWords): at[s] = (n / cpw, V, blocks, 0), then the rows c blocks take at
+    // ai: G (wgsl/back_transform.mjs gateWords): at[s] = (n / CPW, V, blocks, 0), then the rows c blocks take at
     // ai: each slot (rowsBy).
     const gate = new Uint32Array(gateWords(counts));
     for (const s of t.built) {
       const tb = tables[s];
-      gate.set([tb.nt / cpw, tb.V, tb.blocks, 0], 4 * s);
+      gate.set([tb.nt / CPW, tb.V, tb.blocks, 0], 4 * s);
       for (let c = 0; c < counts; c++) gate[gateRowsAt(c, s)] = tb.rowsBy[Math.min(c, tb.blocks)];
     }
     t.gateUni = up(gate, U.UNIFORM);
     // Per frame strides, the largest built size's (a batch may mix sizes).
     // ai: Y holds V rows a frame where pass 1 writes V - 1, and the column means ride in PART's w (no Y0 buffer).
     const over = (f) => Math.max(...t.built.map((s) => f(tables[s])));
-    t.nmax = nmax;
     t.yStride = over((tb) => tb.V * tb.nt);
     t.sStride = over((tb) => tb.npos);
     t.partStride = over((tb) => tb.nt);
     return t;
   }
 
-  // One batch's buffers over the front half's lane buffers: framesBuf (Frame structs) and selBuf (vec4u a frame);
-  // gridStride, the picture capacity a frame, sizes the params.
-  // Returns the lane with its device bytes counted. With zero the gate's bind group waits for bindGate(ln) once ln.V,
-  // ln.ITS and ln.REC exist; the fused pass 1's wait for bindPicture(ln, ...).
-  lane({ gridStride, framesBuf, selBuf }) {
+  // One batch's buffers over the front half's lane buffers: framesBuf (Frame structs) and selBuf (vec4u a frame).
+  // Returns the lane with its device bytes counted. The gate's bind group waits for bindGate(ln) once ln.V, ln.ITS
+  // and ln.REC exist; the fused pass 1's for bindPicture(ln, ...).
+  lane({ framesBuf, selBuf }) {
     const d = this.device, B = this.B, cb = this.cbytes;
-    const ln = { gridStride, framesBuf, selBuf, bytes: 0 };
+    const ln = { framesBuf, selBuf, bytes: 0 };
     const mk = (size, usage) => { const b = d.createBuffer({ size, usage }); ln.bytes += size; return b; };
     ln.listsBuf = mk(4 * listsWords(B), U.STORAGE | U.COPY_SRC);
     ln.argsBuf = mk(4 * argsWords, U.STORAGE | U.INDIRECT | U.COPY_SRC);
@@ -229,13 +224,13 @@ export class Transform {
     for (const s of this.built) {
       const tb = this.tables[s], b = mk(48, U.UNIFORM | U.COPY_DST);
       const u = new Uint32Array(12), f = new Float32Array(u.buffer);
-      u.set([gridStride, this.yStride, this.partStride, s, tb.nt, 0]);
+      u.set([0, this.yStride, this.partStride, s, 0, 0]);
       f[6] = tb.m2; f[7] = tb.sx2; f[8] = tb.sq2; u[9] = this.sStride;
       d.queue.writeBuffer(b, 0, u);
       ln.params[s] = b;
     }
     const group = (bgl, bufs) => d.createBindGroup({ layout: bgl, entries: bufs.map((buffer, binding) => ({ binding, resource: { buffer } })) });
-    ln.gateGroup = this.zero ? null : group(this.gateBgl, [framesBuf, selBuf, ln.listsBuf, ln.argsBuf, this.gateUni]);
+    ln.gateGroup = null;
     ln.p1fGroups = null; ln.redGroups = []; ln.p2Groups = [];
     for (const s of this.built) {
       ln.redGroups[s] = group(this.redBgl, [ln.listsBuf, ln.partBuf, ln.coefBuf, ln.params[s]]);
@@ -258,7 +253,6 @@ export class Transform {
 
   // The zeroing gate's bind group, once the lane holds the LDPC's V, ITS and REC.
   bindGate(ln) {
-    if (!this.zero) return ln.gateGroup;
     ln.gateGroup = this.device.createBindGroup({ layout: this.gateBgl, entries: [ln.framesBuf, ln.selBuf, ln.listsBuf, ln.argsBuf, this.gateUni, ln.countsBuf, ln.V, ln.ITS, ln.REC].map((buffer, binding) => ({ binding, resource: { buffer } })) });
     return ln.gateGroup;
   }
@@ -274,13 +268,5 @@ export class Transform {
   }
   dispatchPass2(p, ln) {
     for (const s of this.built) { p.setPipeline(this.pass2[s]); p.setBindGroup(0, ln.p2Groups[s]); p.dispatchWorkgroupsIndirect(ln.argsBuf, argsOffset(s, "pass2")); }
-  }
-
-  // Records the four passes. ts = { qs, base }: a timestamp pair a pass at qs[base + 2k], k = 0..3.
-  encode(enc, ln, { ts = null } = {}) {
-    const tw = (k) => (ts ? { timestampWrites: { querySet: ts.qs, beginningOfPassWriteIndex: ts.base + 2 * k, endOfPassWriteIndex: ts.base + 2 * k + 1 } } : {});
-    if (!this.zero) enc.clearBuffer(ln.countsBuf);
-    const steps = [(p) => this.dispatchGate(p, ln), (p) => this.dispatchPass1(p, ln), (p) => this.dispatchReduce(p, ln), (p) => this.dispatchPass2(p, ln)];
-    steps.forEach((step, k) => { const p = enc.beginComputePass(tw(k)); step(p); p.end(); });
   }
 }

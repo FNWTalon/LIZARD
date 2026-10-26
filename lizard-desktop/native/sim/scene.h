@@ -19,10 +19,10 @@
 // ai:     read noise; the camera's tone back to 8 bits through 1 / gamma.
 // ai: What it leaves out, and so what no figure from it may claim: a real lens's distortion and vignetting, a real
 // ai: sensor's noise spectrum and its ISP, a real panel's overdrive and backlight PWM, the display's resample of the
-// ai: picture, glare, a real camera's clocks and its trigger path. Its numbers are the model's.
+// ai: picture, glare, a real camera's clocks. Its numbers are the model's.
 // ai: Threads: the painters (paint ahead of the display clock, a ring of pictures), and render on the caller's thread,
 // ai: split over a pool of its own; render from one thread at a time (a second caller waits for the first).
-// ai: Clock: steadyNs's (camera/trigger.h), std::chrono::steady_clock read directly, so the model links without the
+// ai: Clock: steadyNs's (camera/clock.h), std::chrono::steady_clock read directly, so the model links without the
 // ai: cameras.
 #pragma once
 #include <atomic>
@@ -39,8 +39,8 @@ namespace lizard::sim {
 
 // ai: What the screen shows: the sender's format and payload.
 struct Sender {
-  int blocks = 60;          // ai: the format's size (lizard.h liz_format.blocks)
-  int ring = -1;            // ai: 0 to 3, or -1 the default (the 128)
+  int blocks = 60;          // ai: the format's size (lizard.h liz_format.blocks: LIZ_MIN_BLOCKS to LIZ_MAX_BLOCKS)
+  int ring = -1;            // ai: the ring's index (liz_format.ring), -1 the default; a spec names it by its cells
   int fps = 60;             // ai: pictures a second, the rate the word states
   int codes = 1;            // ai: 1, or 2 side by side
   std::string file;         // ai: "" the test stream, else this file's transfer
@@ -77,15 +77,15 @@ struct Optics {
 };
 
 // ai: The space-separated key=value form the test hooks take (LIZ_CAMERA_SIM, cam_check, sim/fake_v4l2's devices):
-// ai: blocks, ring, fps, codes, file, type, id; hz, ppm, phase, scan, response, sw, sh, share, surround, repeat; w, h,
-// ai: fill, yaw, tilt, roll, blur, exposure, shutter (rolling|global), readout, gain, black, noise (read), shot, gamma,
-// ai: seed. False with why for a key it does not know or a value out of range; keys it does not name are left as they
-// ai: were.
+// ai: blocks, ring (its cells a side: 64, 128 or 256, or auto), fps, codes, file, type, id; hz, ppm, phase, scan,
+// ai: response, sw, sh, share, surround, repeat; w, h, fill, yaw, tilt, roll, blur, exposure, shutter (rolling|global),
+// ai: readout, gain, black, noise (read), shot, gamma, seed. False with why for a key it does not know or a value out
+// ai: of range; keys it does not name are left as they were.
 bool parse(const std::string& spec, Sender& s, Display& d, Optics& o, std::string& why);
 
 class Scene {
  public:
-  // ai: Paints ahead on `painters` threads from now (the scene's start, steadyNs's clock: camera/trigger.h). Null with
+  // ai: Paints ahead on `painters` threads from now (the scene's start, steadyNs's clock: camera/clock.h). Null with
   // ai: why where the format or the file is refused.
   static std::unique_ptr<Scene> create(const Sender& s, const Display& d, const Optics& o, int painters, std::string& why);
   ~Scene();

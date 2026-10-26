@@ -1,10 +1,10 @@
-// Wirehair, the project's fixed outer code, for end-to-end runs. build/wirehair.mjs comes from
-// ./build.sh wirehair (liblizard/vendor/wirehair plus liblizard/wirehair/shim.cpp, compiled by path).
-import create from "../build/wirehair.mjs";
+// Wirehair, the project's fixed outer code, for end-to-end runs: liblizard/vendor/wirehair under liblizard/wirehair/shim.cpp,
+// inside the codec's module (liblizard/build.sh), the instance sim/ob.mjs's default build shares.
+import { baseModule } from "./ob.mjs";
 
 let M;
 export async function init() {
-  if (!M) { M = await create(); if (M._lizard_wh_init() !== 0) throw new Error("wirehair init failed"); }
+  if (!M) { const m = await baseModule(); if (m._lizard_wh_init() !== 0) throw new Error("wirehair init failed"); M = m; }
   return M;
 }
 
@@ -15,7 +15,7 @@ export class Encoder {
     this.seed = M._lizard_wh_encoder_create(p, message.length, blockBytes, out);
     M._free(p);
     if (this.seed < 0) throw new Error(`wirehair encoder: ${this.seed}`);
-    this.h = M.getValue(out, "i32"); M._free(out);
+    this.h = M.HEAP32[out >> 2]; M._free(out);
     this.blockBytes = blockBytes; this.buf = M._malloc(blockBytes);
     this.blocks = Math.ceil(message.length / blockBytes);
   }
@@ -33,7 +33,7 @@ export class Decoder {
   constructor(messageBytes, blockBytes, seed) {
     const out = M._malloc(4), rc = M._lizard_wh_decoder_create(messageBytes, blockBytes, seed, out);
     if (rc < 0) throw new Error(`wirehair decoder: ${rc}`);
-    this.h = M.getValue(out, "i32"); M._free(out);
+    this.h = M.HEAP32[out >> 2]; M._free(out);
     Object.assign(this, { messageBytes, blockBytes, buf: M._malloc(blockBytes), lastId: Math.ceil(messageBytes / blockBytes) - 1 });
   }
   // true once enough blocks are in.

@@ -289,7 +289,7 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
     // there is nothing in it to lock to: measured at 2 px of defocus, refining the corners took a marked symbol
     // from 6 blocks of 96 to 2 where it takes an unmarked one from 19 to 35. Reaching a module past the mark's
     // inner edge puts the square's own edges in the template, which is the strongest feature the symbol has.
-    if (L->corner >= 5 && ex == 6 && ey == 6) { ex = L->corner - 1 < OB_FB - 3 ? L->corner - 1 : OB_FB - 3; ey = ex; }
+    if (ex == 6 && ey == 6) { ex = L->corner - 1 < OB_FB - 3 ? L->corner - 1 : OB_FB - 3; ey = ex; }
     rect[0] = -ex < -cx0 ? -cx0 : -ex; rect[1] = ex + 1 > L->w - cx0 ? L->w - cx0 : ex + 1;
     rect[2] = -ey < -cy0 ? -cy0 : -ey; rect[3] = ey + 1 > L->h - cy0 ? L->h - cy0 : ey + 1;
   }
@@ -658,11 +658,10 @@ static void border_fill_axis(const ob_layout_t *L, const homo_t *H, int iw, int 
 
 #ifdef OB_VERIFY_POINTS
 #include <stdio.h>
-int ob_verify_points_ok;
 #endif
 typedef struct { float along, across; int rank; } fpt_t;   // rank: which candidate of its scan line this is, counted from the outside
 typedef struct { float a, b; int n; float c, mid; } fline_t;   // across = c (along - mid)^2 + a * along + b
-// SIDE_K was 4 until a page of clutter round the symbol was measured (scripts/exp/clutter.mjs). A scan line
+// SIDE_K was 4 until a page of clutter round the symbol was measured (2026-09-21). A scan line
 // stops at SIDE_K, so every dark run the clutter puts between the edge of the frame and the border
 // costs one slot, and fit_lines draws its triples WITHIN one rank: the border's rank then varies
 // along the side and no rank holds the twelve points a fit needs. Frames registered of 6 at 64 and
@@ -1025,7 +1024,7 @@ static void refit_curve(const float *al, const float *ac, int n, float tol, flin
 // ---------------------------------------------------------------- thin frame: the corner marks
 //
 // The marks are found DIRECTLY IN THE IMAGE here, not out of the line scan's candidate lists, and that is the
-// whole point of this pass. scripts/exp/noise_bg.mjs: a noisy surround costs the thin frame everything, a quiet zone
+// whole point of this pass. Measured on a noisy surround (2026-09-21): it costs the thin frame everything, a quiet zone
 // does not buy it back at any width, and cropping the capture to the symbol restores all of it. Everything that
 // works from the line scan's lists fails for one reason: a scan STOPS after SIDE_K candidates, so when noise
 // supplies that many before the border, the border was never recorded and nothing downstream can recover it.
@@ -1040,20 +1039,9 @@ static void refit_curve(const float *al, const float *ac, int n, float tol, flin
 enum { MARK_MIN_CORE = 3 };
 
 // The core's modules, and where its centre sits in layout coordinates. thin_corner paints the core from the end
-// of the gap band to the mark's light rim, so it spans [OB_THIN_TRACK, S - 1) and its middle is the two averaged.
-// A mark is the same shape wherever it sits, so one size serves both designs.
-static inline int mark_side(const ob_layout_t *L) { return L->corner >= 5 ? L->corner : (L->centre >= 5 ? L->centre : L->edge); }
-// Every distinct core the layout paints, because a design may carry more than one shape at once: a corner mark
-// borrows the border's line and gap for two of its sides, so it loses them once; a mark anywhere else carries its
-// own all round and loses them twice. Returns how many.
-static int mark_cores(const ob_layout_t *L, int *out) {
-  int n = 0;
-  const int ring = 2 * OB_THIN_TRACK;
-  if (L->corner >= 5) out[n++] = L->corner - 1 - OB_THIN_TRACK;
-  if (L->centre >= 5) out[n++] = L->centre - ring;
-  if (L->edge >= 5 && (!L->centre || L->edge != L->centre)) out[n++] = L->edge - ring;
-  return n;
-}
+// of the gap band to the mark's light rim, so it spans [OB_THIN_TRACK, S - 1) and its middle is the two averaged. A
+// corner mark borrows the border's line and gap for two of its sides.
+static inline int mark_core(const ob_layout_t *L) { return L->corner - 1 - OB_THIN_TRACK; }
 static inline float mark_mid(const ob_layout_t *L) { return (OB_THIN_TRACK + L->corner - 1) / 2.0f; }
 
 // line, gap and core in pixels against the ratio OB_THIN_LINE : OB_RING_DEEP : core. `unit` comes back as the
@@ -1156,24 +1144,17 @@ static void mark_note(cand_t *out, int *n, float fx, float fy, float u) {
   } else if (*n < MAX_CAND) out[(*n)++] = (cand_t){ fx, fy, u, 1 };
 }
 static int mark_candidates(const ob_layout_t *L, const uint8_t *bin, int w, int h, int merged, cand_t *out) {
-  int cores[3], ncore = mark_cores(L, cores);
-  if (mark_side(L) < 5 || L->corner_filled || !ncore) return 0;
-  // Corner marks only: a mark with its ring all round merges into a ring and a core, not into a square.
-  const int sq = L->corner >= 5 ? L->corner - 2 : 0;
-  if (merged && !sq) return 0;
-  int n = 0, *pos = malloc(((size_t)w + 2) * sizeof(int)), minc = merged ? sq : 1 << 20;
+  const int core = mark_core(L), sq = L->corner - 2;
+  int n = 0, *pos = malloc(((size_t)w + 2) * sizeof(int)), minc = merged ? sq : core;
   if (!pos) return 0;
-  for (int i = 0; !merged && i < ncore; i++) if (cores[i] >= MARK_MIN_CORE && cores[i] < minc) minc = cores[i];
   for (int y = 1; y < h; y += 2) {
     const int np = run_edges(bin + y * w, w, pos);
-    int noted = -1;   // the core this row has counted: a ring mark's core lies between two lines and both pairs match it
+    int noted = -1;   // the core this row has counted: met second in one pair, it is met first in the next
     for (int k = 1; !merged && 2 * k + 1 < np; k++) {
       const int a0 = pos[2 * k - 2], a1 = pos[2 * k - 1], b0 = pos[2 * k], b1 = pos[2 * k + 1];
       if (a0 == 0 || b1 >= w) continue;            // a run touching either end of the row has no light outside it
       const int first = a1 - a0, gap = b0 - a1, second = b1 - b0;
-      for (int sc = 0; sc < 2 * ncore; sc++) {
-        const int side = sc & 1, core = cores[sc >> 1];
-        if (core < MARK_MIN_CORE) continue;
+      for (int side = 0; side < 2; side++) {
         // side 0: the corner is to the left, so the line is met first and the core second.
         const int line = side ? second : first, cpx = side ? first : second;
         const int cx0 = side ? a0 : b0, cx1 = side ? a1 : b1;
@@ -1206,7 +1187,7 @@ static int mark_candidates(const ob_layout_t *L, const uint8_t *bin, int w, int 
         // Rows that must cross the smallest mark this call accepts, at this candidate's size: three, or fewer for a small core.
         int need = (int)(minc * out[c].unit) / 2;
         need = need > 3 ? 3 : need < 1 ? 1 : need;
-        if (out[c].hits >= need || out[c].y + mark_side(L) * out[c].unit > y) out[m++] = out[c];
+        if (out[c].hits >= need || out[c].y + L->corner * out[c].unit > y) out[m++] = out[c];
       }
       n = m;
     }
@@ -1267,8 +1248,8 @@ static int mark_candidates(const ob_layout_t *L, const uint8_t *bin, int w, int 
 }
 
 // Four marks chosen the way zxing chooses finder patterns: not by where they are but by whether they AGREE with
-// each other (archive/qr-aztec/vendor/zxing-cpp, QRDetector.cpp GenerateFinderPatternSets rejects a triple on size ratio, leg
-// ratio, implied module count and angle). The widest convex quad picks picture texture here: the picture offers
+// each other (zxing's QR detector rejects a triple of finder patterns on size ratio, leg ratio, implied module count
+// and angle). The widest convex quad picks picture texture here: the picture offers
 // dozens of small things with a mark's cross-section, and four of them always span more of the image than the marks do.
 //
 // LIZARD can press the module-count test much harder than QR can, because the count is not being estimated: two
@@ -1299,8 +1280,8 @@ static float mark_form_mid(const ob_layout_t *L, int form) { return form == 1 ? 
 void ob_mark_geom(const ob_layout_t *L, float *out) {
   out[0] = (float)L->w;
   out[1] = (float)L->corner;
-  out[2] = (float)(L->corner >= 5 ? L->corner - 1 - OB_THIN_TRACK : 0);
-  out[3] = (float)(L->corner >= 5 ? L->corner - 2 : 0);
+  out[2] = (float)mark_core(L);
+  out[3] = (float)(L->corner - 2);
   out[4] = mark_form_mid(L, 0);
   out[5] = mark_form_mid(L, 1);
   out[6] = L->nx > 1 ? L->node_x[L->nx - 1] - L->node_x[0] : (float)L->w;
@@ -1387,9 +1368,9 @@ static int mark_quads(const ob_layout_t *L, const cand_t *all, int nall, int mer
 }
 
 // What a mesh built elsewhere has to be built against: the layout's node lattice, the per-module kind map and which
-// nodes carry a mark. Read once a configuration. dims: nx, ny, w, h, thin, corner.
+// nodes carry a mark. Read once a configuration. dims: nx, ny, w, h, corner.
 int ob_test_mesh_tables(const ob_layout_t *L, int32_t *dims, float *nodeX, float *nodeY, uint8_t *kind, int32_t *mark) {
-  dims[0] = L->nx; dims[1] = L->ny; dims[2] = L->w; dims[3] = L->h; dims[4] = L->thin; dims[5] = L->corner;
+  dims[0] = L->nx; dims[1] = L->ny; dims[2] = L->w; dims[3] = L->h; dims[4] = L->corner;
   if (!nodeX) return 1;
   for (int i = 0; i < L->nx; i++) nodeX[i] = L->node_x[i];
   for (int j = 0; j < L->ny; j++) nodeY[j] = L->node_y[j];
@@ -1397,60 +1378,14 @@ int ob_test_mesh_tables(const ob_layout_t *L, int32_t *dims, float *nodeX, float
   for (int k = 0; k < L->nx * L->ny; k++) mark[k] = L->node_mark[k];
   return 1;
 }
-// Four points determine a homography exactly, so every error in them is an error in it. Eight over-determine it,
-// which is the difference between trusting one measurement and averaging several: QR v40 carries 46 alignment
-// patterns for the same reason LIZARD carries more than its corners.
-//
-// The correspondences cannot be known before the map is, so this runs after it: the corner quad gives a first H,
-// H says where the edge marks must be, and anything found within half a mark of a prediction joins the fit.
-// `src` and `dst` receive the layout and image coordinates of everything matched, appended from `have`; the new count comes back.
-static int mark_pairs(const ob_layout_t *L, const cand_t *c, int n, const homo_t *H, float *src, float *dst, int have) {
-  if (L->edge < 5) return have;
-  // The painter's boxes (layout.c thin_corner): [cw, cw + S) along the side and [0, S) in from it, core in the middle.
-  const int S = L->edge, cw = (L->w - S + 1) / 2, ch = (L->h - S + 1) / 2;
-  const float m = S / 2.0f;
-  const float lay8[8] = { cw + m, m, L->w - m, ch + m, cw + m, L->h - m, m, ch + m };
-  for (int k = 0; k < 4 && have < 8; k++) {
-    float px, py;
-    const float lay[2] = { lay8[2 * k], lay8[2 * k + 1] };
-    project(H, lay[0], lay[1], &px, &py);
-    int best = -1;
-    float bd = 1e9f;
-    for (int i = 0; i < n; i++) {
-      const float dx = c[i].x - px, dy = c[i].y - py, d2 = dx * dx + dy * dy;
-      if (d2 < bd) { bd = d2; best = i; }
-    }
-    // Within half a mark of where it was predicted, or it is not that mark.
-    if (best < 0 || bd > 0.25f * L->edge * L->edge * c[best].unit * c[best].unit) continue;
-    src[2 * have] = lay[0]; src[2 * have + 1] = lay[1];
-    dst[2 * have] = c[best].x; dst[2 * have + 1] = c[best].y;
-    have++;
-  }
-  return have;
-}
-
-// Least squares over `n` correspondences, through the same normal equations solve8 already does for four.
-static int homography_n(const float *src, const float *dst, int n, homo_t *H) {
-  double N[8][9] = { { 0 } };
-  for (int i = 0; i < n; i++) {
-    const double x = src[2 * i], y = src[2 * i + 1], u = dst[2 * i], v = dst[2 * i + 1];
-    const double r0[9] = { x, y, 1, 0, 0, 0, -u * x, -u * y, u }, r1[9] = { 0, 0, 0, x, y, 1, -v * x, -v * y, v };
-    for (int a = 0; a < 8; a++) for (int b = 0; b < 9; b++) N[a][b] += r0[a] * r0[b] + r1[a] * r1[b];
-  }
-  if (!solve8(N)) return 0;
-  for (int i = 0; i < 8; i++) H->h[i] = (float)(N[i][8] / N[i][i]);
-  H->h[8] = 1;
-  return 1;
-}
-
 // Every mark of one form in a binarized image at 1 / scale of the capture, in the capture's own coordinates. The
 // candidates depend on the mark's design alone, never on how many modules the symbol has, so one scan serves every
 // layout a receiver is looking for.
 static int mark_scan(const ob_layout_t *L, const uint8_t *bin, int bw, int bh, int scale, int merged, float *best_mark, cand_t *c) {
   const int n = mark_candidates(L, bin, bw, bh, merged, c);
   for (int k = 0; k < n; k++) { c[k].x *= scale; c[k].y *= scale; c[k].unit *= scale; }
-  // The best-supported mark, whatever the design: four at the corners give a quad, one in the middle does not.
-  // It is a centre and a module size, which says where the symbol is and how big, not how it is turned (layout.h).
+  // The best-supported mark: one is a centre and a module size, which says where the symbol is and how big, not how it
+  // is turned; four give a quad.
   // A gapped mark is believed over any merged one: nothing else in a capture has its cross-section. A scan of a
   // shrunk image counts fewer rows, so it only speaks when the full one found nothing.
   if (scale == 1 ? !merged || best_mark[2] <= 0 : best_mark[2] <= 0) { int bh2 = 0; for (int k = 0; k < n; k++) if (c[k].hits > bh2) { bh2 = c[k].hits; best_mark[0] = c[k].x; best_mark[1] = c[k].y; best_mark[2] = c[k].unit; } }
@@ -1459,7 +1394,7 @@ static int mark_scan(const ob_layout_t *L, const uint8_t *bin, int bw, int bh, i
 
 // The mark centres of one form as quads, best spacing first, and the rectangle they make in layout modules.
 static int mark_rect(const ob_layout_t *L, const cand_t *c, int n, int iw, int ih, int merged, float *src, mquad_t *quads) {
-  if (L->corner < 5 || n < 4) return 0;
+  if (n < 4) return 0;
   const float m = mark_form_mid(L, merged), s4[8] = { m, m, L->w - m, m, L->w - m, L->h - m, m, L->h - m };
   memcpy(src, s4, sizeof s4);
   int nq = mark_quads(L, c, n, merged, quads), keep = 0;
@@ -1487,7 +1422,7 @@ static int mark_rect(const ob_layout_t *L, const cand_t *c, int n, int iw, int i
 // bezel), so within its rank nearly every triple is good. Support is counted over every point.
 //
 // A noisy surround destroys that invariant, and a pass over every point at once, ignoring rank, with
-// five times the draws, was tried and does NOT get it back (scripts/exp/noise_bg.mjs, unchanged in every
+// five times the draws, was tried and does NOT get it back (the noisy-surround cells, unchanged in every
 // cell). The reason is upstream of the fit: a scan STOPS after SIDE_K candidates, so when noise
 // supplies eight before the border the border's points were never recorded, and no draw over what
 // was recorded can find them. Raising SIDE_K does record them, and then the frame registers and the
@@ -1674,7 +1609,7 @@ static float thin_score(const ob_layout_t *L, const image_t *im, const homo_t *H
       const v128_t q4 = wasm_f32x4_div(wasm_f32x4_sub(wasm_f32x4_splat(ref), smp), wasm_f32x4_splat(con));
       wasm_v128_store(Q, wasm_f32x4_pmax(wasm_f32x4_pmin(q4, wasm_f32x4_splat(0.5f)), wasm_f32x4_splat(-0.5f)));
       for (int l = 0; l < 4; l++) {
-        score += ob_thin_track(side, j + l, L->track_alt) ? Q[l] : -Q[l];
+        score += ob_thin_track(side, j + l) ? Q[l] : -Q[l];
         if (!(++n & 7) && score + 0.5f * (total - n) < need) return beat;
       }
       j += 3;
@@ -1685,7 +1620,7 @@ static float thin_score(const ob_layout_t *L, const image_t *im, const homo_t *H
     thin_point(H, cv, map[side], x, y, xs, ys, &u, &v);
     float q = (ref - sample(im, u, v)) / con;
     if (q > 0.5f) q = 0.5f; else if (q < -0.5f) q = -0.5f;
-    score += ob_thin_track(side, j, L->track_alt) ? q : -q;
+    score += ob_thin_track(side, j) ? q : -q;
     if (!(++n & 7) && score + 0.5f * (total - n) < need) return beat;
   }
   return score / n;
@@ -1854,7 +1789,7 @@ int ob_thin_score_plan(const ob_layout_t *L, float *pts, int32_t *meta, int32_t 
     for (int j = 0; j < nj; j++) {
       const int t = L->reserve + OB_TRACK_AT(j);
       side_xy(L, side, t + OB_CELL_MID, OB_TRACK_MID, &x, &y); pts[2 * np] = x; pts[2 * np + 1] = y;
-      signs[total] = ob_thin_track(side, j, L->track_alt) ? 1 : -1;
+      signs[total] = ob_thin_track(side, j) ? 1 : -1;
       np++; total++;
     }
   }
@@ -1962,22 +1897,15 @@ static uint8_t *shrink2(const uint8_t *src, int w, int h) {
 }
 
 // A screen is seen mirrored only through a mirror, so the mirror images (hypotheses 4 to 7) are a last resort, not
-// tried once a rotation holds the best (holds_in, below). A mirror image holding it does not stop them: that is a
-// capture through a mirror, and its other quads are read the same way. rotation_holds is the flat 0.15 hold that
-// mark_crop keeps.
+// tried once a rotation holds the best. A mirror image holding it does not stop them: that is a capture through a
+// mirror, and its other quads are read the same way. 0.15 is 3.4 sd of a texture read (a sign test, sd 0.5 /
+// sqrt(cells)) over the 64 ring's 128 track cells, the fewest any ring has: the same significance or more on every
+// ring (2026-10-04: the 32 ring's 64 cells held at 0.212 until it left the format on 2026-10-25).
 static inline int rotation_holds(float best, int orient) { return best >= 0.15f && orient < 4; }
-// The hold at equal significance on every ring (2026-10-04): 0.15 is 3.4 sd of a
-// texture read (a sign test, sd 0.5 / sqrt(cells)) over the 64 ring's 128 track cells, so a ring with fewer cells holds
-// at the same sd: 0.212 on the 32 ring's 64, 0.15 on the others. At a flat 0.15, mark-like squares in a picture
-// settled a false 32-ring quad before the true ring was scored (8 of 2,000 clean frames at LIZARD-208).
-static inline int holds_in(float best, int orient, const ob_layout_t *L) {
-  const int cells = 4 * ob_track_cells(L->w, L->reserve);
-  return orient < 4 && best >= 0.15f * fmaxf(1.0f, sqrtf(128.0f / (float)cells));
-}
 
 // Ls: the layouts the symbol may be, which differ only in how many modules a side (focus.h FOCUS_RING); *which
-// comes back as the one that registered. The mark path scores every one before a hold settles it (holds_in); the
-// line path tries the first first and the others only when it does not register.
+// comes back as the one that registered. The mark path scores every one before a hold settles it; the line path tries
+// the first (the 64 ring) first and the others only when it does not register.
 static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, const uint8_t *bin, float *quad, int *orient, float *score_out, float *best_mark, int *which) {
   int w = im->w, h = im->h, big = w > h ? w : h, n[4], nl[4];
   fpt_t *pts[4] = { 0 };            // allocated only if the scan runs, which a settled mark quad skips
@@ -2012,7 +1940,7 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
   const uint8_t *grey = im->px;
   *which = 0;
   for (int k = 0; k < 8; k++) ob_finder_info[k] = k == 5 || k == 7 ? 0 : -1;
-  for (int scale = 1; mcand && scale <= 4 && !holds_in(best, *orient, Ls[*which]); scale *= 2) {
+  for (int scale = 1; mcand && scale <= 4 && !rotation_holds(best, *orient); scale *= 2) {
     const uint8_t *sbin = bin;
     const int sw = w / scale, sh = h / scale;
     if (scale > 1) {
@@ -2036,31 +1964,23 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
     // a run and a column and four probes near the middle, none of which cares how the square is turned. No new
     // scan: the candidates are the merged form's, their module size rescaled.
     int nmark = 0;
-    for (int form = 0; form < 3 && !holds_in(best, *orient, Ls[*which]); form++) {
+    for (int form = 0; form < 3 && !rotation_holds(best, *orient); form++) {
     if (form < 2) PROF(PROF_FF_MARKS, nmark = mark_scan(Ls[0], sbin, sw, sh, scale, form, best_mark, mcand));
     else {
-      const int core = Ls[0]->corner - 1 - OB_THIN_TRACK, sq = Ls[0]->corner - 2;
-      if (core < MARK_MIN_CORE) break;
+      const int core = mark_core(Ls[0]), sq = Ls[0]->corner - 2;
       for (int k = 0; k < nmark; k++) mcand[k].unit *= (float)sq / core;
     }
     for (int li = 0; li < nL; li++) {
     const ob_layout_t *L = Ls[li];
     const int nq = mark_rect(L, mcand, nmark, w, h, form, msrc, mq);
     if (form == 0 && scale == 1 && li == 0) ob_finder_info[7] = (float)nq;
-    for (int h0 = 0; h0 < 8 && !(h0 == 4 && holds_in(best, *orient, Ls[*which])); h0 += 4)
+    for (int h0 = 0; h0 < 8 && !(h0 == 4 && rotation_holds(best, *orient)); h0 += 4)
     for (int qi = 0; qi < nq; qi++) for (int hyp = h0; hyp < h0 + 4; hyp++) {
       int rot = hyp & 3, mir = hyp >> 2, map[4];
       float d2[8], ref = 0, con = 0, nc[8];
       homo_t H;
       for (int k = 0; k < 4; k++) { int from = (rot + (mir ? 4 - k : k)) & 3; d2[2 * k] = mq[qi].q[from].x; d2[2 * k + 1] = mq[qi].q[from].y; }
       if (!homography(msrc, d2, &H)) continue;
-      // The corner quad places the edge marks; whatever is found where one was predicted joins the fit, and the
-      // map stops being four points exactly solved and becomes as many as were seen, least squares.
-      float s8[16], d8[16];
-      memcpy(s8, msrc, sizeof msrc);
-      memcpy(d8, d2, sizeof d2);
-      const int np = form ? 4 : mark_pairs(L, mcand, nmark, &H, s8, d8, 4);
-      if (np > 4) homography_n(s8, d8, np, &H);
       for (int sd = 0; sd < 4; sd++) { int ia = (rot + (mir ? 4 - ENDS[sd][0] : ENDS[sd][0])) & 3, ib = (rot + (mir ? 4 - ENDS[sd][1] : ENDS[sd][1])) & 3; map[sd] = ((ia + 1) & 3) == ib ? ia : ib; }
       int lv;
       PROF(PROF_FF_TRACK, lv = thin_levels(L, im, &H, NULL, map, &ref, &con));
@@ -2077,8 +1997,8 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
     }
   }
   free(mcand); free(grey2); free(lbin);
-  ob_finder_info[5] = holds_in(best, *orient, Ls[*which]); ob_finder_info[6] = best;
-  if (holds_in(best, *orient, Ls[*which])) ok = 0;
+  ob_finder_info[5] = rotation_holds(best, *orient); ob_finder_info[6] = best;
+  if (rotation_holds(best, *orient)) ok = 0;
   ob_prof_ms[PROF_FF_SCORE] += ob_now_ms() - tp; tp = ob_now_ms();
   // THE SCAN AND THE LINE FIT, only if the marks settled nothing. A settled mark quad already cleared `ok`,
   // which skipped the 81 combinations below; what it could not skip was the scan and the fit that feed them,
@@ -2115,7 +2035,6 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
       if (bad) { printf("OB_VERIFY_POINTS: side %d differs (%d candidates against %d), image %d x %d\n", s, n[s], m[s], w, h); abort(); }
       free(ref[s]);
     }
-    ob_verify_points_ok++;
     free(pos); free(tr);
   }
 #endif
@@ -2128,13 +2047,14 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
   }
   int combos = SIDE_LINES * SIDE_LINES * SIDE_LINES * SIDE_LINES;
   // The lines are the image's and serve every layout; the track that judges them is each layout's own.
-  for (int li = 0; ok && li < nL && !holds_in(best, *orient, Ls[*which]); li++) {
+  for (int li = 0; ok && li < nL && !rotation_holds(best, *orient); li++) {
   const ob_layout_t *L = Ls[li];
   // One reading serves every way round on a square, where a turn or a flip lands each side on another's.
-  const int share = L->w == L->h && !(L->w & 1) && L->w > 16, npts = share ? ob_track_cells(L->w, L->reserve) : 0;
-  float *track_s = share ? malloc((size_t)8 * npts * sizeof(float)) : NULL;
-  int8_t *track_sign = share ? malloc((size_t)4 * npts) : NULL;
-  for (int sd = 0; sd < 4 && share; sd++) for (int i = 0; i < npts; i++) track_sign[sd * npts + i] = (int8_t)ob_thin_track(sd, i, L->track_alt);
+  const int npts = ob_track_cells(L->w, L->reserve);
+  float *track_s = malloc((size_t)8 * npts * sizeof(float));
+  int8_t *track_sign = malloc((size_t)4 * npts);
+  if (!track_s || !track_sign) { free(track_s); free(track_sign); break; }
+  for (int sd = 0; sd < 4; sd++) for (int i = 0; i < npts; i++) track_sign[sd * npts + i] = (int8_t)ob_thin_track(sd, i);
   // Two passes, one per depth the curves may run at (thin_edge_depth). Blur is the same all round the symbol, so
   // the four sides share one state and this is two hypotheses, not sixteen. The second runs only when the first
   // settled nothing, so a capture sharp enough for the gap to survive pays for one.
@@ -2144,7 +2064,7 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
   // read passably one way round shut the true one out. One read serves all eight ways round, so this costs reading
   // each side both ways, not eight reads: on the line path a decode went from 2.7 to 2.9 ms at n = 256 and from
   // 15.5 to 15.8 at 1024 (an ideal image, mark cores painted out).
-  for (int pass = 0; pass < 2 && !(pass && holds_in(best, *orient, Ls[*which])); pass++) {
+  for (int pass = 0; pass < 2 && !(pass && rotation_holds(best, *orient)); pass++) {
   thin_edge_depth = pass ? OB_THIN : 1 + OB_THIN_LINE;   // OB_THIN: the picture's edge, which is what line, track and ring merge to
   { const float e = thin_edge_depth, se[8] = { e, e, L->w - e, e, L->w - e, L->h - e, e, L->h - e }; memcpy(src, se, sizeof src); }
   for (int combo = 0; ok && combo < combos; combo++) {
@@ -2165,8 +2085,8 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
     // The track is read once, the way up the quad is and both ways along each side (thin_read_both), and each
     // hypothesis takes its sides from that reading with its own threshold and signs: the score its own map gives,
     // without eight reads. The one that wins gets its own homography for the corners it hands back.
-    if (share && (!homography(src, dst, &H0) || !(con = thin_read_both(L, im, &H0, cv, track_s, pair, npts, &nref)))) continue;
-    for (int hyp = 0; hyp < 8 && !(hyp == 4 && holds_in(best, *orient, Ls[*which])); hyp++) {
+    if (!homography(src, dst, &H0) || !(con = thin_read_both(L, im, &H0, cv, track_s, pair, npts, &nref))) continue;
+    for (int hyp = 0; hyp < 8 && !(hyp == 4 && rotation_holds(best, *orient)); hyp++) {
       int rot = hyp & 3, mir = hyp >> 2, map[4];
       float d2[8], sc = 0;
       homo_t H;
@@ -2178,7 +2098,7 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
         map[sd] = ((ia + 1) & 3) == ib ? ia : ib;
         rev[sd] = ia != ENDS[map[sd]][0];
       }
-      if (share) {
+      {
         float trk = 0;
         for (int sd = 0; sd < 4; sd++) trk += pair[4 * rev[sd] + map[sd]];
         const float ref = 0.5f * trk / nref;
@@ -2197,12 +2117,6 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
       }
       for (int k = 0; k < 4; k++) { int from = (rot + (mir ? 4 - k : k)) & 3; d2[2 * k] = dst[2 * from]; d2[2 * k + 1] = dst[2 * from + 1]; }
       if (!homography(src, d2, &H)) continue;
-      if (!share) {
-        float ref;
-        if (!thin_levels(L, im, &H, cv, map, &ref, &con)) continue;
-        sc = thin_score(L, im, &H, cv, map, ref, con, best);
-        if (sc <= best) continue;
-      }
       best = sc; *orient = hyp; *which = li;
       ob_finder_info[0] = best; ob_finder_info[1] = (float)hyp; ob_finder_info[4] = 1;
       // Hand back the lattice's own corners, which sit half a module further in than the line's middle.
@@ -2262,7 +2176,7 @@ void ob_reg_free(ob_reg_t *reg) { free(reg->nodes); reg->nodes = NULL; }
 // Look again inside what one mark says the symbol is, for the case the first look found nothing.
 //
 // A scan starts at the frame's edge and stops after SIDE_K candidates, so whatever lies between the edge and the
-// symbol spends them: scripts/exp/noise_bg.mjs measured a noisy surround taking the whole payload, and
+// symbol spends them: a noisy surround was measured taking the whole payload (2026-09-21), and
 // archive/build-scratch-2026-09/crop_ceiling.mjs measured a crop to within a few percent of the symbol giving all of it back. One mark
 // gives a centre and a module size, which is that crop to about a tenth of the symbol, and a tenth is enough
 // (archive/build-scratch-2026-09/mark_race.mjs: a 2% margin buys nothing, a 10% margin buys everything).
@@ -2272,12 +2186,9 @@ void ob_reg_free(ob_reg_t *reg) { free(reg->nodes); reg->nodes = NULL; }
 // rather than the first binarization being cropped, because the threshold is local and the noise that is now
 // outside the crop was part of what set it.
 // With several layouts each is tried in turn, since the box a mark implies is its layout's size.
-// The best crop wins, and only a rotation at a flat 0.15 ends the search (rotation_holds). find_frame's hold by ring
-// (holds_in) was tried here on 2026-10-04 and read no frame better: on 1,600 made hard captures it acted on 3, changed
-// none of them (a 32-ring crop at 0.16 to 0.17, no word either way) and made their registration 2.5 to 3 times as
-// slow. The first crop to reach 0.06 won until 2026-09-24, and once the line path read all eight ways round a wrong
-// box's 0.07 came before the right box's 0.25 (LIZARD-16, far 0.8 px a module, scripts/exp/fmt_word.mjs DAMAGE frame
-// 1). Still at most 4 crops a layout.
+// The best crop wins, and only a rotation at 0.15 ends the search (rotation_holds). The first crop to reach 0.06 won
+// until 2026-09-24, and once the line path read all eight ways round a wrong box's 0.07 came before the right box's
+// 0.25 (LIZARD-16, far 0.8 px a module, scripts/exp/fmt_word.mjs DAMAGE frame 1). Still at most 4 crops a layout.
 static int mark_crop(const ob_layout_t *const *Ls, int nL, const image_t *im, float *quad, int *orient, float *sc, const float *mark, int *which) {
   uint8_t *cg = NULL, *cb = NULL;
   int ok = 0;
@@ -2288,8 +2199,8 @@ static int mark_crop(const ob_layout_t *const *Ls, int nL, const image_t *im, fl
   static const int SX[4] = { -1, 1, 1, -1 }, SY[4] = { -1, -1, 1, 1 };
   if (!(u > 0) || side < 64 || side > 4.0f * (im->w > im->h ? im->w : im->h)) continue;
   for (int k = 0; k < 4 && !rotation_holds(best, *orient); k++) {
-    // A centre mark is its own answer; a corner mark is one of four, so step to where each would put the middle.
-    const float cx = mark[0] + (L->corner >= 5 ? SX[k] * in : 0), cy = mark[1] + (L->corner >= 5 ? SY[k] * in : 0);
+    // A corner mark is one of four, so step to where each would put the middle.
+    const float cx = mark[0] + SX[k] * in, cy = mark[1] + SY[k] * in;
     int x0 = (int)(cx - half), y0 = (int)(cy - half), x1 = (int)(cx + half), y1 = (int)(cy + half);
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
@@ -2309,7 +2220,6 @@ static int mark_crop(const ob_layout_t *const *Ls, int nL, const image_t *im, fl
       best = *sc = s; *orient = o; ok = 1; *which = li;
       memcpy(info, ob_finder_info, sizeof info);
     }
-    if (L->corner < 5) break;   // a centre mark has only the one box to try
   }
   }
   if (ok) memcpy(ob_finder_info, info, sizeof info);   // the record of the crop that won, not of the last one tried

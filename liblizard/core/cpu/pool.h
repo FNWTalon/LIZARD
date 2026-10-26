@@ -69,7 +69,6 @@ class CpuPool {
   void lost(double repeatShare);
   void tick(int busySkips);
   int size() const { return size_.load(); }   // ai: workers frames are given to
-  int ready() const;                          // ai: those of them that have their decoder
   int ceiling() const { return ceiling_; }
 
  private:

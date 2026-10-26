@@ -26,11 +26,11 @@ class RoundTripTest {
   }
 
   @Test fun arithmetic() {
-    assertEquals(1, Lizard.abi)
     assertTrue(Lizard.version.matches(Regex("""\d+\.\d+\.\d+""")))
     assertEquals(128, Lizard.ringCells())
     val g = Lizard.geometry(Format(60, codes = 2))
-    assertEquals(Geometry(1024, 256, 4, 1160, 2368, 1160, 48, 120), g)
+    // ai: LIZARD-480 carries the rate profile's 59 blocks a symbol
+    assertEquals(Geometry(1024, 256, 4, 1160, 2368, 1160, 48, 118), g)
     assertEquals(58, Lizard.pick(1920.0, 1080.0, codes = 2))
     assertEquals(2, Lizard.layoutRects(1920, 1080, 2).size)
   }
@@ -96,6 +96,9 @@ class RoundTripTest {
 
   @Test fun failures() {
     assertFailsWith<IllegalArgumentException> { Encoder(Format(0)) }
+    // ai: one block a frame (LIZARD-8) is no format
+    assertFailsWith<IllegalArgumentException> { Encoder(Format(1)) }
+    assertFailsWith<IllegalArgumentException> { Lizard.geometry(Format(1)) }
     assertFailsWith<IllegalArgumentException> { Lizard.geometry(Format(10, ring = 7)) }
     val e = Encoder(Format(8))
     e.close()
@@ -117,8 +120,10 @@ class RoundTripTest {
     val g = Lizard.geometry(f)
     val store = File(System.getProperty("java.io.tmpdir"), "lizard-kotlin-engine-${ProcessHandle.current().pid()}")
     var released = 0
+    // ai: the sender's frames live in the GPU's ring whatever paints them: the generated tree's kernels (lizard.assets)
+    val assets = System.getProperty("lizard.assets") ?: error("no lizard.assets: the generated GPU tree")
     Sender(bytes, "e.bin").use { s ->
-      s.configure(f, Painter.CPU, threads = 2)
+      s.configure(f, Painter.CPU, threads = 2, assets = assets)
       Receiver(store.path, decoder = DecoderKind.CPU, release = { released++ }).use { r ->
         val frame = ByteArray(g.width * g.height)
         var shown = 0

@@ -1,12 +1,12 @@
 // zstd, the transfer's compression (src/xfer.h: a chunk goes as one zstd frame where that is shorter than its bytes),
-// through liblizard/zstd/shim.c, which pins the parameters so every sender writes the same frame. build/zstd.mjs comes
-// from ./build.sh zstd. Handed to XferSender and XferReceiver (sim/xfer.mjs) as `Z`, the way Wirehair's classes are,
-// so a module that only needs the id test loads neither.
-import create from "../build/zstd.mjs";
+// through liblizard/zstd/shim.c, which pins the parameters so every sender writes the same frame; inside the codec's
+// module (liblizard/build.sh), the instance sim/ob.mjs's default build shares. Handed to XferSender and XferReceiver
+// (sim/xfer.mjs) as `Z`, the way Wirehair's classes are, so a module that only needs the id test loads neither.
+import { baseModule } from "./ob.mjs";
 
 let M;
 export async function init() {
-  if (!M) M = await create();
+  if (!M) M = await baseModule();
   return M;
 }
 

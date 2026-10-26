@@ -92,10 +92,10 @@
       </div>
       <fieldset id="f-focus"><legend>Code</legend>
         <div class="grid">
-          <!-- ai: blocks a frame, a slider of whole blocks, its first step auto (the largest that fits the room) and 1 to 128 by
-               hand (8 sub-channels a step; an Auto box above it until 2026-10-05); #subch the value the page reads ("auto" or
-               the sub-channels), the slider a view over it (send.mjs) -->
-          <div class="blocks"><span class="row"><span>Blocks</span><span id="blocksOut">57, 26.7 KB</span></span><input id="blocks" type="range" min="0" max="128" step="1" value="60" data-view aria-label="blocks"><input id="subch" type="hidden" value="480"></div>
+          <!-- ai: blocks a frame, a slider of whole blocks, its first step (1) auto (the largest that fits the room) and 2 to 128
+               by hand (8 sub-channels a step; one block a frame is no format since 2026-10-25); #subch the value the page reads
+               ("auto" or the sub-channels), the slider a view over it (send.mjs); its label the rate profile's blocks -->
+          <div class="blocks"><span class="row"><span>Blocks</span><span id="blocksOut">59, 27.7 KB</span></span><input id="blocks" type="range" min="1" max="128" step="1" value="60" data-view aria-label="blocks"><input id="subch" type="hidden" value="480"></div>
           <!-- ai: the display rate, 1 to 60, which the word states -->
           <div class="blocks"><span class="row"><span>FPS</span><span id="fpsOut">60</span></span><input id="fps" type="range" min="1" max="60" step="1" value="60" aria-label="FPS"></div>
           <!-- ai: the code's size, a share of <main>'s room, 25 to 100% (send.mjs sizeOf), so the code can be kept off a monitor's edges -->
@@ -105,7 +105,7 @@
           <div class="blocks" id="spacingRow" hidden><span class="row"><span>Spacing</span><span id="spacingOut">16 modules</span></span><input id="spacing" type="range" min="4" max="68" step="1" value="16" aria-label="spacing"></div>
           <div class="blocks"><span class="row"><span>Margin</span><span id="marginOut">8 modules</span></span><input id="margin" type="range" min="2" max="34" step="1" value="8" aria-label="margin"></div>
           <!-- ai: the ring, the 128 by default (sim/lizard_pick.mjs RING_DEFAULT; an Auto option, the same ring, until 2026-10-05) -->
-          <label>Ring <select id="ring"><option value="32">32</option><option value="64">64</option><option value="128" selected>128</option><option value="256">256</option></select></label>
+          <label>Ring <select id="ring"><option value="64">64</option><option value="128" selected>128</option><option value="256">256</option></select></label>
           <!-- ai: two codes side by side for the app's 2:1 crop (2026-09-28); "(browsers cannot decode 2 codes)" after Two until
                2026-10-05, when it went for being wider than the menu -->
           <label>Codes <select id="codes"><option value="1" selected>One</option><option value="2">Two</option></select></label>
@@ -125,7 +125,10 @@
     // ai: drawn (send.mjs awaits the codec first), so Settings and Developer Tools opened, and the kept values moved, a moment
     // ai: after the page showed, the chevrons turning as they did. ui.mjs remember and persist's rules, the same keys; the
     // ai: blocks slider and the labels drawn from the values as send.mjs showBlocks and showFps draw
-    // ai: them. The modules run them again later and change nothing. A gap between two codes kept from before the margin
+    // ai: them. The modules run them again later and change nothing. The blocks a frame are the rate profile's
+    // ai: (sim/lizard_pick.mjs tiersFor, src/focus.c focus_tiers_for): 7a + 8m + 9t + 12c sub-channels with (a, t, c)
+    // ai: nearest 39, 15 and 20% of them in least squares, a + m + t + c blocks; a value that is no format (LIZARD-16 to
+    // ai: -1024 in steps of 8) is auto, as send.mjs makes it. A gap between two codes kept from before the margin
     // ai: (2026-10-23) is kept as the margin it was, (gap + 4) / 2, and the spacing, gap + 4; a margin from the morning
     // ai: of one margin with no spacing kept, the spacing it gave, two margins.
     (() => { try {
@@ -139,9 +142,18 @@
         const v = ls.getItem("send:" + el.id);
         if (v !== null && (el.tagName !== "SELECT" || [...el.options].some((o) => o.value === v))) el.value = v;
       }
-      const s = +$("subch").value, b = s >= 8 && s <= 1024 && s % 8 === 0 ? s / 8 : 0;
-      $("blocks").value = String(b);
-      $("blocksOut").textContent = b ? `${b}, ${(b * 469 / 1000).toFixed(1)} KB` : "Auto";
+      const s = +$("subch").value, v = s >= 16 && s <= 1024 && s % 8 === 0 ? s / 8 : 0;
+      let k = 0;
+      if (v) {
+        let best = -1;
+        for (let a = 0; 7 * a <= s - 8; a++) for (let t = 0; 7 * a + 9 * t <= s - 8; t++) for (let c = 0; 7 * a + 9 * t + 12 * c <= s - 8; c++) {
+          if ((s - 7 * a - 9 * t - 12 * c) % 8) continue;
+          const d7 = 700 * a - 39 * s, d3 = 900 * t - 15 * s, d2 = 1200 * c - 20 * s, cost = d7 * d7 + d3 * d3 + d2 * d2;
+          if (best < 0 || cost < best) { best = cost; k = a + t + c + (s - 7 * a - 9 * t - 12 * c) / 8; }
+        }
+      }
+      $("blocks").value = String(v || 1);
+      $("blocksOut").textContent = v ? `${k}, ${(k * 469 / 1000).toFixed(1)} KB` : "Auto";
       $("fpsOut").textContent = `${+$("fps").value}`;
       $("sizeOut").textContent = `${+$("size").value}%`;
       $("spacingOut").textContent = `${+$("spacing").value} modules`;

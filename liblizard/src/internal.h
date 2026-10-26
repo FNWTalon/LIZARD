@@ -67,12 +67,15 @@ typedef struct { homo_t H; node_t *nodes; } ob_reg_t;
 // ai: a thread (any.h). The wasm build has one thread, where this is a plain global.
 #define OB_TLS _Thread_local
 double ob_now_ms(void);
-// Stage timers for the benches (scripts/exp/focus_bench.mjs). A handful of clock reads per frame, left in. Slots 4 to
-// 12 (PROF_SAMPLE to PROF_D_LLR) were the binary grid code's (deleted 2026-10-09), kept so the JS readers' indices hold.
-enum { PROF_LUMA, PROF_BINARIZE, PROF_FINDERS, PROF_MESH, PROF_SAMPLE, PROF_DEMAP, PROF_LDPC, PROF_PACK, PROF_D_STATS, PROF_D_NORM, PROF_D_FIT, PROF_D_APPLY, PROF_D_LLR,
-       PROF_F_SAMPLE, PROF_F_DETREND, PROF_F_FFT, PROF_F_LLR, PROF_F_LDPC, PROF_F_ENC_FFT, PROF_F_ENC_REST,   // F: the FOCUS decoder and encoder (scripts/exp/focus_bench.mjs)
-       PROF_FF_POINTS, PROF_FF_TURN, PROF_FF_FIT, PROF_FF_SCORE,   // FF: inside the thin frame's finder (slots 20..23)
-       PROF_FF_MARKS, PROF_FF_TRACK, PROF_N };   // 24, 25: the mark scan, and the track read that judges a quad
+// Stage timers for the benches (scripts/exp/focus_bench.mjs). A handful of clock reads per frame, left in. The slots by
+// index, as the JS and the native tools read them: 0 luma, 1 binarize, 2 finders, 3 mesh; 4 to 10 the picture's decoder
+// and encoder (sample, detrend, transform, LLR, LDPC, the encoder's transform and the rest of it); 11 to 16 inside the
+// thin frame's finder (points, turn, fit, score, the mark scan, the track read that judges a quad). Since 2026-10-25:
+// slots 4 to 12 were the binary grid code's until then, and every later slot sat 9 higher.
+enum { PROF_LUMA, PROF_BINARIZE, PROF_FINDERS, PROF_MESH,
+       PROF_F_SAMPLE, PROF_F_DETREND, PROF_F_FFT, PROF_F_LLR, PROF_F_LDPC, PROF_F_ENC_FFT, PROF_F_ENC_REST,   // F: the picture's decoder and encoder
+       PROF_FF_POINTS, PROF_FF_TURN, PROF_FF_FIT, PROF_FF_SCORE,   // FF: inside the thin frame's finder
+       PROF_FF_MARKS, PROF_FF_TRACK, PROF_N };   // the mark scan, and the track read that judges a quad
 extern OB_TLS double ob_prof_ms[PROF_N];
 #define PROF(i, stmt) do { double t_ = ob_now_ms(); stmt; ob_prof_ms[i] += ob_now_ms() - t_; } while (0)
 void ob_luma(const uint8_t *rgba, int n, uint8_t *out);

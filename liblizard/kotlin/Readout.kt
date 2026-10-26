@@ -56,7 +56,7 @@ object Readout {
     data class Line(val text: String, val tone: Tone = Tone.Plain, val nums: String = "", val frac: Double? = null,
                     val before: String = "", val name: String? = null, val after: String = "")
 
-    // ai: What the native receiver says (its stats JSON, receiver_stub.cpp's header) that the screen reads.
+    // ai: What the native receiver says (its stats JSON: liblizard/core/rx/receiver.h stats) that the screen reads.
     data class Rx(
         val state: String = "", val error: String = "", val goodputKBs: Double = 0.0, val foundShare: Double = 0.0,
         val bandVersion: Int = 0, val fps: Int = 0, val hasFile: Boolean = false, val name: String = "a file",

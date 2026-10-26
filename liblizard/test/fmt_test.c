@@ -1,5 +1,5 @@
-// The format word (src/fmt.c) at each ring's code: RS(8,3), RS(16,3), RS(32,3), RS(64,3) over every word cell of the
-// 32, 64, 128 and 256 ring. Lengths from the layout, the SPEC test vectors, round trips through the soft values, whole
+// The format word (src/fmt.c) at each ring's code: RS(16,3), RS(32,3), RS(64,3) over every word cell of the 64, 128
+// and 256 ring. Lengths from the layout, the SPEC test vectors, round trips through the soft values, whole
 // sides lost, errors with and without the least confident bytes erased, the acceptance checks, and how often garbage
 // is accepted.
 //   gcc -O2 -Wall -Wextra -Isrc -o build/fmt_test test/fmt_test.c src/fmt.c src/rs.c src/layout.c src/ldpc.c -lm && build/fmt_test
@@ -19,20 +19,22 @@ static float uni(void) { return (float)(rnd() >> 8) / 16777216.0f; }
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL line %d: ", __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
-// The four rings: B band cells a side, modules a side S = 2B + 30 (src/focus.h), band reserve 15
-// (ob_thin_reserve(OB_THIN_CORNER)); W word cells a side, RS(BS, 3). Any ring carries any version (SPEC 5.2).
-static const int RB[4] = { 32, 64, 128, 256 }, WS[4] = { 16, 32, 64, 128 }, BS[4] = { 8, 16, 32, 64 };
+// The three rings: B band cells a side, modules a side S = 2B + 30 (src/focus.h), band reserve 15
+// (OB_THIN_RESERVE); W word cells a side, RS(BS, 3). Any ring carries any version (SPEC 5.2).
+enum { NR = 3, NV = OB_FMT_VERSION_MAX - OB_FMT_VERSION_MIN + 1 };
+static const int RB[NR] = { 64, 128, 256 }, WS[NR] = { 32, 64, 128 }, BS[NR] = { 16, 32, 64 };
+// ai: a version a word may state, at random
+static int any_version(void) { return OB_FMT_VERSION_MIN + (int)(rnd() % NV); }
 
-// SPEC.md 5.2's seven words, a the ring's index (test/vectors.mjs holds the wasm build to the same words). A change
+// SPEC.md 5.2's six words, a the ring's index (test/vectors.mjs holds the wasm build to the same words). A change
 // here is a change to the format.
 static const struct { int a, version, fps; const char *hex; } VEC[] = {
-  { 0, 2, 0, "4c0200723f148394" },
-  { 1, 64, 24, "4c401843c236ee95dc072a1c61cb63fc" },
-  { 1, 128, 240, "4c80f01a03b06a272bf125d409be9dd9" },
-  { 1, 72, 30, "4c481e8a5889b2ffdc13581b53702083" },
-  { 1, 2, 0, "4c0200bf8a272653d9ff5f11927947ed" },
-  { 2, 8, 60, "4c083c787c7c416d2b6b3fc18075004ad5cd92b1945ab6165f18ed021c053ff6" },
-  { 3, 32, 120, "4c2078c9d4c6572e79e041b1f59cf0bf61b4d51a391c456426ff193c5616df3bfa872faddf956cda9ffb1371b5bfca1460e86e4f278c5a2c1e79b982387ef7f7" },
+  { 0, 64, 24, "4c401843c236ee95dc072a1c61cb63fc" },
+  { 0, 128, 240, "4c80f01a03b06a272bf125d409be9dd9" },
+  { 0, 72, 30, "4c481e8a5889b2ffdc13581b53702083" },
+  { 0, 2, 0, "4c0200bf8a272653d9ff5f11927947ed" },
+  { 1, 8, 60, "4c083c787c7c416d2b6b3fc18075004ad5cd92b1945ab6165f18ed021c053ff6" },
+  { 2, 32, 120, "4c2078c9d4c6572e79e041b1f59cf0bf61b4d51a391c456426ff193c5616df3bfa872faddf956cda9ffb1371b5bfca1460e86e4f278c5a2c1e79b982387ef7f7" },
 };
 
 // Soft values as the reader lays them out, q[side * cells + i]: +mag for a dark cell, -mag for a light one.
@@ -46,9 +48,9 @@ static void flip_byte(float *q, int cells, int k, float mag) { for (int b = 0; b
 static void fade_side(float *q, int cells, int s) { for (int i = 0; i < cells; i++) q[s * cells + i] = (uni() - 0.5f) * 0.04f; }
 
 // 1 decoded right, 0 nothing, -1 a wrong word accepted.
-static int read(const float *q, int cells, int bytes, int vlo, int vhi, int version, int fps) {
+static int read(const float *q, int cells, int bytes, int version, int fps) {
   ob_fmt_t f = { 0, 0 };
-  if (ob_fmt_decode(q, cells, bytes, vlo, vhi, &f)) return 0;
+  if (ob_fmt_decode(q, cells, bytes, &f)) return 0;
   return f.version == version && f.fps == fps ? 1 : -1;
 }
 
@@ -68,12 +70,12 @@ int main(int argc, char **argv) {
   uint8_t cw[OB_FMT_BYTES_MAX + 1];
 
   // Lengths from the layout, as a receiver takes them from the module count it registered.
-  const int r = ob_thin_reserve(OB_THIN_CORNER);
-  for (int a = 0; a < 4; a++) {
+  const int r = OB_THIN_RESERVE;
+  for (int a = 0; a < NR; a++) {
     const int S = 2 * RB[a] + 30;
     CHECK(ob_fmt_side_cells(S, r) == WS[a] && ob_fmt_bytes(S, r) == BS[a], "ring %d: W %d, %d bytes", RB[a], ob_fmt_side_cells(S, r), ob_fmt_bytes(S, r));
   }
-  CHECK(ob_fmt_bytes(90, r) == 0 && ob_fmt_side_cells(90, r) == 0, "a side too short for the shortest word");
+  CHECK(ob_fmt_bytes(154, r) == 0 && ob_fmt_side_cells(154, r) == 0, "a side too short for the shortest word");
   CHECK(ob_fmt_bytes(700, r) == OB_FMT_BYTES_MAX, "a band past the longest word");
 
   // The vectors, and the encoder's range.
@@ -85,24 +87,24 @@ int main(int argc, char **argv) {
     for (int k = 0; k < BS[a]; k++) sprintf(hex + 2 * k, "%02x", cw[k]);
     CHECK(!strcmp(hex, VEC[v].hex), "vector ring %d version %d fps %d: %s", RB[a], f.version, f.fps, hex);
   }
-  { const ob_fmt_t f = { 2, 0 }, v0 = { 0, 0 }, v129 = { 129, 0 }, fps = { 2, 256 };
-    CHECK(ob_fmt_encode(&f, cw, 16) == 0 && ob_fmt_encode(&f, cw, 7) < 0 && ob_fmt_encode(&f, cw, OB_FMT_BYTES_MAX + 1) < 0, "encode lengths");
-    CHECK(ob_fmt_encode(&v0, cw, 8) < 0 && ob_fmt_encode(&v129, cw, 8) < 0 && ob_fmt_encode(&fps, cw, 8) < 0, "encode fields"); }
+  { const ob_fmt_t f = { 2, 0 }, v0 = { 0, 0 }, v1 = { 1, 0 }, v129 = { 129, 0 }, fps = { 2, 256 };
+    CHECK(ob_fmt_encode(&f, cw, 16) == 0 && ob_fmt_encode(&f, cw, 15) < 0 && ob_fmt_encode(&f, cw, OB_FMT_BYTES_MAX + 1) < 0, "encode lengths");
+    CHECK(ob_fmt_encode(&v0, cw, 16) < 0 && ob_fmt_encode(&v1, cw, 16) < 0 && ob_fmt_encode(&v129, cw, 16) < 0 && ob_fmt_encode(&fps, cw, 16) < 0, "encode fields"); }
 
-  for (int a = 0; a < 4; a++) {
+  for (int a = 0; a < NR; a++) {
     const int W = WS[a], B = BS[a], nroots = B - 3, t = nroots / 2;
-    // ai: The erasure steps' last (src/fmt.c): nroots - 1 at RS(8, 3), the 32 ring, else nroots - 3. Weak bytes past it are
-    // ai: errors over the roots it leaves, so reach is the most weak bytes a word reads with.
-    const int last = B == OB_FMT_BYTES ? nroots - 1 : nroots - 3, reach = last + (nroots - last) / 2;
+    // ai: The erasure steps' last (src/fmt.c): nroots - 3, three roots left in every ring. Weak bytes past it are errors
+    // ai: over the roots it leaves, so reach is the most weak bytes a word reads with.
+    const int last = nroots - 3, reach = last + (nroots - last) / 2;
     int ok = 0, wrong = 0, tries = 0;
     printf("RS(%d,3), ring %d, %d word cells a side, %d bytes a side, %d roots\n", B, RB[a], W, B / 4, nroots);
     // Round trips, with cell noise.
     for (int it = 0; it < 500; it++) {
-      const ob_fmt_t f = { 1 + (int)(rnd() % 128), (int)(rnd() % 256) };
+      const ob_fmt_t f = { any_version(), (int)(rnd() % 256) };
       ob_fmt_encode(&f, cw, B);
       soften(cw, B, W, 0.3f, q);
       for (int i = 0; i < 4 * W; i++) q[i] += (uni() - 0.5f) * 0.2f;
-      const int r = read(q, W, B, 1, 128, f.version, f.fps);
+      const int r = read(q, W, B, f.version, f.fps);
       ok += r == 1; wrong += r < 0; tries++;
     }
     CHECK(ok == tries && !wrong, "round trips %d of %d, %d wrong", ok, tries, wrong);
@@ -112,11 +114,11 @@ int main(int argc, char **argv) {
       for (int m = 0; m < 16; m++) {
         if (__builtin_popcount(m) != lost) continue;
         for (int it = 0; it < 50; it++) {
-          const ob_fmt_t f = { 1 + (int)(rnd() % 128), (int)(rnd() % 256) };
+          const ob_fmt_t f = { any_version(), (int)(rnd() % 256) };
           ob_fmt_encode(&f, cw, B);
           soften(cw, B, W, 0.4f, q);
           for (int s = 0; s < 4; s++) if (m >> s & 1) fade_side(q, W, s);
-          const int r = read(q, W, B, 1, 128, f.version, f.fps);
+          const int r = read(q, W, B, f.version, f.fps);
           got += r == 1; bad += r < 0; n++;
         }
       }
@@ -133,13 +135,13 @@ int main(int argc, char **argv) {
     for (size_t e = 0; e < sizeof E / sizeof E[0]; e++) {
       int got = 0, bad = 0;
       for (int it = 0; it < 200; it++) {
-        const ob_fmt_t f = { 1 + (int)(rnd() % 128), (int)(rnd() % 256) };
+        const ob_fmt_t f = { any_version(), (int)(rnd() % 256) };
         int pos[OB_FMT_BYTES_MAX], used[OB_FMT_BYTES_MAX] = { 0 };
         ob_fmt_encode(&f, cw, B);
         soften(cw, B, W, 0.4f, q);
         for (int i = 0; i < E[e].conf + E[e].weak; i++) { int p; do p = (int)(rnd() % B); while (used[p]); used[p] = 1; pos[i] = p; }
         for (int i = 0; i < E[e].conf + E[e].weak; i++) flip_byte(q, W, pos[i], i < E[e].conf ? 0.45f : 0.05f);
-        const int r = read(q, W, B, 1, 128, f.version, f.fps);
+        const int r = read(q, W, B, f.version, f.fps);
         got += r == 1; bad += r < 0;
       }
       printf("  %2d confident errors, %2d weak: read %3d of 200, wrong %d\n", E[e].conf, E[e].weak, got, bad);
@@ -148,29 +150,30 @@ int main(int argc, char **argv) {
     // Acceptance: a codeword RS takes that is not a word.
     { uint8_t c[OB_FMT_BYTES_MAX] = { 0x4d, 8, 60 };
       rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q);
-      CHECK(read(q, W, B, 1, 128, 8, 60) == 0, "magic 0x4d");
-      for (int v = 0; v <= 129; v += 129) { c[0] = 0x4c; c[1] = (uint8_t)v; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, 1, 128, v, 60) == 0, "version %d", v); }
-      c[1] = 128; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, 1, 128, 128, 60) == 1, "version 128");
-      c[1] = 3; c[2] = 255; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, 1, 128, 3, 255) == 1, "version 3, fps 255");
+      CHECK(read(q, W, B, 8, 60) == 0, "magic 0x4d");
+      static const int NOT_A_VERSION[] = { 0, 1, 129 };
+      for (int k = 0; k < 3; k++) { const int v = NOT_A_VERSION[k]; c[0] = 0x4c; c[1] = (uint8_t)v; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, v, 60) == 0, "version %d", v); }
+      c[1] = 128; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, 128, 60) == 1, "version 128");
+      c[1] = 3; c[2] = 255; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, 3, 255) == 1, "version 3, fps 255");
     }
 
     // ai: Garbage: soft values uniform in -0.5 .. 0.5, what a wrong grid reads. Exact rates first: RS passing a step,
-    // ai: the steps together, then with the magic and a version of 1 .. 128 (a false codeword's data bytes are
-    // ai: uniform). Then measured through ob_fmt_decode, with the other last step's rate beside it (nroots - 3 and
-    // ai: nroots - 1).
-    const int other = last == nroots - 1 ? nroots - 3 : nroots - 1;
+    // ai: the steps together, then with the magic and a version of 2 .. 128 (a false codeword's data bytes are
+    // ai: uniform: 1/256 for the magic, 127/256 for the version). Then measured through ob_fmt_decode, with the rate the
+    // ai: steps to nroots - 1 would have beside it.
+    const int other = nroots - 1;
     double steps = p_pass(B, 0), alt = p_pass(B, 0);
     for (int f = 2; f <= last; f += 2) steps += p_pass(B, f);
     for (int f = 2; f <= other; f += 2) alt += p_pass(B, f);
-    const double mv = steps / 512;
+    const double mv = steps * NV / 65536.0;
     long acc = 0;
     for (long it = 0; it < NG; it++) {
       for (int i = 0; i < 4 * W; i++) q[i] = uni() - 0.5f;
       ob_fmt_t f;
-      acc += ob_fmt_decode(q, W, B, 1, 128, &f) == 0;
+      acc += ob_fmt_decode(q, W, B, &f) == 0;
     }
     printf("  garbage, exact: errors only %.1e, steps to %d %.1e, magic and version %.1e (steps to %d: %.1e)\n",
-           p_pass(B, 0), last, steps, mv, other, alt / 512);
+           p_pass(B, 0), last, steps, mv, other, alt * NV / 65536.0);
     printf("  garbage, measured over %ld reads: %ld accepted (expected %.2f)\n", NG, acc, mv * NG);
     CHECK(acc <= 10 + 4 * mv * NG, "garbage accepted %ld of %ld", acc, NG);
   }

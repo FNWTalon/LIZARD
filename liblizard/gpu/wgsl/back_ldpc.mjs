@@ -1,5 +1,5 @@
-// The LDPC's uniform layout and the split CRC-32, shared by the rate profile's LDPC kernel (back_tiers.mjs) and the
-// sender's paint (send.mjs).
+// The sender's paint uniform layout (send.mjs) and the split CRC-32, shared by the rate profile's LDPC kernel
+// (back_tiers.mjs) and the sender's paint.
 // ai: The one-rate LDPC kernel these came with (ldpcSource: layered min-sum on the 3/4 code, the stall rule and the
 // ai: learned stop) went 2026-10-22; the profile's kernel is back_tiers.mjs tldpcSource.
 // The CRC-32 is split over lanes (ref_ldpc.mjs crcPowers): lane w runs the reflected bitwise CRC over its 4-byte
@@ -8,11 +8,10 @@
 // workgroup memory.
 import { SLOTS } from "./common.mjs";
 
-// ai: The uniform P in u32 words: sizes, a
-// ai: vec4u a picture slot; dims; lay, 45 vec4u (a data slot: col | shift << 16, 15 a block row); pw, 30 vec4u (the
-// ai: CRC-32 powers, crcPowers(PAYLOAD)). PARAMS_STRUCT is its WGSL.
-export const PARAMS_AT = { sizes: 0, dims: 4 * SLOTS, lay: 4 * SLOTS + 4, pw: 4 * SLOTS + 184, words: 4 * SLOTS + 304 };
-export const PARAMS_STRUCT = `struct Params { sizes: array<vec4<u32>, ${SLOTS}>, dims: vec4<u32>, lay: array<vec4<u32>, 45>, pw: array<vec4<u32>, 30> }`;
+// ai: The sender's paint uniform P in u32 words (wgsl/send.mjs paintSource): sizes, a vec4u a picture slot; dims; pw,
+// ai: 30 vec4u (the CRC-32 powers, crcPowers(PAYLOAD)). PARAMS_STRUCT is its WGSL.
+export const PARAMS_AT = { sizes: 0, dims: 4 * SLOTS, pw: 4 * SLOTS + 4, words: 4 * SLOTS + 124 };
+export const PARAMS_STRUCT = `struct Params { sizes: array<vec4<u32>, ${SLOTS}>, dims: vec4<u32>, pw: array<vec4<u32>, 30> }`;
 
 // ai: The split CRC-32 as WGSL, shared with the sender's paint (wgsl/send.mjs): crcOf(i) is called by
 // ai: every lane of the workgroup with its lane index (it holds two barriers) once the 473 payload bytes sit in the

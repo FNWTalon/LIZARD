@@ -45,25 +45,9 @@ void check(VkResult r, const char* what) {
   throw e;
 }
 
-std::string jsonStr(const std::string& s) {
-  std::string o = "\"";
-  for (char c : s) {
-    if (c == '"' || c == '\\') { o += '\\'; o += c; }
-    else if ((unsigned char)c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\u%04x", c); o += b; }
-    else o += c;
-  }
-  return o + "\"";
-}
-
 static std::string lower(std::string s) { for (auto& c : s) c = (char)tolower((unsigned char)c); return s; }
 
 std::string Device::autoId(char kind) { return std::string("n") + kind + std::to_string(nextId++); }
-
-void Device::traceLine(const std::string& json) {
-  if (!traceOut) return;
-  fputs(json.c_str(), traceOut);
-  fputc('\n', traceOut);
-}
 
 uint32_t Device::memoryType(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid) {
   for (uint32_t i = 0; i < mem.memoryTypeCount; i++)
@@ -169,8 +153,6 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   VkPhysicalDeviceShaderIntegerDotProductFeatures dotF{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES};
   VkPhysicalDeviceZeroInitializeWorkgroupMemoryFeatures zeroF{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ZERO_INITIALIZE_WORKGROUP_MEMORY_FEATURES};
   VkPhysicalDeviceSamplerYcbcrConversionFeatures ycF{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES};
-  VkPhysicalDeviceCooperativeMatrixFeaturesKHR cmF{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
-  const bool cmExt = has(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME);
   VkPhysicalDeviceTimelineSemaphoreFeatures tlF{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
   const bool tlExt = v12 || has(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME);
   VkPhysicalDeviceShaderFloat16Int8Features f16F{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
@@ -184,7 +166,6 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   if (zeroExt) chain(zeroF);
   chain(ycF);
   if (tlExt) chain(tlF);
-  if (cmExt) chain(cmF);
   vkGetPhysicalDeviceFeatures2(pick, &f2);
 
   VkPhysicalDeviceSubgroupProperties sub{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
@@ -209,16 +190,6 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   F.subgroupSize = sub.subgroupSize;
   F.zeroInit = zeroExt && zeroF.shaderZeroInitializeWorkgroupMemory;
   F.ycbcr = ycF.samplerYcbcrConversion;
-  F.coopmat = cmExt && cmF.cooperativeMatrix;
-  if (F.coopmat) {
-    auto get = (PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR)vkGetInstanceProcAddr(d->instance, "vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR");
-    uint32_t n = 0;
-    if (get && get(pick, &n, nullptr) == VK_SUCCESS && n) {
-      std::vector<VkCooperativeMatrixPropertiesKHR> v(n, {VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR});
-      get(pick, &n, v.data());
-      for (auto& p : v) F.coopShapes.push_back({p.MSize, p.NSize, p.KSize, (int)p.AType, (int)p.BType, (int)p.CType, (int)p.ResultType, p.scope == VK_SCOPE_SUBGROUP_KHR});
-    }
-  }
   F.timeline = tlExt && tlF.timelineSemaphore;
   F.storageR8 = f2.features.shaderStorageImageExtendedFormats;
 #ifdef __ANDROID__
@@ -285,8 +256,6 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   }
   VkPhysicalDeviceSamplerYcbcrConversionFeatures ycE{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES};
   if (F.ycbcr) { ycE.samplerYcbcrConversion = VK_TRUE; chain(ycE); }
-  VkPhysicalDeviceCooperativeMatrixFeaturesKHR cmE{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
-  if (F.coopmat) { cmE.cooperativeMatrix = VK_TRUE; chain(cmE); enable.push_back(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME); }
   VkPhysicalDeviceTimelineSemaphoreFeatures tlE{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
   if (F.timeline) { tlE.timelineSemaphore = VK_TRUE; chain(tlE); if (!v12) enable.push_back(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME); }
   // ai: the host's device extensions, where the device has them; present_id and present_wait with their features
@@ -348,11 +317,6 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
            F.f16, F.int8, F.dot, F.subgroupShuffle, F.subgroupSize, F.zeroInit, F.ycbcr, F.storageR8, F.timeline, F.ahb, d->twoQueues ? 2 : 1, F.timestamps, d->timestampPeriod, L.maxComputeSharedMemorySize,
            (unsigned long long)(L.maxStorageBufferRange >> 20), (unsigned long long)(L.maxBufferSize >> 20), (unsigned long long)(L.deviceLocalBytes >> 20));
   d->log(line);
-  if (F.coopmat) {
-    std::string cm = "cooperative matrix:";
-    for (auto& c : F.coopShapes) cm += " " + std::to_string(c.M) + "x" + std::to_string(c.N) + "x" + std::to_string(c.K) + " " + std::to_string(c.A) + "," + std::to_string(c.B) + "," + std::to_string(c.C) + "," + std::to_string(c.R) + (c.subgroup ? "" : " (not subgroup)") + ";";
-    d->log(cm);
-  }
   return d;
 }
 
@@ -368,7 +332,6 @@ Device::~Device() {
   if (pool2) vkDestroyCommandPool(dev, pool2, nullptr);
   if (dev) vkDestroyDevice(dev, nullptr);
   if (instance) vkDestroyInstance(instance, nullptr);
-  if (traceOut && traceOut != stdout && traceOut != stderr) fclose(traceOut);
 }
 
 void Device::waitIdle() { check(vkDeviceWaitIdle(dev), "vkDeviceWaitIdle"); }
@@ -462,7 +425,6 @@ std::shared_ptr<Buffer> Device::createBuffer(uint64_t size, uint32_t usage, cons
     std::lock_guard<std::mutex> l(mu);
     inits.push_back({b.get(), [vb](VkCommandBuffer cb) { vkCmdFillBuffer(cb, vb, 0, VK_WHOLE_SIZE, 0); }});
   }
-  if (traceOut) traceLine("{\"op\":\"buffer\",\"id\":" + jsonStr(b->id) + ",\"size\":" + std::to_string(size) + ",\"usage\":" + std::to_string(usage) + "}");
   return b;
 }
 
@@ -478,7 +440,6 @@ Buffer::~Buffer() {
   }
   if (buf) vkDestroyBuffer(dev->dev, buf, nullptr);
   if (mem) { vkFreeMemory(dev->dev, mem, nullptr); dev->allocated -= size; }
-  if (dev->traceOut) dev->traceLine("{\"op\":\"destroy\",\"id\":" + jsonStr(id) + "}");
 }
 
 // ai: A texture: r8unorm, a 2D array of `layers`, sampled (textureLoad) and copied into; cleared and moved to the
@@ -534,7 +495,6 @@ std::shared_ptr<Texture> Device::createTexture(uint32_t w, uint32_t h, uint32_t 
     vkCmdClearColorImage(cb, img, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &range);
   }});
   l.unlock();
-  if (traceOut) traceLine("{\"op\":\"texture\",\"id\":" + jsonStr(t->id) + ",\"size\":[" + std::to_string(w) + "," + std::to_string(h) + "," + std::to_string(layers) + "]}");
   return t;
 }
 
@@ -548,7 +508,6 @@ Texture::~Texture() {
   if (view) vkDestroyImageView(dev->dev, view, nullptr);
   if (img) vkDestroyImage(dev->dev, img, nullptr);
   if (mem) { vkFreeMemory(dev->dev, mem, nullptr); dev->allocated -= (uint64_t)w * h * layers; }
-  if (dev->traceOut) dev->traceLine("{\"op\":\"destroy\",\"id\":" + jsonStr(id) + "}");
 }
 
 static VkDescriptorType descriptorOf(Bind b) {
@@ -558,7 +517,6 @@ static VkDescriptorType descriptorOf(Bind b) {
     default: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   }
 }
-static const char* bindName(Bind b) { return b == Bind::Tex ? "tex" : b == Bind::RO ? "ro" : b == Bind::RW ? "rw" : "uniform"; }
 
 std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const std::vector<Bind>& entries, const std::string& id) {
   auto L = std::make_shared<BindGroupLayout>();
@@ -578,11 +536,6 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const std::vector
   ci.bindingCount = (uint32_t)bs.size();
   ci.pBindings = bs.data();
   check(vkCreateDescriptorSetLayout(dev, &ci, nullptr, &L->dsl), "vkCreateDescriptorSetLayout");
-  if (traceOut) {
-    std::string e;
-    for (auto b : entries) e += std::string(e.empty() ? "" : ",") + "\"" + bindName(b) + "\"";
-    traceLine("{\"op\":\"bgl\",\"id\":" + jsonStr(L->id) + ",\"entries\":[" + e + "]}");
-  }
   return L;
 }
 
@@ -616,7 +569,6 @@ std::shared_ptr<Pipeline> Device::createPipeline(const std::vector<uint32_t>& sp
   VkResult r = vkCreateComputePipelines(dev, cache, 1, &cpi, nullptr, &p->pipe);
   vkDestroyShaderModule(dev, sm, nullptr);
   check(r, ("vkCreateComputePipelines " + p->id + (label.empty() ? "" : " (" + label + ")")).c_str());
-  if (traceOut) traceLine("{\"op\":\"pipeline\",\"id\":" + jsonStr(p->id) + ",\"groups\":[" + jsonStr(bgl->id) + "]}");
   return p;
 }
 
@@ -651,7 +603,6 @@ std::shared_ptr<BindGroup> Device::createBindGroup(std::shared_ptr<BindGroupLayo
   std::vector<VkDescriptorBufferInfo> bi(entries.size());
   std::vector<VkDescriptorImageInfo> ii(entries.size());
   std::vector<VkWriteDescriptorSet> ws;
-  std::string te;
   for (uint32_t i = 0; i < entries.size(); i++) {
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     w.dstSet = g->set;
@@ -662,18 +613,15 @@ std::shared_ptr<BindGroup> Device::createBindGroup(std::shared_ptr<BindGroupLayo
       if (!entries[i].tex) throw Error("bind group on " + bgl->id + ": binding " + std::to_string(i) + " wants a texture");
       ii[i] = {VK_NULL_HANDLE, entries[i].tex->view, VK_IMAGE_LAYOUT_GENERAL};
       w.pImageInfo = &ii[i];
-      if (traceOut) te += std::string(te.empty() ? "" : ",") + "{\"binding\":" + std::to_string(i) + ",\"view\":" + jsonStr(entries[i].tex->id) + "}";
     } else {
       Buffer* b = entries[i].buf;
       if (!b) throw Error("bind group on " + bgl->id + ": binding " + std::to_string(i) + " wants a buffer");
       bi[i] = {b->buf, 0, VK_WHOLE_SIZE};
       w.pBufferInfo = &bi[i];
-      if (traceOut) te += std::string(te.empty() ? "" : ",") + "{\"binding\":" + std::to_string(i) + ",\"buf\":" + jsonStr(b->id) + "}";
     }
     ws.push_back(w);
   }
   vkUpdateDescriptorSets(dev, (uint32_t)ws.size(), ws.data(), 0, nullptr);
-  if (traceOut) traceLine("{\"op\":\"group\",\"id\":" + jsonStr(g->id) + ",\"layout\":" + jsonStr(bgl->id) + ",\"entries\":[" + te + "]}");
   return g;
 }
 
@@ -699,7 +647,6 @@ void Device::writeBuffer(Buffer& b, uint64_t off, const void* data, uint64_t siz
   if (!size) return;
   Write w{&b, off, std::vector<uint8_t>((const uint8_t*)data, (const uint8_t*)data + size)};
   { std::lock_guard<std::mutex> l(mu); writes.push_back(std::move(w)); }
-  if (traceOut) traceLine("{\"op\":\"write\",\"buf\":" + jsonStr(b.id) + ",\"off\":" + std::to_string(off) + ",\"size\":" + std::to_string(size) + "}");
 }
 
 void Device::upload(Buffer& b, uint64_t off, const void* data, uint64_t size) {
@@ -718,7 +665,6 @@ void Device::upload(Buffer& b, uint64_t off, const void* data, uint64_t size) {
     inits.push_back({&b, [src, dst, off, size](VkCommandBuffer cb) { VkBufferCopy c{0, off, size}; vkCmdCopyBuffer(cb, src, dst, 1, &c); }, 1});
     staging.push_back(s);
   }
-  if (traceOut) traceLine("{\"op\":\"write\",\"buf\":" + jsonStr(b.id) + ",\"off\":" + std::to_string(off) + ",\"size\":" + std::to_string(size) + "}");
 }
 
 Encoder Device::encoder() {
@@ -766,7 +712,6 @@ void Encoder::beginComputePass(QuerySet* qs, int begin, int end) {
   inPass = true;
   passQs = qs;
   passEnd = end;
-  if (dev->traceOut) trace.push_back(std::string("{\"c\":\"pass\",\"ts\":") + (qs ? "[" + jsonStr(qs->id) + "," + std::to_string(begin) + "," + std::to_string(end) + "]" : "null") + "}");
   if (qs && dev->features.timestamps) {
     if (std::find(reset.begin(), reset.end(), qs) == reset.end()) {
       vkCmdResetQueryPool(cb, qs->pool, 0, qs->count);
@@ -780,7 +725,6 @@ void Encoder::beginComputePass(QuerySet* qs, int begin, int end) {
 void Encoder::endPass() {
   if (!inPass) throw Error("end with no pass");
   inPass = false;
-  if (dev->traceOut) trace.push_back("{\"c\":\"end\"}");
   if (passQs && dev->features.timestamps) {
     hazard();
     vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, passQs->pool, (uint32_t)passEnd);
@@ -791,43 +735,36 @@ void Encoder::endPass() {
 void Encoder::setPipeline(const Pipeline& p) {
   vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipe);
   pipe = &p;
-  if (dev->traceOut) trace.push_back("{\"c\":\"pipe\",\"id\":" + jsonStr(p.id) + "}");
 }
 
 void Encoder::setBindGroup(const BindGroup& g) {
   if (!pipe) throw Error("a bind group before a pipeline");
   vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe->layout, 0, 1, &g.set, 0, nullptr);
-  if (dev->traceOut) trace.push_back("{\"c\":\"group\",\"i\":0,\"id\":" + jsonStr(g.id) + "}");
 }
 
 void Encoder::dispatch(uint32_t x, uint32_t y, uint32_t z) {
-  if (dev->traceOut) trace.push_back("{\"c\":\"dispatch\",\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) + ",\"z\":" + std::to_string(z) + "}");
   if (!x || !y || !z) return;
   hazard();
   vkCmdDispatch(cb, x, y, z);
 }
 
 void Encoder::dispatchAlongside(uint32_t x, uint32_t y, uint32_t z) {
-  if (dev->traceOut) trace.push_back("{\"c\":\"dispatch\",\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y) + ",\"z\":" + std::to_string(z) + "}");
   if (!x || !y || !z) return;
   commands++;
   vkCmdDispatch(cb, x, y, z);
 }
 
 void Encoder::dispatchIndirectAlongside(const Buffer& b, uint64_t offset) {
-  if (dev->traceOut) trace.push_back("{\"c\":\"indirect\",\"buf\":" + jsonStr(b.id) + ",\"off\":" + std::to_string(offset) + "}");
   commands++;
   vkCmdDispatchIndirect(cb, b.buf, offset);
 }
 
 void Encoder::dispatchIndirect(const Buffer& b, uint64_t offset) {
-  if (dev->traceOut) trace.push_back("{\"c\":\"indirect\",\"buf\":" + jsonStr(b.id) + ",\"off\":" + std::to_string(offset) + "}");
   hazard();
   vkCmdDispatchIndirect(cb, b.buf, offset);
 }
 
 void Encoder::copyBufferToBuffer(const Buffer& src, uint64_t so, const Buffer& dst, uint64_t dof, uint64_t size) {
-  if (dev->traceOut) trace.push_back("{\"c\":\"b2b\",\"src\":" + jsonStr(src.id) + ",\"so\":" + std::to_string(so) + ",\"dst\":" + jsonStr(dst.id) + ",\"do\":" + std::to_string(dof) + ",\"size\":" + std::to_string(size) + "}");
   if (!size) return;
   hazard();
   VkBufferCopy c{so, dof, size};
@@ -835,7 +772,6 @@ void Encoder::copyBufferToBuffer(const Buffer& src, uint64_t so, const Buffer& d
 }
 
 void Encoder::copyBufferToTexture(const Buffer& src, uint64_t offset, uint32_t stride, const Texture& tex, uint32_t layer, uint32_t w, uint32_t h) {
-  if (dev->traceOut) trace.push_back("{\"c\":\"b2t\",\"src\":" + jsonStr(src.id) + ",\"so\":" + std::to_string(offset) + ",\"dst\":" + jsonStr(tex.id) + ",\"layer\":" + std::to_string(layer) + ",\"size\":[" + std::to_string(w) + "," + std::to_string(h) + "]}");
   hazard();
   VkBufferImageCopy c{};
   c.bufferOffset = offset;
@@ -848,7 +784,6 @@ void Encoder::copyBufferToTexture(const Buffer& src, uint64_t offset, uint32_t s
 }
 
 void Encoder::copyTextureToTexture(const Texture& src, uint32_t srcLayer, const Texture& dst, uint32_t dstLayer, uint32_t w, uint32_t h) {
-  if (dev->traceOut) trace.push_back("{\"c\":\"t2t\",\"src\":" + jsonStr(src.id) + ",\"so\":[0,0," + std::to_string(srcLayer) + "],\"dst\":" + jsonStr(dst.id) + ",\"do\":[0,0," + std::to_string(dstLayer) + "],\"size\":[" + std::to_string(w) + "," + std::to_string(h) + ",1]}");
   hazard();
   VkImageCopy c{};
   c.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, srcLayer, 1};
@@ -858,7 +793,6 @@ void Encoder::copyTextureToTexture(const Texture& src, uint32_t srcLayer, const 
 }
 
 void Encoder::copyTextureToBuffer(const Texture& src, uint32_t layer, uint32_t w, uint32_t h, const Buffer& dst, uint64_t offset) {
-  if (dev->traceOut) trace.push_back("{\"c\":\"t2b\",\"src\":" + jsonStr(src.id) + ",\"layer\":" + std::to_string(layer) + ",\"dst\":" + jsonStr(dst.id) + ",\"do\":" + std::to_string(offset) + ",\"size\":[" + std::to_string(w) + "," + std::to_string(h) + "]}");
   hazard();
   VkBufferImageCopy c{};
   c.bufferOffset = offset;
@@ -870,14 +804,12 @@ void Encoder::copyTextureToBuffer(const Texture& src, uint32_t layer, uint32_t w
 
 void Encoder::clearBuffer(const Buffer& b, uint64_t offset, uint64_t size) {
   if (size == ~0ull) size = b.size - offset;
-  if (dev->traceOut) trace.push_back("{\"c\":\"clear\",\"buf\":" + jsonStr(b.id) + ",\"off\":" + std::to_string(offset) + ",\"size\":" + std::to_string(size) + "}");
   if (!size) return;
   hazard();
   vkCmdFillBuffer(cb, b.buf, offset, size, 0);
 }
 
 void Encoder::resolveQuerySet(const QuerySet& qs, uint32_t first, uint32_t count, const Buffer& dst, uint64_t offset) {
-  if (dev->traceOut) trace.push_back("{\"c\":\"resolve\",\"qs\":" + jsonStr(qs.id) + ",\"first\":" + std::to_string(first) + ",\"count\":" + std::to_string(count) + ",\"dst\":" + jsonStr(dst.id) + ",\"off\":" + std::to_string(offset) + "}");
   hazard();
   if (!dev->features.timestamps) { vkCmdFillBuffer(cb, dst.buf, offset, 8ull * count, 0); return; }
   vkCmdCopyQueryPoolResults(cb, qs.pool, first, count, dst.buf, offset, 8, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
@@ -951,11 +883,6 @@ std::shared_ptr<Ticket> Device::submit(Encoder& enc, VkSemaphore wait, uint64_t 
     si.pWaitDstStageMask = &stage;
   }
   check(vkQueueSubmit(queue, 1, &si, t->fence), "vkQueueSubmit");
-  if (traceOut) {
-    std::string c;
-    for (auto& s : enc.trace) c += std::string(c.empty() ? "" : ",") + s;
-    traceLine("{\"op\":\"submit\",\"cmds\":[" + c + "]}");
-  }
   enc.cb = VK_NULL_HANDLE;
   t->keep = std::move(staging);
   staging.clear();

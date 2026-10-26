@@ -120,7 +120,6 @@ class FileStore final : public Store {
     fs::remove_all(pathOf(dir + "/" + id), e);
   }
 
-  bool begin(uint64_t length) override { Before b; return open("t" + std::to_string(n++), nullptr, length, b); }
   bool open(const std::string& id, const uint8_t* header, uint64_t length, Before& before) override {
     before = Before{};
     error.clear();
@@ -190,14 +189,6 @@ class FileStore final : public Store {
     if (!out || !seek64(out, off) || fwrite(p, 1, len, out) != len) { fail("store: " + cur + "/out not written: " + strerror(errno)); return false; }
     return true;
   }
-  std::vector<uint8_t> readOut(uint64_t off, size_t len) override {
-    std::vector<uint8_t> b(len);
-    if (!out) return {};
-    fflush(out);
-    size_t got = seek64(out, off) ? fread(b.data(), 1, len, out) : 0;
-    b.resize(got);
-    return b;
-  }
   void noteManifest(uint32_t m, const uint8_t* payload) override {
     uint8_t r[REC];
     xfer_id_put(r, m);
@@ -240,7 +231,6 @@ class FileStore final : public Store {
   struct Open { FILE* f; uint64_t used; };
   std::string dir, cur;   // ai: cur: the transfer in hand's folder, "" none
   FILE* out = nullptr;
-  int n = 0;
   uint64_t tick = 0;
   std::unordered_map<uint32_t, uint64_t> sizes;   // ai: chunks with a file, and its bytes
   std::unordered_map<uint32_t, Open> opened;
@@ -300,7 +290,8 @@ class MemoryStore final : public Store {
   // ai: cap; the web's MemoryStore.clear lets its output go)
   void clear() override { chunks.clear(); held = 0; out.clear(); out.shrink_to_fit(); done.clear(); done.shrink_to_fit(); }
   void removeAll() override { clear(); error.clear(); }
-  bool begin(uint64_t length) override {
+  bool open(const std::string&, const uint8_t*, uint64_t length, Before& before) override {
+    before = Before{};
     error.clear();
     out.clear();
     if (length > uint64_t(SIZE_MAX) || !fits(length)) {
@@ -335,11 +326,6 @@ class MemoryStore final : public Store {
     if (off + len > out.size()) { fail("store: a chunk past the file's end"); return false; }
     memcpy(out.data() + off, p, len);
     return true;
-  }
-  std::vector<uint8_t> readOut(uint64_t off, size_t len) override {
-    if (off >= out.size()) return {};
-    len = std::min<size_t>(len, size_t(out.size() - off));
-    return std::vector<uint8_t>(out.begin() + off, out.begin() + off + len);
   }
   std::string finish(const std::string&) override { done = std::move(out); out.clear(); return ""; }
   const std::vector<uint8_t>* data() const override { return &done; }

@@ -1,6 +1,7 @@
 // The transform against a naive DFT (small sizes, which also covers a block that is a slice of a wider array),
 // against the textbook radix-2 FFT it replaced (512 x 512), a round trip, and the Hermitian symmetry of a real input.
 #include "../src/fft.h"
+#include "fft2d.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,13 +23,10 @@ static void old_fft2d(float *re, float *im, int n, int inverse) {
 int main(void) {
   int fails = 0;
   srand(3);
-  // fft_cols against the definition, on a slice: rows x cols inside an array whose rows are `pitch` apart, for every
-  // radix fft_set_radix takes (archive/stash/fft-gen2 has four more). The error allowed grows with log n, which is how a
-  // float transform's error grows.
-  const int radices[] = { 2, 4 };
-  for (int ri = 0; ri < 2; ri++) {
-  fft_set_radix(radices[ri]);
-  if (fft_get_radix() != radices[ri]) { fails++; printf("FAIL radix %d not taken\n", radices[ri]); continue; }
+  // fft_cols against the definition, on a slice: rows x cols inside an array whose rows are `pitch` apart (radix 2,
+  // the codec's; archive/stash/fft-gen2 has four more, archive/fft-bench radix 4). The error allowed grows with log n,
+  // which is how a float transform's error grows.
+  {
   double worstAll = 0;
   // ai: The powers of two to 1024, then 3 x 2^k to 1536, which take a radix-3 stage.
   for (int three = 0; three < 2; three++)
@@ -44,13 +42,12 @@ int main(void) {
       double e = fabs(sr - re[k * pitch + x]) + fabs(si - im[k * pitch + x]); if (e > worst) worst = e;
     }
     double bits = 0; for (int t = rows; t > 1; t >>= 1) bits++;
-    if (worst > 2e-5 * bits * sqrt((double)rows)) { fails++; printf("FAIL fft_cols radix %d rows %d cols %d inverse %d: %.2e\n", radices[ri], rows, cols, inverse, worst); }
+    if (worst > 2e-5 * bits * sqrt((double)rows)) { fails++; printf("FAIL fft_cols rows %d cols %d inverse %d: %.2e\n", rows, cols, inverse, worst); }
     if (worst / (bits * sqrt((double)rows)) > worstAll) worstAll = worst / (bits * sqrt((double)rows));
     free(re); free(im); free(r0); free(i0);
   }
-  printf("radix %2d: sizes 2 to 1024 and 3 to 1536, forward and inverse, against the definition: worst error %.2e x log2(n) sqrt(n)\n", radices[ri], worstAll);
+  printf("sizes 2 to 1024 and 3 to 1536, forward and inverse, against the definition: worst error %.2e x log2(n) sqrt(n)\n", worstAll);
   }
-  fft_set_radix(2);
   // 512 x 512 against the transform it replaced, then a round trip and the symmetry of a real input.
   int n = 512; size_t nn = (size_t)n * n;
   float *re = malloc(sizeof(float) * nn), *im = calloc(nn, sizeof(float)), *ore = malloc(sizeof(float) * nn), *oim = calloc(nn, sizeof(float)), *ref = malloc(sizeof(float) * nn);

@@ -1,5 +1,4 @@
 // ai: The receiver app: Kotlin, Compose, Camera2, and libliz.so (src/main/cpp) over liblizard/core/.
-// ai: core's lizard_rx by default; -PlizStub=true links the stub receiver (receiver_stub.cpp) instead.
 import javax.inject.Inject
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -8,8 +7,6 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
-
-val lizStub = (findProperty("lizStub") as String?)?.toBoolean() ?: false
 
 android {
     namespace = "dev.lizard.receiver"
@@ -25,8 +22,7 @@ android {
         externalNativeBuild {
             cmake {
                 // ai: flexible page sizes: the NDK 27 switch that links for 16 KB pages (Android 15's devices)
-                arguments += listOf("-DANDROID_STL=c++_static", "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
-                    "-DLIZ_STUB_RECEIVER=${if (lizStub) "ON" else "OFF"}")
+                arguments += listOf("-DANDROID_STL=c++_static", "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")
                 targets += "liz"
             }
         }
@@ -49,8 +45,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures { compose = true }
-    // ai: the plain-JVM code the desktop app shares (liblizard/kotlin: Tar.kt, the bundles' tar; PhaseLock.kt, the
-    // ai: camera's phase lock; Readout.kt, the receive screen's words and figures)
+    // ai: the plain-JVM code the desktop app shares (liblizard/kotlin: Tar.kt, the bundles' tar; Readout.kt, the receive
+    // ai: screen's words and figures; Pick.kt, the format a room holds), and PhaseLock.kt, the camera's phase lock, which
+    // ai: this app alone compiles
     sourceSets.getByName("main").kotlin.srcDir(rootProject.layout.projectDirectory.dir("../liblizard/kotlin"))
     // ai: the setup's tables, blobs and SPIR-V stored, not deflated: copied out once, and a stored entry streams
     androidResources { noCompress += listOf("spv", "bin", "json") }
@@ -82,7 +79,7 @@ abstract class LizardAssets : DefaultTask() {
 
     companion object {
         val PICK: (PatternFilterable) -> Unit = {
-            it.include("setup/**", "blobs/**", "spv/*.spv", "nets/**", "gen.json")
+            it.include("setup/**", "blobs/**", "spv/*.spv", "gen.json")
             it.exclude("spv/*.raw.spv")
         }
     }

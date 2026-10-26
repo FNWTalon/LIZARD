@@ -33,7 +33,7 @@ static constexpr size_t HOLD_BLOCKS = 1024, SEEN_KEEP = 1 << 16;
 // ai: most that far behind
 static constexpr uint32_t META_EVERY = 2048;
 static constexpr double META_MS = 1000;
-enum { COLLECTING = 0, HOT = 1, VERIFIED = 3 };   // ai: 2 was a chunk decoded before the manifest, which no longer happens (a chunk's block count waits on it)
+enum { COLLECTING, HOT, VERIFIED };
 
 static std::string hexOf(const uint8_t* p, size_t n) {
   static const char* d = "0123456789abcdef";

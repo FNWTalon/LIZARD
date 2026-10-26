@@ -141,7 +141,7 @@ LIZ_API int liz_sender_configure(liz_sender* s, const liz_format* f, int painter
     need(painter >= LIZ_PAINTER_CPU && painter <= LIZ_PAINTER_AUTO, "painter is a LIZ_PAINTER_* value");
     const liz_geometry g = geometryOf(*f);
     lizard::TxFormat t;
-    t.n = g.n; t.subch = 8 * f->blocks; t.span = g.span; t.fps = f->fps; t.codes = f->codes;
+    t.subch = 8 * f->blocks; t.span = g.span; t.fps = f->fps; t.codes = f->codes;
     t.threads = threads > 0 ? threads : 3;
     t.assets = assets ? assets : "";
     t.device = device ? device : "";

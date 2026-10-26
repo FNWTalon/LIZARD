@@ -34,7 +34,6 @@ internal object Native {
   }
 
   @JvmStatic external fun version(): String
-  @JvmStatic external fun abi(): Int
   @JvmStatic external fun simd(): Boolean
   @JvmStatic external fun ringCells(ring: Int): Int
   @JvmStatic external fun geometry(blocks: Int, ring: Int, fps: Int, codes: Int, out: IntArray)

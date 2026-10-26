@@ -2,6 +2,7 @@
 
 package dev.lizard.desktop
 
+import dev.lizard.pick.Pick
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.VerticalScrollbar
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
@@ -225,10 +226,10 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
                 }
                 Field("Size", "${s.size}%") { Bar(s.size.toFloat(), 25f..100f, 74, done = { s.commitSize() }) { s.chooseSize(it.roundToInt()) } }
                 if (s.codes == 2) Field("Spacing", "${s.spacing} modules") {
-                    Bar(s.spacing.toFloat(), Pick.SPACING_MIN.toFloat()..Pick.SPACING_MAX.toFloat(), Pick.SPACING_MAX - Pick.SPACING_MIN - 1, done = { s.repick() }) { s.chooseSpacing(it.roundToInt()) }
+                    Bar(s.spacing.toFloat(), Room.SPACING_MIN.toFloat()..Room.SPACING_MAX.toFloat(), Room.SPACING_MAX - Room.SPACING_MIN - 1, done = { s.repick() }) { s.chooseSpacing(it.roundToInt()) }
                 }
                 Field("Margin", "${s.margin} modules") {
-                    Bar(s.margin.toFloat(), Pick.QUIET.toFloat()..Pick.MARGIN_MAX.toFloat(), Pick.MARGIN_MAX - Pick.QUIET - 1, done = { s.repick() }) { s.chooseMargin(it.roundToInt()) }
+                    Bar(s.margin.toFloat(), Pick.QUIET.toFloat()..Room.MARGIN_MAX.toFloat(), Room.MARGIN_MAX - Pick.QUIET - 1, done = { s.repick() }) { s.chooseMargin(it.roundToInt()) }
                 }
             }
         }
@@ -251,7 +252,7 @@ private fun ColumnScope.Side(s: SendState, window: ComposeWindow) {
 
 // ai: Blocks a frame (send.html #blocks), 0 for auto: the slider's first step is auto (2026-10-05; an Auto chip over the
 // ai: title until then), its value "Auto, 60, 28.1 KB" once auto's pick in the area is known, every step right of
-// ai: it a count by hand, committed on release.
+// ai: it a count by hand from 2 (LIZARD-16) to 128, committed on release.
 @Composable
 private fun BlocksField(s: SendState) {
     val auto = s.blocks == 0
@@ -260,7 +261,7 @@ private fun BlocksField(s: SendState) {
     val v = if (auto) s.autoBlocks else s.blocks
     val b = if (v > 0) Native.blocksFor(8 * v) else 0
     Field("Blocks", if (auto) (if (b > 0) "Auto, ${Fmt.blocks(b)}" else "Auto") else Fmt.blocks(b)) {
-        Bar(s.blocks.toFloat(), 0f..128f, 127, done = { s.repick() }) { s.chooseBlocks(it.roundToInt()) }
+        Bar(if (auto) 1f else s.blocks.toFloat(), 1f..128f, 126, done = { s.repick() }) { val n = it.roundToInt(); s.chooseBlocks(if (n < 2) 0 else n) }
     }
 }
 

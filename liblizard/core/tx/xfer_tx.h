@@ -40,7 +40,6 @@ class XferTx {
  private:
   uint32_t next();   // ai: the schedule's next data id (sim/xfer.mjs Schedule.next)
 
-  const uint8_t* data_;
   size_t size_;
   uint32_t chunks_ = 0;
   uint64_t sentBytes_ = 0;

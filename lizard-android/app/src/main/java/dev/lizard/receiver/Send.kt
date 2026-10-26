@@ -1,5 +1,6 @@
 package dev.lizard.receiver
 
+import dev.lizard.pick.Pick
 import dev.lizard.readout.Readout
 import android.content.Context
 import android.content.res.Configuration
@@ -81,7 +82,8 @@ import androidx.compose.runtime.DisposableEffect
 // ai: surface asks the display for that rate, the switch always made), the screen kept on, at the Brightness set, its
 // ai: bars hidden. The test stream is Developer Tools' (Payload). Vsync-locked since 2026-10-02: on
 // ai: Android 13 and up each frame is due by its frame timeline's expected presentation time and posted for that vsync
-// ai: (jni.cpp Ring), not into the window's queue at whatever refresh it is latched for; below 13 the window's queue.
+// ai: (jni.cpp GpuRing, Ring), not into the window's queue at whatever refresh it is latched for; below 13, and for the
+// ai: rest of a send where the device or the surface refuses that present (toWindowQueue), the window's queue.
 class SendState(private val a: MainActivity) {
     sealed interface Phase { data object Idle : Phase; data object Preparing : Phase; data object On : Phase; data class Error(val why: String) : Phase }
     data class Stats(val label: String = "", val shownFps: Double = 0.0, val offeredKBs: Double = 0.0, val paintMs: Double = 0.0, val pass: Double = 0.0,
@@ -89,8 +91,8 @@ class SendState(private val a: MainActivity) {
                      // ai: the GPU ring's tally over the last second (2026-10-07, jni.cpp txPostStats): posted, held by
                      // ai: vsyncs, late, behind, buffers filled of the ring's
                      val gpuRing: Boolean = false, val posted: Long = 0, val held: String = "", val late: Long = 0, val behind: Long = 0, val filled: Int = 0, val slots: Int = 0,
-                     // ai: the blocks a code carries and its rate profile (2026-10-07)
-                     val blocks: Int = 0, val tiers: String = "")
+                     // ai: the blocks a code carries (2026-10-07)
+                     val blocks: Int = 0)
 
     private val prefs = a.getSharedPreferences("lizard", Context.MODE_PRIVATE)
     // ai: What Start sends (2026-10-16): one file as itself, or several files or a folder as one tar
@@ -114,10 +116,11 @@ class SendState(private val a: MainActivity) {
     private var startWhenMade = false     // ai: Start pressed while the transfer was being made
     var test by mutableStateOf(false)
     // ai: Blocks a frame (2026-10-02), the web sender's
-    // ai: slider (send.html #blocks and #subchAuto): 0 for auto, the largest the code's square holds (Pick.pick), else 1
+    // ai: slider (send.html #blocks and #subchAuto): 0 for auto, the largest the code's square holds (Pick.pick), else 2
     // ai: to 128 set by hand, a block 8 sub-channels, painted as set whatever the square (the web's too); kept, as the
-    // ai: web's #subch is. picked: the sub-channels the last configure took, which auto's label names.
-    var blocks by mutableStateOf(prefs.getInt("sendBlocks", 0))
+    // ai: web's #subch is (a kept 1, one block a frame, which no format has since 2026-10-25, reads as auto). picked: the
+    // ai: sub-channels the last configure took, which auto's label names.
+    var blocks by mutableStateOf(prefs.getInt("sendBlocks", 0).let { if (it in 2..128) it else 0 })
     var picked by mutableStateOf(0)
     // ai: VSync (2026-10-23, on by default, the desktop sender's): the rate voted on both surfaces (the window's and the
     // ai: ring's, jni.cpp), so the panel moves to a mode the rate divides; off, no vote, the system's choice. Kept.
@@ -140,8 +143,9 @@ class SendState(private val a: MainActivity) {
     // ai: apart (0 to 64, 12 unless set); kept. The format is picked for one code's share of the box (roomOf).
     var codes by mutableStateOf(prefs.getInt("sendCodes", 1).coerceIn(1, 2))
     var gap by mutableStateOf(prefs.getInt("sendGap", 12).coerceIn(0, 64))
-    // ai: the code box's width over its height: the codes and the gaps between them, each code as tall as the box
-    val aspect get() = codes + (codes - 1) * Pick.gapShare(gap)
+    // ai: the code box's width over its height: the codes and the gaps between them, each code as tall as the box (a gap
+    // ai: of `gap` modules a share of one code's side, its margin in: the web's gapFrac)
+    val aspect get() = codes + (codes - 1) * gap / (Pick.modules() + 2.0 * Pick.QUIET)
     var phase by mutableStateOf<Phase>(Phase.Idle)
     // ai: Paused (2026-10-02): nothing presented, the run
     // ai: kept, the last picture left on screen (a receiver holds what it has); a resume presents at once (tick)
@@ -155,7 +159,8 @@ class SendState(private val a: MainActivity) {
     private var configured = 0          // ai: the room the sender was last configured for
     private var due = 0L
     private var lastStats = 0L
-    private var vsynced = false         // ai: this send's frames posted for their vsync (Android 13 on; Ring in jni.cpp)
+    private var vsynced = false         // ai: this send's frames posted for their vsync (Android 13 on, unless refused: toWindowQueue)
+    var refused by mutableStateOf("")   // ai: why the vsync present was refused in this send, for the lab line ("" none)
     private var assets = ""             // ai: the generated tree (Assets.ensure), the GPU painter's kernels and tables
     private var vw = 0                  // ai: the view's size in pixels, the vsync-locked present's destination
     private var vh = 0
@@ -260,7 +265,7 @@ class SendState(private val a: MainActivity) {
     }
     // ai: a provider's name as one part of a path: no separator, none empty
     private fun plainName(n: String) = n.replace('/', '_').ifEmpty { "file" }
-    fun chooseBlocks(b: Int) { blocks = b.coerceIn(0, 128); prefs.edit().putInt("sendBlocks", blocks).apply(); if (phase == Phase.On) reconfigure() }
+    fun chooseBlocks(b: Int) { blocks = b.coerceIn(0, 128).let { if (it == 1) 0 else it }; prefs.edit().putInt("sendBlocks", blocks).apply(); if (phase == Phase.On) reconfigure() }
     fun chooseRate(r: Int) { rate = r.coerceIn(1, 60); prefs.edit().putInt("sendFps", rate).apply(); if (phase == Phase.On) reconfigure() }
     fun chooseVsync(on: Boolean) {
         vsyncOn = on
@@ -361,6 +366,7 @@ class SendState(private val a: MainActivity) {
                 if (phase != Phase.Preparing || my != making) { Native.txDestroy(hnd); return@runOnUiThread }   // ai: stopped meanwhile
                 h = hnd; configured = 0; phase = Phase.On
                 vsynced = Build.VERSION.SDK_INT >= 33
+                refused = ""
                 screenFor(true)
                 reconfigure()
                 due = 0; lastStats = 0; lastTimeline = 0; vsyncNs = 0
@@ -393,7 +399,7 @@ class SendState(private val a: MainActivity) {
         if (h == 0L || room <= 0) return
         val subch = if (blocks > 0) 8 * blocks else Pick.pick(room.toDouble())
         val threads = min(4, maxOf(1, Runtime.getRuntime().availableProcessors() - 2))
-        val err = Native.txConfigure(h, Pick.nFor(subch), subch, Pick.span(), fps, threads, when (painter) { "cpu" -> 0; "gpu" -> 1; else -> 2 }, assets, codes, gap, vsynced, vsyncOn)
+        val err = Native.txConfigure(h, subch, Pick.span(), fps, threads, when (painter) { "cpu" -> 0; "gpu" -> 1; else -> 2 }, assets, codes, gap, vsynced, vsyncOn)
         if (err.isNotEmpty()) { phase = Phase.Error(err); stop(); return }
         configured = room
         picked = subch
@@ -421,15 +427,14 @@ class SendState(private val a: MainActivity) {
         override fun surfaceDestroyed(hd: SurfaceHolder) { surface = null }
     }
 
-    // ai: each vsync: the next painted frame when one is due at the asked rate (half a vsync early is on time). t: when the
-    // ai: frame will be shown (the frame timeline's expected presentation time) where vsync names that vsync, else the
-    // ai: callback's frame time, the window's queue showing it a refresh or two after.
-    private fun tick(t: Long, vsync: Long) {
+    // ai: each frame callback (the window's queue): the next painted frame when one is due at the asked rate (half a vsync
+    // ai: early is on time). t: the callback's frame time, the window's queue showing it a refresh or two after.
+    private fun tick(t: Long) {
         val period = 1_000_000_000L / fps
         val s = surface
         if (paused) due = 0L   // ai: presented at once on a resume
         else if (s != null && configured > 0 && t >= due - 4_000_000L) {
-            if (Native.txPresent(h, s, vsync, vw, vh)) { due = if (due == 0L || t - due > period) t + period else due + period; if (!shown) shown = true }
+            if (Native.txPresent(h, s)) { due = if (due == 0L || t - due > period) t + period else due + period; if (!shown) shown = true }
         }
         pollStats(t)
     }
@@ -438,7 +443,8 @@ class SendState(private val a: MainActivity) {
     // ai: 1%, else on the asked rate's grid (the web's due rule); for every timeline the Choreographer offers (the
     // ai: preferred one and the ones after it) not yet passed, the next filled buffer is posted for it where a picture
     // ai: is due there (Native.txPost), so the compositor holds the pictures ahead. Nothing filled at a due vsync: the
-    // ai: picture on screen stays (counted behind in the ring's tally) and the next picture takes the next due vsync.
+    // ai: picture on screen stays (counted behind in the ring's tally) and the next picture takes the next due vsync. A
+    // ai: refusal (no GPU ring, child surface or buffers here, or the ring's filler failed) takes the window's queue.
     private var vsyncNs = 0L
     private var lastTimeline = 0L
     @RequiresApi(33)
@@ -456,8 +462,11 @@ class SendState(private val a: MainActivity) {
             if (t <= lastTimeline) continue
             lastTimeline = t
             if (s == null || configured <= 0 || t + vsyncNs / 2 < due) continue
-            if (Native.txPost(h, s, tl.vsyncId, t, vsyncNs, vw, vh)) { due = if (due == 0L || t - due > periodNs) t + periodNs else due + periodNs; if (!shown) shown = true }
-            else due = t + periodNs
+            when (Native.txPost(h, s, tl.vsyncId, t, vsyncNs, vw, vh)) {
+                1 -> { due = if (due == 0L || t - due > periodNs) t + periodNs else due + periodNs; if (!shown) shown = true }
+                0 -> due = t + periodNs
+                else -> { toWindowQueue(runCatching { JSONObject(Native.txPostStats(h)).optString("error") }.getOrDefault("")); return }
+            }
         }
         pollStats(tls.firstOrNull()?.expectedPresentationTimeNanos ?: System.nanoTime())
     }
@@ -471,16 +480,28 @@ class SendState(private val a: MainActivity) {
             stats = Stats(j.optString("label"), j.optDouble("shownFps"), j.optDouble("offeredKBs"), j.optDouble("paintMs"), j.optDouble("pass", 0.0),
                 j.optString("painter"), j.optString("gpuWhy"), j.optLong("sentBytes", 0),
                 p?.optBoolean("gpu") ?: false, p?.optLong("posted") ?: 0, held, p?.optLong("late") ?: 0, p?.optLong("behind") ?: 0, p?.optInt("filled") ?: 0, p?.optInt("slots") ?: 0,
-                j.optInt("blocks", 0), j.optString("tiers"))
+                j.optInt("blocks", 0))
             if (p?.optBoolean("gpu") == true) Log.i(Engine.TAG, "send: posted ${stats.posted}, held {${held}}, late ${stats.late}, behind ${stats.behind}, ${stats.filled} of ${stats.slots} buffers filled, ${j.optInt("ahead")} of ${j.optInt("depth")} frames painted ahead")
             if (j.optString("error").isNotEmpty()) phase = Phase.Error(j.optString("error"))
-            if (p != null && p.optString("error").isNotEmpty()) phase = Phase.Error(p.optString("error"))
         }
+    }
+    // ai: The vsync present refused for this send (jni.cpp txPost -1; its child surface let go): the frames go into the
+    // ai: window's own queue from here, by the frame callback, the painters keeping host frames again (the configure
+    // ai: with vsynced off). Why goes to the log and the lab line.
+    private fun toWindowQueue(why: String) {
+        if (!vsynced) return
+        Log.i(Engine.TAG, "send: the vsync present refused (${why.ifEmpty { "no reason given" }}): frames into the window's queue")
+        refused = why.ifEmpty { "refused" }
+        vsynced = false
+        if (Build.VERSION.SDK_INT >= 33) Choreographer.getInstance().removeVsyncCallback(vsync)
+        due = 0
+        reconfigure()
+        if (h != 0L) Choreographer.getInstance().postFrameCallback(frame)
     }
     private val frame = object : Choreographer.FrameCallback {
         override fun doFrame(t: Long) {
             if (h == 0L) return
-            tick(t, 0)
+            tick(t)
             Choreographer.getInstance().postFrameCallback(this)
         }
     }
@@ -488,9 +509,9 @@ class SendState(private val a: MainActivity) {
     private val vsync: Choreographer.VsyncCallback by lazy @RequiresApi(33) {
         object : Choreographer.VsyncCallback {
             override fun onVsync(d: Choreographer.FrameData) {
-                if (h == 0L) return
+                if (h == 0L || !vsynced) return
                 tickVsync(d)
-                Choreographer.getInstance().postVsyncCallback(this)
+                if (vsynced) Choreographer.getInstance().postVsyncCallback(this)
             }
         }
     }
@@ -554,7 +575,7 @@ internal fun MainActivity.SendScreen() {
                 Group("Code") {
                     // ai: the slider sets the format's size (its sub-channels / 8); its title the blocks that size carries under the
                     // ai: format's rate profile and their bytes (2026-10-07)
-                    AutoSlider("Blocks", s.blocks, s.picked / 8, 1..128, { n -> val b = Native.blocksFor(8 * n); "$b, ${"%.1f".format(Locale.ROOT, b * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
+                    AutoSlider("Blocks", s.blocks, s.picked / 8, 2..128, { n -> val b = Native.blocksFor(8 * n); "$b, ${"%.1f".format(Locale.ROOT, b * 469 / 1000.0)}\u00a0KB" }) { s.chooseBlocks(it) }
                     if (s.vsyncOn) Select("FPS", s.rate, Pick.FPS.map { it to "$it" }) { s.chooseRate(it) }
                     else Field("FPS", "${s.rate}") { Bar(s.rate.toFloat(), 1f..60f, 58) { v -> val r = v.roundToInt(); if (r != s.rate) s.chooseRate(r) } }
                     // ai: one code, or two side by side for a receiver's 2:1 crop (the web's #codes)
@@ -747,6 +768,7 @@ private fun sendLab(s: SendState): String {
     if (st.label.isEmpty()) return ""
     return "${st.label} on the ${if (st.painter == "gpu") "GPU" else "CPU"}, %.1f frames/s, paint %.1f ms a frame".format(Locale.ROOT, st.shownFps, st.paintMs) +
         (if (st.gpuRing) "\nposted ${st.posted}, held {${st.held}}, late ${st.late}, behind ${st.behind}, ${st.filled} of ${st.slots} buffers filled" else "") +
+        (if (s.refused.isNotEmpty()) "\nthe window's queue: the vsync present refused (${s.refused})" else "") +
         (if (!s.test && s.size > 0) "\nfile ${s.size} B" + (if (st.sentBytes in 1 until s.size) ", ${st.sentBytes} B as sent (zstd)" else "") +
             (if (st.pass > 0) ", pass ${floor(st.pass).toInt()}" else "") else "") +
         if (st.painter == "cpu" && s.painter != "cpu" && st.gpuWhy.isNotEmpty()) "\nnot the GPU: ${st.gpuWhy}" else ""
@@ -755,12 +777,13 @@ private fun sendLab(s: SendState): String {
 // ai: Blocks a frame (send.html #blocks and #subchAuto), 0 for auto: the slider's leftmost step is auto (2026-10-05; an
 // ai: Auto chip at the title row's end until then), its value "Auto, 60, 28.1 KB" while what auto takes is known
 // ai: ("Auto" before the first configure), every step right of it a count by hand. value the setting, shown what auto
-// ai: takes now (0 while unknown), range the counts.
+// ai: takes now (0 while unknown), range the counts; the step left of them auto.
 @Composable
 private fun AutoSlider(title: String, value: Int, shown: Int, range: IntRange, text: (Int) -> String, choose: (Int) -> Unit) {
     val auto = value == 0
     val b = if (auto) shown else value
+    val lo = range.first - 1
     Field(title, if (auto) (if (b > 0) "Auto, ${text(b)}" else "Auto") else text(b)) {
-        Bar(value.toFloat(), 0f..range.last.toFloat(), range.last - 1) { choose(it.roundToInt()) }
+        Bar((if (auto) lo else value).toFloat(), lo.toFloat()..range.last.toFloat(), range.last - lo - 1) { val v = it.roundToInt(); choose(if (v < range.first) 0 else v) }
     }
 }

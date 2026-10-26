@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 # ai: The Android decoder's build steps; core/, gen/, out/ and .tools/ are liblizard's:
-#   ./build.sh tools     naga-cli (its version line) and ../liblizard/gen/wgsl2spv (naga 30 as a library), once
-#                        (cargo: Rust 1.87 or later)
-#   ./build.sh gen       the setup from the web host: ../liblizard/out/{setup,blobs,wgsl,naga,spv}, and with LIZ_NETS=1
-#                        the native nets (gen/nets.mjs: out/nets; glslang 16, placed by hand in ../liblizard/.tools/glslang).
-#                        Needs Node, ../liblizard/build/ob.wasm (liblizard's ./build.sh), naga and wgsl2spv (tools), and
-#                        spirv-val and glslc: the NDK's shader-tools (ANDROID_NDK_HOME, else $ANDROID_HOME/ndk/27.1.12297006,
-#                        else ~/Android/Sdk/ndk/27.1.12297006),
-#                        else SPIRV-Tools and shaderc on the PATH
+#   ./build.sh tools     ../liblizard/gen/wgsl2spv (naga 30 as a library), once (cargo: Rust 1.87 or later)
+#   ./build.sh gen       the setup from the web host: ../liblizard/out/{setup,blobs,wgsl,naga,spv}. Needs Node,
+#                        ../liblizard/build/ob.mjs and ../liblizard/bindings/wasm/dist/lizard.wasm (liblizard's
+#                        ./build.sh), wgsl2spv (tools), and spirv-val and glslc: the NDK's shader-tools (ANDROID_NDK_HOME,
+#                        else $ANDROID_HOME/ndk/27.1.12297006, else ~/Android/Sdk/ndk/27.1.12297006), else SPIRV-Tools
+#                        and shaderc on the PATH
 #   ./build.sh linux     ../liblizard/core for this desktop: build/linux/lizard_gpu_check (the 4090, the iGPU, lavapipe)
 #   ./build.sh android   ../liblizard/core for the phone with the NDK: build/android/lizard_gpu_check (arm64, API 29)
 #   ./build.sh phone [cmd...]   the phone build and out/ pushed to /data/local/tmp/lizard over adb, then cmd run there
@@ -23,13 +21,10 @@ PHONE=/data/local/tmp/lizard
 step=${1:-}; shift || true
 case $step in
   tools)
-    cargo install naga-cli --version 30.0.1 --root $LIB/.tools --locked
     (cd $LIB/gen/wgsl2spv && cargo build --release)
     ;;
   gen)
     node $LIB/gen/gen.mjs "$@"
-    # ai: the native nets only when asked: they need $LIB/.tools/glslang, and none ships by default
-    if [ "${LIZ_NETS:-0}" = 1 ]; then node $LIB/gen/nets.mjs "$@"; fi
     ;;
   linux)
     cmake -S $LIB/core -B build/linux -DCMAKE_BUILD_TYPE=RelWithDebInfo >/dev/null
@@ -45,7 +40,6 @@ case $step in
     adb shell mkdir -p $PHONE/out/spv $PHONE/research/build
     adb push build/android/lizard_gpu_check $PHONE/ >/dev/null
     adb push $OUT/setup $OUT/blobs $PHONE/out/ >/dev/null
-    if [ -d $OUT/nets ]; then adb push $OUT/nets $PHONE/out/ >/dev/null; fi
     # ai: the SPIR-V the device loads, not naga's raw copies
     tmp=$(mktemp -d); cp $OUT/spv/*.spv "$tmp"/; rm -f "$tmp"/*.raw.spv; adb push "$tmp"/. $PHONE/out/spv/ >/dev/null; rm -rf "$tmp"
     if [ "${1:-}" = selftest ]; then
@@ -62,6 +56,6 @@ case $step in
     adb shell pm grant dev.fosslabs.lizard android.permission.CAMERA
     ;;
   *)
-    sed -n 2,16p ./build.sh; exit 2   # ai: the script's own folder, where it has changed to
+    sed -n 2,15p ./build.sh; exit 2   # ai: the script's own folder, where it has changed to
     ;;
 esac

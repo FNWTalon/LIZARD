@@ -57,8 +57,11 @@ std::string Sender::configure(const TxFormat& f) {
   if (f.codes < 1 || f.codes > 2) return "codes are 1 or 2, not " + std::to_string(f.codes);
   if (f.gap < 0 || f.gap > 64) return "the gap is 0 to 64 modules, not " + std::to_string(f.gap);
   // ai: one codec made here to say what the format is (and that it is one); each painter makes its own
+  // ai: the format's picture (src/focus.h focus_n_for: a receiver takes it from the word's version) and clip ratio, 2
+  // ai: (SPEC 6.7)
   focus_t probe{};
-  if (focus_init(&probe, f.n, f.subch, 1, txClip(), f.span, 0.f, 0, 0, 0, 0, 0, 0)) return "the codec refused LIZARD-" + std::to_string(f.subch) + " at n = " + std::to_string(f.n);
+  const int n = focus_n_for(f.subch);
+  if (focus_init(&probe, n, f.subch, 2.0f, f.span, 0.f)) return "the codec refused LIZARD-" + std::to_string(f.subch);
   // ai: The device and the painter are made here where no prepare did: the frame ring lives in the painter whatever
   // ai: paints (2026-10-07), so a sender needs a Vulkan device. The GPU paints where asked (or auto); auto keeps it only
   // ai: where two frames of the test stream's blocks come out as the C paints them (gpu/encoder.mjs checkNow's rule), so
@@ -73,7 +76,7 @@ std::string Sender::configure(const TxFormat& f) {
   const int aheadFrames = std::max(1, static_cast<int>(std::lround(f.fps * f.aheadSecs)));
   if (f.painter != 0) {
     try {
-      gpuWhy_ = gpu_->configure(f.n, f.subch, f.span, f.fps, 4, f.codes, f.gap, aheadFrames, f.aheadBytes, f.margin, false);
+      gpuWhy_ = gpu_->configure(f.subch, f.span, f.fps, 4, f.codes, f.gap, aheadFrames, f.aheadBytes, f.margin, false);
       if (gpuWhy_.empty() && f.painter == 2) {
         const int k = std::min(2, gpu_->frames()), T = probe.blocks * f.codes, B = probe.block_bytes;
         std::vector<uint8_t> blocks(static_cast<size_t>(k) * T * B);
@@ -91,12 +94,13 @@ std::string Sender::configure(const TxFormat& f) {
   }
   if (!gpu) {
     std::string e;
-    try { e = gpu_->configure(f.n, f.subch, f.span, f.fps, 1, f.codes, f.gap, aheadFrames, f.aheadBytes, f.margin, true); }
+    try { e = gpu_->configure(f.subch, f.span, f.fps, 1, f.codes, f.gap, aheadFrames, f.aheadBytes, f.margin, true); }
     catch (const std::exception& x) { e = x.what(); }
     if (!e.empty()) { focus_free(&probe); return "no frame ring on the device: " + e; }
   }
   std::lock_guard<std::mutex> l(mu_);
   fmt_ = f;
+  n_ = n;
   fmt_.threads = gpu ? gpu_->frames() : std::max(1, f.threads);
   onGpu_ = gpu;
   gpuDevice_ = gpu_->device();
@@ -174,14 +178,16 @@ void Sender::produce() {
 void Sender::paint(int) {
   focus_t f{};
   TxFormat fm;
+  int n = 0;
   size_t rowBytes = 0, bytes = 0;
   {
     std::lock_guard<std::mutex> l(mu_);
     fm = fmt_;
+    n = n_;
     rowBytes = 4ull * gpu_->rowWords();
     bytes = 4ull * gpu_->frameWords();
   }
-  if (focus_init(&f, fm.n, fm.subch, 1, txClip(), fm.span, 0.f, 0, 0, 0, 0, 0, 0)) {
+  if (focus_init(&f, n, fm.subch, 2.0f, fm.span, 0.f)) {
     std::lock_guard<std::mutex> l(mu_);
     error_ = "a painter's codec failed";
     return;
@@ -384,11 +390,11 @@ std::string Sender::stats() {
   std::ostringstream o;
   o.setf(std::ios::fixed);
   o.precision(1);
-  o << "{\"label\":\"" << label_ << "\",\"n\":" << fmt_.n << ",\"subch\":" << fmt_.subch << ",\"fps\":" << fmt_.fps
+  o << "{\"label\":\"" << label_ << "\",\"n\":" << n_ << ",\"subch\":" << fmt_.subch << ",\"fps\":" << fmt_.fps
     << ",\"shownFps\":" << lastFps_ << ",\"offeredKBs\":" << lastKBs_ << ",\"paintMs\":" << lastPaintMs_
     << ",\"painters\":" << fmt_.threads << ",\"painter\":\"" << (onGpu_ ? "gpu" : "cpu") << "\",\"device\":\"" << esc(gpuDevice_)
     << "\",\"gpuWhy\":\"" << esc(gpuWhy_) << "\",\"ahead\":" << ready_.size() << ",\"depth\":" << depth_ << ",\"side\":" << side_ << ",\"width\":" << width_
-    << ",\"codes\":" << fmt_.codes << ",\"shown\":" << shown_ << ",\"blocks\":" << blocks_ << ",\"tiers\":\"" << tiers_ << "\",\"clip\":" << txClip()
+    << ",\"codes\":" << fmt_.codes << ",\"shown\":" << shown_ << ",\"blocks\":" << blocks_ << ",\"tiers\":\"" << tiers_ << "\""
     << ",\"test\":" << (xfer_ ? "false" : "true");
   if (xfer_) {
     std::lock_guard<std::mutex> x(xferMu_);

@@ -1,12 +1,12 @@
 // ai: The session (rx_session.h, 2026-10-25): one camera into one Receiver. The camera's capture thread is the sink's:
 // ai: each frame pushed (the receiver copies its crop and releases it inside push, so the release callback has
-// ai: nothing to do), its crop copied for the preview while one is asked, its time queued for the phase lock. Locks,
-// ai: so the quick never wait on the slow: camMu around every call into the camera (open, start, stop, set, the
-// ai: trigger's begin and end: a UVC device's open or start can take seconds); rxMu around the receiver's pointer (the
+// ai: nothing to do) and its crop copied for the preview while one is asked. Locks, so the quick never wait on the
+// ai: slow: camMu around every call into the camera (open, start, stop, set: a UVC device's open or start can take
+// ai: seconds); rxMu around the receiver's pointer (the
 // ai: sink and every reader copy it and call outside the lock; reconfigure swaps it; batchCap and record set the
 // ai: receiver's under it, a store each); ptrMu around the camera's pointer and what was read off it (stats, camera()
-// ai: and delay copy it, so the camera outlives their call however a close goes); and leaf locks for the preview, the
-// ai: lock's feed, the measured rate and the camera's counts. The order: camMu before any other; no other is held while
+// ai: copy it, so the camera outlives their call however a close goes); and leaf locks for the preview, the measured
+// ai: rate and the camera's counts. The order: camMu before any other; no other is held while
 // ai: one is taken but rxMu inside camMu, and a receiver's own inside rxMu.
 // ai: The user's settings are kept here and set again after each start (rx_session.h set): every backend puts back at
 // ai: stop what set changed, so the app's zoom, exposure and gain would otherwise last one stream (2026-10-25).
@@ -16,10 +16,8 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <condition_variable>
 #include <cstdio>
 #include <cstring>
-#include <deque>
 #include <filesystem>
 #include <initializer_list>
 #include <mutex>
@@ -27,6 +25,7 @@
 #include <utility>
 
 #include "camera.h"
+#include "crops.h"
 #include "json.hpp"
 #include "receiver.h"
 #include "replay.h"
@@ -37,8 +36,6 @@ using json = nlohmann::json;
 
 namespace {
 
-// ai: the captures kept for the lock's reader (rx_session.h captures): 17 s at 60
-constexpr size_t CAPS_KEPT = 1024;
 // ai: how long a preview asked keeps the capture thread copying crops
 constexpr int64_t PREVIEW_HOLD_NS = 1'000'000'000;
 // ai: the stats' figures of the receiver's last window (receiver.cpp stats): a stream's, so none while none runs
@@ -73,18 +70,6 @@ bool oneOf(const std::string& v, std::initializer_list<const char*> of, const ch
   }
   why = std::string("the ") + what + " is one of " + list + " (not \"" + v + "\")";
   return false;
-}
-
-// ai: The region of a frame the decoder reads (liblizard/core/rx/receiver.cpp cropsOf, kept equal): 1:1 the centre
-// ai: square of the short side; 2:1 the centre region twice as long as it is high along the long side, its height
-// ai: min(short side, long side / 2).
-struct Region { uint32_t x, y, w, h; };
-Region regionOf(uint32_t w, uint32_t h, bool two) {
-  const bool wide = w >= h;
-  const uint32_t lo = std::min(w, h), hi = std::max(w, h);
-  const uint32_t side = two ? std::min(lo, hi / 2) : lo, len = two ? 2 * side : side;
-  const uint32_t along = (hi - len) / 2, across = (lo - side) / 2;
-  return wide ? Region{along, across, len, side} : Region{across, along, side, len};
 }
 
 // ai: An area average's taps along one axis, `in` samples to `out` (out <= in): output i the mean of the input span
@@ -149,21 +134,12 @@ json describe(cam::Camera& c, const std::vector<cam::Mode>& modes, const std::ve
   for (const auto& k : controls)
     ks.push_back({{"id", k.id}, {"name", k.name}, {"unit", k.unit}, {"min", k.min}, {"max", k.max}, {"step", k.step},
                   {"def", k.def}, {"value", k.value}, {"canAuto", k.canAuto}, {"isAuto", k.isAuto}});
-  return {{"info", infoJson(c.info())}, {"modes", ms}, {"pick", cam::pick(modes, 1920, 1080, 60)}, {"controls", ks},
-          {"trigger", c.trigger() != nullptr}};
+  return {{"info", infoJson(c.info())}, {"modes", ms}, {"pick", cam::pick(modes, 1920, 1080, 60)}, {"controls", ks}};
 }
 
-json parsed(const std::string& s) {
-  try {
-    return s.empty() ? json() : json::parse(s);
-  } catch (const std::exception&) {
-    return json();
-  }
-}
-
-// ai: An object others may still hold for the length of one call (a stats, a delay, a series) let go here, on this
+// ai: An object others may still hold for the length of one call (a stats, a series) let go here, on this
 // ai: thread, once they have: its destructor (a receiver's joins and device wait, a camera's teardown) never lands on
-// ai: the UI's or the lock's thread. Past 5 s the last holder ends it.
+// ai: the UI's thread. Past 5 s the last holder ends it.
 template <class T>
 void letGo(std::shared_ptr<T>& p) {
   for (int i = 0; p && p.use_count() > 1 && i < 5000; i++) std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -196,7 +172,6 @@ struct RxSession::Impl {
   std::vector<cam::Mode> modes;    // ai: camMu: the open camera's
   std::vector<cam::Control> ctls;  // ai: camMu: its controls as last read (describeNow)
   int mode = -1;                   // ai: camMu: the index started last
-  int64_t period = 0;              // ai: camMu: the trigger's period as begun (0 free run)
   bool streamed = false;           // ai: camMu: a stream ran since the receiver was last told the camera closed
   std::atomic<bool> streaming{false};
   std::atomic<uint64_t> starts{0};   // ai: the camera's starts since it opened (the stats' "starts")
@@ -212,12 +187,10 @@ struct RxSession::Impl {
 
   std::mutex ptrMu;
   std::shared_ptr<cam::Camera> camera;   // ai: read under ptrMu (or camMu); written under both
-  cam::Trigger* trig = nullptr;          // ai: as camera: camera->trigger() at open, valid while it is
   json info, modeNow, described;         // ai: ptrMu: its Info, the mode started last (null none), camera()'s answer
 
   std::mutex csMu;
   cam::Stats cs;                   // ai: csMu: Camera::stats as last read
-  json trigStats;                  // ai: csMu: Trigger::stats as last read (null none)
 
   std::mutex endMu;
   std::string ended;               // ai: endMu: the stream's own end's why ("" none)
@@ -258,16 +231,6 @@ struct RxSession::Impl {
   std::mutex scaleMu;
   std::vector<float> scaleMid, scaleAcc;   // ai: scaleMu
 
-  std::mutex capMu;
-  std::condition_variable capCv, capLeft;
-  std::deque<std::pair<int64_t, bool>> caps;   // ai: capMu: (Frame::ns, Frame::delayed), oldest first
-  // ai: capMu: when the running schedule was begun (steady ns, as its begin returned: its first trigger fires about a
-  // ai: period on), 0 in free run. While one runs the feed takes its own captures alone (rx_session.h captures)
-  int64_t schedSince = 0;
-  uint64_t wakeGen = 0, stopGen = 0;           // ai: capMu: wake() calls; stops and the stream's own ends
-  int waiting = 0;                             // ai: capMu: callers inside captures()
-  bool closing = false;                        // ai: capMu: the destructor has begun
-
   // ai: from: the receiver whose transfer the new one goes on with (receiver.h create's from), null for one of its own
   std::shared_ptr<Rx> makeRx(const std::string& decoder, const std::string& layout, Receiver* from, std::string& why) {
     ReceiverConfig rc;
@@ -275,9 +238,6 @@ struct RxSession::Impl {
     rc.cacheDir = cfg.cacheDir;
     rc.storeDir = cfg.storeDir;
     rc.decoder = decoder;
-    rc.cpuThreads = cfg.cpuThreads;
-    rc.precision = cfg.precision;
-    rc.device = cfg.device;
     rc.layout = layout;
     rc.log = cfg.log;
     try {
@@ -297,7 +257,7 @@ struct RxSession::Impl {
     }
   }
 
-  // ai: the capture thread's: a frame into the receiver, its crop for the preview, its time for the lock
+  // ai: the capture thread's: a frame into the receiver, its crop for the preview
   void onFrame(const cam::Frame& f) {
     if (!f.luma || !f.width || !f.height || f.stride < f.width) {
       if (pushErrors++ == 0) say("camera: a frame with no luma, or rows shorter than its width, was let go");
@@ -320,19 +280,6 @@ struct RxSession::Impl {
     }
     const int64_t a = asked.load(std::memory_order_relaxed);
     if (a && now - a < PREVIEW_HOLD_NS) keepCrop(f, r && r->layout == "2:1", tag, now);
-    bool fed = false;
-    {
-      // ai: while a schedule runs, a capture of it alone: one its backend placed on a trigger of it (Frame::triggered),
-      // ai: stamped at or after its begin; the free run's capture still in flight at the begin (stamped before it,
-      // ai: 2026-10-25) and one of a schedule before are the receiver's, not the lock's
-      std::lock_guard<std::mutex> l(capMu);
-      if (!schedSince || (f.triggered && f.ns >= schedSince)) {
-        caps.emplace_back(f.ns, f.delayed);
-        while (caps.size() > CAPS_KEPT) caps.pop_front();
-        fed = true;
-      }
-    }
-    if (fed) capCv.notify_all();
     std::lock_guard<std::mutex> l(fpsMu);
     fpsLast = now;
     if (!fpsStart) {
@@ -351,18 +298,20 @@ struct RxSession::Impl {
   // ai: the decoder's crop of the frame copied, into the spare where no preview holds it (else a new one), outside the
   // ai: lock; then the newest, the newest before it the spare
   void keepCrop(const cam::Frame& f, bool two, uint64_t seq, int64_t now) {
-    const Region g = regionOf(f.width, f.height, two);
-    if (!g.w || !g.h) return;
+    // ai: the region the decoder reads (core/rx/crops.h): the centre square, or the 2:1 halves whole
+    const Crops c = cropsOf(f.width, f.height, two);
+    const uint32_t gx = c.x[0], gy = c.y[0], gw = c.x[c.n - 1] - c.x[0] + c.side, gh = c.y[c.n - 1] - c.y[0] + c.side;
+    if (!c.side) return;
     std::shared_ptr<Crop> k;
     {
       std::lock_guard<std::mutex> l(prevMu);
       if (spare && spare.use_count() == 1) k = std::move(spare);
     }
     if (!k) k = std::make_shared<Crop>();
-    k->px.resize(size_t(g.w) * g.h);
-    for (uint32_t y = 0; y < g.h; y++) std::memcpy(k->px.data() + size_t(y) * g.w, f.luma + size_t(g.y + y) * f.stride + g.x, g.w);
-    k->w = g.w;
-    k->h = g.h;
+    k->px.resize(size_t(gw) * gh);
+    for (uint32_t y = 0; y < gh; y++) std::memcpy(k->px.data() + size_t(y) * gw, f.luma + size_t(gy + y) * f.stride + gx, gw);
+    k->w = gw;
+    k->h = gh;
     k->seq = seq;
     k->at = now;
     std::lock_guard<std::mutex> l(prevMu);
@@ -385,26 +334,15 @@ struct RxSession::Impl {
       ended = w;
     }
     streaming = false;
-    {
-      std::lock_guard<std::mutex> l(capMu);
-      stopGen++;
-      caps.clear();
-    }
-    capCv.notify_all();
     say("camera: the stream ended: " + w);
   }
 
   // ai: camMu held: the camera's counts read into the cache
   void readStats() {
     cam::Stats s;
-    json t;
-    if (camera) {
-      s = camera->stats();
-      if (trig) t = parsed(trig->stats());
-    }
+    if (camera) s = camera->stats();
     std::lock_guard<std::mutex> l(csMu);
     cs = s;
-    trigStats = t;
   }
 
   // ai: camMu held: camera()'s answer read off the camera again
@@ -450,18 +388,9 @@ struct RxSession::Impl {
     say("camera: set again after the start: " + said);
   }
 
-  // ai: camMu held. The trigger ended first (the schedule's thread stops before the stream), then the stream (its
-  // ai: thread joined: no sink call after this), the receiver told, the lock's waits ended.
+  // ai: camMu held. The stream stopped (its thread joined: no sink call after this), then the receiver told.
   void stopLocked() {
     if (!camera) return;
-    if (trig && (period || trig->running())) {
-      try {
-        trig->end();
-      } catch (const std::exception& e) {
-        say(std::string("camera: the trigger did not end: ") + e.what());
-      }
-    }
-    period = 0;
     try {
       camera->stop();
     } catch (const std::exception& e) {
@@ -482,13 +411,6 @@ struct RxSession::Impl {
       }
     }
     const bool was = streaming.exchange(false);
-    {
-      std::lock_guard<std::mutex> l(capMu);
-      stopGen++;
-      caps.clear();
-      schedSince = 0;
-    }
-    capCv.notify_all();
     try {
       readStats();
     } catch (const std::exception&) {
@@ -508,10 +430,6 @@ struct RxSession::Impl {
     {
       std::lock_guard<std::mutex> l(endMu);
       ended.clear();
-    }
-    {
-      std::lock_guard<std::mutex> l(capMu);
-      caps.clear();
     }
     // ai: set before the start, so a stream that ends at once (its Ended on the capture thread before start returns)
     // ai: leaves it false
@@ -545,43 +463,6 @@ struct RxSession::Impl {
     return ok;
   }
 
-  // ai: camMu held: the trigger begun every per ns, the captures before it let go and none but its own fed after it
-  // ai: (schedSince: a lock reads its own schedule's alone)
-  bool beginTrigger(int64_t per, std::string& why) {
-    std::string w;
-    bool ok = false;
-    try {
-      ok = trig && trig->begin(per, w);
-    } catch (const std::exception& e) {
-      w = e.what();
-    }
-    if (!ok) {
-      why = w.empty() ? "the camera refused its software trigger" : w;
-      return false;
-    }
-    period = per;
-    {
-      std::lock_guard<std::mutex> l(capMu);
-      schedSince = nowNs();
-      caps.clear();
-    }
-    say("camera: a software trigger every " + num(per / 1e6, 4) + " ms");
-    return true;
-  }
-
-  // ai: camMu held: a stream stopped and started again in mode index (another, or the same), the trigger begun again
-  // ai: at its period where it ran (stopLocked ends it)
-  bool restartLocked(int index, std::string& why) {
-    const int64_t per = streaming ? period : 0;
-    stopLocked();
-    if (!startLocked(index, why)) return false;
-    if (per && !beginTrigger(per, why)) {
-      why = "the trigger did not begin again: " + why;
-      return false;
-    }
-    return true;
-  }
-
   // ai: camMu held: the camera stopped and let go (here, once a stats or a delay holding it has let go too)
   void closeLocked() {
     if (!camera) return;
@@ -591,7 +472,6 @@ struct RxSession::Impl {
       std::lock_guard<std::mutex> l(ptrMu);
       c = std::move(camera);
       camera = nullptr;
-      trig = nullptr;
       info = nullptr;
       modeNow = nullptr;
       described = json::object();
@@ -600,11 +480,9 @@ struct RxSession::Impl {
     ctls.clear();
     wants.clear();
     mode = -1;
-    period = 0;
     {
       std::lock_guard<std::mutex> l(csMu);
       cs = cam::Stats{};
-      trigStats = nullptr;
     }
     dropCrop();
     const std::string name = c->info().name;
@@ -629,8 +507,7 @@ std::string describeCamera(cam::Camera& c) { return dump(describe(c, c.modes(), 
 RxSession::RxSession(std::unique_ptr<Impl> p) : p_(std::move(p)) {}
 
 std::unique_ptr<RxSession> RxSession::create(const Config& c, std::string& why) {
-  if (!oneOf(c.decoder, {"auto", "gpu", "cpu"}, "decoder", why) || !oneOf(c.precision, {"auto", "int8", "f16", "f32"}, "precision", why) ||
-      !oneOf(c.layout, {"1:1", "2:1"}, "layout", why))
+  if (!oneOf(c.decoder, {"auto", "gpu", "cpu"}, "decoder", why) || !oneOf(c.layout, {"1:1", "2:1"}, "layout", why))
     return nullptr;
   if (c.storeDir.empty()) {
     why = "the receiver needs a folder for its store";
@@ -658,19 +535,12 @@ std::string RxSession::cameras() {
   return dump({{"cameras", cs}, {"notes", notes}});
 }
 
-// ai: The camera first (no frame after its stop), the lock's waits ended and waited out, then the receiver.
+// ai: The camera first (no frame after its stop), then the receiver.
 RxSession::~RxSession() {
   Impl& p = *p_;
   {
     std::lock_guard<std::mutex> l(p.camMu);
     p.closeLocked();
-  }
-  {
-    std::unique_lock<std::mutex> l(p.capMu);
-    p.closing = true;
-    p.wakeGen++;
-    p.capCv.notify_all();
-    p.capLeft.wait(l, [&] { return p.waiting == 0; });
   }
   std::shared_ptr<Impl::Rx> r;
   {
@@ -701,7 +571,6 @@ bool RxSession::reconfigure(const std::string& decoder, const std::string& layou
   if (!fresh) return false;
   const bool was = p.streaming.load();
   const int m = p.mode;
-  const int64_t per = was ? p.period : 0;
   if (p.camera) p.stopLocked();
   std::shared_ptr<Impl::Rx> old;
   {
@@ -724,10 +593,6 @@ bool RxSession::reconfigure(const std::string& decoder, const std::string& layou
     why = "the camera did not start again: " + why;
     return false;
   }
-  if (per && !p.beginTrigger(per, why)) {
-    why = "the trigger did not begin again: " + why;
-    return false;
-  }
   return true;
 }
 
@@ -744,17 +609,14 @@ bool RxSession::open(const std::string& id, std::string& why) {
     }
     std::shared_ptr<cam::Camera> sp(std::move(c));
     std::vector<cam::Mode> ms = sp->modes();
-    cam::Trigger* t = sp->trigger();
     {
       std::lock_guard<std::mutex> k(p.ptrMu);
       p.camera = sp;
-      p.trig = t;
       p.info = infoJson(sp->info());
       p.modeNow = nullptr;
     }
     p.modes = std::move(ms);
     p.mode = -1;
-    p.period = 0;
     p.starts = 0;
     {
       std::lock_guard<std::mutex> k(p.endMu);
@@ -762,8 +624,7 @@ bool RxSession::open(const std::string& id, std::string& why) {
     }
     p.readStats();
     p.describeNow();
-    p.say("camera: opened " + sp->info().name + " (" + sp->info().id + "), " + std::to_string(p.modes.size()) + " modes" +
-          (t ? ", a software trigger" : ""));
+    p.say("camera: opened " + sp->info().name + " (" + sp->info().id + "), " + std::to_string(p.modes.size()) + " modes");
     return true;
   } catch (const std::exception& e) {
     why = std::string("the camera could not be opened: ") + e.what();
@@ -830,7 +691,8 @@ bool RxSession::start(int mode, std::string& why) {
     why = "the camera has no mode " + std::to_string(mode) + " (" + std::to_string(p.modes.size()) + " listed)";
     return false;
   }
-  return p.restartLocked(mode, why);
+  p.stopLocked();
+  return p.startLocked(mode, why);
 }
 
 void RxSession::stop() {
@@ -888,11 +750,9 @@ std::string RxSession::stats() {
     }
   }
   cam::Stats s;
-  json t;
   {
     std::lock_guard<std::mutex> l(p.csMu);
     s = p.cs;
-    t = p.trigStats;
   }
   const bool on = p.streaming.load();
   if (!o.is_object()) o = json::object();
@@ -909,7 +769,6 @@ std::string RxSession::stats() {
     std::lock_guard<std::mutex> l(p.endMu);
     o["ended"] = p.ended;
   }
-  o["trigger"] = t;
   j["camera"] = std::move(o);
   return dump(j);
 }
@@ -931,78 +790,6 @@ void RxSession::record(std::shared_ptr<Replay> rp) {
   std::lock_guard<std::mutex> l(p_->rxMu);
   p_->rec = rp;
   p_->rx->r->record(std::move(rp));
-}
-
-std::vector<int64_t> RxSession::captures(int timeoutMs) {
-  Impl& p = *p_;
-  std::unique_lock<std::mutex> l(p.capMu);
-  if (p.closing) return {};
-  p.waiting++;
-  const uint64_t w0 = p.wakeGen, s0 = p.stopGen;
-  const auto ended = [&] { return p.closing || p.wakeGen != w0 || p.stopGen != s0; };
-  if (timeoutMs > 0) p.capCv.wait_for(l, std::chrono::milliseconds(timeoutMs), [&] { return ended() || !p.caps.empty(); });
-  std::vector<int64_t> out;
-  if (!ended()) {
-    out.reserve(p.caps.size() * 2);
-    for (const auto& c : p.caps) {
-      out.push_back(c.first);
-      out.push_back(c.second ? 1 : 0);
-    }
-    p.caps.clear();
-  }
-  if (--p.waiting == 0) p.capLeft.notify_all();
-  return out;
-}
-
-void RxSession::wake() {
-  {
-    std::lock_guard<std::mutex> l(p_->capMu);
-    p_->wakeGen++;
-  }
-  p_->capCv.notify_all();
-}
-
-bool RxSession::trigger(int64_t periodNs, std::string& why) {
-  Impl& p = *p_;
-  std::lock_guard<std::mutex> l(p.camMu);
-  if (!p.camera) {
-    why = "no camera is open";
-    return false;
-  }
-  if (!p.trig) {
-    why = "this camera takes no software trigger";
-    return false;
-  }
-  if (periodNs < 0) {
-    why = "a trigger's period is positive (0: free run)";
-    return false;
-  }
-  if (periodNs) return p.beginTrigger(periodNs, why);
-  try {
-    p.trig->end();
-  } catch (const std::exception& e) {
-    why = e.what();
-    return false;
-  }
-  p.period = 0;
-  {
-    std::lock_guard<std::mutex> l(p.capMu);
-    p.schedSince = 0;
-  }
-  p.say("camera: free run");
-  return true;
-}
-
-void RxSession::delay(int64_t ns) {
-  if (ns <= 0) return;
-  std::shared_ptr<cam::Camera> c;
-  cam::Trigger* t = nullptr;
-  {
-    std::lock_guard<std::mutex> l(p_->ptrMu);
-    c = p_->camera;
-    t = p_->trig;
-  }
-  if (c && t) t->delay(ns);
 }
 
 bool RxSession::preview(uint64_t since, int side, std::vector<uint8_t>& out, uint32_t& w, uint32_t& h, uint64_t& seq) {

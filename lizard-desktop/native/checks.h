@@ -1,5 +1,5 @@
 // ai: cam_check's checks (2026-10-25), one file each beside the part it holds to account: check_luma.cpp (the
-// ai: conversions, TurboJPEG, the trigger's clock), check_scene.cpp (the simulated screen and camera), check_session.cpp
+// ai: conversions, TurboJPEG, the clock's sleep), check_scene.cpp (the simulated screen and camera), check_session.cpp
 // ai: (the session over the receiver, on the simulated camera), check_v4l2.cpp (V4L2 against sim/fake_v4l2's devices),
 // ai: check_mf.cpp (Media Foundation against sim/fake_mf's source), check_avf.cpp (AVFoundation). Each takes the
 // ai: arguments after its name and returns the process's exit code, one rule for all (kHeld and the rest below); each
@@ -26,7 +26,6 @@ std::string jpegOptional();
 
 using Args = std::vector<std::string>;
 int luma(const Args& a);
-int trigger(const Args& a);
 int scene(const Args& a);
 int session(const Args& a);
 int v4l2(const Args& a);

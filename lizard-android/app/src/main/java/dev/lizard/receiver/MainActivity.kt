@@ -253,9 +253,6 @@ class MainActivity : ComponentActivity() {
         powerW = if (plugged || ua == Int.MIN_VALUE || mv <= 0) null else abs(ua.toDouble()) * mv / 1e9
         powerW?.let { powerSum += it; powerN++ }
     }
-    // ai: `adb shell setprop debug.lizard.dim <0..1>` (2026-10-08, a lab switch for the heat's levers): Receive's
-    // ai: window brightness while the camera runs, acted on when the value changes; anything else, the system's
-    private var dimAsked = ""
     private val heatListener = PowerManager.OnThermalStatusChangedListener { if (it != heat) Log.i(Engine.TAG, "thermal status $it"); heat = it }
     override fun onResume() {
         super.onResume()
@@ -324,8 +321,6 @@ class MainActivity : ComponentActivity() {
     internal fun tipsAgain() { tipsSeen = false; prefs.edit().putBoolean("tipsSeen", false).apply() }
     internal fun isOpen(k: String) = folds[k] == true
     internal fun toggle(k: String) { val v = !isOpen(k); folds[k] = v; prefs.edit().putBoolean(k, v).apply() }
-
-    // ai: Receive again (Clear until 2026-10-01) went 2026-10-05: a second Start camera; a receiver tests with the test stream.
 
     // ai: The received file's actions, through the FileProvider (AndroidManifest.xml), as the header's media type. A
     // ai: bundle's (2026-10-16): Open lists its files (the Files screen), Share hands them all over at once, Save makes
@@ -591,20 +586,11 @@ class MainActivity : ComponentActivity() {
                         if (phase == Engine.Phase.On || phase == Engine.Phase.Starting || phase == Engine.Phase.Loading) { stopped = true; engine.stop(); last = true }
                     }
                 }
-                // ai: the phone's power once a second (readPower), its 5 s mean in the log; the dim switch
+                // ai: the phone's power once a second (readPower), its 5 s mean in the log
                 if (tick % 4 == 0) {
                     readPower()
                     if (tick % 20 == 0 && powerN > 0) { Log.i(Engine.TAG, "power: %.2f W (5 s mean), battery %.1f C".format(powerSum / powerN, batteryC)); powerSum = 0.0; powerN = 0 }
                     else if (tick % 20 == 0) Log.i(Engine.TAG, "power: plugged in, battery %.1f C".format(batteryC))
-                    val d = Native.prop("debug.lizard.dim")
-                    val on = phase == Engine.Phase.On
-                    val want = if (on) d.toFloatOrNull()?.takeIf { it in 0f..1f } else null
-                    val key = if (want == null) "" else d
-                    if (key != dimAsked) {
-                        dimAsked = key
-                        window.attributes = window.attributes.apply { screenBrightness = want ?: WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE }
-                        Log.i(Engine.TAG, "dim: window brightness " + (want?.toString() ?: "the system's"))
-                    }
                 }
                 // ai: the unfinished transfers on Home, once a second (a transfer in hand writes its meta.json as it goes)
                 if (tick % 4 == 0 && screen == Screen.Home) partials = withContext(Dispatchers.IO) { partialStore.list() }
@@ -660,7 +646,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// ai: The stats JSON's fields the screens read (receiver_stub.cpp's header lists them).
+// ai: The stats JSON's fields the screens read (liblizard/core/rx/receiver.h stats() and receiver.cpp name them).
 internal fun rxOf(j: JSONObject?): Readout.Rx {
     if (j == null) return Readout.Rx()
     val f = j.optJSONObject("file")

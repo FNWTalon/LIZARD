@@ -40,7 +40,7 @@
 #include "backends.h"
 #include "jpeg.h"
 #include "luma.h"
-#include "trigger.h"
+#include "clock.h"
 #include "v4l2_sys.h"
 
 namespace lizard::cam {

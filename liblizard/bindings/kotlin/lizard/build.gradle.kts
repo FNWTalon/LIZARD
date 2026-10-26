@@ -16,6 +16,8 @@ sourceSets.main { resources.srcDir(natives.map { it.destinationDir.parentFile.pa
 tasks.test {
   useJUnitPlatform()
   systemProperty("lizard.library", lib.absolutePath)
+  // ai: the generated GPU tree (lizard-android/build.sh gen), which the sender's frame ring reads
+  systemProperty("lizard.assets", rootDir.resolve("../../out").normalize().absolutePath)
   maxHeapSize = "2g"
   // ai: CheckJNI: a JNI call inside a critical region, a bad array access or a pending exception fails the run
   // ai: (2026-10-03: without it the tests passed over a push that called back into Java inside one)

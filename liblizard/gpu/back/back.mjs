@@ -1,12 +1,12 @@
-// ai: The GPU back half composed (DESIGN.md section 11): the transform (A), the soft values (B) and the LDPC with its
+// ai: The GPU back half composed (DESIGN.md section 9): the transform (A), the soft values (B) and the LDPC with its
 // ai: CRC and compaction (C) as one object that owns the stages, their tables and one set of derived strides
 // ai: (dims.mjs), makes a lane's buffers over the front half's frames and sel buffers, and appends the chain's
 // ai: six dispatches to a batch's command stream. What the host reads back is the result buffer of verified blocks
 // ai: (REC: id and payload a record), the verdict a block (V, ITS) and the counters a frame (BCOUNTS); nothing else
 // ai: leaves the device. Runs in the browser; node imports it for parseReadback and the constants.
 //
-//   const bh = await BackHalf.build(device, { B, sizes, precision, cap, picture });
-//   const ln = bh.lane({ gridStride, framesBuf, selBuf });   // one a lane in flight
+//   const bh = await BackHalf.build(device, { B, sizes, precision, picture });
+//   const ln = bh.lane({ framesBuf, selBuf });   // one a lane in flight
 //   bh.bindPicture(ln, { texView, mapsBuf, residBuf });   // pass 1 samples the frame itself
 //   bh.encode(enc, ln, { ts });   // or bh.encode(pass, ln) inside an open compute pass
 //   bh.readback(enc, ln, readBuf, offset); ... parseReadback(mapped, offset, bh.dims)
@@ -24,16 +24,15 @@ export const COUNT = { columns: 0, rows: 1, stored: 2, tried: 3, verified: 4, re
 export const COUNTS = 8;
 
 export class BackHalf {
-  // ai: sizes: the decoder's picture sizes, [{ n, subch, bitmap }] with a size's index its position and sel[f].z
-  // ai: (gpu/tables.mjs PICTURES, each at its largest sub-channel count; at most SLOTS), null where none; bitmap left
-  // ai: out is the format's own. A size whose pass 1 does not fit the device's workgroup memory is left unbuilt
-  // ai: (logged), and the gate leaves its frames, and any frame whose sel[f].z is SLOTS or more or whose sel[f].y is
-  // ai: under 2, off every list.
+  // ai: sizes: the decoder's picture sizes, [{ n, subch }] with a size's index its position and sel[f].z
+  // ai: (gpu/tables.mjs PICTURES, each at its largest sub-channel count; at most SLOTS), null where none. A size whose
+  // ai: pass 1 does not fit the device's workgroup memory is left unbuilt (logged), and the gate leaves its frames, and
+  // ai: any frame whose sel[f].z is SLOTS or more or whose sel[f].y is under 2, off every list.
   // precision: "f16" keeps Y and S as f16 where the device has shader-f16 (the iGPU, phones), else f32 with a log.
-  // cap: records the result buffer holds a batch (0: every block of every frame, B x blocksMax).
+  // ai: The result buffer holds every block of every frame (B x blocksMax records).
   // ai: picture: the front half's rings, [{ span, margin, lattice }] (gpu/tables.mjs rings: span, margin, nodeX): pass 1
   // ai: samples the frame through the front half's map, residuals and texture on its (ring, picture) pair's grid.
-  static async build(device, { B, sizes, precision = "f32", cap = 0, cpw, tw, picture, log = () => {} }) {
+  static async build(device, { B, sizes, precision = "f32", picture, log = () => {} }) {
     if (precision !== "f32" && precision !== "f16") throw new Error(`precision ${precision}`);
     if (precision === "f16" && !device.features.has("shader-f16")) { log("no shader-f16 on this adapter: back half in f32"); precision = "f32"; }
     if (sizes.length > SLOTS) throw new Error(`${sizes.length} sizes, ${SLOTS} slots`);
@@ -46,19 +45,19 @@ export class BackHalf {
       const nt = TRANSFORM_DOWN[z.n] ?? z.n;
       const need = pass1WorkgroupBytes(nt, precision);
       if (need > limit) { log(`size ${s} (${z.n}/${z.subch}) not built: pass 1 needs ${need} B of workgroup memory, the device offers ${limit}`); want.push(null); continue; }
-      want.push({ n: z.n, subch: z.subch, bitmap: z.bitmap, nt });
+      want.push({ n: z.n, subch: z.subch, nt });
     }
     const tables = await transformTables(want);
-    const bsizes = tables.map((tb) => (tb ? { n: tb.n, subch: tb.subch, blocks: tb.blocks, bitmap: tb.bitmap } : null));
-    const dims = derived(bsizes, { B, cap });
+    const bsizes = tables.map((tb) => (tb ? { n: tb.n, subch: tb.subch, blocks: tb.blocks } : null));
+    const dims = derived(bsizes, { B });
     const bh = new BackHalf();
-    Object.assign(bh, { device, B, precision, cap, sizes: bsizes, tables, dims, log });
+    Object.assign(bh, { device, B, precision, sizes: bsizes, tables, dims, log });
     // ai: The stages built at once (2026-09-29, the GPU worker's start: STATUS "The ramp at the start"): none reads
     // ai: another's build, and none compiles under an error scope (../pipeline.mjs).
     [bh.transform, bh.soft, bh.ldpc] = await Promise.all([
-      Transform.build(device, { B, tables, precision, cpw, tw, zero: true, blkStride: dims.blkStride, picture }),
-      buildSoft(device, { B, sizes: bsizes, tables, cap }),
-      buildLdpc(device, { B, sizes: bsizes, cap }),
+      Transform.build(device, { B, tables, precision, blkStride: dims.blkStride, picture }),
+      buildSoft(device, { B, sizes: bsizes, tables }),
+      buildLdpc(device, { B, sizes: bsizes }),
     ]);
     if (bh.transform.sStride !== dims.sStride) throw new Error(`A's sStride ${bh.transform.sStride} against the chain's ${dims.sStride}`);
     // ai: the format's rate profile (tiers.mjs): its stage decodes every version, over the soft and LDPC stages' tables
@@ -67,17 +66,16 @@ export class BackHalf {
     bh.bytes = { REC: bh.ldpc.bytes.REC, V: bh.ldpc.bytes.V, ITS: bh.ldpc.bytes.ITS, BCOUNTS: 4 * COUNTS * B, PILOT: bh.soft.bytes.PILOT };
     // What one readback of the chain's outputs takes, timestamps and other copies aligned after it.
     bh.readBytes = (bh.bytes.REC + bh.bytes.V + bh.bytes.ITS + bh.bytes.BCOUNTS + bh.bytes.PILOT + 7) & ~7;
-    log(`back half: ${precision}, sizes ${dims.served.map((s) => `${bsizes[s].n}/${bsizes[s].subch} (${bsizes[s].blocks} blocks, bit map ${bsizes[s].bitmap})`).join(", ")}; S ${dims.sStride} entries, L ${dims.lStride} words, ${dims.blkStride} blocks a frame; records cap ${dims.recCap}; readback ${(bh.readBytes / 1024).toFixed(0)} KB a batch`);
+    log(`back half: ${precision}, sizes ${dims.served.map((s) => `${bsizes[s].n}/${bsizes[s].subch} (${bsizes[s].blocks} chunks)`).join(", ")}; S ${dims.sStride} entries, L ${dims.lStride} words, ${dims.blkStride} blocks a frame; records cap ${dims.recCap}; readback ${(bh.readBytes / 1024).toFixed(0)} KB a batch`);
     return bh;
   }
 
   // One lane's buffers over the front half's: framesBuf (Frame { w, h, size, valid } a frame) and selBuf (vec4u
   // ai: (ring, 1 + version, picture slot, 0) a frame). Named as DESIGN section 2 names them (S, L,
-  // BLK, V, ITS, REC, LISTS, ARGS, BCOUNTS). The params hold gridStride (the picture capacity a frame), so a lane is
-  // made again (and the old one destroyed) when the front half's picture capacity grows; bindPicture rebinds in place.
+  // BLK, V, ITS, REC, LISTS, ARGS, BCOUNTS); bindPicture rebinds pass 1 in place when the front half's texture changes.
   // ai: ln.bytes is the lane's device memory.
-  lane({ gridStride, framesBuf, selBuf }) {
-    const ln = this.transform.lane({ gridStride, framesBuf, selBuf });
+  lane({ framesBuf, selBuf }) {
+    const ln = this.transform.lane({ framesBuf, selBuf });
     ln.S = ln.sBuf; ln.LISTS = ln.listsBuf; ln.ARGS = ln.argsBuf; ln.BCOUNTS = ln.countsBuf;
     this.soft.lane(ln);
     this.ldpc.lane(ln);

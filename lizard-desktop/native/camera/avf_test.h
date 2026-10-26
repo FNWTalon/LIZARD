@@ -19,7 +19,7 @@ bool frame(void* pixelBuffer, int64_t ns, uint64_t seq, std::vector<uint8_t>& sc
            double& convertMs, std::string& why);
 
 // ai: A capture's presentation time, value / timescale seconds on the host clock, as the Frame::ns it is given: on
-// ai: steadyNs's clock (trigger.h). A timescale of 0 or less (no time) gives steadyNs's now.
+// ai: steadyNs's clock (clock.h). A timescale of 0 or less (no time) gives steadyNs's now.
 int64_t frameNs(int64_t value, int32_t timescale);
 
 // ai: The pixel format start() asks the video data output for, of those the output offers: '420f', else '420v', else

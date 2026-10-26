@@ -14,8 +14,8 @@ import { DIMS, MAP } from "./common.mjs";
 
 export const WINDOW = 12;   // modules a side of a node's template
 export const SUB = 2;       // template samples a module, each way
-// ai: Room for 2 nx + 2 ny - 4 nodes; the rings take 20, 36, 52 and 68 (6, 10, 14 and 18 a side at 94, 158, 222 and
-// ai: 286 modules), and the buffers keep the 136 of the 542-module border before the rings (2026-09-27).
+// ai: Room for 2 nx + 2 ny - 4 nodes; the rings take 36, 68 and 132 (10, 18 and 34 a side at 158, 286 and 542
+// ai: modules).
 export const NODES_MAX = 136;
 // ai: Room for every ring's nodes in a round's light counts (Round.light, a node at its ring's base index).
 export const LIGHT_MAX = 4 * NODES_MAX;

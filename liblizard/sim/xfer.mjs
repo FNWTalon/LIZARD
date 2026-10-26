@@ -246,7 +246,6 @@ export class MemoryStore {
   async read(c) { const r = this.recs.get(c); return r ? r.buf.subarray(0, r.n * REC) : new Uint8Array(0); }
   async drop(c) { this.recs.delete(c); }
   async writeOut(off, bytes) { this.out.set(bytes, off); }
-  async readOut(off, len) { return this.out.subarray(off, off + len); }
   async finish() { return { bytes: this.out }; }
   held() { let t = this.out?.length ?? 0; for (const r of this.recs.values()) t += r.buf.length; return t; }
 }
@@ -265,7 +264,7 @@ export class XferReceiver {
   // sim/zstd.mjs's Z (null: a compressed chunk is rejected).
   constructor({ M, Decoder, store, Z = null }) {
     this.M = M; this.W = wasm(M); this.Decoder = Decoder; this.store = store; this.Z = Z;
-    this.hdr = null; this.source = ""; this.lightSeen = false;
+    this.hdr = null; this.lightSeen = false;
     this.ch = new Map(); this.raw = new Map(); this.replaying = false; this.sinceMeta = 0; this.metaMs = 0;
     this.verified = 0; this.rejected = 0; this.manifestRejected = 0; this.refused = 0; this.over = 0; this.ms = 0; this.done = false; this.result = null;
   }
@@ -282,7 +281,7 @@ export class XferReceiver {
     }
     for (const s of this.ch.values()) s.dec?.free();
     if (this.hdr) [this.hdr.p, this.hdr.root, this.hdr.list, this.hdr.psent, this.hdr.pseed].forEach((p) => M._free(p));
-    this.hdr = null; this.source = ""; this.lightSeen = false; this.ch.clear(); this.raw.clear();
+    this.hdr = null; this.lightSeen = false; this.ch.clear(); this.raw.clear();
     this.verified = 0; this.rejected = 0; this.manifestRejected = 0; this.over = 0; this.ms = 0; this.done = false; this.result = null; this.sinceMeta = 0;
     if (keep) await this.store.park(); else await this.store.clear();
   }
@@ -312,7 +311,7 @@ export class XferReceiver {
   async add(id, bytes) {
     const c = id >>> SYMBOL_BITS, sym = id & SYMBOL_MASK;
     if (c === CONTROL) {
-      if (sym === 0) return this.header(bytes, "light");
+      if (sym === 0) return this.header(bytes);
       if (sym <= MAX_MANIFEST) return this.manifestBlock(sym - 1, bytes);
       return;   // reserved: this version ignores it
     }
@@ -334,15 +333,11 @@ export class XferReceiver {
     if (h && h.K && s.have.n >= h.K[c]) await this.solve(c);   // K: known once the manifest is in (one chunk: from the header)
   }
 
-  // A header block, from the light or, as the fallback, the network (the sender page's copy of the same 469 bytes).
-  // The light's always wins: a different one is a new transfer, and everything held is let go.
-  async header(bytes, source) {
-    const light = source === "light";
-    if (light) this.lightSeen = true;
-    if (this.hdr) {
-      if (eq(bytes, this.hdr.bytes)) { if (light) { this.source = "light"; for (const s of this.ch.values()) s.mark = s.recs; } return; }
-      if (!light) return;
-    }
+  // A header block, read from the light (the only place a transfer's header comes from): the one in hand again marks
+  // every chunk's blocks so far as its own; a different one is a new transfer, and the one in hand is parked or let go.
+  async header(bytes) {
+    this.lightSeen = true;
+    if (this.hdr && eq(bytes, this.hdr.bytes)) { for (const s of this.ch.values()) s.mark = s.recs; return; }
     const M = this.M, W = this.W, ph = W.put(bytes), sc = M._malloc(52), root = M._malloc(32), nm = M._malloc(255), ty = M._malloc(158);
     const rc = M._xfer_hdr_parse(ph, sc, root, nm, ty);
     // ai: a failed parse writes nothing: name and type lengths read then were heap leftovers, megabytes decoded for nothing.
@@ -357,7 +352,7 @@ export class XferReceiver {
       name, type, log2: f[2], size, length, chunks, codec: f[3], mcount: f[10], len: Uint32Array.from({ length: chunks }, (_, c) => Math.min(size, length - c * size)),
       sent: null, seed: null, K: null, mgot: new Uint8Array(f[10]), mhave: 0, listOk: false };
     if (chunks === 1) { h.sent = Uint32Array.of(f[12]); h.seed = Uint8Array.of(f[4]); h.K = Uint32Array.of(blocksOf(f[12])); }
-    this.hdr = h; this.source = source; this.lightSeen ||= light;
+    this.hdr = h;
     for (const c of [...this.ch.keys()]) if (c >= chunks) { this.ch.delete(c); await this.store.drop(c); }   // blocks of another transfer
     const before = await this.store.open(hex(W.take(root, 32)).slice(0, 16), bytes, h.length);
     if (!chunks) {   // an empty file: its root is BLAKE3 of nothing, which is all there is to check
@@ -471,7 +466,7 @@ export class XferReceiver {
   async finish() {
     this.done = true;
     const h = this.hdr;
-    this.result = { ...(await this.store.finish(h)), name: h.name, mediaType: h.type, length: h.length, sent: this.sentTotal(), root: hex(this.W.take(h.root, 32)), source: this.source };
+    this.result = { ...(await this.store.finish(h)), name: h.name, mediaType: h.type, length: h.length, sent: this.sentTotal(), root: hex(this.W.take(h.root, 32)) };
   }
   // The file's bytes as they go, every chunk's frame or its own (null until the manifest says), and how many of them
   // are in: a verified chunk's all, another's blocks in hand (2026-10-05, so a page's time left counts the bytes the
@@ -495,7 +490,7 @@ export class XferReceiver {
       const s = this.ch.get(c);
       per[c] = !s ? 0 : s.state === VERIFIED ? 255 : Math.min(99, Math.floor((100 * s.have.n) / (h.K ? h.K[c] : blocksOf(h.len[c]))));
     }
-    return { header: { name: h.name, type: h.type, length: h.length, chunks: h.chunks, log2: h.log2, root: hex(this.W.take(h.root, 32)), sent: this.sentTotal() }, sentIn: this.sentIn(), source: this.source, lightSeen: this.lightSeen,
+    return { header: { name: h.name, type: h.type, length: h.length, chunks: h.chunks, log2: h.log2, root: hex(this.W.take(h.root, 32)), sent: this.sentTotal() }, sentIn: this.sentIn(), lightSeen: this.lightSeen,
       manifest: h.mcount, manifestHave: h.mhave, listOk: h.listOk, verified: this.verified, rejected: this.rejected, manifestRejected: this.manifestRejected, refused: this.refused, over: this.over, solveMs: this.ms, per, done: this.done };
   }
 }

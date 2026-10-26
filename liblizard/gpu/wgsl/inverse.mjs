@@ -1,5 +1,5 @@
 // ai: The sender's inverse transforms (gpu/encoder.mjs; the native sender through gen/sender.mjs): the decoder's own
-// ai: butterflies (back_transform.mjs), conj in and conj out, unscaled, a symbol a slot.
+// ai: butterflies (back_transform.mjs), conj in and conj out, unscaled, a symbol a slot, in f32.
 // ai: IROWS, a workgroup a (disc row, symbol), n / 8 threads: the row's coefficients at (u + n) mod n, zeros
 // ai:   elsewhere, the inverse along x, the row stored in Y's slot.
 // ai: IPIC, a workgroup a (quad of columns, symbol), n / 8 threads: turn_pack's packing takes two columns through one
@@ -20,8 +20,8 @@ const sendGate = /* wgsl */ `
 
 // ai: Bindings: S (ro), tw (ro, the size's twiddles), Y (rw), rows (uniform, the size's disc rows as pass 2 binds
 // ai: them), P (uniform, SizeParams). Dispatch (V, 1, symbols).
-export function irowsSource({ n, prec }) {
-  const { ty, ld, st } = store(prec);
+export function irowsSource({ n }) {
+  const { ty, ld, st } = store("f32");
   const T = n / 8;
   let load = "";
   for (let k = 0; k < 8; k++) {
@@ -30,7 +30,7 @@ export function irowsSource({ n, prec }) {
     load += `      let un: u32 = N - x;\n      if (un <= row.w) { val = ${ld("sb", "sBase + row.z + row.w - un")}; }\n    }\n`;
     load += `    v[${k}] = vec2f(val.x, -val.y);\n  }\n`;
   }
-  return (prec === "f16" ? "enable f16;\n" : "") + SIZE_PARAMS + /* wgsl */ `
+  return SIZE_PARAMS + /* wgsl */ `
 @group(0) @binding(0) var<storage, read> sb: array<${ty}>;
 @group(0) @binding(1) var<storage, read> tw: array<vec2f>;
 @group(0) @binding(2) var<storage, read_write> yb: array<${ty}>;
@@ -51,7 +51,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) tid: 
   let sBase: u32 = r * P.a.w + row.x;
   var v: array<vec2f, 8> = ${V8};
   // ai: Register k holds x = tid + k T: the row's entry at u = x (x < n / 2) or u = x - n, conjugated; zero off the row.
-` + load + firstStage(prec) + laterStages(n, prec, "chain") + /* wgsl */ `
+` + load + firstStage("f32") + laterStages(n, "f32") + /* wgsl */ `
   let yBase: u32 = r * P.a.z + vv * N;
   for (var x: u32 = tid; x < N; x = x + T) {
     let z: vec2f = ${ld("buf", "x")};
@@ -65,15 +65,15 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) tid: 
 // ai: is P.c. Dispatch (n / 4, 1, symbols). The picture is quad-major: a workgroup's four columns, row by row, are n
 // ai: consecutive vec4f (PIC[x / 4][y]), so its stores are whole lines (row-major they were 16 B a row, 2.4 of ipic's
 // ai: 4.8 ms at 1536 on the iGPU); the sender turns it row-major after (wgsl/send.mjs TPOSE).
-export function ipicSource({ n, prec }) {
-  const { ty, ld } = store(prec);
+export function ipicSource({ n }) {
+  const { ty, ld } = store("f32");
   const T = n / 8, lanes = [["v0", "buf0"], ["v1", "buf1"]];
   let load = "";
   for (let k = 0; k < 8; k++) {
     load += `  {\n    let m: u32 = tid + ${k * T}u;\n    let z0: vec2f = zAt(m, yBase, x0, x0 + 1u, V);\n    let z1: vec2f = zAt(m, yBase, x0 + 2u, x0 + 3u, V);\n`;
     load += `    v0[${k}] = vec2f(z0.x, -z0.y);\n    v1[${k}] = vec2f(z1.x, -z1.y);\n  }\n`;
   }
-  return (prec === "f16" ? "enable f16;\n" : "") + SIZE_PARAMS + /* wgsl */ `
+  return SIZE_PARAMS + /* wgsl */ `
 @group(0) @binding(0) var<storage, read> yb: array<${ty}>;
 @group(0) @binding(1) var<storage, read> tw: array<vec2f>;
 @group(0) @binding(2) var<storage, read_write> PIC: array<vec4f>;
@@ -112,7 +112,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) tid: 
   let V: u32 = P.a.y;
   var v0: array<vec2f, 8> = ${V8};
   var v1: array<vec2f, 8> = ${V8};
-` + load + firstStage(prec, lanes) + laterStages(n, prec, "chain", lanes) + /* wgsl */ `
+` + load + firstStage("f32", lanes) + laterStages(n, "f32", lanes) + /* wgsl */ `
   // ai: conj out: column a is the real part, column b the imaginary; clip_row's clamp and map to 0..1.
 ` + /* wgsl */ `  let lim: f32 = P.c.x;
   let sc: f32 = P.c.y;

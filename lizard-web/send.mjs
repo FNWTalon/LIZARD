@@ -201,23 +201,25 @@ function gpuGiveUp(e) {
   if (running) go();
 }
 
-// ai: Blocks a frame, a slider (2026-10-01): any whole number of blocks from 1 to 128, a block 8 sub-channels
-// ai: (src/focus.h FOCUS_GROUP), which is what the format word names, so every step is a symbol every receiver reads; the
-// ai: menu of 64 versions before stepped by two blocks. #subch holds what the page reads, "auto" or the sub-channels; the
-// ai: slider (#blocks) is a view over it, kept out of the saved settings, its first step (0) auto (2026-10-05; an Auto box
-// ai: beside it before). The slider commits on release (a re-pick for every step dragged would rebuild the encoder each
-// ai: time); under auto its label says what auto took, once known ("Auto, 57, 26.7 KB").
+// ai: Blocks a frame, a slider (2026-10-01): any whole number of blocks from 2 to 128 (one block a frame is no format
+// ai: since 2026-10-25), a block 8 sub-channels (src/focus.h FOCUS_GROUP), which is what the format word names, so every
+// ai: step is a symbol every receiver reads; the menu of 64 versions before stepped by two blocks. #subch holds what the
+// ai: page reads, "auto" or the sub-channels; the slider (#blocks) is a view over it, kept out of the saved settings, its
+// ai: first step (1) auto (2026-10-05; an Auto box beside it before). The slider commits on release (a re-pick for every
+// ai: step dragged would rebuild the encoder each time); under auto its label says what auto took, once known ("Auto,
+// ai: 59, 27.7 KB").
 function showBlocks() {
   const auto = $("subch").value === "auto", b = auto ? (shown ? shown.subch / 8 : 0) : +$("subch").value / 8;
-  $("blocks").value = auto ? "0" : String(b);
+  $("blocks").value = auto ? "1" : String(b);
   $("blocksOut").textContent = auto ? (b ? `Auto, ${blocksText(b)}` : "Auto") : blocksText(b);
 }
 // ai: the title says "Blocks a frame", so the value is the count and its bytes alone, which fit beside it in the 20rem column
-// ai: "57, 26.7 KB": the blocks a frame of the slider's size carries (the format's rate profile, 2026-10-07: 57 at
-// ai: its 60) and what they hold, under the title "Blocks" (2026-10-05; "60 blocks, ..." before)
+// ai: "59, 27.7 KB": the blocks a frame of the slider's size carries (the format's rate profile, 2026-10-07: 59 at
+// ai: its 60) and what they hold, under the title "Blocks" (2026-10-05; "60 blocks, ..." before); send.html's inline
+// ai: script draws the same before the first paint
 const blocksText = (v) => { const b = blocksFor(8 * v); return `${b}, ${((b * 469) / 1000).toFixed(1)} KB`; };
-$("blocks").addEventListener("input", () => { const v = +$("blocks").value; $("blocksOut").textContent = v ? blocksText(v) : "Auto"; });
-$("blocks").addEventListener("change", () => { const v = +$("blocks").value; $("subch").value = v ? String(8 * v) : "auto"; $("subch").dispatchEvent(new Event("change")); });
+$("blocks").addEventListener("input", () => { const v = +$("blocks").value; $("blocksOut").textContent = v > 1 ? blocksText(v) : "Auto"; });
+$("blocks").addEventListener("change", () => { const v = +$("blocks").value; $("subch").value = v > 1 ? String(8 * v) : "auto"; $("subch").dispatchEvent(new Event("change")); });
 $("subch").addEventListener("change", showBlocks);
 // ai: The page's defaults are LIZARD-480 at 60 painted a second (2026-10-01, the night the Android app, its camera's
 // ai: phase held, read 93 to 95% of it; auto and 24 a second before), in send.html
@@ -246,21 +248,17 @@ const URLP = new URLSearchParams(location.search), CHUNK_LOG2 = +URLP.get("chunk
 // ai: bg=none|noise|text|photo|checker|squares|mixed.
 const FIT = URLP.get("fit") ?? "stretch", SURROUND = URLP.get("bg") ?? "none";
 
-// Which generator fills a test block (sim/phy.mjs STREAMS). It rides in the spec so the receiver
-// and any later replay of research/captures take it from the same place; a capture recorded before
-// this field existed has no stream and replays against the old walk.
+// Which generator fills a test block (sim/phy.mjs STREAMS), in the spec the worker builds its codec from.
 // ai: The receiver judges it from the light (SPEC 9.3), so it is SHAKE256 and nothing else.
 const STREAM = "shake256";
 
 function spec() {
-  // The 2 x 2 picture split is gone from this page (2026-09-24): its tiles were n = 128 pictures off the ladder
-  // with no format word, a symbol that cannot describe itself.
   // ai: The format's rate profile (the codec's, from the sub-channel count: src/focus.c focus_tiers_for, four rates
   // ai: since 2026-10-08), equal power, soft LDPC: the power tilt and RS(80,64) lost (research/10).
   // n is derived from the version (N_FOR in sim/lizard_pick.mjs) and is never chosen here.
   const subch = $("subch").value === "auto" ? pick(room()).subch : +$("subch").value, n = N_FOR(subch);
-  // span written out, not 0, so a recording says which symbol it holds (sim/phy.mjs recordedSpec).
-  // ai: The ring Settings names, or the default ring, the same for every picture (sim/lizard_pick.mjs RING_DEFAULT).
+  // ai: The span of the ring Settings names, or of the default ring, the same for every picture (sim/lizard_pick.mjs
+  // ai: RING_DEFAULT).
   return { phy: "focus", n, subch, mode: 1, span: SPAN(n, ringChosen() ?? RING_DEFAULT), bitmap: FOCUS_BITMAP,
     variants: [{ name: "rx" }], stream: STREAM };
 }
@@ -493,9 +491,8 @@ async function start() {
     if (my !== gen) { if (c) genc?.release(c); return; }
     gcfg = c;
   }
-  // ai: What is painted, for the development log only: nothing reads it to decode. transfer tells one start from the
-  // ai: next in the development log; a re-pick keeps it.
-  cfg = { spec: s, label: made.label, mode: file ? "file" : "test", usefulBytes: made.usefulBytes, blocksPerFrame: made.blocksPerFrame, codes, gap, fps: +$("fps").value, encoder: gcfg ? "gpu" : "wasm", transfer: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, ...(file ? { fileBytes: file.size, name: file.name, ...(file.bundled ? { files: file.files } : {}) } : {}) };
+  // ai: What is painted: the label, the payload, the block's bytes, the blocks a frame, the codes and their gap.
+  cfg = { label: made.label, mode: file ? "file" : "test", usefulBytes: made.usefulBytes, blocksPerFrame: made.blocksPerFrame, codes, gap };
   shown = s; lap = made.xfer?.lap ?? 0; dataSent = 0; dataWin = 0; fileBytes = file?.size ?? 0; sentBytes = made.xfer?.sent ?? 0;
   showEnc();
   showBlocks();
@@ -576,7 +573,7 @@ async function start() {
         `\nworker ${ahead.size} ready ahead, ${behind} animation frames found nothing ready\nanimation frames ${afps.toFixed(1)} a second, the screen ${(1000 / tickMs).toFixed(1)} Hz by their intervals; pictures held 1, 2, 3, 4+ refreshes: ${held.join(", ")}\n${encLine}`;
       $("tx").textContent = line;
       offeredKBs = (painted / dt) * cfg.codes * cfg.blocksPerFrame * cfg.usefulBytes / 1000;
-      // ai: #tx's first line names the format (auto(): "LIZARD-480 (57 blocks), picture ..."; the lab line #lab did until
+      // ai: #tx's first line names the format (auto(): "LIZARD-480 (59 blocks), picture ..."; the lab line #lab did until
       // ai: 2026-10-02, repeating #nums' rate and pass: deleted). The user's figure (#nums): the offered rate alone (the
       // ai: pass went to #tx on 2026-10-05).
       $("nums").textContent = rate(offeredKBs);
@@ -649,7 +646,7 @@ async function repickOnce() {
   shown = s;
   showBlocks();
   stateFps(true);
-  Object.assign(cfg, { spec: s, label: r.label, blocksPerFrame: r.blocksPerFrame, codes, gap });
+  Object.assign(cfg, { label: r.label, blocksPerFrame: r.blocksPerFrame, codes, gap });
 }
 // One debounced entry point for every way the room can change, so they cannot race.
 //   ResizeObserver on <main>: the fullscreen button regrows it by toggling a class, which fires NO resize event; it
@@ -963,9 +960,14 @@ new ResizeObserver(paintSurround).observe(bgc.parentElement);
 for (const el of document.querySelectorAll("#dev select, #dev input, #logs select")) if (el.type !== "file" && !("view" in el.dataset)) persist(el, `send:${el.id}`);
 // ai: a menu takes a preset only where it is one of its options (?ring=auto, from before the menu lost its auto, keeps the default)
 for (const [k, v] of URLP) { const el = $(k); if (el && "value" in el && el.type !== "file" && (el.tagName !== "SELECT" || [...el.options].some((o) => o.value === v))) el.value = v; }
-// ai: A preset or a kept value that is no whole number of blocks from 1 to 128 (?subch=20) is no symbol: back to auto,
-// ai: and say so, rather than paint it.
-if ($("subch").value !== "auto" && !VERSIONS.includes(+$("subch").value)) { $("tx").textContent = `${$("subch").value} sub-channels is no whole number of blocks (8 each, 8 to 1024): showing auto`; $("subch").value = "auto"; }
+// ai: A preset or a kept value that is no format, a whole number of blocks from 2 to 128 (?subch=20, ?subch=8), is no
+// ai: symbol: back to auto, and say so, rather than paint it. A kept one (no preset) is kept as auto from here, as the
+// ai: native apps read a kept one block a frame; a preset never overwrites the kept setting.
+if ($("subch").value !== "auto" && !VERSIONS.includes(+$("subch").value)) {
+  $("tx").textContent = `${$("subch").value} sub-channels is no format (a multiple of 8 from 16 to 1024): showing auto`;
+  $("subch").value = "auto";
+  if (!URLP.has("subch")) try { localStorage.setItem("send:subch", "auto"); } catch {}
+}
 showBlocks();
 showEnc();
 showFps();

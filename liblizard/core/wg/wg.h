@@ -57,11 +57,6 @@ struct Features {
   // ai: the camera's zero-copy ingest (core/ingest/): YCbCr sampling, an r8 storage image, timeline semaphores, and
   // ai: on Android the AHardwareBuffer import; all four or the ingest copies luma instead
   bool ycbcr = false, storageR8 = false, timeline = false, ahb = false, foreign = false;
-  // ai: VK_KHR_cooperative_matrix (the nets' GEMMs on the device's matrix units, core/nets/): the shapes it offers,
-  // ai: "MxNxK A,B,C,Result scope" a shape (KHR types: 0 f16, 1 f32, 2 f64, 3 i8, 4 i16, 5 i32, 6 i64, 7 u8, ...)
-  bool coopmat = false;
-  struct CoopShape { uint32_t M, N, K; int A, B, C, R; bool subgroup; };
-  std::vector<CoopShape> coopShapes;
   uint32_t subgroupSize = 0;
 };
 
@@ -139,7 +134,6 @@ struct QuerySet {
 struct Encoder {
   Device* dev = nullptr;
   VkCommandBuffer cb = VK_NULL_HANDLE;
-  std::vector<std::string> trace;   // ai: the commands as the mock records them, when the device traces
   int commands = 0;
   bool inPass = false;
   QuerySet* passQs = nullptr;
@@ -217,7 +211,6 @@ struct Device {
   // ai: command buffers of dropped Tickets, freed by the recording thread at its next encoder()
   std::vector<VkCommandBuffer> retired;
   std::function<void(const std::string&)> log;
-  FILE* traceOut = nullptr;       // ai: LIZ_TRACE: a JSON line an event, as liblizard/gen/mockgpu.mjs records them
   std::string cachePath;
 
   // ai: The queue's writes waiting for the next submit (WebGPU's queue.writeBuffer), with their staging.
@@ -243,7 +236,7 @@ struct Device {
   // ai: storage: also written by a compute shader (the camera's ingest into the ring), as an r8 storage image.
   std::shared_ptr<Texture> createTexture(uint32_t w, uint32_t h, uint32_t layers, const std::string& id = "", bool storage = false);
   std::shared_ptr<BindGroupLayout> createBindGroupLayout(const std::vector<Bind>& entries, const std::string& id = "");
-  // ai: spec: values for specialisation constants 0, 1, ... (u32 each), the native kernels' shapes (core/nets/)
+  // ai: spec: values for specialisation constants 0, 1, ... (u32 each), the bench kernels' sizes (lizard_gpu_check bench)
   std::shared_ptr<Pipeline> createPipeline(const std::vector<uint32_t>& spirv, std::shared_ptr<BindGroupLayout> bgl, const std::string& id = "", const std::string& label = "", const std::vector<uint32_t>& spec = {});
   std::shared_ptr<BindGroup> createBindGroup(std::shared_ptr<BindGroupLayout> bgl, const std::vector<Resource>& entries, const std::string& id = "");
   std::shared_ptr<QuerySet> createQuerySet(uint32_t count, const std::string& id = "");
@@ -267,13 +260,11 @@ struct Device {
   void loadCache(const std::string& path);
   void saveCache();
 
-  void traceLine(const std::string& json);
   uint32_t memoryType(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid = 0);
   std::atomic<int> nextId{0};
   std::string autoId(char kind);
 };
 
 void check(VkResult r, const char* what);
-std::string jsonStr(const std::string& s);
 
 }  // namespace wg

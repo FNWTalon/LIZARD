@@ -63,9 +63,10 @@ else()
 endif()
 
 add_library(dec STATIC dec/setup.cpp dec/front.cpp ingest/camera.cpp)
-target_include_directories(dec PUBLIC dec ingest)
+target_include_directories(dec PUBLIC dec ingest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_include_directories(dec SYSTEM PUBLIC ${TP})
-target_link_libraries(dec PUBLIC wg)
+# ai: the codec for its ring table: a setup is held to the rings the C reads (dec/front.cpp create)
+target_link_libraries(dec PUBLIC wg lizard_codec)
 
 add_executable(lizard_gpu_check tools/gpu_check.cpp)
 target_link_libraries(lizard_gpu_check PRIVATE dec lizard_rx)
@@ -141,7 +142,7 @@ target_include_directories(tx_check SYSTEM PRIVATE ${TP})
 target_link_libraries(tx_check PRIVATE lizard_tx lizard_xfer lizard_codec)
 
 # ai: Save replays (rx/replay.h, 2026-10-03): the newest frames a receiver decodes, kept as a run's folder; its own
-# ai: target so the app's stub receiver links it too
+# ai: target, which the app's libliz.so links beside lizard_rx
 add_library(lizard_replay STATIC rx/replay.cpp)
 target_include_directories(lizard_replay PUBLIC rx PRIVATE ${CODEC})
 target_include_directories(lizard_replay SYSTEM PRIVATE ${TP})

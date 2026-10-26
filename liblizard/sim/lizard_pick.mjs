@@ -62,7 +62,7 @@ export { QUIET as OB_QUIET } from "./ob.mjs";
 // Modules the sender paints outside the frame, which the room it needs has to hold as well. (An optional guard ring
 // round more white was a sender setting from 2026-09-23 until it was deleted as useless on 2026-09-26.)
 export const PAINTED_MARGIN = () => {
-  if (QUIET === undefined) throw new Error("the codec's margin is not known yet: await sim/ob.mjs init() first (or this ob.wasm predates src/focus.h FOCUS_QUIET)");
+  if (QUIET === undefined) throw new Error("the codec's margin is not known yet: await sim/ob.mjs init() first");
   return QUIET;
 };
 // Until 2026-10-01 every multiple of 16 from 16 to 1024: 64 formats (2026-09-23: even QR, whose ECC must be harsher for
@@ -72,10 +72,12 @@ export const PAINTED_MARGIN = () => {
 // receiver reads any version exactly as it reads the ladder, with no flag. Past LIZARD-1024 the codec refuses to build
 // a symbol at all (src/focus.c init), since the word cannot name its version.
 // This replaced LIZARD-16 / 64 / 128 / 192 / 256 (2026-09-21), whose reasoning is above and in STATUS.md.
-// ai: Every whole number of blocks from 1 to 128 since 2026-10-01 (the sender's slider takes the smallest step that
-// ai: works): a block is 8 sub-channels (src/focus.h FOCUS_GROUP), the word names subch / 8, so 8 is the smallest
-// ai: step a symbol can take; the 64 of 16 to 1024 by 16 before.
-export const VERSIONS = Array.from({ length: 128 }, (_, i) => 8 * (i + 1));
+// ai: Every whole number of blocks from 2 to 128 (LIZARD-16 to -1024, 127 formats): the slider steps a block of 8
+// ai: sub-channels (src/focus.h FOCUS_GROUP), the word naming subch / 8. One block a frame, LIZARD-8, was on the ladder
+// ai: from 2026-10-01 to 2026-10-25 and left it: a frame of one block has no diversity and carries one pilot parity
+// ai: alone; every format of two blocks or more carries a pilot block of each (src/fmt.h OB_FMT_VERSION_MIN). The 64
+// ai: of 16 to 1024 by 16 before 2026-10-01.
+export const VERSIONS = Array.from({ length: 127 }, (_, i) => 8 * (i + 2));
 export const NAME = (subch) => `LIZARD-${subch}`;
 export const versionOf = (subch) => subch / 8;   // what the format word carries; the blocks a frame are blocksFor's
 // ai: The format's rate profile (2026-10-07, four rates since 2026-10-08; src/focus.c focus_tiers_for, the same
@@ -85,7 +87,7 @@ export const versionOf = (subch) => subch / 8;   // what the format word carries
 // ai: the blocks a frame carries, each 473 B.
 export const TIER_IN = 39, TIER_23 = 15, TIER_OUT = 20;
 export function tiersFor(subch) {
-  if (subch < 8 || subch % 8 || subch > 1024) return [];
+  if (subch < 16 || subch % 8 || subch > 1024) return [];
   let best = -1, ba = 0, bt = 0, bc = 0;
   for (let a = 0; 7 * a <= subch - 8; a++) for (let t = 0; 7 * a + 9 * t <= subch - 8; t++) for (let c = 0; 7 * a + 9 * t + 12 * c <= subch - 8; c++) {
     if ((subch - 7 * a - 9 * t - 12 * c) % 8) continue;
@@ -98,16 +100,16 @@ export const blocksFor = (subch) => tiersFor(subch).reduce((n, [, b]) => n + b, 
 // The border in modules a side, which src/focus.c sets as the corner mark's own size plus the guard interval,
 // because the border grows OUTWARDS to hold its marks and nothing ever reaches into the picture.
 export const OB_MARGIN = 12 + 3;
-// ai: THE RINGS (src/focus.h FOCUS_RING: 32, 64, 128, 256 since 2026-10-10). The dotted band holds RINGS[r] cells of
-// ai: 2 x 2 modules a side, so a side is 2 B + 30 modules (94 / 158 / 286 / 542) and the picture spans 2 B (64 / 128 /
-// ai: 256 / 512). The ring only locates the symbol and syncs its grid, like 5G's sync block; the format word says what
-// ai: is inside, and any ring may carry any picture. RING_DEFAULT is the sender's ring for every picture unless one is
-// ai: named (src/focus.h FOCUS_RING_DEFAULT): the 128. No ring follows the version, even by default. Keep equal to the
-// ai: C.
+// ai: THE RINGS (src/focus.h FOCUS_RING: 64, 128, 256 since 2026-10-25; the 32 as well from 2026-09-27 to 2026-10-25).
+// ai: The dotted band holds RINGS[r] cells of 2 x 2 modules a side, so a side is 2 B + 30 modules (158 / 286 / 542) and
+// ai: the picture spans 2 B (128 / 256 / 512). The ring only locates the symbol and syncs its grid, like 5G's sync
+// ai: block; the format word says what is inside, and any ring may carry any picture. RING_DEFAULT is the sender's ring
+// ai: for every picture unless one is named (src/focus.h FOCUS_RING_DEFAULT): the 128, an index into RINGS. No ring
+// ai: follows the version, even by default. Keep equal to the C.
 // The ring and the picture are separate grids: the ring is painted at CELL_OF whole pixels a module and the
 // picture's n samples are resampled to fill its span, so a module is n / span picture samples.
-export const RINGS = [32, 64, 128, 256];
-export const RING_DEFAULT = 2;
+export const RINGS = [64, 128, 256];
+export const RING_DEFAULT = RINGS.indexOf(128);
 // ai: The ring helpers take (n, ring) alike; SPAN and MODULES do not depend on n, CELL_OF and SAMPLES do.
 // ai: A picture's span, modules, in ring `ring` (the default unless named).
 export const SPAN = (n, ring = RING_DEFAULT) => 2 * RINGS[ring];
@@ -117,8 +119,8 @@ export const MODULES = (n, ring = RING_DEFAULT) => SPAN(n, ring) + 2 * OB_MARGIN
 export const CELL_OF = (n, ring = RING_DEFAULT) => Math.ceil(n / SPAN(n, ring) - 1e-4);
 // Pixels across the painted symbol, margin not included.
 export const SAMPLES = (n, ring = RING_DEFAULT) => MODULES(n, ring) * CELL_OF(n, ring);
-// How a block's bits lie on its coefficients, src/focus.h FOCUS_BITMAP: the sender writes it into its config so a
-// recording says how it was painted (sim/phy.mjs recordedSpec). Keep the two equal.
+// How a block's bits lie on its coefficients, src/focus.h FOCUS_BITMAP (the only map): the sender writes it into its
+// config so a recording says how it was painted. Keep the two equal.
 export const FOCUS_BITMAP = 3;   // LINEAR
 // Sub-channels a picture of n samples can carry. The coefficients are taken in order of increasing RADIUS, so
 // subch * 320 of them fill a half-disc of radius R(subch), and that disc has to fit inside the half-plane:
@@ -158,7 +160,7 @@ export const SUBCH_CAP = (n) => Math.floor(Math.PI * n * n / (8 * 320));
 // ai: src/focus.c FOCUS_PICTURES is the same list.
 export const PICTURE_SIZES = [256, 384, 512, 768, 1024, 1536];
 export const N_FOR = (subch) => PICTURE_SIZES.find((n) => n >= 3 * R_RING(subch)) ?? PICTURE_SIZES.at(-1);
-// Camera px a cycle the top ring must still get, fitted by scripts/exp/focus_sweep.mjs (SUBCH set), 2026-09-20. It was
+// Camera px a cycle the top ring must still get, fitted by focus_sweep.mjs (SUBCH set; archive/focus-capacity/), 2026-09-20. It was
 // 2.5, and two things were wrong with that: the border was counted in the application and not in the fit, and the
 // fit averaged in cells that are not resolution-limited (blur, angle, phone, lens distortion) and cells whose
 // optimum lies past the top of the sweep. On the five cells that really are resolution-limited it is 2.12, and
@@ -234,7 +236,7 @@ export function pickVersion(roomPx, top = VERSIONS.at(-1), ring = null) {
   const r = ring ?? RING_DEFAULT;
   for (const v of VERSIONS) if (v <= top && ROOM_FOR(v, r) <= roomPx && v > subch) subch = v;
   const n = N_FOR(subch), samples = SAMPLES(n, r);
-  // ai: `tight` is a room too small even for the fallback (LIZARD-8, 123 px in the default ring, which no real device is). `squeezed` is a room
+  // ai: `tight` is a room too small even for the fallback (LIZARD-16, 175 px in the default ring, which no real device is). `squeezed` is a room
   // that cannot hold the picture's samples at all, which only matters to a page that paints nearest: an
   // oversampled picture survives being shown smaller than its sample count, and LIZARD-16 reads whole at 0.3
   // device px a sample. Both reported, never silent.

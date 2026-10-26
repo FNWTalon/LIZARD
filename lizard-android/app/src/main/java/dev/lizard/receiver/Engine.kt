@@ -53,12 +53,11 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
 
     // ai: what the camera was asked for and given, for the Developer readout
     data class CamInfo(val id: String, val format: String, val size: Size, val preview: Size, val fps: Range<Int>,
-                       val offered: List<Range<Int>>, val minFrameMs: Double, val sensorOrientation: Int, val note: String)
+                       val minFrameMs: Double, val sensorOrientation: Int, val note: String)
 
     // ai: what the rear camera offers, read once at start-up for Settings' choices
-    // ai: zoom: the camera's CONTROL_ZOOM_RATIO_RANGE (Android 11 and up), null where it has none (the lens's focus
-    // ai: range and calibration, for the Focus slider of 2026-10-04, went with it 2026-10-05)
-    data class Caps(val id: String?, val sizes: Set<String>, val lenses: List<Lens>, val zoom: Range<Float>? = null)
+    // ai: zoom: the camera's CONTROL_ZOOM_RATIO_RANGE (Android 11 and up), null where it has none
+    data class Caps(val sizes: Set<String>, val lenses: List<Lens>, val zoom: Range<Float>? = null)
     // ai: a back camera an app can open: its id, and a label from its lens (focal length, horizontal field of view,
     // ai: whether it is a logical camera that switches between lenses)
     data class Lens(val id: String, val label: String)
@@ -249,13 +248,13 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     }.also { Log.i(TAG, "back cameras: ${it.joinToString("; ") { l -> l.label }}") }
 
     fun caps(s: Settings): Caps {
-        val id = rearId(s.camera) ?: return Caps(null, emptySet(), emptyList())
+        val id = rearId(s.camera) ?: return Caps(emptySet(), emptyList())
         val ch = cm.getCameraCharacteristics(id)
         val map = ch.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
         val all = (sizes(map, ImageFormat.PRIVATE) + sizes(map, ImageFormat.YUV_420_888))
             .map { "${it.width}x${it.height}" }.toSet()
         val zr = if (Build.VERSION.SDK_INT >= 30) ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) else null
-        return Caps(id, Settings.RESOLUTIONS.filter { it in all }.toSet(), lenses(), zr)
+        return Caps(Settings.RESOLUTIONS.filter { it in all }.toSet(), lenses(), zr)
     }
 
     private fun backIds() = cm.cameraIdList.filter {
@@ -293,7 +292,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         val assets = Assets.ensure(ctx)
         val cache = File(ctx.cacheDir, "lizard").apply { mkdirs() }
         val store = File(ctx.filesDir, "received").apply { mkdirs() }
-        val hnd = Native.create(assets.path, cache.path, store.path, s.decoder, "auto", s.layout)
+        val hnd = Native.create(assets.path, cache.path, store.path, s.decoder, s.layout)
         luma = Native.wantsLuma(hnd)
         Native.batchCap(hnd, (wanted ?: s).frames)
         if (replaying != 0L) Native.record(hnd, replaying)
@@ -327,8 +326,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         }
     }
 
-    // ai: Autofocus: the camera's continuous video mode where it lists one (a lens held in dioptres, Receive's Focus of
-    // ai: 2026-10-04, went 2026-10-05)
+    // ai: Autofocus: the camera's continuous video mode where it lists one
     private fun applyFocus(b: CaptureRequest.Builder, ch: CameraCharacteristics) {
         val af = ch.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.toList().orEmpty()
         if (CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO in af) b.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
@@ -380,7 +378,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                     val minNs = map.getOutputMinFrameDuration(format, size)
                     main.post {
                         onCamera(CamInfo(id, if (format == ImageFormat.PRIVATE) "PRIVATE" else "YUV_420_888", size,
-                            preview, fps, offered, minNs / 1e6, ch.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0, note))
+                            preview, fps, minNs / 1e6, ch.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0, note))
                     }
                 }
             }
@@ -430,16 +428,15 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                     // ai: asked) and the statistics maps. Measured for edge and hot pixel in 2:1 (two LIZARD-480 painted
                     // ai: 60, the S26 by hand, the same minutes): 51.7 blocks of 60 a clean capture and 2.8 MB/s off
                     // ai: against 34.5 to 39.5 and 1.6 to 2.2 MB/s with the record template's FAST (STATUS "The ISP's
-                    // ai: enhancements off"). Three stay the camera's, since all three off together read worse by
-                    // ai: hand the same evening (which of them is not known): its tone curve (the sRGB preset, or
-                    // ai: an sRGB contrast curve, is the off form here), lens shading correction and distortion
-                    // ai: correction. The `capture:` line reports what the camera did. test: `adb shell setprop
+                    // ai: enhancements off"). Three stay the camera's, measured by hand the same evening: its tone
+                    // ai: curve (an sRGB contrast curve in its place made a fifth of captures short), lens shading
+                    // ai: correction (off alone cost about 6% of the blocks) and distortion correction (the S26 lists
+                    // ai: no mode for it). The `capture:` line reports what the camera did. test: `adb shell setprop
                     // ai: debug.lizard.camx <name,...>` (read at open): a name leaves that one as the template has it
-                    // ai: (nr, edge, hot, ca, face, scene, stats; `all` every one), `-tone`, `-shade`, `-dist` ask one of
-                    // ai: the three off: the A/B's arms either way.
+                    // ai: (nr, edge, hot, ca, face, scene, stats; `all` every one), for the A/B of edge against hot
+                    // ai: pixel apart.
                     val lists = { key: CameraCharacteristics.Key<IntArray> -> ch.get(key)?.toList().orEmpty() }
-                    val camxAsked = Native.prop("debug.lizard.camx").split(',').map { it.trim() }.filter { it.isNotEmpty() }
-                    val keep = setOf("tone", "shade", "dist") + camxAsked.filter { !it.startsWith("-") } - camxAsked.filter { it.startsWith("-") }.map { it.drop(1) }.toSet()
+                    val keep = Native.prop("debug.lizard.camx").split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
                     val off = { name: String -> !("all" in keep || "0" in keep || name in keep) }
                     if (off("nr") && CameraMetadata.NOISE_REDUCTION_MODE_OFF in lists(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES))
                         b.set(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_OFF)
@@ -459,20 +456,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                         if (Build.VERSION.SDK_INT >= 28 && CameraMetadata.STATISTICS_OIS_DATA_MODE_OFF in lists(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_OIS_DATA_MODES))
                             b.set(CaptureRequest.STATISTICS_OIS_DATA_MODE, CameraMetadata.STATISTICS_OIS_DATA_MODE_OFF)
                     }
-                    if (off("tone")) {
-                        val modes = lists(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES)
-                        if (CameraMetadata.TONEMAP_MODE_PRESET_CURVE in modes) {
-                            b.set(CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_PRESET_CURVE); b.set(CaptureRequest.TONEMAP_PRESET_CURVE, CameraMetadata.TONEMAP_PRESET_CURVE_SRGB)
-                        } else if (CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE in modes) {
-                            val n = minOf(ch.get(CameraCharacteristics.TONEMAP_MAX_CURVE_POINTS) ?: 2, 64).coerceAtLeast(2)
-                            val pts = FloatArray(2 * n) { i -> val x = (i / 2) / (n - 1f); if (i % 2 == 0) x else if (x <= 0.0031308f) 12.92f * x else 1.055f * Math.pow(x.toDouble(), 1 / 2.4).toFloat() - 0.055f }
-                            b.set(CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE); b.set(CaptureRequest.TONEMAP_CURVE, android.hardware.camera2.params.TonemapCurve(pts, pts, pts))
-                        }
-                    }
-                    if (off("shade") && CameraMetadata.SHADING_MODE_OFF in lists(CameraCharacteristics.SHADING_AVAILABLE_MODES)) b.set(CaptureRequest.SHADING_MODE, CameraMetadata.SHADING_MODE_OFF)
-                    if (off("dist") && Build.VERSION.SDK_INT >= 28 && CameraMetadata.DISTORTION_CORRECTION_MODE_OFF in lists(CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES))
-                        b.set(CaptureRequest.DISTORTION_CORRECTION_MODE, CameraMetadata.DISTORTION_CORRECTION_MODE_OFF)
-                    if (camxAsked.isNotEmpty()) Log.i(TAG, "camx: ${camxAsked.joinToString(",")} (kept as the template has them: ${keep.joinToString(",")})")
+                    if (keep.isNotEmpty()) Log.i(TAG, "camx: kept as the template has them: ${keep.joinToString(",")}")
                     // ai: test: `adb shell setprop debug.lizard.camdump 1` logs every key of the request as built, the
                     // ai: vendor's included, one `request:` line a key at this open: what the template turns on that the
                     // ai: `capture:` line cannot name

@@ -10,19 +10,8 @@
 // array). Forward is exp(-i), inverse exp(+i) and NOT scaled: callers that need the
 // identity divide by rows themselves, and FOCUS normalizes by the picture's RMS anyway.
 // ai: rows: a power of two, or 3 times one (384, 768, 1536), which takes one radix-3 stage (fft.c rows3); any other
-// ai: size is not transformed.
+// ai: size is not transformed. Radix 2 is the CPU transform (2026-09-23: radix 4 was 4 to 15% slower on the desktop and
+// ai: a third slower on the S26 at a strip of 64, research/10 s12; it left the code on 2026-10-25).
 void fft_cols(float *re, float *im, int rows, int cols, int pitch, int inverse);
 
-// Which radix fft_cols uses from here on: 2 (the default) or 4; any other value takes 2 (radix 8 has no kernel,
-// fft.c). A size the radix does not divide takes one leading radix-2 stage and the rest at the full radix. The output
-// differs between radices in its last bits, the order of the additions not being the same, so a build that wants
-// to be compared byte for byte against another must be on the same one. scripts/exp/fft_bench.mjs and scripts/pages/fft.html time
-// them; a phone is the only place the choice can be made.
-void fft_set_radix(int r);
-int fft_get_radix(void);
-
-// n x n complex samples in place, rows then columns. inverse = 1 divides by n * n, so forward then inverse is the
-// identity. For tests and for anything that wants the whole plane; FOCUS only ever needs half of it and uses
-// fft_cols directly (src/focus.c).
-void fft2d(float *re, float *im, int n, int inverse);
 #endif

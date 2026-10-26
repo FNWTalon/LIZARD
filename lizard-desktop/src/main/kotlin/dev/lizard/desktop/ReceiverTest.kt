@@ -3,26 +3,24 @@ package dev.lizard.desktop
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlin.system.exitProcess
 
 // ai: The receiver's integration hook (2026-10-25, SenderTest.kt's twin): env LIZ_RECEIVER_TEST, space separated
 // ai: key=value, e.g. "secs=20 decoder=cpu". Every setting starts at its default (the kept ones neither read nor
 // ai: written: Prefs.forget; the run's own held in memory), the ones named applied; the app opens on Receive and starts
-// ai: the camera, and after secs (10 unless named) counted from the receiver's first answer (the phase On) one JSON line
-// ai: {"rx": <the newest stats>, "received": <the received files' list, Received.kt>, "lock": <the phase lock's state,
-// ai: or null>, "camera": <the camera open as the session describes it (rx_session.h camera: its controls' values), {}
-// ai: none>} goes to stdout and the app exits 0; any failure prints "FAIL <why>" and exits 1, the camera stopped and the
-// ai: session destroyed first. Keys: secs; camera (an id, rxCameras': it must be listed; unless named the simulated
-// ai: camera sim:0 where LIZ_CAMERA_SIM is set, else the first listed); mode (an index into the camera's modes, or
-// ai: WxH@fps); layout 1:1 or 2:1; decoder auto, gpu or cpu; steps, comma separated <seconds>:<action> from the first
-// ai: answer, each as its control does it: start, stop (Start and Stop camera), swap (the bar's swap: to Send, or back
-// ai: to Receive), home (Home), receive (Home's Receive), layout=1:1|2:1, decoder=auto|gpu|cpu, res=<W>x<H> and
-// ai: fps=<rate> (Settings' menus), zoom=<v>, exposure=<us>|auto and gain=<v>|auto (Settings' bars, a value the
-// ai: camera's own units); logged on stderr as "step <s>: <action>". Each second's stats go to stderr as "rx: <stats
-// ai: JSON>". A camera stopped by a step, away from Receive, or by itself once a file is in, is no failure; one stopped
-// ai: by an error is.
+// ai: the camera, and after secs (10 unless named) counted from the receiver's first answer (the phase On) one JSON
+// ai: line {"rx": <the newest stats>, "received": <the received files' list, Received.kt>, "camera": <the camera open
+// ai: as the session describes it (rx_session.h camera: its controls' values), {} none>} goes to stdout and the app
+// ai: exits 0; any failure prints "FAIL <why>" and exits 1, the camera stopped and the session destroyed first. Keys:
+// ai: secs; camera (an id, rxCameras': it must be listed; unless named the simulated camera sim:0 where LIZ_CAMERA_SIM
+// ai: is set, else the first listed); mode (an index into the camera's modes, or WxH@fps); layout 1:1 or 2:1; decoder
+// ai: auto, gpu or cpu; steps, comma separated <seconds>:<action> from the first answer, each as its control does it:
+// ai: start, stop (Start and Stop camera), swap (the bar's swap: to Send, or back to Receive), home (Home), receive
+// ai: (Home's Receive), layout=1:1|2:1, decoder=auto|gpu|cpu, res=<W>x<H> and fps=<rate> (Settings' menus), zoom=<v>,
+// ai: exposure=<us>|auto and gain=<v>|auto (Settings' bars, a value the camera's own units); logged on stderr as "step
+// ai: <s>: <action>". Each second's stats go to stderr as "rx: <stats JSON>". A camera stopped by a step, away from
+// ai: Receive, or by itself once a file is in, is no failure; one stopped by an error is.
 class ReceiverTest private constructor(private val secs: Double, private val kv: Map<String, String>) {
     companion object {
         private val KEYS = setOf("secs", "camera", "mode", "layout", "decoder", "steps")
@@ -87,7 +85,6 @@ class ReceiverTest private constructor(private val secs: Double, private val kv:
         val todo = steps().toMutableList()
         var away = false        // ai: the camera stopped by a step, or Receive left
         var nextLine = begun
-        var lockSeen: JsonElement = JsonNull   // ai: the lock's newest state while it ran
         while (System.nanoTime() < end) {
             (r.phase as? ReceiveState.Phase.Error)?.let { fail(it.why) }
             val at = (System.nanoTime() - begun) / 1e9
@@ -98,18 +95,16 @@ class ReceiverTest private constructor(private val secs: Double, private val kv:
             }
             if (away && r.running && app.screen == Screen.Receive) away = false
             if (!r.running && !away && !r.rx.verified) fail("the camera stopped")
-            r.lockJson().let { if (it != JsonNull) lockSeen = it }
             val now = System.nanoTime()
             if (now >= nextLine) { nextLine = now + 1_000_000_000L; if (r.raw.isNotEmpty()) System.err.println("rx: ${r.raw}") }
             delay(100)
         }
         (r.phase as? ReceiveState.Phase.Error)?.let { fail(it.why) }
         val stats: JsonElement = dev.lizard.desktop.parse(r.raw.ifEmpty { "{}" }) ?: JsonObject(emptyMap())   // ai: the JSON helper, not this class's parse
-        val lockNow = r.lockJson().let { if (it == JsonNull) lockSeen else it }
         val cam: JsonElement = dev.lizard.desktop.parse(r.cameraNow()) ?: JsonObject(emptyMap())
         // ai: the list read once the close has waited for the filings (a tar's unpack may still run when the time is up)
         app.close()
-        val line = JsonObject(mapOf("rx" to stats, "received" to JsonArray(Received.list().map { Received.asJson(it) }), "lock" to lockNow,
+        val line = JsonObject(mapOf("rx" to stats, "received" to JsonArray(Received.list().map { Received.asJson(it) }),
             "camera" to cam)).toString()
         println(line)
         System.out.flush()

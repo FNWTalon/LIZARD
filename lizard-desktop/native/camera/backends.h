@@ -26,8 +26,7 @@ std::vector<Info> avfList(std::vector<std::string>* notes);
 std::unique_ptr<Camera> avfOpen(const std::string& id, std::string& why);
 #endif
 // ai: sim.cpp: the simulated camera (sim:0), listed only where LIZ_CAMERA_SIM is set; its value is sim/scene.h parse's
-// ai: spec, plus the camera's own keys: camfps (its frame rate, 60), trigger (1: it takes a software trigger, as a
-// ai: GenICam camera does), latency (ms from a trigger to its exposure, 0.05), jitter (ms, the latency's spread), format
+// ai: spec, plus the camera's own keys: camfps (its frame rate, 60), camppm (its clock against the host's, 0), format
 // ai: (the Pix its frames come in, grey by default: yuyv, nv12, mjpeg exercise luma.h and jpeg.h)
 std::vector<Info> simList(std::vector<std::string>* notes);
 std::unique_ptr<Camera> simOpen(const std::string& id, std::string& why);

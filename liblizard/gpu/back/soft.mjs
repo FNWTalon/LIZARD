@@ -7,33 +7,30 @@ import { derived } from "./dims.mjs";
 
 const U = globalThis.GPUBufferUsage;   // undefined under node
 
-const DECLINE_BAR = Math.fround(Math.fround(0.2 * 3816) / 5088);   // FOCUS_DECLINE k / n, the C's float
-
-// sizes[s] = { n, subch, blocks } (null for a size not served); tables[s] = { uv | UV: Uint32Array subch * 320 }.
-export async function build(device, { B, sizes, tables, cap = 0 }) {
-  const dims = derived(sizes, { B, cap }), { served, subchMax, blocksMax, sStride, lStride } = dims;
-  for (const s of served) if (!(tables[s]?.uv ?? tables[s]?.UV)) throw new Error(`size ${s} (${sizes[s].n}/${sizes[s].subch}) has no UV table`);
+// sizes[s] = { n, subch, blocks } (null for a size not served); tables[s] = { UV, UC: Uint32Array subch * 320 }
+// (transform.mjs transformTables).
+export async function build(device, { B, sizes, tables }) {
+  const dims = derived(sizes, { B }), { served, subchMax, blocksMax, sStride, lStride } = dims;
+  for (const s of served) if (!tables[s]?.UV || !tables[s]?.UC) throw new Error(`size ${s} (${sizes[s].n}/${sizes[s].subch}) has no UV and UC tables`);
   // The UV tables, one buffer, each size at its own entry offset.
   // ai: and after them all, at the same offsets again, each coefficient's (u, v) (transform.mjs discLayout UC) for
-  // ai: the turn by the grid's shift; a table that carries none (a test's own) leaves zeros, which fit no shift.
+  // ai: the turn by the grid's shift.
   let uvTotal = 0;
   const uvOff = [];
-  for (const s of served) { uvOff[s] = uvTotal; uvTotal += (tables[s].uv ?? tables[s].UV).length; }
+  for (const s of served) { uvOff[s] = uvTotal; uvTotal += tables[s].UV.length; }
   const uvBuf = device.createBuffer({ size: 8 * uvTotal, usage: U.STORAGE | U.COPY_DST });
   for (const s of served) {
-    device.queue.writeBuffer(uvBuf, 4 * uvOff[s], tables[s].uv ?? tables[s].UV);
-    const uc = tables[s].uc ?? tables[s].UC;
-    if (uc) device.queue.writeBuffer(uvBuf, 4 * (uvTotal + uvOff[s]), uc);
+    device.queue.writeBuffer(uvBuf, 4 * uvOff[s], tables[s].UV);
+    device.queue.writeBuffer(uvBuf, 4 * (uvTotal + uvOff[s]), tables[s].UC);
   }
-  // ai: Params a size: 12 words (48 bytes), wgsl/back_soft.mjs Params.
+  // ai: Params a size (wgsl/back_tiers.mjs Params): the slot, UV's offset, the strides, the batch size, UC's offset
+  // ai: and n, in a 48-byte uniform.
   const params = [];
   for (const s of served) {
     const z = sizes[s], buf = device.createBuffer({ size: 48, usage: U.UNIFORM | U.COPY_DST });
-    const w = new ArrayBuffer(48), u32 = new Uint32Array(w), f32 = new Float32Array(w);
-    u32.set([s, z.subch, z.blocks, uvOff[s], sStride, lStride, subchMax, blocksMax, B]);
-    f32[9] = DECLINE_BAR;
-    u32[10] = uvTotal + uvOff[s]; u32[11] = z.n;
-    device.queue.writeBuffer(buf, 0, w);
+    const u32 = new Uint32Array(12);
+    u32.set([s, uvOff[s], sStride, lStride, subchMax, blocksMax, B, uvTotal + uvOff[s], z.n]);
+    device.queue.writeBuffer(buf, 0, u32);
     params[s] = buf;
   }
   // ai: PILOT: a block's pilots, blocksMax a frame, then a frame's shift, two each (talign)

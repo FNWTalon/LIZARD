@@ -20,17 +20,13 @@ class Store {
   // ai: OpfsStore.removeAll: the receiver's Clear, the transfer in hand and every finished file; a file store keeps
   // ai: the transfers it parked
   virtual void removeAll() = 0;
-  // ai: A new transfer's output, length bytes; false when the store cannot hold it (error says why). begin, append and
-  // ai: writeOut return false on a failure, which ends the transfer (xfer_rx_core.cpp): a file the store cannot keep
-  // ai: whole is never reported received (before 2026-10-03 it was, with 0 bytes or a short file).
-  virtual bool begin(uint64_t length) = 0;
 
   // ai: Transfers kept across receivers (2026-10-22). A store that keeps them (a file store) holds each transfer in a
   // ai: folder of its own, named by its id (the root's first 16 hex digits): its header, the manifest blocks it took,
   // ai: each chunk's stored blocks, the output so far, the chunks verified into it, and meta.json for an app's list. A
   // ai: header of another root parks the transfer in hand (park: its folder left as it is); its own header read again,
   // ai: by this receiver or a later one, resumes it (open). A memory store keeps one transfer at a time, as before:
-  // ai: open is begin, park is clear, and the notes are nothing.
+  // ai: open begins it afresh, park is clear, and the notes are nothing.
   virtual bool keeps() const { return false; }
   // ai: What a transfer's folder held from before: the manifest blocks taken (index, payload), the chunks verified into
   // ai: the output, and the chunks with stored blocks (read() gives them). found: there was a folder to resume.
@@ -40,8 +36,10 @@ class Store {
     std::vector<uint32_t> verified, chunks;
   };
   // ai: The transfer whose header is header (469 B) and whose file is length bytes: its folder resumed where it holds
-  // ai: this header, else begun afresh (begin's contract otherwise)
-  virtual bool open(const std::string& id, const uint8_t* header, uint64_t length, Before& before) { (void)id; (void)header; before = Before{}; return begin(length); }
+  // ai: this header, else begun afresh, its output length bytes; false when the store cannot hold it (error says why).
+  // ai: open, append and writeOut return false on a failure, which ends the transfer (xfer_rx_core.cpp): a file the
+  // ai: store cannot keep whole is never reported received (before 2026-10-03 it was, with 0 bytes or a short file).
+  virtual bool open(const std::string& id, const uint8_t* header, uint64_t length, Before& before) = 0;
   // ai: a manifest block taken; a chunk verified into the output (the output's bytes made durable first, so a chunk
   // ai: noted is a chunk on disk); the transfer's line for an app's list (meta.json)
   virtual void noteManifest(uint32_t m, const uint8_t* payload) { (void)m; (void)payload; }
@@ -60,7 +58,6 @@ class Store {
   virtual std::vector<uint8_t> read(uint32_t c) = 0;
   virtual void drop(uint32_t c) = 0;
   virtual bool writeOut(uint64_t off, const uint8_t* p, size_t len) = 0;
-  virtual std::vector<uint8_t> readOut(uint64_t off, size_t len) = 0;
   // ai: the output verified: its path for a file store, "" for memory (the bytes then in data()); a failure sets error
   virtual std::string finish(const std::string& name) = 0;
   // ai: the finished file's bytes where the store keeps them in memory, else null

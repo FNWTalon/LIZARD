@@ -17,11 +17,10 @@
 
 namespace lizard::cam {
 
-// ai: How a mode's bytes become luma (luma.h convert): the layouts the backends meet. Grey16 and Bayer16 are
-// ai: little-endian samples of `bits` significant bits (Mode::bits), the top 8 kept.
+// ai: How a mode's bytes become luma (luma.h convert): the layouts the backends meet. Grey16 is little-endian
+// ai: samples of `bits` significant bits (Mode::bits), the top 8 kept.
 enum class Pix : uint8_t {
-  Unknown, Grey8, Grey16, Mono10p, Mono12p, Mono12Packed, YUYV, UYVY, YVYU, VYUY, NV12, NV21, I420, YV12,
-  Bayer8, Bayer16, RGB24, BGR24, RGBA32, BGRA32, MJPEG,
+  Unknown, Grey8, Grey16, YUYV, UYVY, YVYU, VYUY, NV12, NV21, I420, YV12, Bayer8, RGB24, BGR24, BGRA32, MJPEG,
 };
 const char* pixName(Pix p);
 
@@ -33,7 +32,7 @@ struct Mode {
   // ai: Foundation's subtype (NV12, YUY2, L8), AVFoundation's FourCharCode (420v, 2vuy), the simulated camera's (GREY)
   std::string format;
   Pix pix = Pix::Unknown;
-  uint8_t bits = 8;         // ai: Grey16, Bayer16: the significant bits of a sample
+  uint8_t bits = 8;         // ai: Grey16: the significant bits of a sample
   bool compressed = false;  // ai: MJPEG: decoded on the host (TurboJPEG on Linux; the system's decoder elsewhere)
   // ai: the backend's own: V4L2's fourcc, Media Foundation's media type index, AVFoundation's format index
   uint64_t key = 0;
@@ -61,41 +60,16 @@ struct Info {
 struct Frame {
   const uint8_t* luma = nullptr;   // ai: the Y plane, valid during the sink's call alone
   uint32_t width = 0, height = 0, stride = 0;
-  // ai: in ns on one clock for the whole stream: for a triggered capture its trigger's deadline on the host's steady
-  // ai: clock (trigger.h), the schedule's time, which the exposure follows by the trigger's lateness (at most the
-  // ai: stats' lateUs) and the camera's latency; else when the capture began, the system's time for the frame
-  // ai: (V4L2's monotonic buffer time, Media Foundation's QPC, AVFoundation's host clock)
+  // ai: in ns on one clock for the whole stream: when the capture began, the system's time for the frame (V4L2's
+  // ai: monotonic buffer time, Media Foundation's QPC, AVFoundation's host clock), moved onto steadyNs's (clock.h)
   int64_t ns = 0;
   uint64_t seq = 0;                // ai: the camera's frame count
-  bool delayed = false;            // ai: the capture of the first trigger a delay moved (trigger.h; the phase lock's `delayed`)
-  // ai: ns is a trigger's of the schedule running (2026-10-25): the backend matched the frame to one of its triggers
-  // ai: (trigger.h TriggerClock::match); false for a free-running frame, the one still exposing as a schedule begins
-  // ai: among them (the phase lock's feed takes the schedule's own frames alone: rx_session.h captures)
-  bool triggered = false;
 };
 
 // ai: Since start: frames handed over, dropped (the system's or the camera's: a buffer the stream lost, a sequence
 // ai: gap), corrupt (a frame that would not convert: a broken JPEG, a short buffer); the mean time to luma;
 // ai: fps, the rate the camera agreed to at start (V4L2's answer to the interval asked), 0 where it names none.
 struct Stats { uint64_t frames = 0, dropped = 0, corrupt = 0; double convertMs = 0, fps = 0; };
-
-// ai: A camera that exposes one frame at each software trigger the host sends (trigger.h's schedule, fired from a
-// ai: thread of its own): the simulated camera's (trigger=1); no UVC backend has one.
-class Trigger {
- public:
-  virtual ~Trigger() = default;
-  // ai: Fires every periodNs on the host's steady clock from now on, the camera switched from free run to its software
-  // ai: trigger; false with why where the camera refuses.
-  virtual bool begin(int64_t periodNs, std::string& why) = 0;
-  // ai: The schedule moved later by ns from the next trigger on, every later one with it; that trigger's capture comes
-  // ai: with Frame::delayed. A delay of nearly a period skips a capture, as one long frame does on Camera2.
-  virtual void delay(int64_t ns) = 0;
-  virtual void end() = 0;           // ai: back to free run
-  virtual bool running() const = 0;
-  // ai: JSON: periodNs, fired, lost (triggers no frame answered), lateUs (the worst a trigger left after its deadline),
-  // ai: jitterUs (their spread)
-  virtual std::string stats() = 0;
-};
 
 class Camera {
  public:
@@ -118,9 +92,6 @@ class Camera {
   // ai: changed. The simulated camera (sim.cpp) has nothing to put back: its exposure and gain are the model's own.
   virtual void stop() = 0;
   virtual Stats stats() = 0;
-  // ai: The software trigger where the camera has one, else null: the simulated camera's (trigger=1) alone. Valid while
-  // ai: the camera is.
-  virtual Trigger* trigger() { return nullptr; }
 };
 
 // ai: Every backend's cameras: UVC (the system's) first, then the simulated one where LIZ_CAMERA_SIM is set. A

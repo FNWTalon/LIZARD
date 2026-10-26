@@ -22,7 +22,7 @@
 namespace lizard::sim {
 namespace {
 
-// ai: steadyNs's clock (camera/trigger.h: std::chrono::steady_clock), read here so the model needs no camera code
+// ai: steadyNs's clock (camera/clock.h: std::chrono::steady_clock), read here so the model needs no camera code
 int64_t nowNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
@@ -399,8 +399,19 @@ bool parse(const std::string& spec, Sender& s, Display& d, Optics& o, std::strin
       }
       return true;
     };
-    if (key == "blocks") { if (!take(1, LIZ_MAX_BLOCKS, true)) return false; s.blocks = int(x); }
-    else if (key == "ring") { if (!take(-1, LIZ_RINGS - 1, true)) return false; s.ring = int(x); }
+    if (key == "blocks") { if (!take(LIZ_MIN_BLOCKS, LIZ_MAX_BLOCKS, true)) return false; s.blocks = int(x); }
+    else if (key == "ring") {
+      // ai: by its cells a side, as the sender hook's ring= names it (an index would mean
+      // ai: another ring once the list changes)
+      int r = -1;
+      std::string cells;
+      for (int i = 0; i < LIZ_RINGS; i++) {
+        cells += (i ? (i + 1 < LIZ_RINGS ? ", " : " or ") : "") + std::to_string(liz_ring_cells(i));
+        if (number(val, x) && x == liz_ring_cells(i)) r = i;
+      }
+      if (r < 0 && val != "auto") { why = "ring=" + val + ": " + cells + " cells a side, or auto"; return false; }
+      s.ring = r;
+    }
     else if (key == "fps") { if (!take(1, 255, true)) return false; s.fps = int(x); }
     else if (key == "codes") { if (!take(1, 2, true)) return false; s.codes = int(x); }
     else if (key == "file") { if (val.empty()) { why = "file=: a path"; return false; } s.file = val; }

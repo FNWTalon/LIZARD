@@ -13,7 +13,9 @@ for every picture. Sections 1 to 6, 10 and 12 to 14 follow the evening's code, w
 5.4, 6.2, 6.8, 6.9 and 6.12 recomputed from `liblizard/build/ob.wasm` and `liblizard/src/fmt.c`; section 4 is the border the code paints
 (a 12-module corner mark, a 3-module guard). Updated since for every whole number of blocks and the 128 default ring
 (2026-10-01), the pilots (2026-09-30, signed 2026-10-01), zstd (2026-10-05), the rate profile (2026-10-07, four
-rates since 2026-10-08) and the rings 32, 64, 128 and 256, the 256 in the 96's place (2026-10-10). Measured figures cite the record they come from.
+rates since 2026-10-08), the rings 32, 64, 128 and 256, the 256 in the 96's place (2026-10-10), and one block a frame
+out of the format (2026-10-25: LIZARD-16 to LIZARD-1024, versions 2 to 128) with the 32 ring archived the same day: the
+rings are 64, 128 and 256 (3.3). Measured figures cite the record they come from.
 
 ## Contents
 
@@ -38,10 +40,10 @@ LIZARD is a luminance-only animated 2D barcode for one-way transfer from a scree
 (Hermans et al., MobiSys 2016). A generic screen paints a sequence of frames, a generic phone camera films them, and
 nothing comes back. Each frame is one symbol: a square grey picture of n x n samples whose 2D spectrum carries QPSK
 symbols on the coefficients of the upper half-plane, taken in order of rising spatial frequency, inside a black and
-white border 15 modules deep. The border comes in four sizes, the rings, whose band holds 32, 64, 128 or 256 cells a
+white border 15 modules deep. The border comes in three sizes, the rings, whose band holds 64, 128 or 256 cells a
 side; any ring may carry any picture, and the sender paints the 128 ring unless told otherwise. The ring registers the
 symbol and carries a format word that says what is inside (the sub-channel count, so the picture size and the blocks,
-and the display rate the sender intends): one Reed-Solomon codeword over every word cell of the border, 8, 16, 24 or 32
+and the display rate the sender intends): one Reed-Solomon codeword over every word cell of the border, 16, 32 or 64
 bytes by ring. The
 payload travels in blocks of 473 bytes (a 32-bit block id and 469 payload bytes) with a CRC-32, each coded by a
 QC-LDPC code onto consecutive sub-channels of 320 coefficients at a rate that follows the frequency: 7/8 on 7
@@ -60,12 +62,12 @@ LIZARD was chosen over the binary grid code, which carries more above its cliff 
 | term | meaning |
 |---|---|
 | frame | one symbol as displayed; the sender paints a sequence of them |
-| symbol | one frame's square: the picture inside the border, S = 2B + 30 modules a side in ring B (94, 158, 286, 542; 3.3). S, "modules a side" and module coordinates exclude the margin |
-| ring B | one of the four border sizes, named by its band cells a side: B = 32, 64, 128 or 256 (`liblizard/src/focus.h:FOCUS_RING`; 32, 64, 96 and 128 until 2026-10-10). "The 128 ring" is a symbol whose band holds 128 cells a side. It locates the symbol and syncs its grid; the word it carries says what is inside (3.3, 5.5) |
+| symbol | one frame's square: the picture inside the border, S = 2B + 30 modules a side in ring B (158, 286, 542; 3.3). S, "modules a side" and module coordinates exclude the margin |
+| ring B | one of the three border sizes, named by its band cells a side: B = 64, 128 or 256 (`liblizard/src/focus.h:FOCUS_RING`; 32, 64, 96 and 128 until 2026-10-10, then 32, 64, 128 and 256 until 2026-10-25). "The 128 ring" is a symbol whose band holds 128 cells a side. It locates the symbol and syncs its grid; the word it carries says what is inside (3.3, 5.5) |
 | painted image | the symbol and its margin as the codec paints them: S + 4 modules, (S + 4) pxm pixels a side (4.8) |
 | module | the border's unit of length; the symbol is S modules a side |
 | picture | the n x n grey image inside the border that carries the data (section 6); it spans span = 2B modules |
-| sample | one of the picture's n x n values; a module is n / span samples, a whole number in the 32 and 64 rings and where span divides n in the 128 and 256 rings, and under 1 in the 256 ring at n = 256 and 384 (3.3) |
+| sample | one of the picture's n x n values; a module is n / span samples, a whole number in the 64 ring and where span divides n in the 128 and 256 rings, and under 1 in the 256 ring at n = 256 and 384 (3.3) |
 | pixel | a pixel of the painted image (pxm to a module) or of a camera image; the text says which |
 | drive | the symbol as the encoder's float image, S x pxm pixels a side, 0 dark and 1 light, margin excluded (`liblizard/src/focus.c:focus_encode`) |
 | border | the 15 modules round the picture: rim, ring, gap, band and guard (4.3) |
@@ -116,7 +118,7 @@ These bind every encoder and decoder of the format. This document records the fo
    inverse FFT, so a hole in it is not a local cost: it was measured at about 8 times its own area in lost payload,
    and half the blocks at n = 1024 (`liblizard/src/focus.c:init`, simulator).
 4. **The symbol is self-describing.** Everything a receiver needs to decode a frame is in the frame. The ring, one of
-   four, locates the symbol and syncs its grid, and states nothing else; the format word it carries gives the
+   three, locates the symbol and syncs its grid, and states nothing else; the format word it carries gives the
    sub-channel count and so the picture size n and the block count (3.1, 3.2, section 5). Anything about the transfer
    belongs in the payload and never in the border, as in QR and Aztec (`liblizard/src/fmt.h`): the fountain's header is a
    block of its own, the header block (7.7). The C around the word is open to heavy change.
@@ -142,24 +144,28 @@ define them, its real arithmetic (6.6 to 6.8) to the formula, not to the referen
 never checks conformance.
 
 **Not the format.** Each of these exists in the code or the record. None is part of the format, and the format word
-cannot state any of them. A receiver told nothing reads a frame of other rate tiers, `FOCUS_RS` or another bit map wrongly.
+cannot state any of them. A receiver told nothing reads a frame of other rate tiers wrongly.
 
 - A power tilt across the sub-channels (`focus_t.tilt`, in dB; 6.5). Sender only: the receiver measures each
   sub-channel's amplitude.
 - Rate tiers other than the profile's (`liblizard/src/focus.c:focus_init_tiers`): up to four runs of blocks at any of the
   generator's rates, a block taking 7 sub-channels at 7/8, 8 at 3/4, 9 at 2/3 and 12 at 1/2. The format's tiers are the
   rate profile's alone (3.1).
-- `FOCUS_RS`, mode 0 of `liblizard/src/focus.c:focus_init`: the FOCUS paper's RS(80,64) per sub-channel with hard QPSK.
-- Bit map modes other than LINEAR (7.3).
+- Removed on 2026-10-25, with every code path that painted or read a frame without pilots or whitening: `FOCUS_RS`,
+  the FOCUS paper's RS(80,64) per sub-channel with hard QPSK (mode 0 of `focus_init`), with its fragment assembly
+  (`focus_assemble`); and the bit map modes other than LINEAR (7.3). LINEAR, whitened, with its pilots, is the only map
+  the codec builds, and LDPC the only code.
 - Straddle cancellation, reading a capture that straddles a frame change by subtracting what the receiver already
   holds: out for good in the C (2026-09-23), archived in `archive/straddle-cancel/`; the GPU decoder's form, off by
   default since 2026-09-25, was deleted on 2026-10-22, the pilots (7.3) having taken over what it was for.
-- FOCUS's own finder frame ("finders and margin", `thin = 0`): corner finders, orientation strips and a 20-module
+- FOCUS's own finder frame ("finders and margin", once `thin = 0`): corner finders, orientation strips and a 20-module
   margin, the frame the FOCUS reimplementation began with. Deleted from `liblizard/src/` and `liblizard/sim/` (2026-09-26; section
-  13, item 12). A symbol has one frame, the border of section 4.
+  13, item 12); the `thin` flag that chose between the two frames, 1 on every symbol since, went on 2026-10-25. A symbol
+  has one frame, the border of section 4.
 - A 2 x 2 picture split, four smaller symbols edge to edge in place of one, each with a word stating its own version
   or with none (n = 128). It is gone from the sender page (2026-09-24) and from the simulator (2026-10-22).
-- The other borders `liblizard/src/` can paint for experiments (4.11).
+- The other borders `liblizard/src/` once painted for experiments (centred or edge marks, an alternate track, spans
+  that are no ring's), removed on 2026-10-25 (4.11).
 
 **Implementation rules.** These bind the project's decoders, not the symbol.
 
@@ -190,7 +196,7 @@ the profile is the one with the least (700 a - 39 subch)^2 + (900 t - 15 subch)^
 the first of equals in rising a, then rising t, then rising c: 7a near 39% of the sub-channels, 9t near 15% and 12c near
 20%, 3/4 filling the rest (`liblizard/src/focus.c:focus_tiers_for`, `FOCUS_TIER_IN` = 39, `FOCUS_TIER_23` = 15,
 `FOCUS_TIER_OUT` = 20; `liblizard/sim/lizard_pick.mjs:tiersFor`, the same integers). A tier of no blocks is absent:
-LIZARD-8 and -16 are one tier of 3/4, LIZARD-24 to -40 have no 1/2 tier, LIZARD-48 and -56 no 2/3 tier, and every
+LIZARD-16 is one tier of 3/4 (two blocks), LIZARD-24 to -40 have no 1/2 tier, LIZARD-48 and -56 no 2/3 tier, and every
 larger format has all four. B(V) = a + m + t + c (`focus_blocks_for`) is never above V: equal to it up to V = 15 and at
 V = 20 to 22, at most 4 under it elsewhere (124 at LIZARD-1024), never falling as V rises. Every block is 473 bytes
 whatever its rate, so the profile moves a frame's capacity by its block count alone.
@@ -199,7 +205,7 @@ nothing else is signalled.
 
 | format | tiers, inner first | blocks B(V) |
 |---|---|---|
-| LIZARD-8, -16 | 3/4 x V | 1, 2 |
+| LIZARD-16 | 3/4 x 2 | 2 |
 | LIZARD-24 | 7/8 x 1, 3/4 x 1, 2/3 x 1 | 3 |
 | LIZARD-48 | 7/8 x 4, 3/4 x 1, 1/2 x 1 | 6 |
 | LIZARD-64 | 7/8 x 5, 3/4 x 1, 2/3 x 1, 1/2 x 1 | 8 |
@@ -228,21 +234,26 @@ On the reference decoder's own reading the same scan leaned the other way, so a 
 receiver's channel.
 
 **Versions collapse** (2026-09-27). A version names what is inside the symbol, its sub-channel count, and nothing
-else: not a symbol size, not a module count. The symbol's size is its ring's, one of four (3.3), and any ring may carry
+else: not a symbol size, not a module count. The symbol's size is its ring's, one of three (3.3), and any ring may carry
 any version. The names stay: LIZARD-k already states the sub-channel count.
 
-**Every whole number of blocks** (2026-10-01). A sender MAY paint any version from 1 to 128: every multiple of 8 sub-channels
-from 8 to 1024, LIZARD-8, -16, ..., -1024 (`liblizard/sim/lizard_pick.mjs:VERSIONS`, 128 values). One block is the smallest step
-a symbol can take: the word names subch / 8, a step of 8 sub-channels. The reference sender's control is a slider of
-versions, each labelled with the blocks its profile carries, its first step the automatic pick (`lizard-web/send.html`;
-an Auto box beside it until 2026-10-05), and its picker reaches all 128. A
-receiver reads the version the word names with no flag: the word states any version from 1 to 128
-(`liblizard/src/fmt.c:ob_fmt_encode`, `ob_fmt_decode`, `OB_FMT_VERSION_MAX` = 128), and `liblizard/src/focus.c:focus_init` builds any
-positive multiple of 8 sub-channels up to 1024. Checked 2026-10-01, under one rate 3/4: every one of the 128 in each of the four rings
-painted and read blind byte for byte by the C (`scripts/exp/ring_pairs.mjs`, 512 of 512) and by the GPU decoder
-(`scripts/exp/gpu_rings.mjs`, 511 of 512: LIZARD-8 in the 128 ring at 2 px a module not found; STATUS "Blocks a frame, a
-slider"). A frame of one block has no diversity (one failed block is an empty frame), which was the reason for the
-floor at 16 before; a sender that names one block takes that.
+**Every whole number of blocks** (2026-10-01; from two blocks since 2026-10-25). A sender MAY paint any version from
+2 to 128: every multiple of 8 sub-channels from 16 to 1024, LIZARD-16, -24, ..., -1024
+(`liblizard/sim/lizard_pick.mjs:VERSIONS`, 127 values). A block of 8 sub-channels is the step: the word names
+subch / 8. The reference sender's control is a slider of versions, each labelled with the blocks its profile carries,
+its first step the automatic pick (`lizard-web/send.html`; an Auto box beside it until 2026-10-05), and its picker
+reaches all 127. A receiver reads the version the word names with no flag: the word states any version from 2 to 128
+(`liblizard/src/fmt.c:ob_fmt_encode`, `ob_fmt_decode`, `OB_FMT_VERSION_MIN` = 2, `OB_FMT_VERSION_MAX` = 128), and
+`liblizard/src/focus.c:focus_init` builds any multiple of 8 sub-channels from 16 to 1024 (`focus_tiers_for` has no
+profile for 8). Checked 2026-10-01, under one rate 3/4 and with version 1 then on the ladder: every version in each of
+the four rings of the day painted and read blind byte for byte by the C (`scripts/exp/ring_pairs.mjs`, 512 of 512) and
+by the GPU decoder (`scripts/exp/gpu_rings.mjs`, 511 of 512: LIZARD-8 in the 128 ring at 2 px a module not found;
+STATUS "Blocks a frame, a slider"). On 2026-10-25, in the three rings, the C read every version blind in every ring
+(381 of 381; `scripts/exp/ring_pairs.mjs`).
+
+Version 1, LIZARD-8, one block a frame, was on the ladder from 2026-10-01 to 2026-10-25. Such a frame has no diversity
+(one failed block is an empty frame) and carries one pilot parity alone, so a capture of it says how much of its
+neighbours it holds and not which (7.3). Its version byte is invalid now (5.1).
 
 **The ladder before** (2026-09-23 to 2026-10-01): every multiple of 16 from 16 to 1024, 64 formats, versions 2,
 4, ..., 128, and from 2026-09-24 an odd version was not painted by the reference sender (a preset of one fell back to
@@ -278,12 +289,15 @@ range (LIZARD-1024 has 3R = 1370.2). Since n >= 3R is V <= pi n^2 / 46080:
 
 | n | versions the word can state | ladder formats | ladder count |
 |---|---|---|---|
-| 256 | 1 to 4 | LIZARD-16, -32 | 2 |
-| 384 | 5 to 10 | LIZARD-48 to -80 | 3 |
-| 512 | 11 to 17 | LIZARD-96 to -128 | 3 |
-| 768 | 18 to 40 | LIZARD-144 to -320 | 12 |
-| 1024 | 41 to 71 | LIZARD-336 to -560 | 15 |
-| 1536 | 72 to 128 | LIZARD-576 to -1024 | 29 |
+| 256 | 2 to 4 | LIZARD-16 to -32 | 3 |
+| 384 | 5 to 10 | LIZARD-40 to -80 | 6 |
+| 512 | 11 to 17 | LIZARD-88 to -136 | 7 |
+| 768 | 18 to 40 | LIZARD-144 to -320 | 23 |
+| 1024 | 41 to 71 | LIZARD-328 to -568 | 31 |
+| 1536 | 72 to 128 | LIZARD-576 to -1024 | 57 |
+
+The ladder is every version the word can state (127, from 2026-10-25; the by-16 ladder of 2026-09-23 to 2026-10-01 had
+2, 3, 3, 12, 15 and 29 formats in these rows).
 
 Until 2026-09-27 n was the smallest power of two from 256 to 2048 with n >= 3R: LIZARD-48 to -128 at 512, -144 to
 -560 at 1024, -576 to -1024 at 2048. At each step to the next power of two a format took four times the samples for
@@ -317,37 +331,39 @@ n adds has a horizontal or vertical frequency of magnitude at least n / 2 of the
 
 The argument holds for any even n, so for the 3 x 2^k sizes as for the powers of two.
 
-On the ladder the oversampling n / 2R runs from 1.50 (LIZARD-80 and -320) to 2.24 (LIZARD-16, -144 and -576).
+On the ladder the oversampling n / 2R runs from 1.50 (LIZARD-80, -320 and -568) to 2.24 (LIZARD-16, -144 and -576).
+LIZARD-8, on the ladder from 2026-10-01 to 2026-10-25, was the one format outside that range (3.17 at n = 256).
 
-`liblizard/src/focus.c:init` itself only checks that n is 2^k or 3 x 2^k and a multiple of 64 (the transform's sizes and the
-64-column strips), and that the half-plane has room (320 subch at most (n / 2)(n - 2) coefficients, so 96 sub-channels
+`liblizard/src/focus.c:init` itself only checks that n is one of the six picture sizes (`FOCUS_PICTURES`: the transform's
+sizes, each a multiple of 64 for the 64-column strips), and that the half-plane has room (320 subch at most (n / 2)(n - 2) coefficients, so 96 sub-channels
 as a multiple of 8 at n = 256). It does not check n >= 3R; the derived n keeps well inside that limit.
 
 ### 3.3 The rings (normative)
 
-The border comes in four sizes, the rings (2026-09-27). Ring B has B band cells of 2 x 2 modules a side, B = 32, 64, 128
+The border comes in three sizes, the rings (2026-09-27). Ring B has B band cells of 2 x 2 modules a side, B = 64, 128
 or 256 (`liblizard/src/focus.h:FOCUS_RING`), and its geometry does not depend on the picture:
 
-- Modules across the picture: span = 2B (64, 128, 256, 512). `focus_init`'s span argument names the ring (span = 2B), at
-  any n; 0 takes the default ring below (`liblizard/src/focus.c:init`).
+- Modules across the picture: span = 2B (128, 256, 512). `focus_init`'s span argument names the ring (span = 2B), at
+  any n; 0 takes the default ring below, and any other span is refused (`liblizard/src/focus.c:init`).
 - The border: 15 modules a side, the corner mark's 12 (`OB_THIN_CORNER`) plus the guard's 3 (`FOCUS_CP`)
   (`liblizard/src/focus.c:init`, where the C calls it `margin`). Section 4 defines its content.
-- Modules a side: S = span + 30 = 2B + 30 (94, 158, 286, 542). With the 2-module margin (4.8) the painted square is
-  S + 4 modules (98, 162, 290, 546).
+- Modules a side: S = span + 30 = 2B + 30 (158, 286, 542). With the 2-module margin (4.8) the painted square is
+  S + 4 modules (162, 290, 546).
 
 On the morning of 2026-09-27 the rings were three, B = 32, 48 and 64, and that evening 32, 64 and 128 before the 96
-ring joined them; on 2026-10-10 the 256 ring took the 96's place (section 12).
+ring joined them; on 2026-10-10 the 256 ring took the 96's place, and on 2026-10-25 the 32 ring (B = 32, span 64,
+S = 94, its word RS(8, 3)) left the format, so the rings are 64, 128 and 256 (section 12).
 
-**Any ring may carry any picture.** A sender MAY paint a picture of any n in any of the four rings. The reference sender
+**Any ring may carry any picture.** A sender MAY paint a picture of any n in any of the three rings. The reference sender
 paints the 128 ring for every picture since 2026-10-01 (the 64 from 2026-09-27
-evening) (`liblizard/src/focus.h:FOCUS_RING_DEFAULT`, `liblizard/sim/lizard_pick.mjs:RING_DEFAULT`, the Android app's `Pick.kt`); the
+evening) (`liblizard/src/focus.h:FOCUS_RING_DEFAULT`, `liblizard/sim/lizard_pick.mjs:RING_DEFAULT`, the apps' `liblizard/kotlin/Pick.kt`); the
 Settings panel's Ring menu names another (`lizard-web/send.html`; `lizard-web/send.mjs` paints `SPAN(n, ring)`). The 256 ring
 suits a camera held still close to the screen, on a tripod: in one room its picture is larger and its modules smaller
 (about 1.75 px for a code in a 960 px room, against 3.3 in the 128 ring). No ring follows
 the version, even by default: the ring is a sync and bootstrap layer, like 5G's sync block, chosen for the channel and
 the room, and what is inside is the word's to say (2026-09-27). Until the evening of 2026-09-27 the default followed n
 (`focus_ring_for`: 32 for 256, 48 for 384 and 512, 64 above). A receiver MUST NOT infer n from the ring: the
-four module counts identify the ring and nothing else, and the word says what is inside (3.2, section 5).
+three module counts identify the ring and nothing else, and the word says what is inside (3.2, section 5).
 
 In ring B carrying a picture of n samples:
 
@@ -355,18 +371,12 @@ In ring B carrying a picture of n samples:
   a whole number, so no module is split across pixels.
 - Picture samples a module: scale = n / span. The picture keeps its n samples and is resampled to fill its span
   modules (span x pxm pixels), so it is never shrunk; the upscale is pxm x span / n (6.8). Where span divides n, pxm =
-  scale and the resampling is an exact copy, one pixel a sample: every picture in the 32 and 64 rings, every picture but
+  scale and the resampling is an exact copy, one pixel a sample: every picture in the 64 ring, every picture but
   384 in the 128 ring, and 512, 1024 and 1536 in the 256 ring. The 128 ring upscales 384 by 1.333; the 256 ring
   upscales 256 by 2 and 384 and 768 by 1.333, a picture under 512 samples painted at one pixel a module.
 
 | ring B | span | S | with margin | n | samples a module | pxm | upscale | symbol, px | with margin, px |
 |---|---|---|---|---|---|---|---|---|---|
-| 32 | 64 | 94 | 98 | 256 | 4 | 4 | 1 (copy) | 376 | 392 |
-| 32 | 64 | 94 | 98 | 384 | 6 | 6 | 1 (copy) | 564 | 588 |
-| 32 | 64 | 94 | 98 | 512 | 8 | 8 | 1 (copy) | 752 | 784 |
-| 32 | 64 | 94 | 98 | 768 | 12 | 12 | 1 (copy) | 1128 | 1176 |
-| 32 | 64 | 94 | 98 | 1024 | 16 | 16 | 1 (copy) | 1504 | 1568 |
-| 32 | 64 | 94 | 98 | 1536 | 24 | 24 | 1 (copy) | 2256 | 2352 |
 | 64 | 128 | 158 | 162 | 256 | 2 | 2 | 1 (copy) | 316 | 324 |
 | 64 | 128 | 158 | 162 | 384 | 3 | 3 | 1 (copy) | 474 | 486 |
 | 64 | 128 | 158 | 162 | 512 | 4 | 4 | 1 (copy) | 632 | 648 |
@@ -420,7 +430,7 @@ the display rate; goodput, what the receiver's decoded blocks deliver, is lower.
 
 | n | versions | blocks a frame | useful bytes a frame |
 |---|---|---|---|
-| 256 | 1 to 4 | 1 to 4 | 469 to 1876 |
+| 256 | 2 to 4 | 2 to 4 | 938 to 1876 |
 | 384 | 5 to 10 | 5 to 10 | 2345 to 4690 |
 | 512 | 11 to 17 | 11 to 16 | 5159 to 7504 |
 | 768 | 18 to 40 | 17 to 39 | 7973 to 18291 |
@@ -433,12 +443,14 @@ ceil(1024 / 128) = 8, an exact copy, so the symbol paints 1264 x 1264 pixels, 12
 blocks (7/8 x 29, 3/4 x 15, 2/3 x 9, 1/2 x 9) on 163,840 coefficients (327,680 slots), 29,078 useful bytes a frame, and
 its version byte is 64 (0x40). At 24 frames a second its ceiling is 697,872 B/s (720,384 under one rate).
 
-To reproduce, in node with `const M = await init()` from `liblizard/sim/ob.mjs`: `M._focus_setup(1024, 512, 1, 2, 128, 0, 0, 0, 0,
-0, 0, 0)` (span 128, the 64 ring) returns 473 (block bytes), then `M._focus_blocks()` gives 62, `M._focus_side()` 1264,
-`M._focus_cell()` 8 and `M._focus_quiet()` 2 (2026-10-08; span 0, the default ring, gives side 1144 and cell 4). Painting a frame with `M._focus_tx_rgba(blocks, drive, rgba)` gives 1296 x 1296 pixels, the codec's
+To reproduce, in node with `const M = await init()` from `liblizard/sim/ob.mjs`: `M._focus_setup(1024, 512, 2, 128, 0)`
+(n, subch, clip, span, tilt; span 128, the 64 ring) returns 473 (block bytes), then `M._focus_blocks()` gives 62,
+`M._focus_side()` 1264, `M._focus_cell()` 8 and `M._focus_quiet()` 2 (2026-10-08, the call's arguments as since
+2026-10-25; span 0, the default ring, gives side 1144 and cell 4). Painting a frame with `M._focus_tx_rgba(blocks, drive, rgba)` gives 1296 x 1296 pixels, the codec's
 2-module margin (16 px) included. Every (ring, picture) pair painted this way reads back blind byte-exact
 (`scripts/exp/ring_pairs.mjs` with `SUBCH=16,32,48,80,96,128,144,320,336,560,576,1024`, the first and last format of each
-picture, in each of the four rings: 48 of 48, 2026-09-27 evening, and again on the rings of 2026-10-10). That round trip has no camera in it: it checks the
+picture of the by-16 ladder, in each of the four rings of the day: 48 of 48, 2026-09-27 evening, and again on the rings of
+2026-10-10; every version in each of the three rings, 381 of 381, 2026-10-25). That round trip has no camera in it: it checks the
 arithmetic, not the channel.
 
 ### 3.5 Choosing a version (non-normative)
@@ -461,7 +473,8 @@ automatic pick is a preview (2026-09-23); nothing in the format depends on it.
   2.7 device px a cycle at the top ring (`T_DISPLAY_CYCLE`) is the highest of the floors measured in
   `scripts/exp/display_scale.mjs`, where three formats of 2026-09-20 read their whole payload down to 2.7, 2.2 and 2.0 device
   px a cycle (simulator, nearest-neighbour display).
-- **The pick** is the largest ladder format whose room fits, or LIZARD-8 when none does (flagged `tight`).
+- **The pick** is the largest ladder format whose room fits, or LIZARD-16 when none does (flagged `tight`; LIZARD-8 from
+  2026-10-01 to 2026-10-25).
   `pickVersion` walks the whole ladder; in one ring the room rises with the version (below), so the largest that fits
   is also the last before the first that fails. `pickVersion(roomPx, top, ring)` returns the ring and span with the
   format; a ring left out is the default, the 128.
@@ -495,17 +508,18 @@ automatic pick is a preview (2026-09-23); nothing in the format depends on it.
   (margin excluded) that give the top ring 2.12 camera px a cycle. 2.12 was fitted by `scripts/exp/focus_sweep.mjs` on five
   resolution-limited simulated test cells (2026-09-20, before the border took its present size).
 
-In the default ring, the 128, and in the 64 (the default from 2026-09-27 to 2026-10-01), over the ladder by 8:
+In the default ring, the 128, and in the 64 (the default from 2026-09-27 to 2026-10-01), over the ladder by 8 from
+LIZARD-16:
 
 | n | ring | room, device px | camera px |
 |---|---|---|---|
-| 256 | 128 | 123.5 to 247.0 | 95.6 to 191.2 |
+| 256 | 128 | 174.6 to 247.0 | 135.2 to 191.2 |
 | 384 | 128 | 276.1 to 390.5 | 213.8 to 302.4 |
 | 512 | 128 | 409.5 to 509.1 | 317.1 to 394.2 |
 | 768 | 128 | 523.9 to 780.9 | 405.7 to 604.7 |
 | 1024 | 128 | 790.6 to 1040.4 | 612.2 to 805.7 |
 | 1536 | 128 | 1047.7 to 1397.0 | 811.3 to 1081.8 |
-| 256 | 64 | 138.0 to 275.9 | 105.6 to 211.3 |
+| 256 | 64 | 195.1 to 275.9 | 149.4 to 211.3 |
 | 384 | 64 | 308.5 to 436.2 | 236.2 to 334.1 |
 | 512 | 64 | 457.5 to 568.8 | 350.4 to 435.6 |
 | 768 | 64 | 585.3 to 872.5 | 448.2 to 668.1 |
@@ -517,9 +531,10 @@ The room depends on the ring and R only. LIZARD-16 to -128 defaulted to the 32 a
 236.0 and 177.8 in the 32 ring); from LIZARD-144 up no figure moved.
 
 **The room rises with the version.** In one ring the room is a constant times R: the border's share of the symbol,
-MODULES / SPAN, is 1.469, 1.234, 1.117 and 1.059 in the 32, 64, 128 and 256 rings (1.156 in the 96, until 2026-10-10), and does not change with n. So the
-picker reaches every format (`scripts/exp/pick_check.mjs`: 128 of 128 in one ring since 2026-10-01; 64 of 64 on the
-ladder by 16, 2026-09-27 evening), a picker capped at LIZARD-560 all 70 up to 560, and in the 128 ring every room of 1047.7
+MODULES / SPAN, is 1.234, 1.117 and 1.059 in the 64, 128 and 256 rings (1.156 in the 96, until 2026-10-10), and does not change with n. So the
+picker reaches every format (`scripts/exp/pick_check.mjs`: 127 of 127 in one ring since 2026-10-25; 128 of 128 with
+LIZARD-8 from 2026-10-01; 64 of 64 on the ladder by 16, 2026-09-27 evening), a picker capped at LIZARD-560 all 69 up to
+560, and in the 128 ring every room of 1047.7
 device px or more, and none below, lands on n = 1536 (1170.6 in the 64).
 While the default ring followed n (2026-09-27 morning), the share fell at n = 768 (48 ring to 64) by more than R rose:
 LIZARD-144 needed 585.3 px against LIZARD-128's 590.4, and the picker never returned LIZARD-128 (63 of 64; 58 on the
@@ -601,7 +616,7 @@ picker's guidance (3.5), taken in that ring.
 ## 4. The border
 
 Normative except 4.10 and 4.11. Sources: `liblizard/src/layout.h`; `liblizard/src/layout.c` `thin_init`, `thin_corner`, `ob_thin_track`,
-`ob_thin_reserve`, `ob_layout_set_fmt`; `liblizard/src/focus.c` `init`, `focus_encode`, `resample_init`, `focus_paint_rgba`;
+`ob_layout_set_fmt`; `liblizard/src/focus.c` `init`, `focus_encode`, `resample_init`, `focus_paint_rgba`;
 `liblizard/src/focus.h` `FOCUS_RING`, `FOCUS_RING_DEFAULT`, `FOCUS_QUIET`; `liblizard/src/layout.h` `OB_THIN_CORNER`, `FOCUS_CP`. The border
 is what the code paints: a 12-module corner mark with a 1-module inner edge, a 3-module guard, 15 modules in all. An
 even border (a 13-module mark, a 2-module guard, every feature but the rim whole 2 x 2 cells) was built on 2026-09-27
@@ -610,7 +625,7 @@ and reverted that day (section 12).
 ### 4.1 Units and coordinates
 
 - The border's unit is the module. A symbol in ring B is `S = 2B + 30` modules a side: `span = 2B` modules of picture
-  inside 15 modules of border on each side (`liblizard/src/focus.h:FOCUS_RING`, B = 32, 64, 128, 256). The module count (94, 158,
+  inside 15 modules of border on each side (`liblizard/src/focus.h:FOCUS_RING`, B = 64, 128, 256). The module count (158,
   286, 542) identifies the ring before the word is read, and says nothing about n. The sizes in modules and pixels for
   each ring and picture are in 3.3.
 - Module (x, y): x grows to the right and y grows downwards, and (0, 0) is the top-left module as displayed. In
@@ -633,7 +648,7 @@ and reverted that day (section 12).
   of one level, covering drive pixels `[x * pxm, (x + 1) * pxm) x [y * pxm, (y + 1) * pxm)`. No module is split. The
   guard's modules are not one level: the resampler paints them pixel by pixel, as it paints the picture (4.4, 6.8).
 - The picture is on its own grid. It keeps its n samples and is resampled (Lanczos-3, periodic) to fill its span
-  modules, upscaled by `pxm / scale` and never shrunk: 1, an exact copy, for every picture in the 32 and 64 rings, for
+  modules, upscaled by `pxm / scale` and never shrunk: 1, an exact copy, for every picture in the 64 ring, for
   every n but 384 in the 128 ring and for n = 512, 1024 and 1536 in the 256 ring; 4/3 (n = 384) in the 128 ring, and 2
   (n = 256) or 4/3 (n = 384, 768) in the 256 ring (3.3). Picture
   sample x (0 to n - 1) is centred at module coordinate `15 + (x + 0.5) / scale` on each axis (6.8, 6.9). Nothing
@@ -701,14 +716,14 @@ picture or its guard, and the border grows outwards only (`liblizard/src/focus.c
 ### 4.6 The band
 
 - The band is depths 5 and 6, in cells of 2 x 2 modules. On each side it runs from along 15 to `S - 16`. The reserve,
-  15 modules at each end, is `ob_thin_reserve(12)` = 12 + 3 (14, `(corner + 3) & ~1`, until 2026-09-27). So no band
-  cell touches a mark: along 11 is the mark's light inner edge and along 12 to 14 are light.
-- Band cells a side: `B = (S - 30) / 2`, the ring's own number (32, 64, 128, 256). Band cell b (0 to B - 1) covers along
+  15 modules at each end, is `OB_THIN_RESERVE` = `OB_THIN_CORNER` + 3 (14, `(corner + 3) & ~1`, until 2026-09-27). So
+  no band cell touches a mark: along 11 is the mark's light inner edge and along 12 to 14 are light.
+- Band cells a side: `B = (S - 30) / 2`, the ring's own number (64, 128, 256). Band cell b (0 to B - 1) covers along
   `[15 + 2b, 17 + 2b)`.
 - Runs of 4 cells alternate, starting with the track (`OB_BAND_RUN` 4). Cell b is a track cell when `floor(b / 4)` is
   even and a word cell when it is odd. Track cell j is band cell `8 * floor(j / 4) + j mod 4`, and word cell i is band
   cell `8 * floor(i / 4) + 4 + i mod 4` (`liblizard/src/layout.h` `OB_TRACK_AT`, `OB_WORD_AT`). B is a multiple of 8, so each
-  side holds B / 2 of each kind (16, 32, 64, 128) and ends on a whole word run.
+  side holds B / 2 of each kind (32, 64, 128) and ends on a whole word run.
 - Inside a run, the track never has more than 2 equal cells (4 modules) in a row, because each Manchester pair holds a
   bit and its complement. The band as a whole has no such bound, since word cells carry data.
 
@@ -729,8 +744,8 @@ track cell j is dark  iff  ((v ^ j) & 1) == 1
 Worked example: side 0, pair 0 gives v = 0x00009E37, then 0x00009E36, 0xC6B2271A, 0xC6B4128B. Bit 0 is 1, so track cell
 0 is dark and track cell 1 is light.
 
-Track cells 0 to 15 of each side (1 is dark). This is the 32 ring's whole track and the start of the 64, 128 and 256
-rings' (read from the painted cells in each ring, 2026-09-27 evening):
+Track cells 0 to 15 of each side (1 is dark), the start of every ring's track (read from the painted cells in each
+ring, 2026-09-27 evening; the whole track of the 32 ring, B = 32, until 2026-10-25):
 
 | side | track cells 0 to 15 |
 |---|---|
@@ -745,7 +760,7 @@ differ, so the track alone tells a receiver the rotation and mirroring (8 hypoth
 ### 4.8 Margin
 
 - The margin is the codec's (2026-09-24): `liblizard/src/focus.h:FOCUS_QUIET` = 2 modules of light, `2 * pxm` pixels (4, 6,
-  8, 12, 16 and 24 at n = 256 to 1536 in the 64 ring, 2, 4, 4, 6, 8 and 12 in the default 128; 2 to 48 over every ring and picture, 3.3), outside depth 0
+  8, 12, 16 and 24 at n = 256 to 1536 in the 64 ring, 2, 4, 4, 6, 8 and 12 in the default 128; 2 to 24 over every ring and picture, 3.3), outside depth 0
   on every side. With the rim, that puts 3 modules of light outside the ring, and the page may put anything at the
   canvas's edge. An encoder MUST paint the margin. The painted image, symbol and margin, is `(S + 4) * pxm` pixels a
   side. The margin is outside the module grid, whose origin stays the symbol's outer corner (4.1), so nothing a decoder
@@ -769,12 +784,12 @@ differ, so the track alone tells a receiver the rotation and mirroring (8 hypoth
 
 ### 4.9 One corner
 
-LIZARD-16 in the 32 ring (S = 94) at fps 0, top-left corner, modules x 0 to 37 and y 0 to 17, taken from the layout's
-cells (`ob_test_mesh_tables_out`, 2026-09-27 evening). Legend: `#` dark, `.` light, `T` / `t` track cell dark /
-light, `W` / `w` word cell dark / light, `g` guard, `P` picture. The other corners are this one reflected, except for
-the band's cells, which follow 4.6 and 4.7. Every symbol in the 32 ring has this border except for its word's cells,
-whatever picture it carries, and this corner, word cells aside, is the same in all four rings (read from the cells of
-LIZARD-16, -64 and -256 in each).
+LIZARD-16 in the 64 ring (S = 158) at fps 0, top-left corner, modules x 0 to 37 and y 0 to 17, taken from the layout's
+cells (`ob_test_mesh_tables_out`; 2026-09-27 evening in the 32 ring, the same corner taken in the 64 ring on 2026-10-25).
+Legend: `#` dark, `.` light, `T` / `t` track cell dark / light, `W` / `w` word cell dark / light, `g` guard, `P`
+picture. The other corners are this one reflected, except for the band's cells, which follow 4.6 and 4.7. Every symbol
+in the 64 ring has this border except for its word's cells, whatever picture it carries, and this corner, word cells
+aside, is the same in every ring (read from the cells of LIZARD-16, -64 and -256 in each, 2026-09-27 evening).
 
 ```
                 1         2         3
@@ -799,14 +814,14 @@ LIZARD-16, -64 and -256 in each).
   17  .##..TT.....gggPPPPPPPPPPPPPPPPPPPPPPP
 ```
 
-The same symbol's whole band at depth 5 (depth 6 is identical), along 0 to 93 of each side, so the marks' cores show at
-both ends:
+The same symbol's whole band at depth 5 (depth 6 is identical), along 0 to 157 of each side, so the marks' cores show
+at both ends (from the layout's cells, 2026-10-25):
 
 ```
-top    .##..######....TTttTTttwwWWwwwwTTttTTttWWWWwwwwTTttttTTwwwwWWWWTTttTTttWWWWWWWW....######..##.
-right  .##..######....TTttTTttwwwwwwwwttTTTTttwwwwWWwwTTttTTttwwwwwwWWttTTTTttwwWWwwww....######..##.
-bottom .##..######....ttTTttTTwwwwwwwwttTTTTttwwwwwwwwTTttTTttWWwwwwwwttTTttTTwwwwWWWW....######..##.
-left   .##..######....ttTTTTttwwWWWWWWTTttttTTwwwwWWwwttTTttTTWWwwwwWWttTTTTttwwWWwwww....######..##.
+top    .##..######....TTttTTttwwWWwwwwTTttTTttWWWWwwwwTTttttTTWWwwwwwwTTttTTttWWwwWWwwTTttttTTWWWWwwWWTTttttTTWWwwwwWWttTTttTTWWwwwwWWttTTTTttwwwwWWww....######..##.
+right  .##..######....TTttTTttwwwwwwwwttTTTTttwwwwWWwwTTttTTttwwwwWWwwttTTTTttwwWWWWWWTTttttTTWWWWWWWWttTTttTTWWWWWWWWttTTTTttwwWWWWWWTTttttTTWWwwwwWW....######..##.
+bottom .##..######....ttTTttTTwwwwwwwwttTTTTttwwwwwwwwTTttTTttwwwwWWwwttTTttTTwwWWWWwwTTttTTttwwWWwwWWttTTTTttWWWWWWWWttTTttTTwwWWwwwwttTTttTTwwWWWWWW....######..##.
+left   .##..######....ttTTTTttWWwwWWWWTTttttTTWWWWWWWWttTTttTTwwWWwwWWttTTTTttwwwwWWWWttTTTTttwwwwwwWWTTttTTttwwwwwwWWttTTTTttWWWWWWwwttTTTTttWWWWwwWW....######..##.
 ```
 
 ### 4.10 Mesh node sites (non-normative)
@@ -817,13 +832,12 @@ alone.
 
 | ring B | S | node positions | count |
 |---|---|---|---|
-| 32 | 94 | 3.5, 19.5, 35.5, 51.5, 67.5, 90.5 | 6 |
 | 64 | 158 | 3.5 to 131.5 in steps of 16, then 154.5 | 10 |
 | 128 | 286 | 3.5 to 259.5 in steps of 16, then 282.5 | 18 |
 | 256 | 542 | 3.5 to 515.5 in steps of 16, then 538.5 | 34 |
 
 The last step is 23 modules in every ring (read from `ob_test_mesh_tables_out`, 2026-09-27 evening; the 256 ring's by
-the rule, 2026-10-10). The nodes a
+the rule, 2026-10-10; the 32 ring, S = 94, had 6 until 2026-10-25). The nodes a
 receiver measures are on the border: the rows y = 3.5 and y = S - 3.5 and the columns x = 3.5 and x = S - 3.5. That is
 depth 3.5, the middle of the gap's outer row (`OB_NODE_LINE = (5 + 2) / 2`). The four corner nodes, (3.5, 3.5) and its
 reflections, are the corners of the registration quad (`liblizard/src/acquire.c:corner_coords`). The reference receiver refines
@@ -835,14 +849,18 @@ marks inside the picture.
 
 ### 4.11 Settings in liblizard/src/ that are not the format (non-normative)
 
-`ob_cfg_t` and `focus_init` take switches that paint other borders, and some build macros change the border too. The
-switches are a corner mark of another size or none (`corner`), a filled mark (`corner_filled`), edge and centre marks
-(`edge`, `centre`), a 1 : 1 clock track (`track_alt`), a wider border (`border`), and a span other than the four rings'
-64, 128, 256 and 512 (`span`; a ring's span is taken at any n, and another one under 32 or over n falls back to `min(n, 256)`, `liblizard/src/focus.c:init`). The macros are
-`OB_RING_DEEP`, `OB_CELL`, `OB_BAND_RUN` and `FOCUS_CP`; `FOCUS_SLOPE` and `FOCUS_SPAN0`, which set the side from n,
-went on 2026-09-27. They exist for experiments. The format is their defaults: a gapped 12-module mark with a 1-module
-inner edge at each corner, no other marks, the hashed Manchester track, a 15-module border, bands 2 modules deep, 2 x 2
-cells, runs of 4, a 3-module guard and 2B modules of picture in one of the four rings.
+Since 2026-10-25 `liblizard/src/` paints the format's border alone: a gapped 12-module mark with a 1-module inner edge
+at each corner, no other marks, the hashed Manchester track, a 15-module border, bands 2 modules deep, 2 x 2 cells,
+runs of 4, a 3-module guard and 2B modules of picture in one of the three rings. `focus_init`'s span names a ring
+(128, 256 or 512, at any n; 0 the default) and any other span is refused, and the border's constants
+(`OB_RING_DEEP`, `OB_CELL`, `OB_BAND_RUN`, `FOCUS_CP`, `OB_THIN_CORNER`) are plain definitions in
+`liblizard/src/layout.h`, not build settings.
+
+Until 2026-10-25 `ob_cfg_t` and `focus_init` took switches that painted other borders for experiments, and some build
+macros changed the border too: a corner mark of another size or none (`corner`), a filled mark (`corner_filled`), edge
+and centre marks (`edge`, `centre`), a 1 : 1 clock track (`track_alt`), a wider border (`border`), and a span other
+than the rings' (one under 32 or over n fell back to `min(n, 256)`). None was ever part of the format; `FOCUS_SLOPE`
+and `FOCUS_SPAN0`, which set the side from n, went on 2026-09-27.
 
 ## 5. The format word
 
@@ -865,25 +883,28 @@ side (4.6), the word cells a side are the whole word runs, and the codeword fill
 W = 4 floor(B / 8)        bytes = min(64, 4 floor(W / 8))
 ```
 
-(`liblizard/src/fmt.c` `ob_fmt_side_cells`, `ob_fmt_bytes`; `OB_FMT_BYTES_MAX`, 64 since 2026-10-10, 36 before). In the four rings B is a multiple of 8, so W = B
-/ 2 = (S - 30) / 4 (16, 32, 64, 128) and bytes = W / 2 (8, 16, 32, 64). A receiver has B from the ring it registered
-(4.1) before it reads the word, and the same picture in two rings carries two different codewords. A lab layout at
-another module count gets the code its band holds (S = 126, the morning's 48 ring: B = 48, W = 24, RS(12, 3)); a word
-run its band cuts short is not a word run, and stays light. The data is the same 3 bytes in every ring:
+(`liblizard/src/fmt.c` `ob_fmt_side_cells`, `ob_fmt_bytes`; `OB_FMT_BYTES_MAX`, 64 since 2026-10-10, 36 before). In the three rings B is a multiple of 8, so W = B
+/ 2 = (S - 30) / 4 (32, 64, 128) and bytes = W / 2 (16, 32, 64). A receiver has B from the ring it registered
+(4.1) before it reads the word, and the same picture in two rings carries two different codewords. A band of fewer
+than 32 word cells a side (`OB_FMT_SIDE_CELLS`) carries no word. A layout at another module count, which only
+`ob_layout_init` builds (the codec paints the three rings alone, 4.11), gets the code its band holds; a word run its
+band cuts short is not a word run, and stays light. The data is the same 3 bytes in every ring:
 
 | byte | field | value |
 |---|---|---|
 | `cw[0]` | magic | `0x4C` (ASCII `L`) |
-| `cw[1]` | version | sub-channels / 8, 1 to 128; the blocks a frame and their rates follow from it (3.1). It names the picture: n = `focus_n_for(8 * version)` (3.2) |
+| `cw[1]` | version | sub-channels / 8, 2 to 128 (1, 0 and 129 to 255 are no version); the blocks a frame and their rates follow from it (3.1). It names the picture: n = `focus_n_for(8 * version)` (3.2) |
 | `cw[2]` | fps | whole frames a second the sender means to paint at, 1 to 255; 0 means not stated |
 | `cw[3]` to `cw[bytes - 1]` | parity | Reed-Solomon, 5.2 |
 
-- The 128 formats, LIZARD-8 to LIZARD-1024 in steps of 8, have versions 1 to 128: LIZARD-k has version k / 8. An
-  encoder MUST write version = subch / 8 (3.1; until 2026-10-01 only the 64 even versions were painted).
-- A decoder MUST accept every ladder version in every ring, and reads an odd version as it reads a ladder one, with no
+- The 127 formats, LIZARD-16 to LIZARD-1024 in steps of 8, have versions 2 to 128: LIZARD-k has version k / 8. An
+  encoder MUST write version = subch / 8 and MUST NOT paint version 1 (3.1; until 2026-10-01 only the 64 even versions
+  were painted, and version 1 too from then to 2026-10-25).
+- A decoder MUST accept every ladder version in every ring, and reads an odd version as it reads an even one, with no
   flag (3.1). Any ring may carry any picture (3.3), so a decoder MUST NOT reject a word for the ring it was read in. The
-  reference decoder accepts every version from 1 to 128 (`OB_FMT_VERSION_MAX`), and the codec builds any multiple of 8
-  sub-channels up to 1024 and refuses more.
+  reference decoder accepts every version from 2 to 128 (`OB_FMT_VERSION_MIN`, `OB_FMT_VERSION_MAX`) and refuses a word
+  of version 1 as one of 0 or 129; the codec builds any multiple of 8 sub-channels from 16 to 1024 and refuses the
+  rest.
 - fps is the rate the sender intends, not the rate it achieves. No decode decision depends on it. A sender MAY change
   it between frames: only the word's cells change (`liblizard/src/focus.c:focus_fmt_fps`, 9.2).
 - Nothing else is in the word. The mode is always LDPC, the rates are the profile's for the version (3.1,
@@ -898,28 +919,26 @@ run its band cuts short is not a word run, and stays light. The data is the same
 
 | ring B | modules a side S | word cells a side W | code | nroots | distance | bytes a side |
 |---|---|---|---|---|---|---|
-| 32 | 94 | 16 | RS(8, 3) | 5 | 6 | 2 |
 | 64 | 158 | 32 | RS(16, 3) | 13 | 14 | 4 |
 | 128 | 286 | 64 | RS(32, 3) | 29 | 30 | 8 |
 | 256 | 542 | 128 | RS(64, 3) | 61 | 62 | 16 |
 
-- `bytes` and W are 5.1's; the table is the four rings. Until 2026-09-27 the code followed the picture size, RS(8, 3),
+- `bytes` and W are 5.1's; the table is the three rings. Until 2026-09-27 the code followed the picture size, RS(8, 3),
   (12, 3), (20, 3) and (36, 3) at n = 256 to 2048, and that morning's rings (32, 48, 64) took RS(8, 3), (12, 3) and
-  (16, 3), and from that evening to 2026-10-10 the 96 ring took RS(24, 3). RS(8, 3) is unchanged since 2026-09-24;
-  RS(12, 3), RS(20, 3), RS(24, 3) and RS(36, 3) are gone from the format.
+  (16, 3), and from that evening to 2026-10-10 the 96 ring took RS(24, 3). The 32 ring (S = 94, W = 16) carried RS(8, 3)
+  from 2026-09-24 to 2026-10-25. RS(8, 3), RS(12, 3), RS(20, 3), RS(24, 3) and RS(36, 3) are gone from the format.
 - Generator: roots alpha^0 to alpha^(nroots - 1), so the first consecutive root is alpha^0 (`rs_encode`). Subtraction
   is addition in this field. `g(x) = (x + 1)(x + alpha) ... (x + alpha^(nroots - 1))`, coefficients from x^nroots down
   to x^0, in hex:
 
   ```
-  nroots  5: 01 1f c6 3f 93 74
   nroots 13: 01 89 49 e3 11 b1 11 34 0d 2e 2b 53 84 78
   nroots 29: 01 e4 c1 c4 30 aa 56 50 d9 36 8f 4f 20 58 ff 57 18 0f fb 55 52 c9 3a 70 bf 99 6c 84 8f aa
   nroots 61: 01 d1 fa 1a 7c 5f 3a 45 cb 4c 4d 52 4e a8 6e 87 b4 8e cf 94 9c 70 65 10 79 73 b2 91 a9 ad 6c
                 03 7f 60 3b 48 fb 5b 0e 65 80 72 2b f5 ee 33 ab e4 f1 97 77 11 c0 5d 22 dd 5f ff 24 e5 9a c1
   ```
 
-  The first is `x^5 + 0x1F x^4 + 0xC6 x^3 + 0x3F x^2 + 0x93 x + 0x74`. Each line is `rs_encode`'s parity of x^nroots
+  The first is `x^13 + 0x89 x^12 + 0x49 x^11 + ... + 0x78`. Each line is `rs_encode`'s parity of x^nroots
   (data `00 00 01`), with the leading 01 (2026-09-27 evening, `liblizard/src/rs.c` compiled natively; nroots 61 on 2026-10-10 through
   `liblizard/gpu/wordcode.mjs`, whose nroots 29 line is the one above).
 - Byte order: `cw[0]` is the highest-degree coefficient, `c(x) = cw[0] x^(bytes - 1) + cw[1] x^(bytes - 2) + ... +
@@ -931,14 +950,13 @@ run its band cuts short is not a word run, and stays light. The data is the same
   erasures with `2e + f <= nroots`.
 - **Acceptance.** A decoder MUST NOT take a correction past the code's bound, `2e + f <= nroots` for e errors and f
   erasures (`liblizard/src/rs.c` `solve` refuses it), and the garbage rates in 5.4 assume it. A decoder MUST reject a corrected
-  word whose `cw[0]` is not `0x4C` or whose version is outside 1 to 128. RS can miscorrect past its distance, and a wrong
+  word whose `cw[0]` is not `0x4C` or whose version is outside 2 to 128. RS can miscorrect past its distance, and a wrong
   version sends the receiver to another picture: that frame's blocks fail their CRCs, and a receiver that holds the
   last word (5.5) decodes the wordless frames after it at the wrong picture until a word reads again.
 
 **Test vectors.** `cw[0]` to `cw[bytes - 1]`, in hex:
 
 ```
-LIZARD-16    n  256  ring  32  version   2  fps   0  RS(8, 3)   4c 02 00 72 3f 14 83 94
 LIZARD-512   n 1024  ring  64  version  64  fps  24  RS(16, 3)  4c 40 18 43 c2 36 ee 95 dc 07 2a 1c 61 cb 63 fc
 LIZARD-1024  n 1536  ring  64  version 128  fps 240  RS(16, 3)  4c 80 f0 1a 03 b0 6a 27 2b f1 25 d4 09 be 9d d9
 LIZARD-576   n 1536  ring  64  version  72  fps  30  RS(16, 3)  4c 48 1e 8a 58 89 b2 ff dc 13 58 1b 53 70 20 83
@@ -952,14 +970,15 @@ LIZARD-256   n  768  ring 256  version  32  fps 120  RS(64, 3)  4c 20 78 c9 d4 c
 ```
 
 How they were made (2026-09-27 evening): each symbol painted by `liblizard/build/ob.wasm` through `liblizard/sim/ob.mjs` in the ring named
-(`_focus_setup(n, subch, 1, 2, 2B, ...)`, `_focus_fmt_fps_set(fps)`), the word
+(`_focus_setup(n, subch, 1, 2, 2B, ...)` then; `_focus_setup(n, subch, 2, 2B, 0)` since 2026-10-25), `_focus_fmt_fps_set(fps)`, the word
 read back out of the layout's cells (`ob_test_mesh_tables_out`) with the placement in 5.3, and compared with `liblizard/src/fmt.c`
 compiled natively and with `liblizard/gpu/wordcode.mjs`, a separate encoder in JS; all three agree. `liblizard/test/vectors.mjs`
-reads all seven back out of the painted cells. `scripts/gpu/word_check.mjs` checked the JS encoder against the wasm's painted
-cells on the four rings (256 words, 2026-09-27, evening; 192 on the morning's rings). The word does not depend on n: when the picture sizes changed
+reads all six back out of the painted cells. `scripts/gpu/word_check.mjs` checked the JS encoder against the wasm's painted
+cells on the four rings (256 words, 2026-09-27, evening; 192 on the morning's rings; 381 on the three rings, 2026-10-25). The word does not depend on n: when the picture sizes changed
 (3.2), LIZARD-64, -1024 and -576 painted the same outer border, module for module, at 384 and 1536 as at 512 and 2048
-(2026-09-27). The RS(8, 3) word is unchanged from 2026-09-24. `liblizard/test/fmt_test.c` holds these seven since 2026-10-04 (that
-day's five before, four of them in codes no ring uses: RS(12, 3), RS(20, 3), RS(36, 3)). On 2026-10-10 the 96 ring's
+(2026-09-27). `liblizard/test/fmt_test.c` holds these six since 2026-10-25 (seven from 2026-10-04, the 32 ring's
+`4c 02 00 72 3f 14 83 94` among them, unchanged from 2026-09-24 until that ring left the format; that day's five before,
+four of them in codes no ring uses: RS(12, 3), RS(20, 3), RS(36, 3)). On 2026-10-10 the 96 ring's
 vector (LIZARD-256 at fps 120, RS(24, 3): `4c 20 78 2d ...`) gave way to the same word in the 256 ring, made by the JS
 encoder and held to the C (`fmt_test`) and to the painted cells (`vectors.mjs`).
 
@@ -977,7 +996,7 @@ encoder and held to the C (`fmt_test`) and to the painted cells (`vectors.mjs`).
 | 2 bottom | `cw[2]` fps | `cw[6]` | `cw[10]` | `cw[14]` | `cw[18]` | `cw[22]` | `cw[26]` | `cw[30]` |
 | 3 left | `cw[3]` | `cw[7]` | `cw[11]` | `cw[15]` | `cw[19]` | `cw[23]` | `cw[27]` | `cw[31]` |
 
-  The 32 ring uses the first two columns, the 64 ring four, the 128 ring all eight, and the 256 ring sixteen: the
+  The 64 ring uses the first four columns, the 128 ring all eight, and the 256 ring sixteen: the
   pattern goes on, `cw[4j]` to `cw[4j + 3]` at word cells 8j to 8j + 7, to `cw[60]` to `cw[63]` at 120 to 127.
 - Word cells are numbered along the side in the direction its modules count (4.1), and where they sit in the band is
   in 4.6. A side has W word cells (5.1), and every one carries a bit of the codeword: there are no copies and no
@@ -985,28 +1004,30 @@ encoder and held to the C (`fmt_test`) and to the painted cells (`vectors.mjs`).
   not a multiple of 8, or is past 128, paints the cells past the codeword light; no ring has any.)
 - The reference layout flags every word cell `CELL_WORD` (`liblizard/src/layout.h`), so no registration template treats one as
   fixed (5.4).
-- The shortest word, RS(8, 3), needs 16 word cells a side, which the 32 ring holds exactly.
-- A side lost costs a quarter of the bytes (2, 4, 8 or 16). A faded side reads at its local level, so its bytes are the
+- The shortest word, RS(16, 3), needs 32 word cells a side (`OB_FMT_SIDE_CELLS`), which the 64 ring holds exactly; a
+  band with fewer carries no word.
+- A side lost costs a quarter of the bytes (4, 8 or 16). A faded side reads at its local level, so its bytes are the
   least confident and the erasure steps take them (5.4): the word reads with two faded sides in every ring, and with
   three in the 128 and 256 rings (5.4's table). A side under glare is taken the same way. In the simulator on the n / 8 +
   60 border (`scripts/exp/fmt_word.mjs` DAMAGE, glare saturating one side's band and ring, 32 frames a cell, 2026-09-24), two
-  glared sides at n = 256, RS(8, 3) as in today's 32 ring, are 4 wrong bytes, twice what errors-only RS corrects; they
+  glared sides at n = 256, RS(8, 3) as in the 32 ring of 2026-09-27 to 2026-10-25, are 4 wrong bytes, twice what errors-only RS corrects; they
   read on 31 and 32 of 32 frames with the steps to 4 erasures (the frame lost failed orientation) and on 16 of 32 with
   the steps stopped at 2. Those 16 are the frames where side 3 is one of the pair, which fits a glared side's cells
   reading light: `cw[7]` of that word is `0x00`, so one glared byte reads right. Glare on one side read on 32 of 32 at
   every size, on two 32 of 32 at n >= 512, and on three almost never, orientation failing first on most (10.1;
   STATUS.md, "C decoder fixes"). On the morning's three rings (32, 48, 64; `DAMAGE=1`, 2,048 frames, told, against the
-  build before, 2026-09-27) the told words went from 1,476 to 1,481 and wrong words stayed 0; not repeated on the four
+  build before, 2026-09-27) the told words went from 1,476 to 1,481 and wrong words stayed 0; not repeated on the later
   rings.
 
-LIZARD-16 in the 32 ring at fps 0, the 16 word cells of each side in order (the whole band is drawn in 4.9):
+LIZARD-16 in the 64 ring at fps 0, the 32 word cells of each side in order (the whole band is drawn in 4.9; read from
+the painted cells, 2026-10-25):
 
-| side | word cells 0 to 15 |
+| side | word cells 0 to 31 |
 |---|---|
-| 0 | `0100 1100 0011 1111` |
-| 1 | `0000 0010 0001 0100` |
-| 2 | `0000 0000 1000 0011` |
-| 3 | `0111 0010 1001 0100` |
+| 0 | `0100 1100 1000 1010 1101 1001 1001 0010` |
+| 1 | `0000 0010 0010 0111 1111 1111 0111 1001` |
+| 2 | `0000 0000 0010 0110 0101 1111 0100 0111` |
+| 3 | `1011 1111 0101 0011 0001 0001 1110 1101` |
 
 LIZARD-64 in the 128 ring at fps 60, the 64 word cells of each side in order (read from the painted cells, 2026-09-27
 evening):
@@ -1033,8 +1054,8 @@ depth 2.0 is the ring's middle line, 4.0 the gap's and 6.0 the band's. That is w
    2.0) and the gap at (along `t + 0.5`, depth 4.0). `con` is the mean gap sample minus the mean ring sample. Below
    0.08 the reader gives up.
 2. **Local level.** For each Manchester pair p of the side's track (track cells 2p and 2p + 1, 4.7), `mid[p]` is the
-   mean of the two cells' samples at their centres (depth 6.0). A side has `npair` = B / 4 = 8, 16, 32, 64 pairs in
-   the 32, 64, 128 and 256 rings.
+   mean of the two cells' samples at their centres (depth 6.0). A side has `npair` = B / 4 = 16, 32, 64 pairs in
+   the 64, 128 and 256 rings.
 3. **Cells.** Word cell i (0 to W - 1) of side s sits in band cell b (4.6) and is sampled at its centre, along
    `15 + 2b + 1`, depth 6.0. With `a = floor(2b / 8)`, its level is the mean of `mid[p]` for p from `max(0, a - 3)` to
    `min(npair - 1, a + 3)`. `q[s][i] = sample - level`.
@@ -1048,54 +1069,56 @@ Decoding (`ob_fmt_decode`):
 
 1. Byte k is built from the 8 soft values of side `k mod 4` starting at cell `8 * floor(k / 4)`, most significant bit
    first, with a bit of 1 where `z > 0`. The byte's confidence is the smallest `|z|` among its 8 bits.
-2. Errors-only RS: up to `floor(nroots / 2)` byte errors (2, 6, 14, 30).
-3. Then erase the least confident bytes (the lower index wins a tie), 2, then 4, and so on up to nroots - 1 (4) in the
-   32 ring and nroots - 3 (10, 26, 58) in the 64, 128 and 256 rings, decoding errors and erasures at each step within
-   `2e + f <= nroots` (5.2). Every nroots is odd, so the last step leaves one root over the erasures in the 32 ring and
-   three in the others. A side read faded, near its local track level, is W / 8 of the least confident bytes; where
-   three roots are left, one byte past the last step is corrected as an error.
-4. Each result, from step 2 on, is taken only if `cw[0] = 0x4C` and the version is 1 to 128 (5.2); the first that
+2. Errors-only RS: up to `floor(nroots / 2)` byte errors (6, 14, 30).
+3. Then erase the least confident bytes (the lower index wins a tie), 2, then 4, and so on up to nroots - 3 (10, 26,
+   58), decoding errors and erasures at each step within `2e + f <= nroots` (5.2). Every nroots is odd, so the last
+   step leaves three roots over the erasures. A side read faded, near its local track level, is W / 8 of the least
+   confident bytes, and one byte past the last step is corrected as an error. A step's result is held to that bound:
+   since 2026-10-25 the reference's solver (`liblizard/src/rs.c` `solve`) refuses a locator whose degree is not its
+   length (the errors and erasures it stands for) or whose errors and erasures break `2e + f <= nroots`. Until then a
+   locator whose top terms cancelled came back as a correction of nothing on a word that is no codeword (random words:
+   a few in a million decodes in each code); on `liblizard/test/rs_er_test.c`'s garbage half 452 of 4,000 random words
+   decode, all to codewords, where the solver before returned 3 that were not.
+4. Each result, from step 2 on, is taken only if `cw[0] = 0x4C` and the version is 2 to 128 (5.2); the first that
    passes is the word. fps is taken as it comes. Nothing is checked against the ring: the receiver calls
-   `ob_fmt_decode` with versions 1 to 128 in every ring (`liblizard/src/focus.c`). Until 2026-09-27 the receiver told nothing also
+   `ob_fmt_decode` with versions 2 to 128 in every ring (`liblizard/src/focus.c`). Until 2026-09-27 the receiver told nothing also
    required the version to imply the picture size of the module count it registered; that check went with the rings.
 
 The steps stop at nroots - 3 in the 64, 128 and 256 rings, where going on to nroots - 1, as they did until 2026-09-24,
-let garbage through 43 times as often. In the 32 ring they go on to nroots - 1 (2026-09-24): stopping at 2 lost
-two faded or glared sides there (`scripts/exp/fmt_word.mjs` DAMAGE, LIZARD-16 on the n / 8 + 60 border: glare on two sides 16 of
-32 on each cell against 31 and 32, defocus 4 px 12 against 26). With the size check gone, that step lets garbage through
-at 7.8e-6 a read in the 32 ring (2.4e-7 with the check). A step of nroots leaves no root, so RS takes every read and
+let garbage through 43 times as often. A step of nroots leaves no root, so RS takes every read and
 only the magic and the version stand behind it. What a read of garbage (soft values uniform in -0.5 to 0.5, what a wrong
 grid or a quad that is not the symbol gives) is accepted as, exact, with the data bytes of a false codeword uniform:
 
-| per garbage read | RS(8, 3) | RS(16, 3) | RS(32, 3) | RS(64, 3) |
-|---|---|---|---|---|
-| errors-only RS decodes it | 1.7e-6 | 1.1e-13 | 3.4e-28 | 3.2e-57 |
-| some step up to the last (4, 10, 26, 58) decodes it | 4.0e-3 | 9.3e-5 | 9.3e-5 | 9.3e-5 |
-| accepted: magic, version 1 to 128 | 7.8e-6 | 1.8e-7 | 1.8e-7 | 1.8e-7 |
-| measured over 2,000,000: accepted | 13 | 1 | 0 | 0 (2026-10-10) |
-| with the other last step (2 in the 32 ring, nroots - 1 in the others): magic and version | 1.8e-7 | 7.8e-6 | 7.8e-6 | 7.8e-6 |
-| with a step of nroots: magic and version | 2.0e-3 | 2.0e-3 | 2.0e-3 | 2.0e-3 |
+| per garbage read | RS(16, 3) | RS(32, 3) | RS(64, 3) |
+|---|---|---|---|
+| errors-only RS decodes it | 1.1e-13 | 3.4e-28 | 3.2e-57 |
+| some step up to the last (10, 26, 58) decodes it | 9.3e-5 | 9.3e-5 | 9.3e-5 |
+| accepted: magic, version 2 to 128 | 1.8e-7 | 1.8e-7 | 1.8e-7 |
+| measured over 2,000,000: accepted | 0 | 0 | 0 (2026-10-25; 1, 0, 0 on 2026-10-10) |
+| with the other last step (nroots - 1): magic and version | 7.7e-6 | 7.7e-6 | 7.7e-6 |
+| with a step of nroots: magic and version | 1.9e-3 | 1.9e-3 | 1.9e-3 |
+
+A read of garbage is taken at the steps' rate times 1/256 for the magic times V/256 for the version, V the valid
+versions: 127 since 2026-10-25 (128 before, when the rows read 1.8e-7, 7.8e-6 and 2.0e-3).
 
 The last step sets the rate, not the length: a step that leaves r roots over its erasures passes garbage at the same
 rate at every length (r = 3: 9.1e-5 for the step itself; r = 1: 1 in 256). The exact rows are the bounded-distance count
 of `liblizard/test/fmt_test.c` (`p_pass`), recomputed for RS(16, 3), RS(24, 3) and RS(32, 3) on 2026-09-27 and for
-RS(64, 3), the 256 ring's, on 2026-10-10 (the 96 ring's RS(24, 3) read 6.1e-21 errors-only and the same rates below). The measured row's
-RS(8, 3) cell is `liblizard/test/fmt_test.c` through `liblizard/src/fmt.c` (2026-09-24, the same schedule measured before the steps were cut
-that evening, STATUS.md, "Miscorrection"; 12 in a rerun on 2026-09-27); its RS(16, 3) cell is a scratch copy of that
-test through `liblizard/src/fmt.c` (2026-09-27, about 17 s), and its RS(24, 3) and RS(32, 3) cells a scratch harness of the same
-reads through the evening's `liblizard/src/fmt.c` (2026-09-27). The reader before the code grew (RS(8, 3) in copies, errors-only
+RS(64, 3), the 256 ring's, on 2026-10-10 (the 96 ring's RS(24, 3) read 6.1e-21 errors-only and the same rates below),
+and for 127 versions on 2026-10-25. The measured row is `liblizard/test/fmt_test.c` through `liblizard/src/fmt.c`
+(`build/fmt_test 2000000`, the three rings, 2026-10-25); its 2026-10-10 figures came from the same test and scratch
+harnesses of the same reads. The reader before the code grew (RS(8, 3) in copies, errors-only
 then 2 erasures) accepted 1.8e-7.
 
-**Known limit, the 32 ring.** Side 0 holds `cw[0]` and `cw[4]`. A frame whose side 0 reads clean and whose other three
-sides read garbage keeps the real magic, so the version byte is all that stands behind a miscorrection. Measured over
-10^7 such reads through `liblizard/src/fmt.c` (side 0 at magnitude 0.4, the rest uniform): accepted 2.0e-3 a read.
-That is the steps' rate with the magic already right, 4.0e-3, times the chance the garbage version passes, 1/2. In the
-64 ring one clean side leaves 12 garbage bytes, one past the steps' reach of 11 (the table below), and the same counting
-gives 9.3e-5 times 1/2, 4.6e-5 a read; the harness below measured 2 wrong words (and 7,699 right) in 10^6 such reads.
-In the 128 and 256 rings one clean side leaves 24 and 48 garbage bytes, inside the steps' reach of 27 and 59, so the
+**Known limit, the 64 ring.** Side 0 holds `cw[0]` and `cw[4]`. A frame whose side 0 reads clean and whose other
+three sides read garbage keeps the real magic, so the steps and the version byte are all that stand behind a
+miscorrection. In the 64 ring one clean side leaves 12 garbage bytes, one past the steps' reach of 11 (the table
+below), and the counting gives the steps' rate with the magic already right, 9.3e-5, times the chance the garbage
+version passes, 127/256 (1/2 when it was measured): 4.6e-5 a read; the harness below measured 2 wrong words (and
+7,699 right) in 10^6 such reads (2026-09-27). In the 128 and 256 rings one clean side leaves 24 and 48 garbage bytes, inside the steps' reach of 27 and 59, so the
 steps erase them and the clean side's 8 or 16 bytes give back the sent word: 10^6 of 10^6 read right in the 128 ring
-(and in the 96, whose 18 bytes sat inside 19), none wrong (2026-09-27); the 256 ring's not measured. Until 2026-09-27 the size check cut the 32 ring's rate to 6.0e-5, and the 48 ring's, counted at
-4.6e-5, to 4.7e-6.
+(and in the 96, whose 18 bytes sat inside 19), none wrong (2026-09-27); the 256 ring's not measured. Until 2026-09-27
+the size check cut the 48 ring's rate, counted at 4.6e-5, to 4.7e-6.
 
 Registration should not correlate against word cells. The fps byte is the sender's choice, so a receiver cannot predict
 those cells. The layout flags every word cell `CELL_WORD` (`liblizard/src/layout.h`) and the reference mesh skips them. When they
@@ -1106,24 +1129,25 @@ were in its template, one 720 px capture fell from 22 blocks of 24 to 6 with fps
 values built from a codeword (magnitude 0.4; a byte in error 0.45, so no erasure lands on it, or 0.05 for one made least
 confident; a faded side uniform within 0.02 of 0), version 2 and fps 0 unless a row says otherwise, 400 trials a cell:
 
-| input | RS(8, 3) | RS(16, 3) | RS(32, 3) | RS(64, 3) |
-|---|---|---|---|---|
-| clean | read | read | read | read |
-| floor(nroots / 2) byte errors (2, 6, 14, 30) | read | read | read | read |
-| one byte error more | rejected | rejected | rejected | rejected |
-| nroots - 2 byte errors, all in the least confident bytes | read | read | read | read |
-| nroots - 1 byte errors, all in the least confident bytes | read | rejected | rejected | rejected |
-| 1 byte error, and nroots - 3 in the least confident bytes | read | read | read | read |
-| 1 byte error, and nroots - 2 in the least confident bytes | rejected | rejected | rejected | rejected |
-| side 0 faded | read | read | read | read |
-| sides 0 and 1 faded | read | read | read | read |
-| sides 0 and 2 faded | read | read | read | read |
-| sides 1, 2 and 3 faded | rejected | rejected (5 of 400 read) | read | read |
-| sides 0, 1 and 2 faded | rejected | rejected (5 of 400 read) | read | read |
-| valid codeword, magic `0x4D` | rejected | rejected | rejected | rejected |
-| valid codeword, version 0 or 129 | rejected | rejected | rejected | rejected |
-| valid codeword, version 128 | read | read | read | read |
-| valid codeword, version 3 (off the ladder), fps 255 | read | read | read | read |
+| input | RS(16, 3) | RS(32, 3) | RS(64, 3) |
+|---|---|---|---|
+| clean | read | read | read |
+| floor(nroots / 2) byte errors (6, 14, 30) | read | read | read |
+| one byte error more | rejected | rejected | rejected |
+| nroots - 2 byte errors, all in the least confident bytes | read | read | read |
+| nroots - 1 byte errors, all in the least confident bytes | rejected | rejected | rejected |
+| 1 byte error, and nroots - 3 in the least confident bytes | read | read | read |
+| 1 byte error, and nroots - 2 in the least confident bytes | rejected | rejected | rejected |
+| side 0 faded | read | read | read |
+| sides 0 and 1 faded | read | read | read |
+| sides 0 and 2 faded | read | read | read |
+| sides 1, 2 and 3 faded | rejected (5 of 400 read) | read | read |
+| sides 0, 1 and 2 faded | rejected (5 of 400 read) | read | read |
+| valid codeword, magic `0x4D` | rejected | rejected | rejected |
+| valid codeword, version 0 or 129 | rejected | rejected | rejected |
+| valid codeword, version 1 (since 2026-10-25, `liblizard/test/fmt_test.c`) | rejected | rejected | rejected |
+| valid codeword, version 128 | read | read | read |
+| valid codeword, version 3, fps 255 | read | read | read |
 
 No trial read a wrong word. The RS(64, 3) column is `liblizard/test/fmt_test.c`'s own rows for the 256 ring (2026-10-10,
 200 trials a row; its faded rows lose sides at random), the RS(24, 3) column it replaced, the 96 ring's, read as the
@@ -1137,7 +1161,7 @@ three faded sides at n = 1024 and 2048.
 The rule since 2026-09-27: the ring tells what is inside it and bootstraps the receiver's configuration, and a frame
 whose word later fails to decode leaves that configuration as it was. Both reference receivers do this (10.1, 10.2):
 
-- **The ring is found first.** The finder registers the symbol against the four rings' layouts, a bounded search of 4
+- **The ring is found first.** The finder registers the symbol against the three rings' layouts, a bounded search of 3
   like the 8 orientations, and the ring that registered is the frame's. The ring says nothing about the picture.
 - **The word says what is inside.** It is read in that ring (5.4), and its version names the sub-channels and so n
   (3.2). The frame is finished at that picture, in that ring.
@@ -1152,7 +1176,7 @@ whose word later fails to decode leaves that configuration as it was. Both refer
   48, 64), a frame registered at a wrong ring now and then: 90 of 2,048 under `scripts/exp/fmt_word.mjs` `DAMAGE=1`, 82 of them
   under glare over three sides, where nothing reads; 1 of 426 in `RINGS=all` (LIZARD-576 painted in the 48 ring at 45
   degrees: 2 blocks blind, 6 told); 1 or 2 frames in 9 cells of `scripts/exp/border_scale.mjs`, none with payload (2026-09-27).
-  Not repeated on the four rings.
+  Not repeated on today's three rings.
 
 ## 6. The picture
 
@@ -1186,35 +1210,30 @@ n follows from subch by the rule in 3.2, span from the ring (3.3), and pxm and t
 
 | ring B | n | scale = n / span (samples a module) | pxm | upscale pxm / scale | resampled square: side, first pixel |
 |---|---|---|---|---|---|
-| 32 | 256 | 4 | 4 | 1 (copy) | 280, from 48 |
-| 32 | 384 | 6 | 6 | 1 (copy) | 420, from 72 |
-| 32 | 512 | 8 | 8 | 1 (copy) | 560, from 96 |
-| 32 | 768 | 12 | 12 | 1 (copy) | 840, from 144 |
-| 32 | 1024 | 16 | 16 | 1 (copy) | 1120, from 192 |
-| 32 | 1536 | 24 | 24 | 1 (copy) | 1680, from 288 |
 | 64 | 256 | 2 | 2 | 1 (copy) | 268, from 24 |
 | 64 | 384 | 3 | 3 | 1 (copy) | 402, from 36 |
 | 64 | 512 | 4 | 4 | 1 (copy) | 536, from 48 |
 | 64 | 768 | 6 | 6 | 1 (copy) | 804, from 72 |
 | 64 | 1024 | 8 | 8 | 1 (copy) | 1072, from 96 |
 | 64 | 1536 | 12 | 12 | 1 (copy) | 1608, from 144 |
-| 96 | 256 | 4/3 = 1.3333 | 2 | 1.5 | 396, from 24 |
-| 96 | 384 | 2 | 2 | 1 (copy) | 396, from 24 |
-| 96 | 512 | 8/3 = 2.6667 | 3 | 1.125 | 594, from 36 |
-| 96 | 768 | 4 | 4 | 1 (copy) | 792, from 48 |
-| 96 | 1024 | 16/3 = 5.3333 | 6 | 1.125 | 1188, from 72 |
-| 96 | 1536 | 8 | 8 | 1 (copy) | 1584, from 96 |
 | 128 | 256 (default) | 1 | 1 | 1 (copy) | 262, from 12 |
 | 128 | 384 (default) | 3/2 = 1.5 | 2 | 4/3 = 1.3333 | 524, from 24 |
 | 128 | 512 (default) | 2 | 2 | 1 (copy) | 524, from 24 |
 | 128 | 768 (default) | 3 | 3 | 1 (copy) | 786, from 36 |
 | 128 | 1024 (default) | 4 | 4 | 1 (copy) | 1048, from 48 |
 | 128 | 1536 (default) | 6 | 6 | 1 (copy) | 1572, from 72 |
+| 256 | 256 | 1/2 = 0.5 | 1 | 2 | 518, from 12 |
+| 256 | 384 | 3/4 = 0.75 | 1 | 4/3 = 1.3333 | 518, from 12 |
+| 256 | 512 | 1 | 1 | 1 (copy) | 518, from 12 |
+| 256 | 768 | 3/2 = 1.5 | 2 | 4/3 = 1.3333 | 1036, from 24 |
+| 256 | 1024 | 2 | 2 | 1 (copy) | 1036, from 24 |
+| 256 | 1536 | 3 | 3 | 1 (copy) | 1554, from 36 |
 
 pxm = ceil(n / span) is the painter's whole number of pixels a module (`focus.c` `init` computes
 `ceilf(scale - 1e-4)`, which is the same on every row; the `1e-4` keeps a scale that is a whole number at that number).
 The square is (span + 2 cp) pxm pixels from (15 - cp) pxm, with cp = 3 the guard in modules (6.8): (span + 6) pxm from
-12 pxm, read from the painted layout's cells on every row (2026-09-27 evening).
+12 pxm, read from the painted layout's cells on every row (2026-09-27 evening; the 256 ring's rows, in the 96 ring's
+place, from the codec on 2026-10-25).
 
 ### 6.3 The coefficients
 
@@ -1283,8 +1302,8 @@ sub-channels of 3/4).
 Block b's rate and place come from the rate profile (3.1): it takes g_b sub-channels, 7, 8 or 12 by its rate, from
 sub-channel s_b, the sum of the sub-channels of the blocks before it; coefficients C_(320 s_b) to C_(320 (s_b + g_b) -
 1), 640 g_b slots. Its codeword (section 8) fills 4464, 5088 or 7680 of them and leaves the last 16, 32 or none to the
-whitening (7.3). Under one rate (before 2026-10-07, and LIZARD-8 to -40 now) g_b = 8 and s_b = 8b. Other rate tiers and
-`FOCUS_RS` build other frames, which are not the format (section 2).
+whitening (7.3). Under one rate (before 2026-10-07, and LIZARD-16 now) g_b = 8 and s_b = 8b. Other rate tiers build
+other frames, which are not the format (section 2).
 
 ### 6.5 Symbols
 
@@ -1383,7 +1402,7 @@ w(t) = (t + 0.5) * sc / pxm - 3 * sc - 0.5,        sc = n / span,   evaluated in
 
 which is w = ((X + 0.5) / pxm - 15) * sc - 0.5. Its inverse is the rule that places the picture: **sample x sits at
 module coordinate 15 + (x + 0.5) / sc**, the same on both axes. Where sc is a whole number it equals pxm, each pixel
-lands on one sample and the resampler copies: every picture in the 32 and 64 rings, every n but 384 in the 128 ring
+lands on one sample and the resampler copies: every picture in the 64 ring, every n but 384 in the 128 ring
 (sc = 1, 2, 3, 4, 6) and n = 512, 1024 and 1536 in the 256 ring (sc = 1, 2, 3). At n = 384 in the 128 ring (sc = 1.5)
 and at n = 256, 384 and 768 in the 256 ring (sc = 0.5, 0.75, 1.5) sc is not a whole number, which is why those four are
 resampled rather than copied; below 1, a sample spans more than one module and the picture is enlarged. Either way there is no light between the border and the picture.
@@ -1544,7 +1563,9 @@ make room for this; whatever part of the picture itself projects onto the five f
 Computed with `liblizard/build/ob.wasm` through `liblizard/sim/ob.mjs` (`init`, then the raw exports): `_focus_setup(n, subch, 1, 2, 128, 0,
 0, 0, 0, 0, 0, 0)` (LDPC mode, clip 2, span 128: the 64 ring, named; it was the default ring when these were made, and
 the default has been the 128 since 2026-10-01; no tilt, default corner mark), `_focus_dbg(1)`,
-`_focus_tx` on a payload of blocks x 473 zero bytes, then the drive (float32, S x pxm pixels square, row-major, top row
+`_focus_tx` on a payload of blocks x 473 zero bytes (since 2026-10-25 the wasm is the library's one module,
+`liblizard/bindings/wasm/dist/lizard.wasm` by `liblizard/build.sh`, and the call `_focus_setup(n, subch, 2, 128, 0)`;
+every value below holds on it), then the drive (float32, S x pxm pixels square, row-major, top row
 first), the slot bits from `_focus_dbg_sym` (int8 a slot, +1 for bit 0, -1 for bit 1, frame slot order) and the
 coefficient positions from `_focus_pos_ptr`. Grey bytes are G as defined under Painting (6.8). The format word states
 fps 0, and the pilot count is 0 (`_focus_parity_set` not called): since 2026-09-30 the tail slots, and so the slot
@@ -1600,12 +1621,16 @@ in the 32 and 48 rings, and P3 was at n = 512 before the picture sizes of 3.2. B
 the Lanczos taps: in the 64 ring every picture is a copy, and only four (ring, picture) pairs resample (6.8), 384 in
 the 128 ring, the default since 2026-10-01, among them.
 
-`test/vectors.mjs <ob.mjs>`, run from `liblizard/`, checks 5.2 (the seven words read back out of the painted
-cells), P2, P3, 7.4 and 9.3 against a build (all ok on the evening build of 2026-09-27 and on that of 2026-10-04, 20 s)
+`test/vectors.mjs <ob.mjs>`, run from `liblizard/`, checks 5.2 (the six words read back out of the painted
+cells), P2, P3, 7.4 and 9.3 against a build (all ok on the evening build of 2026-09-27, on that of 2026-10-04 and on
+that of 2026-10-25, 20 s)
 and prints three digests over the whole ladder to diff two builds: every format's cell map at five rates, its drive on
 a fixed payload, and `_focus_pos_ptr`, each format in the 64 ring (span 128). "Every format" there is the 64 formats of
-before 2026-10-01, LIZARD-16 to -1024 in steps of 16 (two blocks), not every whole number of blocks. They are cells `e8ae1656c90e4552`, drives `3f8e49cfe13a5596`, order
-`60842c81479e470a`. With the 64 ring the default, the cells and drives of LIZARD-16 to -128 moved (that morning they
+before 2026-10-01, LIZARD-16 to -1024 in steps of 16 (two blocks), not every whole number of blocks. Since 2026-10-25
+they are cells `9ffe76a7804c3d95`, drives `dcd4270abe52fb63`, order `60842c81479e470a`. The cells digest hashes each
+format's layout dimensions with its cells, and those lost the `thin` flag that day (always 1; with it put back as 1
+the digest is `e8ae1656c90e4552`, as before): no cell moved. The drives were `3f8e49cfe13a5596` before the code rate
+followed the frequency and the tables of 2026-10-08 changed what a fixed payload paints. With the 64 ring the default, the cells and drives of LIZARD-16 to -128 moved (that morning they
 were `fcd70aefcce26613` and `f0b6d16dbac39887`) and the order did not. When the picture sizes changed the cells did not
 move and the drives and the order did, by design: a drive is painted from an n x n picture, and the order digest hashes
 the offsets of P1, which depend on n.
@@ -1728,9 +1753,9 @@ r_b = (1 / T) sum_i (1 - 2 w[640 s_b + n + i]) y_i / sqrt(m2 / 2)
 ```
 
 and a frame has two readings: r, the mean of r_b over the even blocks its format carries, and r2, the mean over the
-odd ones (every format of two blocks or more has both, LIZARD-16 one block of each; version 1, LIZARD-8, has one block,
-an even one, so its captures read r alone, how much of the neighbours they hold and not which, and a decoder reports
-the odd reading as none). A capture of one picture reads r = +1 where bit 0 of its
+odd ones (every format has both: its 7/8 and 3/4 blocks carry tails of each parity, LIZARD-16 and LIZARD-24 one block
+of each, LIZARD-24's 2/3 block having no tail. Version 1, LIZARD-8, the one format with r alone, left the format on
+2026-10-25). A capture of one picture reads r = +1 where bit 0 of its
 count is 0 and -1 where it is 1, and r2 the same by bit 1 (sqrt(A2 / m2) of that at a signal-to-noise ratio A2 / N,
 0.98 to 0.99 at the decoders' usual ones). So the two signs are the count of the picture a capture mostly holds: a
 capture whose count is the one before's saw a picture the screen showed twice, and one whose count is two on saw a
@@ -1747,7 +1772,7 @@ camera's phase needs (10).
 
 A reading's standard error is its blocks' spread of r_b over the square root of their count (0.003 to 0.007 on a clean
 capture at LIZARD-32 to -512, where a reading has half the blocks; 1/sqrt(M) sqrt(N / A2) in general, M its pilots' real
-symbols; a one-block reading, version 1's or LIZARD-16's, has no spread to state). Both reference decoders report the two
+symbols; a one-block reading, LIZARD-16's or LIZARD-24's, has no spread to state). Both reference decoders report the two
 (`focus.h:focus_pilot`; the GPU's soft stage, `liblizard/gpu/wgsl/back_soft.mjs` `PILOT`, a value a block, averaged by its host)
 and the Android receiver steers its camera's phase by them (10). A sender that paints c = 0 throughout (every sender
 before 2026-09-30) reads +1 on both, mixed or not: the receiver can tell, since consecutive pictures then never read
@@ -1779,8 +1804,10 @@ permutation, the systematic codeword's 1272 parity bits (degree 2, its weakest) 
 the slots blur and distance take first. `scripts/exp/bitmap_race.mjs` chose LINEAR over INNER, which tied with it, because
 LINEAR spreads every run of the code instead of betting on which way the damage runs.
 
-**One map** (2026-09-24). LINEAR is the only bit map the format has, so the format word names none. The other
-values of `focus.h:FOCUS_BITMAP_*` (NONE, WHITE, SPREAD, INNER) are lab settings for `scripts/exp/bitmap_race.mjs`, not the format.
+**One map** (2026-09-24). LINEAR is the only bit map the format has, so the format word names none. The others
+(NONE, WHITE, SPREAD, INNER) stayed in the codec as lab settings for the script that raced them (archived 2026-10-22)
+and left it on 2026-10-25 with every path for a frame without whitening or pilots: `focus.h:FOCUS_BITMAP`
+is LINEAR's number alone (3), and `focus_init` builds no other map.
 
 ### 7.4 Test vector
 
@@ -1822,7 +1849,8 @@ same way (1280 bytes), c = 0: `ce4bbd787faaed53466ecabc2b53a065d5eb0fc9c89daa666
 `689b47f951d007d8d598887414319f96`, slots `2a6d2d409722af16f5f2c5ec83cda6fb` and `77df2df63b06611785ae191b9d491b47`,
 the frame at c = 0 `8881113e5edfc7b2c3ac85c58d00b57d4186021e9c3a66a045715263e95cbd1f`.
 
-How it was computed. `liblizard/build/ob.wasm` reports the bit pair it put on every coefficient. From `liblizard/`:
+How it was computed. The codec's wasm (`liblizard/bindings/wasm/dist/lizard.wasm`, built by `liblizard/build.sh`)
+reports the bit pair it put on every coefficient. From `liblizard/`:
 
 ```js
 import { init, Focus } from "./sim/ob.mjs";
@@ -1837,8 +1865,8 @@ const slot = Array.from(f.sent(), (s) => (s < 0 ? 1 : 0));   // 10240 slot bits,
 The CRC is the wasm's `ob_test_crc_hash` and agrees with node's `zlib.crc32`. The codeword, parity and whitening rows
 come from a separate JavaScript implementation of this section and section 8 (CRC, shift table construction, encoder,
 PRBS, permutation). It reproduces the wasm's slots bit for bit on LIZARD-16, on LIZARD-64 (then at n = 512; the slots
-do not depend on n) and on LIZARD-512 (n = 1024, 327,680 slots), and each of the other four modes agrees with its row
-of the table in 7.3.
+do not depend on n) and on LIZARD-512 (n = 1024, 327,680 slots), and, while the codec still had them (to 2026-10-25),
+on the four other bit maps of 7.3.
 
 ### 7.5 The block id
 
@@ -2172,12 +2200,13 @@ the rest degree 3) were chosen on the exact int8 decoder's 10%-loss thresholds o
 2026-09-24 table's 4.07, 7/8 5.83 against 5.99, 2/3 3.00 against 3.04; no floor to 0.8 dB above at 65,536 codewords).
 The 1/2 table is the generator's own output (seed 1, 2026-10-07), as the three were before that day (the 3/4 table of
 2026-09-24, the 7/8 and 2/3 of 2026-10-07). The
-generator stays: `ldpc.c:ldpc_generate` builds every code outside the format (the
-rates the experiments tier with, `liblizard/test/ldpc_ablate.c`'s profiles), and the format's own when a test sets
-`ldpc_override_heavy`. `liblizard/test/ldpc_table.c` holds every table to the hash of its H as adopted (FNV-1a over its
-row pointers and column indices: 3/4 5660f26d, 20,669 edges) and `ldpc_init`'s block-row view to the table entry by
-entry; a table altered in one entry fails it. `ldpc.c` also has `ldpc_norm`, a test global that changes the decoder's
-scale and not H.
+generator stays: `ldpc.c:ldpc_generate` builds a code at the format's rates where no table holds its z or seed (the
+rates the experiments tier with). `liblizard/test/ldpc_table.c` holds every table to the hash of its H as adopted
+(FNV-1a over its row pointers and column indices: 3/4 5660f26d, 20,669 edges) and `ldpc_init`'s block-row view to the
+table entry by entry; a table altered in one entry fails it. The lab's own rates (1/4, 1/3, 5/6), the degree-profile
+ablation that bent the generator through test globals (`ldpc_ablate.c`, `ldpc_override_heavy`), the test global
+`ldpc_norm` that changed the decoder's scale and not H, and the serial decoder were archived on 2026-10-25
+(`archive/ldpc-lab-rates/codec/`); the format's four tables did not change.
 
 The construction, as `ldpc.c:ldpc_generate` and `ldpc.c:count_cycles` run it, which the 1/2 table is the output of.
 Columns are filled in order, one edge at a time. Each edge goes in the
@@ -2628,22 +2657,23 @@ unchanged and the transfer's zstd (7.6) takes the archive's headers and padding 
 ## 10. Reference receivers (non-normative)
 
 Two decoders read the format. Neither defines it. Both report each frame's two pilot readings (7.3), and where the
-frames flash the Android app's phase lock holds by what they say a capture holds of its neighbours; frames with one
-reading (version 1) it reads by their blocks, as it does frames that do not flash.
+frames flash the Android app's phase lock holds by what they say a capture holds of its neighbours; frames that do
+not flash it reads by their blocks. Every format gives both readings since version 1 left it (2026-10-25).
 
 ### 10.1 The C decoder (`liblizard/src/`)
 
 The decoder the phone rig carries: wasm with SIMD128, one thread a worker, a pool of workers that grows only while
-frames are lost to busy ones (`lizard-web/recv.mjs`, `lizard-web/pool.mjs`); the Android app runs the same C natively on NEON, a
-blind receiver a thread (`liblizard/core/cpu/`, 2026-09-30). The rig's receiver is told nothing (2026-09-26): each
+frames are lost to busy ones (`lizard-web/recv.mjs`, `lizard-web/pool.mjs`), the web receiver's one decoder since
+2026-10-25; the Android and desktop apps run the same C natively (NEON on arm64), a blind receiver a thread
+(`liblizard/core/cpu/`, 2026-09-30). The rig's receiver is told nothing (2026-09-26): each
 worker runs `liblizard/sim/phy.mjs:makeBlind` over `liblizard/sim/ob.mjs:FocusAny(nmax)`, the wasm's `focus_any_*` (`liblizard/src/wasm.c`), with
 nmax 1536, the ladder's top (`BLIND_NMAX`, since 2026-09-29; 1024 by default before, 1536 from the receiver's sizes menu,
 which went that day; 2048 until 2026-09-27). Since 2026-09-27 it bootstraps from the ring (5.5):
 
-- `focus_any_setup(nmax)` builds four ring codecs, one a ring (32, 64, 128, 256), each at n = 256 (the 256 ring's span,
+- `focus_any_setup(nmax)` builds three ring codecs, one a ring (64, 128, 256), each at n = 256 (the 256 ring's span,
   512, over a 256-sample picture: `focus_init` takes a ring's span at any n since 2026-10-10).
-- `focus_any_rx(img, iw, ih, gamma, mesh, blocks, ok, held)` registers the frame against the four rings' layouts
-  (`liblizard/src/focus.c:focus_acquire_ring`, a bounded search of 4 inside the finder, like the 8 orientations), and the ring
+- `focus_any_rx(img, iw, ih, gamma, mesh, blocks, ok, held)` registers the frame against the three rings' layouts
+  (`liblizard/src/focus.c:focus_acquire_ring`, a bounded search of 3 inside the finder, like the 8 orientations), and the ring
   that registered reads the word. Its version names n (3.2); the codec for that ring and sub-channel count is built the
   first time the pair is seen and cached (`FOCUS_ANY_PICS` = 2, `liblizard/src/any.h`, the least recently used replaced):
   each count's rate profile is its own, so a frame decodes on its version's codec (under one rate, before 2026-10-07,
@@ -2664,7 +2694,9 @@ which went that day; 2048 until 2026-09-27). Since 2026-09-27 it bootstraps from
 Checks (2026-09-27 evening, the four rings): every (ring, picture) pair read blind byte-exact, 48 of 48
 (`scripts/exp/ring_pairs.mjs`: the first and last format of each picture, twelve, in each ring); a wordless frame decoded at
 the held word and not without one, 5 of 5 (`scripts/exp/ring_held.mjs`). On the morning's three rings `scripts/exp/fmt_word.mjs` read
-287 of 287 words, 0 wrong, blind equal to told in every row; not repeated on the four. `liblizard/src/focus.c:focus_decode`, the
+287 of 287 words, 0 wrong, blind equal to told in every row; not repeated on the four. On the three rings
+(2026-10-25): 24 of 24 pairs over eight formats and 381 of 381 over every version from LIZARD-16, a frame of eight
+sub-channels refused (`ring_pairs.mjs`), held 4 of 4 (`ring_held.mjs`). `liblizard/src/focus.c:focus_decode`, the
 decode of one known codec, is `focus_acquire` then `focus_finish`:
 
 1. **Luma.** (77 R + 150 G + 29 B + 128) >> 8 (`liblizard/src/acquire.c:ob_luma`), then an optional gamma table (1 for the grey
@@ -2675,10 +2707,9 @@ decode of one known codec, is `focus_acquire` then `focus_finish`:
    form, then a merged one, then the merged squares read as mark cores; 4.5). Quads come from the four marks' mutual
    agreement (`mark_rect`), and each is scored by reading the timing track against its own local levels
    (`thin_levels`, `thin_score`; 4.7) against every ring's layout (a told decode has one), under the 4 rotations,
-   and under the 4 mirror images only while no rotation holds the best. A rotation holds at 0.15 x max(1,
-   sqrt(128 / c)) or more, c the ring's track cells (`holds_in`): 0.212 in the 32 ring, 0.15 in the others, the same
-   significance against a picture's texture on every ring (since 2026-10-04; at a flat 0.15, mark-like squares in a
-   picture settled a 32-ring quad before the true ring was scored). The best reading of a form's quads over every ring
+   and under the 4 mirror images only while no rotation holds the best. A rotation holds at 0.15 or more
+   (`rotation_holds`), 3.4 standard deviations of a texture's reading over the 64 ring's 128 track cells, the fewest
+   any ring has, so the same significance or more on every ring. The best reading of a form's quads over every ring
    wins, not the first to hold. A hold settles it; otherwise the search goes on through the forms and on the image
    halved and quartered, and a mirror image never ends it. If no mark quad settles, the border's lines are fitted
    (`row_points`, `col_points`, `fit_lines`) and every combination is scored the same way, ring by ring until one
@@ -2720,10 +2751,12 @@ rules.
 
 ### 10.2 The GPU decoder (`liblizard/gpu/`)
 
-A second decoder, designed from the format for WebGPU rather than ported from the C (a port that copied the C's control
-flow was deleted on 2026-09-23). A batch of frames is one command encoder and one readback: a trained proposer and a
+A second decoder, designed from the format for a GPU rather than ported from the C (a port that copied the C's control
+flow was deleted on 2026-09-23): written in WGSL, its setup (the kernels' sizes, the format's tables and the nets) built
+by its JavaScript host in `liblizard/gpu/`, and run natively on Vulkan (`liblizard/gen/` compiles it through naga to
+SPIR-V for the host in `liblizard/core/`). A batch of frames is one command encoder and one readback: a trained proposer and a
 trained classifier find the corner marks, votes along the symbol's diagonals find its centre, the timing track scores
-every quad, orientation and ring (`liblizard/gpu/wgsl/finder.mjs` `RING_COUNT` 4, 128 hypotheses: 4 quads x 8 orientations x 4
+every quad, orientation and ring (`liblizard/gpu/wgsl/finder.mjs` `RING_COUNT` 3, 96 hypotheses: 4 quads x 8 orientations x 3
 rings), PICK picks the ring, the border nodes are refitted against that ring's nodes, the word is read and the picture
 sampled, and a back half on the device does the transform with the detrend, the pilots' grid alignment (10.1, step 9;
 since 2026-10-01), the soft values and the decline gate, the LDPC (its stop a small learned net a code,
@@ -2735,27 +2768,44 @@ ring) and the pictures apart (`liblizard/gpu/tables.mjs` `formatTables()` return
 32 KB of workgroup memory and no `shader-f16` builds no 1536 picture (pass 1 needs 33,792 B in f32), as it built no
 2048 before.
 
-The word stage, F8 (`liblizard/gpu/wgsl/word.mjs`), bootstraps as the C does (5.5): one code a ring, read over every version 1 to
-128, sets the frame's selection to (ring, 1 + version, picture slot); with no word taken, the batch's held version (the
-last word the caller read, `decoder.mjs` `run(..., { held })`, a held uniform a lane); with none held, the frame is
-dropped. Its acceptance distance is set in bits by W, 6 of 64, 24 of 128, 48 of 256 and 96 of 512 in the 32, 64, 128
-and 256 rings, with union bounds on a garbage read of 1.5e-7, 7.5e-9, 1.1e-20 and 2.9e-44 (the 96 ring's 36 of 192,
-8.6e-15, until 2026-10-10).
+The word stage, F8 (`liblizard/gpu/wgsl/word.mjs`), bootstraps as the C does (5.5): one code a ring, read over every
+version 2 to 128 (a candidate of version 1 skipped, as 0 and 129 to 255 are), sets the frame's selection to (ring,
+1 + version, picture slot); with no word taken, the batch's held version (the last word the caller read, `decoder.mjs`
+`run(..., { held })`, a held uniform a lane); with none held, the frame is dropped. It reads the word cells' soft values
+as the ring's linear code (every valid word is a fixed word XOR the rows of its version's and display rate's bits,
+`liblizard/gpu/wordcode.mjs`) and decodes them by ordered statistics at order 3, where the C decodes hard bytes with
+erasures (5.4). A side whose sum of |q| is under 0.75 of the best side's is set to nothing before the search scores, at
+most the two least. The best word is taken through a side-aware gate (`wordcode.mjs` `gateTable`, since 2026-10-25):
+only the cells read at |q| of 0.1 or more count; the sides counted are tried three ways (all four, all but the one with
+the least sum of |q|, all but the two least), and the word is taken if any of the three passes, its disagreements on
+the m cells that count at most E[m], the most that keeps a union bound over every word of the ring at a third of the
+C's own false-word rate in that ring (1.8e-7, 5.4), so the three together stay at it. Which cells count depends on the
+magnitudes alone, which a garbage read's signs do not, so the bound holds as it stands for each choice. On every cell
+of a side counted, E is 25 of 128, 72 of 256 and 177 of 512 in the 64, 128 and 256 rings. The bound counts the 32,768
+words the version byte can name, over the 32,512 a ring holds. Until 2026-10-25 the acceptance distance was a fixed
+number of bits by W (6 of 64, 24 of 128, 48 of 256 and 96 of 512 in the 32, 64, 128 and 256 rings), which read one
+lost side only. `scripts/gpu/word_check.mjs` holds the gate's tables and the search's decisions to the wasm (2026-10-25:
+381 painted words read, every damage case 24 of 24 in each ring, garbage 0 of 1,000 a ring, the OSD 0 of 1,120 cell
+sets apart from the exhaustive search).
 
 It is judged only on CRC-verified blocks, on throughput and on a negative control (captures with no symbol and empty
 batch slots must give nothing), never on parity with the C at any stage. On the four rings (2026-09-27 evening,
 synthetic frames, no camera, an RTX 4090): every (ring, picture) pair read told nothing, 24 of 24 at
 each picture's top and 48 of 48 over the twelve formats of 10.1 (`scripts/exp/gpu_rings.mjs`), a wordless frame read at the held
 word and not without one, 5 of 5; `scripts/exp/gpu_front.mjs`, 28 cells, found the right ring and picture on every symbol frame,
-the no-symbol controls 0 blocks and 0 words, 0 wrong, 0 bad. On the desktop's two-CU RDNA-2 iGPU, on the four rings
+the no-symbol controls 0 blocks and 0 words, 0 wrong, 0 bad. On the three rings (2026-10-25, the 4090): 17 of 18 pairs
+read (`gpu_rings.mjs`; LIZARD-32 at n = 256 in the 256 ring at 2 px a module not found, as on the four rings before),
+8 of 8 wordless frames at the held word and none without; `gpu_front.mjs` 0 bad in every cell. On the desktop's
+two-CU RDNA-2 iGPU, on the four rings
 (f16, 48 synthetic 1080 frames, LIZARD-192 in the 64 ring, 2026-09-27 evening), it took 5.71 ms of compute a frame and
 verified 1,152 of 1,152 blocks, bad 0; at n = 768 against 1024 that morning, 5.53 against 5.68 ms (section 11). On the
 three recordings on the rings (v0.3, 600 frames at 1080 each, file transfers in one-rate frames; the 4090, bad 0) it
 verified 20,742 and 24,024 blocks on 07-56-38 and 17-59-29 (LIZARD-336 at n = 1024 in the 64 ring), where the blind C
 read 20,545 and 23,958, both aligning the grid from the pilots (2026-10-01), and 19,721 on 17-05-48 (LIZARD-512 at
-n = 1024 in the 128 ring) against the C's 20,274, before the finder's final retrain (2026-10-01). It decodes live on the
-S26 Ultra, in Chrome since 2026-09-25 and natively in the Android app since 2026-09-30, its WGSL compiled to SPIR-V for
-a Vulkan host (`liblizard/core/`). `liblizard/gpu/README.md` has the shape rules, the stages and how to run it.
+n = 1024 in the 128 ring) against the C's 20,274, before the finder's final retrain (2026-10-01). It decodes natively
+in the Android app since 2026-09-30 and in the desktop app's receiver since 2026-10-25. From 2026-09-25 to 2026-10-25
+the receiver page also ran it on WebGPU, in Chrome on the S26 Ultra among others; the page decodes with the C alone
+since (10.1, section 12). `liblizard/gpu/README.md` has the shape rules, the stages and how to run it.
 
 ## 11. Measured facts (non-normative)
 
@@ -2768,8 +2818,9 @@ simulator sweep. Every figure is from STATUS.md unless its line says it was meas
 | fact | conditions | kind |
 |---|---|---|
 | 2:1, two codes a frame read as two: goodput median 3,783 KB/s, 90th percentile 3,955, max 4,014; 67.5 of 70 blocks a clean capture (96%); 117 halves a second decoded | two LIZARD-592 codes at 60 painted by the desktop sender's GPU painter, the four-rate format; the native Android app, its GPU decoder launching as soon as a frame is staged, with every frame then staged; 150 one-second rows over 13 minutes, aimed by hand, the phone off its charger; one monitor; 2026-10-08 | phone |
+| Clip ratio (6.7) live, c = 2 against 1.6: c = 2 4,107 KB/s pooled and 76.4 of 81 blocks a clean capture, c = 1.6 3,945 and 74.9 (-2.0% blocks, -3.9% goodput); each 1.6 session read under both c = 2 sessions beside it, so c = 2 stays | two LIZARD-664 codes (81 blocks each) in the 256 ring, n = 1536, 60 painted by a native sender's GPU painter at a spacing of 16 and a margin of 10 modules, the test stream, a stock 1080p monitor at 60 Hz; the native Android app in 2:1 on its GPU decoder, by hand; three sessions at c = 2 and two at 1.6, the first 5 s of each left out; no Save replay, so no SNR by sub-channel; 2026-10-25 | phone |
 | One code: 1,570 to 1,640 KB/s, 56 to 58 of 60 blocks a clean capture, under 3% of captures short | LIZARD-480 painted 60 in the 128 ring, one rate; a 1920 x 1080 monitor at 60.00 Hz, the code 959 px a side; the native Android app, its phase lock `track`; the minutes with no repeated or skipped picture; 2026-10-01 | phone |
-| Chrome for Android: 700 to 800+ KB/s stable at a 1440 crop, about 550 at 1080 (the camera the limit there); bad 0 over 121,380 blocks judged | LIZARD-560 at 24 painted (788 KB/s offered) in the 64 ring, one rate, a fullscreen 1080p monitor; the GPU decoder in the page; reported, 2026-09-27 | phone |
+| Chrome for Android, through the receiver page's GPU decoder: 700 to 800+ KB/s stable at a 1440 crop, about 550 at 1080 (the camera the limit there); bad 0 over 121,380 blocks judged | LIZARD-560 at 24 painted (788 KB/s offered) in the 64 ring, one rate, a fullscreen 1080p monitor; the page's GPU decoder, removed on 2026-10-25 (section 12); the page decodes with the C since, and no current figure for it on a phone exists; reported, 2026-09-27 | phone |
 | 270 KB/s sustained and not finicky: 48 fully decoded frames a second of 5,628 B | 96 sub-channels (12 blocks) at n = 256, which is not a current format (LIZARD-96 now takes n = 512); 720 x 720 crop; the 286-module border, before the bit map; reported, 2026-09-20 | phone |
 | Decode 13.7 ms a frame; the phone is about 4x the desktop | the same configuration | phone |
 | LIZARD-256: 281 KB/s (13,268 B a frame, 88% of frames found) at a 2160 crop; 269 KB/s (9,955 B, 96%) at 1440 | the 286-module border; 5 to 6 s of stats from an uncontrolled session; 2026-09-23 | phone |
@@ -2807,21 +2858,22 @@ Each of these was built and measured, or decided. The reason given is the one on
 | decision | reason | record |
 |---|---|---|
 | The ladder is every multiple of 16 from LIZARD-16 to LIZARD-1024: 64 formats, version = blocks a frame, versions 2 to 128; the names stay under the rings (every whole number of blocks since 2026-10-01, next row) | a symbol a computer paints can afford more versions than QR's 40 (2026-09-23); it replaced the five formats of 2026-09-21; LIZARD-k already states the sub-channel count (2026-09-27) | STATUS "64 formats" |
-| Every whole number of blocks, 1 to 128, a slider on the sender in place of the menu of 64 | one version (8 sub-channels) is the smallest step the word names; the blocks a frame are the rate profile's since 2026-10-07 | 2026-10-01; `liblizard/sim/lizard_pick.mjs:VERSIONS`, `lizard-web/send.html` |
+| Every whole number of blocks from 2 to 128 (1 to 128 from 2026-10-01 to 2026-10-25), a slider on the sender in place of the menu of 64 | a block of 8 sub-channels is the step the word names; the blocks a frame are the rate profile's since 2026-10-07 | 2026-10-01; `liblizard/sim/lizard_pick.mjs:VERSIONS`, `lizard-web/send.html` |
+| No format of one block: LIZARD-8 (version 1) out; the word's version byte keeps its layout, 1 invalid | a frame of one block has no diversity (one failed block is an empty frame) and one pilot parity alone, so a receiver's phase lock reads no side from it (7.3, 10); every format of two blocks or more carries a pilot block of each parity; the word's garbage acceptance falls by 1/128 (5.4) | 2026-10-25; `liblizard/src/fmt.h:OB_FMT_VERSION_MIN`, `liblizard/sim/lizard_pick.mjs:VERSIONS` |
 | The largest picture (LIZARD-576 to -1024; n = 1536 since 2026-09-27, 2048 before) is for fixed rigs; apps are advised to stop at LIZARD-560; the library does not cap | a 2048 picture doubles decode and heap and stops dead under blur where 1024 degrades (both measured on the 542-module border, section 11; neither measured at 1536); the library's picker takes the largest format a room holds, so in the default ring, the 128, any room of 1,047.7 device px or more (1,170.6 in the 64) gets the largest picture | 2026-09-23; `liblizard/sim/lizard_pick.mjs:ROOM_FOR` |
 | The picture size is the first of 256, 384, 512, 768, 1024 and 1536 with n >= 3R: 2^k and 3 x 2^k, each at most 1.5 times the one before; a 3 x 2^k transform takes one radix-3 stage, and every power of two stays radix 2 | on the powers of two each step gave a format four times the samples for one more block (LIZARD-144 at n / 2R = 2.99); at the smaller sizes the simulator read 0.85% fewer blocks, the C's sampler and transform took 0.62 to 0.69 of their time, and the iGPU 2.6 and 10.8% less compute a frame (section 11); no format moved a coefficient or its ring | 2026-09-27; STATUS "Picture sizes between the powers of two"; 3.2 |
-| Four rings: the band holds B = 32, 64, 128 or 256 cells of 2 x 2 modules a side (32, 64, 96 or 128 until 2026-10-10), a side is 2B + 30 modules (94, 158, 286, 542), the picture spans 2B; any ring may carry any picture | the ring bootstraps what is inside, and versions collapse (the rows below) | 2026-09-27 (three rings that morning, four that evening); STATUS "Three rings: the ring bootstraps what is inside, versions collapse" |
+| Three rings: the band holds B = 64, 128 or 256 cells of 2 x 2 modules a side (32, 64, 128 or 256 from 2026-10-10 to 2026-10-25, 32, 64, 96 or 128 before), a side is 2B + 30 modules (158, 286, 542), the picture spans 2B; any ring may carry any picture | the ring bootstraps what is inside, and versions collapse (the rows below) | 2026-09-27 (three rings that morning, four that evening); STATUS "Three rings: the ring bootstraps what is inside, versions collapse" |
 | The sender's default ring is the 64 for every picture (the 128 since 2026-10-01, next row); no ring follows the version, even by default | unlike QR, whose size is fixed by its version, LIZARD decouples the two, closer to 5G than to QR or Aztec: the ring is a sync and bootstrap layer, like 5G's sync block, chosen for the channel and the room; a rule that picks it from the room waits on a measured module-size floor | 2026-09-27 evening; `liblizard/src/focus.h:FOCUS_RING_DEFAULT`, `liblizard/sim/lizard_pick.mjs:RING_DEFAULT` |
 | The sender's default ring is the 128 for every picture | the best phone runs (1,570 to 1,640 KB/s at LIZARD-480) were painted in the 128 ring (the page's `ring=3`) | 2026-10-01; `liblizard/src/focus.h:FOCUS_RING_DEFAULT`, `liblizard/sim/lizard_pick.mjs:RING_DEFAULT` |
 | Versions collapse: the word's second byte, sub-channels / 8, names what is inside the ring and nothing about the ring; n follows from it, and nothing checks it against the ring | the ring only locates the symbol and syncs its grid, and the word it carries says what is inside it | 2026-09-27; `liblizard/src/wasm.c:focus_any_rx` |
 | The ring bootstraps; a failed word is decoded at the last word read, and before any word nothing is decoded | the ring bootstraps the configuration, and a later word that fails to decode leaves it as it was | 2026-09-27; 5.5 |
 | No retry at the other rings when a word fails | by the time the word fails, the rest of the frame has long failed: on the recordings before the rings no frame of 10,656 registered ones read a block without its word; a wrong ring registered on 90 of 2,048 damaged simulated frames, 82 under glare over three sides where nothing reads | 2026-09-27; 5.5 |
-| The ring at a whole number of pixels a module, pxm = ceil(n / span); the picture keeps its n samples, resampled (Lanczos-3, periodic) to fill its 2B modules, with no dead light between border and picture | a whole 8 samples a module left 15 modules of dead white (judged broken); in the 32 and 64 rings, at 384, 768 and 1536 in the 96 and at every n but 384 in the 128, the resampler copies (6.8) | STATUS 2026-09-23 |
+| The ring at a whole number of pixels a module, pxm = ceil(n / span); the picture keeps its n samples, resampled (Lanczos-3, periodic) to fill its 2B modules, with no dead light between border and picture | a whole 8 samples a module left 15 modules of dead white (judged broken); in the 64 ring, at every n but 384 in the 128 and at 512, 1024 and 1536 in the 256, the resampler copies (6.8) | STATUS 2026-09-23 |
 | The border grows outwards only | the picture is an inverse FFT, so a hole in it costs about 8x its own area in payload | `liblizard/src/focus.c:init` |
 | The symbol is self-describing through the format word | a receiver told nothing reads it; the version as an anchor count was built and lost (fill 0.3: 2,521 B to 381) and cannot carry error correction | `liblizard/src/fmt.h` |
 | The word carries the display rate | the one property of an animated symbol that no single frame shows | `liblizard/src/fmt.h` |
 | The margin, 2 modules of light, is part of the symbol, and the codec paints it (`FOCUS_QUIET`) | the finder assumes light outside the ring: noise up to the ring cost LIZARD-256 73 to 96% of its blocks; in the codec, every encoder built from `liblizard/src/` paints it and no JS keeps a copy | 2026-09-23 and 2026-09-24; `liblizard/src/focus.h` |
-| Only ladder versions are painted; a receiver reads any version the word states, with no flag; the codec refuses a symbol past LIZARD-1024 | an odd version is unsupported; past version 128 the word cannot name the symbol; since 2026-10-01 every version is on the ladder (above) | 2026-09-24; `liblizard/sim/lizard_pick.mjs:VERSIONS`, `liblizard/src/focus.c:init` |
+| Only ladder versions are painted; a receiver reads any version the word states, with no flag; the codec refuses a symbol past LIZARD-1024 | an odd version is unsupported; past version 128 the word cannot name the symbol; every version from 2 is on the ladder since 2026-10-25 (from 1, 2026-10-01 to 2026-10-25) (above) | 2026-09-24; `liblizard/sim/lizard_pick.mjs:VERSIONS`, `liblizard/src/focus.c:init` |
 | The 3/4, 7/8 and 2/3 tables optimised within their structure, the 7/8 code with a first data column never sent (2026-10-08): +0.04, +0.16 and +0.03 dB at the 10%-loss threshold, +0.3 to +0.9% bytes on the 2:1 replays as recorded and up to +2.7% on captures 1 dB worse; on degraded frames the same blocks for 5.3% less GPU a frame; the sent-bit map unchanged but for the 93-bit offset | 8.3, 8.6; `scripts/exp/ldpc_opt.py`; the full 5G NR structure (a double-diagonal core, degree-1 extension parities) not taken: another 0.3 dB at 7/8 for a different encoder in every painter and under 1% as recorded |
 | H is the printed shift table, `liblizard/src/ldpc_base.h`, not a construction (the 7/8 and 1/2 codes' too since 2026-10-07, the 2/3 code's since 2026-10-08) | with H generated at start-up, a change to the profile, the seed or the cycle score would have changed the format without warning | 2026-09-24; 8.2, 8.6 |
 | The transfer is in the light: the block id as 14 bits of chunk over 18 of fountain symbol, a header block, manifest blocks, and chunks of 2^10 to 2^24 bytes each verified by BLAKE3 against the file's root | a camera alone recovers a file; a chunk aligned at its own size is a subtree of BLAKE3's tree, so each is checked on arrival, as Bao and iroh stream; one fountain stops at 30 MB | 2026-09-24; `liblizard/src/xfer.h` |
@@ -2829,7 +2881,8 @@ Each of these was built and measured, or decided. The reason given is the one on
 | No guard ring: the symbol ends at its 2-module margin | the ring round the margin was a sender option (2026-09-23) that recovered part of what noise at the ring cost, not the line fallback's cells; judged useless | 2026-09-26 |
 | Luminance only: grey levels, never colour; two brand colours are allowed as a luma ramp under the palette rule | colour is what made cimbar unreliable | project rules |
 | The code rate follows the frequency: the rate profile, 7/8 inner, then 3/4 and 2/3, 1/2 outer (four rates since 2026-10-08; 7/8, 3/4 and 1/2 from 2026-10-07), a function of the sub-channel count (3.1) | a capture's signal-to-noise ratio falls with the frequency, and on recorded phone captures re-modulated under each profile it read +17.5 and +25% bytes a frame over one rate (section 11); the four rates read +2.7 to +4.1% over the three on three such captures and alike live on clean ones, and were taken for their margin on mixed and noisier captures. One rate 3/4 was the format before 2026-10-07: the rate a bet on a capture the sender cannot see, after profiles set on the simulator lost 4 to 16% where the capture did not match them; the recorded channel's own noise settled it the other way | 2026-10-07, 2026-10-08; `liblizard/src/focus.c:focus_tiers_for` |
-| The bit map is LINEAR, whitened, and the only one, so the word names none | whitening fixes small payloads; LINEAR spreads every run of the code across the block; the word has no free bit for a mode, and the other modes are lab settings | `liblizard/src/focus.h:FOCUS_BITMAP`; 2026-09-24 |
+| The bit map is LINEAR, whitened, and the only one, so the word names none | whitening fixes small payloads; LINEAR spreads every run of the code across the block; the word has no free bit for a mode; the other maps, lab settings until then, left the codec on 2026-10-25 | `liblizard/src/focus.h:FOCUS_BITMAP`; 2026-09-24, 2026-10-25 |
+| The clip ratio c = 2 (6.7) | measured live against c = 1.6 (section 11, 2026-10-25): 1.6 read fewer blocks a clean capture in every pair (-2.0%, goodput -3.9%), where the picture's own SNR at the source falls 3 dB; the outer sub-channels that fail are noise-bound with the signal | 2026-10-25; 13 item 8 |
 | The format is never gated on a decoder | a weak decoder is fixed; it never decides or reverts a format choice | 2026-09-23; section 2 |
 | LIZARD over the binary grid code | not throughput (the binary code is ahead above its cliff): LIZARD degrades where the binary code stops dead; the binary code deleted from the codec (2026-10-09) | 2026-09-20, 2026-10-09 |
 | The receiver is blind and the sender stands alone: a page talks to a server only to send it development logs, and nothing comes back into decoding or painting | LIZARD's format, geometry and file header come from the light, the test stream's bad blocks are judged from the light (9.3), and Aztec and QR describe themselves | 2026-09-26; STATUS "The whole receiver blind" |
@@ -2867,6 +2920,9 @@ Each of these was built and measured, or decided. The reason given is the one on
 | Soft values that take a capture's two neighbours as signals of known size (their shares by the pilots), not as noise (2026-10-01) | no gain even given the true shares, which a receiver would have to estimate: LIZARD-480 in the 128 ring through a simulated camera, 24 frames a cell, 15,107 blocks to 15,109 and 12,174 to 12,171 on mixes held on every row (the rule's best case), 12,214 to 12,213 on the rows model; no cell moved by more than 0.13 of a block a frame. Where a neighbour is small against the noise the two rules give the same numbers. The experimental build and its script are deleted | STATUS "Soft values that know the two leaks", `research/results/mix/` |
 | The pilots as a meter on \|r\| alone (2026-09-30 night): a sweep folded for the display's period, a hold on the slope of \|r\| against phase, repeats guessed by a spike | \|r\| is the same whichever neighbour a capture leaks from, so the hold was blind near its top and slow to start; replaced by the signed pilots (the count mod 4), whose two readings say which neighbour, and deleted | STATUS "The pilots' phase meter", "Signed pilots" |
 | A learned fine round for F7's nodes, and a learned side model (GPU decoder, 2026-09-29) | nodes 35% more accurate on neutral data and no more blocks (-1.1% there, -4.0% and +6.8% on the two recordings); the side model +20 to +46% on neutral and -2.4 to -7.9% on the recordings; thrown out | STATUS "The F7 node net", "The F7 side model" |
+| The 32 ring: B = 32, S = 94 modules, W = 16 word cells a side, the word RS(8, 3) (2026-09-27 to 2026-10-25) | the weakest word: its reader's last erasure step left one root where the other rings leave three, so garbage passed at 7.8e-6 a read (1.8e-7 in the others) and at 2.0e-3 with one side clean; the coarsest node lattice of the rings; the one ring that needed a finder hold of its own (0.212 against 0.15) for the same significance against a picture's texture; never recorded and never measured live; archived, the live tree keeping no reference to it | 2026-10-25; `archive/ring-32/` |
+| The web receiver's WebGPU decoder (2026-09-25 to 2026-10-25) | the page's host bounded it, not the kernels: no control of the camera's timing, exposure or lens, VideoFrames to copy, one symbol a frame and no 2:1; the same WGSL runs natively in the Android and desktop apps (10.2); measured side by side on the S26 on 2026-09-29 (LIZARD-512 at 24 painted, Chrome), the page's C read 481 to 489 KB/s and its GPU decoder a median of 467 | 2026-10-25; 10.1, 10.2 |
+| The small classifier on the Adreno's cooperative-matrix units behind a bit-for-bit first-batch guard (Android app, 2026-09-30; archived 2026-10-25) | exact; 0.103 to 0.120 ms a frame against 0.111 to 0.112 for the int8 WGSL kernel on the S26 on the 10-10 replay (2026-10-24), about 0.008 ms of a frame, for about 7 s more cold compile (0.356 against 0.479 ms at 1,024 patches on 2026-09-30); its fast form holds only for the Adreno's element layout and stride unit and was never built for or timed on a PC GPU | STATUS "Native nets on the matrix units", "Three levers for the GPU decoder, A/B'd"; `archive/coop-matrix/` |
 | The proposer's network on the Adreno's cooperative-matrix units, and an NPU port (Android app, 2026-09-30) | the units multiply int8 2.5 to 2.8 times as fast and the kernel ran 5.4 times slower (4.95 ms a frame against 0.92), around ten recorded compiler faults; the NPU judged too unstable | STATUS "Native nets on the matrix units", `archive/stash/coopmat-proposer/` |
 
 ## 13. Open questions
@@ -2877,8 +2933,8 @@ number so references to the others hold.
 **Where `liblizard/src/` and the decisions differ, or the code leaves a choice open**
 
 1. **Versions off the ladder. Closed (2026-09-24): unsupported.** A sender never paints one, and a receiver
-   reads one as it reads the ladder, with no flag (3.1, 5.1). Since 2026-10-01 every version, 1 to 128, is on the
-   ladder (3.1).
+   reads one as it reads the ladder, with no flag (3.1, 5.1). Every version from 2 to 128 is on the ladder (3.1; 1 to
+   128 from 2026-10-01 to 2026-10-25); version 1 is invalid (5.1).
 2. **A symbol with no word. Closed (2026-09-24): refused.** `liblizard/src/focus.c:init` refuses a symbol past
    LIZARD-1024, whose version the word cannot state (3.1). The wordless tiles of the 2 x 2 split are gone from the
    sender page (section 2).
@@ -2892,12 +2948,15 @@ number so references to the others hold.
    `liblizard/src/ldpc_base.h`; the generator builds only codes outside the format (8.3).
 7. **Spare word cells. Closed (2026-09-24): there are none.** The word is one code over every word cell, a code
    a ring since 2026-09-27 (a picture size before), and every word cell is flagged `CELL_WORD` (5.2, 5.3).
-8. **Clip ratio and tilt.** `liblizard/src/` treats both as sender arguments (`focus_init` `clip`, `tilt`) that no receiver
-   needs, and every sender in the tree uses c = 2 and t = 0 (6.5, 6.7). No decision says whether they are format
-   constants or free for a conforming sender. Left open on 2026-10-10 until it is measured: a recorded capture at c = 2
-   and one at c = 1.6, compared by SNR a sub-channel (`scripts/exp/capture_snr.mjs`), says whether a sub-channel's noise
-   is the camera's (a lower c gains) or the picture's own (it does not); the tilt waits on the same answer. One live
-   look at 1.6 (2026-10-07, not interleaved) showed no gain beyond the run-to-run spread.
+8. **Clip ratio and tilt. The clip ratio measured (2026-10-25): c = 2 stays.** `liblizard/src/` treats both as sender
+   arguments (`focus_init` `clip`, `tilt`) that no receiver needs, and every sender in the tree paints c = 2 and t = 0
+   (6.5, 6.7); the senders' arm for another clip ratio is gone. Measured live on 2026-10-25 (section 11): two LIZARD-664
+   codes in the 256 ring at 60 painted, read in 2:1 on one phone, c = 2 4,107 KB/s pooled and 76.4 blocks a clean
+   capture of 81, c = 1.6 3,945 and 74.9, each 1.6 session under both c = 2 sessions beside it (one live look at 1.6
+   on 2026-10-07, not interleaved, had shown no gain beyond the run-to-run spread). Whether the two are format constants
+   or free for a conforming sender is not decided. The tilt still waits on a Save replay's SNR by sub-channel
+   (`scripts/exp/capture_snr.mjs`), which says whether a sub-channel's noise is the camera's or the picture's own; that
+   run kept no replay.
 9. **Bit-exactness. Decided (2026-09-24; revised 2026-09-29): the reference is exact, and a sender need not
    be.** The reference encoder (`liblizard/src/`, as `liblizard/build.sh` builds it) paints the same bytes on every machine, and its test
    vectors are its own regression check; the text's real arithmetic (6.6 to 6.8) describes the picture, it does not
@@ -2910,7 +2969,10 @@ number so references to the others hold.
    device: in the 33 cases of `scripts/gpu/encoder_check.mjs` (every ring with each picture's top, each picture's lowest
    ladder version, two codes side by side, frames encoded in batches), 508 of 52,562,612 pixels one grey level off the
    reference's on SwiftShader and 456 on an NVIDIA 4090, none by more and none in the border, and every block, 1,748
-   in 39 symbols, read back by the C decoder told nothing (STATUS.md, "The sender encodes on the GPU"). `fft_set_radix(4)` is a lab setting.
+   in 39 symbols, read back by the C decoder told nothing (STATUS.md, "The sender encodes on the GPU"). On the three
+   rings (2026-10-25, the 4090), every format in every ring, 381, painted on the GPU against the C: the border 0 pixels
+   apart, the picture at most one level, 8,077 of 752,297,732 pixels, every block read blind. The radix-4 transform,
+   a lab setting, left the codec on 2026-10-25.
 10. **Two brand colours.** Allowed by the palette rule (2, item 1), but neither `liblizard/src/` nor the sender paints them, and
     no code defines the grey-to-colour mapping between the two ends (linear in 8-bit values, or in light). Kept in the
     format (2026-10-10); the mapping is defined once item 11's floor is measured on a phone.
@@ -2922,7 +2984,8 @@ number so references to the others hold.
 12. **A sender page option that breaks the format. Closed (2026-09-26): removed.** FOCUS's finder
     frame ("finders and margin", thin = 0) is gone from `liblizard/src/`, `liblizard/sim/ob.mjs` and `liblizard/sim/phy.mjs`: `focus_init`,
     `focus_init_tiers` and the wasm's `focus_setup` and `focus_setup_tiers` take no `thin`, and a harness spec that
-    names no frame gets the format's border. The page's other such option, the 2 x 2 picture split, was removed
+    names no frame gets the format's border; the `thin` flag itself, 1 on every symbol since, went on 2026-10-25. The
+   page's other such option, the 2 x 2 picture split, was removed
     (2026-09-24; section 2): its tiles were off the ladder, or at n = 128 with no word.
 13. **The fountain's header has no place in light. Closed (2026-09-24): the header block.** Its layout is 7.7,
     with the manifest (7.8) and the chunk tree (7.9); the rig's network copy is only a fallback (9.4).
@@ -2951,18 +3014,16 @@ number so references to the others hold.
     - `liblizard/src/layout.h` (the thin-frame comment) and the 2026-09-22 spec say no run in the band is longer than 4 modules.
       That holds for the track only (4.6).
     - `liblizard/sim/lizard_pick.mjs`'s header still says LIZARD-16 needs 226 device px of room (195.1 in the 64 ring,
-      174.6 in the 128).
+      174.6 in the 128, 164.4 in the 256): a comment from the five formats of 2026-09-20, kept as history.
     - STATUS.md's "64 formats" table (94, 158, 286, 542 modules; rooms 226 to 1305 px) and its never-picked list (128,
       528, 544, 560) predate both later borders. In one ring every format is picked by some room, and the
       largest picture (1536 since 2026-09-27, 2048 before) starts at 1047.7 px of room in the default 128 ring (1170.6
       in the 64; 1034.8 on the n / 8 + 60 border, 979 before).
-    - `liblizard/test/fmt_test.c` tests the four rings' codes since 2026-10-04 (5.2's seven words; all passed, its exact
-      garbage rates 5.4's). 5.4's measured row still comes from the scratch harnesses of 2026-09-27; `build/fmt_test
-      2000000` remakes it (about 10 minutes).
 18. **Test vectors outside the repository.** `liblizard/test/vectors.mjs` checks 5.2, 6.12, 7.4 and 9.3 against a build
     (in the repository since 2026-10-04). The scripts that computed the vectors in 4.7, 4.9, 5.3 and 7.10, and the
     independent implementations that matched them, are outside the repository, not in `scripts/exp/`. Those vectors can be
-    recomputed from `liblizard/build/ob.wasm` as each section describes. Decided 2026-10-10: a version 1 vector set, a
+    recomputed from the codec's wasm (`liblizard/bindings/wasm/dist/lizard.wasm`, built by `liblizard/build.sh`) as each
+    section describes. Decided 2026-10-10: a version 1 vector set, a
     four-rate format in the 128 ring and one in the 256 ring (every code of the rate profile, a resampled picture), held by
     `liblizard/test/vectors.mjs`, which also takes over the computations behind 4.7, 4.9, 5.3 and 7.10. Not yet made.
 19. **The decoder text may move.** 8.5 describes `liblizard/src/ldpc.c` as of 2026-09-22 and `liblizard/src/focus.c` as of 2026-09-23. The
@@ -2973,10 +3034,12 @@ number so references to the others hold.
 
 **Not yet measured**
 
-20. The 32 and 256 rings on a phone. The recordings on the rings (`research/captures/v0.3`, the S26 Ultra) are in the
-    64 ring (07-56-38 and 17-59-29, LIZARD-336 at n = 1024, 600 frames at a 1080 crop; 10.1, 10.2) and the 128 ring
-    (17-05-48, LIZARD-512, and the Android app's 2:1 replays since 2026-10-03), none in the 32 or 256 ring, and every
-    one holds frames painted before the four-rate profile. The recordings of
+20. The 256 ring on a phone. The recordings on the rings (`research/captures/v0.3`, the S26 Ultra) are in the
+    64 ring (07-56-38 and 17-59-29, LIZARD-336 at n = 1024, 600 frames at a 1080 crop; 10.1, 10.2), the 128 ring
+    (17-05-48, LIZARD-512, and the Android app's 2:1 replays of 2026-10-08 and 2026-10-10) and the 256 ring (the 2:1 replay
+    of 2026-10-17, two LIZARD-616 from camera 0 at 2.2x); the v0.3 file transfers hold one-rate frames, painted before
+    the rate profile. The 256 ring read live in 2:1 in the clip test (section 11, 2026-10-25); no file transfer has
+    been recorded in it. The recordings of
     the borders before (v0.1, 19 runs and more to 2026-09-26; v0.2, 14 runs on n / 8 + 60, 2026-09-27) do not register
     on today's decoders; the build before (`archive/before-copies/rings/before/`) still reads them. Heat is open.
 21. The largest pictures under blur in the 64 ring (158 modules): 1536 since 2026-09-27, 2048 before. The dead stop
@@ -2995,7 +3058,8 @@ number so references to the others hold.
     reads 0.8% of captures short. Open: phones other than the S26.
 23. The GPU decoder on a phone on the rings. Measured: on the S26 Ultra in Chrome (2026-09-29, LIZARD-512 in the 128
     ring at 24 painted, the test stream: goodput median 467 KB/s, bad 0) and natively in the Android app since
-    2026-09-30 (section 11). It ran on the n / 8 + 60 border from 2026-09-25 (10.2).
+    2026-09-30 (section 11). It ran on the n / 8 + 60 border from 2026-09-25 (10.2). The page's path is gone since
+    2026-10-25 (section 12): the receiver page decodes with the C, and no current figure for that on a phone exists.
 24. A recording with a noisy surround. Every recording has a white one; the sender's surround parameter (`?bg=`,
     `lizard-web/send.mjs`) exists for it.
 25. The C decoder's block total on the 19 recordings. Reconciled (2026-09-24): `scripts/exp/capture_check.mjs` read 81,390
@@ -3018,6 +3082,25 @@ number so references to the others hold.
 
 The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
 
+- **One block a frame out** (2026-10-25). LIZARD-8, version 1, left the format: the ladder is LIZARD-16 to LIZARD-1024,
+  versions 2 to 128, 127 formats (3.1). A word naming version 1 is refused as any invalid word is (5.1 to 5.4); the
+  word's layout is unchanged, its version byte still 1 to 128 with 1 invalid. No sender paints it, the codec builds no
+  frame of 8 sub-channels under the format's code (`focus_tiers_for`), and the pick's fallback is LIZARD-16 (3.5).
+  Every format from LIZARD-16 up paints the same bytes. Every format carries a pilot block of each parity, so every
+  capture gives both readings (7.3). The word's garbage acceptance is 1.8e-7 a read as before (5.4), and n / 2R over
+  the ladder is 1.50 to 2.24 again (LIZARD-8 at n = 256 was 3.17).
+- **Three rings** (2026-10-25). The 32 ring (B = 32, S = 94, W = 16, the word RS(8, 3)) is archived: the rings are
+  B = 64, 128 and 256, S = 158, 286 and 542, the 128 the default (3.3, 4, 5.1 to 5.5, 6.2, 10). Every format in the
+  three rings paints the same bytes. The reader's erasure steps stop at nroots - 3 in every ring, and the C finder's
+  hold is one 0.15 on every ring (10.1). Its code, tables and text are in `archive/ring-32/`.
+- **What the format has none of, out of the codec** (2026-10-25). Every code path for a frame without pilots or
+  whitening went: the bit maps other than LINEAR (7.3), the FOCUS paper's RS(80, 64) mode with its fragment assembly
+  (section 2), and with them the layout's `thin` flag (always 1; 6.12's ladder cells digest moved with the dimensions it
+  hashes, no cell did), the lab's other borders and spans (4.11), the lab LDPC rates and the generator's override
+  globals (8.3). No painted byte of the format moved. The reference's RS solver refuses a collapsed error locator,
+  which until then could hand back a word that is no codeword (5.4).
+- **The clip ratio measured** (2026-10-25). c = 2 against 1.6, live: c = 2 stays (section 11; 13, item 8). The
+  senders' arm for another clip ratio is gone; `focus_init` keeps `clip` as an argument.
 - **The rate profile** (2026-10-07; four rates since 2026-10-08). Every block was coded at rate 3/4 on 8 sub-channels,
   and a frame of version V carried V blocks. The rate now follows the frequency: 7/8 on 7 sub-channels a block in the
   inner tier, then 3/4 on 8, 2/3 on 9, and 1/2 on 12 in the outer, by the sub-channel count alone (3.1), so a frame
@@ -3027,8 +3110,8 @@ The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
   names the size, and the profile follows from it. The 7/8, 2/3 and 1/2 codes are printed tables as the 3/4 code is
   (8.6). The pilots ride in the 7/8 and 3/4 blocks' tails; a 2/3 or 1/2 block has none (7.3). A one-rate frame of
   LIZARD-24 or more, painted before, reads as the profile today and decodes nothing; LIZARD-8 and -16 are unchanged.
-- **Every whole number of blocks** (2026-10-01). The 64 formats by 16 became 128 by 8, versions 1 to 128, all of which the word
-  already named and every receiver already read; the reference sender sets blocks a frame on a slider (3.1, 5.1). Tables
+- **Every whole number of blocks** (2026-10-01). The 64 formats by 16 became 128 by 8, versions 1 to 128 (127 since
+  2026-10-25, above), all of which the word already named and every receiver already read; the reference sender sets blocks a frame on a slider (3.1, 5.1). Tables
   below that list 64 formats list the ladder as it was.
 - **The default ring is the 128** (2026-10-01). The reference sender, the web's and the Android app's, paints every
   picture in the 128 ring unless one is named; a receiver reads any ring as before, and nothing in a symbol changed.
@@ -3054,7 +3137,7 @@ The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
 - **Border rule.** Every format was 286 modules a side (span = min(n, 256), so 1, 2 or 4 samples a module). On
   2026-09-23 a side became n / 8 + 60 modules (92, 124, 188, 316), the picture n / 8 + 30, and the module count
   identified n. Since 2026-09-27 a side is its ring's (below).
-- **Rings** (2026-09-27). The border is one of four rings, B = 32, 64, 96 or 128 band cells a side, S = 2B + 30
+- **Rings** (2026-09-27; three since 2026-10-25, above). The border is one of four rings, B = 32, 64, 96 or 128 band cells a side, S = 2B + 30
   modules (94, 158, 222, 286), the picture spanning 2B. Any ring carries any picture, and the word, one code a ring,
   says what is inside (3.3, 5.1 to 5.5). The sender paints the 64 ring for every picture (the 128 since 2026-10-01,
   above). That morning there were three
@@ -3114,7 +3197,9 @@ The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
   per-side vectors, the RS generator, the LDPC construction, and test vectors for the picture (6.12), the block (7.4),
   the transfer (7.10), the word (5.2) and the test stream (9.3). The clip level is stated as the analytic rms sqrt(2P), which is what the
   reference uses (6.6, 6.7).
-- **Receivers.** Registration moved into the C decoder's description (10.1). The GPU decoder is described (10.2).
+- **Receivers.** Registration moved into the C decoder's description (10.1). The GPU decoder is described (10.2). Its
+  word reader decodes by ordered statistics through a side-aware gate since 2026-10-25 (10.2). The receiver page ran
+  it on WebGPU from 2026-09-25 to 2026-10-25 and decodes with the C since (10.1, section 12); the apps run it natively.
 - **Straddle cancellation** is out for good, and dithered black and white, a sender option since 2026-09-20, was deleted
   on 2026-09-26 (12).
 - **FOCUS's finder frame** (2026-09-26). The frame the FOCUS reimplementation started from (corner finders,

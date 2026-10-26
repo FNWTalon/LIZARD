@@ -1,9 +1,9 @@
-// C ABI for the JS harness and the browser.
+// The codec's own exports in the library's WebAssembly module, beside the C API (CMakeLists.txt's list): for the tree's
+// pages, the native generator and the lab through sim/ob.mjs, over one focus_t and one focus_any_t. No stable interface.
 #include "ob.h"
 #include "internal.h"
 #include "focus.h"
 #include "any.h"
-#include "fft.h"
 #include "ldpc.h"
 #include "xfer.h"
 #include <unistd.h>
@@ -11,46 +11,40 @@
 #include <string.h>
 
 static ob_result_t R;
-// Camera frames arrive as RGBA. Converting here keeps the 4 bytes a pixel out of JS loops.
+// Camera frames arrive as RGBA. Converting here keeps the 4 bytes a pixel out of JS loops, a strip at a time, so that
+// the heap never holds a frame at four bytes a pixel: n pixels of RGBA go to luma[offset ..] of a buffer of `total`.
+// Returns the buffer, which the last strip completes.
 static uint8_t *lum; static int lum_cap;
-static const uint8_t *to_luma(const uint8_t *rgba, int n) {
-  if (n > lum_cap) { free(lum); lum = malloc((size_t)n); lum_cap = lum ? n : 0; }
-  if (!lum) return NULL;
-  PROF(PROF_LUMA, ob_luma(rgba, n, lum));
-  return lum;
-}
-// The same a strip at a time, so that the heap never holds a frame at four bytes a pixel: n pixels of RGBA go to
-// luma[offset ..] of a buffer of `total`. Returns the buffer, which the last strip completes.
 const uint8_t *ob_luma_strip(const uint8_t *rgba, int n, int offset, int total) {
   if (total > lum_cap) { free(lum); lum = malloc((size_t)total); lum_cap = lum ? total : 0; }
   if (!lum || offset < 0 || n < 0 || offset + n > total) return NULL;
   PROF(PROF_LUMA, ob_luma(rgba, n, lum + offset));
   return lum;
 }
-const uint8_t *ob_luma_of(const uint8_t *rgba, int n) { return to_luma(rgba, n); }
 const ob_result_t *ob_last(void) { return &R; }
 // Test hook (scripts/exp/simd_check.mjs, focus_bench.mjs): nonzero asks a decode to leave a hash of its floats and soft
-// values here (focus.c). The host defines it: here for the wasm, core/cpu/codec.c natively.
-uint32_t ob_debug_hash;
+// values here (focus.c). The host defines it (core/cpu/codec.c, in this module too).
+extern uint32_t ob_debug_hash;
 uint32_t ob_dbg_hash(int arm) { uint32_t v = ob_debug_hash; ob_debug_hash = (uint32_t)arm; return v; }
 double ob_prof(int i) { return i >= 0 && i < PROF_N ? ob_prof_ms[i] : 0; }
 void ob_prof_reset(void) { for (int i = 0; i < PROF_N; i++) ob_prof_ms[i] = 0; }
 
 static focus_t F;
 static int fready;
-int focus_setup(int n, int subch, int mode, float clip, int span, float tilt, int corner, int corner_filled, int centre, int edge, int track_alt, int border) {
+// ai: The format at n and subch in the ring span names (focus.h focus_init), clip and tilt the sender's.
+int focus_setup(int n, int subch, float clip, int span, float tilt) {
   if (fready) { focus_free(&F); fready = 0; }
-  if (focus_init(&F, n, subch, mode, clip, span, tilt, corner, corner_filled, centre, edge, track_alt, border)) return -1;
+  if (focus_init(&F, n, subch, clip, span, tilt)) return -1;
   fready = 1;
   return F.block_bytes;
 }
 // Up to four runs (FOCUS_TIERS) of blocks at different code rates (focus.h): rate index, blocks, sub-channels a block; a run of 0 blocks ends the list.
-int focus_setup_tiers(int n, float clip, int span, float tilt, int corner, int corner_filled, int centre, int edge, int track_alt, int border, int r0, int b0, int s0, int r1, int b1, int s1, int r2, int b2, int s2, int r3, int b3, int s3) {
+int focus_setup_tiers(int n, float clip, int span, float tilt, int r0, int b0, int s0, int r1, int b1, int s1, int r2, int b2, int s2, int r3, int b3, int s3) {
   const focus_tier_t all[FOCUS_TIERS] = { { r0, b0, s0 }, { r1, b1, s1 }, { r2, b2, s2 }, { r3, b3, s3 } };
   int tiers = 0;
   while (tiers < FOCUS_TIERS && all[tiers].blocks > 0) tiers++;
   if (fready) { focus_free(&F); fready = 0; }
-  if (focus_init_tiers(&F, n, all, tiers, clip, span, tilt, corner, corner_filled, centre, edge, track_alt, border)) return -1;
+  if (focus_init_tiers(&F, n, all, tiers, clip, span, tilt)) return -1;
   fready = 1;
   return F.block_bytes;
 }
@@ -78,9 +72,8 @@ const ob_fmt_t *focus_any_fmt(void) { return focus_any_word(&ANY); }
 // ai: out[3] their standard errors; the blocks read, 0 for none
 int focus_any_pilot_get(float *out) { return focus_any_pilot(&ANY, out, out + 2); }
 
-// The bit map (focus.h FOCUS_BITMAP_*) of the codec focus_setup made: the format's unless a measurement sets another
-// (scripts/exp/bitmap_race.mjs).
-int focus_bitmap_set(int mode) { return fready ? focus_bitmap(&F, mode) : -1; }
+// The bit map of the codec focus_setup made (focus.h FOCUS_BITMAP, the only one), which a spec may name (sim/ob.mjs
+// Focus refuses any other).
 int focus_bitmap_get(void) { return fready ? F.bitmap : -1; }
 
 // What the last decode read out of the band, as the ints of an ob_fmt_t (fmt.h), or 0 for nothing read.
@@ -119,36 +112,6 @@ const int8_t *focus_dbg_sym(void) { return dbg_sym; }
 const float *focus_dbg_coef(void) { return dbg_coef; }
 const int8_t *focus_blk_its(void) { const int8_t *i; const float *e; focus_block_stats(&F, &i, &e); return i; }
 const float *focus_blk_est(void) { const int8_t *i; const float *e; focus_block_stats(&F, &i, &e); return e; }
-// One transform's cost on THIS machine, for scripts/exp/fft_bench.mjs and scripts/pages/fft.html: `reps` forward transforms of a
-// rows x cols block, ms for all of them. A phone is the only place the radix and the strip width can be chosen,
-// and this needs no camera, no sender and no second build.
-// Repeated forward transforms grow the magnitudes, so the block is refilled every BATCH of them, outside the
-// timing, and starts small enough that nothing reaches infinity inside a batch: white noise grows by about
-// sqrt(rows) a transform, but a correlated fill concentrates the energy and grows by up to rows, and an infinity
-// would make the rest of the batch measure something else. Hence a real PRNG and 1e-9: even at the correlated
-// rate, 512^8 * 1e-9 is still finite. Eight transforms of a 512 x 64 strip is half a millisecond, well above
-// clock()'s resolution.
-double ob_fft_bench(int rows, int cols, int reps) {
-  enum { BATCH = 8 };
-  if (rows < 2 || cols < 1 || reps < 1) return -1;
-  float *re = malloc((size_t)rows * cols * sizeof(float)), *im = malloc((size_t)rows * cols * sizeof(float));
-  if (!re || !im) { free(re); free(im); return -1; }
-  double ms = 0;
-  uint32_t s = 2463534242u;
-  for (int done = 0; done < reps; ) {
-    for (int i = 0; i < rows * cols; i++) {
-      s ^= s << 13; s ^= s >> 17; s ^= s << 5; re[i] = 1e-9f * (float)(int32_t)s;
-      s ^= s << 13; s ^= s >> 17; s ^= s << 5; im[i] = 1e-9f * (float)(int32_t)s;
-    }
-    int n = reps - done < BATCH ? reps - done : BATCH;
-    double t0 = ob_now_ms();
-    for (int r = 0; r < n; r++) fft_cols(re, im, rows, cols, cols, 0);
-    ms += ob_now_ms() - t0;
-    done += n;
-  }
-  free(re); free(im);
-  return ms;
-}
 // The top of the heap. sbrk never gives memory back here, so this is the most the module has had in use.
 unsigned ob_heap_top(void) { return (unsigned)(uintptr_t)sbrk(0); }
 
@@ -257,10 +220,6 @@ void focus_block_subs(int32_t *first, int32_t *count) {
 // focus_tiers_for gives each one's blocks). See ldpc.c ldpc_tables for the layout (12 dims).
 void focus_ldpc_tables(int tier, int32_t *dims, int32_t *lay) {
   if (fready && tier >= 0 && tier < FOCUS_TIERS) ldpc_tables(&F.code[tier], dims, lay);
-}
-// The whole tail done on the device: verdicts and bytes in, blocks out, no registration.
-int focus_rx_assemble(const uint8_t *bytes, int stride, const uint8_t *verdicts, const int8_t *its, const float *est, uint8_t *blocks, uint8_t *ok, const float *quad, int orient, float score) {
-  return fready ? focus_assemble(&F, bytes, stride, verdicts, its, est, blocks, ok, &R, quad, orient, score) : 0;
 }
 int focus_fmt_check_out(const float *q) { return fready ? focus_fmt_check(&F, q) : 0; }
 int focus_fmt_soft_out(float *out) { return fready ? focus_fmt_soft(&F, out) : 0; }

@@ -2,7 +2,7 @@
 // ai: frame of v versions (8 v sub-channels) carries its blocks in up to four tiers from the lowest frequencies out:
 // ai: 7/8 (7 sub-channels a block), 3/4 (8), 2/3 (9), 1/2 (12), every block 473 B; the profile is a function of v alone, so
 // ai: these kernels read it from TAB by the frame's version (the gate's chunk count) and decode any version at any
-// ai: picture slot. gpu/back/tiers.mjs builds TAB and the stage; it replaces the one-rate soft and LDPC dispatches.
+// ai: picture slot. gpu/back/tiers.mjs builds TAB and the stage, the back half's soft values and LDPC.
 // ai: TAB (u32 words, tabLayout): TT, a row of TTW words a version (blocks, 0, 0, 0, then (first block, first
 // ai: sub-channel, blocks, 0) a code in CODES' order); INV, a code's inverse bit map (u16 two a word: the slot that
 // ai: carries codeword bit j, 0xffff for a bit never sent: the 7/8 code's first 93, read as 0); WHITE, the whitening a bit a slot over 1024 sub-channels (bitmap.mjs whiten, packed
@@ -10,16 +10,15 @@
 // ai: stop/rule.mjs netWords; tiers.mjs ruleContents lays them out).
 // ai:   talign   the pilots' grid shift (the fit at ALIGN_CHI, below) over each block's own tail: 16 coefficients at
 // ai:            3/4, 8 at 7/8, none at 2/3 and 1/2 (their codewords fill the block). A workgroup a frame, a dispatch a slot.
-// ai:   tsoft    the soft values and estimates a sub-channel (the one-rate soft kernel's, exactly); and each sub-channel's
+// ai:   tsoft    the soft values and estimates a sub-channel (src/focus.c's arithmetic); and each sub-channel's
 // ai:            pilot reading where a block's tail lies in it. Both to EP (est, pilot) a sub-channel. Over the
 // ai:            version's 8-sub-channel chunks, a dispatch a slot.
 // ai:   tblocks  a block's estimate (the mean of its sub-channels'), its decline at its code's bar (0.2 k / n, as src/
 // ai:            focus.c FOCUS_DECLINE), its pilot (its last sub-channel's). A workgroup a frame, a dispatch a slot.
-// ai:   tldpc    a code's blocks: the one-rate kernel's i16 min-sum, the code's shape the module's constants, its
+// ai:   tldpc    a code's blocks: layered i16 min-sum (src/ldpc.c's), the code's shape the module's constants, its
 // ai:            block rows (unequal at 2/3 and 1/2) from the uniform; codeword bit j's slot and whitening from INV and WHITE
 // ai:            (no stored rows); the known zeros past a block's 477 B at 127; each code gives up by its own learned
-// ai:            stop (trained on that code; the 7/8 and 1/2 codes' since 2026-10-07, the C's stall rule before), or by
-// ai:            the stall rule where the stage is built without nets. A dispatch a code over every slot.
+// ai:            stop (stop/rule.mjs, trained on that code). A dispatch a code over every slot.
 import { SLOTS } from "./common.mjs";
 import { CRC_SPLIT } from "./back_ldpc.mjs";
 // ai: The grid's shift by the pilots (2026-10-01; the format paints the pilots whatever the phone, so a decoder may
@@ -34,7 +33,9 @@ import { CRC_SPLIT } from "./back_ldpc.mjs";
 // ai: (signed), v in the low.
 export const ALIGN_CHI = 13.8;
 
-export const TIER_BLOCKS = 128;   // ai: blocks a frame at most (talign's and tblocks' lanes; the rule's top is 121)
+export const TIER_BLOCKS = 128;   // ai: blocks a frame at most (talign's and tblocks' lanes; the profile's top is 124)
+// ai: TT holds rows 0 to VERSIONS, the version byte's range; rows 0 and 1 are zero (no format of 0 or 1 block: the
+// ai: ladder is versions 2 to 128, ../wordcode.mjs VERSION_MIN).
 export const VERSIONS = 128;
 export const KNOWN = 3816;        // ai: (473 + 4) x 8: the bits a block's payload and CRC fill; past them a code's data bits are zeros
 export const WHITE_SLOTS = 1024 * 640;
@@ -47,8 +48,8 @@ export const WHITE_SLOTS = 1024 * 640;
 // ai: where a launch's few codewords leave cores idle (the Adreno at one or two frames a launch) and lengthens it where
 // ai: the codewords fill the device (the iGPU at any launch, the Adreno at 32). All are exact (the same decisions and
 // ai: iterations). A generated tree carries all three (the native host times them on its first batch and keeps the
-// ai: fastest: on-chip memory bounds the desktop GPUs' workgroups, atomic stores cost the Adreno); a browser builds
-// ai: "reg" alone. The lab's other forms (records in workgroup memory, a parity bit array; LIZ_TLDPC) went 2026-10-22.
+// ai: fastest: on-chip memory bounds the desktop GPUs' workgroups, atomic stores cost the Adreno); a browser (the lab's
+// ai: harness in Chrome) builds "reg" alone. The lab's other forms (records in workgroup memory, a parity bit array; LIZ_TLDPC) went 2026-10-22.
 export const LDPC_FORMS = typeof process !== "undefined" ? ["reg", "reg+i32", "reg+i32+pair"] : ["reg"];
 // ai: the codes TT names, in order: src/focus.c focus_tiers_for's four rates (ldpc.h index, sub-channels a block)
 export const CODES = [{ rate: 6, subs: 7, name: "7/8" }, { rate: 4, subs: 8, name: "3/4" }, { rate: 3, subs: 9, name: "2/3" }, { rate: 2, subs: 12, name: "1/2" }];
@@ -59,7 +60,8 @@ export const TTW = 4 + 4 * NC;
 // ai: a NaN made at run time (a constant NaN is a WGSL error, which Tint reports and naga let pass): P is a uniform
 const NAN = "bitcast<f32>(0x7fc00000u | (P.n & 0u))";
 const TWO_PI = (2 * Math.PI).toFixed(9);
-const PARAMS = "struct Params { s: u32, subch: u32, blocks: u32, uvOff: u32, sStride: u32, lStride: u32, subchMax: u32, blocksMax: u32, B: u32, bar: f32, ucOff: u32, n: u32 }";
+// ai: A picture slot's uniform (back/soft.mjs build), 48 B.
+const PARAMS = "struct Params { s: u32, uvOff: u32, sStride: u32, lStride: u32, subchMax: u32, blocksMax: u32, B: u32, ucOff: u32, n: u32 }";
 
 // ai: TAB's sections' word offsets, from the codes' n and the nets' words (all codes' together).
 export function tabLayout(codes, netWords) {
@@ -212,8 +214,8 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) t: u3
 }
 `;
 
-// ai: The one-rate soft kernel's sub-channel arithmetic exactly (32 lanes of 10 coefficients a sub-channel, eight a
-// ai: workgroup); a sub-channel's pilot reading where a block's tail lies in it, to EP with its estimate; no BLK.
+// ai: A sub-channel's soft values and estimate (32 lanes of 10 coefficients a sub-channel, eight a workgroup), and its
+// ai: pilot reading where a block's tail lies in it, to EP with its estimate; no BLK.
 export const tsoftSource = ({ f16 = false, layout, codes }) => (f16 ? "enable f16;\n" : "") + /* wgsl */ `
 ${PARAMS}
 @group(0) @binding(0) var<storage, read> S: array<${f16 ? "vec2<f16>" : "vec2<f32>"}>;
@@ -386,17 +388,18 @@ export function tierShape(code, form = LDPC_FORMS[0]) {
 // ai: word past them, which get32 may read).
 const packWords = (n) => Math.max(120, Math.ceil(n / 32) + 1);
 // ai: Workgroup bytes a code's kernel declares (32 KB is the floor every phone we know offers).
-export const tierWgBytes = (sh, net) => (sh.wide ? 4 * sh.n : 4 * Math.ceil(sh.n / 2)) + 4 * packWords(sh.n) + 12 + (net ? 4 * (6 + 2 * net.hidden) : 0) + (sh.pair ? 16 * sh.z : 0);
+export const tierWgBytes = (sh, net) => (sh.wide ? 4 * sh.n : 4 * Math.ceil(sh.n / 2)) + 4 * packWords(sh.n) + 12 + 4 * (6 + 2 * net.hidden) + (sh.pair ? 16 * sh.z : 0);
 // ai: A code's uniform: dims (B, L words a frame, blocksMax, record cap), the row pointers, the data slots (col |
 // ai: shift << 16), the CRC powers.
 export const tierUniformStruct = (sh) => `struct TierCode { dims: vec4u, rows: array<vec4u, ${sh.rowv}>, pairs: array<vec4u, ${sh.pairv}>, pw: array<vec4u, 30> }`;
 export const tierUniformWords = (sh) => 4 + 4 * sh.rowv + 4 * sh.pairv + 120;
 
-// ai: c: the code's index in CODES; inv: its INV section's offset in TAB; net: { hidden, at } for the learned stop.
-export function tldpcSource(sh, { c, inv, layout, codes, net = null }) {
+// ai: c: the code's index in CODES; inv: its INV section's offset in TAB; net: { hidden, at }, the code's learned stop.
+export function tldpcSource(sh, { c, inv, layout, codes, net }) {
   const { n: N, k: K, z: Z, mb: MB, ns: NS, threads: TH, one } = sh;
   if (K < KNOWN || NS > 32 || (one && NS > 12)) throw new Error(`tier code ${JSON.stringify(sh)}`);
-  const R = one ? "u32" : "vec2<u32>", H = net?.hidden;
+  if (!(net?.hidden > 0)) throw new Error(`the ${CODES[c].name} code's kernel needs its learned stop`);
+  const R = one ? "u32" : "vec2<u32>", H = net.hidden;
   return /* wgsl */ `
 ${tierUniformStruct(sh)}
 struct Rec { count: atomic<u32>, words: array<u32> }
@@ -420,8 +423,6 @@ const NS: u32 = ${NS}u;
 const KNOWN: u32 = ${KNOWN}u;
 const NORM: i32 = 13;
 const MAXIT: u32 = 30u;
-const STALL_IT: u32 = 9u;
-const STALL_RATIO: f32 = 0.95;
 const DATA_WORDS: u32 = 120u;
 const REC_WORDS: u32 = 121u;
 
@@ -431,13 +432,13 @@ var<workgroup> flag: u32;
 var<workgroup> packw: array<u32, ${packWords(N)}>;   // ai: the CRC's data words; between iterations the signs' bitmap
 var<workgroup> crcw: atomic<u32>;
 ${sh.pair ? `var<workgroup> pmin: array<vec2<u32>, ${2 * Z}>;   // ai: a lane's part of its check: (min1 | min2 << 16, arg | sign << 8)
-` : ``}${net ? `const NET_H: u32 = ${H}u;
+` : ``}const NET_H: u32 = ${H}u;
 const NET_AT: u32 = ${net.at}u;
 var<workgroup> netX: array<f32, 6>;
 var<workgroup> netH: array<f32, ${H}>;
 var<workgroup> netP: array<f32, ${H}>;
 fn netW(q: u32) -> f32 { return bitcast<f32>(TAB[NET_AT + q]); }
-` : ``}
+
 ${sh.wide ? `fn ldL(idx: i32) -> i32 { return Lw[u32(idx)]; }
 fn stL(idx: i32, old: i32, nl: i32) { Lw[u32(idx)] = nl; }` : `fn ldL(idx: i32) -> i32 {
   let w = atomicLoad(&Lw[u32(idx) >> 1u]);
@@ -689,10 +690,10 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
   if (i == 0u) { atomicStore(&badc, 0u); flag = 0u; }
   workgroupBarrier();
 
-  var first0: u32 = 0u;${net ? `
+  var first0: u32 = 0u;
   var low: u32 = 0xffffffffu;
   var prev: u32 = 0u;
-  let est = bitcast<f32>(BLK[slotV].x);` : ``}
+  let est = bitcast<f32>(BLK[slotV].x);
   var it: u32 = 0u;
   var exitCode: u32 = 0u;
   for (it = 0u; it < MAXIT; it = it + 1u) {
@@ -707,7 +708,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
     let c = violatedChunks(i);
     if (c != 0u) { atomicAdd(&badc, c); }
     workgroupBarrier();
-${net ? `    if (i == 0u) {
+    if (i == 0u) {
       let bad = atomicLoad(&badc);
       atomicStore(&badc, 0u);
       var d: u32 = 0u;
@@ -744,18 +745,7 @@ ${net ? `    if (i == 0u) {
       let g = workgroupUniformLoad(&flag);
       if (g != 0u) { exitCode = g; break; }
     }
-` : `    if (i == 0u) {
-      let bad = atomicLoad(&badc);
-      atomicStore(&badc, 0u);
-      var d: u32 = 0u;
-      if (bad == 0u) { d = 1u; }
-      else if (it == 0u) { first0 = bad; }
-      else if (it == STALL_IT - 1u && f32(bad) > STALL_RATIO * f32(first0)) { d = 2u; }
-      flag = d;
-    }
-    let d = workgroupUniformLoad(&flag);
-    if (d != 0u) { exitCode = d; break; }
-`}  }
+  }
   var its: i32 = -1;
   var ran: u32 = MAXIT;
   if (exitCode == 1u) { its = i32(it) + 1; ran = it + 1u; }

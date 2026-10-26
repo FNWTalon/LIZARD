@@ -4,7 +4,8 @@
 // ai: replay: the frames of research/captures/v0.3/<run> that are there (a phone holds the first 96), each
 // ai: decoded once. seq (one thread, the default there): the held word is the last word read in frame order, as the
 // ai: web's blind replay carries it (sim/phy.mjs makeBlind), so the block total is comparable with
-// ai: `ARM=blind node scripts/exp/capture_check.mjs`. none (the default on several threads): nothing held, so a frame's
+// ai: `node scripts/exp/capture_check.mjs` (its default arm, blind) on the same run. none (the default on several
+// ai: threads): nothing held, so a frame's
 // ai: result does not depend on the order frames finish in, and the digest over every frame's result (what it found,
 // ai: its word, its blocks, each block's iterations and estimate) is the same at any thread count: the race check. On
 // ai: one thread a second digest, "floats", is the codec's own hash of the floats and soft values behind each decode:
@@ -100,7 +101,7 @@ static int replay(const std::string& run, int want, int threads, std::string mod
   const int passes = std::max(1, atoi(envOr("LIZ_PASSES", "1").c_str())), nmax = atoi(envOr("LIZ_NMAX", "1536").c_str());
   std::vector<FrameResult> res(frames);
   std::vector<double> passMs;
-  std::vector<double> prof(32, 0.0);
+  std::vector<double> prof(CPU_PROF_N, 0.0);
   std::atomic<bool> failed{false};
   for (int pass = 0; pass < passes; pass++) {
     const double t0 = nowMs();
@@ -125,7 +126,7 @@ static int replay(const std::string& run, int want, int threads, std::string mod
         if (threads == 1) r.deep = cpu_hash_take();
         res[i] = r;
       }
-      if (threads == 1) for (int k = 0; k < 32; k++) prof[k] = cpu_prof_ms(k);
+      if (threads == 1) for (int k = 0; k < CPU_PROF_N; k++) prof[k] = cpu_prof_ms(k);
       cpu_dec_free(d);
     });
     for (auto& x : th) x.join();
@@ -153,10 +154,10 @@ static int replay(const std::string& run, int want, int threads, std::string mod
   printf("  %d thread%s: %.2f ms a frame on its thread (median %.2f, slowest %.1f); a pass of the frames %.0f ms, %.1f frames a second\n", threads, threads == 1 ? "" : "s", sum / frames, ms[ms.size() / 2],
          ms.back(), passMs[passMs.size() / 2], 1000.0 * frames / passMs[passMs.size() / 2]);
   if (threads == 1) {
-    // ai: internal.h PROF_*: 13 sample, 14 detrend, 15 transform, 16 LLR, 17 LDPC; 20 to 25 the finder's parts; 2, 3 the binarizer and the mesh
+    // ai: cpu/codec.h CPU_PROF_*, in their order
     const double per = 1.0 / frames;
-    printf("  stages, ms a frame: binarize %.2f, finder (points %.2f, turn %.2f, fit %.2f, score %.2f, marks %.2f, track %.2f), mesh %.2f, sample %.2f, detrend %.2f, transform %.2f, LLR %.2f, LDPC %.2f\n",
-           prof[1] * per, prof[20] * per, prof[21] * per, prof[22] * per, prof[23] * per, prof[24] * per, prof[25] * per, prof[3] * per, prof[13] * per, prof[14] * per, prof[15] * per, prof[16] * per, prof[17] * per);
+    printf("  stages, ms a frame: binarize %.2f, mesh %.2f, finder (points %.2f, turn %.2f, fit %.2f, score %.2f, marks %.2f, track %.2f), sample %.2f, detrend %.2f, transform %.2f, LLR %.2f, LDPC %.2f\n",
+           prof[0] * per, prof[1] * per, prof[2] * per, prof[3] * per, prof[4] * per, prof[5] * per, prof[6] * per, prof[7] * per, prof[8] * per, prof[9] * per, prof[10] * per, prof[11] * per, prof[12] * per);
   }
   return 0;
 }

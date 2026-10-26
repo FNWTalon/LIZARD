@@ -1,10 +1,8 @@
 // ai: The Android packaging (an AAR, 2026-10-03): the library built by the NDK for arm64 with its JNI (the library's
 // ai: own CMake), the Kotlin API's sources (../lizard's, compiled for Android: System.loadLibrary finds the AAR's
-// ai: liblizard.so), and the engines' GPU files as assets under lizard/ (cmake/gpu_files.cmake's rule, read here from the
-// ai: generated tree), which LizardAssets.path copies out of the APK once an install. -PlizardVariants=f32-sg,... picks
-// ai: the decoder variants (all six by default: 21 MB; f32-sg alone about 10, the sender's files included).
-import groovy.json.JsonSlurper
-
+// ai: liblizard.so), and the engines' GPU files as assets under lizard/ (cmake/gpu_files.cmake's rule, run as a script
+// ai: over the generated tree), which LizardAssets.path copies out of the APK once an install. -PlizardVariants=f32-sg,...
+// ai: picks the decoder variants (all six by default: 21 MB; f32-sg alone about 10, the sender's files included).
 plugins {
   id("com.android.library")
   kotlin("android")
@@ -16,22 +14,18 @@ val lib: File = rootDir.resolve("../..")
 val gpuTree: File = lib.resolve("out")
 val variants = ((findProperty("lizardVariants") as String?) ?: "int8-sg,int8,f16-sg,f16,f32-sg,f32").split(",")
 
-@Suppress("UNCHECKED_CAST")
+// ai: the files the engines read, by cmake/gpu_files.cmake (the library install's rule) in script mode: the SDK's CMake
+// ai: (the one the native build takes, 3.22.1) where it is there, else the PATH's
 fun gpuFiles(): List<String> {
   if (!gpuTree.resolve("setup/send.json").isFile)
     throw GradleException("no generated GPU tree in ${gpuTree.normalize()}: lizard-android/build.sh tools, then gen")
-  val json = JsonSlurper()
-  val files = linkedSetOf("setup/send.json", "spv/ingest_camera.spv")
-  gpuTree.resolve("spv").listFiles { f -> f.name.startsWith("send_") && f.name.endsWith(".spv") && !f.name.endsWith(".raw.spv") }!!
-    .forEach { files += "spv/${it.name}" }
-  files += ((json.parse(gpuTree.resolve("setup/send.json")) as Map<String, Any>)["perm"] as Map<String, Any>)["blob"] as String
-  for (v in variants) {
-    files += "setup/$v.json"
-    val objects = (json.parse(gpuTree.resolve("setup/$v.json")) as Map<String, Any>)["objects"] as Map<String, Any>
-    for (p in (objects["pipelines"] as Map<String, Map<String, Any>>).values) files += "spv/${p["module"]}.spv"
-    for (b in (objects["buffers"] as Map<String, Map<String, Any>>).values) (b["blob"] as? String)?.let { files += "blobs/$it.bin" }
-  }
-  return files.toList()
+  val sdkCmake = androidComponents.sdkComponents.sdkDirectory.get().asFile.resolve("cmake/3.22.1/bin/cmake")
+  val list = layout.buildDirectory.file("gpu-files.txt").get().asFile.also { it.parentFile.mkdirs() }
+  providers.exec {
+    commandLine(if (sdkCmake.canExecute()) sdkCmake.path else "cmake", "-DLIZ_GPU_TREE=${gpuTree.absolutePath}",
+      "-DLIZ_GPU_VARIANTS=${variants.joinToString(";")}", "-DLIZ_GPU_LIST=${list.absolutePath}", "-P", lib.resolve("cmake/gpu_files.cmake").absolutePath)
+  }.result.get()
+  return list.readLines().filter { it.isNotEmpty() }
 }
 
 // ai: the files into <output>/lizard/, registered as every variant's generated assets (the app's LizardAssets way)

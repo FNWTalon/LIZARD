@@ -1,15 +1,16 @@
 package dev.lizard.desktop
 
+import dev.lizard.pick.Pick
 import java.util.Locale
 import java.util.prefs.Preferences
-import kotlin.math.roundToInt
 
 // ai: What the sender keeps between runs (the web's send:<id> keys): the encoder (auto, gpu, cpu), the payload (file,
-// ai: test), the blocks a frame (0 auto, else 1 to 128), pictures a second, the code's size (25 to 100%), the spacing and
-// ai: the margin (modules, Pick's bounds), the ring (-1 the default, else 0 to 3, kept as its cells since 2026-10-10), the codes, VSync, the folds and the rail, and
-// ai: whether the brightness tip was taken before a first send (SendState.requestStart); the receiver's and Home's in a
-// ai: node of their own (Rx, 2026-10-25). forget(): a run that neither reads nor keeps either node's, every setting at
-// ai: its default (the test hooks', SenderTest.kt and ReceiverTest.kt); the receiver's set in the run held in memory.
+// ai: test), the blocks a frame (0 auto, else 2 to 128), pictures a second, the code's size (25 to 100%), the spacing
+// ai: and the margin (modules, Pick's bounds), the ring (-1 the default, else an index into Pick.RINGS, kept as its
+// ai: cells), the codes, VSync, the folds and the rail, and whether the brightness tip was taken before a first send
+// ai: (SendState.requestStart); the receiver's and Home's in a node of their own (Rx, 2026-10-25). forget(): a run that
+// ai: neither reads nor keeps either node's, every setting at its default (the test hooks', SenderTest.kt and
+// ai: ReceiverTest.kt); the receiver's set in the run held in memory.
 object Prefs {
     private var off = false
     private val node by lazy { Preferences.userRoot().node("dev/lizard/sender") }
@@ -69,20 +70,12 @@ object Prefs {
     var blocks: Int get() = int("blocks", 60); set(v) { p?.putInt("blocks", v) }   // ai: the page's LIZARD-480 default
     var fps: Int get() = int("fps", 60); set(v) { p?.putInt("fps", v) }
     var size: Int get() = int("size", 100); set(v) { p?.putInt("size", v) }
-    // ai: a "gap" kept from before the margin (2026-10-23: modules between two codes past their quiet zones) read as the
-    // ai: margin it was, (gap + 4) / 2
-    var margin: Int
-        get() = int("margin", 0).takeIf { it > 0 } ?: int("gap", -1).takeIf { it >= 0 }?.let { (it + 2 * Pick.QUIET + 1) / 2 } ?: Pick.MARGIN_DEFAULT
-        set(v) { p?.putInt("margin", v); p?.remove("gap") }
-    // ai: none kept (2026-10-23, the morning's one margin): two margins, the light between two codes then, kept at its first
-    // ai: read so a later margin does not move it
-    var spacing: Int
-        get() = int("spacing", 0).takeIf { it > 0 } ?: (if (p?.get("margin", null) != null || p?.get("gap", null) != null) 2 * margin else Pick.SPACING_DEFAULT).also { p?.putInt("spacing", it) }
-        set(v) { p?.putInt("spacing", v) }
-    // ai: an index into Pick.RINGS, kept by its cells (ringCells, 2026-10-10: the 96 ring's place went to the 256, so an
-    // ai: index alone would move a saved choice); a key "ring" from before is an index into 32, 64, 96, 128, its 96 the default now
+    var margin: Int get() = int("margin", Room.MARGIN_DEFAULT); set(v) { p?.putInt("margin", v) }
+    var spacing: Int get() = int("spacing", Room.SPACING_DEFAULT); set(v) { p?.putInt("spacing", v) }
+    // ai: an index into Pick.RINGS, kept by its cells (ringCells), so a change of the list moves no saved choice: cells
+    // ai: no ring has any more read as the default
     var ring: Int
-        get() = when (val c = int("ringCells", 0)) { 0 -> when (int("ring", -1)) { 0 -> 0; 1 -> 1; 3 -> 2; else -> -1 }; else -> Pick.RINGS.indexOf(c) }
+        get() = Pick.RINGS.indexOf(int("ringCells", 0))
         set(v) { p?.putInt("ringCells", if (v in Pick.RINGS.indices) Pick.RINGS[v] else -1) }
     var codes: Int get() = int("codes", 1); set(v) { p?.putInt("codes", v) }
     var vsync: Boolean get() = bool("vsync", true); set(v) { p?.putBoolean("vsync", v) }   // ai: on unless turned off
@@ -94,20 +87,9 @@ object Prefs {
     var brightnessSeen: Boolean get() = bool("tipSeen", false); set(v) { p?.putBoolean("tipSeen", v) }
 }
 
-// ai: The web's figures (lizard-web/ui.mjs bytes, rate; lizard-android/.../Readout.kt the same): 1000 B a KB, the unit chosen
-// ai: after rounding, a figure kept on its line (a no-break space), digits as the web prints them whatever the locale.
+// ai: The sender's own figures beside Readout's (liblizard/kotlin/Readout.kt bytes and rate): digits as the web prints
+// ai: them whatever the locale, a figure kept on its line (a no-break space).
 object Fmt {
-    const val NB = '\u00a0'
-    private fun at(v: Double) = if (v < 9.95) String.format(Locale.ROOT, "%.1f", v) else v.roundToInt().toString()
-    fun bytes(n: Long): String {
-        if (n < 1000) return "$n${NB}B"
-        return when {
-            n < 999_500 -> "${at(n / 1e3)}${NB}KB"
-            n < 999_500_000 -> "${at(n / 1e6)}${NB}MB"
-            else -> "${at(n / 1e9)}${NB}GB"
-        }
-    }
-    fun rate(kbs: Double) = if (kbs < 999.5) "${kbs.roundToInt()}${NB}KB/s" else "${String.format(Locale.ROOT, "%.2f", kbs / 1000)}${NB}MB/s"
-    fun blocks(b: Int) = "$b, ${String.format(Locale.ROOT, "%.1f", b * 469 / 1000.0)}${NB}KB"   // ai: under the title "Blocks" (2026-10-05)
+    fun blocks(b: Int) = "$b, ${String.format(Locale.ROOT, "%.1f", b * 469 / 1000.0)}\u00a0KB"   // ai: under the title "Blocks" (2026-10-05)
     fun f1(v: Double) = String.format(Locale.ROOT, "%.1f", v)
 }

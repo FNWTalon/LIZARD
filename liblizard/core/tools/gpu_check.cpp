@@ -7,31 +7,28 @@
 //                                                 one batch, each frame's finder, word and blocks against the web's
 //                                                 reference at its tolerances (research/build/gpu_selftest_ref.json, or
 //                                                 _int8.json for an int8 variant); exit 1 on a difference
-//   lizard_gpu_check same vote <variant> <spv>    an exact change to a kernel, held to the kernel before it on one
-//                                                 state: the self-test's batch, then VOTE alone on that lane by the
-//                                                 tree's kernel and by the SPIR-V given, acc word for word; exit 1
-//                                                 on a difference (a batch's peaks differ run to run, SELECT's order,
-//                                                 so two runs' dumps cannot show it)
 //   lizard_gpu_check replay <run> [frames] [variant]   a recording (research/captures/v0.3/<run>) through the
 //                                                 decoder as the web's replay runs it (batches of the batcher's size,
 //                                                 two in flight, the held word carried in capture order): frames
 //                                                 found, words, verified blocks, GPU ms a frame
 //
-// ai: info needs only a Vulkan device, build and compile gen's tree too (LIZ_OUT); bench out/spv/bench_*.spv, which no
-// ai: build step makes (core/nets/README.md has the line). selftest, same vote and dump read the self-test's frames and
-// ai: references, replay and receive a recording, ingest (Android) either: the lab's research/ (LIZ_BARCODE), which is
-// ai: not published. A run lizard_engine paint makes reads as a recording put at <LIZ_BARCODE>/captures/v0.3/<run>.
+// ai: info needs only a Vulkan device, build and compile gen's tree too (LIZ_OUT); bench out/spv/bench_dot.spv, which no
+// ai: build step makes: from the root, liblizard/.tools/glslang/bin/glslang -V --target-env vulkan1.3
+// ai: liblizard/core/tools/bench_dot.comp -o liblizard/out/spv/bench_dot.spv (glslang 16, placed there by hand).
+// ai: selftest and dump read the self-test's frames and references, replay and receive a recording, ingest (Android)
+// ai: either: the lab's research/ (LIZ_BARCODE), which is not published. A run lizard_engine paint makes reads as a recording put at <LIZ_BARCODE>/captures/v0.3/<run>.
 //
 // ai: Env: LIZ_OUT (the generated tree, liblizard/out; on the phone /data/local/tmp/lizard/out), LIZ_BARCODE (research/,
 // ai: for its build/ frames and references and its captures/ recordings), LIZ_VK_DEVICE (a substring of the device's name), LIZ_VALIDATE=1 (the
-// ai: Khronos validation layer), LIZ_TRACE=<path> (wg's trace, a JSON line an event), LIZ_CACHE=<path> (the pipeline
-// ai: cache file), LIZ_BUDGET=<MB> (the decoder's memory budget; 2048 by default, the web's on the S26).
+// ai: Khronos validation layer), LIZ_CACHE=<path> (the pipeline cache file), LIZ_BUDGET=<MB> (the decoder's memory
+// ai: budget; 2048 by default, the web's on the S26).
 #include "front.h"
 #include "receiver.h"
 #include "replay.h"
 #include "axes.h"
 #include <algorithm>
 #include <atomic>
+#include <deque>
 #include <thread>
 
 #include <chrono>
@@ -70,7 +67,7 @@ struct Ctx {
 
 static std::unique_ptr<FrontHalf> open(Ctx& c, const std::string& v) {
   const double budget = std::stod(env("LIZ_BUDGET", "2048")) * (1 << 20);
-  auto fh = FrontHalf::create(*c.dev, readDir(c.out), v, budget, 0, [](const std::string& m) { std::cout << "  " << m << std::endl; });
+  auto fh = FrontHalf::create(*c.dev, readDir(c.out), v, budget, [](const std::string& m) { std::cout << "  " << m << std::endl; });
   return fh;
 }
 
@@ -325,9 +322,8 @@ static int receive(Ctx& c, const std::string& run, double fps, const std::string
   return rx->file().empty() || last["state"] == "error" ? 1 : 0;
 }
 
-// ai: bench: the device's int8 and f16 matrix units (VK_KHR_cooperative_matrix) against the packed int8 dot product
-// ai: today's int8 kernels use, each a kernel of multiply-adds in registers (core/nets/bench_*.comp), timed by
-// ai: timestamps: the ceiling a rewrite of the nets can reach.
+// ai: bench: the packed int8 dot product today's int8 kernels use, a kernel of multiply-adds in registers
+// ai: (core/tools/bench_dot.comp), timed by timestamps: its ceiling on the device; then what a dispatch costs.
 static int bench(Ctx& c) {
   auto& d = *c.dev;
   auto bgl = d.createBindGroupLayout({wg::Bind::RW, wg::Bind::RW});
@@ -343,10 +339,6 @@ static int bench(Ctx& c) {
   std::vector<Case> cases;
   const uint32_t R = 512;
   cases.push_back({"dot4x8 int8", "bench_dot", 0, R, (double)G * 64 * 8 * R * 4});
-  if (d.features.coopmat) {
-    for (uint32_t N : {16u, 32u, 64u}) cases.push_back({"coopmat int8 64xNx32", "bench_coop", N, R, (double)G * 64 * N * 32 * R});
-    for (uint32_t N : {16u, 32u, 64u}) cases.push_back({"coopmat f16 64xNx16", "bench_h16", N, R, (double)G * 64 * N * 16 * R});
-  }
   for (auto& k : cases) {
     auto b = readAll(c.out + "/spv/" + k.spv + ".spv");
     std::vector<uint32_t> w(b.size() / 4);
@@ -396,51 +388,6 @@ static int bench(Ctx& c) {
     printf("%-24s: one %.4f ms, 64 %.4f ms, %.2f us a dispatch past the first\n", "dispatch and barrier", t1, t64, (t64 - t1) / 63 * 1e3);
   }
   return 0;
-}
-
-// ai: same vote: the self-test's batch decoded once, then VOTE alone twice on the lane as the batch left it (its
-// ai: frames and readings), acc cleared before each: the tree's kernel, then the SPIR-V at spvPath over the same
-// ai: layout and group. Every word of acc must agree.
-static int sameVote(Ctx& c, std::string v, const std::string& spvPath) {
-  auto fh = open(c, v);
-  auto refBytes = readAll(c.barcode + "/build/gpu_selftest_ref.json");
-  json ref = json::parse(refBytes.begin(), refBytes.end());
-  const auto& frames = ref["frames"];
-  const uint32_t W = frames[0]["w"], H = frames[0]["h"], n = (uint32_t)frames.size();
-  fh->plan(W, H);
-  std::vector<std::vector<uint8_t>> px;
-  std::vector<Slot*> slots;
-  for (auto& f : frames) px.push_back(readAll(c.barcode + "/build/" + ref["source"].get<std::string>() + "/" + f["name"].get<std::string>()));
-  for (size_t i = 0; i < px.size(); i++) slots.push_back(fh->enqueueLuma(px[i].data(), W, H, W, i));
-  auto out = fh->finish(fh->run(slots, 0));
-  Lane& ln = *fh->lanes[0];
-  const Pipe now = fh->S->pair(fh->S->tree["front"]["vote"]);
-  auto b = readAll(spvPath);
-  std::vector<uint32_t> words(b.size() / 4);
-  memcpy(words.data(), b.data(), words.size() * 4);
-  auto other = c.dev->createPipeline(words, now.bgl, "vote@other", "vote, the other build", {});
-  const uint64_t size = ln.accBuf->size / ln.B * n;
-  auto keep = c.dev->createBuffer(2 * size, wg::MAP_READ | wg::COPY_DST);
-  auto e = c.dev->encoder();
-  for (int k = 0; k < 2; k++) {
-    e.clearBuffer(*ln.accBuf, 0, size);
-    e.beginComputePass();
-    e.setPipeline(k ? *other : *now.p);
-    e.setBindGroup(*ln.voteGroup);
-    e.dispatch(((uint32_t)fh->cap + 63) / 64, n);
-    e.endPass();
-    e.copyBufferToBuffer(*ln.accBuf, 0, *keep, k * size, size);
-  }
-  c.dev->submit(e)->wait();
-  const uint32_t* a = (const uint32_t*)c.dev->read(*keep, 0, 2 * size);
-  const uint64_t nw = size / 4;
-  uint64_t differ = 0, massA = 0, massB = 0, cells = 0;
-  for (uint64_t i = 0; i < nw; i++) { differ += a[i] != a[nw + i]; massA += a[i]; massB += a[nw + i]; cells += a[i] != 0; }
-  int blocks = 0;
-  for (auto& fo : out.frames) blocks += (int)fo.records.size();
-  printf("%s: VOTE on %u frames (%d blocks decoded), %llu words of acc: %llu differ; votes %llu in %llu cells by the tree's kernel, %llu by %s\n", v.c_str(), n, blocks,
-    (unsigned long long)nw, (unsigned long long)differ, (unsigned long long)massA, (unsigned long long)cells, (unsigned long long)massB, spvPath.c_str());
-  return differ || !massA ? 1 : 0;
 }
 
 // ai: The self-test: the eight frames in one batch, as the web's page runs them, against its reference.
@@ -583,7 +530,6 @@ int main(int argc, char** argv) {
     Ctx c;
     auto log = [](const std::string& m) { std::cout << m << std::endl; };
     c.dev = wg::Device::create(env("LIZ_VK_DEVICE"), env("LIZ_VALIDATE") == "1", log);
-    if (!env("LIZ_TRACE").empty()) c.dev->traceOut = fopen(env("LIZ_TRACE").c_str(), "w");
     if (!env("LIZ_CACHE").empty()) c.dev->loadCache(env("LIZ_CACHE"));
     c.variants = variantsFor(*c.dev);
     c.out = env("LIZ_OUT", "out");
@@ -621,10 +567,6 @@ int main(int argc, char** argv) {
     else if (cmd == "dump") {
       if (argc < 4) throw wg::Error("dump <variant> <dir>");
       rc = dump(c, argv[2], argv[3]);
-    }
-    else if (cmd == "same") {
-      if (argc < 5 || std::string(argv[2]) != "vote") throw wg::Error("same vote <variant> <spv>");
-      rc = sameVote(c, argv[3], argv[4]);
     }
     else if (cmd == "replay") {
       if (argc < 3) throw wg::Error("replay <run> [frames] [variant]");

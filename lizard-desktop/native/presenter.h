@@ -1,6 +1,6 @@
-// ai: The desktop sender's presenter (2026-10-04; its stack, 2026-10-03, for portability and vsync): present.cpp's FIFO
-// ai: loop, which held every picture exactly one refresh on the 4090, as a class over any window it is handed (the app's
-// ai: AWT canvas through JAWT, lizard_present's own full-screen window).
+// ai: The desktop sender's presenter (2026-10-04; its stack, 2026-10-03, for portability and vsync): the FIFO loop of the
+// ai: test sender lizard_present (2026-10-03 to 2026-10-25), which held every picture exactly one refresh on the 4090, as
+// ai: a class over the window it is handed (the app's AWT canvas through JAWT).
 // ai: One thread of its own does every Vulkan and window call: it opens its own X display connection on X11 (a window id
 // ai: is good on any connection, and Xlib stays off AWT's thread), makes the window's surface and a FIFO swapchain, and
 // ai: at every refresh clears the area white and blits the picture on screen into it, centred; a new picture is taken
@@ -36,14 +36,13 @@ bool win32IsFullscreen(void* hwnd);
 
 struct PresentOptions {
   int fps = 60;            // ai: pictures a second asked; each held round(refreshHz / fps) refreshes where that is whole
-                           // ai: within 1% (present.cpp's rule), else a grid
+                           // ai: within 1%, else a grid
   double size = 1.0;       // ai: the code's share of the area's room, 0.25 to 1 (the web's #size)
   double edge = 0;         // ai: light kept at each edge of the area past the frame's own, a share of the frame's
                            // ai: height (the Margin past the codec's quiet zone, SendState.kt), 0 to 1
-  bool whole = false;      // ai: whole device pixels a sample, nearest (present.cpp --fit whole); else stretch, linear
   bool vsync = false;      // ai: the monitor held at a refresh fps divides while presenting (setVsync)
   std::function<void(const std::string&)> log;
-  std::string csv;         // ai: a CSV line a present into this file, a UTF-8 path (lizard_present --log), "" none
+  std::string csv;         // ai: a CSV line a present into this file, a UTF-8 path (LIZ_PRESENT_CSV, tx_jni.cpp), "" none
 };
 
 class Presenter {
@@ -73,13 +72,8 @@ class Presenter {
   // ai: queued and queuedMin (presents between one submitted and the last on screen, the mean and the least: the
   // ai: chain's slack; 0 without present_wait), images (the swapchain's), paused, surface and frame ("WxH": the
   // ai: swapchain's, the picture on screen's), presentWait, device, error, secs (the window's length), vsync and
-  // ai: modeFrom (the monitor's refresh before VSync moved it, 0 where it did not), and on X11 with
-  // ai: Composite `direct` (true: the screen shows the window direct, no compositor or the window unredirected; false:
-  // ai: a compositor draws it, which can tear and paces by its own monitor).
+  // ai: modeFrom (the monitor's refresh before VSync moved it, 0 where it did not).
   std::string stats();
-  // ai: The whole run's, JSON: secs, pictures, presents, held, missed, behind, queued, queuedMin, unknown (presents with
-  // ai: no time), hz, modeHz.
-  std::string totals();
   // ai: Stops and joins (again a no-op); the destructor calls it.
   void stop();
   ~Presenter();

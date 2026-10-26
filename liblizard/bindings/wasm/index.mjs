@@ -4,15 +4,23 @@
 // ai: them, Sender (a file to painted frames) and Receiver (camera frames to a file). Everything is synchronous: a
 // ai: page runs a Receiver in a worker of its own (several, for several decoders). Call init() once first.
 // ai: Handles hold wasm memory: free() each, or let the module go.
-// ai: Two builds of the same API: dist/lizard.mjs (the "wasm" preset, the vector paths on WebAssembly SIMD) and
-// ai: dist/lizard-mvp.mjs (the "wasm-mvp" preset, WebAssembly 1.0 with no extension, the scalar paths: the same blocks
-// ai: from the same frames, slower), loaded where the engine has no SIMD.
+// ai: One module in two builds (liblizard/build.sh, the library's wasm target): dist/lizard.mjs (the vector paths on
+// ai: WebAssembly SIMD, C++ exceptions as wasm's own) and dist/lizard-mvp.mjs (WebAssembly 1.0 with no extension, the
+// ai: scalar paths, exceptions through JS: the same blocks from the same frames, slower), loaded where the engine lacks
+// ai: either feature. The module also carries the codec's own exports, which the repository's tools use (liblizard/sim)
+// ai: and which are no interface of this package.
 
-let M = null;
+let M = null, loading = null;
 
 // ai: a module whose one function returns a v128 (i8x16.splat, i8x16.popcnt), valid only where the engine has SIMD
 const SIMD_PROBE = Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11);
+// ai: a module whose one function holds an empty try and catch_all (wasm exception handling, the form emscripten
+// ai: emits), valid only where the engine has it
+const EH_PROBE = Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 10, 8, 1, 6, 0, 6, 64, 25, 11, 11);
 export const hasSimd = () => WebAssembly.validate(SIMD_PROBE);
+// ai: whether the SIMD build runs here: it needs SIMD and wasm's exceptions (Chrome 91 to 94 and Firefox 89 to 99 have
+// ai: the one and not the other)
+const simdBuildRuns = () => hasSimd() && WebAssembly.validate(EH_PROBE);
 
 // ai: Thrown for a failed call: code, one of lizard.h's LIZ_E_* (negative), and the library's message.
 export class LizardError extends Error {
@@ -23,16 +31,16 @@ export class LizardError extends Error {
   }
 }
 
-// ai: build: "auto" (the SIMD build where the engine has SIMD, else the MVP build), "simd" or "mvp". The first call
-// ai: decides; later calls return the same module.
-export async function init(moduleOptions, { build = "auto" } = {}) {
-  if (!M) {
+// ai: build: "auto" (the SIMD build where the engine has SIMD and wasm's exceptions, else the MVP build), "simd" or
+// ai: "mvp". The first call decides; later calls, and calls made while it loads, return the same module.
+export function init(moduleOptions, { build = "auto" } = {}) {
+  loading ??= (async () => {
     if (!["auto", "simd", "mvp"].includes(build)) throw new Error(`lizard: build auto, simd or mvp, not ${build}`);
-    const mvp = build === "mvp" || (build === "auto" && !hasSimd());
+    const mvp = build === "mvp" || (build === "auto" && !simdBuildRuns());
     const create = (await (mvp ? import("./dist/lizard-mvp.mjs") : import("./dist/lizard.mjs"))).default;
-    M = await create(moduleOptions);
-  }
-  return M;
+    return (M = await create(moduleOptions));
+  })();
+  return loading;
 }
 const mod = () => {
   if (!M) throw new Error("lizard: await init() first");
@@ -47,7 +55,7 @@ const made = (ptr) => {
   return ptr;
 };
 
-export const BLOCK = 473, ID_BYTES = 4, PAYLOAD = 469, MAX_BLOCKS = 128, RINGS = 4, RING_DEFAULT = -1, GAP_MODULES = 12;
+export const BLOCK = 473, ID_BYTES = 4, PAYLOAD = 469, MIN_BLOCKS = 2, MAX_BLOCKS = 128, RINGS = 3, RING_DEFAULT = -1, GAP_MODULES = 12;
 const PIXFMT = { grey: 1, rgbx: 2, rgba: 3, bgra: 4 };
 const bpp = (f) => (f === "grey" ? 1 : 4);
 const pixfmt = (f) => {
@@ -73,12 +81,11 @@ const scratch = new Heap();
 const u64 = (p) => M.HEAPU32[p >> 2] + M.HEAPU32[(p >> 2) + 1] * 2 ** 32;
 
 export const version = () => mod().UTF8ToString(M._liz_version());
-export const abi = () => mod()._liz_abi();
 export const simd = () => mod()._liz_simd() === 1;
 
 // ---- 1. format arithmetic --------------------------------------------------------------------------------------------
 
-// ai: format: { blocks (1 to 128), ring (0 to 3, -1 the default), fps (1 to 255), codes (1 or 2) }
+// ai: format: { blocks (2 to 128), ring (0 to 2: the 64, 128 or 256 ring; -1 the default, the 128), fps (1 to 255), codes (1 or 2) }
 function formatAt(p, { blocks, ring = RING_DEFAULT, fps = 60, codes = 1 }) {
   M.HEAP32.set([blocks, ring, fps, codes], p >> 2);
   return p;
@@ -95,6 +102,8 @@ export function geometry(format) {
   return geometryFrom(p + 16);
 }
 export function roomFor(blocks, ring = RING_DEFAULT) { return check(mod()._liz_room_for(blocks, ring)); }
+// ai: the blocks a symbol of that size carries (the rate profile's), 0 for a size no format has
+export function blocksFor(blocks) { return mod()._liz_blocks_for(blocks); }
 // ai: the largest size (format.blocks) a symbol may have in a w x h room of display pixels (the senders' pick)
 export function pick(w, h, { codes = 1, ring = RING_DEFAULT, top = MAX_BLOCKS } = {}) { return check(mod()._liz_pick(w, h, codes, ring, top)); }
 
@@ -217,11 +226,12 @@ export class Tx {
     check(M._liz_tx_next(this.h, n, p));
     return M.HEAPU8.slice(p, p + n * BLOCK);
   }
+  // ai: liz_tx_info, 64 bytes in wasm32
   get info() {
-    const p = scratch.at(56);
+    const p = scratch.at(64);
     check(M._liz_tx_info_get(this.h, p));
     const root = Array.from(M.HEAPU8.subarray(p + 24, p + 56), (b) => b.toString(16).padStart(2, "0")).join("");
-    return { test: !!M.HEAP32[p >> 2], length: u64(p + 8), chunks: M.HEAPU32[(p + 16) >> 2], lap: M.HEAPU32[(p + 20) >> 2], root };
+    return { test: !!M.HEAP32[p >> 2], length: u64(p + 8), chunks: M.HEAPU32[(p + 16) >> 2], lap: M.HEAPU32[(p + 20) >> 2], root, sent: u64(p + 56) };
   }
   free() { if (this.h) M._liz_tx_free(this.h); this.h = 0; this.blocks.free(); }
 }
@@ -244,13 +254,14 @@ export class Rx {
     const [seen, bad, judged, fresh, test] = M.HEAP32.subarray(v >> 2, (v >> 2) + 5);
     return { seen, bad, judged, fresh, test: !!test };
   }
+  // ai: liz_progress, 72 bytes in wasm32
   get progress() {
-    const p = scratch.at(56);
+    const p = scratch.at(72);
     check(M._liz_rx_progress(this.h, p));
     return {
       header: !!M.HEAP32[p >> 2], done: !!M.HEAP32[(p >> 2) + 1], length: u64(p + 8), bytesIn: u64(p + 16),
       fraction: M.HEAPF64[(p + 24) >> 3], chunks: M.HEAPU32[(p + 32) >> 2], verified: M.HEAPU32[(p + 36) >> 2],
-      rejected: M.HEAPU32[(p + 40) >> 2], solveMs: M.HEAPF64[(p + 48) >> 3],
+      rejected: M.HEAPU32[(p + 40) >> 2], solveMs: M.HEAPF64[(p + 48) >> 3], sent: u64(p + 56), sentIn: u64(p + 64),
     };
   }
   // ai: each chunk: 0 to 99 the share in (a floor until the manifest is in), 255 verified

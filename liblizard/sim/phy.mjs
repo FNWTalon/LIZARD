@@ -21,7 +21,8 @@ import { PICTURE_SIZES } from "./lizard_pick.mjs";
 // harnesses painted two.
 const marginSamples = (spec, fc) => (spec.quiet ?? fc.quiet) * fc.cell;
 
-const RATE = ["1/4", "1/3", "1/2", "2/3", "3/4", "5/6", "7/8"];
+// ai: LDPC rate indices to names (src/ldpc.h): the format's four
+const RATE = { 2: "1/2", 3: "2/3", 4: "3/4", 6: "7/8" };
 
 // Block contents are a function of the block id, so a receiver can check any block it decodes
 // without being told which frame it came from.
@@ -45,14 +46,10 @@ export function blockBytesShake(id, len, out = new Uint8Array(len)) {
   return out;
 }
 
-// The spec a RECORDING was made with, fit to replay. A LIZARD sender has written its bit map into its config since
-// 2026-09-23 (src/focus.h FOCUS_BITMAP); a recording without one was painted before the map existed, so with none.
-// A spec written by hand takes the format's own, so only something replayed from disk goes through this.
-// A recording carries the spec it was painted with, and replays under what that meant then. No bitmap field: painted
-// before the bit map existed. span 0 on a single picture: painted between the morning and the evening of 2026-09-23,
-// when "the format's own" was n / 4 modules across the picture; since then the sender writes the span it paints
-// (SPAN(n): n / 8 + 30 then, 2 B in ring B since 2026-09-27), so a 0 in a recording means that day's rule and nothing else.
-export const recordedSpec = (spec) => (spec.phy === "focus" ? { bitmap: 0, ...spec, ...(!spec.span && !spec.grid ? { span: spec.n / 4 } : {}) } : spec);
+// The spec a RECORDING was made with, fit to replay: every recording kept names its span, mode 1 and the bit map
+// (src/focus.h FOCUS_BITMAP), so it replays as written (the rules for the specs of 2026-09-23, before the map and the
+// spans were written down, went with those recordings).
+export const recordedSpec = (spec) => spec;
 
 // ai: The largest picture a receiver builds: the ladder's top (1536, LIZARD-576 to -1024), so it reads any version the
 // ai: word names, with no flag (2026-09-24; 1024 until 2026-09-29, the receiver's #sizes menu choosing 1536, the menu
@@ -141,24 +138,22 @@ async function makeBlind(spec) {
 // variants: [{ name, gamma, mesh }]. Each block starts with its 4-byte fountain id.
 async function makeFocus(spec) {
   await initOb();
-  const { n = 512, subch = 32, mode = 0, clip = 2, span = 0, tilt = 0, tiers = null, corner = 0, cornerFilled = 0, centre = 0, edge = 0, trackAlt = 0, border = 0, bitmap, fps = 0, variants = [{ name: mode ? "ldpc" : "rs" }] } = spec;
-  const fc = new Focus(n, subch, mode, { clip, span, tilt, tiers, corner, cornerFilled, centre, edge, trackAlt, border, bitmap }), B = fc.blockBytes, T = fc.blocks, seen = variants.map(() => new Set()), buf = new Uint8Array(T * B), want = new Uint8Array(B - 4);
+  const { n = 512, subch = 32, mode = 1, clip = 2, span = 0, tilt = 0, tiers = null, bitmap, fps = 0, variants = [{ name: "ldpc" }] } = spec;
+  const fc = new Focus(n, subch, mode, { clip, span, tilt, tiers, bitmap }), B = fc.blockBytes, T = fc.blocks, seen = variants.map(() => new Set()), buf = new Uint8Array(T * B), want = new Uint8Array(B - 4);
   const quiet = marginSamples(spec, fc);
   // The page's pixels come from the codec's own paint, which has only its margin: an experiment's override has no way there.
   const noRGBA = spec.quiet !== undefined && spec.quiet !== fc.quiet ? `spec.quiet ${spec.quiet} is the simulator's override; the codec paints ${fc.quiet}` : null;
-  // ai: whether the build paints the pilots (src/focus.h focus_parity; a build from before them, OB_BUILD, does not)
-  const pilots = (() => { try { fc.setParity(0); return true; } catch { return false; } })();
   if (fps) fc.setFps(fps);   // the display rate goes in the band (src/fmt.h); 0 states none, which is the default
   let source = sourceFor(spec.stream);
   return {
-    label: `focus ${n} ${tiers ? tiers.map(([r, b]) => `${b}x${RATE[r]}`).join("+") : `${subch}sub ${mode ? "soft" : "RS(80,64)"}`}${span ? " span" + span : ""}${corner ? ` corner ${corner}${cornerFilled ? " gapped" : ""}` : ""}${centre ? ` centre ${centre}` : ""}${edge ? ` edge ${edge}` : ""}${trackAlt ? " clock" : ""}${border ? ` border ${border}` : ""}${tilt ? " tilt " + tilt + " dB" : ""}`, family: "focus", variants: variants.map((v) => v.name), usefulBytes: B - 4, blocksPerFrame: T, modules: fc.side, bitmap: fc.bitmap,
+    label: `focus ${n} ${tiers ? tiers.map(([r, b]) => `${b}x${RATE[r]}`).join("+") : `${subch}sub`}${span ? " span" + span : ""}${tilt ? " tilt " + tilt + " dB" : ""}`, family: "focus", variants: variants.map((v) => v.name), usefulBytes: B - 4, blocksPerFrame: T, modules: fc.side, bitmap: fc.bitmap,
     // ai: the paint's samples a module and the codec's margin in modules (src/focus.h FOCUS_QUIET), for a painter
     // ai: that places symbols in modules (lizard-web/send-worker.mjs: two codes a gap apart, 2026-09-30)
     cell: fc.cell, quiet: fc.quiet,
     // baseId may instead be the frame's T ids, for a sender whose ids are not a run (sim/xfer.mjs: chunk and symbol).
     frame(seq, baseId = seq * T) {
       for (let t = 0; t < T; t++) { const id = typeof baseId === "number" ? baseId + t : baseId[t], o = t * B; buf[o] = id & 255; buf[o + 1] = (id >>> 8) & 255; buf[o + 2] = (id >>> 16) & 255; buf[o + 3] = id >>> 24; source(id, buf.subarray(o + 4, o + B)); }
-      if (pilots) fc.setParity(0);
+      fc.setParity(0);
       return { w: fc.side, h: fc.side, quiet, drive: fc.encode(buf), truth: null };
     },
     // The same frame as the pixels a page paints, margin included (lizard-web/send-worker.mjs): { w, rgba }, the rgba a view
@@ -166,7 +161,7 @@ async function makeFocus(spec) {
     // (SPEC 7.3): a page's frames flash (frame() above, the simulator's, paints count 0, as before the pilots).
     frameRGBA(seq, baseId = seq * T) {
       if (noRGBA) throw new Error(noRGBA);
-      if (pilots) fc.setParity(seq & 3);
+      fc.setParity(seq & 3);
       return fc.encodeRGBA(this.frameBlocks(seq, baseId));
     },
     // ai: The frame's T blocks alone, each its id (little-endian) then its payload, B bytes a block, for an encoder

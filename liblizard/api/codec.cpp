@@ -1,13 +1,14 @@
 // ai: Layer 2, the per-frame codec (lizard.h): the C reference's encoder (src/focus.h: focus_init, focus_parity,
 // ai: focus_encode, focus_paint_rgba) and its blind receiver (core/cpu/codec.h over src/any.h), behind the API's
 // ai: formats. Two codes are painted and composited as the senders do (core/tx/sender.cpp paint, lizard-web/send-worker.mjs);
-// ai: the 2:1 regions are core/rx/receiver.cpp cropsOf's.
+// ai: the 2:1 regions are the receiver's (core/rx/crops.h).
 #include <algorithm>
 #include <cstring>
 #include <memory>
 #include <vector>
 
 #include "api.hpp"
+#include "crops.h"
 
 extern "C" {
 #include "codec.h"
@@ -49,7 +50,7 @@ LIZ_API liz_encoder* liz_encoder_new(const liz_format* format) {
     auto e = std::make_unique<liz_encoder>();
     e->fmt = *format;
     e->g = geometryOf(*format);
-    if (focus_init(&e->f, e->g.n, 8 * format->blocks, FOCUS_LDPC, 2.0f, e->g.span, 0.f, 0, 0, 0, 0, 0, 0))
+    if (focus_init(&e->f, e->g.n, 8 * format->blocks, 2.0f, e->g.span, 0.f))
       throw Error(LIZ_E_FORMAT, "the codec refused LIZARD-" + std::to_string(8 * format->blocks));
     e->made = true;
     if (focus_fmt_fps(&e->f, format->fps)) throw Error(LIZ_E_FORMAT, "the codec refused " + std::to_string(format->fps) + " a second");
@@ -162,16 +163,14 @@ LIZ_API int liz_layout_rects(int w, int h, int layout, int rect[2][4]) {
   return guard([&] {
     need(rect && w > 0 && h > 0, "a frame and a place for its regions");
     need(layout == 1 || layout == 2, "layout is 1 (the centre square) or 2 (2:1)");
-    const bool two = layout == 2, wide = w >= h;
-    const int lo = std::min(w, h), hi = std::max(w, h), side = two ? std::min(lo, hi / 2) : lo, n = two ? 2 : 1;
-    for (int k = 0; k < n; k++) {
-      const int along = (hi - n * side) / 2 + k * side, across = (lo - side) / 2;
-      rect[k][0] = wide ? along : across;
-      rect[k][1] = wide ? across : along;
-      rect[k][2] = side;
-      rect[k][3] = side;
+    const lizard::Crops c = lizard::cropsOf((uint32_t)w, (uint32_t)h, layout == 2);
+    for (int k = 0; k < c.n; k++) {
+      rect[k][0] = (int)c.x[k];
+      rect[k][1] = (int)c.y[k];
+      rect[k][2] = (int)c.side;
+      rect[k][3] = (int)c.side;
     }
-    return n;
+    return c.n;
   });
 }
 

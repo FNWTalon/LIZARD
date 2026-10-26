@@ -97,12 +97,14 @@ static void tally_to(ctx_t *ctx, const ref_arm_t *a, uint64_t stream, double sig
   if (upto > t->frames) { t->fails += fails; t->wrong += wrong; t->its += its; t->frames = upto; }
 }
 
-// ai: The table this tool always printed: every rate at length n, today's decoder at 40 iterations, bisected in
-// ai: noise for 10% frame error with the given frames a step.
+// ai: The table this tool always printed: every rate with a code (the format's four; the lab's 1/4, 1/3 and 5/6 left
+// ai: on 2026-10-25, archive/ldpc-lab-rates/) at length n, today's decoder at 40 iterations, bisected in noise for 10%
+// ai: frame error with the given frames a step.
 static void rate_sweep(int n, int frames, int threads) {
   printf("n=%d, %d frames per point, 40 iterations max\n", n, frames);
   printf("rate     n     k  edges  init_ms | MI@FER10%%   gap  gap%%  | iters@op  us/frame@op\n");
   for (int rate = 0; rate < LDPC_RATES; rate++) {
+    if (!ldpc_rate_name[rate]) continue;
     clock_t t0 = clock();
     ctx_t *ctx = ctx_make(threads, n, rate);
     double init_ms = 1000.0 * (clock() - t0) / CLOCKS_PER_SEC / threads;

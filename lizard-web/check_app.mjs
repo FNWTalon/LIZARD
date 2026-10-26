@@ -118,9 +118,9 @@ check(missing.length === 0 && extra.length === 0, `the caches hold the shell exa
 const inst = await s.send("Page.getInstallabilityErrors").catch((e) => ({ installabilityErrors: [{ errorId: String(e) }] }));
 const man = await s.send("Page.getAppManifest").catch(() => ({ errors: [{ message: "no manifest" }] }));
 check(!inst.installabilityErrors?.length && !man.errors?.length, `installable by Chrome's own verdict${inst.installabilityErrors?.length ? `: ${inst.installabilityErrors.map((e) => e.errorId).join(", ")}` : ""}${man.errors?.length ? `; the manifest: ${man.errors.map((e) => e.message).join(", ")}` : ""}`);
-// ai: a URL with a query is answered under its own URL, query and all: a worker's location is its response's URL, and
-// ai: the GPU worker reads its switches from location.search (2026-10-01: answered with the stored
-// ai: response, the worker read none). fetch's url is that same response URL.
+// ai: a URL with a query is answered under its own URL, query and all: a page's location is its response's URL, and
+// ai: recv.html?auto and send.html?shared read their query from location.search (2026-10-01: answered with the stored
+// ai: response, a worker of the time read none). fetch's url is that same response URL.
 const asked = await evaluate(s, `fetch("index.html?probe=1").then((r) => r.url)`);
 check(asked.endsWith("/index.html?probe=1"), `a query kept through the cache (fetch's url ${asked.replace(BASE, "./")})`);
 

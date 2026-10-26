@@ -31,12 +31,12 @@ class GpuPainter {
   // ai: the device, for a host that presents from it (its handles are wg::Device's public fields)
   wg::Device* vk() const { return dev_.get(); }
 
-  // ai: A format (n, sub-channels, the ring's span, the rate the word states), encodes of up to `frames` frames (halved
+  // ai: A format (sub-channels, the ring's span, the rate the word states; the picture is the format's, focus_n_for), encodes of up to `frames` frames (halved
   // ai: while the device cannot hold them), each `codes` symbols side by side `gap` modules apart (send_tables.h), and
   // ai: the frame ring (2026-10-07): FRAME holds depth() frames, the most of `aheadFrames` and `aheadBytes` allow and at
   // ai: least 2 frames + margin + 1 (halved while the device cannot hold them, never under the floor), frame seq at slot
   // ai: seq mod depth. ringOnly: the ring alone (the CPU's painters fill it), no pipelines' buffers. "" or why not.
-  std::string configure(int n, int subch, int span, int fps, int frames = 4, int codes = 1, int gap = GAP_MODULES,
+  std::string configure(int subch, int span, int fps, int frames = 4, int codes = 1, int gap = GAP_MODULES,
                         int aheadFrames = 0, uint64_t aheadBytes = 0, int margin = 0, bool ringOnly = false);
   int frames() const { return frames_; }
   int depth() const { return depth_; }

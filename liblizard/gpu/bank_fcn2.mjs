@@ -8,8 +8,8 @@
 // ai: FitError leaves the device with no GPU decoder: the C decodes (since 2026-09-26, no DoG bank to fall to).
 //
 // ?fcnstore= (FCN_STORE in the harness), comma separated: packed or f32 forces the storage, region=32x16 the region,
-// fused the one-kernel form, xblock=32x32 the X pass's block, walk=<n> the regions a network workgroup walks, unfit
-// the fallback, weights=<path under liblizard/> another version 2 weights file.
+// fused the one-kernel form, xblock=32x32 the X pass's block (each a form a smaller device is given, run where a larger
+// one fits), unfit the fallback (FitError: the C decodes), weights=<path under liblizard/> another version 2 weights file.
 // ai: The decoder's precision "int8" runs the int8 form (wgsl/bank_fcn2.mjs) on a q8 file (cnn/q8.mjs): the one named
 // ai: by weights=, else WEIGHTS_INT8; a float precision runs a float form on a float file. Either refuses the other's
 // ai: file, and a precision it does not know.
@@ -17,7 +17,6 @@ import { fcn2Source, fcn2Plan, fcn2Forms, fcn2Bytes, KEEP, TILE } from "./wgsl/b
 import { loadNet } from "./cnn/netfile.mjs";
 import { LEVELS, TAU, EPS } from "./constants.mjs";   // ai: not ./decoder.mjs, which imports this module (constants.mjs)
 
-export const name = "fcn2";
 export { KEEP };
 // ai: The installed proposer since 2026-10-03: the final retrain's arm A seed 1 trained further on blown-out scenes
 // ai: (STATUS "Blown-out codes: the finder measured and its classifiers trained further, round 1" and its round 2):
@@ -54,15 +53,13 @@ export async function build(fh) {
   if (o.weights && (o.weights.replace(/^\.\.\/research\//, "").includes("..") || o.weights.startsWith("/"))) throw new Error(`fcn2 weights ${o.weights}: a path under liblizard/ or ../research/`);
   if (!["int8", "f16", "f32"].includes(fh.precision)) throw new Error(`fcn2 bank: precision ${fh.precision}: int8, f16 or f32`);
   const int8 = fh.precision === "int8", file = o.weights ?? (int8 ? WEIGHTS_INT8 : WEIGHTS);
-  if (!file) throw new Error("fcn2 bank: no int8 proposer file (none is installed; name one with fcnstore weights=<path under liblizard/>)");
+  if (!file) throw new Error("fcn2 bank: fcnstore weights= names no file");
   const json = await loadNet(new URL(`../${file}`, import.meta.url));
   const f16 = !int8 && fh.floatPrecision === "f16";
-  if (f16 && !fh.features.includes("shader-f16")) throw new Error("fcn2 bank: f16 asked for without shader-f16");
   const limit = fh.device.limits.maxComputeWorkgroupStorageSize;
   let forms;
   try { forms = fcn2Forms(json, { f16, int8, force: o }); } catch (e) { throw new Error(`fcn2 bank ${fh.precision}, ${file}: ${e.message}`); }
-  // ai: A value that leaves no form (region=2 is v1's) is a mistake, not a small device: FitError would hide it as a
-  // ai: device too small.
+  // ai: A value that leaves no form is a mistake, not a small device: FitError would hide it as a device too small.
   if (!forms.length) throw new Error(`fcn2 bank: fcnstore ${JSON.stringify(o)} matches no form; the forms are ${fcn2Forms(json, { f16, int8 }).map((t) => t.name).join(", ")}`);
   const form = o.unfit ? null : forms.find((t) => t.bytes <= limit);
   // ai: int8 too big for the device is a failed int8 build, not a small device: the caller's precision chain then

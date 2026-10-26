@@ -6,7 +6,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <set>
 
 namespace lizard {
 
@@ -20,13 +19,13 @@ ReadFile readDir(const std::string& root) {
   };
 }
 
-std::vector<std::string> variantsFor(const wg::Device& d, bool subgroups) {
+std::vector<std::string> variantsFor(const wg::Device& d) {
   std::vector<std::string> out;
   const auto& F = d.features;
   const auto& L = d.limits;
   // ai: the SPIR-V zeroes workgroup memory by initializer (gen/wgsl2spv), which needs shaderZeroInitializeWorkgroupMemory
   if (L.maxComputeSharedMemorySize < 32768 || L.maxPerStageStorageBuffers < 10 || !F.zeroInit) return out;
-  const bool sg = subgroups && F.subgroupShuffle;
+  const bool sg = F.subgroupShuffle;
   auto add = [&](const std::string& p) { if (sg) out.push_back(p + "-sg"); out.push_back(p); };
   const bool halfOk = F.f16;
   if (halfOk && F.int8 && F.dot) add("int8");
@@ -91,7 +90,6 @@ void Setup::make(const std::vector<std::string>& ids) {
       auto t0 = std::chrono::steady_clock::now();
       pipelines[id] = dev->createPipeline(spirv(o["module"]), bgls.at(g), id, label);
       const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-      compileMs[id] = ms;
       if (ms > 200) dev->log("pipeline " + id + " (" + (label.empty() ? o["module"].get<std::string>() : label) + ", module " + o["module"].get<std::string>() + "): " + std::to_string((int)ms) + " ms to compile");
     } else if (k == 'b' && !buffers.count(id)) {
       const auto& o = objects["buffers"].at(id);
@@ -141,82 +139,6 @@ void Setup::buildBack(int B) {
   idsIn(back(), ids);
   make(ids);
   dev->flush();
-}
-
-// ai: out/nets/manifest.json: { "kernels": [ { "variants": [names], "role": a path into the tree to a { p, bgl } pair
-// ai: (e.g. "front.fcn2", "front.twins.small.pipe"), "weights": the tree path to the buffer id it replaces or null,
-// ai: "spv": its SPIR-V under out/, "spec": [u32...], "P": a classifier's patches a workgroup (Pipe::P; 1 when absent),
-// ai: "blob": its weights' bytes under out/ or null, "needs": [ { M, N, K, A, B, C, R } ] the cooperative-matrix shapes
-// ai: (wg::Features::CoopShape's types) } ] }.
-static json* at(json& tree, const std::string& path) {
-  json* j = &tree;
-  size_t a = 0;
-  while (a <= path.size()) {
-    size_t b = path.find('.', a);
-    if (b == std::string::npos) b = path.size();
-    const std::string k = path.substr(a, b - a);
-    if (!j->is_object() || !j->contains(k)) return nullptr;
-    j = &(*j)[k];
-    a = b + 1;
-  }
-  return j;
-}
-
-std::vector<std::string> Setup::applyNativeNets() {
-  std::vector<std::string> done;
-  const char* mode = getenv("LIZ_NATIVE_NETS");
-  if (mode && std::string(mode) == "0") return done;
-  const bool replace = mode && std::string(mode) == "1";
-  // ai: the roles the host has a check for (FrontHalf::measureTwins); any other is built only to replace
-  static const std::vector<std::string> checked = {"front.twins.small.pipe", "front.twins.large.pipe"};
-  std::vector<uint8_t> mb;
-  try { mb = read("nets/manifest.json"); } catch (const std::exception&) { return done; }
-  const json man = json::parse(mb.begin(), mb.end());
-  const auto& shapes = dev->features.coopShapes;
-  for (const auto& k : man["kernels"]) {
-    bool mine = false;
-    for (const auto& v : k["variants"]) mine = mine || v.get<std::string>() == variant;
-    if (!mine) continue;
-    // ai: a kernel that names no matrix shape runs on any device
-    bool ok = k["needs"].empty() || dev->features.coopmat;
-    for (const auto& n : k["needs"]) {
-      bool has = false;
-      for (const auto& c : shapes)
-        has = has || (c.subgroup && c.M == n["M"].get<uint32_t>() && c.N == n["N"].get<uint32_t>() && c.K == n["K"].get<uint32_t>() && c.A == n["A"].get<int>() && c.B == n["B"].get<int>() && c.C == n["C"].get<int>() && c.R == n["R"].get<int>());
-      ok = ok && has;
-    }
-    const std::string role = k["role"];
-    if (!ok) { dev->log("native net " + role + ": not on this device (its cooperative-matrix shapes)"); continue; }
-    if (!replace && std::find(checked.begin(), checked.end(), role) == checked.end()) { dev->log("native net " + role + ": not built (the host has no check for it)"); continue; }
-    json* pair = at(tree, role);
-    if (!pair || !pair->is_object() || !(*pair)["p"].is_string()) throw wg::Error("native net: no pipeline at " + role);
-    const std::string pid = (*pair)["p"], lid = (*pair)["bgl"];
-    make({lid});
-    auto b = read(k["spv"].get<std::string>());
-    std::vector<uint32_t> w(b.size() / 4);
-    memcpy(w.data(), b.data(), b.size());
-    std::vector<uint32_t> spec;
-    for (const auto& x : k.value("spec", json::array())) spec.push_back(x.get<uint32_t>());
-    NativeNet nn;
-    nn.pipe = {dev->createPipeline(w, bgls.at(lid), pid + "@native", "native " + role, spec), bgls.at(lid), k.value("P", 1u)};
-    std::string bufId;
-    if (k["weights"].is_string()) {
-      const json* wid = at(tree, k["weights"].get<std::string>());
-      if (!wid || !wid->is_string()) throw wg::Error("native net: no buffer at " + k["weights"].get<std::string>());
-      bufId = wid->get<std::string>();
-      auto data = read(k["blob"].get<std::string>());
-      nn.weights = dev->createBuffer(data.size(), wg::STORAGE | wg::COPY_DST, bufId + "@native", false);
-      dev->upload(*nn.weights, 0, data.data(), data.size());
-    }
-    if (replace) {
-      pipelines[pid] = nn.pipe.p;
-      (*pair)["P"] = nn.pipe.P;
-      if (nn.weights) buffers[bufId] = nn.weights;
-    } else natives[role] = nn;
-    done.push_back(role + (replace ? " (in the web kernel's place, unchecked)" : ""));
-  }
-  dev->flush();
-  return done;
 }
 
 wg::Buffer& Setup::buf(const std::string& id) { return *bufPtr(id); }

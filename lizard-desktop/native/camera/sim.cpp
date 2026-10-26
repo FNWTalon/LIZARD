@@ -1,27 +1,18 @@
 // ai: The simulated camera (2026-10-25, backends.h simList and simOpen): sim/scene.h's screen filmed by a camera that
 // ai: runs as a real backend's does, for every test of the receiver where no camera is. Listed only where
 // ai: LIZ_CAMERA_SIM is set, its value the scene's spec plus the camera's own keys: camfps (its rate, 60), camppm (its
-// ai: clock against the host's, 0), trigger (1: it takes a software trigger, one exposure a trigger: camera.h
-// ai: Trigger), latency (ms from a trigger to the exposure, 0.05), jitter (ms, that latency's spread, a seeded normal,
-// ai: 0.02), format (grey, yuyv, nv12 or mjpeg: the bytes its frames come in, so luma.h's and jpeg.h's paths run as a
-// ai: real camera's would).
-// ai: Free run: capture k begins at the stream's start + k / (camfps (1 + camppm 1e-6)) and is handed over once its
-// ai: exposure and readout are over (sleepUntil, then the render); one handed over past the next one's hand-over time
-// ai: drops that next one, counted. With a trigger begun, each trigger's fire time is queued and its capture begins
-// ai: latency + jitter after it, handed over with the time and the delayed mark TriggerClock::match gives for its
-// ai: arrival (steadyNs at hand-over), Frame::triggered set; end() goes back to free run. A schedule begun or ended
-// ai: forgets the captures of the one before, queued or being exposed, as the clock forgets their triggers; a free
-// ai: run's capture being exposed is handed over as it is. Frame::ns is on steadyNs's clock always.
+// ai: clock against the host's, 0), format (grey, yuyv, nv12 or mjpeg: the bytes its frames come in, so luma.h's and
+// ai: jpeg.h's paths run as a real camera's would).
+// ai: Capture k begins at the stream's start + k / (camfps (1 + camppm 1e-6)) and is handed over once its exposure and
+// ai: readout are over (sleepUntil, then the render); one handed over past the next one's hand-over time drops that
+// ai: next one, counted. Frame::ns is the capture's start on steadyNs's clock.
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
-#include <deque>
 #include <locale>
 #include <mutex>
-#include <random>
 #include <sstream>
 #include <thread>
 
@@ -29,7 +20,7 @@
 #include "jpeg.h"
 #include "luma.h"
 #include "sim/scene.h"
-#include "trigger.h"
+#include "clock.h"
 
 namespace lizard::cam {
 namespace {
@@ -54,8 +45,7 @@ bool number(const std::string& text, double& v) {
 
 // ai: the camera's own keys out of the spec, the rest left for sim::parse
 struct Own {
-  double fps = 60, ppm = 0, latencyMs = 0.05, jitterMs = 0.02;
-  bool trigger = false;
+  double fps = 60, ppm = 0;
   const Form* form = &kForms[0];
 };
 bool split(const std::string& spec, Own& own, std::string& rest, std::string& why) {
@@ -72,12 +62,6 @@ bool split(const std::string& spec, Own& own, std::string& rest, std::string& wh
     };
     if (key == "camfps") { if (!take(1, 1000, "a rate from 1 to 1000")) return false; own.fps = x; }
     else if (key == "camppm") { if (!take(-100000, 100000, "ppm from -100000 to 100000")) return false; own.ppm = x; }
-    else if (key == "trigger") {
-      if (val != "0" && val != "1") { why = "trigger=" + val + ": 0 or 1"; return false; }
-      own.trigger = val == "1";
-    }
-    else if (key == "latency") { if (!take(0, 1000, "ms from 0 to 1000")) return false; own.latencyMs = x; }
-    else if (key == "jitter") { if (!take(0, 100, "ms from 0 to 100")) return false; own.jitterMs = x; }
     else if (key == "format") {
       own.form = nullptr;
       for (const Form& f : kForms) if (val == f.key) own.form = &f;
@@ -88,23 +72,6 @@ bool split(const std::string& spec, Own& own, std::string& rest, std::string& wh
   return true;
 }
 
-class SimCamera;
-
-class SimTrigger : public Trigger {
- public:
-  explicit SimTrigger(SimCamera& cam);
-  bool begin(int64_t periodNs, std::string& why) override;
-  void delay(int64_t ns) override { clock_.delay(ns); }
-  void end() override;
-  bool running() const override { return clock_.running(); }
-  std::string stats() override { return clock_.stats(); }
-  bool match(int64_t arrivedNs, int64_t& ns, bool& delayed) { return clock_.match(arrivedNs, ns, delayed); }
-
- private:
-  SimCamera& cam_;
-  TriggerClock clock_;
-};
-
 class SimCamera : public Camera {
  public:
   SimCamera(const std::string& spec, const Own& own, const sim::Sender& s, const sim::Display& d, const sim::Optics& o)
@@ -114,12 +81,8 @@ class SimCamera : public Camera {
     info_.name = "Simulated camera";
     info_.backend = "sim";
     info_.detail = spec;
-    if (own.trigger) trig_ = std::make_unique<SimTrigger>(*this);
   }
-  ~SimCamera() override {
-    stop();
-    trig_.reset();   // ai: its clock's thread fires into this camera: ended before the rest goes
-  }
+  ~SimCamera() override { stop(); }
 
   const Info& info() const override { return info_; }
 
@@ -182,8 +145,6 @@ class SimCamera : public Camera {
       std::lock_guard<std::mutex> l(mu_);
       stats_ = Stats{};
       convertSum_ = 0;
-      fires_.clear();
-      streaming_ = true;
       quit_ = false;
     }
     th_ = std::thread([this] { loop(); });
@@ -194,10 +155,7 @@ class SimCamera : public Camera {
     {
       std::lock_guard<std::mutex> l(mu_);
       quit_ = true;
-      streaming_ = false;
-      fires_.clear();
     }
-    cv_.notify_all();
     if (th_.joinable()) th_.join();
     scene_.reset();
     jpeg_.reset();
@@ -210,73 +168,22 @@ class SimCamera : public Camera {
     return s;
   }
 
-  Trigger* trigger() override { return trig_.get(); }
-
-  // ai: SimTrigger's: a fire queued (its time) while streaming; the schedule's start and end
-  void fired(int64_t at) {
-    {
-      std::lock_guard<std::mutex> l(mu_);
-      if (!streaming_ || !triggered_) return;
-      fires_.push_back(at);
-    }
-    cv_.notify_all();
-  }
-  // ai: a schedule begun or ended, the clock stopped meanwhile (SimTrigger): the captures of the one before forgotten,
-  // ai: as the clock forgets their triggers: those queued here, and one being exposed, which its hand-over finds of an
-  // ai: older schedule_
-  void triggered(bool on) {
-    {
-      std::lock_guard<std::mutex> l(mu_);
-      triggered_ = on;
-      fires_.clear();
-      schedule_++;
-    }
-    cv_.notify_all();
-  }
-
  private:
   // ai: the capture thread
   void loop() {
     const double period = 1e9 / (own_.fps * (1 + own_.ppm * 1e-6));
     const uint32_t w = mode_.width, h = mode_.height;
-    std::mt19937_64 rng(uint64_t(o_.seed) * 0x9e3779b97f4a7c15ull + 0x6a6974746572ull);
-    std::normal_distribution<double> normal(0, 1);
     // ai: the frame as the camera sends it (packed), and the luma a backend makes of it
     std::vector<uint8_t> grey(size_t(w) * h), bytes, luma;
     if (mode_.pix == Pix::YUYV) bytes.assign(size_t(w) * 2 * h, 128);
     if (mode_.pix == Pix::NV12) bytes.assign(size_t(w) * h + size_t(w) * ((h + 1) / 2), 128);
-    int64_t base = steadyNs();   // ai: free run's capture 0
+    const int64_t base = steadyNs();   // ai: capture 0
     int64_t k = 0;
     uint64_t seq = 0;
-    bool wasTriggered = false;
     std::unique_lock<std::mutex> l(mu_);
     while (!quit_) {
-      int64_t t0 = 0;
-      bool trig = false;
-      uint64_t sched = 0;   // ai: a triggered capture's schedule (schedule_ when its fire was taken)
-      if (triggered_) {
-        wasTriggered = true;
-        if (fires_.empty()) { cv_.wait(l); continue; }
-        t0 = fires_.front();
-        fires_.pop_front();
-        trig = true;
-        sched = schedule_;
-        t0 += int64_t(std::max(0.0, own_.latencyMs + own_.jitterMs * normal(rng)) * 1e6);
-        // ai: a trigger whose hand-over passed more than a period ago (the thread behind) is dropped, its trigger lost
-        if (steadyNs() > t0 + int64_t((exposureUs_.load() * 1e-3 + (o_.rolling ? o_.readoutMs : 0)) * 1e6 + period)) {
-          stats_.dropped++;
-          seq++;
-          continue;
-        }
-      } else {
-        if (wasTriggered) {   // ai: back to free run: its schedule anew from a period from now
-          wasTriggered = false;
-          base = steadyNs() + int64_t(period);
-          k = 0;
-        }
-        t0 = base + int64_t(double(k) * period);
-        k++;
-      }
+      const int64_t t0 = base + int64_t(double(k) * period);
+      k++;
       const double expMs = exposureUs_.load() * 1e-3, gain = gain_.load() * o_.gain;
       const int64_t window = int64_t((expMs + (o_.rolling ? o_.readoutMs : 0)) * 1e6);
       l.unlock();
@@ -285,10 +192,6 @@ class SimCamera : public Camera {
       sleepUntil(t0 + window);
       l.lock();
       if (quit_) break;
-      // ai: a schedule begun or ended while it was exposed: its trigger is forgotten, so is it (2026-10-25: a capture
-      // ai: of a 30 a second schedule begun again at 60 took the new schedule's first trigger, every later one the
-      // ai: trigger after its own)
-      if (trig && sched != schedule_) continue;
       l.unlock();
       uint8_t* into = mode_.pix == Pix::NV12 ? bytes.data() : grey.data();
       scene_->render(t0, into, w, expMs, gain);
@@ -337,30 +240,13 @@ class SimCamera : public Camera {
         default:
           good = false;
       }
-      if (trig) {
-        // ai: the frame's time and delayed mark as a real backend reads them: its arrival matched to a trigger, its
-        // ai: schedule looked at again first (one begun meanwhile forgets it: the render is a few ms, a schedule's
-        // ai: first trigger a period after its begin)
-        l.lock();
-        if (sched != schedule_) continue;   // ai: with l held, as the loop's top has it
-        l.unlock();
-        bool delayed = false;
-        int64_t ns = 0;
-        if (trig_ && trig_->match(steadyNs(), ns, delayed)) {
-          f.ns = ns;
-          f.delayed = delayed;
-          f.triggered = true;
-        }
-      }
       f.seq = seq++;
       if (good) sink_(f);
       l.lock();
       if (good) { stats_.frames++; convertSum_ += convertMs; } else stats_.corrupt++;
-      // ai: free run: a capture whose hand-over time has passed is dropped (the camera had no buffer for it)
-      if (!triggered_ && !trig) {
-        const int64_t now = steadyNs();
-        while (base + int64_t(double(k) * period) + window < now) { k++; stats_.dropped++; seq++; }
-      }
+      // ai: a capture whose hand-over time has passed is dropped (the camera had no buffer for it)
+      const int64_t now = steadyNs();
+      while (base + int64_t(double(k) * period) + window < now) { k++; stats_.dropped++; seq++; }
     }
   }
 
@@ -377,34 +263,10 @@ class SimCamera : public Camera {
   std::unique_ptr<Jpeg> jpeg_;
   std::thread th_;
   std::mutex mu_;
-  std::condition_variable cv_;
-  bool quit_ = false, streaming_ = false, triggered_ = false;
-  uint64_t schedule_ = 0;   // ai: mu_: schedules begun and ended (triggered), a capture's generation
-  std::deque<int64_t> fires_;
+  bool quit_ = false;
   Stats stats_;
   double convertSum_ = 0;
-  std::unique_ptr<SimTrigger> trig_;
 };
-
-SimTrigger::SimTrigger(SimCamera& cam) : cam_(cam), clock_([this](std::string&) { cam_.fired(steadyNs()); return true; }) {}
-
-// ai: The schedule before stopped first (end waits out a trigger being fired), then the camera's captures of it
-// ai: forgotten, then the new one begun: no trigger fires between the forgetting and the begin, so the camera's queue
-// ai: holds the clock's triggers alone (2026-10-25: forgotten before the begin, a trigger of the old schedule being
-// ai: fired was queued after it while the clock forgot it, and its capture took the new schedule's first trigger,
-// ai: every later one the trigger after its own)
-bool SimTrigger::begin(int64_t periodNs, std::string& why) {
-  if (periodNs <= 0) { why = "a period of at least a ns"; return false; }
-  clock_.end();
-  cam_.triggered(true);
-  clock_.begin(periodNs);
-  return true;
-}
-
-void SimTrigger::end() {
-  clock_.end();
-  cam_.triggered(false);
-}
 
 }  // namespace
 

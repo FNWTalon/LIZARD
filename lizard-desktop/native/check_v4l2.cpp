@@ -372,7 +372,7 @@ void caseOpen(Run& r) {
             "by its link and by its node, two cameras at once, each named by its link (" +
                 (b ? b->info().id : std::string("?")) + " opened as v4l2:" + f.node(1) +
                 "); refused: the metadata node (\"" + metaWhy + "\"), an unprobed node (\"" + missWhy +
-                "\"), \"aravis:x\" (\"" + otherWhy + "\")");
+                "\"), \"nosuch:x\" (\"" + otherWhy + "\")");
 }
 
 void caseModes(Run& r) {

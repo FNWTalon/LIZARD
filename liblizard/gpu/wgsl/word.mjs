@@ -2,12 +2,12 @@
 // ai: a frame, after F7 and before the back half (gpu/decoder.mjs). The reads are the format's (gpu/tables.mjs word
 // ai: plan, the reference codec's own): the solid line and the gap every 16 modules give the contrast; each word cell
 // ai: is read at its planned centre against the mean of the Manchester pairs of the track near it (a pair is one dark
-// ai: and one light cell, so its mean is the local grey). One code a ring over every word cell, W = 16, 32, 64, 128 a
-// ai: side (src/fmt.h; 48 for the 96 ring until 2026-10-10), so 4 W soft bits, one cell each. Then the word is found
+// ai: and one light cell, so its mean is the local grey). One code a ring over every word cell, W = 32, 64, 128 a side
+// ai: (src/fmt.h), so 4 W soft bits, one cell each. Then the word is found
 // ai: by ordered statistics decoding (2026-10-25, research STATUS "The ring's word"): the cells sorted by |q|, the
 // ai: code's K rows (gpu/wordcode.mjs) reduced over them to an information set, the word agreeing with the hard bits
 // ai: there, and every word up to ORDER of those bits away scored against the soft bits, the best kept. Until then it
-// ai: was maximum likelihood over all VERSION_MAX x 256 words (a Walsh-Hadamard transform over the rate from
+// ai: was maximum likelihood over all the ring's words (a Walsh-Hadamard transform over the rate from
 // ai: 2026-10-21), which OSD matched on every lab frame and replay it was held to; the search's work doubled with each
 // ai: information bit of the word, OSD's grows as K^ORDER, which is what a longer word needs. Where the reference
 // ai: decodes hard bytes with erasures (src/fmt.c), this decodes soft. A word is taken if the contrast reads (CON_MIN, as
@@ -15,8 +15,8 @@
 // ai: disagreements with the hard bits on the cells at |q| >= TAU of the sides counted, within E[m] for the m that
 // ai: count, the sides counted three ways (all, all but the least sum of |q|, all but the two least) and any passing.
 // ai: The search leaves out (keep) a side under SIDE_KEEP of the best side's sum, at most the two least. Until then the
-// ai: gate was DMAX[W] over every bit, which a glared side (its signs a coin at |q| about 0.33) spent half of, so two
-// ai: glared sides were never read (research STATUS "The ring's word").
+// ai: gate was a hard-bit cap over every bit (scripts/exp/word_arms.mjs DMAX), which a glared side (its signs a coin
+// ai: at |q| about 0.33) spent half of, so two glared sides were never read (research STATUS "The ring's word").
 // ai: The frame then decodes at the word's version, or, with no word taken, at the batch's held version (the last word
 // ai: the host read, 0 for none, since 2026-09-27: the ring bootstraps the word, and a frame whose word does not decode
 // ai: leaves the held one as it is); with neither it decodes nothing. So sel[f].y = 1 + that version (the back
@@ -30,17 +30,9 @@ import { DIMS, MAP, SLOTS } from "./common.mjs";
 import { COONS } from "./sample.mjs";
 import { LATTICE_MAX } from "./back_transform.mjs";
 import { RING_COUNT } from "./finder.mjs";
-import { wordCode, VERSION_MAX, gateTable, TAU, SIDE_KEEP } from "../wordcode.mjs";
+import { wordCode, VERSION_MIN, VERSION_MAX, gateTable, TAU, SIDE_KEEP } from "../wordcode.mjs";
 
 export const CON_MIN = 0.08;
-// ai: The most hard bits the best word may disagree with, by word cells a side (so by ring): 3/16 of the bits, or
-// ai: fewer where the union bound on a random cell set taking a word (every one of the ring's 32,768 words within DMAX
-// ai: of a random hard word) would pass 1e-6 a frame. 64 bits: 6 (1.5e-7; 7 gives 1.3e-6); 128 bits: 24, 3/16
-// ai: (7.5e-9); 192 bits: 36, 3/16 (8.6e-15); 256 bits: 48, 3/16 (1.1e-20); 512 bits (the 256 ring, 2026-10-10): 96, 3/16. Until the evening of 2026-09-27 the rings
-// ai: were 32, 48, 64 and 96 bits took 16 (3.4e-7); until that morning each picture size scored only its own versions
-// ai: (1,024 to 14,592 words): 2/16 at n = 256 (2.9e-7), 3/16 elsewhere. scripts/gpu/word_check.mjs prints the bounds and a
-// ai: garbage trial. F8 no longer reads it (the gate above, 2026-10-25); it stays for the check's comparison.
-export const DMAX = { 16: 6, 32: 24, 48: 36, 64: 48, 128: 96 };
 // ai: WMAX: word cells a side at most (the 256 ring; the 128's 64 until 2026-10-10), so a word's 4 WMAX bits fill VECS
 // ai: vec4u (a row of the code); ROWS: BASE and the 16 rows a ring; MIDS_MAX: track pairs a frame (the 256 ring's 512), each
 // ai: invocation taking every 256th.
@@ -59,7 +51,7 @@ if (K * NW !== 256 || ORDER !== 3) throw new Error(`F8's OSD is laid out for 16 
 // ai: GATE u32 a ring holds 4 WMAX + 1 of them, padded to a vec4u.
 export const GATE = 4 * Math.ceil((4 * WMAX + 2) / 8);
 // ai: The Word uniform's layout in vec4u: code (every ring's ROWS rows, a row VECS vec4u: ring r's row k at (r ROWS +
-// ai: k) VECS), then range (W, DMAX, 0, 0) a ring, then plan a ring, then tops (the last version of pictures 0 to
+// ai: k) VECS), then range (W, 0, 0, 0) a ring, then plan a ring, then tops (the last version of pictures 0 to
 // ai: SLOTS - 1), then gate (GATE u32 a ring).
 export const LAYOUT = (() => {
   const range = RING_COUNT * ROWS * VECS, plan = range + RING_COUNT, tops = plan + RING_COUNT, gate = tops + TOPS;
@@ -73,12 +65,11 @@ export function wordUniform(rings, plans, pictures) {
   if (pictures.length !== SLOTS || pictures.at(-1).hi !== VERSION_MAX) throw new Error(`F8 names a picture of ${SLOTS} by its last version, the last VERSION_MAX`);
   const u = new Uint32Array(4 * LAYOUT.size);
   rings.forEach(({ word }, r) => {
-    if (!(word.cells in DMAX)) throw new Error(`ring ${r}: ${word.cells} word cells a side, F8 has a DMAX for ${Object.keys(DMAX).join(", ")}`);
     if (word.cells > WMAX) throw new Error(`ring ${r}: ${word.cells} word cells a side, F8 holds ${WMAX}`);
     const { base, rows } = wordCode(word.cells);
     [base, ...rows].forEach((v, k) => u.set(v, 4 * VECS * (r * ROWS + k)));
     gateTable(word.cells).forEach((e, m) => { u[4 * LAYOUT.gate + GATE * r + (m >> 1)] |= (e < 0 ? 0xffff : e) << (16 * (m & 1)); });
-    u.set([word.cells, DMAX[word.cells], 0, 0], 4 * (LAYOUT.range + r));
+    u.set([word.cells, 0, 0, 0], 4 * (LAYOUT.range + r));
     u.set(plans[r], 4 * (LAYOUT.plan + r));
   });
   u.set(pictures.map((p) => p.hi), 4 * LAYOUT.tops);
@@ -141,7 +132,7 @@ const SEARCH = /* wgsl */ `
   gb[li] = select(0u, W.code[${VECS}u * (at0 + 1u + (li >> 4u)) + ((li & 15u) >> 2u)][li & 3u], (li & 15u) < nw);
   workgroupBarrier();
   // ai: The cells in order of confidence, |qs| falling and ties to the lower cell: a bitonic sort (nbu is a power of
-  // ai: two, 64 to 512), an invocation a pair.
+  // ai: two, 128 to 512), an invocation a pair.
   for (var k = 2u; k <= nbu; k <<= 1u) {
     for (var j = k >> 1u; j > 0u; j >>= 1u) {
       if (li < nbu / 2u) {
@@ -201,13 +192,13 @@ const SEARCH = /* wgsl */ `
   }
   workgroupBarrier();
   // ai: Every candidate, an invocation every 256th: order 0 with up to ORDER pivot rows flipped, its version byte in
-  // ai: 1 .. VERSION_MAX, its score sum qs_i (2 c_i - 1).
+  // ai: VERSION_MIN .. VERSION_MAX (a candidate naming 1 skipped, as 0 and 129 to 255 are), its score sum qs_i (2 c_i - 1).
   var best = -1e9;
   var bc = 0u;
   for (var c = li; c < ${NCAND}u; c += 256u) {
     let sub = unrank(c);
     let v = byteOf(sub, vr.x);
-    if (v < 1u || v > ${VERSION_MAX}u) { continue; }
+    if (v < ${VERSION_MIN}u || v > ${VERSION_MAX}u) { continue; }
     var sc = 0.0;
     for (var w = 0u; w < nw; w++) {
       let cw = c0w[w] ^ rowWord(sub.y, w) ^ rowWord(sub.z, w) ^ rowWord(sub.w, w);
@@ -220,7 +211,7 @@ const SEARCH = /* wgsl */ `
 export const WORD = DIMS + MAP + /* wgsl */ `
 struct LevelDims { d: array<vec4u, 5> }
 // ai: code: per ring, BASE then the 16 rows (version bits, then fps bits), VECS vec4u each; range[ring] = (word cells
-// ai: a side W, DMAX, 0, 0); plan[ring] = (first point, reference steps, track pairs, word points); tops: the last
+// ai: a side W, 0, 0, 0); plan[ring] = (first point, reference steps, track pairs, word points); tops: the last
 // ai: version of pictures 0 to SLOTS - 1, four a vec4u; gate: the gate's E[m], GATE u32 a ring.
 struct Word { code: array<vec4u, ${LAYOUT.range}>, range: array<vec4u, ${RING_COUNT}>, plan: array<vec4u, ${RING_COUNT}>, tops: array<vec4u, ${TOPS}>, gate: array<vec4u, ${(RING_COUNT * GATE) / 4}> }
 struct Lattice { at: array<vec4u, ${RING_COUNT}>, lat: array<vec4f, ${(RING_COUNT * LATTICE_MAX) / 4}> }
@@ -411,7 +402,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
     let sub = unrank(u32(b.y));
     let v = byteOf(sub, vr.x);
     let fr = byteOf(sub, 2u * vr.x);
-    let valid = b.x > -1e8 && v >= 1u && v <= ${VERSION_MAX}u;
+    let valid = b.x > -1e8 && v >= ${VERSION_MIN}u && v <= ${VERSION_MAX}u;
     win = vec4f(b.x, f32(select(0u, (v - 1u) * 256u + fr, valid)), select(0.0, 1.0, valid), 0.0);
   }
   let wn = workgroupUniformLoad(&win);

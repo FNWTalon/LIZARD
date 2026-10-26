@@ -1,5 +1,5 @@
 # The desktop app (Home, Send and Receive) built from a clean checkout for Linux (.deb), Windows (.msi) and macOS on
-# Apple Silicon (.dmg). On Linux once: the codec (Emscripten), naga, the GPU tree (the painter's and the decoder's),
+# Apple Silicon (.dmg). On Linux once: the codec (Emscripten), wgsl2spv (naga), the GPU tree (the painter's and the decoder's),
 # and Windows' native library and the receiver's tools (cam_check, lizard_receive) cross-built with MinGW-w64. Then
 # each system builds its package with jpackage, a Java runtime inside (Linux and macOS their native library too, macOS
 # with MoltenVK beside it), keeps it as an artifact, and only then runs the receiver's checks, synthetic all
@@ -14,7 +14,6 @@ name: Desktop app
 on:
   push:
     tags: ['v*']
-    branches: ['desktop-ports']
   workflow_dispatch:
 
 permissions:
@@ -55,14 +54,13 @@ jobs:
           ~/emsdk/emsdk install "$EMSDK_VERSION"
           ~/emsdk/emsdk activate "$EMSDK_VERSION"
 
-      - name: naga and wgsl2spv (cached)
+      - name: wgsl2spv (cached)
         uses: actions/cache@v4
         with:
           path: |
-            liblizard/.tools
             liblizard/gen/wgsl2spv/target
             ~/.cargo/registry
-          key: naga-30.0.1-${{ runner.os }}-${{ hashFiles('liblizard/gen/wgsl2spv/Cargo.lock') }}
+          key: wgsl2spv-${{ runner.os }}-${{ hashFiles('liblizard/gen/wgsl2spv/Cargo.lock') }}
 
       - name: The NDK's shader tools
         run: |
@@ -74,7 +72,7 @@ jobs:
           source ~/emsdk/emsdk_env.sh
           liblizard/build.sh
 
-      - name: naga
+      - name: wgsl2spv
         run: lizard-android/build.sh tools
 
       - name: The GPU tree
@@ -146,7 +144,7 @@ jobs:
         run: |
           sudo rm -f /var/lib/man-db/auto-update
           sudo apt-get update -q
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libx11-dev libxrandr-dev libxcomposite-dev libxext-dev libturbojpeg
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libx11-dev libxrandr-dev libturbojpeg
           cmake -S lizard-desktop/native -B lizard-desktop/build/native -DCMAKE_BUILD_TYPE=Release
           cmake --build lizard-desktop/build/native --target lizard_desktop cam_check lizard_receive -j"$(nproc)"
 
@@ -166,8 +164,8 @@ jobs:
           path: dist/
 
       # The receiver's checks (native/checks.h), after the package is kept and whatever packaging gave: the
-      # conversions and TurboJPEG, the trigger's clock, the simulated screen and camera, the session on the CPU
-      # decoder, V4L2 against sim/fake_v4l2's devices. LIZ_V4L2_NODES empty: no /dev/video* node is probed. Every check
+      # conversions, TurboJPEG and the clock's sleep, the simulated screen and camera, the session on the CPU decoder,
+      # V4L2 against sim/fake_v4l2's devices. LIZ_V4L2_NODES empty: no /dev/video* node is probed. Every check
       # runs; any one's failure (exit other than 0) fails the step after the last, and the job.
       - name: The receiver's checks
         if: ${{ !cancelled() && steps.native.outcome == 'success' }}
@@ -176,7 +174,7 @@ jobs:
           export LIZ_V4L2_NODES=
           mkdir -p smoke
           fail=0
-          for c in luma trigger scene session v4l2; do
+          for c in luma scene session v4l2; do
             rc=0
             timeout 600 lizard-desktop/build/native/cam_check "$c" > "smoke/cam_check-$c.txt" 2>&1 || rc=$?
             echo "::group::cam_check $c: exit $rc"
@@ -245,17 +243,17 @@ jobs:
           cp tj/x/bin/turbojpeg.dll lizard-desktop/build/win/
 
       # The receiver's checks (native/checks.h), as on Linux: after the .msi is kept and whatever packaging gave, the
-      # conversions and TurboJPEG, the trigger's clock, the simulated screen and camera, the session on the CPU
-      # decoder. Every check runs; any one's failure fails the step after the last, and the job. Without
-      # turbojpeg.dll the MJPEG cases would skip saying why (Media Foundation decodes a camera's MJPEG here: checks.h
-      # jpegOptional); with it they run.
+      # conversions, TurboJPEG and the clock's sleep, the simulated screen and camera, the session on the CPU decoder.
+      # Every check runs; any one's failure fails the step after the last, and the job. Without turbojpeg.dll the MJPEG
+      # cases would skip saying why (Media Foundation decodes a camera's MJPEG here: checks.h jpegOptional); with it
+      # they run.
       - name: The receiver's checks
         if: ${{ !cancelled() }}
         timeout-minutes: 20
         run: |
           mkdir -p smoke
           fail=0
-          for c in luma trigger scene session; do
+          for c in luma scene session; do
             rc=0
             lizard-desktop/build/win/cam_check.exe "$c" > "smoke/cam_check-$c.txt" 2>&1 || rc=$?
             echo "::group::cam_check $c: exit $rc"
@@ -411,7 +409,7 @@ jobs:
           EOF
 
       # The receiver's checks (native/checks.h): AVFoundation's (its list on a runner with no camera, its frames'
-      # conversions on test buffers), the conversions and TurboJPEG, the trigger's clock, the simulated screen and
+      # conversions on test buffers), the conversions, TurboJPEG and the clock's sleep, the simulated screen and
       # camera, the session on the CPU decoder. Every check runs; any one's failure fails the step after the last, and
       # the job. Without jpeg-turbo the MJPEG cases would skip saying why (AVFoundation decodes a camera's MJPEG here:
       # checks.h jpegOptional); with it they run.
@@ -421,7 +419,7 @@ jobs:
         run: |
           mkdir -p smoke
           fail=0
-          for c in avf luma trigger scene session; do
+          for c in avf luma scene session; do
             rc=0
             lizard-desktop/build/native/cam_check "$c" > "smoke/cam_check-$c.txt" 2>&1 || rc=$?
             echo "::group::cam_check $c: exit $rc"

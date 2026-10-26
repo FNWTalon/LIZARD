@@ -147,13 +147,13 @@ const fc = (L, src, w, b, relu, at) => {
 
 // The cascade (cnn/README.md, "The cascade"): a small net on every kept peak, RANK keeps the `keep` strongest a
 // frame by mark logit as a compacted index list, and the large net runs on that list only, overwriting those
-// readings. The harness default; FrontHalf.create's `cascade` option and CASCADE=<file> CASCADE_KEEP=<n> select it.
-// rest: what a peak outside the list keeps, "small" (the small net's reading) or "zero" (no reading at all).
+// readings; a peak outside the list keeps the small net's reading. The harness default; FrontHalf.create's `cascade`
+// option and CASCADE=<file> CASCADE_KEEP=<n> select it.
 // keep 64, not 128 (2026-09-24): the replay's blocks the same to 0.01%, and the small net ranks 99.83% of the noisy
 // scenes' marks within its top 64 (scripts/train/cnn_v3_topk.py --k=64; 99.60% at 32, which is why not 32).
 // ai: weights: a path under liblizard/ since 2026-10-01 (a name under gpu/cnn/ before): the installed app names every file
 // ai: by a hash of its bytes and rewrites only whole literal paths (lizard-web/pwa/hash.mjs), and the harness page takes either.
-export const CASCADE = { weights: "gpu/cnn/weights-v3.safetensors", keep: 64, rest: "small" };
+export const CASCADE = { weights: "gpu/cnn/weights-v3.safetensors", keep: 64 };
 // ai: The installed classifiers' int8 twins, paths under liblizard/ (names under gpu/cnn/ until 2026-10-01, which the built
 // ai: app's renamed files no longer matched: it would have run the float classifiers without a word): a float file's
 // ai: q8 form (cnn/q8c.mjs), run where the decoder runs at precision int8 and its measurement on the first stream
@@ -163,10 +163,9 @@ export const CASCADE = { weights: "gpu/cnn/weights-v3.safetensors", keep: 64, re
 export const INT8_TWINS = { "gpu/cnn/weights.safetensors": "gpu/cnn/weights-q8.safetensors", "gpu/cnn/weights-v3.safetensors": "gpu/cnn/weights-v3-q8.safetensors" };
 
 // offsets: element offsets of each layer's weights and biases in the W buffer (cnn/weights.mjs, packWeights).
-// role: null runs this net on every kept peak. "first" also writes the mark logit to `score` (binding 12) and, with
-// rest "zero", writes no reading. "second" takes its peak from `list` (binding 12), `keep` entries a frame, and
-// runs on counts[3] of them.
-export const classifySource = (offsets, arch, { f16 = false, role = null, keep = 0, rest = "small" } = {}) => {
+// role: null runs this net on every kept peak. "first" also writes the mark logit to `score` (binding 12). "second"
+// takes its peak from `list` (binding 12), `keep` entries a frame, and runs on counts[3] of them.
+export const classifySource = (offsets, arch, { f16 = false, role = null, keep = 0 } = {}) => {
   // ai: the reference kernel is float only: a q8 file runs in classify_gemm.mjs's int8 form
   if (arch?.quant) throw new Error(`classify: ${arch.name} is an int8 file (arch.quant); classify_gemm.mjs runs it`);
   const P = classifyPlan(arch, { f16 }), T = f16 ? "f16" : "f32";
@@ -237,9 +236,9 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
     let p = 1.0 / (1.0 + exp(-z0));
     let o3 = 3u * (f * P.cap + i);
     ${role === "first" ? "score[f * P.cap + i] = z0;" : ""}
-    ${role === "first" && rest === "zero" ? "" : /* wgsl */ `readings[o3] = vec4f(pk.xy, u * exp(z3), t - PI / 4.0);
+    readings[o3] = vec4f(pk.xy, u * exp(z3), t - PI / 4.0);
     readings[o3 + 1u] = vec4f(p, 0.0, 0.0, 0.0);
-    readings[o3 + 2u] = vec4f(select(0.0, 1.0, z4 > 0.0), pk.w, f32(l), 1.0);`}
+    readings[o3 + 2u] = vec4f(select(0.0, 1.0, z4 > 0.0), pk.w, f32(l), 1.0);
   }
 }
 `;
