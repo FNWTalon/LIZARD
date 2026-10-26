@@ -11,7 +11,7 @@
 <li>Grey levels only, so any screen and any camera read it the same way.</li>
 </ul>
 
-<p>Senders: the web page at https://fosslabs.dev, the LIZARD desktop sender, or this app on another phone. From an ordinary monitor it reads about 1 to 1.6 MB/s; with two codes side by side on a recent phone, up to about 4 MB/s.</p>
+<p>Senders: the web page at https://fosslabs.dev, the LIZARD desktop app, or this app on another phone. From an ordinary monitor it reads about 1 to 1.6 MB/s; with two codes side by side on a recent phone, up to about 4 MB/s.</p>
 
 <p>Requirements: Android 10 or later, a 64-bit ARM phone and a back camera.</p>
 
