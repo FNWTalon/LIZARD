@@ -614,7 +614,7 @@ class MainActivity : ComponentActivity() {
                 busyRuns.remove(r.run)
                 exporting = ""
                 replayNote = res.fold({ "$name in Downloads, ${"%.0f".format(Locale.ROOT, it / 1e6)} MB\nthen: adb pull " +
-                    "/sdcard/Download/$name research/captures/v0.3/" }, { "${r.run}: ${it.message}" })
+                    "/sdcard/Download/$name research/replays/" }, { "${r.run}: ${it.message}" })
                 if (runs.none { it.run == r.run }) dropRun(r)
                 Log.i(Engine.TAG, "replay: ${r.run} ${res.fold({ "downloaded" }, { "not downloaded: ${it.message}" })}")
             }
