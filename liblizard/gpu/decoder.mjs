@@ -535,7 +535,10 @@ export class FrontHalf {
       d.queue.writeBuffer(b, 0, ab);
       return b;
     };
-    this.rounds = [[6, SUB * SUB, 0.5], [3, 1, 0.2]].map(this.roundOf);
+    // ai: F7's one round: +-3 modules at half a module from the finder's map, half the template's samples (a fine round
+    // ai: about the refit's map, +-0.6 at a fifth, until 2026-10-28: 0.4% more blocks on an anchored replay for 7 to 8%
+    // ai: more of the iGPU's frame, the anchors' border search doing its work)
+    this.round = this.roundOf([6, SUB * SUB, 0.5]);
     const fitAb = new ArrayBuffer(48);
     new Uint32Array(fitAb).set(count, 0); new Uint32Array(fitAb).set(nbase, 4); new Float32Array(fitAb).set(this.modules, 8);
     this.fitUni = d.createBuffer({ size: 48, usage: U.UNIFORM | U.COPY_DST });
@@ -564,8 +567,8 @@ export class FrontHalf {
     const au = anchUniform(this.tables.rings);
     this.anchUni = this.device.createBuffer({ size: au.byteLength, usage: U.UNIFORM | U.COPY_DST });
     this.device.queue.writeBuffer(this.anchUni, 0, au);
-    // ai: the border's second search's own round: +-0.4 module at a fifth, every template sample (F7's fine round's
-    // ai: +-0.6: 0.07% more blocks over the published lenses for 0.06 to 0.08 ms more of the S26's half; +-0.2 no
+    // ai: the border's second search's own round: +-0.4 module at a fifth, every template sample (+-0.6, the fine round
+    // ai: F7 had until 2026-10-28: 0.07% more blocks over the published lenses for 0.06 to 0.08 ms more of the S26's half; +-0.2 no
     // ai: cheaper there and 0.22% fewer; one sample a module 4.2% fewer)
     const anchRound = this.roundOf([2, 1, 0.2]);
     Object.assign(this, { anchFind, anchPredict, nodesC, anchRound, anchFit, anchRefit });
@@ -701,7 +704,7 @@ export class FrontHalf {
       this.gatherGroup2 = group(this.gather, [this.frames2Buf, this.readingsBuf, this.accBuf, this.candBuf, this.quadsBuf, this.p5Uni]);
       this.completeGroup2 = group(this.complete, [this.readingsBuf, this.quadsBuf, this.p5Uni], 7, this.lvEntries2);
       this.redoGroup = group(this.redo, [this.framesBuf, this.selBuf, this.frames2Buf, this.accBuf, this.readingsBuf, this.candBuf, this.quadsBuf, this.p5Uni]);
-      this.nodesGroups = this.rounds.map((r) => group(this.nodesP, [this.nodesBuf, this.tmplBuf, this.mapsBuf, this.selBuf, this.measBuf, r], 7));
+      this.nodesGroup = group(this.nodesP, [this.nodesBuf, this.tmplBuf, this.mapsBuf, this.selBuf, this.measBuf, this.round], 7);
       this.anchNodesGroup = group(this.nodesP, [this.nodesBuf, this.tmplBuf, this.mapsBuf, this.selBuf, this.measBuf, this.anchRound], 7);
       this.wordGroup = group(this.wordP, [this.mapsBuf, this.selBuf, this.residBuf, this.wordPtsBuf, this.resultBuf, this.wordUni, this.wordLatUni, this.heldUni], 7);
       // ai: The anchors' two stages read the frame texture (binding 0), so their groups are made here with it.
@@ -1116,7 +1119,7 @@ export class FrontHalf {
     // ai: The finder's second round (wgsl/finder.mjs REDO) wherever it runs: the bank's levels below COARSE_FROM for the
     // ai: frames the first round did not find, and the finder again on those frames.
     const second = find && !inject;
-    const STAGES = ["pyramid", "bank", "select", "describe", "vote", "score", ...(second ? ["find2"] : []), ...this.rounds.flatMap((_, r) => [`nodes${r + 1}`, `refit${r + 1}`]), ...(anch ? [] : ["anchors"]), "word", ...(grid ? ["sample"] : []), ...(this.bh ? BACK_PASSES : [])];
+    const STAGES = ["pyramid", "bank", "select", "describe", "vote", "score", ...(second ? ["find2"] : []), "nodes", "refit", ...(anch ? [] : ["anchors"]), "word", ...(grid ? ["sample"] : []), ...(this.bh ? BACK_PASSES : [])];
     if (profile && this.qs && this.qs.count < 2 * STAGES.length) { this.qs.destroy(); this.qs = d.createQuerySet({ type: "timestamp", count: 2 * STAGES.length }); this.qsBuf.destroy(); this.qsBuf = d.createBuffer({ size: 8 * 2 * STAGES.length, usage: U.QUERY_RESOLVE | U.COPY_SRC }); }
     const pair = (k) => (this.qs ? { timestampWrites: { querySet: this.qs, beginningOfPassWriteIndex: 2 * k, endOfPassWriteIndex: 2 * k + 1 } } : {});
     // ai: Each slot's crop from its ring layer into the lane's layer i (1.2 MB at 1080, about 0.1 ms a batch): no
@@ -1185,11 +1188,9 @@ export class FrontHalf {
       }
       if (this.register) {
         // ai: One workgroup a node of the largest ring; a frame's own ring's nodes past its count return at once.
-        this.nodesGroups.forEach((g, r) => {
-          begin(`nodes${r + 1}`); step(this.nodesP, g, this.nodesMax, nb);
-          begin(`refit${r + 1}`); step(this.refit, this.refitGroup, nb);
-        });
-        // ai: the last round's residuals, lens and side fits (REFIT_POST), in its refit's profile pass: REFIT's own tail
+        begin("nodes"); step(this.nodesP, this.nodesGroup, this.nodesMax, nb);
+        begin("refit"); step(this.refit, this.refitGroup, nb);
+        // ai: the residuals, lens and side fits (REFIT_POST), in the refit's profile pass: REFIT's own tail
         // ai: until 2026-10-21, which ran in every round but the first (m0[13] != 0)
         step(this.refitPost, this.refitPostGroup, nb);
         // ai: the anchors' arm (wgsl/anchors.mjs), in the same pass: ANCH_FIND a workgroup per (anchor, frame), then

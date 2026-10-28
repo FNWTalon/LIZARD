@@ -185,7 +185,7 @@ function exportTree(fh, v) {
       redo: pb(fh.redo), coarseFrom: fh.bank.COARSE_FROM,
       fcn2: pb(fh.fcn2), fcn2X: pb(fh.fcn2X), fcn2Form: { TX: f.TX, TY: f.TY, XB: f.XB, walk: f.walk, xplane: f.xplane, int8: f.int8, store: f.store, name: f.name },
       buffers: Object.fromEntries(["planBuf", "planUni", "p4Uni", "pickUni", "nodesBuf", "tmplBuf", "wordPtsBuf", "wordUni", "wordLatUni", "fitUni", "weightsBuf"].map((k) => [k, idOf(fh[k])])),
-      rounds: fh.rounds.map(idOf),
+      round: idOf(fh.round),
       twins: tf ? { large: twin(tf.large) } : null,
     },
     pictures: PICTURES.map(({ n, subch, lo, hi }) => ({ n, subch, lo, hi })),
