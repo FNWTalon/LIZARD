@@ -13,7 +13,7 @@
 //
 //   id bits 31..18  chunk   0 .. 16382 a chunk of the file, 16383 (XFER_CONTROL) a control block
 //   id bits 17..0   symbol  a data block: the Wirehair block id within its chunk's fountain
-//                           a control block: 0 the header, 1 + m manifest block m (m < 1171), the rest reserved
+//                           a control block: 0 the header, 1 + m manifest block m (m < XFER_MAX_MANIFEST, 1366), the rest reserved
 //
 // Why 18 bits of symbol. Wirehair takes at most 64,000 source blocks (liblizard/wirehair/shim.cpp), so the largest chunk
 // is 16 MiB (35,773 blocks of 469 bytes; 32 MiB would be 71,546). Repair ids run past the source count without end,

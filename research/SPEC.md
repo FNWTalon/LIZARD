@@ -1180,7 +1180,7 @@ little-endian (`xfer.h:xfer_id_get`):
 | bits | field | values |
 |---|---|---|
 | 31 to 18 | chunk | 0 to 16382: a chunk of the file (7.6). 16383 (`XFER_CONTROL`): a control block |
-| 17 to 0 | fountain symbol | a data block: its Wirehair block id in its chunk's fountain. A control block: 0 the header (7.7), 1 + m manifest block m for m = 0 to 1170 (7.8), 1172 to 262143 reserved |
+| 17 to 0 | fountain symbol | a data block: its Wirehair block id in its chunk's fountain. A control block: 0 the header (7.7), 1 + m manifest block m for m = 0 to 1365 (7.8), 1367 to 262143 reserved |
 
 - id = chunk x 2^18 + symbol. The header's id is 0xFFFC0000 (`XFER_ID_HEADER`); manifest block m's is 0xFFFC0001 + m.
 - A receiver MUST ignore a block with a reserved id.
