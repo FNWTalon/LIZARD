@@ -1,0 +1,4 @@
+- The code carries a grid of anchors: it reads through strongly bent lenses. 0.5's codes do not read here.
+- Receive's PC decoder: with a USB cable in, a computer's LIZARD decodes the phone's camera.
+- Replays are .lizard files.
+- The phase lock recovers from a bad start by itself.
