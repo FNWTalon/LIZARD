@@ -559,7 +559,13 @@ void caseCamera(liz_decoder* dec) {
       }
     }
     const bool lossy = !std::strcmp(form, "mjpeg");
-    const bool good = seen.ns.size() >= 100 && st.frames == seen.ns.size() && !st.corrupt && !offGrid && compared >= 6 &&
+    // ai: the camera's own pace: every period of the 2 s accounted for, delivered or counted dropped (a skipped period
+    // ai: between two frames is a drop the camera counted); how many it delivers is the host's speed, not the camera's
+    // ai: (the scene renders on the camera's thread: CI's 3-core macOS runner delivered 21 to 26 a second with the
+    // ai: reference scene painting beside it)
+    const uint64_t periods = uint64_t(seen.ns.size()) + st.dropped;
+    const bool good = seen.ns.size() >= 12 && periods >= 110 && uint64_t(gaps) <= st.dropped && st.frames == seen.ns.size() &&
+                      !st.corrupt && !offGrid && compared >= 6 &&
                       (lossy ? worstDb >= 30 : differ == 0) && blocksRead == liz_blocks_for(s.blocks);
     const std::string what = fmt("%s at %u x %u: %d frames in 2 s (%llu dropped, %llu corrupt, %ld periods skipped), %ld times off the 60 a "
                                  "second grid, %ld captures against the reference %s, %d of %d blocks read from one, convert %.3f ms",
