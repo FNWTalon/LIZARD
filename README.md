@@ -217,100 +217,100 @@ times, camera axes, the crop) and its statistics. The format is specified in
 
 ## The pilots and the phase lock, in algebra
 
-**The problem.** The screen shows a new picture every $T_d$ (16.67 ms at 60 Hz), and the camera starts a capture
-every $T_c$. The two clocks run independently, so each capture's exposure window slides across the screen's picture
-changes; on the Samsung S26, $T_c = 16.650$ ms against $T_d = 16.667$ ms, a slide of about 1 ms a second. A capture
-whose window crosses a change holds a share $a$ of the previous picture or a share $b$ of the next one, and reads
-fewer blocks. The pilots let the receiver measure $a$ and $b$ on every capture, and the Android app moves its camera's
+**The problem.** The screen shows a new picture every $`T_d`$ (16.67 ms at 60 Hz), and the camera starts a capture
+every $`T_c`$. The two clocks run independently, so each capture's exposure window slides across the screen's picture
+changes; on the Samsung S26, $`T_c = 16.650`$ ms against $`T_d = 16.667`$ ms, a slide of about 1 ms a second. A capture
+whose window crosses a change holds a share $`a`$ of the previous picture or a share $`b`$ of the next one, and reads
+fewer blocks. The pilots let the receiver measure $`a`$ and $`b`$ on every capture, and the Android app moves its camera's
 timing to keep both near zero.
 
-**What the sender paints.** The sender counts its pictures modulo 4, $c = 0, 1, 2, 3, 0, \dots$, with low bit $c_0$
-and high bit $c_1$. The spare slots at the end of each block hold known symbols $s_i = \pm 1$, which the sender
-flips (multiplies by $-1$) when the block's bit is 1: bit $c_0$ in the even-numbered blocks, bit $c_1$ in the odd
+**What the sender paints.** The sender counts its pictures modulo 4, $`c = 0, 1, 2, 3, 0, \dots`$, with low bit $`c_0`$
+and high bit $`c_1`$. The spare slots at the end of each block hold known symbols $`s_i = \pm 1`$, which the sender
+flips (multiplies by $`-1`$) when the block's bit is 1: bit $`c_0`$ in the even-numbered blocks, bit $`c_1`$ in the odd
 ones. So the even blocks' pilots flip on every picture, and the odd blocks' on every second picture:
 
-| picture $c$ | 0 | 1 | 2 | 3 |
+| picture $`c`$ | 0 | 1 | 2 | 3 |
 |---|---|---|---|---|
-| $c_0$, even blocks | 0 | 1 | 0 | 1 |
-| $c_1$, odd blocks | 0 | 0 | 1 | 1 |
+| $`c_0`$, even blocks | 0 | 1 | 0 | 1 |
+| $`c_1`$, odd blocks | 0 | 0 | 1 | 1 |
 
-**What a capture reads.** For each block $b$, the receiver correlates the received values $y_i$ of its $T$ spare
-slots with the known symbols, scaled by the block's own signal level ($m_2$ is the mean power of the sub-channel the
+**What a capture reads.** For each block $`b`$, the receiver correlates the received values $`y_i`$ of its $`T`$ spare
+slots with the known symbols, scaled by the block's own signal level ($`m_2`$ is the mean power of the sub-channel the
 slots sit in):
 
-$$
+```math
 r_b = \frac{1}{T} \sum_{i=1}^{T} \frac{s_i \, y_i}{\sqrt{m_2 / 2}}
-$$
+```
 
-The mean over the even blocks is $r$, over the odd blocks $r_2$. A capture of a single picture reads $r = \pm K$ and
-$r_2 = \pm K$, where $K = \sqrt{S / (S + N)}$ is just under 1 at a good signal-to-noise ratio, and the two signs give
+The mean over the even blocks is $`r`$, over the odd blocks $`r_2`$. A capture of a single picture reads $`r = \pm K`$ and
+$`r_2 = \pm K`$, where $`K = \sqrt{S / (S + N)}`$ is just under 1 at a good signal-to-noise ratio, and the two signs give
 the count of the picture it holds:
 
-$$
+```math
 \hat c = [\, r < 0 \,] + 2 \, [\, r_2 < 0 \,]
-$$
+```
 
-**What a blended capture reads.** Suppose a capture of picture $c$ also holds a share $a$ of picture $c - 1$ and a
-share $b$ of picture $c + 1$. A neighbour whose bit differs contributes flipped symbols, which cancel part of the
+**What a blended capture reads.** Suppose a capture of picture $`c`$ also holds a share $`a`$ of picture $`c - 1`$ and a
+share $`b`$ of picture $`c + 1`$. A neighbour whose bit differs contributes flipped symbols, which cancel part of the
 correlation:
 
-$$
+```math
 |r| = K \, (1 - 2a - 2b)
 \qquad
 |r_2| = \begin{cases} K \, (1 - 2a) & c \text{ even} \\ K \, (1 - 2b) & c \text{ odd} \end{cases}
-$$
+```
 
-Bit $c_0$ differs from both neighbours. Bit $c_1$ differs only from the previous picture when $c$ is even, and only
-from the next one when $c$ is odd (see the table). Two readings, two unknowns: for $c$ even,
+Bit $`c_0`$ differs from both neighbours. Bit $`c_1`$ differs only from the previous picture when $`c`$ is even, and only
+from the next one when $`c`$ is odd (see the table). Two readings, two unknowns: for $`c`$ even,
 
-$$
+```math
 a = \frac{1}{2} \left( 1 - \frac{|r_2|}{K} \right) \qquad b = \frac{|r_2| - |r|}{2K}
-$$
+```
 
-and the same with $a$ and $b$ exchanged for $c$ odd. So a capture tells not only how much it is blended but with
+and the same with $`a`$ and $`b`$ exchanged for $`c`$ odd. So a capture tells not only how much it is blended but with
 which neighbour, which is what a controller needs to know: whether to move later or earlier. A single flipping bit
-would only give $|r| = K(1 - 2a - 2b)$, the sum.
+would only give $`|r| = K(1 - 2a - 2b)`$, the sum.
 
-**Fitting over many captures.** One capture's readings are noisy, so the app fits $K$, $a$ and $b$ over the last
-second of captures by weighted least squares. For each capture and each bit $\beta$ (0 or 1):
+**Fitting over many captures.** One capture's readings are noisy, so the app fits $`K`$, $`a`$ and $`b`$ over the last
+second of captures by weighted least squares. For each capture and each bit $`\beta`$ (0 or 1):
 
-$$
+```math
 |r_\beta| = K - 2Ka \, d^-_\beta - 2Kb \, d^+_\beta + \varepsilon
-$$
+```
 
-Here $d^-_\beta$ is 1 when bit $\beta$ of this capture's count differs from the previous capture's count, and
-$d^+_\beta$ the same against the next capture. The counts are read from the neighbouring captures' own signs, so a
+Here $`d^-_\beta`$ is 1 when bit $`\beta`$ of this capture's count differs from the previous capture's count, and
+$`d^+_\beta`$ the same against the next capture. The counts are read from the neighbouring captures' own signs, so a
 picture the screen showed twice (no bit differs) or skipped is accounted for as it happened, not assumed. Each
-reading is weighted by $1/\sigma^2$, its standard error from the spread of $r_b$ over the blocks.
+reading is weighted by $`1/\sigma^2`$, its standard error from the spread of $`r_b`$ over the blocks.
 
-**The correction.** A capture that starts too early holds some of the previous picture ($a > b$); one that starts
-too late holds some of the next ($b > a$). The error is $e = a - b$, with standard error
-$\sigma_e = \sqrt{\sigma_a^2 + \sigma_b^2}$. When both neighbours show and $|e| \ge 3 \sigma_e$, the app moves its
+**The correction.** A capture that starts too early holds some of the previous picture ($`a > b`$); one that starts
+too late holds some of the next ($`b > a`$). The error is $`e = a - b`$, with standard error
+$`\sigma_e = \sqrt{\sigma_a^2 + \sigma_b^2}`$. When both neighbours show and $`|e| \ge 3 \sigma_e`$, the app moves its
 captures later by
 
-$$
+```math
 h = G \, e
-$$
+```
 
-where $G$, in milliseconds per unit of $e$, is learned as the lock runs (below). The only timing control the camera
-API gives is to make one frame longer: a single capture request with frame duration $T_c + h$ shifts every capture
-after it by $h$. A move earlier by $x$ is therefore made as a move later by $T_d - x$, one picture less $x$.
+where $`G`$, in milliseconds per unit of $`e`$, is learned as the lock runs (below). The only timing control the camera
+API gives is to make one frame longer: a single capture request with frame duration $`T_c + h`$ shifts every capture
+after it by $`h`$. A move earlier by $`x`$ is therefore made as a move later by $`T_d - x`$, one picture less $`x`$.
 
 - Neither neighbour shows (both shares under 2%): the captures are clean, and the hold stands.
 - Only one shows: the captures sit at the edge of a clean region; the hold steps out of that edge and 2 ms in.
-- No capture is mostly one picture (the median $|r|$ under 0.35): there is no sign to trust, so the hold jumps a
+- No capture is mostly one picture (the median $`|r|`$ under 0.35): there is no sign to trust, so the hold jumps a
   quarter of a picture later and looks again.
 
-**Learning the gain and the drift.** Take two fits a time $\tau$ apart, with a move $h$ made between them. The error
+**Learning the gain and the drift.** Take two fits a time $`\tau`$ apart, with a move $`h`$ made between them. The error
 changed by what the move and the clocks' slide did between them:
 
-$$
+```math
 G \, \Delta e - p \, \tau = -h - p_{\mathrm{line}} \, \tau
-$$
+```
 
-where $p$ is the display's pace against the camera (its slide per second) and $p_{\mathrm{line}}$ is the pace the
-hold assumed over that interval. Least squares over successive pairs of fits, the older ones fading, gives $G$ and
-$p$, and the hold cancels the measured slide as it goes instead of waiting for it to show up as an error.
+where $`p`$ is the display's pace against the camera (its slide per second) and $`p_{\mathrm{line}}`$ is the pace the
+hold assumed over that interval. Least squares over successive pairs of fits, the older ones fading, gives $`G`$ and
+$`p`$, and the hold cancels the measured slide as it goes instead of waiting for it to show up as an error.
 
 The pilots do one more job in both decoders: the known symbols sit at every frequency, so they also measure any
 offset of a fraction of a sample left in the sampling grid (a grid offset turns each coefficient by an angle that
