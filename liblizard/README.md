@@ -13,7 +13,7 @@ One C API (`include/lizard.h`), three bindings over it:
 | WebAssembly | one ES module and its `.wasm` in two builds (WebAssembly SIMD with wasm exceptions; WebAssembly 1.0 for engines without them), no threads, no GPU | `bindings/wasm/` |
 | Kotlin | a JVM library (desktops; its natives Linux x86-64 only), and an AAR (Android, arm64, the GPU files in it) | `bindings/kotlin/` |
 
-macOS has no preset and has never been built.
+macOS has no preset.
 
 Beside them, `kotlin/` holds plain-JVM code the apps compile into themselves. Both the Android app and the desktop app
 compile `Tar.kt`, how several files or a folder become one transfer (a tar, `research/SPEC.md` 9.6) and how a receiver
@@ -71,14 +71,10 @@ Options: `LIZ_GPU` (the Vulkan engines; off in wasm), `LIZ_JNI`, `LIZ_TESTS`, `L
 WebAssembly 1.0, the `wasm-mvp` preset), `LIZ_WASM_DIST` (where the wasm build writes its module, `bindings/wasm/dist`
 by default), `LIZ_VERIFY_POINTS` (a lab build: the border finder's point scans checked against the plain scan they
 replaced, `./build.sh verify`), `LIZ_GPU_TREE` (the generated GPU
-files) and `LIZ_GPU_VARIANTS` (the decoder variants installed: all six by default, 21 MB; one alone 10 MB for `f32-sg`
-to 14 MB for `int8-sg`, the sender's files included). The receiver decodes with the best variant the device runs of
+files) and `LIZ_GPU_VARIANTS` (the decoder variants installed: all six by default). The receiver decodes with the best variant the device runs of
 those its assets hold; where they hold none it runs, `auto` decodes on the CPU (the log says why) and `gpu` fails. On a
 software Vulkan device (Vulkan's CPU type: lavapipe, SwiftShader) `auto` decodes on the CPU too, its stats' `gpuWhy`
 naming the device, and `gpu` still runs there.
-`f32` and `f32-sg` hold no back half for the 1536 picture (the setups are made for 32 KB of workgroup memory, and f32
-needs 33,792 B there): a GPU decoder on them finds LIZARD-576 and up but reads none of their blocks, so an install of
-one variant that reads every format is `f16-sg` or `int8-sg`.
 Build trees go in `build-native/<preset>`.
 
 The bindings:
@@ -96,12 +92,10 @@ extension (the codec's scalar paths, exceptions through JS; emscripten's libc ha
 saturating float-to-int lowered by binaryen, and the module is validated against the MVP feature set), for an engine
 without either. `init()` loads the SIMD build where the engine validates both SIMD and wasm exceptions (`hasSimd()`
 answers for SIMD alone) and the MVP build otherwise; `init(options, { build: "simd" | "mvp" })` names one. Both
-decode the same blocks from the same frames; the MVP build is about four times slower (one core of a Ryzen 9 9950X
-under Node 22, the 2:1 halves of two LIZARD-616 at 960 and 1280 px: 92.8 ms a frame against 24.4). Both builds also
+decode the same blocks from the same frames; the MVP build, on the codec's scalar paths, is several times slower. Both builds also
 carry the codec's own exports and the Wirehair and zstd shims, which the repository's pages and tools reach through
-`sim/`; those are no interface of the package. The repository's web pages load the SIMD build alone. Their codec
-module was SIMD-only with no fallback before it became this one, so needing wasm exceptions as well adds only Chrome
-91 to 94 and Firefox 89 to 99 (SIMD without wasm exceptions) to the browsers they do not run in.
+`sim/`; those are no interface of the package. The repository's web pages load the SIMD build alone, so they need both WebAssembly SIMD and wasm
+exceptions: of the browsers with SIMD, that leaves out Chrome 91 to 94 and Firefox 89 to 99.
 
 `npm test`'s comparison with the web sender's picker also needs `build/ob.mjs` (`./build.sh`, the default build's
 re-export); without it that test is skipped, saying why. The AAR needs the Android SDK (`ANDROID_HOME`, or `sdk.dir` in `bindings/kotlin/local.properties`)
