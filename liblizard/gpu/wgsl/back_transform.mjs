@@ -270,7 +270,7 @@ export const pictureHead = (lists, B) => `  let fw: i32 = i32(${lists}[${listsHe
 // ai: knot q = 7 j + i in .xy of [4 + q / 2] for an even q, .zw for an odd. Here, not in anchors.mjs, because pass 1
 // ai: reads it and anchors.mjs imports this module.
 export const ANCH_SIDE = 7, ANCH_K = ANCH_SIDE * ANCH_SIDE, ANCH_REC = 4 + Math.ceil(ANCH_K / 2);
-// ai: The samples the erase takes round a square on the picture's grid (src/acquire.c ob_anch_margin).
+// ai: The samples the erase takes round a square on the picture's grid (src/internal.h OB_ANCH_MARGIN).
 export const ANCH_ERASE = 2;
 // ai: Pass 1's workgroup memory for the anchors: what a quad's four columns blend of each knot row, -1 to 9 (anE: rows
 // ai: 1 to 7 the inner knots', the rest 0, so a sample's 4 x 4 blend reads it with no test), an axis's 9 knots (anK),

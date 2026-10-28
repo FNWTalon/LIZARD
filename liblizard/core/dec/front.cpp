@@ -850,7 +850,7 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
     step(P("refit"), ln.refitGroup, n);
   }
   // ai: decoder.mjs batch: the last round's residuals, lens and side fits (REFIT_POST), in its refit's pass
-  if (ln.nodesGroups.size() > 1) step(P("refitPost"), ln.refitPostGroup, n);
+  step(P("refitPost"), ln.refitPostGroup, n);
   // ai: decoder.mjs batch: the anchors in the same pass, behind REFIT_POST (no profile stage of its own): ANCH_FIND
   // ai: a workgroup per (anchor, frame), ANCH_PREDICT and the border's second search (NODES centred on its own round, a
   // ai: workgroup a node), ANCH_REFIT, then ANCH_FIT a workgroup a frame, whose records pass 1 reads

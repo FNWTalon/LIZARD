@@ -17,7 +17,6 @@ OB_TLS double ob_prof_ms[PROF_N];
 // The quad the finder settled on, BEFORE the corner nodes refine it. res->quad is the refined one, and handing
 // that back to ob_acquire_quad would refine it a second time; this is what a finder running elsewhere has to
 // reproduce and what it has to be compared against.
-OB_TLS float ob_raw_quad[8];
 // What the thin frame's finder settled on, for a finder elsewhere to be held to: the final
 // score and orient, then which form and which mark quad won, the source of the final quad (0 marks, 1 lines,
 // 2 mark_crop, -1 none), whether the marks alone settled it, the mark stage's best, and form 0's quad count.
@@ -47,7 +46,6 @@ static int ob_lens_no_report(void) {
 //
 // ai: the samples erased round an anchor's square (focus.c): two, measured on the published lenses' captures (one left
 // ai: the blurred rim in where the map sits a few tenths of a sample off: 26 of 192 frames lost blocks; three read as two)
-int ob_anch_margin = 2;
 // ai: the anchors the last acquisition counted (anchor_register's, read out by the wasm's focus_anchors_found for the
 // ai: lab's checks), -1 where no mesh was made
 OB_TLS int ob_anch_found = -1;
@@ -2792,15 +2790,12 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
   double tm = ob_now_ms();
   float src[8];
   corner_coords(L, src);
-  homo_t H, best_h;
-  float best = -1e9f;
-  int best_o = -1;
+  homo_t H;
   // The thin frame's finder has already settled rotation: it scores the coded track under every hypothesis.
-  if (homography(src, thin_quad, &best_h)) { best = 2.0f + thin_sc; best_o = thin_orient; memcpy(res->quad, thin_quad, sizeof thin_quad); }
-  if (best_o < 0 || best < 2.0f) return 0;
-  res->orient = best_o;
-  memcpy(ob_raw_quad, res->quad, sizeof ob_raw_quad);
-  H = best_h;
+  if (!homography(src, thin_quad, &H)) return 0;
+  memcpy(res->quad, thin_quad, sizeof thin_quad);
+  if (thin_orient < 0 || 2.0f + thin_sc < 2.0f) return 0;
+  res->orient = thin_orient;
 
   // The node templates read the image under a box a module wide once a module is several pixels (border_blur). The
   // module's size is the quad's sides over the lattice's, in modules.
@@ -2812,7 +2807,7 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
     mpx += hypotf(res->quad[2 * k1] - res->quad[2 * k], res->quad[2 * k1 + 1] - res->quad[2 * k + 1]) / hypotf(src[2 * k1] - src[2 * k], src[2 * k1 + 1] - src[2 * k + 1]) / 4;
   }
   // ai: a box radius of at least one pixel, tested before the conversion (a NaN mpx blurs nothing, as before)
-  if (mpx / 2 >= 1 && (blurred = border_blur(L, &best_h, img, iw, ih, (int)(mpx / 2)))) rim.px = blurred;
+  if (mpx / 2 >= 1 && (blurred = border_blur(L, &H, img, iw, ih, (int)(mpx / 2)))) rim.px = blurred;
   // Finders first, so the homography the marks are measured against is as good as four
   // points can make it.
   int nn = L->nx * L->ny;

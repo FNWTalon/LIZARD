@@ -180,21 +180,12 @@ ${centred ? `  if (li == 0u) { wm0 = meas[f * ${NODES_MAX}u + n]; }
         sp[j - c0] = vec4f(bitcast<f32>(0x40000000u | g.x | (g.y << 8u) | (u32(t.z) << 16u)), 0.0, 0.0, 0.0);
       } else {
         let p = toImage(M, t.xy)${centred ? " + sh" : ""};
-        // The map's Jacobian at t: the homography's, then through the lens inverse (u - c = d (1 + k1 |d|^2 / R^2)
-        // with d = p - c, whose 2 x 2 derivative s I + g d d^T inverts by Sherman-Morrison).
+        // The map's Jacobian at t: the homography's (its k1 slot is 0: PICK and REFIT write it so, the lens about the
+        // axis being REFIT_POST's).
         let w = M[6] * t.x + M[7] * t.y + M[8];
         let uu = vec2f(M[0] * t.x + M[1] * t.y + M[2], M[3] * t.x + M[4] * t.y + M[5]) / w;
-        var jx = vec2f(M[0] - uu.x * M[6], M[3] - uu.y * M[6]) / w;
-        var jy = vec2f(M[1] - uu.x * M[7], M[4] - uu.y * M[7]) / w;
-        if (M[9] != 0.0) {
-          let d = p - vec2f(M[10], M[11]);
-          let r2 = dot(d, d);
-          let s = 1.0 + M[9] * r2 * M[12];
-          let g = 2.0 * M[9] * M[12];
-          let q = g / (s + g * r2);
-          jx = (jx - d * (q * dot(d, jx))) / s;
-          jy = (jy - d * (q * dot(d, jy))) / s;
-        }
+        let jx = vec2f(M[0] - uu.x * M[6], M[3] - uu.y * M[6]) / w;
+        let jy = vec2f(M[1] - uu.x * M[7], M[4] - uu.y * M[7]) / w;
         sp[j - c0] = vec4f(p, t.z, 0.0);
         sj[j - c0] = vec4f(jx.x, jy.x, jx.y, jy.y);
       }

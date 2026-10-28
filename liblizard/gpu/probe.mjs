@@ -1,7 +1,7 @@
 // ai: The self-test's view of a batch (scripts/pages/gpu_selftest.mjs): what every stage left in its buffers, copied out in
 // ai: the batch's own encoder after its passes and read back beside the batch's readback. Only a decoder made with
 // ai: probe: true has one (FrontHalf.create), and only a batch run with probe: true uses it; a receiver asks for
-// ai: neither. Such a decoder gives the pyramid levels, the accumulator and the cascade's logits and list COPY_SRC, a
+// ai: neither. Such a decoder gives the pyramid levels and the accumulator COPY_SRC, a
 // ai: buffer flag no stage reads. The input layer keeps a receiver's usage flags (a texture's can change its layout):
 // ai: it is read through textureLoad, as every stage reads it, into a buffer of packed bytes.
 import { DIMS } from "./wgsl/common.mjs";
@@ -111,7 +111,6 @@ export class Probe {
       // ai: REFIT_DBG, 52 floats a frame: the first iteration's theta 0-7, normal matrix 8-43 and gradient 44-51), so a
       // ai: frame's registration can be held against another's.
       ["meas", ln.measBuf, per(ln.measBuf), Float32Array], ["resid", ln.residBuf, per(ln.residBuf), Float32Array], ["refit", ln.refitDbg, per(ln.refitDbg), Float32Array],
-      ...(ln.logitBuf ? [["logits", ln.logitBuf, per(ln.logitBuf), Float32Array]] : []), ...(ln.listBuf ? [["list", ln.listBuf, per(ln.listBuf), Uint32Array]] : []),
       // ai: the anchors' arm, where it is on (wgsl/anchors.mjs): ANCH_FIND's record an anchor (ANCH_REFIT's where it
       // ai: refitted the frame) and ANCH_FIT's a frame
       ["anch", ln.anchBuf, per(ln.anchBuf), Float32Array], ["arec", ln.arecBuf, per(ln.arecBuf), Float32Array],
@@ -120,7 +119,7 @@ export class Probe {
     const at = parts.map(([, , bytes]) => { const o = off; off += bytes * nb; return o; });
     const readBuf = d.createBuffer({ size: off, usage: U.MAP_READ | U.COPY_DST });
     parts.forEach(([, buf, bytes], k) => enc.copyBufferToBuffer(buf, 0, readBuf, at[k], bytes * nb));
-    const shape = { W: ln.W, H: ln.H, gx: ln.gx, gy: ln.gy, cap: ln.cap, keep: ln.cascade?.keep ?? 0, levels: ln.level.map((lv) => ({ stride: lv.w, rows: lv.h })) };
+    const shape = { W: ln.W, H: ln.H, gx: ln.gx, gy: ln.gy, cap: ln.cap, levels: ln.level.map((lv) => ({ stride: lv.w, rows: lv.h })) };
     let mapped = null;
     const drop = () => { inBuf.destroy(); uni.destroy(); readBuf.destroy(); score2?.destroy(); dbg?.destroy(); };
     return {

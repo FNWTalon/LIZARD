@@ -148,7 +148,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
     let inward = -vec2f(cos(beta), sin(beta));
     let perp = vec2f(-inward.y, inward.x);
     let c = CENTRE[u32(r2.x)];
-    let w = u32(clamp(p, 0.0, 1.5) * 256.0);
+    let w = u32(clamp(p, 0.0, 1.0) * 256.0);
     // The frame's own cells, not the lane's: a lane sized for a larger frame earlier would otherwise keep the votes
     // that run past this frame's edge, and a frame's answer would depend on which lane it ran in.
     let gxf = i32((frames[f].w + ${CELL - 1}u) / ${CELL}u);
@@ -278,13 +278,13 @@ fn tallest(f: u32, x: i32, y: i32, v: u32, r: i32, gw: i32, gh: i32) -> bool {
   return true;
 }
 // ai: Reading i's key, four words compared in turn, the fields packed across them so each compares exactly: the
-// ai: weight (its p in thousandths, floor(clamp(p, 0, 1.5) x 1000) x 300 in 19 bits), the response,
+// ai: weight (its p, the classifier's sigmoid, in thousandths, floor(clamp(p, 0, 1) x 1000) x 300 in 19 bits), the response,
 // ai: y, x (f32 bits, which order a float that is not negative as a u32; the sign bit cleared so -0 is 0), the index
 // ai: (13 bits, cap <= 8192). Every supporter's first word is at least 349 x 300 << 13, so 0 there means none.
 fn keyOf(f: u32, i: u32) -> vec4u {
   let o = 3u * (f * P.cap + i);
   let r0 = readings[o];
-  let w = u32(floor(clamp(readings[o + 1u].x, 0.0, 1.5) * 1000.0)) * 300u;
+  let w = u32(floor(clamp(readings[o + 1u].x, 0.0, 1.0) * 1000.0)) * 300u;
   let rb = bitcast<u32>(readings[o + 2u].y) & 0x7fffffffu;
   let yb = bitcast<u32>(max(r0.y, 0.0)) & 0x7fffffffu;
   let xb = bitcast<u32>(max(r0.x, 0.0)) & 0x7fffffffu;
@@ -972,8 +972,8 @@ fn main(@builtin(workgroup_id) wg: vec3u) {
 // ai: a frame it did not find is found again with level 1's peaks beside those, by the same stages on a second
 // ai: frame record (frames2), which says which frames: valid 1 for a frame of the batch PICK did not find, 2 for one
 // ai: it found (left as it is: common.mjs DIMS), 0 for an empty slot. A frame to run again gets back what the batch's
-// ai: clears gave its first round: its accumulator (VOTE adds into it), readings (a list slot the cascade's large net
-// ai: wrote in the first round may hold none in the second), centre peaks and quads. A workgroup a frame.
+// ai: clears gave its first round: its accumulator (VOTE adds into it), readings (a slot the classifier wrote in the
+// ai: first round may hold no peak in the second), centre peaks and quads. A workgroup a frame.
 export const REDO = DIMS + /* wgsl */ `
 struct P5 { cap: u32, gx: u32, gy: u32, p0: u32, modules: vec4f }
 @group(0) @binding(0) var<storage, read> frames: array<Frame>;
