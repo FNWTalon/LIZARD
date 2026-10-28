@@ -25,7 +25,7 @@
 // ai: A frame's digests (FNV-1a, 64 bits) are in the order the decode produces them, so the first that differs names
 // ai: the stage:
 // ai:   reg   the registration: found, finders, quad, orientation, track score, best mark, the ring, and the finder's
-// ai:         own account of itself (acquire.c ob_finder_info, ob_raw_quad)
+// ai:         own account of itself (acquire.c ob_finder_info)
 // ai:   word  the format word, the picture, whether the held word stood in
 // ai:   spec  focus.c's test hook: the whole spectrum after the detrend, and every block's soft values
 // ai:   stat  each block's LDPC iterations and its estimate
@@ -372,7 +372,7 @@ static void decode_one(rx_t *rx, const uint8_t *px, int w, int h, int held, int 
   dig_t d = DIG0;
   d = dig_int(d, res.found); d = dig_int(d, res.finders); d = dig(d, res.quad, sizeof res.quad); d = dig_int(d, res.orient);
   d = dig(d, &res.mark_score, sizeof res.mark_score); d = dig(d, res.mark, sizeof res.mark); d = dig_int(d, a->which);
-  d = dig(d, ob_finder_info, 8 * sizeof(float)); d = dig(d, ob_raw_quad, 8 * sizeof(float));
+  d = dig(d, ob_finder_info, 8 * sizeof(float));
   o->reg = d;
   d = DIG0; d = dig_int(d, o->has_word); d = dig_int(d, o->version); d = dig_int(d, o->fps); d = dig_int(d, a->n); d = dig_int(d, a->held);
   o->word = d;

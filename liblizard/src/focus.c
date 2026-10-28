@@ -971,7 +971,7 @@ int focus_finish_ext(const focus_t *f, float *grid, const int8_t *ext_llr, const
   // A caller that brings its own soft values brings the spectrum's whole product with them, so none of this
   // runs. The registration still has to be let go, which is why the free below is outside the guard.
   if (ext_llr) { ob_reg_free(&reg); goto have_llr; }
-  // ai: the anchors (SPEC 6.13): every sample an anchor's square touches and ob_anch_margin round it set to the
+  // ai: the anchors (SPEC 6.13): every sample an anchor's square touches and OB_ANCH_MARGIN round it set to the
   // ai: picture's mean before the detrend and the transform, on every frame, however many anchors its acquisition
   // ai: found (the margin measured: on the S26's lenses an erased sample more costs about 0.2 dB in a 1:1 crop, one
   // ai: fewer 0.15; research/build/anchors/PLAN.md). The squares sit on a lattice, so one range of samples a lattice
@@ -982,7 +982,7 @@ int focus_finish_ext(const focus_t *f, float *grid, const int8_t *ext_llr, const
     const int a = ob_anchor_side(&f->frame);
     for (int i = 0; i < OB_ANCH_K; i++) {
       const int m0 = ob_anchor_m0(&f->frame, i);
-      const int lo = (int)floorf((m0 - f->margin) * f->scale) - ob_anch_margin, hi = (int)ceilf((m0 + a - f->margin) * f->scale) - 1 + ob_anch_margin;
+      const int lo = (int)floorf((m0 - f->margin) * f->scale) - OB_ANCH_MARGIN, hi = (int)ceilf((m0 + a - f->margin) * f->scale) - 1 + OB_ANCH_MARGIN;
       elo[i] = lo < 0 ? 0 : lo; ehi[i] = hi > n - 1 ? n - 1 : hi;
     }
     // ai: the mean of a caller's grid over every sample; of one sampled here, over every eighth sample each way (a

@@ -32,8 +32,8 @@ import { gridOf, slotOf } from "./tables.mjs";
 import { VERSION_MIN, VERSION_MAX } from "./wordcode.mjs";
 // The classifier kernel and its weight packers come from one module: classify_gemm.mjs lays the weights out for its
 // tiles, and its classifySource refuses a buffer packed by cnn/weights.mjs.
-import { classifySource, classifyPlan, rankSource, packWeights, packWeightsF16, packWeightsInt8 } from "./wgsl/classify_gemm.mjs";
-import { INT8_TWINS, CASCADE } from "./wgsl/classify.mjs";
+import { classifySource, classifyPlan, packWeights, packWeightsF16, packWeightsInt8 } from "./wgsl/classify_gemm.mjs";
+import { INT8_TWINS, CLASSIFIER } from "./wgsl/classify.mjs";
 import { loadNet } from "./cnn/netfile.mjs";
 import { BackHalf, parseReadback, PASSES as BACK_PASSES } from "./back/back.mjs";
 import { computePipeline } from "./pipeline.mjs";
@@ -41,7 +41,7 @@ import { Probe } from "./probe.mjs";
 
 export const COUNTERS = 16;     // u32 counters a frame, read back with every batch (see COUNT)
 // What each counter slot holds, so a stage that silently did nothing reads as a zero here.
-export const COUNT = { samples: 0, rawPeaks: 1, peaks: 2, cascade: 3 };   // cascade: peaks the large net ran on
+export const COUNT = { samples: 0, rawPeaks: 1, peaks: 2 };
 // F2/F3: each 16 x 16 tile of every level keeps its KEEP strongest peaks in fixed slots; F3 keeps the strongest
 // `cap` of a frame's slots.
 // The bank's floor on the normalised response, and the deviation added under it so a flat patch does not
@@ -121,8 +121,7 @@ export const budgetFor = (limits) => limits?.maxBufferSize || BUDGET_MIN;
 // ai: FrontHalf with, read by the native setup (../gen/gen.mjs, a tree a variant) and the lab's opener
 // ai: (scripts/pages/gpu_open.mjs, whose self-test makes the references the native self-test is held to). net: that
 // ai: file's document (cnn/netfile.mjs loadNet). The caller adds precision, subgroups, backN, log, probe and twins.
-// ai: The cascade stays create's option for the lab (CASCADE).
-export const INSTALLED = Object.freeze({ classifier: CASCADE.weights });
+export const INSTALLED = Object.freeze({ classifier: CLASSIFIER });
 export const receiverOptions = (net) => ({ B: "auto", capMs: CAP_MS, inflight: "auto", cap: CAP, register: true, weights: net, back: "gpu" });
 
 // ai: INT8, the WGSL language feature the int8 nets need, is constants.mjs's (imported and re-exported above).
@@ -177,12 +176,9 @@ export class FrontHalf {
   // ai: classifier file, runs in fh.floatPrecision: f16 where the adapter has shader-f16, else f32 ("f32" asked keeps
   // ai: f32 everywhere). A q8 classifier file at f16 or f32 is refused (no float path runs codes). fh.precision is the
   // ai: precision asked; fh.nets = { bank, small, large } what each net runs in ("int8", "f16", "f32", or null for
-  // ai: none), logged once.
+  // ai: none; small is always null, the field kept for the readers of the setup and the harness headers), logged once.
   // ai: The proposer (bank_fcn2.mjs, version 2) makes the peaks; a device whose workgroup memory holds none of its forms
-  // ai: throws its FitError: no GPU decoder there, the C decodes.
-  // cascade: { weights, keep } runs that (small) net on every kept peak and `weights` only on the `keep` strongest a
-  // frame by its mark logit (wgsl/classify.mjs CASCADE), the rest keeping the small net's reading; null runs `weights`
-  // on every kept peak.
+  // ai: throws its FitError: no GPU decoder there, the C decodes. The classifier runs on every kept peak.
   // B: frames a lane holds, or "auto" (Batcher). budget, capMs: the controller's memory budget in bytes and submit
   // cap in ms. restart: under "auto", the batch size to start at and never grow past (a decoder made again after its
   // device was lost, at half the batch that was running).
@@ -207,7 +203,7 @@ export class FrontHalf {
   // ai: The anchors (SPEC 6.13; wgsl/anchors.mjs) always: ANCH_FIND, ANCH_PREDICT, the border's second search,
   // ai: ANCH_REFIT and ANCH_FIT after F7 (ANCH_FIND and ANCH_FIT alone in a told batch), pass 1 reading their records,
   // ai: frames[i].anchors the anchors a frame read. The wasm back half's F9 reads no anchors (the C's finish erases them).
-  static async create(adapter, tables, { B = "auto", budget = budgetFor(adapter?.limits), capMs = CAP_MS, restart = 0, cap = CAP, register = true, log = () => {}, weights = null, precision = "f32", cascade = null, inflight = "auto", back = "gpu", backN = 1024, subgroups = true, probe = false, twins = null } = {}) {
+  static async create(adapter, tables, { B = "auto", budget = budgetFor(adapter?.limits), capMs = CAP_MS, restart = 0, cap = CAP, register = true, log = () => {}, weights = null, precision = "f32", inflight = "auto", back = "gpu", backN = 1024, subgroups = true, probe = false, twins = null } = {}) {
     if (back !== "wasm" && back !== "gpu") throw new Error(`back ${back}`);
     if (tables?.rings?.length !== RING_COUNT || tables.pictures?.length !== SLOTS) throw new Error(`tables: gpu/tables.mjs formatTables(), ${RING_COUNT} rings and ${SLOTS} pictures`);
     const whole = (v) => v >= 1 && v === Math.floor(v);
@@ -222,8 +218,7 @@ export class FrontHalf {
     if (twins === "measure" && !auto) throw new Error("twins measure times them on the first stream batch under B \"auto\" (or twins int8 or off)");
     if (!weights) throw new Error("F4 needs a classifier's weights");
     // ai: A q8 classifier file carries codes and no float weights: it runs only at precision int8.
-    if (precision !== "int8" && [weights, cascade?.weights].some((w) => w?.arch?.quant || w?.offsets?.int8)) throw new Error(`a q8 classifier file runs only at precision int8, not ${precision}`);
-    if (cascade && (!cascade.weights || !(cascade.keep > 0) || cascade.keep > cap)) throw new Error(`cascade: a small net's weights and keep in 1..cap (${cap})`);
+    if (precision !== "int8" && (weights.arch?.quant || weights.offsets?.int8)) throw new Error(`a q8 classifier file runs only at precision int8, not ${precision}`);
     // subgroups: the classifier reduces a split conv across adjacent lanes by shuffles where the adapter has it.
     // ai: subgroups false leaves the feature off even where the adapter has it (a device whose shuffles are suspect).
     const want = ["timestamp-query", "shader-f16", "subgroups"].filter((f) => adapter.features.has(f) && (subgroups || f !== "subgroups"));
@@ -252,8 +247,7 @@ export class FrontHalf {
       fh.precision = precision;
       fh.floatPrecision = floatPrecision;
       fh.weights = null;
-      fh.cascade = null;
-      // ai: twinForms: { large, small } the int8 twins waiting to be measured (packed, then built), null when none;
+      // ai: twinForms: { large } the int8 twin waiting to be measured (packed, then built), null when none;
       // ai: twins: the measurement once made (measureTwins).
       fh.twinForms = null;
       fh.twins = null;
@@ -266,14 +260,11 @@ export class FrontHalf {
         return { ...p, precision: int8 ? "int8" : floatPrecision };
       };
       fh.weights = packed(weights);
-      if (cascade) fh.cascade = { weights: packed(cascade.weights), keep: cascade.keep };
-      // ai: The int8 twins of the files given, packed: taken at once (twins "int8") or left for measureTwins.
+      // ai: The int8 twin of the file given, packed: taken at once (twins "int8") or left for measureTwins.
       if (precision === "int8" && twins !== "off") {
-        const tw = { large: await int8Twin(weights, twins === "int8", log), small: fh.cascade ? await int8Twin(cascade.weights, twins === "int8", log) : null };
-        if (twins === "int8") {
-          if (tw.large) fh.weights = packed(tw.large);
-          if (tw.small) fh.cascade.weights = packed(tw.small);
-        } else if (tw.large || tw.small) fh.twinForms = { large: tw.large && packed(tw.large), small: tw.small && packed(tw.small) };
+        const twin = await int8Twin(weights, twins === "int8", log);
+        if (twin && twins === "int8") fh.weights = packed(twin);
+        else if (twin) fh.twinForms = { large: packed(twin) };
       }
       lapBoot("twins");
       fh.sampled = back === "wasm";
@@ -283,9 +274,8 @@ export class FrontHalf {
       // ai: "packed" is f32 arithmetic with halves stored). A net whose twin waits to be measured
       // ai: runs its float form until then, and the line says so.
       const store = /^(int8|f16|f32|packed)\b/.exec(fh.bankStore ?? "")?.[1] ?? null;
-      fh.nets = { bank: store === "packed" ? "f32" : store, small: fh.cascade?.weights.precision ?? null, large: fh.weights?.precision ?? null };
-      const pend = (k) => (fh.twinForms?.[k] ? " (its int8 twin measured on the first batch)" : "");
-      log(`nets: bank ${fh.nets.bank}, small ${fh.nets.small}${pend("small")}, large ${fh.nets.large}${pend("large")}`);
+      fh.nets = { bank: store === "packed" ? "f32" : store, small: null, large: fh.weights?.precision ?? null };
+      log(`nets: bank ${fh.nets.bank}, small ${fh.nets.small}, large ${fh.nets.large}${fh.twinForms ? " (its int8 twin measured on the first batch)" : ""}`);
       fh.probeKit = probe ? await Probe.create(fh) : null;
       lapBoot("probe");
       fh.back = back;
@@ -387,59 +377,50 @@ export class FrontHalf {
     return { p, bgl };
   }
 
-  // ai: A classifier's kernel and weights buffer, from its packed weights (create): the large net (on every kept peak,
-  // ai: or on the cascade's list) or, small, the cascade's first net (on every kept peak, writing its mark logits).
+  // ai: The classifier's kernel and weights buffer, from its packed weights (create), run on every kept peak.
   // ai: { pipe, buf, w, plan }; pipe.P is the patches a workgroup of this kernel takes (its plan's), which a dispatch
   // ai: divides its slots by.
-  async netForm(w, small) {
-    const c = this.cascade, f = { f16: w.precision === "f16", int8: w.precision === "int8", subgroups: this.features.includes("subgroups") };
+  async netForm(w) {
+    const f = { f16: w.precision === "f16", int8: w.precision === "int8", subgroups: this.features.includes("subgroups") };
     const plan = classifyPlan(w.arch, f);
-    const src = small ? classifySource(w.offsets, w.arch, { ...f, role: "first" }) : classifySource(w.offsets, w.arch, { ...f, role: c ? "second" : null, keep: c?.keep });
-    const pipe = { ...(await this.pipeline(src, [...LV, "ro", "ro", "rw", "uniform", "ro", ...(small ? ["rw"] : c ? ["ro"] : [])])), P: plan.P };
+    const src = classifySource(w.offsets, w.arch, f);
+    const pipe = { ...(await this.pipeline(src, [...LV, "ro", "ro", "rw", "uniform", "ro"])), P: plan.P };
     const buf = this.device.createBuffer({ size: w.data.byteLength, usage: U.STORAGE | U.COPY_DST });
     this.device.queue.writeBuffer(buf, 0, w.data);
     return { pipe, buf, w, plan };
   }
 
-  // ai: A classifier's bind group on this lane (called on a lane, after ensure()): its kernel pipe over weights buf,
-  // ai: small (the cascade's first net: the logits) or the large net (the cascade's list, when there is one).
+  // ai: The classifier's bind group on this lane (called on a lane, after ensure()): its kernel pipe over weights buf.
   // ai: second: over the finder's second round's frame records (wgsl/finder.mjs REDO).
-  netGroup(pipe, buf, small, second = false) {
-    const extra = small ? [this.logitBuf] : this.cascade ? [this.listBuf] : [];
-    return this.device.createBindGroup({ layout: pipe.bgl, entries: [...(second ? this.lvEntries2 : this.lvEntries), ...[this.peaksBuf, this.countsBuf, this.readingsBuf, this.p4Uni, buf, ...extra].map((buffer, k) => ({ binding: 7 + k, resource: { buffer } }))] });
+  netGroup(pipe, buf, second = false) {
+    return this.device.createBindGroup({ layout: pipe.bgl, entries: [...(second ? this.lvEntries2 : this.lvEntries), ...[this.peaksBuf, this.countsBuf, this.readingsBuf, this.p4Uni, buf].map((buffer, k) => ({ binding: 7 + k, resource: { buffer } }))] });
   }
 
-  // ai: The lane's classifier bind groups over the nets' current forms: made by ensure(), and again once
+  // ai: The lane's classifier bind groups over the net's current form: made by ensure(), and again once
   // ai: measureTwins has chosen.
   bindNets() {
-    this.classifyGroup = this.netGroup(this.classify, this.weightsBuf, false);
-    if (this.cascade) this.classify0Group = this.netGroup(this.classify0, this.weightsBuf0, true);
-    this.classifyGroup2 = this.netGroup(this.classify, this.weightsBuf, false, true);
-    if (this.cascade) this.classify0Group2 = this.netGroup(this.classify0, this.weightsBuf0, true, true);
+    this.classifyGroup = this.netGroup(this.classify, this.weightsBuf);
+    this.classifyGroup2 = this.netGroup(this.classify, this.weightsBuf, true);
   }
 
   async build() {
     // ai: Every pipeline compiled at once (2026-09-29): one at a time, the S26's front half took 1.7 to 5.2 s of the GPU
     // ai: worker's 4.5 to 8 s start (STATUS "The ramp at the start").
-    const c = this.cascade, tf = this.twinForms, subgroups = this.features.includes("subgroups") ? " subgroups" : "";
+    const tf = this.twinForms, subgroups = this.features.includes("subgroups") ? " subgroups" : "";
     const P = (code, entries) => this.pipeline(code, entries);
     // ai: The proposer is a module (gpu/bank_fcn2.mjs, version 2). A device whose workgroup memory cannot hold it even with its
     // ai: activations stored as halves (under 18,692 B; WebGPU promises only 16 KB) gets its FitError: no GPU decoder
     // ai: there, and the receiver decodes with the C.
     const bank = (async () => { this.bank = await import("./bank_fcn2.mjs"); await this.bank.build(this); })();
-    const [pyramid, sampler, large, small, rank, twinLarge, twinSmall, vote, gather, complete, score, pick, redo, nodesP, refit, refitPost, wordP, select] = await Promise.all([
+    const [pyramid, sampler, large, twinLarge, vote, gather, complete, score, pick, redo, nodesP, refit, refitPost, wordP, select] = await Promise.all([
       // ai: The pyramid and each frame's grey levels in one kernel (wgsl/pyramid.mjs): the layer, the frame records,
       // ai: levels 1 to 4, the histogram (read back with the batch: the native receiver's grey range, core/dec/front.h
       // ai: hist), the levels' dims.
       P(PYRAMID, ["tex", "ro", "rw", "rw", "rw", "rw", "rw", "uniform"]),
       this.sampled ? P(SAMPLE, ["tex", "ro", "ro", "ro", "rw", "rw", "uniform", "ro", "ro", "ro", "uniform"]) : null,
-      this.netForm(this.weights, false),
-      // The cascade: the small net on every kept peak (writing its mark logit), RANK, then the net above on the list.
-      c ? this.netForm(c.weights, true) : null,
-      c ? P(rankSource({ cap: this.cap, keep: c.keep }), ["ro", "ro", "rw", "rw"]) : null,
-      // ai: The twins waiting to be measured, built beside the float forms: { pipe, buf, w, plan } a net.
-      tf?.large ? this.netForm(tf.large, false) : null,
-      tf?.small ? this.netForm(tf.small, true) : null,
+      this.netForm(this.weights),
+      // ai: The twin waiting to be measured, built beside the float form: { pipe, buf, w, plan }.
+      tf ? this.netForm(tf.large) : null,
       // ai: F5 (wgsl/finder.mjs): VOTE a lane a reading into the accumulator, then GATHER a workgroup a frame, its
       // ai: centre peaks (cand) and their quads.
       P(VOTE, ["ro", "ro", "rw", "uniform"]),
@@ -466,16 +447,8 @@ export class FrontHalf {
     this.weightsBuf = large.buf;
     this.arch = large.plan.name;
     this.log(`classifier ${large.plan.name} ${this.weights.precision}${subgroups}: ${large.plan.macs} MACs a patch, ${large.plan.P} patches a workgroup, ${large.plan.bytes} bytes of workgroup memory`);
-    if (c) {
-      this.classify0 = small.pipe;
-      this.weightsBuf0 = small.buf;
-      this.rank = rank;
-      this.arch = `${small.plan.name}>${large.plan.name} keep ${c.keep}`;
-      this.log(`cascade ${small.plan.name} ${c.weights.precision}${subgroups}: ${small.plan.macs} MACs a patch, ${small.plan.P} patches a workgroup, ${small.plan.bytes} bytes of workgroup memory; ${large.plan.name} on the ${c.keep} strongest a frame, the rest the small net's reading`);
-    }
     if (tf) {
-      if (tf.large) tf.large = twinLarge;
-      if (tf.small) tf.small = twinSmall;
+      tf.large = twinLarge;
       this.log("int8 twins built beside the float forms");
     }
     const d = this.device, rings = this.tables.rings, pictures = this.tables.pictures;
@@ -638,11 +611,6 @@ export class FrontHalf {
     ln.arecBuf = d.createBuffer({ size: 16 * ANCH_REC * B, usage: U.STORAGE | U.COPY_SRC });
     ln.refitDbg = d.createBuffer({ size: 4 * REFIT_DBG * B, usage: U.STORAGE | U.COPY_SRC | U.COPY_DST });
     ln.histBuf = d.createBuffer({ size: 4 * HIST_BINS * B, usage: U.STORAGE | U.COPY_DST | U.COPY_SRC });
-    if (this.cascade) {
-      const probe = this.probeOn ? U.COPY_SRC : 0;
-      ln.logitBuf = d.createBuffer({ size: 4 * cap * B, usage: U.STORAGE | probe });
-      ln.listBuf = d.createBuffer({ size: 4 * this.cascade.keep * B, usage: U.STORAGE | probe });
-    }
     const fitGroup = (pl) => d.createBindGroup({ layout: pl.bgl, entries: [ln.framesBuf, this.nodesBuf, ln.selBuf, ln.measBuf, ln.mapsBuf, ln.residBuf, this.fitUni, ln.refitDbg]
       .map((buffer, binding) => ({ binding, resource: { buffer } })) });
     ln.refitGroup = fitGroup(this.refit);
@@ -724,12 +692,10 @@ export class FrontHalf {
       this.lvEntries2 = lvOf(this.frames2Buf);
       const group = (pl, extra, first = 0, lv = lvEntries) => d.createBindGroup({ layout: pl.bgl, entries: [...(first ? lv : []), ...extra.map((buffer, k) => ({ binding: first + k, resource: { buffer } }))] });
       this.bindNets();
-      if (this.cascade) this.rankGroup = group(this.rank, [this.framesBuf, this.logitBuf, this.countsBuf, this.listBuf]);
       this.scoreGroup = group(this.score, [this.quadsBuf, this.planBuf, this.scoreBuf, this.planUni], 7);
       this.voteGroup = group(this.vote, [this.framesBuf, this.readingsBuf, this.accBuf, this.p5Uni]);
       this.gatherGroup = group(this.gather, [this.framesBuf, this.readingsBuf, this.accBuf, this.candBuf, this.quadsBuf, this.p5Uni]);
       // ai: The finder's second round: the same stages over its frame records, and REDO, which writes them.
-      if (this.cascade) this.rankGroup2 = group(this.rank, [this.frames2Buf, this.logitBuf, this.countsBuf, this.listBuf]);
       this.scoreGroup2 = group(this.score, [this.quadsBuf, this.planBuf, this.scoreBuf, this.planUni], 7, this.lvEntries2);
       this.voteGroup2 = group(this.vote, [this.frames2Buf, this.readingsBuf, this.accBuf, this.p5Uni]);
       this.gatherGroup2 = group(this.gather, [this.frames2Buf, this.readingsBuf, this.accBuf, this.candBuf, this.quadsBuf, this.p5Uni]);
@@ -870,17 +836,16 @@ export class FrontHalf {
     this.log(`batch auto: planned in ${bt.planMs.toFixed(0)} ms`);
   }
 
-  // ai: create's twins "measure": each classifier with an int8 twin timed in both forms and the faster kept (the S26
+  // ai: create's twins "measure": the classifier with an int8 twin timed in both forms and the faster kept (the S26
   // ai: Ultra's Adreno ran the int8 classifiers at 8.6 times f16's describe time where the iGPU ran them at half: a
   // ai: measurement, never the device's name). On the first stream batch a lane reads back with a live frame first
   // ai: (batch(), 2026-09-29; a measuring batch of the planning frame before): its first nb (up to TWIN_FRAMES) frames'
-  // ai: levels, peaks, logits and list are still on that lane, which is busy until this returns; then timeArms. The
-  // ai: fastest round a form (interference only adds); int8 kept only when faster. Once a decoder: the loser's weights
-  // ai: are freed, every lane's groups remade (a batch already submitted keeps the ones it was encoded with; none is
-  // ai: encoded across an await), fh.nets and fh.twins set. A measurement that fails on a live device is logged and
-  // ai: the float forms kept.
+  // ai: levels and peaks are still on that lane, which is busy until this returns; then timeArms. The fastest round a
+  // ai: form (interference only adds); int8 kept only when faster. Once a decoder: the loser's weights are freed, every
+  // ai: lane's groups remade (a batch already submitted keeps the ones it was encoded with; none is encoded across an
+  // ai: await), fh.nets and fh.twins set. A measurement that fails on a live device is logged and the float form kept.
   async measureTwins(lane, nb) {
-    const tf = this.twinForms, c = this.cascade, arms = [];
+    const t = this.twinForms.large;
     this.twinForms = null;
     // ai: Without timestamps a dispatch is timed from its submit to its completion, so no other lane's batch may be on
     // ai: the device meanwhile: the other lanes are reserved (launch() leaves a reserved lane busy when its batch
@@ -888,37 +853,25 @@ export class FrontHalf {
     const held = this.features.includes("timestamp-query") ? [] : this.lanes.filter((l) => l !== lane);
     for (const l of held) { l.reserved = true; l.busy = true; }
     await Promise.allSettled(held.map((l) => l.pending));
+    const fl = { precision: this.weights.precision, pipe: this.classify, buf: this.weightsBuf }, i8 = { ...t, precision: "int8" };
+    const arms = [fl, i8].map((f) => ({ precision: f.precision, pipe: f.pipe, group: lane.netGroup(f.pipe, f.buf), x: ceilDiv(this.cap, f.pipe.P), ms: [] }));
     try {
-      for (const net of ["small", "large"]) {
-        if (!tf[net]) continue;
-        const small = net === "small", slots = small || !c ? this.cap : c.keep;
-        const now = small ? { pipe: this.classify0, buf: this.weightsBuf0, precision: c.weights.precision } : { pipe: this.classify, buf: this.weightsBuf, precision: this.weights.precision };
-        for (const f of [now, { ...tf[net], precision: "int8" }]) arms.push({ net, precision: f.precision, pipe: f.pipe, group: lane.netGroup(f.pipe, f.buf, small), x: ceilDiv(slots, f.pipe.P), ms: [] });
-      }
       await this.timeArms(arms, nb);
     } catch (e) {
       if (this.lost) throw e;
       this.log(`int8 twins not measured (${e.message}): the float files`);
-      for (const k of ["small", "large"]) tf[k]?.buf.destroy();
+      t.buf.destroy();
       return;
     } finally { for (const l of held) { l.reserved = false; l.busy = false; } }
     const best = (v) => Math.min(...v) / nb;
-    const out = { frames: nb, by: this.features.includes("timestamp-query") ? "timestamps" : "submits" };
-    for (const net of ["small", "large"]) {
-      const [fl, i8] = arms.filter((a) => a.net === net);
-      if (!fl) continue;
-      const keep = best(i8.ms) < best(fl.ms) ? i8 : fl, t = tf[net];
-      out[net] = { [fl.precision]: +best(fl.ms).toFixed(3), int8: +best(i8.ms).toFixed(3), kept: keep.precision };
-      if (keep === i8) {
-        if (net === "small") { this.weightsBuf0.destroy(); this.classify0 = t.pipe; this.weightsBuf0 = t.buf; c.weights = t.w; }
-        else { this.weightsBuf.destroy(); this.classify = t.pipe; this.weightsBuf = t.buf; this.weights = t.w; }
-      } else t.buf.destroy();
-      this.nets[net] = keep.precision;
-    }
-    this.twins = out;
+    const [af, a8] = arms, keep = best(a8.ms) < best(af.ms) ? a8 : af;
+    const large = { [af.precision]: +best(af.ms).toFixed(3), int8: +best(a8.ms).toFixed(3), kept: keep.precision };
+    if (keep === a8) { this.weightsBuf.destroy(); this.classify = t.pipe; this.weightsBuf = t.buf; this.weights = t.w; }
+    else t.buf.destroy();
+    this.nets.large = keep.precision;
+    this.twins = { frames: nb, by: this.features.includes("timestamp-query") ? "timestamps" : "submits", large };
     for (const l of this.lanes) l.bindNets();
-    const said = (net) => (out[net] ? `${net} ${out[net].kept} (${Object.entries(out[net]).filter(([k]) => k !== "kept").map(([k, v]) => `${k} ${v}`).join(", ")} ms a frame)` : null);
-    this.log(`int8 twins measured on ${nb} frames by ${out.by}: ${["small", "large"].map(said).filter(Boolean).join("; ")}`);
+    this.log(`int8 twins measured on ${nb} frames by ${this.twins.by}: large ${large.kept} (${Object.entries(large).filter(([k]) => k !== "kept").map(([k, v]) => `${k} ${v}`).join(", ")} ms a frame)`);
     this.log(`nets: bank ${this.nets.bank}, small ${this.nets.small}, large ${this.nets.large}`);
   }
 
@@ -1132,7 +1085,7 @@ export class FrontHalf {
     const find = !maps;
     // ai: The anchors' stages run behind F7's last round (anch); a batch with no F7 (told, or register off) runs
     // ai: ANCH_FIND and ANCH_FIT alone, through the map it holds, so pass 1 has every frame's record.
-    const anch = find && this.register && this.rounds.length > 1;
+    const anch = find && this.register;
     const G = this.slotsG;
     d.queue.writeBuffer(this.heldUni, 0, heldUniform(held));
     // Every slot's frame record is written, so a slot past nb (or a gate slot past B) reads as no frame.
@@ -1205,14 +1158,12 @@ export class FrontHalf {
     if (find) {
       const step = (pl, group, x, y = 1) => { pass.setPipeline(pl.p); pass.setBindGroup(0, group); pass.dispatchWorkgroups(x, y); };
       // F4: a workgroup of the network takes its kernel's P patches from slot P wg.x (and returns at once past the
-      // frame's count), so ceil(cap / P) workgroups a frame cover the cap slots. The cascade: the small net on every
-      // slot, RANK a frame, the large net on `keep` list slots.
+      // frame's count), so ceil(cap / P) workgroups a frame cover the cap slots.
       // ai: cap (or keep) workgroups before 2026-09-30, P - 1 in P of them returning at once: the small net's
       // ai: describe 0.90 to 0.83 ms a frame on the iGPU for launching them (STATUS "Native speed").
       begin("describe");
       const net = (pipe, group, slots) => step(pipe, group, ceilDiv(slots, pipe.P), nb);
-      if (this.cascade) { net(this.classify0, this.classify0Group, this.cap); step(this.rank, this.rankGroup, nb); net(this.classify, this.classifyGroup, this.cascade.keep); }
-      else net(this.classify, this.classifyGroup, this.cap);
+      net(this.classify, this.classifyGroup, this.cap);
       begin("vote");
       step(this.vote, this.voteGroup, ceilDiv(this.cap, VOTE_READS), nb);
       step(this.gather, this.gatherGroup, nb);
@@ -1224,8 +1175,7 @@ export class FrontHalf {
         step(this.redo, this.redoGroup, nb);
         this.bank.dispatch(pass, this, nb, 2);
         step(this.select, this.selGroup2, nb);
-        if (this.cascade) { net(this.classify0, this.classify0Group2, this.cap); step(this.rank, this.rankGroup2, nb); net(this.classify, this.classifyGroup2, this.cascade.keep); }
-        else net(this.classify, this.classifyGroup2, this.cap);
+        net(this.classify, this.classifyGroup2, this.cap);
         step(this.vote, this.voteGroup2, ceilDiv(this.cap, VOTE_READS), nb);
         step(this.gather, this.gatherGroup2, nb);
         // ai: F5d (wgsl/finder.mjs COMPLETE), a workgroup a (frame, quad): on a frame neither round found four corners of
@@ -1241,7 +1191,7 @@ export class FrontHalf {
         });
         // ai: the last round's residuals, lens and side fits (REFIT_POST), in its refit's profile pass: REFIT's own tail
         // ai: until 2026-10-21, which ran in every round but the first (m0[13] != 0)
-        if (this.rounds.length > 1) step(this.refitPost, this.refitPostGroup, nb);
+        step(this.refitPost, this.refitPostGroup, nb);
         // ai: the anchors' arm (wgsl/anchors.mjs), in the same pass: ANCH_FIND a workgroup per (anchor, frame), then
         // ai: ANCH_PREDICT (the border's places from the anchors), the border searched again about them (nodesC on its own
         // ai: round, a workgroup a node), ANCH_REFIT (the lens refitted over the border and the anchors) and ANCH_FIT, a

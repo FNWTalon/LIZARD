@@ -338,14 +338,14 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
 // ai: so the map the interior is read through follows what the anchors see and the mesh carries only what the model
 // ai: cannot (F7's lens, fitted to the border alone, misses the interior by up to 2 or 3 modules on the strongest
 // ai: lenses in a 2:1 half, more than the mesh's cubic from the border's 0 to the outer anchors follows):
-// ai: - The points, about H, F7's homography without its k1 about the image's centre (an axis inside a 2:1 half's edge
-// ai:   leaves a field the model about the axis cannot take that k1 back from: about H the anchors alone put the border
-// ai:   of the strongest lenses within 0.82 module of the C's map, about F7's whole map 3.6 to 4.2 modules off): each
-// ai:   border node's displacement from H as measured, weighted by its correlation; each found anchor's, its record (the
-// ai:   residual the final map needed at its centre) plus what that map adds over H there (k1, the lens and the Coons
-// ai:   patch REFIT_POST wrote), weighted 1 (the C's weight; by its peak, 38 fewer blocks over the published lenses).
-// ai:   Where the model holds, the map's k1 is set to 0 with it (maps[f][9]), so every later sampler reads H, the lens
-// ai:   and the patch.
+// ai: - The points, about H, F7's homography (the map's k1 slot is 0: REFIT fits the homography alone, F7's lens being
+// ai:   the one about the axis, which an axis inside a 2:1 half's edge leaves a field a k1 about the image's centre
+// ai:   could not take back from: about H the anchors alone put the border of the strongest lenses within 0.82 module
+// ai:   of the C's map, about F7's whole map with that k1 3.6 to 4.2 modules off): each border node's displacement from
+// ai:   H as measured, weighted by its correlation; each found anchor's, its record (the residual the final map needed
+// ai:   at its centre) plus what that map adds over H there (the lens and the Coons patch REFIT_POST wrote), weighted 1
+// ai:   (the C's weight; by its peak, 38 fewer blocks over the published lenses). Every later sampler reads H, the
+// ai:   lens and the patch.
 // ai: - The model (wgsl/register.mjs LENS: a homography's first-order change and K = 0 to 3 radial terms about the axis,
 // ai:   K by AICc), with no cap inside the code's quad: the anchors sample the interior's radii, which a 1:1 crop's
 // ai:   border does not.
@@ -372,7 +372,7 @@ struct Anchors { k: array<vec4f, ${3 * RING_COUNT}> }
 @group(0) @binding(0) var<storage, read> frames: array<Frame>;
 @group(0) @binding(1) var<storage, read> nodes: array<vec4f>;
 @group(0) @binding(2) var<storage, read> sel: array<vec4u>;
-// ai: meas and maps read and written (ANCH_PREDICT writes meas, ANCH_REFIT the map's k1): one layout for both forms
+// ai: meas and maps bound read-write (ANCH_PREDICT writes meas; maps is only read, its layout kept): one layout for both forms
 @group(0) @binding(3) var<storage, read_write> meas: array<vec4f>;
 @group(0) @binding(4) var<storage, read_write> maps: array<array<f32, 16>>;
 @group(0) @binding(5) var<storage, read_write> resid: array<vec4f>;
@@ -429,8 +429,6 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   }
   if (workgroupUniformLoad(&wu) < ${ANCH_MIN}u) { return; }
   let M = maps[f];
-  var Mh = M;
-  Mh[9] = 0.0;
   let L0 = lensOf(f);
   let at = LAT.at[rgi];
   let first = at.x;
@@ -438,7 +436,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   for (var n = li; n < count; n += 64u) {
     let e = meas[f * ${NODES_MAX}u + n];
     let ok = e.w != 0.0 && e.z >= ${WMIN};
-    let p = toImage(Mh, nodes[base + n].xy);
+    let p = toImage(M, nodes[base + n].xy);
     pp[n] = vec4f(p, select(vec2f(0.0), e.xy - p, ok));
     pw[n] = ${predict ? "0.0" : "select(0.0, e.z, ok)"};
     pd[n] = 0u;
@@ -447,7 +445,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
     let e = anch[NK * f + li];
     let X = vec2f(knot(rgi, 1u + li % SIDE), knot(rgi, 1u + li / SIDE));
     let p = toImage(M, X);
-    let h = toImage(Mh, X);
+    let h = p;
     let on = ak[li] == 1u;
     pp[count + li] = vec4f(h, select(vec2f(0.0), p + e.xy + lensAt(L0, p) + coons(f, first, nl, X) - h, on));
     pw[count + li] = select(0.0, 1.0, on);
@@ -609,7 +607,6 @@ ${lensNormalSolve}    }
 ${predict ? `  for (var n = li; n < count; n += 64u) { meas[f * ${NODES_MAX}u + n] = vec4f(pp[n].xy + lensAt(lz, pp[n].xy), 0.0, 2.0); }
   return;
 ` : ""}  if (li == 0u) {
-    maps[f][9] = 0.0;
     let b = f * ${RESID}u + ${NODES_MAX}u;
     resid[b] = lz.c;
     resid[b + 1u] = lz.a;

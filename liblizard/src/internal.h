@@ -91,7 +91,6 @@ int ob_acquire_any(const ob_layout_t *const *Ls, int nL, const image_t *im, int 
 // shared. quad is eight floats, image pixels, in the order find_frame reports.
 int ob_acquire_quad(const ob_layout_t *L, const image_t *im, int mesh, ob_reg_t *reg, ob_result_t *res,
                     const float *quad, int orient, float score);
-extern OB_TLS float ob_raw_quad[8];   // the finder's quad before the corner nodes refine it
 int ob_test_mesh_tables(const ob_layout_t *L, int32_t *dims, float *nodeX, float *nodeY, uint8_t *kind, int32_t *mark);
 int ob_thin_fmt_plan(const ob_layout_t *L, int cells, float *pts, int32_t *meta, int32_t *widx);
 int ob_thin_score_plan(const ob_layout_t *L, float *pts, int32_t *meta, int32_t *signs);
@@ -111,7 +110,7 @@ void ob_map_point(const ob_layout_t *L, const ob_reg_t *reg, float mx, float my,
 // ai: blurred square's neighbourhood at 0.6) is fitted exactly and bends the map (the bench's 64 ring at 2.7 camera px
 // ai: a module, 8 found, one 2.3 modules off: 0 blocks of 23, 16 without the anchors).
 enum { OB_ANCH_K = 7, OB_ANCH_TS = 16, OB_ANCH_PX_MIN = 6, OB_ANCH_MIN = 12 };
-extern int ob_anch_margin;   // ai: the samples erased round an anchor's square (acquire.c)
+enum { OB_ANCH_MARGIN = 2 };   // ai: the samples erased round an anchor's square
 extern OB_TLS int ob_anch_found;   // ai: the anchors the last acquisition counted, -1 where no mesh was made (acquire.c)
 int ob_anchor_side(const ob_layout_t *L);
 int ob_anchor_m0(const ob_layout_t *L, int i);

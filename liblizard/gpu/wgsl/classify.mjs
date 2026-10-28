@@ -1,5 +1,5 @@
 // F4 as a network, the reference kernel: the decoder runs classify_gemm.mjs (the same stage, GEMM-shaped), and
-// cnn/test_gemm.mjs checks that one against this. RANK and CASCADE live here and are re-exported from there.
+// cnn/test_gemm.mjs checks that one against this.
 // One workgroup a (frame, kept peak) cuts the 32 x 32 patch
 // at the peak, standardises it, runs the arch's layers in workgroup memory and writes one reading in the layout
 // finder.mjs states at the peak's index. Its best diagonal is index 0, at the network's outward angle, scored by the
@@ -145,15 +145,10 @@ const fc = (L, src, w, b, relu, at) => {
 `;
 };
 
-// The cascade (cnn/README.md, "The cascade"): a small net on every kept peak, RANK keeps the `keep` strongest a
-// frame by mark logit as a compacted index list, and the large net runs on that list only, overwriting those
-// readings; a peak outside the list keeps the small net's reading. The harness default; FrontHalf.create's `cascade`
-// option and CASCADE=<file> CASCADE_KEEP=<n> select it.
-// keep 64, not 128 (2026-09-24): the replay's blocks the same to 0.01%, and the small net ranks 99.83% of the noisy
-// scenes' marks within its top 64 (scripts/train/cnn_v3_topk.py --k=64; 99.60% at 32, which is why not 32).
-// ai: weights: a path under liblizard/ since 2026-10-01 (a name under gpu/cnn/ before): the installed app names every file
-// ai: by a hash of its bytes and rewrites only whole literal paths (lizard-web/pwa/hash.mjs), and the harness page takes either.
-export const CASCADE = { weights: "gpu/cnn/weights-v3.safetensors", keep: 64 };
+// ai: The installed classifier (gpu/decoder.mjs INSTALLED): cnn-v3, run on every kept peak. A path under liblizard/
+// ai: since 2026-10-01 (a name under gpu/cnn/ before): the installed app names every file by a hash of its bytes and
+// ai: rewrites only whole literal paths (lizard-web/pwa/hash.mjs), and the harness page takes either.
+export const CLASSIFIER = "gpu/cnn/weights-v3.safetensors";
 // ai: The installed classifiers' int8 twins, paths under liblizard/ (names under gpu/cnn/ until 2026-10-01, which the built
 // ai: app's renamed files no longer matched: it would have run the float classifiers without a word): a float file's
 // ai: q8 form (cnn/q8c.mjs), run where the decoder runs at precision int8 and its measurement on the first stream
@@ -243,43 +238,3 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
 }
 `;
 };
-
-// RANK, the cascade's middle: one workgroup a frame keeps the `keep` peaks with the highest score as a compacted
-// index list, in score order, and writes how many to counts[3]. Rank by counting: every peak counts the peaks above
-// it (ties by index), so ranks are unique and no atomics or host round trip are needed; n^2 compares a frame from
-// workgroup memory. A frame with fewer than `keep` peaks lists them all, and every slot past them is written too,
-// so the list never carries a slot from an earlier batch.
-// The order is on the score's bits, not the float: a float compare ranks a NaN 0, where it collides with the true
-// maximum and the losing write leaves a slot holding whatever was there before. The key folds the sign so larger
-// scores give larger keys, and a NaN keys 0, below every number.
-export const rankSource = ({ cap, keep }) => DIMS + /* wgsl */ `
-@group(0) @binding(0) var<storage, read> frames: array<Frame>;
-@group(0) @binding(1) var<storage, read> score: array<f32>;
-@group(0) @binding(2) var<storage, read_write> counts: array<u32>;
-@group(0) @binding(3) var<storage, read_write> list: array<u32>;
-const CAP = ${cap}u;
-const KEEP = ${keep}u;
-var<workgroup> z: array<u32, ${cap}>;
-fn key(x: f32) -> u32 {
-  let b = bitcast<u32>(x);
-  if ((b & 0x7fffffffu) > 0x7f800000u) { return 0u; }
-  return select(~b, b | 0x80000000u, (b >> 31u) == 0u);
-}
-@compute @workgroup_size(256, 1, 1)
-fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
-  let f = wg.x;
-  if (frames[f].valid != 1u) { return; }
-  let n = min(counts[f * 16u + 2u], CAP);
-  for (var i = li; i < n; i += 256u) { z[i] = key(score[f * CAP + i]); }
-  workgroupBarrier();
-  for (var i = li; i < n; i += 256u) {
-    let zi = z[i];
-    var r = 0u;
-    for (var j = 0u; j < n; j++) { r += u32(z[j] > zi || (z[j] == zi && j < i)); }
-    if (r < KEEP) { list[f * KEEP + r] = i; }
-  }
-  // Ranks are a permutation, so the slots under min(n, KEEP) are all written above; the rest are cleared here.
-  for (var r = li; r < KEEP; r += 256u) { if (r >= n) { list[f * KEEP + r] = 0u; } }
-  if (li == 0u) { counts[f * 16u + 3u] = min(n, KEEP); }
-}
-`;

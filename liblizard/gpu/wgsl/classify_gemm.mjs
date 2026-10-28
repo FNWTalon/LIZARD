@@ -1,5 +1,5 @@
-// F4 as a network, GEMM-shaped: the same stage as classify.mjs (bindings, uniforms, roles, the reading layout and
-// RANK are identical, so the decoder switches by changing its import), with the convolutions restructured as small
+// F4 as a network, GEMM-shaped: the same stage as classify.mjs (bindings, uniforms, roles and the reading layout are
+// identical, so the decoder switches by changing its import), with the convolutions restructured as small
 // matrix multiplies. classify.mjs gives each lane one output channel at four positions and reloads three weights
 // and three input vectors for every twelve multiply-adds; on the iGPU that is load-bound. Here a workgroup takes
 // several patches at once and each lane owns a tile of TC channels x 4 TX positions, accumulated in registers:
@@ -49,7 +49,6 @@ import { planArch, toHalf } from "../cnn/weights.mjs";
 import { readQuantC, forwardCodesC } from "../cnn/q8c.mjs";
 import { packI8x4, quantiseInput } from "../cnn/q8.mjs";
 import { INT8 } from "../constants.mjs";   // ai: not ../decoder.mjs, which imports this module (gpu/constants.mjs)
-export { rankSource, CASCADE } from "./classify.mjs";
 
 // Copied from classify.mjs (which copied finder.mjs): the patch has to be cut exactly as finder.mjs reads the pyramid.
 const LEVELS = /* wgsl */ `
