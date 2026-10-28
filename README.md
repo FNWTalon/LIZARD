@@ -143,6 +143,78 @@ received archive into a folder, and the web receiver offers it as the `.tar` it 
    captures in the middle of each picture (the algebra is
    [below](#the-pilots-and-the-phase-lock-in-algebra)).
 
+## A phone as a PC's camera
+
+The desktop app can decode what an Android phone films: the phone keeps its own camera, crop and phase lock, and
+sends each capture's crop to the PC, which decodes it on its own GPU or CPU. It helps a phone too slow or too hot to
+decode at the camera's rate, and a PC whose own camera is poor. Each frame goes as a `.lizard` frame (see
+[Replays](#replays-lizard-files)), about three quarters of its raw bytes; where the link carries fewer frames than the
+camera makes, the phone skips evenly and sends the rest in runs of four, so the phase lock still sees neighbouring
+captures. Packing a frame costs the phone about 1.4 ms of a big core for a 960 x 960 half; Receive › Settings ›
+Compression (shown with the PC decoder) turns it off for a phone too weak or too warm, and the frames then go raw. Start and Stop on either end start and stop both, and either end stops when it has not heard from the other
+for 3 seconds.
+
+**Over a USB tether** (no driver on Linux or Windows):
+
+1. Connect the phone to the PC with a USB data cable and open LIZARD's Receive on the phone (the PC's Start reaches the
+   app there).
+2. Turn on USB tethering (the phone's Settings, or the button under Receive › Settings › PC link in the app).
+3. On the PC, open Receive › Settings › Camera: the phone is listed by its name. Press Start. The phone's decoder
+   switches to PC and its camera starts.
+
+The phone announces itself on the tether alone (UDP 47231) and serves the stream on TCP 47230. Where the PC does not
+hear it, Camera › Phone by address takes the address the phone's PC link field shows.
+
+**Over the cable alone, as an Android Open Accessory.** The PC switches the phone into accessory mode and reads the
+stream over USB bulk transfers, with no network at all. The desktop app loads libusb-1.0 at run time:
+`libusb-1.0.so.0` on Linux (Debian's and Ubuntu's `libusb-1.0-0`), `libusb-1.0.dylib` from Homebrew on macOS, and
+`libusb-1.0.dll` on Windows (from [libusb's releases](https://github.com/libusb/libusb/releases), beside the app's
+executable or on the `PATH`). The phone then shows under Camera as USB; Start switches it (the phone asks once whether
+LIZARD may open the accessory) and the phone reappears on the bus as Google's accessory device, 18d1:2d00 or 18d1:2d01.
+
+- **Linux**: the logged-in user needs access to both USB devices, the phone as it plugs in and the accessory it
+  becomes. Desktops grant it to most phones already; where the camera list does not show the phone, a udev rule for the
+  phone's vendor (Samsung's is 04e8) and Google's, for example `/etc/udev/rules.d/51-lizard.rules`:
+
+  ```
+  SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", MODE="0660", TAG+="uaccess"
+  SUBSYSTEM=="usb", ATTR{idVendor}=="04e8", MODE="0660", TAG+="uaccess"
+  ```
+
+  then `sudo udevadm control --reload-rules` and plug the phone in again.
+- **Windows**: libusb reaches a device only through the WinUSB driver, which [Zadig](https://zadig.akeo.ie) binds:
+  1. Plug the phone in. In Zadig, choose Options › List All Devices, pick the phone, set the driver to WinUSB and press
+     Replace Driver. This takes the phone's file transfer (MTP) away from Explorer while WinUSB holds it.
+  2. In LIZARD, press Start with the phone chosen under Camera. The phone switches into accessory mode and Windows
+     finds a new device.
+  3. In Zadig again, pick that device (18d1:2d00 or 2d01, interface 0), choose WinUSB and press Install Driver. Press
+     Start in LIZARD again. Windows remembers both drivers for those devices.
+
+  To undo it, uninstall the device in Device Manager with its driver deleted, and plug it in again. This route has
+  not been tried on Windows yet; the USB tether needs none of it.
+- **macOS**: nothing to install beyond libusb; not tried yet.
+
+On a link of 42 MB/s, what a USB 2 cable carries, a 2:1 crop at 1080p and 60 captures a second (110 MB/s raw) arrives at
+about 31 captures a second, where raw luma got about 22 (measured over a throttled loopback); a USB 3 cable and port
+carry all of them.
+
+## Replays (.lizard files)
+
+A replay is a run of captures as a receiver's decoder was handed them, kept for playing again into a decoder. It is
+one `.lizard` file: a ZIP archive of stored entries, each frame's luma as JPEG-LS's median prediction residuals
+compressed with zstd (about three quarters of the raw bytes, lossless), with the run's `meta.json` (sizes, capture
+times, camera axes, the crop) and its statistics. The format is specified in
+[research/SPEC.md](research/SPEC.md) section 15; any ZIP tool lists and tests one.
+
+- **Recording.** Receive › Developer Tools › Save replays, in the Android app and the desktop app, keeps the newest
+  300 frames while the camera runs and writes the `.lizard` when it stops. The Android app's Download puts it in the
+  phone's Downloads folder; the desktop app's is in its data folder (Show in folder).
+- **Playing.** The desktop app's Receive › Settings › Camera › Upload asks for a `.lizard` and plays it as a camera at
+  its recorded times, a 2:1 run's halves put side by side again; the crop is the file's. Headless:
+  `lizard_receive --camera upload:<file.lizard> --layout <its crop>`.
+- **Looking inside.** `lizard_receive unpack <file.lizard> <folder>` writes the frames as raw `NNNN.gray` files with
+  `meta.json`, and `lizard_receive pack <folder> <file.lizard>` makes a `.lizard` of such a folder.
+
 ## The pilots and the phase lock, in algebra
 
 **The problem.** The screen shows a new picture every $T_d$ (16.67 ms at 60 Hz), and the camera starts a capture
@@ -415,10 +487,10 @@ not how steadily it paces on real hardware. The desktop app's receiver (UVC came
 AVFoundation) is checked against fake camera devices and a simulated camera filming a simulated screen; with a real
 camera it has run once, a 2013 USB webcam (a Logitech C930e on Linux) reading 90 to 120 kB/s (reported, not logged),
 which no phase lock helps: a webcam cannot delay a single frame, so a sender for one paints at most half its rate.
-It also takes a phone as its camera, the phone keeping its own camera control and phase lock: the Android app's PC
-decoder sends its camera's crop over any IP route (a USB tether, Wi-Fi), or over the cable alone as an Android Open
-Accessory (with libusb on the PC; on Windows a WinUSB driver bound with Zadig), skipping evenly what the link cannot
-carry, and the PC decodes it. That path has run over loopback and a stand-in for the accessory, not yet over a cable.
+It also takes a phone as its camera ([A phone as a PC's camera](#a-phone-as-a-pcs-camera)): the phone sends its
+camera's crop as `.lizard` frames over a USB tether or, as an Android Open Accessory, over the cable alone. The
+accessory has run over a USB 2 cable on Linux (the link steady at 41 to 42 MB/s); the tether and the accessory on
+Windows and macOS have not run on a cable yet.
 
 ## Layout
 
@@ -427,7 +499,7 @@ carry, and the PC decodes it. That path has run over loopback and a stand-in for
 | `liblizard/` | the library: the C codec (`src/`, the format's reference), the GPU decoder's WGSL and its host and the sender's WebGPU encoder (`gpu/`), the native engine (`core/`: the decoder on Vulkan, the C on the CPU, the transfer, the sender), the generator that compiles the GPU decoder for Vulkan (`gen/`), and a C API with WebAssembly and Kotlin bindings (`include/`, `api/`, `bindings/`) |
 | `lizard-web/` | the web app: sender and receiver pages, installable as a PWA |
 | `lizard-android/` | the Android app: receiver and sender, native Vulkan decoding |
-| `lizard-desktop/` | the desktop app: sender and receiver, a Compose Desktop app drawing the code through a native Vulkan presenter and reading a camera (V4L2, Media Foundation or AVFoundation) into the native decoders |
+| `lizard-desktop/` | the desktop app: sender and receiver, a Compose Desktop app drawing the code through a native Vulkan presenter and reading a camera (V4L2, Media Foundation or AVFoundation), a phone's stream or a `.lizard` replay into the native decoders |
 | `research/SPEC.md` | the format specification |
 
 Comments and docs also cite the project's lab files (`scripts/`, `archive/`, `research/` other than `SPEC.md`,
@@ -492,7 +564,8 @@ cmake -S native -B build/native && cmake --build build/native
 The receiver's checks run against fake camera devices and a simulated camera, never a real one:
 `cmake --build build/native --target cam_check lizard_receive`, then `build/native/cam_check all` (with
 `LIZ_V4L2_NODES=` set empty on Linux, so no camera node is probed). `lizard_receive` is the receiver without the
-window: `lizard_receive list`, or `lizard_receive --camera <id>` with a line of figures a second.
+window: `lizard_receive list`, or `lizard_receive --camera <id>` with a line of figures a second (`upload:<file.lizard>`
+plays a replay), and `lizard_receive pack` and `unpack` turn a `.lizard` into a folder of frames and back.
 
 On Windows the native library is built with MinGW-w64, most simply from Linux with its posix-thread compilers
 (`x86_64-w64-mingw32-gcc-posix` and `g++-posix`, as Debian names them) and `JAVA_HOME` a JDK, for its JNI headers. From

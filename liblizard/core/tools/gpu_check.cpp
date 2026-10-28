@@ -30,6 +30,7 @@
 #include "front.h"
 #include "receiver.h"
 #include "recording.h"
+#include "stream.h"
 #include "replay.h"
 #include "axes.h"
 extern "C" {
@@ -273,6 +274,8 @@ static int receive(Ctx& c, const std::string& run, double fps, const std::string
   cfg.assets = c.out; cfg.cacheDir = storeDir; cfg.storeDir = storeDir; cfg.layout = layout;
   // ai: LIZ_DECODER: auto (the default), gpu or cpu; LIZ_CPU_THREADS: the CPU decoder's workers (0: its pool's rule)
   if (getenv("LIZ_DECODER")) cfg.decoder = getenv("LIZ_DECODER");
+  // ai: LIZ_STREAM_PACK=0 (decoder pc): the frames to the PC raw, as the phone's Compression off sends them (stream.h linkPack)
+  if (env("LIZ_STREAM_PACK") == "0") linkPack(false);
   if (getenv("LIZ_CPU_THREADS")) cfg.cpuThreads = atoi(getenv("LIZ_CPU_THREADS"));
   if (getenv("LIZ_YIELD_GPU")) cfg.yieldGpu = env("LIZ_YIELD_GPU") == "1";   // ai: ReceiverConfig::yieldGpu, its default unset
   cfg.log = [](const std::string& m) { std::cout << "  " << m << std::endl; };

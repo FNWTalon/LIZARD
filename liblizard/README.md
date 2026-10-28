@@ -117,7 +117,7 @@ some of the decoder variants, chosen among as an install's are.
   [device]` pushes a run through the receiver until its file is whole; `lizard_engine send <assets> <gpu|cpu|auto>
   [device]` paints a file and reads it back. `<assets>` is `out/` or an install's `share/lizard`. A run is a folder of
   `meta.json` (`{"w": ..., "h": ..., "frames": ...}`) and the frames `0000.gray` on, `w` x `h` grey bytes each. The
-  project's camera recordings are not published; `lizard_engine paint <assets> <run dir> [frames] [blocks]` makes a run
+  project's camera recordings (`.lizard` files, `../research/SPEC.md` 15, which this C API does not read yet) are not published; `lizard_engine paint <assets> <run dir> [frames] [blocks]` makes a run
   with the library alone (a file painted on the CPU through the GPU's frame ring, so the assets too; each frame on
   white).
 - `bindings/wasm/test/`, `bindings/kotlin/lizard/src/test/`: the same round trips through each binding.

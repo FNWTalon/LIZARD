@@ -220,6 +220,7 @@ class MainActivity : ComponentActivity() {
             else bars.show(WindowInsetsCompat.Type.systemBars())
         }, { cam = it })
         settings = Settings.load(this) { camId(it) }   // ai: after the engine: a lens's own settings are under the id it resolves
+        Native.linkPack(settings.pcPack != "off")
         granted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         // ai: a restored activity (a configuration change, the process gone and back) keeps the screen it was on; only a
         // ai: fresh one takes its launch intent's (2026-10-01: restored, it went back to the intent's Receive)
@@ -354,6 +355,7 @@ class MainActivity : ComponentActivity() {
         val cam = camId(s0.camera)
         val s = if (s0.camera != settings.camera || s0.layout != settings.layout) s0.forCamera(this, cam) else s0
         if (s.layout != settings.layout && usb.connected) Native.linkUp(s.layout)   // ai: the crop the PC's hello names
+        if (s.pcPack != settings.pcPack) Native.linkPack(s.pcPack != "off")   // ai: from the next frame queued on
         settings = s
         s.save(this, cam)
         engine.batch(s.frames)

@@ -230,6 +230,11 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_streamAcce
 }
 
 // ai: the PC link (stream.h linkUp): up while a USB cable is in, its hello naming layout; its state for the app's poll
+// ai: the PC stream's frames packed (.lizard frames) or raw: the Compression setting (stream.h linkPack)
+extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_linkPack(JNIEnv*, jclass, jboolean on) {
+  lizard::linkPack(on == JNI_TRUE);
+}
+
 extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_linkUp(JNIEnv* e, jclass, jstring layout) {
   const char* l = e->GetStringUTFChars(layout, nullptr);
   const std::string lay = l ? l : "1:1";
