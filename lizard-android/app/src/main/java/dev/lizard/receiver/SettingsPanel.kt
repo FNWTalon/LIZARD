@@ -37,7 +37,9 @@ internal fun MainActivity.ReceiveSettings() {
     val s = settings
     Fields {
         // ai: the fields in the web's shape, a menu each (2026-10-06; chips until then); auto shows the decoder it runs
-        Select("Decoder", if (s.decoder == "auto") autoRan.ifEmpty { "GPU" }.lowercase() else s.decoder, listOf("gpu" to "GPU", "cpu" to "CPU", "pc" to "PC")) { change(s.copy(decoder = it), true) }
+        // ai: PC only with a cable in (MainActivity.usb): the PC decoder is the phone's frames over USB to a PC
+        val decoders = listOf("gpu" to "GPU", "cpu" to "CPU") + listOfNotNull(("pc" to "PC").takeIf { usb.connected || s.decoder == "pc" })
+        Select("Decoder", if (s.decoder == "auto") autoRan.ifEmpty { "GPU" }.lowercase() else s.decoder, decoders) { change(s.copy(decoder = it), true) }
         // ai: the most frames a GPU launch takes (Settings.batch): a launch goes as soon as a frame waits, with every
         // ai: frame then waiting up to this; 1 decodes each frame alone. The C decodes a frame at a time: not shown with it.
         if (s.decoder == "pc") PcLinkField()
@@ -62,22 +64,20 @@ internal fun MainActivity.ReceiveSettings() {
 }
 
 // ai: The PC decoder's link (PcLink, the stream's stats): connected, the PC's address ("USB" for the accessory) and the
-// ai: frames a second it carries; else the USB accessory where it is open and the addresses this phone is reached at,
-// ai: and the tethering page where a cable is in with neither. Read at each stats poll (a second).
+// ai: frames a second it carries; else "disconnected", the USB accessory where it is open and the USB tether's address
+// ai: (no Wi-Fi: the PC decoder is the cable's, 2026-10-27), and the tethering page where the cable has neither. Read at each stats poll (a second).
 @Composable
 internal fun MainActivity.PcLinkField() {
     val st = remember(raw) { runCatching { JSONObject(raw).optJSONObject("stream") }.getOrNull() }
-    val usb = remember(raw) { PcLink.usb(this) }
-    val addrs = remember(raw) { PcLink.addresses() }
-    val accessory = remember(raw) { Native.accessoryOpen() }
+    val addrs = remember(raw, usb) { PcLink.usbAddresses() }
+    val accessory = remember(raw, usb) { Native.accessoryOpen() }
     val port = st?.optInt("port", 47230) ?: 47230
     val connected = st?.optBoolean("connected") == true
-    Field("PC link", if (connected) "to ${st?.optString("peer").orEmpty()}" else "waiting") {
+    Field("PC link", if (connected) "to ${st?.optString("peer").orEmpty()}" else "disconnected") {
         val lines = if (connected) listOf(String.format(Locale.ROOT, "%.0f of %.0f frames a second", st?.optDouble("sentFps", 0.0) ?: 0.0, st?.optDouble("cameraFps", 0.0) ?: 0.0))
-            else (listOfNotNull("USB accessory".takeIf { accessory }) + addrs.map { (k, a) -> "$k $a:$port" })
-                .ifEmpty { listOf(if (usb.connected) "USB tethering off" else "No network") }
+            else (listOfNotNull("USB accessory".takeIf { accessory }) + addrs.map { "USB $it:$port" }).ifEmpty { listOf("USB tethering off") }
         for (l in lines) Text(l, style = MaterialTheme.typography.bodyMedium, color = Muted)
-        if (usb.connected && !usb.tether && !accessory && !connected && addrs.none { it.first == "USB" })
+        if (usb.connected && !usb.tether && !accessory && !connected && addrs.isEmpty())
             Btn("USB tethering", modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { PcLink.openTethering(this@PcLinkField) }
     }
 }

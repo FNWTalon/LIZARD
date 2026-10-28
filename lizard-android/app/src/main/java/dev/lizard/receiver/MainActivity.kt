@@ -4,6 +4,8 @@ import dev.lizard.readout.Readout
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.ClipData
+import android.content.Context
+import android.content.BroadcastReceiver
 import android.content.ContentValues
 import android.content.Intent
 import android.content.IntentFilter
@@ -72,6 +74,7 @@ import java.util.TimeZone
 class MainActivity : ComponentActivity() {
     // ai: the folds' keys, and the two collapsers' (Receive's column, the sending screen's panel; landscape)
     companion object {
+        const val UNPLUG_MS = 2000L   // ai: a cable out this long is out (usb)
         val FOLDS = listOf("recvSettings", "recvExperimental", "recvAdvanced", "sendSettings", "sendAdvanced", "recvCollapsed", "sendCollapsed")
         // ai: the received tars' unpacking (keep), one at a time, off the main thread and the engine's
         private val unpacker = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "lizard-unpack") }
@@ -117,6 +120,21 @@ class MainActivity : ComponentActivity() {
     internal val folds = mutableStateMapOf<String, Boolean>()
     internal var autoRan by mutableStateOf("")             // ai: what auto last decoded on, GPU or CPU (the Decoder menu's value under auto)
     internal var raw by mutableStateOf("")                 // ai: the stats JSON as it came, for Developer Tools
+    // ai: The phone's USB (2026-10-27): the PC decoder is offered only with a cable in (USB_STATE's connected, while this
+    // ai: activity runs).
+    // ai: A cable out for UNPLUG_MS takes a PC decoder back to auto (the phone decodes on its own; picking PC again is
+    // ai: the user's), so the phone's drop off the bus as the PC switches it into accessory mode does not
+    internal var usb by mutableStateOf(PcLink.Usb(false, false))
+    private val unplugged = Runnable {
+        if (!PcLink.usb(this).connected && settings.decoder == "pc") { Log.i(Engine.TAG, "usb: the cable out, the decoder back to auto"); change(settings.copy(decoder = "auto"), true) }
+    }
+    private val usbListener = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            usb = PcLink.usbOf(i)
+            main.removeCallbacks(unplugged)
+            if (!usb.connected) main.postDelayed(unplugged, UNPLUG_MS)
+        }
+    }
     internal var rx by mutableStateOf(Readout.Rx())
     internal var root by mutableStateOf("")                // ai: the transfer in hand's BLAKE3 root, hex
     private var filing = ""      // ai: the root whose keep is under way (Engine.keep), until its answer
@@ -278,12 +296,16 @@ class MainActivity : ComponentActivity() {
         // ai: the permission again: it may have been given in Android's settings meanwhile
         granted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         if (granted) denied = false
+        val usbFilter = IntentFilter(PcLink.USB_STATE)
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(usbListener, usbFilter, Context.RECEIVER_EXPORTED) else registerReceiver(usbListener, usbFilter)
         PcLink.openAccessory(this)
         if (wantsCamera()) startCamera()
         else if (screen == Screen.Receive && !granted && !asked) askCamera()
     }
     override fun onPause() {
         super.onPause(); Log.i(Engine.TAG, "pause"); engine.stop(); send.stop()
+        runCatching { unregisterReceiver(usbListener) }
+        main.removeCallbacks(unplugged)
         getSystemService(PowerManager::class.java)?.removeThermalStatusListener(heatListener)
     }
     override fun onDestroy() { super.onDestroy(); runs.filter { it.state == ReplayState.Recording && it.owner === engine }.forEach { endReplay(it) }; engine.shutdown() }
