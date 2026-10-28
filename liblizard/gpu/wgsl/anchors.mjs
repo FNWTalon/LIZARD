@@ -361,9 +361,9 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
 // ai: order (src/acquire.c: the border's search starts from the anchors' model). F7's border search reaches 3 modules
 // ai: about the corners' homography and then 0.6 about a homography and k1, and the strongest lenses' sides in a 2:1
 // ai: half bow 1.7 to 3 modules (median) and up to 10 from the one, 1 to 1.7 and up to 3.5 from the other; the
-// ai: anchors' places come within 0.82 module of the C's map (median 0.1), which a search of +-0.4 reads as F7's
-// ai: +-0.6 fine round does (and F7's coarse round before it, 0.1% more over the published lenses for 1 to 2% more of
-// ai: the S26's frame). Writes nothing where the fit does not hold (the second search then leaves F7's nodes).
+// ai: anchors' places come within 0.82 module of the C's map (median 0.1), which a search of +-0.4 reads as the +-0.6
+// ai: fine round F7 had until 2026-10-28 did (and F7's +-3 round before it, 0.1% more over the published lenses for 1
+// ai: to 2% more of the S26's frame). Writes nothing where the fit does not hold (the second search then leaves F7's nodes).
 const NPTS = NODES_MAX + ANCH_K;
 export const anchRefitSource = ({ predict = false } = {}) => DIMS + MAP + /* wgsl */ `
 struct Fit { count: vec4u, base: vec4u, modules: vec4f }

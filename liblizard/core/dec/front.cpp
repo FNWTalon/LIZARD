@@ -47,7 +47,7 @@ Consts Consts::of(const json& c) {
 
 // ai: decoder.mjs STAGES, the profile's stage groups, a timestamp pair each. Every pair a batch resolves is written: a
 // ai: query never written is waited on until the device is lost (the iGPU, 2026-10-21), where WebGPU reads it as 0.
-static const std::vector<std::string> STAGES = {"pyramid", "bank", "select", "describe", "vote", "score", "find2", "nodes1", "refit1", "nodes2", "refit2", "word", "gate", "pass1", "reduce", "pass2", "soft", "ldpc"};
+static const std::vector<std::string> STAGES = {"pyramid", "bank", "select", "describe", "vote", "score", "find2", "nodes", "refit", "word", "gate", "pass1", "reduce", "pass2", "soft", "ldpc"};
 
 std::vector<wg::Resource> Lane::lvEntries(bool second) const {
   std::vector<wg::Resource> e{tex.get()};
@@ -73,6 +73,9 @@ std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const
   // ai: cascade, or with REFIT's debug words of the k1 fit, predates it
   if (!T["cascade"].is_null() || T["consts"]["REFIT_DBG"] != 52)
     throw wg::Error("the setup predates one classifier and REFIT without k1 (liblizard/gen/gen.mjs before 2026-10-27): generate it again");
+  // ai: F7 one round (2026-10-28; a fine round after it before): a tree with the list of rounds predates it
+  if (!T["front"].contains("round"))
+    throw wg::Error("the setup predates F7's one round (liblizard/gen/gen.mjs before 2026-10-28): generate it again");
   // ai: the smallest version a word names (LIZARD-16's 2 since 2026-10-25): a tree before it reads a word of version 1
   // ai: in F8, which a host refuses as a held version
   if (!T["consts"].contains("VERSION_MIN"))
@@ -398,8 +401,7 @@ void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H) {
       ln.completeGroup2 = dev.createBindGroup(P("complete").bgl, lvc);
       ln.redoGroup = group(P("redo"), {ln.framesBuf, ln.selBuf, ln.frames2Buf, ln.accBuf, ln.readingsBuf, ln.candBuf, ln.quadsBuf, ln.p5Uni}, false);
     }
-    ln.nodesGroups.clear();
-    for (auto& r : S->tree["front"]["rounds"]) ln.nodesGroups.push_back(group(P("nodesP"), {FBP("nodesBuf"), FBP("tmplBuf"), ln.mapsBuf, ln.selBuf, ln.measBuf, S->bufPtr(r)}, true));
+    ln.nodesGroup = group(P("nodesP"), {FBP("nodesBuf"), FBP("tmplBuf"), ln.mapsBuf, ln.selBuf, ln.measBuf, S->bufPtr(S->tree["front"]["round"])}, true);
     ln.anchNodesGroup = group(P("nodesP"), {FBP("nodesBuf"), FBP("tmplBuf"), ln.mapsBuf, ln.selBuf, ln.measBuf, S->bufPtr(S->tree["anch"]["buffers"]["round"])}, true);
     ln.wordGroup = group(P("wordP"), {ln.mapsBuf, ln.selBuf, ln.residBuf, FBP("wordPtsBuf"), ln.resultBuf, FBP("wordUni"), FBP("wordLatUni"), ln.heldUni}, true);
     // ai: decoder.mjs ensure: the anchors' two stages read the frame texture (binding 0), so their groups are made here
@@ -843,13 +845,11 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
     step(P("score"), ln.scoreGroup2, C.HYP * n);
     step(P("pick"), ln.pickGroup2, n);
   }
-  for (size_t r = 0; r < ln.nodesGroups.size(); r++) {
-    begin(r ? "nodes2" : "nodes1");
-    step(P("nodesP"), ln.nodesGroups[r], (uint32_t)nodesMax, n);
-    begin(r ? "refit2" : "refit1");
-    step(P("refit"), ln.refitGroup, n);
-  }
-  // ai: decoder.mjs batch: the last round's residuals, lens and side fits (REFIT_POST), in its refit's pass
+  begin("nodes");
+  step(P("nodesP"), ln.nodesGroup, (uint32_t)nodesMax, n);
+  begin("refit");
+  step(P("refit"), ln.refitGroup, n);
+  // ai: decoder.mjs batch: the residuals, lens and side fits (REFIT_POST), in the refit's pass
   step(P("refitPost"), ln.refitPostGroup, n);
   // ai: decoder.mjs batch: the anchors in the same pass, behind REFIT_POST (no profile stage of its own): ANCH_FIND
   // ai: a workgroup per (anchor, frame), ANCH_PREDICT and the border's second search (NODES centred on its own round, a

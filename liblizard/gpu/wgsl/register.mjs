@@ -5,10 +5,11 @@
 //           measured at once, one workgroup each: its window of the border as painted (the kind map, 12 x 12
 //           modules, word cells and picture left out) against the image under a grid of offsets, by normalised
 //           cross-correlation, and a parabola through the best. Sampled at the level where a module is 1.5 to 3 px.
-//   REFIT   one workgroup a frame fits a homography and radial distortion to every node by Gauss-Newton, each node
-//           weighted by its correlation and a Huber weight, so a node under glare or off the frame is discounted,
-//           not followed. What the fit leaves at each node is kept.
-// Run twice: a wide coarse search from the finder's map, a refit, a narrow fine search from the refit's, a refit.
+//   REFIT   one workgroup a frame fits a homography to every node by Gauss-Newton, each node weighted by its
+//           correlation and a Huber weight, so a node under glare or off the frame is discounted, not followed.
+//   REFIT_POST then fits the lens about the camera's axis to what the homography leaves and each side's curve.
+// Run once, a search from the finder's map; the anchors' stages (wgsl/anchors.mjs) search the border again about
+// the places their model predicts.
 // F9 then adds the nodes' residuals over the picture as a Coons patch (wgsl/sample.mjs).
 import { DIMS, MAP } from "./common.mjs";
 
