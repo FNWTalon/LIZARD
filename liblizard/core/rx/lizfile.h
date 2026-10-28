@@ -22,6 +22,25 @@ namespace lizard::lizfile {
 std::vector<uint8_t> packFrame(const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride);
 bool unpackFrame(const uint8_t* z, size_t n, uint32_t w, uint32_t h, uint8_t* out, std::string& why);
 
+// ai: The same codec with its zstd contexts and buffers kept, for a stream of frames: the phone's frames to a PC go as
+// ai: .lizard frames (stream.h FRAME, 2026-10-28). One thread at a time.
+class FrameCodec {
+ public:
+  FrameCodec();
+  ~FrameCodec();
+  FrameCodec(const FrameCodec&) = delete;
+  FrameCodec& operator=(const FrameCodec&) = delete;
+  // ai: px's w x h luma (rows `stride` apart) as its packed bytes in out; false where zstd refused
+  bool pack(const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride, std::vector<uint8_t>& out);
+  // ai: n packed bytes back into out's w h bytes; false with why
+  bool unpack(const uint8_t* z, size_t n, uint32_t w, uint32_t h, uint8_t* out, std::string& why);
+
+ private:
+  void* cctx_ = nullptr;
+  void* dctx_ = nullptr;
+  std::vector<uint8_t> res_;   // ai: the residuals of the frame in hand
+};
+
 // ai: A .lizard written as it goes: the frames in order, then finish's stats.jsonl and meta.json. Written through
 // ai: path.part, renamed over path at finish; one destroyed unfinished removes its .part. One thread at a time.
 class Writer {

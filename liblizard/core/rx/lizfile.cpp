@@ -76,23 +76,34 @@ void restore(const uint8_t* r, uint32_t w, uint32_t h, uint8_t* px) {
   }
 }
 
-std::vector<uint8_t> packWith(ZSTD_CCtx* cc, const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride) {
+// ai: into z (resized to the packed bytes), r the residuals' buffer; false where zstd refused
+bool packInto(ZSTD_CCtx* cc, const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride, std::vector<uint8_t>& r, std::vector<uint8_t>& z) {
   const size_t n = size_t(w) * h;
-  std::vector<uint8_t> r(n), z(ZSTD_compressBound(n));
+  r.resize(n);
+  z.resize(ZSTD_compressBound(n));
   residuals(px, w, h, stride, r.data());
   const size_t m = ZSTD_compressCCtx(cc, z.data(), z.size(), r.data(), n, LEVEL);
-  if (ZSTD_isError(m)) return {};
+  if (ZSTD_isError(m)) { z.clear(); return false; }
   z.resize(m);
+  return true;
+}
+std::vector<uint8_t> packWith(ZSTD_CCtx* cc, const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride) {
+  std::vector<uint8_t> r, z;
+  packInto(cc, px, w, h, stride, r, z);
   return z;
 }
-bool unpackWith(ZSTD_DCtx* dc, const uint8_t* z, size_t n, uint32_t w, uint32_t h, uint8_t* out, std::string& why) {
+bool unpackInto(ZSTD_DCtx* dc, const uint8_t* z, size_t n, uint32_t w, uint32_t h, std::vector<uint8_t>& r, uint8_t* out, std::string& why) {
   const size_t want = size_t(w) * h;
-  std::vector<uint8_t> r(want);
+  r.resize(want);
   const size_t got = ZSTD_decompressDCtx(dc, r.data(), want, z, n);
   if (ZSTD_isError(got)) { why = std::string("zstd: ") + ZSTD_getErrorName(got); return false; }
   if (got != want) { why = "a frame of " + std::to_string(got) + " B where " + std::to_string(w) + " x " + std::to_string(h) + " is " + std::to_string(want); return false; }
   restore(r.data(), w, h, out);
   return true;
+}
+bool unpackWith(ZSTD_DCtx* dc, const uint8_t* z, size_t n, uint32_t w, uint32_t h, uint8_t* out, std::string& why) {
+  std::vector<uint8_t> r;
+  return unpackInto(dc, z, n, w, h, r, out, why);
 }
 
 std::FILE* openFile(const std::string& path, const char* mode) {
@@ -215,6 +226,19 @@ bool unpackFrame(const uint8_t* z, size_t n, uint32_t w, uint32_t h, uint8_t* ou
   const bool ok = unpackWith(dc, z, n, w, h, out, why);
   ZSTD_freeDCtx(dc);
   return ok;
+}
+
+FrameCodec::FrameCodec() : cctx_(ZSTD_createCCtx()), dctx_(ZSTD_createDCtx()) {}
+FrameCodec::~FrameCodec() {
+  ZSTD_freeCCtx(static_cast<ZSTD_CCtx*>(cctx_));
+  ZSTD_freeDCtx(static_cast<ZSTD_DCtx*>(dctx_));
+}
+bool FrameCodec::pack(const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride, std::vector<uint8_t>& out) {
+  return cctx_ && packInto(static_cast<ZSTD_CCtx*>(cctx_), px, w, h, stride, res_, out);
+}
+bool FrameCodec::unpack(const uint8_t* z, size_t n, uint32_t w, uint32_t h, uint8_t* out, std::string& why) {
+  if (!dctx_) { why = "zstd: no context"; return false; }
+  return unpackInto(static_cast<ZSTD_DCtx*>(dctx_), z, n, w, h, res_, out, why);
 }
 
 std::unique_ptr<Writer> Writer::create(const std::string& path, std::string& why) {

@@ -45,6 +45,9 @@ data class Settings(
     val batch: String = "32",
     val replays: String = "off",
     val stats: String = "off",
+    // ai: the PC decoder's frames packed as .lizard frames ("on", the default) or sent raw ("off": a phone too weak or
+    // ai: too warm to pack them; about 1.4 ms a 960 x 960 half on the S26's big core, a quarter fewer bytes on the link)
+    val pcPack: String = "on",
 ) {
     val frames get() = batch.toIntOrNull()?.coerceIn(1, 32) ?: 32
     // ai: cam: the id the camera switch resolves to (Engine.rearId), null where the phone has no back camera (the
@@ -53,7 +56,7 @@ data class Settings(
         val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val e = p.edit()
             .putString("decoder", decoder).putString("layout", layout).putString("camera", camera)
-            .putString("batch", batch).putString("stats", stats)
+            .putString("batch", batch).putString("stats", stats).putString("pcPack", pcPack)
         e.putString(key("resolution", cam), resolution).putString(key("format", cam), format).putString(zoomKey(cam, layout), zoom)
         e.apply()
     }
@@ -84,7 +87,7 @@ data class Settings(
             val d = Settings()
             val s = Settings(p.getString("decoder", d.decoder)!!,
                 p.getString("layout", d.layout)!!, p.getString("camera", d.camera)!!, d.resolution, d.format, d.zoom,
-                p.getString("batch", d.batch)!!, d.replays, p.getString("stats", d.stats)!!)
+                p.getString("batch", d.batch)!!, d.replays, p.getString("stats", d.stats)!!, p.getString("pcPack", d.pcPack)!!)
             val cam = rearId(s.camera)
             return s.copy(camera = cam ?: s.camera).forCamera(ctx, cam)
         }

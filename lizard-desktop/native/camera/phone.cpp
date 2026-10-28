@@ -16,6 +16,7 @@
 #include "aoa.h"
 #include "backends.h"
 #include "clock.h"
+#include "lizfile.h"
 #include "stream.h"
 #include "json.hpp"
 
@@ -575,8 +576,11 @@ class PhoneCamera : public Camera {
     }
   }
 
+  // ai: the link's reader: a PACKED frame's .lizard frame unpacked here (stream.h; about 3.8 ms a 960 x 960 half on a
+  // ai: Ryzen 9 9950X's core, the time counted as the frame's convert), a FRAME's raw luma taken as it is
   void read() {
-    std::vector<uint8_t> b;
+    std::vector<uint8_t> b, luma;
+    lizfile::FrameCodec codec;
     uint64_t lastSeq = 0, winSeq = 0;
     int64_t winAt = 0;
     std::string why = "the phone went";
@@ -589,7 +593,7 @@ class PhoneCamera : public Camera {
         if (steadyNs() >= until) why = "the phone went quiet";
         break;
       }
-      if (head[0] < stream::HELLO || head[0] > stream::CAMERA || head[1] > stream::MAX_PAYLOAD) {
+      if (head[0] < stream::HELLO || head[0] > stream::PACKED || head[1] > stream::MAX_PAYLOAD) {
         if (!usb_) { why = "the phone's stream broke"; break; }
         // ai: the accessory's bytes broke (a write the phone could not finish): read on from a hello asked for
         json h;
@@ -605,7 +609,7 @@ class PhoneCamera : public Camera {
         continue;
       }
       // ai: a hello mid-link (the phone's session begun again) changes nothing here
-      if (head[0] != stream::FRAME || head[1] < stream::FRAME_HEAD) continue;
+      if ((head[0] != stream::FRAME && head[0] != stream::PACKED) || head[1] < stream::FRAME_HEAD) continue;
       uint64_t seq;
       int64_t ns;
       uint32_t w, h;
@@ -615,15 +619,25 @@ class PhoneCamera : public Camera {
       std::memcpy(&h, b.data() + 20, 4);
       std::lock_guard<std::mutex> k(sinkMu_);
       if (!started_ || !sink_) continue;
-      if (static_cast<uint64_t>(w) * h != head[1] - stream::FRAME_HEAD) {
+      const int64_t t0 = steadyNs();
+      std::string bad;
+      const bool packed = head[0] == stream::PACKED;
+      bool ok = w && h && w <= 16384 && h <= 16384;
+      if (ok && packed) {
+        luma.resize(size_t(w) * h);
+        ok = codec.unpack(b.data() + stream::FRAME_HEAD, head[1] - stream::FRAME_HEAD, w, h, luma.data(), bad);
+      } else if (ok) ok = static_cast<uint64_t>(w) * h == head[1] - stream::FRAME_HEAD;
+      if (!ok) {
         std::lock_guard<std::mutex> l(mu_);
         st_.corrupt++;
         continue;
       }
+      const double unpackMs = double(steadyNs() - t0) * 1e-6;
       // ai: the phone camera's clock onto this one's by one offset for the link, so back() can take it off again
       if (!offsetSet_) { offset_ = steadyNs() - ns; offsetSet_ = true; }
       {
         std::lock_guard<std::mutex> l(mu_);
+        st_.convertMs = st_.frames ? (st_.convertMs * double(st_.frames) + unpackMs) / double(st_.frames + 1) : unpackMs;
         st_.frames++;
         if (lastSeq && seq > lastSeq + 1) st_.dropped += seq - lastSeq - 1;   // ai: the phone's: frames not sent (the link's room)
         // ai: the phone camera's own rate, from its count a second at a time (the session's agreedFps; frames that
@@ -634,7 +648,7 @@ class PhoneCamera : public Camera {
       }
       lastSeq = seq;
       Frame f;
-      f.luma = b.data() + stream::FRAME_HEAD;
+      f.luma = packed ? luma.data() : b.data() + stream::FRAME_HEAD;
       f.width = w;
       f.height = h;
       f.stride = w;

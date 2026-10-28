@@ -43,6 +43,8 @@ internal fun MainActivity.ReceiveSettings() {
         // ai: the most frames a GPU launch takes (Settings.batch): a launch goes as soon as a frame waits, with every
         // ai: frame then waiting up to this; 1 decodes each frame alone. The C decodes a frame at a time: not shown with it.
         if (usb.connected) PcLinkField()
+        // ai: the PC decoder's frames packed as .lizard frames or raw (Settings.pcPack): raw for a phone too weak or too warm
+        if (s.decoder == "pc") Select("Compression", s.pcPack, listOf("on" to "On", "off" to "Off")) { change(s.copy(pcPack = it), false) }
         if (s.decoder != "cpu" && s.decoder != "pc") Field("Batch size", "${s.frames}") {
             Bar(s.frames.toFloat(), 1f..32f, 30) { v -> val n = v.roundToInt().coerceIn(1, 32); if (n != s.frames) change(s.copy(batch = n.toString()), false) }
         }

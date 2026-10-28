@@ -8,9 +8,13 @@
 // ai: and screen read the PC's decode as they read their own receiver's.
 // ai: Wire (both ends little-endian: arm64 and x86-64): a message is u32 type, u32 payload bytes, the payload.
 // ai:   HELLO  phone to PC, once a connection: JSON {"proto", "name", "layout", "fps"}
-// ai:   FRAME  phone to PC: u64 seq (the camera's frame count: a gap the frames not sent, skipped evenly where the
+// ai:   PACKED phone to PC: u64 seq (the camera's frame count: a gap the frames not sent, skipped evenly where the
 // ai:          link carries fewer than the camera makes, or dropped), i64 ns (the phone camera's clock), u32 w, u32 h,
-// ai:          then w x h luma bytes, rows of w
+// ai:          then the w x h luma as a .lizard frame (lizfile.h, research/SPEC.md 15.3: JPEG-LS's median residuals as
+// ai:          one zstd frame), the payload's rest: the stream as a .lizard's frames, about three quarters of the raw
+// ai:          bytes (2026-10-28); the phone's default
+// ai:   FRAME  phone to PC: the same header, then the w x h luma raw, rows of w (linkPack off: a phone too weak or too
+// ai:          warm to pack)
 // ai:   SERIES PC to phone: doubles, receiver.h series' array (the version, then 8 a frame), ms on the phone's clock
 // ai:   STATS  PC to phone: the PC receiver's stats JSON
 // ai:   OPEN   PC to phone, no payload: send a HELLO again (the PC's start on a link it did not open fresh: a USB
@@ -36,10 +40,10 @@
 #include "receiver.h"
 
 namespace lizard::stream {
-constexpr uint32_t PROTO = 2;   // ai: 2 since CAMERA (2026-10-27)
+constexpr uint32_t PROTO = 3;   // ai: 3 since PACKED (2026-10-28), 2 since CAMERA (2026-10-27)
 constexpr uint16_t TCP_PORT = 47230;      // ai: the phone listens (LIZ_STREAM_PORT another)
 constexpr uint16_t BEACON_PORT = 47231;   // ai: the PC listens for beacons
-enum Type : uint32_t { HELLO = 1, FRAME = 2, SERIES = 3, STATS = 4, OPEN = 5, CAMERA = 6 };
+enum Type : uint32_t { HELLO = 1, FRAME = 2, SERIES = 3, STATS = 4, OPEN = 5, CAMERA = 6, PACKED = 7 };
 constexpr int CAMERA_OFF_MS = 1000;  // ai: a camera off this long is off (either end's: a restart is not a stop)
 // ai: each end says something at least every HEARTBEAT_MS (the phone the camera's state where no frame goes, the PC its
 // ai: stats), and takes the other as gone after QUIET_MS of nothing
@@ -59,6 +63,9 @@ std::unique_ptr<Receiver> makeStreamReceiver(const ReceiverConfig& c, std::funct
 // ai: "pc" receiver feeds it, its word a second; so the app can tell a PC receiver is there before offering PC.
 void linkUp(const std::string& layout, std::function<void(const std::string&)> log);
 void linkDown();
+// ai: whether the frames go as .lizard frames (PACKED, the default: about three quarters of the bytes for about 1.4 ms
+// ai: a 960 x 960 half of the phone's CPU) or raw (FRAME), from the next frame queued on; the app's setting (2026-10-28)
+void linkPack(bool on);
 // ai: JSON {"up", "present" (a PC connected has said something within QUIET_MS), "connected", "peer", "port",
 // ai: "want": {"seq", "on"} (the PC's Start and Stop: a count and the last)}
 std::string linkState();

@@ -1,6 +1,7 @@
 // ai: The "pc" decoder (stream.h): the phone's side of the stream, a Receiver that decodes nothing.
 #include "stream.h"
 #include "crops.h"
+#include "lizfile.h"
 #include "develop.h"
 #include "json.hpp"
 #include "wg.h"
@@ -17,6 +18,7 @@ bool streamAccessory(int, std::function<void(const std::string&)>) { return fals
 bool accessoryOpen() { return false; }
 void linkUp(const std::string&, std::function<void(const std::string&)>) {}
 void linkDown() {}
+void linkPack(bool) {}
 std::string linkState() { return "{\"up\":false}"; }
 }  // namespace lizard
 
@@ -108,6 +110,7 @@ std::mutex gMu;
 std::condition_variable gCv;
 std::shared_ptr<Link> gLink;
 std::weak_ptr<Link> gLast;
+std::atomic<bool> gPack{true};   // ai: linkPack's: every link's frames packed (PACKED) or raw (FRAME)
 
 std::string deviceName() {
 #if defined(__ANDROID__)
@@ -203,14 +206,16 @@ class Link {
 
   // ai: The share_ of the camera's frames the link carries, sent in runs of RUN consecutive captures (2026-10-27; the
   // ai: transfer is fountain coded, so any share reads, 58 of 60 as well as 1 of 3): a running credit gains share_ a
-  // ai: capture, a run starts once it holds RUN, and every capture of the run has its crop copied into the queue (the
-  // ai: camera's buffer released at once) and the credit charged one; the captures between runs are skipped. Runs, not
-  // ai: one capture in k: the phase lock reads a capture against the captures a refresh either side of it
-  // ai: (PhaseLock.kt flashNow, leaks), which an even spread at under a half never sends: at 21 of 60 a second over
-  // ai: USB 2 the lock never held, the camera drifted against the screen and the blocks fell to 0 every pass. A full queue lets its
-  // ai: oldest go (dropped, counted). seq is the camera's count, so the PC reads the gaps. Nothing kept while no PC is
-  // ai: connected. A frame to develop (CameraFrame::raw: P010, RAW) is cropped first and only the crop developed, only
-  // ai: where it is sent (ingest/develop.h developLuma), so a skipped frame costs no develop.
+  // ai: capture, a run starts once it holds RUN, and every capture of the run is queued and the credit charged one; the
+  // ai: captures between runs are skipped. Runs, not one capture in k: the phase lock reads a capture against the
+  // ai: captures a refresh either side of it (PhaseLock.kt flashNow, leaks), which an even spread at under a half never
+  // ai: sends: at 21 of 60 a second over USB 2 the lock never held, the camera drifted against the screen and the blocks
+  // ai: fell to 0 every pass. A capture queued has its crop copied out (the camera's buffer released at once) and, with
+  // ai: linkPack on, packed as a .lizard frame (stream.h PACKED, 2026-10-28), here on the pushing thread and outside mu_,
+  // ai: so the writer only sends and the pace reads the link alone; a frame to develop (CameraFrame::raw: P010, RAW) is cropped first and
+  // ai: only the crop developed (ingest/develop.h developLuma), so a skipped frame costs no develop or pack. A full
+  // ai: queue lets its oldest go (dropped, counted). seq is the camera's count, so the PC reads the gaps. Nothing kept
+  // ai: while no PC is connected.
   // ai: gpu: a frame to develop's crop developed on the GPU (StreamReceiver's GpuDevelop), false where it was not (the
   // ai: CPU's develop then)
   using Develop = std::function<bool(const RawFrame&, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t* out)>;
@@ -219,6 +224,8 @@ class Link {
     const Crops k = cropsOf(f.width, f.height, two_);
     const bool wide = f.width >= f.height;
     const uint32_t w = wide ? k.n * k.side : k.side, h = wide ? k.side : k.n * k.side;
+    Out o;
+    bool send = false;
     {
       std::lock_guard<std::mutex> l(mu_);
       cameraOn_ = true;
@@ -233,20 +240,43 @@ class Link {
         if (run_ > 0) {
           run_--;
           credit_ -= 1.0;
-          if (queue_.size() >= QUEUE_MAX) { spare_.push_back(std::move(queue_.front().px)); queue_.pop_front(); dropped_++; }
-          Out o;
+          send = true;
           if (!spare_.empty()) { o.px = std::move(spare_.back()); spare_.pop_back(); }
-          o.px.resize(static_cast<size_t>(w) * h);
-          if (f.raw) {
-            const bool onGpu = gpu && gpu(*f.raw, k.x[0], k.y[0], w, h, o.px.data());
-            if (!onGpu) developLuma(*f.raw, k.x[0], k.y[0], w, h, o.px.data(), w);
-            developed_ = onGpu ? "gpu" : "cpu";
-          }
-          else for (uint32_t y = 0; y < h; y++) std::memcpy(&o.px[static_cast<size_t>(y) * w], f.luma + static_cast<size_t>(k.y[0] + y) * f.stride + k.x[0], w);
           o.w = w; o.h = h; o.ns = f.timestampNs; o.seq = arrived_;
-          queue_.push_back(std::move(o));
         } else skipped_++;
       }
+    }
+    if (!send) return;
+    bool packed = true;
+    o.type = gPack.load() ? stream::PACKED : stream::FRAME;
+    {
+      std::lock_guard<std::mutex> pl(packMu_);
+      const uint8_t* src;
+      uint32_t stride;
+      // ai: raw, a frame to develop goes straight into the frame's own buffer (packed, into the crop first)
+      std::vector<uint8_t>& into = o.type == stream::PACKED ? crop_ : o.px;
+      if (f.raw) {
+        into.resize(static_cast<size_t>(w) * h);
+        const bool onGpu = gpu && gpu(*f.raw, k.x[0], k.y[0], w, h, into.data());
+        if (!onGpu) developLuma(*f.raw, k.x[0], k.y[0], w, h, into.data(), w);
+        std::lock_guard<std::mutex> l(mu_);
+        developed_ = onGpu ? "gpu" : "cpu";
+        src = into.data(); stride = w;
+      } else {
+        src = f.luma + static_cast<size_t>(k.y[0]) * f.stride + k.x[0];
+        stride = f.stride;
+      }
+      if (o.type == stream::PACKED) packed = codec_.pack(src, w, h, stride, o.px);
+      else if (!f.raw) {
+        o.px.resize(static_cast<size_t>(w) * h);
+        for (uint32_t y = 0; y < h; y++) std::memcpy(&o.px[static_cast<size_t>(y) * w], src + static_cast<size_t>(y) * stride, w);
+      }
+    }
+    {
+      std::lock_guard<std::mutex> l(mu_);
+      if (!packed) { dropped_++; spare_.push_back(std::move(o.px)); return; }
+      if (queue_.size() >= QUEUE_MAX) { spare_.push_back(std::move(queue_.front().px)); queue_.pop_front(); dropped_++; }
+      queue_.push_back(std::move(o));
     }
     cv_.notify_all();
   }
@@ -260,7 +290,9 @@ class Link {
     lastStats_ = now;
     const double sentFps = (sent_ - sentLast_) / secs, mbps = (bytes_ - bytesLast_) / secs / 1e6, inFps = (arrived_ - arrivedLast_) / secs;
     const uint64_t drops = dropped_ - droppedLast_;
-    sentLast_ = sent_; bytesLast_ = bytes_; arrivedLast_ = arrived_; droppedLast_ = dropped_;
+    // ai: the bytes sent over the frames' raw bytes (the .lizard frames' share, headers in), 0 with none sent
+    const double packedShare = rawBytes_ > rawLast_ ? double(bytes_ - bytesLast_) / double(rawBytes_ - rawLast_) : 0.0;
+    sentLast_ = sent_; bytesLast_ = bytes_; arrivedLast_ = arrived_; droppedLast_ = dropped_; rawLast_ = rawBytes_;
     json j = json::object();
     if (cfd_ >= 0 && !pcStats_.empty()) {
       j = json::parse(pcStats_, nullptr, false);
@@ -272,7 +304,7 @@ class Link {
     else if (!j.contains("state")) j["state"] = "streaming";
     if (!j.contains("error") || !j["error"].is_string()) j["error"] = "";
     j["stream"] = {{"port", port_}, {"name", name_}, {"peer", peer_}, {"connected", cfd_ >= 0}, {"cameraFps", inFps},
-                   {"sentFps", sentFps}, {"MBps", mbps}, {"dropped", drops}, {"share", share_}, {"w", lastW_}, {"h", lastH_},
+                   {"sentFps", sentFps}, {"MBps", mbps}, {"dropped", drops}, {"share", share_}, {"packed", packedShare}, {"w", lastW_}, {"h", lastH_},
                    {"develop", developed_}};
     return j.dump();
   }
@@ -312,11 +344,13 @@ class Link {
     if (secs < 1.0) return;
     const double camFps = (arrived_ - paceArrived_) / secs;
     const double mbps = (bytes_ - paceBytes_) / secs / 1e6;
+    // ai: a frame's bytes as sent (packed, its header with it) over the second, else as it is raw
+    const double perFrame = sent_ > paceSent_ ? double(bytes_ - paceBytes_) / double(sent_ - paceSent_) : double(lastW_) * lastH_;
     const double busy = std::chrono::duration<double>(std::chrono::nanoseconds(busyNs_ - paceBusy_)).count() / secs;
     const bool drops = dropped_ != paceDropped_;
-    paceAt_ = now; paceArrived_ = arrived_; paceBytes_ = bytes_; paceBusy_ = busyNs_; paceDropped_ = dropped_;
+    paceAt_ = now; paceArrived_ = arrived_; paceBytes_ = bytes_; paceBusy_ = busyNs_; paceDropped_ = dropped_; paceSent_ = sent_;
     if (cfd_ < 0) { share_ = 1.0; credit_ = 0; easier_ = 0; calm_ = 0; linkMBps_ = 0; return; }
-    const double frameMB = static_cast<double>(lastW_) * lastH_ / 1e6;
+    const double frameMB = perFrame / 1e6;
     if (frameMB <= 0 || camFps <= 0) return;
     if (busy > 0.8 || drops) {
       // ai: what the link carried while the writer sent (never under it: a share is cut only by this, and an over-read
@@ -387,6 +421,9 @@ class Link {
       if (!sendAll(fd, head, sizeof head) || !sendAll(fd, hello.data(), hello.size()) || !sendAll(fd, cam, sizeof cam)) { close(fd); return; }
       cfd_ = fd;
       peer_ = peer;
+      // ai: a new PC is a new link: its pace measured afresh, from every frame (a rate kept from the last one held a
+      // ai: faster link to it until a re-read 30 s on)
+      share_ = 1.0; credit_ = 0; easier_ = 0; calm_ = 0; linkMBps_ = 0;
       saidOn_ = on ? 1 : 0;
       lastSent_ = Clock::now();
       heardAt_ = Clock::time_point{};
@@ -462,12 +499,13 @@ class Link {
     saidOn_ = 0;
   }
 
+  // ai: the writer's thread: the queued frames, packed already (push), and the control words, sent
   void write() {
     std::vector<uint8_t> out;
     std::vector<uint32_t> ctl;
     for (;;) {
       int fd = -1;
-      uint32_t w = 0, h = 0;
+      uint32_t w = 0, h = 0, type = stream::FRAME;
       int64_t ns = 0;
       uint64_t seq = 0;
       bool frame = false;
@@ -488,7 +526,7 @@ class Link {
           Out& o = queue_.front();
           out.swap(o.px);
           if (!o.px.empty() || o.px.capacity()) spare_.push_back(std::move(o.px));   // ai: the buffer out held before
-          w = o.w; h = o.h; ns = o.ns; seq = o.seq;
+          w = o.w; h = o.h; ns = o.ns; seq = o.seq; type = o.type;
           queue_.pop_front();
           frame = true;
         }
@@ -503,7 +541,7 @@ class Link {
       const auto t0 = Clock::now();
       if (frame && ok) {
         uint8_t head[8 + stream::FRAME_HEAD];
-        const uint32_t th[2] = {stream::FRAME, static_cast<uint32_t>(stream::FRAME_HEAD + out.size())};
+        const uint32_t th[2] = {type, static_cast<uint32_t>(stream::FRAME_HEAD + out.size())};
         std::memcpy(head, th, 8);
         std::memcpy(head + 8, &seq, 8);
         std::memcpy(head + 16, &ns, 8);
@@ -514,6 +552,7 @@ class Link {
           std::lock_guard<std::mutex> l(mu_);
           sent_++;
           bytes_ += sizeof head + out.size();
+          rawBytes_ += uint64_t(w) * h;
         }
       }
       {
@@ -587,8 +626,13 @@ class Link {
   std::string peer_;
   bool sending_ = false;
   // ai: a frame to send: its crop, the camera's time and count
+  // ai: push's: the frame codec and a developed crop, one push at a time (packMu_, outside mu_)
+  std::mutex packMu_;
+  lizfile::FrameCodec codec_;
+  std::vector<uint8_t> crop_;
   struct Out {
-    std::vector<uint8_t> px;
+    std::vector<uint8_t> px;   // ai: the crop, as a .lizard frame (PACKED) or raw (FRAME)
+    uint32_t type = stream::PACKED;
     uint32_t w = 0, h = 0;
     int64_t ns = 0;
     uint64_t seq = 0;
@@ -597,16 +641,16 @@ class Link {
   std::vector<std::vector<uint8_t>> spare_;  // ai: buffers sent, for the next frames
   int run_ = 0;                              // ai: the captures left of the run under way
   uint32_t lastW_ = 0, lastH_ = 0;
-  uint64_t arrived_ = 0, sent_ = 0, bytes_ = 0, dropped_ = 0, skipped_ = 0;
+  uint64_t arrived_ = 0, sent_ = 0, bytes_ = 0, dropped_ = 0, skipped_ = 0, rawBytes_ = 0;
   // ai: the share of the camera's frames sent (pace), the running credit that spreads them, the seconds in a row that
   // ai: allowed a larger share, and those since the rate was read
   double share_ = 1.0, credit_ = 0;
   int easier_ = 0, calm_ = 0;
   int64_t busyNs_ = 0, paceBusy_ = 0;
-  uint64_t paceArrived_ = 0, paceBytes_ = 0, paceDropped_ = 0;
+  uint64_t paceArrived_ = 0, paceBytes_ = 0, paceDropped_ = 0, paceSent_ = 0;
   double linkMBps_ = 0;   // ai: the link's rate as pace last read it (0 none yet)
   Clock::time_point paceAt_ = Clock::now();
-  uint64_t arrivedLast_ = 0, sentLast_ = 0, bytesLast_ = 0, droppedLast_ = 0;
+  uint64_t arrivedLast_ = 0, sentLast_ = 0, bytesLast_ = 0, droppedLast_ = 0, rawLast_ = 0;
   Clock::time_point lastStats_ = Clock::now();
   std::string pcStats_;
   double version_ = 0;
@@ -900,6 +944,8 @@ void linkUp(const std::string& layout, std::function<void(const std::string&)> l
     if (log) log(std::string("stream: no PC link: ") + e.what());
   }
 }
+
+void linkPack(bool on) { gPack = on; }
 
 // ai: the link let go outside gMu (its threads joined); a "pc" receiver still holding it keeps it until it goes
 void linkDown() {

@@ -3319,7 +3319,8 @@ The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
 
 A replay is a run of captures as a receiver's decoder was handed them: the crops it read, in order, with each one's
 capture time. It is what a receiver records (Save replays), what one device hands another to decode (a phone's
-recording played on a PC) and what the reference tools replay. Every program that writes or reads one follows this
+recording played on a PC) and what the reference tools replay; a phone streaming its captures to a PC sends each
+frame in the form of 15.3 (the apps' link, `liblizard/core/rx/stream.h`, not part of this format). Every program that writes or reads one follows this
 section; the reference is `liblizard/core/rx/lizfile.h` and `lizfile.cpp` (writer, reader, and `lizard_receive pack`
 and `unpack` over them), with a reader in `liblizard/sim/lizfile.mjs`.
 

@@ -64,6 +64,8 @@ object Native {
     // ai: the core's PC link (stream.h): up while a USB cable is in (its hello's crop), down after; linkState its JSON
     // ai: (up, present: a PC receiver heard, connected, peer, port, want: the PC's Start and Stop)
     @JvmStatic external fun linkUp(layout: String)
+    // ai: the PC stream's frames as .lizard frames (true, the default) or raw (a phone too weak or too warm to pack)
+    @JvmStatic external fun linkPack(on: Boolean)
     @JvmStatic external fun linkDown()
     @JvmStatic external fun linkState(): String
 
