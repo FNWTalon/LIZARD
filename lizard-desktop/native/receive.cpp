@@ -334,7 +334,7 @@ static int run(int argc, char** argv) {
       return 0;
     }
     if (!lizard::lizfile::unpack(a.from, a.to, why)) { std::printf("FAIL %s\n", why.c_str()); return 1; }
-    auto r = lizard::lizfile::Reader::open(a.to, why);
+    auto r = lizard::lizfile::Reader::open(a.from, why);
     std::printf("unpacked %zu frames\n", r ? r->frames().size() : size_t(0));
     return 0;
   }
