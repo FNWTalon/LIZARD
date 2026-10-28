@@ -21,6 +21,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.os.PowerManager
 import android.provider.DocumentsContract
 import android.provider.MediaStore
@@ -75,7 +76,8 @@ class MainActivity : ComponentActivity() {
     // ai: the folds' keys, and the two collapsers' (Receive's column, the sending screen's panel; landscape)
     companion object {
         const val UNPLUG_MS = 2000L   // ai: a cable out this long is out (usb)
-        val FOLDS = listOf("recvSettings", "recvExperimental", "recvAdvanced", "sendSettings", "sendAdvanced", "recvCollapsed", "sendCollapsed")
+        const val PC_GONE_MS = 2000L  // ai: a PC decoder with no PC heard this long, past the link's QUIET_MS, lets go
+        val FOLDS = listOf("recvSettings", "recvAdvanced", "sendSettings", "sendAdvanced", "recvCollapsed", "sendCollapsed")
         // ai: the received tars' unpacking (keep), one at a time, off the main thread and the engine's
         private val unpacker = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "lizard-unpack") }
         // ai: Save replays: the frames a replay keeps, and the seconds of stats rows its stats.jsonl holds
@@ -120,19 +122,24 @@ class MainActivity : ComponentActivity() {
     internal val folds = mutableStateMapOf<String, Boolean>()
     internal var autoRan by mutableStateOf("")             // ai: what auto last decoded on, GPU or CPU (the Decoder menu's value under auto)
     internal var raw by mutableStateOf("")                 // ai: the stats JSON as it came, for Developer Tools
-    // ai: The phone's USB (2026-10-27): the PC decoder is offered only with a cable in (USB_STATE's connected, while this
-    // ai: activity runs).
-    // ai: A cable out for UNPLUG_MS takes a PC decoder back to auto (the phone decodes on its own; picking PC again is
-    // ai: the user's), so the phone's drop off the bus as the PC switches it into accessory mode does not
+    // ai: The phone's USB and the PC link (2026-10-27): while a cable is in (USB_STATE's connected, while this activity
+    // ai: runs) the core's PC link is up (Native.linkUp: the listener, the beacon, the accessory's sessions), answering a
+    // ai: PC whatever the decoder; a cable out for UNPLUG_MS lets it go (the drop as the PC switches the phone into
+    // ai: accessory mode does not). The PC decoder is offered while a PC receiver is heard on it (pcPresent), and a PC
+    // ai: unheard for PC_GONE_MS past the link's own QUIET_MS takes a PC decoder back to auto and the camera off.
     internal var usb by mutableStateOf(PcLink.Usb(false, false))
+    internal var link by mutableStateOf<JSONObject?>(null)   // ai: Native.linkState, each poll
+    internal val pcPresent get() = link?.optBoolean("present") == true
+    private var pcWant = 0L       // ai: the PC's Start and Stop as last followed (the link's want.seq)
+    private var pcMissedAt = 0L   // ai: when a PC decoder first went without a PC heard (elapsedRealtime; 0 none)
     private val unplugged = Runnable {
-        if (!PcLink.usb(this).connected && settings.decoder == "pc") { Log.i(Engine.TAG, "usb: the cable out, the decoder back to auto"); change(settings.copy(decoder = "auto"), true) }
+        if (!PcLink.usb(this).connected) { Log.i(Engine.TAG, "usb: the cable out, the PC link down"); Native.linkDown() }
     }
     private val usbListener = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             usb = PcLink.usbOf(i)
             main.removeCallbacks(unplugged)
-            if (!usb.connected) main.postDelayed(unplugged, UNPLUG_MS)
+            if (usb.connected) Native.linkUp(settings.layout) else main.postDelayed(unplugged, UNPLUG_MS)
         }
     }
     internal var rx by mutableStateOf(Readout.Rx())
@@ -145,13 +152,14 @@ class MainActivity : ComponentActivity() {
     internal var shownBundle by mutableStateOf<Library.Entry?>(null)   // ai: the bundle the Files screen lists
     private var asked = false
     // ai: Save replays (Developer Tools, 2026-10-03; a rolling window): while the switch is on and the camera runs, the
-    // ai: newest REPLAY_FRAMES frames the decoder is handed are kept as a run's folder under filesDir/replays
-    // ai: (liblizard/core/rx/replay.h), its stats.jsonl the last REPLAY_LOG stats rows, made a second while a run records
+    // ai: newest REPLAY_FRAMES frames the decoder is handed are kept as a run's .lizard under filesDir/replays
+    // ai: (liblizard/core/rx/replay.h, lizfile.h; its scratch folder <run>.lizard.frames while it records), its
+    // ai: stats.jsonl the last REPLAY_LOG stats rows, made a second while a run records
     // ai: and at no other time; the run ends when either stops. A finished run keeps its Download until a newer run ends
     // ai: with frames, then goes (the companion's `runs`). `owner` the Engine recording the run, which this activity's
     // ai: poll alone ends; null once it ends.
     enum class ReplayState { Recording, Ending, Ready, Failed }
-    internal data class Replay(val run: String, val dir: File, val handle: Long, val state: ReplayState, val frames: Long = 0, val bytes: Long = 0,
+    internal data class Replay(val run: String, val file: File, val handle: Long, val state: ReplayState, val frames: Long = 0, val bytes: Long = 0,
                                val why: String = "", val owner: Any? = null)
     private val statsRows = ArrayDeque<String>()
     private fun nz(x: Double): Any = if (x.isNaN() || x.isInfinite()) JSONObject.NULL else x   // ai: a JSON number, or null where there is none
@@ -345,6 +353,7 @@ class MainActivity : ComponentActivity() {
     internal fun change(s0: Settings, restart: Boolean) {
         val cam = camId(s0.camera)
         val s = if (s0.camera != settings.camera || s0.layout != settings.layout) s0.forCamera(this, cam) else s0
+        if (s.layout != settings.layout && usb.connected) Native.linkUp(s.layout)   // ai: the crop the PC's hello names
         settings = s
         s.save(this, cam)
         engine.batch(s.frames)
@@ -477,27 +486,30 @@ class MainActivity : ComponentActivity() {
 
     private val replaysDir get() = File(filesDir, "replays")
 
-    // ai: a run's folder deleted on a thread of its own, unless it is being ended or packed (whoever finishes with it
-    // ai: deletes it then, if `runs` no longer lists it)
+    // ai: a run's file (and its scratch folder, its .part) deleted on a thread of its own, unless it is being ended or
+    // ai: copied (whoever finishes with it deletes it then, if `runs` no longer lists it)
     private fun dropRun(r: Replay?) {
         if (r == null || r.run in busyRuns) return
-        Thread({ r.dir.deleteRecursively() }, "lizard-replays").start()
+        Thread({ partsOf(r.run).forEach { it.deleteRecursively() } }, "lizard-replays").start()
     }
+    // ai: a run's names on disk: <run>.lizard, <run>.lizard.part (being written), <run>.lizard.frames/ (its scratch)
+    private fun partsOf(run: String) = replaysDir.listFiles()?.filter { it.name.substringBefore(".lizard") == run }.orEmpty()
+    private fun runOf(f: File) = f.name.substringBefore(".lizard")
     private fun putRun(r: Replay) { val i = runs.indexOfFirst { it.run == r.run }; if (i >= 0) runs[i] = r }
 
-    // ai: The runs on disk at the process's first activity: the newest whole one (its meta.json written) is listed, with
-    // ai: its Download; the rest go (one with no meta.json never ended: its process died first).
+    // ai: The runs on disk at the process's first activity: the newest whole one (a .lizard, written whole at its run's
+    // ai: end) is listed, with its Download, its frames from its meta.json; the rest go, scratch folders and .part files
+    // ai: with them (a run whose process died before its end).
     private fun adoptReplays() {
         if (adopted) return
         adopted = true
-        val runsOnDisk = replaysDir.listFiles()?.filter { it.isDirectory }.orEmpty().sortedBy { it.name }
-        val whole = runsOnDisk.lastOrNull { File(it, "meta.json").isFile }
+        val onDisk = replaysDir.listFiles().orEmpty().toList()
+        val whole = onDisk.filter { it.isFile && it.name.endsWith(".lizard") }.maxByOrNull { it.name }
         if (whole != null) {
-            val meta = runCatching { JSONObject(File(whole, "meta.json").readText()) }.getOrNull()
-            val bytes = whole.listFiles()?.filter { it.name.endsWith(".gray") }?.sumOf { it.length() } ?: 0L
-            runs.add(Replay(whole.name, whole, 0L, ReplayState.Ready, meta?.optLong("frames") ?: 0L, bytes, meta?.optString("error").orEmpty()))
+            val meta = runCatching { java.util.zip.ZipFile(whole).use { z -> JSONObject(z.getInputStream(z.getEntry("meta.json")).reader().readText()) } }.getOrNull()
+            runs.add(Replay(runOf(whole), whole, 0L, ReplayState.Ready, meta?.optLong("frames") ?: 0L, whole.length(), meta?.optString("error").orEmpty()))
         }
-        val rest = runsOnDisk.filter { it != whole }
+        val rest = onDisk.filter { it != whole }
         if (rest.isNotEmpty()) Thread({ rest.forEach { it.deleteRecursively() } }, "lizard-replays").start()
     }
 
@@ -505,27 +517,27 @@ class MainActivity : ComponentActivity() {
     // ai: while this one records, and goes when a newer run ends with frames (the rule above; the deletion moved from a
     // ai: run's start to its end on 2026-10-03: Receive starts its camera by itself on a return,
     // ai: which began a run and took the last one before anyone could download it). A failed run leaves the list now (its
-    // ai: folder went when it failed), and every folder no run names, but for one being ended or packed. The run named as
+    // ai: file went when it failed), and every file no run names, but for one being ended or copied. The run named as
     // ai: the web names one, a millisecond on where the name is taken.
     private fun beginReplay() {
         runs.removeAll { it.state == ReplayState.Failed }
         val named = runs.map { it.run }.toSet()
-        val old = replaysDir.listFiles()?.filter { it.name !in named && it.name !in busyRuns }.orEmpty()
+        val old = replaysDir.listFiles()?.filter { runOf(it) !in named && runOf(it) !in busyRuns }.orEmpty()
         if (old.isNotEmpty()) Thread({ old.forEach { it.deleteRecursively() } }, "lizard-replays").start()
         val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss-SSS'Z'", Locale.ROOT).apply { timeZone = TimeZone.getTimeZone("UTC") }
         var t = System.currentTimeMillis()
         var run: String
-        while (true) { run = "run-" + fmt.format(Date(t)); if (run !in named && run !in busyRuns && !File(replaysDir, run).exists()) break; t++ }
-        val dir = File(replaysDir, run)
-        val h = Native.replayNew(dir.path, run, REPLAY_FRAMES)
-        runs.add(Replay(run, dir, h, ReplayState.Recording, owner = engine))
+        while (true) { run = "run-" + fmt.format(Date(t)); if (run !in named && run !in busyRuns && partsOf(run).isEmpty()) break; t++ }
+        val file = File(replaysDir.apply { mkdirs() }, "$run.lizard")
+        val h = Native.replayNew(file.path, run, REPLAY_FRAMES)
+        runs.add(Replay(run, file, h, ReplayState.Recording, owner = engine))
         statsRows.clear()   // ai: a run's rows are its own
         engine.replay(h)
         Log.i(Engine.TAG, "replay: $run")
     }
 
     // ai: The run's end (the switch off, the camera stopped, the activity gone): the frames the decoder still holds for it
-    // ai: come in first, then its frames are renamed into order and its meta written (the receiver's fields, then the
+    // ai: come in first, then its .lizard is written (the frames, the rows, the meta: the receiver's fields, then the
     // ai: camera and the settings as they are at its end), off the main thread. Ended with frames, it keeps its
     // ai: Download and every finished run begun before it goes; failed, or with no frame (the camera stopped before the
     // ai: decoder handed one over), it goes and the runs before it stay.
@@ -559,28 +571,35 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // ai: Download: the replay packed into one file, Download/<run>.tar.gz (ReplayPack.kt: the web's tar, gzip at
-    // ai: level 1), on a thread of its own: through the file system from Android 11, through MediaStore's Downloads
-    // ai: on Android 10, where a path in Download/ cannot be written (no permission needed from 29). The run stays
-    // ai: until it is superseded, and goes once packed if it was meanwhile.
+    // ai: Download: the run's .lizard copied to Download/<run>.lizard (what a PC's Upload camera plays, 2026-10-28; a
+    // ai: .tar.gz packed here before), on a thread of its own: through the file system from Android 11 (a .part renamed
+    // ai: at the end), through MediaStore's Downloads on Android 10, where a path in Download/ cannot be written (no
+    // ai: permission needed from 29). The run stays until it is superseded, and goes once copied if it was meanwhile.
     internal fun downloadReplay(r: Replay) {
         if (r.state != ReplayState.Ready || exporting.isNotEmpty() || !busyRuns.add(r.run)) return
         exporting = r.run
         val resolver = applicationContext.contentResolver
         Thread({
-            val name = "${r.run}.tar.gz"
+            val name = "${r.run}.lizard"
             val res = runCatching {
-                if (!File(r.dir, "meta.json").isFile) throw IOException("the replay is gone")
+                if (!r.file.isFile) throw IOException("the replay is gone")
                 if (Build.VERSION.SDK_INT >= 30) {
                     @Suppress("DEPRECATION") val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                    packReplay(r.dir, File(downloads, name))
+                    val dest = File(downloads, name)
+                    val part = File(downloads, "$name.part")
+                    try {
+                        r.file.copyTo(part, overwrite = true)
+                        if (dest.exists() && !dest.delete()) throw IOException("$name could not be replaced")
+                        if (!part.renameTo(dest)) throw IOException("${part.name} could not be renamed")
+                    } catch (e: Throwable) { part.delete(); throw e }
+                    dest.length()
                 } else {
                     val values = ContentValues().apply {
-                        put(MediaStore.Downloads.DISPLAY_NAME, name); put(MediaStore.Downloads.MIME_TYPE, "application/gzip"); put(MediaStore.Downloads.IS_PENDING, 1)
+                        put(MediaStore.Downloads.DISPLAY_NAME, name); put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream"); put(MediaStore.Downloads.IS_PENDING, 1)
                     }
                     val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Downloads refused $name")
                     try {
-                        val n = (resolver.openOutputStream(uri) ?: throw IOException("Downloads refused $name")).use { packReplay(r.dir, it) }
+                        val n = (resolver.openOutputStream(uri) ?: throw IOException("Downloads refused $name")).use { out -> r.file.inputStream().use { it.copyTo(out) } }
                         resolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
                         n
                     } catch (e: Throwable) {
@@ -593,8 +612,7 @@ class MainActivity : ComponentActivity() {
                 busyRuns.remove(r.run)
                 exporting = ""
                 replayNote = res.fold({ "$name in Downloads, ${"%.0f".format(Locale.ROOT, it / 1e6)} MB\nthen: adb pull " +
-                    "/sdcard/Download/$name && mkdir -p research/captures/v0.3/${r.run} && tar -xzf $name -C research/captures/v0.3/${r.run}" },
-                    { "${r.run}: ${it.message}" })
+                    "/sdcard/Download/$name research/captures/v0.3/" }, { "${r.run}: ${it.message}" })
                 if (runs.none { it.run == r.run }) dropRun(r)
                 Log.i(Engine.TAG, "replay: ${r.run} ${res.fold({ "downloaded" }, { "not downloaded: ${it.message}" })}")
             }
@@ -612,6 +630,41 @@ class MainActivity : ComponentActivity() {
                 val j = if (s.isEmpty()) null else runCatching { JSONObject(s) }.getOrNull()
                 val r = rxOf(j)
                 rx = r
+                val lk = withContext(Dispatchers.Default) { runCatching { JSONObject(Native.linkState()) }.getOrNull() }
+                link = lk
+                val running = phase == Engine.Phase.On || phase == Engine.Phase.Starting || phase == Engine.Phase.Loading
+                // ai: Start or Stop pressed on the PC (liblizard/core/rx/stream.h CAMERA): followed once each, on Receive in
+                // ai: front: Start takes the PC decoder where another runs, and the camera on; Stop the camera off. The
+                // ai: phone's own Start and Stop reach the PC the same way.
+                lk?.optJSONObject("want")?.let { w ->
+                    val seq = w.optLong("seq")
+                    if (seq != pcWant) {
+                        pcWant = seq
+                        val on = w.optBoolean("on")
+                        if (seq > 0 && screen == Screen.Receive && resumed() && (!on || granted)) {
+                            if (on && settings.decoder != "pc") {
+                                Log.i(Engine.TAG, "stream: the PC asks the camera on: the PC decoder")
+                                stopped = false
+                                change(settings.copy(decoder = "pc"), true)
+                                if (!running) startCamera()
+                            } else if (on != running) {
+                                Log.i(Engine.TAG, "stream: the PC asks the camera ${if (on) "on" else "off"}")
+                                toggleCamera()
+                            }
+                        }
+                    }
+                }
+                // ai: no PC receiver heard (the PC's app closed, the PC off, the cable out): PC mode let go, the camera off
+                if (settings.decoder == "pc" && !pcPresent) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (pcMissedAt == 0L) pcMissedAt = now
+                    else if (now - pcMissedAt >= PC_GONE_MS) {
+                        pcMissedAt = 0L
+                        Log.i(Engine.TAG, "stream: no PC receiver heard: the decoder back to auto, the camera off")
+                        change(settings.copy(decoder = "auto"), false)
+                        if (running) { stopped = true; engine.stop() }
+                    }
+                } else pcMissedAt = 0L
                 if (settings.decoder == "auto" && phase == Engine.Phase.On) j?.optString("decoder").orEmpty().let { if (it.isNotEmpty()) autoRan = if (it.startsWith("gpu")) "GPU" else "CPU" }
                 val f = j?.optJSONObject("file")
                 root = f?.optString("root").orEmpty()

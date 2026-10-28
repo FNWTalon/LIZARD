@@ -46,12 +46,13 @@ object Native {
     // ai: one transfer forgotten by its root, the one in hand or one parked unfinished (2026-10-22): Home's Delete
     @JvmStatic external fun forget(h: Long, root: String)
     @JvmStatic external fun destroy(h: Long)
-    // ai: Save replays (2026-10-03; liblizard/core/rx/replay.h): a replay keeping the newest `frames` frames in dir (made there),
+    // ai: Save replays (2026-10-03; liblizard/core/rx/replay.h): a replay keeping the newest `frames` frames, written
+    // ai: as the .lizard `file` at its end (its scratch folder beside it while it records),
     // ai: handed to a receiver by record (0 takes it back); replayEnd ends its run once the frames the decoder holds for
     // ai: it have come (rxStats the receiver's stats JSON, rows stats.jsonl's lines, more meta.json's own fields) and
     // ai: lets the handle go: {"frames", "bytes", "error"} as JSON (error: a write that ended the frames early), or an
     // ai: IllegalStateException saying why
-    @JvmStatic external fun replayNew(dir: String, run: String, frames: Int): Long
+    @JvmStatic external fun replayNew(file: String, run: String, frames: Int): Long
     @JvmStatic external fun record(h: Long, replay: Long)
     @JvmStatic external fun replayEnd(replay: Long, rxStats: String, rows: String, more: String): String
     // ai: a system property ("" when unset), for switches set over adb while the app runs
@@ -60,6 +61,11 @@ object Native {
     // ai: where one is open already
     @JvmStatic external fun streamAccessory(fd: Int): Boolean
     @JvmStatic external fun accessoryOpen(): Boolean
+    // ai: the core's PC link (stream.h): up while a USB cable is in (its hello's crop), down after; linkState its JSON
+    // ai: (up, present: a PC receiver heard, connected, peer, port, want: the PC's Start and Stop)
+    @JvmStatic external fun linkUp(layout: String)
+    @JvmStatic external fun linkDown()
+    @JvmStatic external fun linkState(): String
 
     // ai: The sender (2026-10-01; liblizard/core/tx/sender.h, jni.cpp's Tx): a file (its path in the app's cache; "" for the test
     // ai: stream) to a handle, 0 with txError() saying why; the format to paint ("" or the codec's refusal; painter 0 the

@@ -15,6 +15,7 @@
 #include "jni_util.h"
 #include "json.hpp"
 #include "replay.h"
+#include "camera.h"
 #include "rx_session.h"
 
 using lizard::jni::jstr;
@@ -61,6 +62,16 @@ jlongArray longs(JNIEnv* e, const std::vector<jlong>& v) {
 }
 
 }  // namespace
+
+// ai: camera.h listStamp: cheap, for a watch that lists again only where it changed
+FN(jstring, rxCamerasStamp)(JNIEnv* e, jclass) {
+  std::string s;
+  try {
+    s = lizard::cam::listStamp();
+  } catch (const std::exception&) {
+  }
+  return jstr(e, s);
+}
 
 FN(jstring, rxCameras)(JNIEnv* e, jclass) {
   std::string s;
@@ -201,11 +212,11 @@ FN(void, rxBatchCap)(JNIEnv*, jclass, jlong h, jint n) {
   if (h) quietly("batch cap", [&] { rs(h)->batchCap(n); });
 }
 
-// ai: a run's folder (made here: one that holds anything is refused, which rxReplayEnd's error says), the newest
+// ai: a run's .lizard (replay.h: a file there already is refused, which rxReplayEnd's error says), the newest
 // ai: `frames` frames kept; 0 with why in txError() where it could not be made at all
-FN(jlong, rxReplayNew)(JNIEnv* e, jclass, jstring dir, jstring run, jint frames) {
+FN(jlong, rxReplayNew)(JNIEnv* e, jclass, jstring file, jstring run, jint frames) {
   try {
-    return reinterpret_cast<jlong>(new std::shared_ptr<lizard::Replay>(std::make_shared<lizard::Replay>(str(e, dir), str(e, run), frames)));
+    return reinterpret_cast<jlong>(new std::shared_ptr<lizard::Replay>(std::make_shared<lizard::Replay>(str(e, file), str(e, run), frames)));
   } catch (const std::exception& x) {
     setError(std::string("the replay could not be made: ") + x.what());
   } catch (...) {

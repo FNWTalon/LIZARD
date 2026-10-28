@@ -3,6 +3,7 @@
 #include "crops.h"
 #include "develop.h"
 #include "json.hpp"
+#include "wg.h"
 
 #include <stdexcept>
 
@@ -14,6 +15,9 @@ std::unique_ptr<Receiver> makeStreamReceiver(const ReceiverConfig&, std::functio
 }
 bool streamAccessory(int, std::function<void(const std::string&)>) { return false; }
 bool accessoryOpen() { return false; }
+void linkUp(const std::string&, std::function<void(const std::string&)>) {}
+void linkDown() {}
+std::string linkState() { return "{\"up\":false}"; }
 }  // namespace lizard
 
 #else
@@ -40,6 +44,7 @@ bool accessoryOpen() { return false; }
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -91,16 +96,18 @@ bool recvAll(int fd, void* p, size_t n, const std::atomic<bool>& stop, int quiet
   return true;
 }
 
-// ai: A PC silent this long has gone: it sends its stats a second (lizard-desktop/native/camera/phone.cpp readBack),
-// ai: and an accessory's session has no other end when the PC's program goes with the cable in
-constexpr int QUIET_MS = 5000;
+// ai: a run's captures (push): two captures with both neighbours read, three pairs a refresh apart, for the lock; and
+// ai: the queue's most, a run whole (the writer holds one more)
+constexpr int RUN = 4;
+constexpr size_t QUEUE_MAX = RUN;
 
-class StreamReceiver;
-// ai: the receiver that takes the accessory's sessions (the newest made) and the bridge: a bridge offers under gMu and
-// ai: a receiver leaves under it, so no offer reaches one gone; gCv: a receiver came, or a bridge ended
+class Link;
+// ai: the link held up (linkUp, or a "pc" receiver's) and the last one made, which a receiver may hold after a
+// ai: linkDown; the bridge offers under gMu, so no offer reaches a link let go; gCv: a link came up, or a bridge ended
 std::mutex gMu;
 std::condition_variable gCv;
-StreamReceiver* gServer = nullptr;
+std::shared_ptr<Link> gLink;
+std::weak_ptr<Link> gLast;
 
 std::string deviceName() {
 #if defined(__ANDROID__)
@@ -113,10 +120,13 @@ std::string deviceName() {
   return "phone";
 }
 
-class StreamReceiver : public Receiver {
+// ai: The phone's side of the link (stream.h linkUp): one PC at a time over TCP or the accessory's bridge, its hello
+// ai: and its word heard (present), its Start and Stop (want); frames only while a "pc" receiver is attached
+// ai: (StreamReceiver), the camera said off otherwise. It outlives receivers, so a decoder change keeps the PC.
+class Link {
  public:
-  StreamReceiver(const ReceiverConfig& c, std::function<void(uint64_t)> release)
-      : layout_(c.layout == "2:1" ? "2:1" : "1:1"), log_(c.log), release_(std::move(release)), name_(deviceName()) {
+  Link(std::string layout, std::function<void(const std::string&)> log) : layout_(std::move(layout)), log_(std::move(log)), name_(deviceName()) {
+    two_ = layout_ == "2:1";
     const char* p = std::getenv("LIZ_STREAM_PORT");
     port_ = p && std::atoi(p) > 0 ? static_cast<uint16_t>(std::atoi(p)) : stream::TCP_PORT;
     lfd_ = socket(AF_INET, SOCK_STREAM, 0);
@@ -132,22 +142,13 @@ class StreamReceiver : public Receiver {
       close(lfd_);
       throw std::runtime_error("the PC stream cannot listen on port " + std::to_string(port_) + ": " + e);
     }
-    say("stream: serving frames on port " + std::to_string(port_) + " as " + name_ + ", " + layout_);
+    say("stream: the PC link up on port " + std::to_string(port_) + " as " + name_ + ", " + layout_);
     net_ = std::thread([this] { serve(); });
     writer_ = std::thread([this] { write(); });
     beacon_ = std::thread([this] { announce(); });
-    {
-      std::lock_guard<std::mutex> l(gMu);
-      gServer = this;
-    }
-    gCv.notify_all();
   }
 
-  ~StreamReceiver() override {
-    {
-      std::lock_guard<std::mutex> l(gMu);
-      if (gServer == this) gServer = nullptr;
-    }
+  ~Link() {
     stop_ = true;
     cv_.notify_all();
     {
@@ -167,41 +168,92 @@ class StreamReceiver : public Receiver {
     offered_.push_back(fd);
   }
 
-  // ai: The share_ of the camera's frames the link carries, spread evenly by a running credit (2026-10-27; the transfer
-  // ai: is fountain coded, so any share reads, 58 of 60 as well as 1 of 2; 1 of every k until then): a frame
-  // ai: whose credit comes to a whole one has its crop copied as the frame to send, the camera's buffer released at once;
-  // ai: the rest skipped. A frame the link still had no room for when the next came is
-  // ai: replaced by it (dropped, counted). seq is the camera's count, so the PC reads the gaps. Nothing kept while no
-  // ai: PC is connected. A frame to develop (CameraFrame::raw: P010, RAW) is cropped first and only the crop developed,
-  // ai: only where it is sent (ingest/develop.h developLuma), so a skipped frame costs no develop.
-  void push(const CameraFrame& f) override {
-    if ((!f.luma && !f.raw) || !f.width || !f.height || (f.luma && f.stride < f.width)) { release_(f.tag); return; }
-    const Crops k = cropsOf(f.width, f.height, layout_ == "2:1");
+  // ai: the crop the next hello names (the receiver's, the app's setting)
+  void setLayout(const std::string& layout) {
+    std::lock_guard<std::mutex> l(mu_);
+    layout_ = layout == "2:1" ? "2:1" : "1:1";
+    two_ = layout_ == "2:1";
+  }
+
+  // ai: a "pc" receiver's frames in (one at a time in practice; counted, as a new one may come before the old goes);
+  // ai: the last gone, the camera off for the PC as at cameraClosed
+  void attach() {
+    std::lock_guard<std::mutex> l(mu_);
+    attached_++;
+  }
+  void detach() {
+    {
+      std::lock_guard<std::mutex> l(mu_);
+      if (--attached_ > 0) return;
+      cameraOn_ = false;
+      offAt_ = Clock::now();
+      unqueue();
+    }
+    cv_.notify_all();
+  }
+
+  // ai: linkState's JSON: present while a PC connected has said something within QUIET_MS (a hello probe, which says
+  // ai: nothing, is not one)
+  std::string state() {
+    std::lock_guard<std::mutex> l(mu_);
+    const bool present = cfd_ >= 0 && heardAt_ != Clock::time_point{} && Clock::now() - heardAt_ < std::chrono::milliseconds(stream::QUIET_MS);
+    return json{{"up", true}, {"present", present}, {"connected", cfd_ >= 0}, {"peer", peer_}, {"port", port_},
+                {"want", {{"seq", wantSeq_}, {"on", wantOn_}}}}.dump();
+  }
+
+  // ai: The share_ of the camera's frames the link carries, sent in runs of RUN consecutive captures (2026-10-27; the
+  // ai: transfer is fountain coded, so any share reads, 58 of 60 as well as 1 of 3): a running credit gains share_ a
+  // ai: capture, a run starts once it holds RUN, and every capture of the run has its crop copied into the queue (the
+  // ai: camera's buffer released at once) and the credit charged one; the captures between runs are skipped. Runs, not
+  // ai: one capture in k: the phase lock reads a capture against the captures a refresh either side of it
+  // ai: (PhaseLock.kt flashNow, leaks), which an even spread at under a half never sends: at 21 of 60 a second over
+  // ai: USB 2 the lock never held, the camera drifted against the screen and the blocks fell to 0 every pass. A full queue lets its
+  // ai: oldest go (dropped, counted). seq is the camera's count, so the PC reads the gaps. Nothing kept while no PC is
+  // ai: connected. A frame to develop (CameraFrame::raw: P010, RAW) is cropped first and only the crop developed, only
+  // ai: where it is sent (ingest/develop.h developLuma), so a skipped frame costs no develop.
+  // ai: gpu: a frame to develop's crop developed on the GPU (StreamReceiver's GpuDevelop), false where it was not (the
+  // ai: CPU's develop then)
+  using Develop = std::function<bool(const RawFrame&, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t* out)>;
+  void push(const CameraFrame& f, const Develop& gpu = nullptr) {
+    if ((!f.luma && !f.raw) || !f.width || !f.height || (f.luma && f.stride < f.width)) return;
+    const Crops k = cropsOf(f.width, f.height, two_);
     const bool wide = f.width >= f.height;
     const uint32_t w = wide ? k.n * k.side : k.side, h = wide ? k.side : k.n * k.side;
     {
       std::lock_guard<std::mutex> l(mu_);
+      cameraOn_ = true;
+      offAt_ = Clock::time_point{};
+      if (cfd_ >= 0 && saidOn_ != 1) { ctl_.push_back(1); saidOn_ = 1; }
       arrived_++;
       lastW_ = w; lastH_ = h;
       pace();
-      if (cfd_ >= 0) credit_ += share_;
-      if (cfd_ >= 0 && credit_ >= 1.0 - 1e-9) {
-        credit_ -= 1.0;
-        if (pending_) dropped_++;
-        next_.resize(static_cast<size_t>(w) * h);
-        if (f.raw) developLuma(*f.raw, k.x[0], k.y[0], w, h, next_.data(), w);
-        else for (uint32_t y = 0; y < h; y++) std::memcpy(&next_[static_cast<size_t>(y) * w], f.luma + static_cast<size_t>(k.y[0] + y) * f.stride + k.x[0], w);
-        nextW_ = w; nextH_ = h; nextNs_ = f.timestampNs; nextSeq_ = arrived_;
-        pending_ = true;
-      } else if (cfd_ >= 0) skipped_++;
+      if (cfd_ >= 0) {
+        credit_ += share_;
+        if (run_ == 0 && (credit_ >= RUN - 1e-9 || share_ >= 1.0 - 1e-9)) run_ = RUN;
+        if (run_ > 0) {
+          run_--;
+          credit_ -= 1.0;
+          if (queue_.size() >= QUEUE_MAX) { spare_.push_back(std::move(queue_.front().px)); queue_.pop_front(); dropped_++; }
+          Out o;
+          if (!spare_.empty()) { o.px = std::move(spare_.back()); spare_.pop_back(); }
+          o.px.resize(static_cast<size_t>(w) * h);
+          if (f.raw) {
+            const bool onGpu = gpu && gpu(*f.raw, k.x[0], k.y[0], w, h, o.px.data());
+            if (!onGpu) developLuma(*f.raw, k.x[0], k.y[0], w, h, o.px.data(), w);
+            developed_ = onGpu ? "gpu" : "cpu";
+          }
+          else for (uint32_t y = 0; y < h; y++) std::memcpy(&o.px[static_cast<size_t>(y) * w], f.luma + static_cast<size_t>(k.y[0] + y) * f.stride + k.x[0], w);
+          o.w = w; o.h = h; o.ns = f.timestampNs; o.seq = arrived_;
+          queue_.push_back(std::move(o));
+        } else skipped_++;
+      }
     }
-    release_(f.tag);
     cv_.notify_all();
   }
 
   // ai: the PC's stats (its receiver's JSON, the file and the rate the PC's), "stream" beside them: this end's
   // ai: figures since the last call; before a PC connects, this end's alone
-  std::string stats() override {
+  std::string stats() {
     std::lock_guard<std::mutex> l(mu_);
     const auto now = Clock::now();
     const double secs = std::max(1e-3, std::chrono::duration<double>(now - lastStats_).count());
@@ -220,12 +272,13 @@ class StreamReceiver : public Receiver {
     else if (!j.contains("state")) j["state"] = "streaming";
     if (!j.contains("error") || !j["error"].is_string()) j["error"] = "";
     j["stream"] = {{"port", port_}, {"name", name_}, {"peer", peer_}, {"connected", cfd_ >= 0}, {"cameraFps", inFps},
-                   {"sentFps", sentFps}, {"MBps", mbps}, {"dropped", drops}, {"share", share_}, {"w", lastW_}, {"h", lastH_}};
+                   {"sentFps", sentFps}, {"MBps", mbps}, {"dropped", drops}, {"share", share_}, {"w", lastW_}, {"h", lastH_},
+                   {"develop", developed_}};
     return j.dump();
   }
 
   // ai: the PC's rows, already on this camera's clock, after sinceMs
-  std::vector<double> series(double sinceMs) override {
+  std::vector<double> series(double sinceMs) {
     std::lock_guard<std::mutex> l(mu_);
     std::vector<double> v{version_};
     for (const auto& r : rows_)
@@ -233,10 +286,15 @@ class StreamReceiver : public Receiver {
     return v;
   }
 
-  void batchCap(int) override {}
-  std::string file() override { return ""; }   // ai: the file is the PC's
-  void clear() override {}
-  bool wantsLuma() const override { return true; }
+  // ai: the camera off: said to the PC once it has stayed off CAMERA_OFF_MS (the writer's offDue)
+  void cameraClosed() {
+    {
+      std::lock_guard<std::mutex> l(mu_);
+      cameraOn_ = false;
+      offAt_ = Clock::now();
+    }
+    cv_.notify_all();
+  }
 
  private:
   void say(const std::string& s) { if (log_) log_(s); }
@@ -318,22 +376,29 @@ class StreamReceiver : public Receiver {
     setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
 #endif
     const std::string who = peer == "USB" ? "the PC on USB" : "the PC at " + peer;
-    const std::string hello = json{{"proto", stream::PROTO}, {"name", name_}, {"layout", layout_}, {"fps", 0}}.dump();
-    const uint32_t head[2] = {stream::HELLO, static_cast<uint32_t>(hello.size())};
-    if (!sendAll(fd, head, sizeof head) || !sendAll(fd, hello.data(), hello.size())) { close(fd); return; }
     {
+      // ai: the hello, then the camera as it is, under the lock so no change falls between them (a few bytes on a
+      // ai: connection with nothing in flight)
       std::lock_guard<std::mutex> l(mu_);
+      const std::string hello = json{{"proto", stream::PROTO}, {"name", name_}, {"layout", layout_}, {"fps", 0}}.dump();
+      const uint32_t head[2] = {stream::HELLO, static_cast<uint32_t>(hello.size())};
+      const bool on = attached_ > 0 && cameraOn_;
+      const uint32_t cam[3] = {stream::CAMERA, 4, on ? 1u : 0u};
+      if (!sendAll(fd, head, sizeof head) || !sendAll(fd, hello.data(), hello.size()) || !sendAll(fd, cam, sizeof cam)) { close(fd); return; }
       cfd_ = fd;
       peer_ = peer;
+      saidOn_ = on ? 1 : 0;
+      lastSent_ = Clock::now();
+      heardAt_ = Clock::time_point{};
+      ctl_.clear();
       pcStats_.clear();
       rows_.clear();
     }
-    say("stream: " + who + " connected");
-    readBack(fd);
+    const bool heard = readBack(fd, who);
     {
       std::lock_guard<std::mutex> l(mu_);
       cfd_ = -1;
-      pending_ = false;
+      unqueue();
       pcStats_.clear();
     }
     // ai: the writer may be in a send on it: shut down first, closed once the writer has let it go (sending_)
@@ -343,18 +408,29 @@ class StreamReceiver : public Receiver {
       cv_.wait(l, [this] { return !sending_; });
     }
     close(fd);
-    say("stream: " + who + " went");
+    if (heard) say("stream: " + who + " went");
   }
 
-  void readBack(int fd) {
+  // ai: the PC's messages until it goes; whether it said anything (a session nobody speaks on, an accessory's with no PC
+  // ai: reading or a hello probe, logs nothing)
+  bool readBack(int fd, const std::string& who) {
     std::vector<uint8_t> b;
+    bool heard = false;
     while (!stop_) {
       uint32_t head[2];
-      if (!recvAll(fd, head, sizeof head, stop_, QUIET_MS) || head[1] > stream::MAX_PAYLOAD) return;
+      if (!recvAll(fd, head, sizeof head, stop_, stream::QUIET_MS) || head[1] > stream::MAX_PAYLOAD) return heard;
       b.resize(head[1]);
-      if (head[1] && !recvAll(fd, b.data(), head[1], stop_, QUIET_MS)) return;
+      if (head[1] && !recvAll(fd, b.data(), head[1], stop_, stream::QUIET_MS)) return heard;
+      if (!heard) { heard = true; say("stream: " + who + " connected"); }
       std::lock_guard<std::mutex> l(mu_);
+      heardAt_ = Clock::now();
       if (head[0] == stream::STATS) pcStats_.assign(b.begin(), b.end());
+      else if (head[0] == stream::CAMERA && head[1] >= 4) {
+        uint32_t v;
+        std::memcpy(&v, b.data(), 4);
+        wantSeq_++;
+        wantOn_ = v != 0;
+      }
       else if (head[0] == stream::SERIES && head[1] >= sizeof(double) && (head[1] - sizeof(double)) % (8 * sizeof(double)) == 0) {
         const auto* d = reinterpret_cast<const double*>(b.data());
         version_ = d[0];
@@ -368,46 +444,96 @@ class StreamReceiver : public Receiver {
         while (!rows_.empty() && rows_.back()[0] - rows_.front()[0] > 4000) rows_.pop_front();
       }
     }
+    return heard;
+  }
+
+  // ai: under mu_: the queue let go (its buffers kept), no run under way
+  void unqueue() {
+    for (auto& o : queue_) spare_.push_back(std::move(o.px));
+    queue_.clear();
+    run_ = 0;
+  }
+
+  // ai: under mu_: a camera off CAMERA_OFF_MS, said once
+  void offDue() {
+    if (cfd_ < 0 || cameraOn_ || saidOn_ == 0 || offAt_ == Clock::time_point{}) return;
+    if (Clock::now() - offAt_ < std::chrono::milliseconds(stream::CAMERA_OFF_MS)) return;
+    ctl_.push_back(0);
+    saidOn_ = 0;
   }
 
   void write() {
     std::vector<uint8_t> out;
+    std::vector<uint32_t> ctl;
     for (;;) {
       int fd = -1;
       uint32_t w = 0, h = 0;
       int64_t ns = 0;
       uint64_t seq = 0;
+      bool frame = false;
       {
         std::unique_lock<std::mutex> l(mu_);
-        cv_.wait(l, [this] { return stop_ || (pending_ && cfd_ >= 0); });
-        if (stop_) return;
-        out.swap(next_);
-        w = nextW_; h = nextH_; ns = nextNs_; seq = nextSeq_;
-        pending_ = false;
+        for (;;) {
+          if (stop_) return;
+          offDue();
+          // ai: a word a second at least (the camera as last said), so the PC hears a phone whose camera is off
+          if (cfd_ >= 0 && queue_.empty() && ctl_.empty() && saidOn_ >= 0 && Clock::now() - lastSent_ >= std::chrono::milliseconds(stream::HEARTBEAT_MS))
+            ctl_.push_back(static_cast<uint32_t>(saidOn_));
+          if (cfd_ >= 0 && (!queue_.empty() || !ctl_.empty())) break;
+          cv_.wait_for(l, std::chrono::milliseconds(100));
+        }
+        ctl.clear();
+        ctl.swap(ctl_);
+        if (!queue_.empty()) {
+          Out& o = queue_.front();
+          out.swap(o.px);
+          if (!o.px.empty() || o.px.capacity()) spare_.push_back(std::move(o.px));   // ai: the buffer out held before
+          w = o.w; h = o.h; ns = o.ns; seq = o.seq;
+          queue_.pop_front();
+          frame = true;
+        }
         fd = cfd_;
         sending_ = true;
       }
-      uint8_t head[8 + stream::FRAME_HEAD];
-      const uint32_t th[2] = {stream::FRAME, static_cast<uint32_t>(stream::FRAME_HEAD + out.size())};
-      std::memcpy(head, th, 8);
-      std::memcpy(head + 8, &seq, 8);
-      std::memcpy(head + 16, &ns, 8);
-      std::memcpy(head + 24, &w, 4);
-      std::memcpy(head + 28, &h, 4);
+      bool ok = true;
+      for (const uint32_t v : ctl) {
+        const uint32_t m[3] = {stream::CAMERA, 4, v};
+        ok = ok && sendAll(fd, m, sizeof m);
+      }
       const auto t0 = Clock::now();
-      const bool ok = sendAll(fd, head, sizeof head) && sendAll(fd, out.data(), out.size());
+      if (frame && ok) {
+        uint8_t head[8 + stream::FRAME_HEAD];
+        const uint32_t th[2] = {stream::FRAME, static_cast<uint32_t>(stream::FRAME_HEAD + out.size())};
+        std::memcpy(head, th, 8);
+        std::memcpy(head + 8, &seq, 8);
+        std::memcpy(head + 16, &ns, 8);
+        std::memcpy(head + 24, &w, 4);
+        std::memcpy(head + 28, &h, 4);
+        ok = sendAll(fd, head, sizeof head) && sendAll(fd, out.data(), out.size());
+        if (ok) {
+          std::lock_guard<std::mutex> l(mu_);
+          sent_++;
+          bytes_ += sizeof head + out.size();
+        }
+      }
       {
         std::lock_guard<std::mutex> l(mu_);
         sending_ = false;
-        busyNs_ += std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count();
-        if (ok) { sent_++; bytes_ += sizeof head + out.size(); }
+        if (ok) lastSent_ = Clock::now();
+        if (frame) busyNs_ += std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count();
       }
       cv_.notify_all();
       if (!ok) shutdown(fd, SHUT_RDWR);   // ai: serve's read ends with it and lets the PC go
     }
   }
 
-  // ai: the beacon a second to each IPv4 broadcast address (the tether's, the Wi-Fi's)
+  // ai: a USB tether's interface (Android's rndis, ncm and usb names): the PC link is the cable's, so the beacon goes
+  // ai: nowhere else (2026-10-27: on Wi-Fi it had a PC list a phone with no cable in)
+  static bool usbInterface(const char* name) {
+    return name && (!std::strncmp(name, "rndis", 5) || !std::strncmp(name, "ncm", 3) || !std::strncmp(name, "usb", 3));
+  }
+
+  // ai: the beacon a second to each USB tether's IPv4 broadcast address
   void announce() {
     const int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) { say("stream: no beacon socket"); return; }
@@ -418,20 +544,23 @@ class StreamReceiver : public Receiver {
     while (!stop_) {
       uint32_t w, h;
       double fps;
+      std::string layout;
       {
         std::lock_guard<std::mutex> l(mu_);
         w = lastW_; h = lastH_;
+        layout = layout_;
         const double secs = std::chrono::duration<double>(Clock::now() - last).count();
         fps = secs > 0 ? (arrived_ - sentThen) / secs : 0;
         sentThen = arrived_;
         last = Clock::now();
       }
       const std::string msg = "LIZARD-STREAM " + std::to_string(stream::PROTO) + " port=" + std::to_string(port_) + " w=" + std::to_string(w) +
-                              " h=" + std::to_string(h) + " fps=" + std::to_string(static_cast<int>(std::lround(fps))) + " layout=" + layout_ + " name=" + name_;
+                              " h=" + std::to_string(h) + " fps=" + std::to_string(static_cast<int>(std::lround(fps))) + " layout=" + layout + " name=" + name_;
       ifaddrs* all = nullptr;
       if (getifaddrs(&all) == 0) {
         for (ifaddrs* i = all; i; i = i->ifa_next) {
           if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET || !(i->ifa_flags & IFF_UP) || (i->ifa_flags & IFF_LOOPBACK)) continue;
+          if (!usbInterface(i->ifa_name)) continue;
           if (!(i->ifa_flags & IFF_BROADCAST) || !i->ifa_broadaddr) continue;
           sockaddr_in to = *reinterpret_cast<sockaddr_in*>(i->ifa_broadaddr);
           to.sin_port = htons(stream::BEACON_PORT);
@@ -444,9 +573,9 @@ class StreamReceiver : public Receiver {
     close(fd);
   }
 
-  const std::string layout_;
+  std::string layout_;              // ai: under mu_ (setLayout)
+  std::atomic<bool> two_{false};    // ai: layout_ is 2:1, for push
   std::function<void(const std::string&)> log_;
-  std::function<void(uint64_t)> release_;
   const std::string name_;
   uint16_t port_ = stream::TCP_PORT;
   int lfd_ = -1;
@@ -456,11 +585,19 @@ class StreamReceiver : public Receiver {
   std::condition_variable cv_;
   int cfd_ = -1;              // ai: the PC's connection, -1 none
   std::string peer_;
-  bool pending_ = false, sending_ = false;
-  std::vector<uint8_t> next_;
-  uint32_t nextW_ = 0, nextH_ = 0, lastW_ = 0, lastH_ = 0;
-  int64_t nextNs_ = 0;
-  uint64_t nextSeq_ = 0, arrived_ = 0, sent_ = 0, bytes_ = 0, dropped_ = 0, skipped_ = 0;
+  bool sending_ = false;
+  // ai: a frame to send: its crop, the camera's time and count
+  struct Out {
+    std::vector<uint8_t> px;
+    uint32_t w = 0, h = 0;
+    int64_t ns = 0;
+    uint64_t seq = 0;
+  };
+  std::deque<Out> queue_;                    // ai: the frames for the writer, oldest first (a run's)
+  std::vector<std::vector<uint8_t>> spare_;  // ai: buffers sent, for the next frames
+  int run_ = 0;                              // ai: the captures left of the run under way
+  uint32_t lastW_ = 0, lastH_ = 0;
+  uint64_t arrived_ = 0, sent_ = 0, bytes_ = 0, dropped_ = 0, skipped_ = 0;
   // ai: the share of the camera's frames sent (pace), the running credit that spreads them, the seconds in a row that
   // ai: allowed a larger share, and those since the rate was read
   double share_ = 1.0, credit_ = 0;
@@ -475,7 +612,143 @@ class StreamReceiver : public Receiver {
   double version_ = 0;
   std::deque<std::array<double, 8>> rows_;
   std::vector<int> offered_;   // ai: the accessory's sessions not yet served
+  // ai: the camera (on from a frame, off at cameraClosed), when it went off, what the PC was last told (-1 nothing this
+  // ai: session), the CAMERA messages for the writer; the PC's Start and Stop (a count and the last)
+  int attached_ = 0;            // ai: the "pc" receivers feeding frames
+  const char* developed_ = "";  // ai: where the last frame sent was developed (RAW, P010): "gpu", "cpu"; "" none yet
+  bool cameraOn_ = false;
+  Clock::time_point offAt_{};
+  int saidOn_ = -1;
+  Clock::time_point lastSent_{}, heardAt_{};   // ai: this end's last word to the PC, and the PC's last to it
+  std::vector<uint32_t> ctl_;
+  uint64_t wantSeq_ = 0;
+  bool wantOn_ = false;
 };
+
+// ai: A RAW or P010 frame's crop developed on the GPU for the PC (2026-10-27; 3.7 to 7 ms of the S26's CPU a frame on
+// ai: the CPU): develop.comp, the GPU decoder's (ingest/develop.h), on a device of its
+// ai: own at low priority: the crop's samples staged as they are (stageRaw), developed into a device buffer, copied into
+// ai: a mapped one, read once the submit is done. 8-bit YUV is no work to save (its Y plane is the luma, the crop one
+// ai: copy), so it stays the CPU's. Made at the first raw frame sent; where it cannot be (no Vulkan, no kernel), the
+// ai: CPU develops as before.
+class GpuDevelop {
+ public:
+  static std::unique_ptr<GpuDevelop> make(const std::string& assets, const std::function<void(const std::string&)>& log, std::string& why) {
+    std::ifstream in(assets + "/spv/ingest_develop.spv", std::ios::binary);
+    std::vector<char> b((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (b.size() < 20 || b.size() % 4) { why = "no develop kernel in " + assets; return nullptr; }
+    std::vector<uint32_t> code(b.size() / 4);
+    std::memcpy(code.data(), b.data(), b.size());
+    std::unique_ptr<GpuDevelop> g(new GpuDevelop());
+    try {
+      wg::DeviceExtras ex;
+      ex.lowPriority = true;
+      const char* want = std::getenv("LIZ_VK_DEVICE");
+      g->dev_ = wg::Device::create(want ? want : "", false, log, ex);
+      g->bgl_ = g->dev_->createBindGroupLayout({wg::Bind::RO, wg::Bind::RO, wg::Bind::RW}, "developL");
+      g->pipe_ = g->dev_->createPipeline(code, g->bgl_, "develop", "develop");
+      g->lut_ = g->dev_->createBuffer(4100, wg::STORAGE, "developLut", false);
+      uint8_t lut[4100] = {};
+      std::memcpy(lut, gammaLut(), 4097);
+      g->dev_->upload(*g->lut_, 0, lut, sizeof lut);
+      g->dev_->flush();
+    } catch (const std::exception& e) {
+      why = e.what();
+      return nullptr;
+    }
+    return g;
+  }
+
+  bool develop(const RawFrame& r, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t* out) {
+    try {
+      const size_t bytes = rawStageBytes(r, x, y, w, h);
+      const uint64_t outBytes = ((uint64_t)w * h + 3) & ~3ull;
+      bool bind = !group_;
+      if (!raw_ || raw_->size < bytes) { raw_ = dev_->createBuffer(bytes + bytes / 4, wg::STORAGE | wg::MAP_WRITE, "", false); bind = true; }
+      if (!out_ || out_->size < outBytes) {
+        out_ = dev_->createBuffer(outBytes, wg::STORAGE | wg::COPY_SRC, "", false);
+        back_ = dev_->createBuffer(outBytes, wg::MAP_READ | wg::COPY_DST, "", false);
+        bind = true;
+      }
+      if (bind) group_ = dev_->createBindGroup(bgl_, {raw_, lut_, out_});
+      stageRaw(r, x, y, w, h, raw_->mapped);
+      if (!raw_->coherent) {
+        VkMappedMemoryRange mr{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        mr.memory = raw_->mem;
+        mr.size = VK_WHOLE_SIZE;
+        vkFlushMappedMemoryRanges(dev_->dev, 1, &mr);
+      }
+      auto c = dev_->encoder();
+      c.setPipeline(*pipe_);
+      c.setBindGroup(*group_);
+      c.dispatch((uint32_t)(((uint64_t)w * h + 1023) / 1024));
+      c.copyBufferToBuffer(*out_, 0, *back_, 0, outBytes);
+      dev_->submit(c)->wait();
+      std::memcpy(out, dev_->read(*back_, 0, (uint64_t)w * h), (size_t)w * h);
+      return true;
+    } catch (const std::exception&) {
+      return false;
+    }
+  }
+
+ private:
+  std::unique_ptr<wg::Device> dev_;
+  std::shared_ptr<wg::BindGroupLayout> bgl_;
+  std::shared_ptr<wg::Pipeline> pipe_;
+  std::shared_ptr<wg::Buffer> lut_, raw_, out_, back_;
+  std::shared_ptr<wg::BindGroup> group_;
+};
+
+// ai: The "pc" decoder (stream.h): a Receiver that decodes nothing. Its frames go into the PC link, which it brings up
+// ai: where the app has not (linkFor) and holds while it lives; the PC's stats and rows come back through it.
+class StreamReceiver : public Receiver {
+ public:
+  StreamReceiver(std::shared_ptr<Link> link, std::function<void(uint64_t)> release, std::string assets, std::function<void(const std::string&)> log)
+      : link_(std::move(link)), release_(std::move(release)), assets_(std::move(assets)), log_(std::move(log)) {
+    link_->attach();
+  }
+  ~StreamReceiver() override { link_->detach(); }
+  void push(const CameraFrame& f) override {
+    if (f.raw && rawFormatKnown(f.raw->format)) {
+      link_->push(f, [this](const RawFrame& r, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t* out) {
+        if (!gpuTried_) {
+          gpuTried_ = true;
+          std::string why;
+          gpu_ = GpuDevelop::make(assets_, log_, why);
+          if (log_) log_(gpu_ ? std::string("stream: RAW and P010 developed on the GPU") : "stream: RAW and P010 developed on the CPU: " + why);
+        }
+        return gpu_ && gpu_->develop(r, x, y, w, h, out);
+      });
+    } else link_->push(f);
+    release_(f.tag);
+  }
+  std::string stats() override { return link_->stats(); }
+  std::vector<double> series(double sinceMs) override { return link_->series(sinceMs); }
+  void cameraClosed() override { link_->cameraClosed(); }
+  void batchCap(int) override {}
+  std::string file() override { return ""; }   // ai: the file is the PC's
+  void clear() override {}
+  bool wantsLuma() const override { return true; }
+
+ private:
+  const std::shared_ptr<Link> link_;
+  std::function<void(uint64_t)> release_;
+  const std::string assets_;
+  std::function<void(const std::string&)> log_;
+  std::unique_ptr<GpuDevelop> gpu_;   // ai: the camera thread's (push), made at the first raw frame sent
+  bool gpuTried_ = false;
+};
+
+// ai: the link held up, made where there is none (the last one made taken back where a receiver still holds it), the
+// ai: layout the hello names set; throws where it cannot listen (under gMu)
+std::shared_ptr<Link> linkFor(const std::string& layout, std::function<void(const std::string&)> log) {
+  if (!gLink) gLink = gLast.lock();
+  if (!gLink) gLink = std::make_shared<Link>(layout, std::move(log));
+  else gLink->setLayout(layout);
+  gLast = gLink;
+  gCv.notify_all();
+  return gLink;
+}
 
 // ai: an fd closed when its last holder lets it go: the bridge's end of a session, which the reader writes the PC's
 // ai: messages into while the writer may be ending it
@@ -514,8 +787,8 @@ class Bridge {
       std::shared_ptr<Fd> s;
       {
         std::unique_lock<std::mutex> l(gMu);
-        gCv.wait_for(l, std::chrono::milliseconds(250), [this] { return gServer || dead_; });
-        if (dead_ || !gServer) continue;
+        gCv.wait_for(l, std::chrono::milliseconds(250), [this] { return gLink || dead_; });
+        if (dead_ || !gLink) continue;
         int sv[2];
         if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
           l.unlock();
@@ -523,7 +796,7 @@ class Bridge {
           std::this_thread::sleep_for(std::chrono::seconds(1));
           continue;
         }
-        gServer->offer(sv[1]);
+        gLink->offer(sv[1]);
         s = std::make_shared<Fd>(sv[0]);
       }
       {
@@ -611,7 +884,39 @@ std::weak_ptr<Bridge> gBridge;   // ai: under gMu
 }  // namespace
 
 std::unique_ptr<Receiver> makeStreamReceiver(const ReceiverConfig& c, std::function<void(uint64_t)> release) {
-  return std::make_unique<StreamReceiver>(c, std::move(release));
+  std::shared_ptr<Link> link;
+  {
+    std::lock_guard<std::mutex> l(gMu);
+    link = linkFor(c.layout == "2:1" ? "2:1" : "1:1", c.log);
+  }
+  return std::make_unique<StreamReceiver>(std::move(link), std::move(release), c.assets, c.log);
+}
+
+void linkUp(const std::string& layout, std::function<void(const std::string&)> log) {
+  std::lock_guard<std::mutex> l(gMu);
+  try {
+    linkFor(layout, log);
+  } catch (const std::exception& e) {
+    if (log) log(std::string("stream: no PC link: ") + e.what());
+  }
+}
+
+// ai: the link let go outside gMu (its threads joined); a "pc" receiver still holding it keeps it until it goes
+void linkDown() {
+  std::shared_ptr<Link> was;
+  {
+    std::lock_guard<std::mutex> l(gMu);
+    was = std::move(gLink);
+  }
+}
+
+std::string linkState() {
+  std::shared_ptr<Link> k;
+  {
+    std::lock_guard<std::mutex> l(gMu);
+    k = gLink ? gLink : gLast.lock();
+  }
+  return k ? k->state() : std::string("{\"up\":false}");
 }
 
 bool streamAccessory(int fd, std::function<void(const std::string&)> log) {

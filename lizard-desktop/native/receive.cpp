@@ -3,8 +3,13 @@
 // ai:   lizard_receive list
 // ai:     every camera every backend lists, a JSON line each ({info, modes, pick, controls}, the camera opened
 // ai:     to read them; {info, error} where it would not open), then {"notes": [...]}: why a backend saw none
+// ai:   lizard_receive pack RUN FILE.lizard | unpack FILE.lizard RUN
+// ai:     a replay's folder (Save replays: meta.json, stats.jsonl, NNNN.gray) as one .lizard, and back
+// ai:     (liblizard/core/rx/lizfile.h; 2026-10-28): "packed N frames, B B" or "unpacked N frames", exit 0; FAIL, exit 1
 // ai:   lizard_receive [--camera ID] [--mode INDEX|WxH[@FPS]] [--layout 1:1|2:1] [--decoder auto|gpu|cpu]
 // ai:                  [--assets DIR] [--store DIR] [--out DIR] [--secs S] [--set CONTROL=VALUE|auto]... [--json]
+// ai: --camera upload:<a .lizard or a run's folder> plays a replay (camera/upload.cpp), --layout its crop; its end ends
+// ai: the run as --secs does.
 // ai: The camera: the one named, else the simulated one (sim:0) where LIZ_CAMERA_SIM is set (nothing listed), else the
 // ai: first listed (list and this probe every /dev/video* unless LIZ_V4L2_NODES names the nodes: set and empty, none).
 // ai: Its mode: by index, or the first of that size and rate (a rate within half a frame a second; none given, any),
@@ -44,6 +49,7 @@
 
 #include "camera.h"
 #include "json.hpp"
+#include "lizfile.h"
 #include "rx_session.h"
 
 #ifndef LIZ_ASSETS
@@ -59,6 +65,7 @@ std::atomic<bool> gQuit{false};
 
 struct Args {
   bool list = false, json = false;
+  std::string tool, from, to;   // ai: pack or unpack, its two paths
   std::string camera, mode, layout = "1:1", decoder = "auto", assets = LIZ_ASSETS, store, out = ".";
   double secs = 0;
   std::vector<std::string> sets;
@@ -67,6 +74,7 @@ struct Args {
 [[noreturn]] void usage(const std::string& why) {
   std::fprintf(stderr,
                "%s%susage: lizard_receive list\n"
+               "       lizard_receive pack RUN FILE.lizard | unpack FILE.lizard RUN\n"
                "       lizard_receive [--camera ID] [--mode INDEX|WxH[@FPS]] [--layout 1:1|2:1] [--decoder auto|gpu|cpu]\n"
                "                      [--assets DIR] [--store DIR] [--out DIR] [--secs S] [--set CONTROL=VALUE|auto]... [--json]\n",
                why.c_str(), why.empty() ? "" : "\n");
@@ -78,6 +86,13 @@ Args parse(int argc, char** argv) {
   if (argc >= 2 && std::string(argv[1]) == "list") {
     if (argc > 2) usage("list takes no arguments");
     a.list = true;
+    return a;
+  }
+  if (argc >= 2 && (std::string(argv[1]) == "pack" || std::string(argv[1]) == "unpack")) {
+    if (argc != 4) usage(std::string(argv[1]) + " takes two paths");
+    a.tool = argv[1];
+    a.from = argv[2];
+    a.to = argv[3];
     return a;
   }
   for (int i = 1; i < argc; i++) {
@@ -309,6 +324,20 @@ fs::path tempStore() {
 static int run(int argc, char** argv) {
   const Args a = parse(argc, argv);
   if (a.list) return list();
+  if (!a.tool.empty()) {
+    std::string why;
+    if (a.tool == "pack") {
+      const int64_t n = lizard::lizfile::pack(a.from, a.to, why);
+      if (n < 0) { std::printf("FAIL %s\n", why.c_str()); return 1; }
+      auto r = lizard::lizfile::Reader::open(a.to, why);
+      std::printf("packed %zu frames, %lld B\n", r ? r->frames().size() : size_t(0), (long long)n);
+      return 0;
+    }
+    if (!lizard::lizfile::unpack(a.from, a.to, why)) { std::printf("FAIL %s\n", why.c_str()); return 1; }
+    auto r = lizard::lizfile::Reader::open(a.to, why);
+    std::printf("unpacked %zu frames\n", r ? r->frames().size() : size_t(0));
+    return 0;
+  }
   std::signal(SIGINT, [](int) { gQuit = true; });
   std::signal(SIGTERM, [](int) { gQuit = true; });
 #if defined(SIGPIPE)
@@ -413,12 +442,14 @@ static int run(int argc, char** argv) {
           std::fflush(stdout);
           next += 1;
         }
-        if (!s->streaming()) {
+        // ai: an upload's end is its file's (camera/upload.cpp), the run as --secs ends it; any other stream's a failure
+        const bool played = !s->streaming() && a.camera.rfind("upload:", 0) == 0;
+        if (!s->streaming() && !played) {
           const json j = parsed(s->stats());
           const std::string ended = j.contains("camera") ? text(j["camera"], "ended") : "";
           fail("the camera stopped: " + (ended.empty() ? std::string("the stream ended") : ended));
         }
-        if (gQuit || (a.secs > 0 && t >= a.secs)) {
+        if (gQuit || played || (a.secs > 0 && t >= a.secs)) {
           const json j = parsed(s->stats());
           found.poll(*s);
           summary(j, found, t, false);

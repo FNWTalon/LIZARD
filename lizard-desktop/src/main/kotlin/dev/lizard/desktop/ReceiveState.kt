@@ -19,6 +19,10 @@ import org.jetbrains.skia.ColorType
 import org.jetbrains.skia.ImageInfo
 import java.awt.EventQueue
 import java.io.File
+import java.io.IOException
+import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.file.StandardOpenOption
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -81,7 +85,7 @@ class ReceiveState(private val app: App) {
 
     // ai: Save replays (the app's): a run's folder of the newest frames the decoder takes, Native.data/replays/<run>
     enum class RunState { Recording, Ending, Ready, Failed }
-    data class Run(val run: String, val dir: File, val handle: Long, val state: RunState, val frames: Long = 0, val bytes: Long = 0, val why: String = "")
+    data class Run(val run: String, val file: File, val handle: Long, val state: RunState, val frames: Long = 0, val bytes: Long = 0, val why: String = "")
 
     var phase by mutableStateOf<Phase>(Phase.Idle)
     var cameras by mutableStateOf<List<Cam>>(emptyList())
@@ -145,6 +149,38 @@ class ReceiveState(private val app: App) {
     private var streaming = false
 
     private class Refused(why: String) : Exception(why)
+
+    // ai: One receive session a PC (2026-10-27): the session's store is one folder for every window, and a store's open
+    // ai: lets go what holds no header (a finished file not yet filed, another window's transfer in hand), so a second
+    // ai: window receiving beside the first would clear it under the first. Native.data/receive.lock, the system's file
+    // ai: lock, is taken as a window makes its session and held until the session is let go (letGo: off Receive, idle) or the
+    // ai: window exits; another window's Start is refused meanwhile, and its Home deletes no unfinished transfer while it
+    // ai: is held. A folder that takes no lock receives as before.
+    private object ReceiveLock {
+        private var held: FileLock? = null
+        @Synchronized fun take(): Boolean {
+            if (held != null) return true
+            val ch = runCatching { FileChannel.open(File(Native.data.apply { mkdirs() }, "receive.lock").toPath(), StandardOpenOption.CREATE, StandardOpenOption.WRITE) }
+                .getOrNull() ?: return true
+            val l = try { ch.tryLock() } catch (e: IOException) { ch.close(); return true }
+            if (l == null) { ch.close(); return false }
+            held = l
+            return true
+        }
+        // ai: let go (the session destroyed: letGo)
+        @Synchronized fun release() {
+            held?.let { runCatching { it.release(); it.channel().close() } }
+            held = null
+        }
+        // ai: whether another window holds it now (taken and let go at once)
+        @Synchronized fun elsewhere(): Boolean {
+            if (held != null) return false
+            if (!take()) return true
+            held?.let { it.release(); it.channel().close() }
+            held = null
+            return false
+        }
+    }
     private class Want(val camera: String?, val strict: Boolean, val mode: String?, val decoder: String, val layout: String, val batch: Int)
 
     private fun post(my: Int = -1, f: () -> Unit) = EventQueue.invokeLater { if (my < 0 || my == gen) f() }
@@ -177,6 +213,7 @@ class ReceiveState(private val app: App) {
             }
             return hh
         }
+        if (!ReceiveLock.take()) throw Refused("another LIZARD window is receiving")
         val store = File(Native.data, "store").apply { mkdirs() }
         val cache = File(Native.buildDir, "pipeline").apply { mkdirs() }
         val made1 = Native.rxCreate(Native.assets, cache.path, store.path, dec, lay)
@@ -207,15 +244,32 @@ class ReceiveState(private val app: App) {
     private fun phoneLayout(cams: List<Cam>, id: String) =
         cams.firstOrNull { it.id == id && it.backend == "phone" }?.detail?.substringBefore(",")?.trim()?.takeIf { it == "1:1" || it == "2:1" }
     val phone get() = info?.backend == "phone" || camera.startsWith("phone:")
+    // ai: The Upload camera (2026-10-28, camera/upload.cpp): a .lizard (the phone's Download) or a replay's folder played
+    // ai: as a camera, upload:<path>, asked for by the Camera menu's Upload (Chooser); never listed, never kept as the
+    // ai: camera chosen, its crop the file's (its detail, as a phone's), its end the stream's
+    val upload get() = info?.backend == "upload" || camera.startsWith("upload:")
+    // ai: frames that are another device's crop at its own rate (a phone, an upload): no modes, crop or controls here
+    val fixed get() = phone || upload
+    val uploaded: String? get() = camera.takeIf { it.startsWith("upload:") }
+    fun chooseUpload() {
+        val owner = app.frame ?: return
+        Chooser.choose(owner, "Choose a .lizard file", false, false) { f -> f.firstOrNull()?.let { chooseCamera("upload:" + it.path) } }
+    }
+    // ai: the crop a phone or an upload names in its detail ("2:1, ..."), null for any other camera
+    private fun ownLayout(ci: CamInfo) =
+        if (ci.backend == "phone" || ci.backend == "upload") ci.detail.substringBefore(",").trim().takeIf { it == "1:1" || it == "2:1" } else null
     // ai: A phone by its address (2026-10-27, beside the beacon and the gateways, which a firewall or a route may defeat): the
     // ai: Camera menu's last entry asks for it (askAddress); the address typed is the camera's id, phone:<ip>:<port>
     // ai: (the stream's port where none is typed), listed by it while no listing has it
     var askAddress by mutableStateOf(false)
-    val typedPhone: String? get() = camera.takeIf { c -> c.startsWith("phone:") && cameras.none { it.id == c } }
+    val typedPhone: String? get() = camera.takeIf { c -> c.startsWith("phone:") && !c.startsWith("phone:usb:") && cameras.none { it.id == c } }
     val cameraOptions: List<Pair<String, String>> get() =
         cameras.map { it.id to it.label } + listOfNotNull(typedPhone?.let { it to "Phone at ${it.removePrefix("phone:").removeSuffix(":$PHONE_PORT")}" }) +
-            ("phone:" to "Phone by address")
-    fun chooseCameraOption(id: String) { if (id == "phone:") askAddress = true else { askAddress = false; chooseCamera(id) } }
+            listOfNotNull(uploaded?.let { it to File(it.removePrefix("upload:")).name }) + ("phone:" to "Phone by address") + ("upload:" to "Upload")
+    fun chooseCameraOption(id: String) {
+        askAddress = id == "phone:"
+        if (id == "upload:") chooseUpload() else if (id != "phone:") chooseCamera(id)
+    }
     fun choosePhoneAddress(typed: String) {
         val a = typed.trim()
         if (!Regex("\\d{1,3}(\\.\\d{1,3}){3}(:\\d{1,5})?").matches(a)) return
@@ -250,6 +304,7 @@ class ReceiveState(private val app: App) {
         val ci = camInfo(Native.rxCamera(hh)) ?: run { Native.rxClose(hh); throw Refused("the camera says nothing of itself") }
         opened = id
         openInfo = ci
+        post { asks = -1L }
         ci.control("zoom")?.let { c -> Prefs.Rx.zoom(id, lay)?.let { setNow(hh, c.id, it, false) } }
         ci.control("exposure")?.let { c -> Prefs.Rx.exposure(id)?.let { setNow(hh, c.id, it, false) } }
         ci.control("gain")?.let { c -> Prefs.Rx.gain(id)?.let { setNow(hh, c.id, it, false) } }
@@ -288,8 +343,8 @@ class ReceiveState(private val app: App) {
             // ai: the cameras first: no receiver is made (the GPU's pipelines) where none is listed
             val cams = listed()
             post { cameras = cams }
-            // ai: a phone by its address opens unlisted
-            val typed = w.camera?.takeIf { it.startsWith("phone:") }
+            // ai: a phone by its address and an upload open unlisted (a phone on USB is listed or not there)
+            val typed = w.camera?.takeIf { (it.startsWith("phone:") && !it.startsWith("phone:usb:")) || it.startsWith("upload:") }
             if (cams.isEmpty() && typed == null) { post(my) { phase = Phase.Error("No camera was found.") }; return }
             val id = w.camera?.takeIf { c -> c == typed || cams.any { it.id == c } } ?: if (w.strict) throw Refused("${w.camera} is not listed") else cams[0].id
             // ai: a phone sends its own crop (liblizard/core/rx/stream.h): the receiver crops as the phone did, from its
@@ -298,7 +353,7 @@ class ReceiveState(private val app: App) {
             var hh = session(w.decoder, lay)
             Native.rxBatchCap(hh, w.batch)
             val ci = openCam(hh, id, lay)
-            if (ci.backend == "phone") ci.detail.substringBefore(",").trim().takeIf { (it == "1:1" || it == "2:1") && it != lay }?.let { l ->
+            ownLayout(ci)?.takeIf { it != lay }?.let { l ->
                 lay = l
                 hh = session(w.decoder, l)
             }
@@ -354,9 +409,9 @@ class ReceiveState(private val app: App) {
     }
     fun toggle() = if (running) stop() else start()
     // ai: Receive entered (App.go): the lists read again, the camera started
-    fun enter() { refreshLists(); start() }
+    fun enter() { refreshLists(); start(); stamp = null; watchTimer.start() }
     // ai: Receive left: the camera stopped and closed; the session and its transfer kept
-    fun leave() { stop(); task { closeCam() } }
+    fun leave() { watchTimer.stop(); stop(); task { closeCam() } }
 
     // ai: the app's close: everything stopped and the session destroyed (the camera's controls put back by its stop), a
     // ai: recording run ended first and a file verified since the last poll taken out (the next launch's store would let
@@ -388,7 +443,8 @@ class ReceiveState(private val app: App) {
     // ai: Settings
     fun chooseCamera(id: String) {
         if (id == camera && info?.id == id) return
-        camera = id; Prefs.Rx.camera = id
+        camera = id
+        if (!id.startsWith("upload:")) Prefs.Rx.camera = id
         layout = phoneLayout(cameras, id) ?: Prefs.Rx.layout   // ai: a phone's crop its own; another camera's the one kept
         zoom = null; exposure = Prefs.Rx.exposure(id); gain = Prefs.Rx.gain(id)
         if (running) { stop(); start() }
@@ -400,7 +456,7 @@ class ReceiveState(private val app: App) {
                 if (hh == 0L) return@task
                 runCatching { openCam(hh, id, lay) }.onSuccess { ci ->
                     val m = runCatching { keptMode(ci) }.getOrNull()
-                    post { if (camera == id) { info = ci; mode = m; zoom = Prefs.Rx.zoom(id, layout) ?: ci.control("zoom")?.value } }
+                    post { if (camera == id) { info = ci; mode = m; ownLayout(ci)?.let { layout = it }; zoom = Prefs.Rx.zoom(id, layout) ?: ci.control("zoom")?.value } }
                     // ai: a camera chosen and open: an error before it said is no longer the line's
                     post(my) { if (camera == id && phase is Phase.Error) phase = Phase.Idle }
                 }.onFailure { e ->
@@ -506,7 +562,43 @@ class ReceiveState(private val app: App) {
         listing = true
         thread(name = "lizard-cameras", isDaemon = true) {
             val l = runCatching { listed() }.getOrNull()
-            post { listing = false; if (l != null) cameras = l }
+            post {
+                listing = false
+                if (l != null) { cameras = l; dropGonePhone() }
+            }
+        }
+    }
+
+    // ai: The camera list kept current with no interaction (2026-10-27): a second at a time while Receive shows, the
+    // ai: mark of what is plugged in (rxCamerasStamp: cheap, read off the UI thread) and the list read again
+    // ai: (refreshCameras) only where it changed, a camera that came or went shown so
+    private val watchTimer = Timer(1000) { watchCameras() }
+    private var stamp: String? = null
+    private var stamping = false
+    // ai: a USB phone gone from the list (unplugged), the camera chosen and not reading (a stream it was in has ended by
+    // ai: then): let go, the camera closed and the choice the first listed (the saved choice kept, for its return)
+    private fun dropGonePhone() {
+        val c = camera
+        if (!c.startsWith("phone:usb:") || cameras.any { it.id == c } || running) return
+        camera = ""
+        info = null
+        mode = null
+        task { closeCam() }
+    }
+    private fun watchCameras() {
+        dropGonePhone()
+        if (stamping || app.loadError.isNotEmpty()) return
+        stamping = true
+        thread(name = "lizard-camera-watch", isDaemon = true) {
+            val st = runCatching { Native.rxCamerasStamp() }.getOrNull()
+            post {
+                stamping = false
+                if (st != null && st != stamp) {
+                    val first = stamp == null
+                    stamp = st
+                    if (!first) refreshCameras()   // ai: the first mark only taken (enter lists already)
+                }
+            }
         }
     }
 
@@ -525,7 +617,12 @@ class ReceiveState(private val app: App) {
             val hh = h
             if (hh != 0L) Native.rxForget(hh, p.root.ifEmpty { p.id }) else p.dir.deleteRecursively()
             val l = Partials.list(); post { partials = l }
-        } else later { p.dir.deleteRecursively(); val l = Partials.list(); post { partials = l } }
+        } else later {
+            // ai: another window's receiver may hold it: its folder left to that window
+            if (ReceiveLock.elsewhere()) System.err.println("receive: ${p.id} not deleted: another LIZARD window is receiving")
+            else p.dir.deleteRecursively()
+            val l = Partials.list(); post { partials = l }
+        }
     }
     // ai: a received file deleted (Home's Delete, Delete all): to the trash, on the files' thread; the receiver forgets it
     // ai: where it holds that root (its transfer and held word, rxClear), so the line's "Received" goes and the same file
@@ -623,6 +720,9 @@ class ReceiveState(private val app: App) {
     private var endedRoot = ""                 // ai: the root the camera last stopped for
     private val filing = HashSet<String>()     // ai: roots asked to be taken out or being filed, until their filing ends
     private var skip = ""                      // ai: a root not asked for again while the receiver holds it (takeOut)
+    // ai: a phone's own Start and Stop as last counted (camera/phone.cpp asks; the camera's "camera" stats), -1 before
+    // ai: the first poll of a camera opened: that poll the baseline
+    private var asks = -1L
     private fun poll() {
         val hh = h
         if (hh == 0L) return
@@ -640,10 +740,21 @@ class ReceiveState(private val app: App) {
             phase = Phase.On
             previewTimer.start()
         }
-        val ended = (j?.get("camera") as? JsonObject)?.str("ended").orEmpty()
+        // ai: Start or Stop pressed on the phone (2026-10-27): Receive follows it, the link open through both, so either
+        // ai: end starts and stops the other (a Start or Stop here goes to the phone the same way, phone.cpp)
+        val cam = j?.get("camera") as? JsonObject
+        if (phone && cam != null) {
+            val n = cam.num("asks").toLong()
+            if (asks >= 0 && n > asks) { if (cam.flag("askOn")) { if (!running) start() } else if (running) stop() }
+            asks = n
+        }
+        val ended = cam?.str("ended").orEmpty()
         // ai: a stream that ended by itself (a camera unplugged, a device error): the camera closed as well as stopped, so
         // ai: the next Start opens it again by its id
-        if (ended.isNotEmpty() && (phase == Phase.On || phase == Phase.Loading)) { stop(); task { closeCam() }; phase = Phase.Error("The camera stopped: $ended") }
+        if (ended.isNotEmpty() && (phase == Phase.On || phase == Phase.Loading)) {
+            stop(); task { closeCam() }
+            if (!upload) phase = Phase.Error("The camera stopped: $ended")   // ai: an upload's end is its file's
+        }
         // ai: the receiver let that root go (a clear, a new receiver): a copy of it received later is asked for anew
         if (skip.isNotEmpty() && skip != root) skip = ""
         if (r.verified && root.isNotEmpty()) {
@@ -658,12 +769,35 @@ class ReceiveState(private val app: App) {
             if (root != endedRoot) { endedRoot = root; if (running) stop() }
         }
         replayTick(s)
+        letGo()
         if (tick++ % 4 == 0 && app.screen == Screen.Home) thread(name = "lizard-partials", isDaemon = true) { val p = Partials.list(); post { partials = p } }
+    }
+
+    // ai: The session let go off Receive (2026-10-27; a window that had received once and then sent held the lock and
+    // ai: refused the other's Start): a window off Receive with its camera stopped, nothing recording, ending or filing, takes its last file
+    // ai: out, closes its camera, destroys its session and lets the receive lock go, so a window that sends holds none.
+    // ai: The transfer in hand stays in the store, which the next session (the next Receive, here or in another window)
+    // ai: resumes when its header is read again. On the session's thread, so a Receive entered meanwhile makes its new
+    // ai: session after.
+    private var releasing = false
+    private fun letGo() {
+        if (releasing || app.screen == Screen.Receive || running || filing.isNotEmpty() || beginning) return
+        if (runs.any { it.state == RunState.Recording || it.state == RunState.Ending }) return
+        releasing = true
+        task {
+            runCatching { takeOut() }
+            closeCam()
+            val hh = h
+            if (hh != 0L) { Native.rxDestroy(hh); h = 0L }
+            made = ""
+            ReceiveLock.release()
+            post { releasing = false; if (h == 0L) { sessionMade = false; timer.stop() } }
+        }
     }
 
     // ai: The preview: the newest frame's crop as the decoder reads it, at most PREVIEW px on its long side, grey, into
     // ai: one of two Skia bitmaps in turn (installPixels copies the bytes; Compose draws a bitmap by its copy), while On
-    private val previewTimer = Timer(33) { pull() }
+    private val previewTimer = Timer(16) { pull() }   // ai: every frame of a 60 a second stream (a phone's, as it sends them)
     private val buf = ByteArray(PREVIEW * PREVIEW)
     private var seq = 0L
     private val bitmaps = arrayOfNulls<Bitmap>(2)
@@ -681,10 +815,11 @@ class ReceiveState(private val app: App) {
         if (bm.installPixels(ImageInfo(w, ht, ColorType.GRAY_8, ColorAlphaType.OPAQUE), buf, w)) preview = bm.asComposeImageBitmap()
     }
 
-    // ai: Save replays: a run while the switch is on and the camera reads (Native.data/replays/<run>, the app's run
-    // ai: name, the newest REPLAY_FRAMES frames the decoder takes), ended when either stops: its rows (the stats a
-    // ai: second, the newest REPLAY_ROWS) and the app's fields (camera, settings, build) into its meta. A run that ends
-    // ai: with frames lets the finished runs before it go, as the app's; the folder is the replay.
+    // ai: Save replays: a run while the switch is on and the camera reads (Native.data/replays/<run>.lizard, the app's
+    // ai: run name, the newest REPLAY_FRAMES frames the decoder takes; liblizard/core/rx/replay.h, lizfile.h), ended
+    // ai: when either stops: its rows (the stats a second, the newest REPLAY_ROWS) and the app's fields (camera,
+    // ai: settings, build) into its meta. A run that ends with frames lets the finished runs before it go, as the app's;
+    // ai: the file is the replay, which the Upload camera plays.
     private val rows = ArrayDeque<String>()
     private var beginning = false
     private var replayRefused = false          // ai: a run the session would not begin: none asked again until the switch moves
@@ -692,21 +827,21 @@ class ReceiveState(private val app: App) {
     private fun replayTick(s: String) {
         if (!adopted) adopt()
         val mine = runs.lastOrNull { it.state == RunState.Recording }
-        val want = replays && phase == Phase.On
+        val want = replays && phase == Phase.On && !upload   // ai: an upload is a replay already
         if (want && mine == null && !beginning && !replayRefused) beginReplay()
         else if (!want && mine != null) endReplay(mine)
         if (mine != null && tick % 4 == 0) { rows.addLast(s); while (rows.size > REPLAY_ROWS) rows.removeFirst() }
     }
     private val replaysDir get() = File(Native.data, "replays")
-    // ai: the runs on disk at the first look: the newest whole one (its meta.json written) listed, the rest deleted
+    // ai: the runs on disk at the first look: the newest whole one (a .lizard, written whole at its run's end) listed,
+    // ai: its frames from its meta.json; the rest deleted, scratch folders and .part files with them
     private fun adopt() {
         adopted = true
-        val all = replaysDir.listFiles()?.filter { it.isDirectory }.orEmpty().sortedBy { it.name }
-        val whole = all.lastOrNull { File(it, "meta.json").isFile }
+        val all = replaysDir.listFiles().orEmpty().toList()
+        val whole = all.filter { it.isFile && it.name.endsWith(".lizard") }.maxByOrNull { it.name }
         if (whole != null) {
-            val meta = runCatching { parse(File(whole, "meta.json").readText()) }.getOrNull()
-            val bytes = whole.listFiles()?.filter { it.name.endsWith(".gray") }?.sumOf { it.length() } ?: 0L
-            runs.add(Run(whole.name, whole, 0L, RunState.Ready, meta?.num("frames")?.toLong() ?: 0L, bytes, meta?.str("error").orEmpty()))
+            val meta = runCatching { java.util.zip.ZipFile(whole).use { z -> parse(z.getInputStream(z.getEntry("meta.json")).reader().readText()) } }.getOrNull()
+            runs.add(Run(whole.name.removeSuffix(".lizard"), whole, 0L, RunState.Ready, meta?.num("frames")?.toLong() ?: 0L, whole.length(), meta?.str("error").orEmpty()))
         }
         val rest = all.filter { it != whole }
         if (rest.isNotEmpty()) thread(name = "lizard-replays", isDaemon = true) { rest.forEach { it.deleteRecursively() } }
@@ -716,17 +851,17 @@ class ReceiveState(private val app: App) {
         val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH-mm-ss-SSS'Z'", Locale.ROOT).apply { timeZone = TimeZone.getTimeZone("UTC") }
         var t = System.currentTimeMillis()
         var run: String
-        while (true) { run = "run-" + fmt.format(Date(t)); if (runs.none { it.run == run } && !File(replaysDir, run).exists()) break; t++ }
-        val dir = File(replaysDir, run)
+        while (true) { run = "run-" + fmt.format(Date(t)); if (runs.none { it.run == run } && !File(replaysDir, "$run.lizard").exists()) break; t++ }
+        val file = File(replaysDir, "$run.lizard")
         rows.clear()
         task {
             val hh = h
-            val r = if (hh == 0L) 0L else runCatching { replaysDir.mkdirs(); Native.rxReplayNew(dir.path, run, REPLAY_FRAMES) }.getOrDefault(0L)
+            val r = if (hh == 0L) 0L else runCatching { replaysDir.mkdirs(); Native.rxReplayNew(file.path, run, REPLAY_FRAMES) }.getOrDefault(0L)
             if (r != 0L) Native.rxRecord(hh, r)
             post {
                 beginning = false
                 if (r == 0L) replayRefused = true
-                runs.add(Run(run, dir, r, if (r != 0L) RunState.Recording else RunState.Failed, why = if (r == 0L) "not begun" else ""))
+                runs.add(Run(run, file, r, if (r != 0L) RunState.Recording else RunState.Failed, why = if (r == 0L) "not begun" else ""))
                 System.err.println("replay: $run" + if (r == 0L) " not begun" else "")
             }
         }
@@ -751,7 +886,7 @@ class ReceiveState(private val app: App) {
                     val gone = if (done.state == RunState.Ready) runs.filter { it.run != r.run && (it.state == RunState.Ready || it.state == RunState.Failed) }
                         else listOf(done)
                     runs.removeAll(gone)
-                    if (gone.isNotEmpty()) thread(name = "lizard-replays", isDaemon = true) { gone.forEach { it.dir.deleteRecursively() } }
+                    if (gone.isNotEmpty()) thread(name = "lizard-replays", isDaemon = true) { gone.forEach { gone1 -> listOf(gone1.file, File(gone1.file.path + ".frames"), File(gone1.file.path + ".part")).forEach { it.deleteRecursively() } } }
                 }
             }
         }
@@ -785,6 +920,7 @@ class ReceiveState(private val app: App) {
         // ai: a phone (camera/phone.cpp): its camera's rate (its frame count's, agreedFps) against what arrives, short
         // ai: where the link carries fewer (the phone skips evenly, 2026-10-27); a
         // ai: phone's camera is the phone's to time, so the rules after this are not its
+        if (upload) return ""
         if (phone) {
             val cam = j["camera"] as? JsonObject
             val of = cam?.num("agreedFps") ?: 0.0

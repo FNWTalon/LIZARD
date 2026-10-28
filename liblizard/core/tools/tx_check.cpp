@@ -17,8 +17,8 @@
 // ai:   LIZ_PAINTER=gpu|auto tx_check paint ...   the Sender painting on the GPU (or auto), every frame read blind as before
 // ai:   LIZ_CODES=2 [LIZ_GAP=<modules>] tx_check paint ...   two codes a frame (2026-10-03), the gap between them set
 // ai:       (2026-10-04, TxFormat.gap; GAP_MODULES unset), each read blind at its own offset
-// ai:   LIZ_RUN_OUT=<dir> tx_check paint ...   every symbol read written as a recording too (<dir>/NNNN.gray, W x W luma,
-// ai:       a code a frame, and meta.json), which lizard_gpu_check replay reads (2026-10-07, the GPU's rate profile)
+// ai:   LIZ_RUN_OUT=<file> tx_check paint ...   every symbol read written as a recording too (a .lizard, rx/lizfile.h:
+// ai:       W x W luma, a code a frame, and its meta.json), which lizard_gpu_check replay reads (2026-10-07)
 // ai:   LIZ_SPAN=<2 B> tx_check paint ...   the symbols in ring B (2026-10-10; 128, the 64 ring's, unset): 512 the 256 ring
 // ai:   LIZ_TYPE=<media type> tx_check paint <file> ...   the header carries that type, as the apps' files do (2026-10-10)
 // ai:   tx_check gpucheck ...   the GPU's frames against the C's: the anchors' squares (SPEC 6.13) to the byte besides
@@ -41,6 +41,7 @@
 #include "codec.h"
 #include "gpu_painter.h"
 #include "json.hpp"
+#include "lizfile.h"
 #include "send_tables.h"
 #include "sender.h"
 #include "xfer_rx.h"
@@ -165,18 +166,18 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> rgba(static_cast<size_t>(FW) * W * 4), luma(static_cast<size_t>(W) * W), blocks(static_cast<size_t>(top) * BB), ok(top), want(469);
     int held = 0, words = 0, faults = 0;
     long verified = 0, total = 0;
+    std::unique_ptr<lizard::lizfile::Writer> runOut;
+    std::string runWhy;
+    if (const char* ro = getenv("LIZ_RUN_OUT")) {
+      runOut = lizard::lizfile::Writer::create(ro, runWhy);
+      if (!runOut) printf("LIZ_RUN_OUT: %s\n", runWhy.c_str());
+    }
     const double t0 = nowMs();
     for (int k = 0; k < frames * codes; k++) {
       if (k % codes == 0) while (!s.take(rgba.data(), FW * 4)) std::this_thread::sleep_for(std::chrono::microseconds(200));
       const int x0 = (k % codes) * (W + gap);
       for (int y = 0; y < W; y++) for (int x = 0; x < W; x++) luma[static_cast<size_t>(y) * W + x] = rgba[4 * (static_cast<size_t>(y) * FW + x0 + x)];
-      if (const char* ro = getenv("LIZ_RUN_OUT")) {
-        char name[32];
-        snprintf(name, sizeof name, "/%04d.gray", k);
-        std::filesystem::create_directories(ro);
-        FILE* fo = fopen((std::string(ro) + name).c_str(), "wb");
-        if (fo) { fwrite(luma.data(), 1, luma.size(), fo); fclose(fo); }
-      }
+      if (runOut && !runOut->frame(luma.data(), W, W, W, runWhy)) { printf("LIZ_RUN_OUT: %s\n", runWhy.c_str()); runOut.reset(); }
       cpu_frame_t fr{};
       const int got = cpu_dec_frame(d, luma.data(), W, W, held, blocks.data(), ok.data(), &fr);
       if (fr.word) { words++; held = fr.version; }
@@ -191,11 +192,10 @@ int main(int argc, char** argv) {
       }
     }
     const double ms = nowMs() - t0;
-    if (const char* ro = getenv("LIZ_RUN_OUT")) {
-      nlohmann::json meta = {{"w", W}, {"h", W}, {"frames", frames * codes}, {"source", "tx_check paint"},
+    if (runOut) {
+      nlohmann::json meta = {{"w", W}, {"h", W}, {"frames", runOut->frames()}, {"source", "tx_check paint"},
                              {"config", {{"spec", {{"n", s.n()}, {"subch", wantSubch}, {"span", f.span}}}}}};
-      FILE* fo = fopen((std::string(ro) + "/meta.json").c_str(), "wb");
-      if (fo) { const std::string m = meta.dump(); fwrite(m.data(), 1, m.size(), fo); fclose(fo); }
+      if (runOut->finish(meta.dump(), "", runWhy) < 0) printf("LIZ_RUN_OUT: %s\n", runWhy.c_str());
     }
     printf("paint: LIZARD-%d x %d n %d, %d x %d px (gap %d px), %d painters: %d frames, %ld of %ld blocks verified, words %d, %.1f frames a second taken\n",
            wantSubch, codes, s.n(), FW, W, gap, threads, frames, verified, total, words, 1000.0 * frames / ms);

@@ -13,7 +13,8 @@ import kotlin.system.exitProcess
 // ai: line {"rx": <the newest stats>, "received": <the received files' list, Received.kt>, "camera": <the camera open
 // ai: as the session describes it (rx_session.h camera: its controls' values), {} none>} goes to stdout and the app
 // ai: exits 0; any failure prints "FAIL <why>" and exits 1, the camera stopped and the session destroyed first. Keys:
-// ai: secs; camera (an id, rxCameras': it must be listed; unless named the simulated camera sim:0 where LIZ_CAMERA_SIM
+// ai: secs; camera (an id, rxCameras': it must be listed, but upload:<a .lizard>, the Upload camera, whose file's end
+// ai: ends the run as secs does; unless named the simulated camera sim:0 where LIZ_CAMERA_SIM
 // ai: is set, else the first listed); mode (an index into the camera's modes, or WxH@fps); layout 1:1 or 2:1; decoder
 // ai: auto, gpu or cpu; steps, comma separated <seconds>:<action> from the first answer, each as its control does it:
 // ai: start, stop (Start and Stop camera), swap (the bar's swap: to Send, or back to Receive), home (Home), receive
@@ -94,7 +95,7 @@ class ReceiverTest private constructor(private val secs: Double, private val kv:
                 away = step(app, act, away)
             }
             if (away && r.running && app.screen == Screen.Receive) away = false
-            if (!r.running && !away && !r.rx.verified) fail("the camera stopped")
+            if (!r.running && !away && !r.rx.verified) { if (r.upload) break else fail("the camera stopped") }
             val now = System.nanoTime()
             if (now >= nextLine) { nextLine = now + 1_000_000_000L; if (r.raw.isNotEmpty()) System.err.println("rx: ${r.raw}") }
             delay(100)

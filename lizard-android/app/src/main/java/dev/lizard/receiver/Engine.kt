@@ -78,11 +78,9 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     private var session: CameraCaptureSession? = null
     private var reader: ImageReader? = null
     private var gen = 0   // ai: bumped by every close: a callback of a camera already closed is ignored
-    private val phase = PhaseLock({ Log.i(TAG, it) })   // ai: engine thread only
-    // ai: the experimental arm D6 (Settings.d6 "on", liblizard/kotlin/PhaseLockD6.kt), chosen at each camera session;
-    // ai: no readout skew and no code row, as it ran on 2026-10-26
-    private val phaseD6 = dev.lizard.phase.d6.PhaseLock({ Log.i(TAG, it) })
-    @Volatile private var d6 = false
+    // ai: the phase lock (liblizard/kotlin/PhaseLock.kt, D6 since 2026-10-28): engine thread only; no readout skew and
+    // ai: no code row
+    private val phase = PhaseLock({ Log.i(TAG, it) })
     // ai: The phase lock learns the display's pace and its gain afresh every run (2026-10-03): from 2026-10-01 to
     // ai: 2026-10-03 they were kept in the preferences (phasePace, phaseGain, no longer read) and given back when track
     // ai: was next set, and a pace learned to its bound (5 ms a second) in 2:1 was given back to every run after it
@@ -144,9 +142,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
             (r.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L) / 1e6, (r.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1e6,
             r.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID))
     }
-    fun phaseState(): PhaseLock.State? = if (!d6) phase.state else phaseD6.state?.let {
-        PhaseLock.State("d6 " + it.arm, it.what, it.a, it.b, it.k, it.se, it.n, it.gain, it.pace, it.stood, it.edge, it.flatMs, it.delays)
-    }
+    fun phaseState(): PhaseLock.State? = phase.state
     // ai: Whether the open lens can take the phase lock's delay frame (2026-10-22): one request with auto-exposure off
     // ai: and a longer SENSOR_FRAME_DURATION (delay below), applied to that frame alone. That needs manual sensor
     // ai: control and per-frame control; on a lens without them the longer frame lands late or not at all, and the
@@ -554,28 +550,24 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                         var resAsked = Native.prop("debug.lizard.resolution")
                         // ai: the camera's phase against the display (PhaseLock.kt, the engine's one: what it has
                         // ai: learned of the two clocks outlives a camera opened again), by `adb shell setprop
-                        // ai: debug.lizard.phase <us> | scan | track` (read twice a second): a hold at that
-                        // ai: point of a 60 Hz grid, a scan of every point with a line each, or track's automatic
-                        // ai: hold; unset, track (always on since 2026-10-10: the Phase lock setting went). Anything else: off.
-                        // ai: the lock this session runs: Settings.d6 (the Experimental fold), read as the session opens
+                        // ai: debug.lizard.phase track | off` (read twice a second): unset, track (always on since
+                        // ai: 2026-10-10: the Phase lock setting went); anything else, off (the tools' starts from random phases)
                         init {
-                            d6 = wanted?.d6 == "on"
-                            Log.i(TAG, "phase: lock " + (if (d6) "d6" else "standard") + " (session)")
-                            phase.reopened(); phaseD6.reopened()
-                            if (d6) fedMs = -1.0
+                            phase.reopened()
+                            fedMs = -1.0
                             delayAsked = null
-                            if (bar != null) { phase.set(PhaseLock.Mode.Off); phaseD6.set(dev.lizard.phase.d6.PhaseLock.Mode.Off) }
+                            if (bar != null) phase.set(PhaseLock.Mode.Off)
                         }
-                        // ai: D6 is told what became of its delay request: its frame failed (captured or not), or its sequence aborted
+                        // ai: the lock is told what became of its delay request: its frame failed (captured or not), or its sequence aborted
                         override fun onCaptureFailed(s: CameraCaptureSession, q: CaptureRequest, f: android.hardware.camera2.CaptureFailure) {
                             if (q !== delayAsked) return
                             delayAsked = null
-                            if (d6) phaseD6.delayFate(f.wasImageCaptured())
+                            phase.delayFate(f.wasImageCaptured())
                         }
                         override fun onCaptureSequenceAborted(s: CameraCaptureSession, seq: Int) {
                             if (delayAsked == null || seq != delaySeq) return
                             delayAsked = null
-                            if (d6) phaseD6.delayFate(false)
+                            phase.delayFate(false)
                         }
                         override fun onCaptureCompleted(s: CameraCaptureSession, q: CaptureRequest, r: android.hardware.camera2.TotalCaptureResult) {
                             val ts = r.get(android.hardware.camera2.CaptureResult.SENSOR_TIMESTAMP) ?: 0L
@@ -617,28 +609,18 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                                     val w = wanted
                                     if (w != null && res.matches(Regex("\\d+x\\d+")) && res != w.resolution) { Log.i(TAG, "resolution: $res asked"); start(w.copy(resolution = res)) }
                                 }
-                                // ai: `debug.lizard.pilots`: 0, track reads the frames by their blocks even where they
-                                // ai: flash (the A/B's other arm); unset or anything else, where they flash it holds
-                                // ai: by the pilots' leaks (PhaseLock.kt)
-                                phase.usePilots = Native.prop("debug.lizard.pilots") != "0"
-                                // ai: track always (2026-10-10: the setting and its off went); `debug.lizard.phase` the tools' override
-                                // ai: (scan, track, off, or a hold at that many us); off on a lens that cannot delay a frame (lockBar)
+                                // ai: track always (2026-10-10: the setting and its off went); `debug.lizard.phase` the tools'
+                                // ai: override (track, or anything else off); off on a lens that cannot delay a frame (lockBar)
                                 val want = if (bar != null) "off" else Native.prop("debug.lizard.phase").ifEmpty { "track" }
-                                // ai: D6 has Track and Off alone: the tools' scan and holds are the standard lock's
-                                if (d6) phaseD6.set(if (want == "track") dev.lizard.phase.d6.PhaseLock.Mode.Track else dev.lizard.phase.d6.PhaseLock.Mode.Off)
-                                else when (want) {
-                                    "scan" -> phase.set(PhaseLock.Mode.Scan)
-                                    "track" -> phase.set(PhaseLock.Mode.Track)
-                                    else -> want.toLongOrNull()?.let { phase.set(PhaseLock.Mode.Hold, it) } ?: phase.set(PhaseLock.Mode.Off)
-                                }
+                                phase.set(if (want == "track") PhaseLock.Mode.Track else PhaseLock.Mode.Off)
                             }
                             // ai: the lock's frames as the receiver reads them, at every capture (twice a second
                             // ai: from the stats' JSON to 2026-10-01: a reading reached the lock 0.7 s old)
-                            if (d6) feedD6() else feed(phase)
-                            val us = if (d6) phaseD6.onCapture(ts, delayed) else phase.onCapture(ts, delayed)
-                            if (us > 0 && !delay(cs, b, us, this, quiet = true, lock = true) && d6) phaseD6.delayFate(false)
+                            feed()
+                            val us = phase.onCapture(ts, delayed)
+                            if (us > 0 && !delay(cs, b, us, this, quiet = true, lock = true)) phase.delayFate(false)
                             if (n % 60 == 0) rx()?.let { Log.i(TAG, it) }
-                            if (n % 300 == 0) (if (d6) phaseD6.line(ts) else phase.line(ts))?.let { Log.i(TAG, it) }
+                            if (n % 300 == 0) phase.line(ts)?.let { Log.i(TAG, it) }
                             if (n++ % 300 != 0) return
                             val now = System.nanoTime()
                             val im = images.get()
@@ -773,16 +755,16 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
 
     // ai: The receiver's frames since the last call (Native.series: ms on the camera's clock, verified blocks, new
     // ai: blocks, registered, the pilots' r and its standard error over the even blocks, then over the odd, NaN
-    // ai: where none) and the word's blocks a frame, to the phase's scan or track (each frame's a launch after its
+    // ai: where none) and the word's blocks a frame, to the phase lock's track (each frame's a launch after its
     // ai: capture: since 2026-10-08 the GPU receiver launches as soon as a frame is staged and a lane is free, never
     // ai: waiting to fill a batch). Called at
     // ai: every capture result on the camera's thread since 2026-10-01: one JNI call and no JSON, so a call with
     // ai: nothing new costs microseconds.
     private var fedMs = -1.0     // ai: the newest frame already fed, ms on the camera's clock
-    private fun feed(p: PhaseLock) {
+    private fun feed() {
         val hnd = handle
         if (hnd == 0L) return
-        if (p.mode != PhaseLock.Mode.Scan && p.mode != PhaseLock.Mode.Track) return
+        if (phase.mode != PhaseLock.Mode.Track) return
         val t0 = System.nanoTime()
         val a = try { Native.series(hnd, fedMs) } catch (_: Throwable) { return }
         val n = (a.size - 1) / 8
@@ -790,26 +772,11 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         val frames = ArrayList<PhaseLock.Frame>(n)
         for (i in 0 until n) { val o = 1 + 8 * i; frames.add(PhaseLock.Frame((a[o] * 1e6).toLong(), a[o + 1].toInt(), a[o + 3] == 1.0, a[o + 4], a[o + 5], a[o + 6], a[o + 7])) }
         fedMs = a[1 + 8 * (n - 1)]
-        p.onWindow(frames, a[0].toInt())
+        phase.onWindow(frames, a[0].toInt())
         // ai: this runs on the camera's thread between capture results: a slow feed delays the lock's next delay
         // ai: (2026-09-30: the search's steps grew to 2.4 to 3.9 ms on the S26, one step every 16 to 26 captures)
         val t1 = System.nanoTime()
         if (t1 - t0 > 20_000_000L) Log.i(TAG, "phase: the feed took %d ms".format((t1 - t0) / 1_000_000))
-    }
-
-    // ai: D6's feed: feed's, its frames D6's (no code row: D6 takes the frame's middle)
-    private fun feedD6() {
-        val p = phaseD6
-        val hnd = handle
-        if (hnd == 0L) return
-        if (p.mode != dev.lizard.phase.d6.PhaseLock.Mode.Track) return
-        val a = try { Native.series(hnd, fedMs) } catch (_: Throwable) { return }
-        val n = (a.size - 1) / 8
-        if (n <= 0) return
-        val frames = ArrayList<dev.lizard.phase.d6.PhaseLock.Frame>(n)
-        for (i in 0 until n) { val o = 1 + 8 * i; frames.add(dev.lizard.phase.d6.PhaseLock.Frame((a[o] * 1e6).toLong(), a[o + 1].toInt(), a[o + 3] == 1.0, a[o + 4], a[o + 5], a[o + 6], a[o + 7])) }
-        fedMs = a[1 + 8 * (n - 1)]
-        p.onWindow(frames, a[0].toInt())
     }
 
     // ai: One frame made `us` microseconds longer, so every frame after it starts that much later: the camera's phase

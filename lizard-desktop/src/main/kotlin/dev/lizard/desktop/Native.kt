@@ -57,6 +57,8 @@ object Native {
     // ai: transfer's worker), rxReplayEnd. rxStats, rxCamera and rxPreview wait on nothing.
     // ai: the cameras every backend sees: {"cameras": [{id, name, backend, detail}], "notes": [why a backend saw none]}
     @JvmStatic external fun rxCameras(): String
+    // ai: a cheap mark of what is plugged in (camera.h listStamp): rxCameras again only where it changed
+    @JvmStatic external fun rxCamerasStamp(): String
     // ai: a session with its receiver (decoder auto|gpu|cpu, layout 1:1|2:1): 0, why in txError()
     @JvmStatic external fun rxCreate(assets: String, cacheDir: String, storeDir: String, decoder: String, layout: String): Long
     @JvmStatic external fun rxConfigure(h: Long, decoder: String, layout: String): String
@@ -79,7 +81,7 @@ object Native {
     @JvmStatic external fun rxBatchCap(h: Long, n: Int)
     // ai: Save replays (core/rx/replay.h): a run's folder of the newest `frames` frames the decoder takes; rxRecord(h, 0)
     // ai: stops; rxReplayEnd ends the run: {"frames", "bytes", "error"}
-    @JvmStatic external fun rxReplayNew(dir: String, run: String, frames: Int): Long
+    @JvmStatic external fun rxReplayNew(file: String, run: String, frames: Int): Long
     @JvmStatic external fun rxRecord(h: Long, replay: Long)
     @JvmStatic external fun rxReplayEnd(replay: Long, rxStats: String, rows: String, more: String): String
     @JvmStatic external fun rxDestroy(h: Long)

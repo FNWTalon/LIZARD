@@ -15,7 +15,10 @@
 // ai:   STATS  PC to phone: the PC receiver's stats JSON
 // ai:   OPEN   PC to phone, no payload: send a HELLO again (the PC's start on a link it did not open fresh: a USB
 // ai:          accessory's, whose bytes may be partway through a message; the PC skips to the HELLO)
-// ai: The phone also says where it is: a UDP beacon a second to each IPv4 interface's broadcast address on
+// ai:   CAMERA both ways, u32 1 on or 0 off (2026-10-27): phone to PC, the phone's camera (after each HELLO, then at
+// ai:          each change that lasts CAMERA_OFF_MS, so a camera the phone restarts says nothing); PC to phone, a Start
+// ai:          or Stop pressed there, which the app follows (the stats' stream.want). The link stays open through both.
+// ai: The phone also says where it is: a UDP beacon a second to each USB tether interface's IPv4 broadcast address on
 // ai: BEACON_PORT, "LIZARD-STREAM <proto> port=<tcp port> w=<w> h=<h> fps=<fps> layout=<layout> name=<name>" (w, h,
 // ai: fps those of the frames sent last, 0 before any).
 // ai: Or over USB by Android Open Accessory (2026-10-27; on Windows a WinUSB driver bound by the user, Zadig): the PC
@@ -33,10 +36,15 @@
 #include "receiver.h"
 
 namespace lizard::stream {
-constexpr uint32_t PROTO = 1;
+constexpr uint32_t PROTO = 2;   // ai: 2 since CAMERA (2026-10-27)
 constexpr uint16_t TCP_PORT = 47230;      // ai: the phone listens (LIZ_STREAM_PORT another)
 constexpr uint16_t BEACON_PORT = 47231;   // ai: the PC listens for beacons
-enum Type : uint32_t { HELLO = 1, FRAME = 2, SERIES = 3, STATS = 4, OPEN = 5 };
+enum Type : uint32_t { HELLO = 1, FRAME = 2, SERIES = 3, STATS = 4, OPEN = 5, CAMERA = 6 };
+constexpr int CAMERA_OFF_MS = 1000;  // ai: a camera off this long is off (either end's: a restart is not a stop)
+// ai: each end says something at least every HEARTBEAT_MS (the phone the camera's state where no frame goes, the PC its
+// ai: stats), and takes the other as gone after QUIET_MS of nothing
+constexpr int HEARTBEAT_MS = 1000;
+constexpr int QUIET_MS = 3000;
 constexpr uint32_t FRAME_HEAD = 24;
 constexpr uint32_t MAX_PAYLOAD = 64u << 20;   // ai: past it a message is a broken stream
 }  // namespace lizard::stream
@@ -45,6 +53,15 @@ namespace lizard {
 // ai: Receiver::create's for decoder "pc": throws where it cannot listen (the port taken, no sockets: Windows has none
 // ai: here, the phone side being a phone's)
 std::unique_ptr<Receiver> makeStreamReceiver(const ReceiverConfig& c, std::function<void(uint64_t tag)> release);
+// ai: The PC link (2026-10-27): the listener on TCP_PORT, the beacon and the accessory's sessions, one PC at a time,
+// ai: held up by the app while a PC may be there (a USB cable in) and let go after; a "pc" receiver brings it up where
+// ai: it is not and holds it while it lives. It answers a PC whatever the decoder: its hello, the camera off where no
+// ai: "pc" receiver feeds it, its word a second; so the app can tell a PC receiver is there before offering PC.
+void linkUp(const std::string& layout, std::function<void(const std::string&)> log);
+void linkDown();
+// ai: JSON {"up", "present" (a PC connected has said something within QUIET_MS), "connected", "peer", "port",
+// ai: "want": {"seq", "on"} (the PC's Start and Stop: a count and the last)}
+std::string linkState();
 // ai: the accessory's fd (UsbManager.openAccessory, detached), the bridge's from here: it closes it at its end. False
 // ai: where a bridge is up already (the fd closed) or this system has none (Windows)
 bool streamAccessory(int fd, std::function<void(const std::string&)> log);

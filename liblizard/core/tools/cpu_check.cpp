@@ -1,8 +1,8 @@
 // ai: The CPU decoder's check: recorded frames through the native C (cpu/codec.h), on one thread or several.
 //   lizard_cpu_check info
 //   lizard_cpu_check replay <run> [frames] [threads] [seq|none]
-// ai: replay: the frames of research/captures/v0.3/<run> that are there (a phone holds the first 96), each
-// ai: decoded once. seq (one thread, the default there): the held word is the last word read in frame order, as the
+// ai: replay: the frames of the recording research/captures/v0.3/<run>.lizard (tools/recording.h; a path with a '/'
+// ai: too), each decoded once. seq (one thread, the default there): the held word is the last word read in frame order, as the
 // ai: web's blind replay carries it (sim/phy.mjs makeBlind), so the block total is comparable with
 // ai: `node scripts/exp/capture_check.mjs` (its default arm, blind) on the same run. none (the default on several
 // ai: threads): nothing held, so a frame's
@@ -10,12 +10,12 @@
 // ai: its word, its blocks, each block's iterations and estimate) is the same at any thread count: the race check. On
 // ai: one thread a second digest, "floats", is the codec's own hash of the floats and soft values behind each decode:
 // ai: with the first, the vector build's check against the scalar one.
-// ai: info runs on its own; replay reads a recording, the lab's research/ (LIZ_BARCODE), which is not published. A run
-// ai: lizard_engine paint makes reads as a recording put at <LIZ_BARCODE>/captures/v0.3/<run>.
+// ai: info runs on its own; replay reads a recording, the lab's research/ (LIZ_BARCODE), which is not published.
 // ai: Env: LIZ_BARCODE (../research), LIZ_PASSES (1: timing passes over the frames), LIZ_NMAX (1536: every picture of the ladder, as the receiver's pool).
 #include "codec.h"
 #include "json.hpp"
 #include "axes.h"
+#include "recording.h"
 
 #include <algorithm>
 #include <atomic>
@@ -30,19 +30,6 @@
 
 static double nowMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 static std::string envOr(const char* k, const char* d) { const char* v = getenv(k); return v ? v : d; }
-
-static std::vector<uint8_t> readAll(const std::string& p) {
-  std::ifstream f(p, std::ios::binary);
-  if (!f) return {};
-  return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-}
-
-// ai: the first integer after "key": in a small JSON text (meta.json's w, h, frames)
-static int jsonInt(const std::string& s, const std::string& key) {
-  const size_t k = s.find("\"" + key + "\"");
-  if (k == std::string::npos) return 0;
-  return atoi(s.c_str() + s.find(':', k) + 1);
-}
 
 struct FrameResult { cpu_frame_t fr{}; int got = 0; double ms = 0; uint64_t digest = 0; uint32_t deep = 0; };
 
@@ -69,31 +56,23 @@ static uint64_t digestOf(const cpu_dec_t* d, const cpu_frame_t& fr, int got, con
 }
 
 static int replay(const std::string& run, int want, int threads, std::string mode) {
-  const std::string dir = envOr("LIZ_BARCODE", "../research") + "/captures/v0.3/" + run;
-  auto mb = readAll(dir + "/meta.json");
-  if (mb.empty()) { fprintf(stderr, "no %s/meta.json\n", dir.c_str()); return 2; }
-  const std::string meta(mb.begin(), mb.end());
-  const int W = jsonInt(meta, "w"), H = jsonInt(meta, "h");
-  int frames = jsonInt(meta, "frames");
+  std::string why;
+  auto rec = openRecording(envOr("LIZ_BARCODE", "../research"), run, why);
+  if (!rec) { fprintf(stderr, "%s\n", why.c_str()); return 2; }
+  const std::string meta = rec->meta();
+  int frames = (int)rec->frames().size();
   if (want > 0) frames = std::min(frames, want);
-  // ai: each frame's size from meta's sizes where it has them (the web's format: a run may hold frames of several
-  // ai: sizes, a tracked crop's or a camera reopened at another resolution), else the run's w x h
   const nlohmann::json mj = nlohmann::json::parse(meta, nullptr, false);
   std::vector<std::vector<uint8_t>> px;
   std::vector<std::pair<int, int>> dims;
-  char name[32];
   for (int i = 0; i < frames; i++) {
-    snprintf(name, sizeof name, "/%04d.gray", i);
-    int w = W, h = H;
-    if (mj.is_object() && mj.contains("sizes") && mj["sizes"].is_array() && i < (int)mj["sizes"].size() && mj["sizes"][i].is_array())
-      { w = mj["sizes"][i][0].get<int>(); h = mj["sizes"][i][1].get<int>(); }
-    auto b = readAll(dir + name);
-    if (b.size() != (size_t)w * h) { if (!b.empty()) fprintf(stderr, "%s: %zu bytes for %d x %d: the frames stop there\n", name + 1, b.size(), w, h); break; }
+    std::vector<uint8_t> b;
+    if (!rec->frame((size_t)i, b, why)) { fprintf(stderr, "%s: the frames stop there\n", why.c_str()); break; }
     px.push_back(std::move(b));
-    dims.push_back({w, h});
+    dims.push_back({(int)rec->frames()[i].w, (int)rec->frames()[i].h});
   }
   frames = (int)px.size();
-  if (!frames) { fprintf(stderr, "no frames in %s\n", dir.c_str()); return 2; }
+  if (!frames) { fprintf(stderr, "no frames in %s\n", recordingPath(envOr("LIZ_BARCODE", "../research"), run).c_str()); return 2; }
   if (mode.empty()) mode = threads == 1 ? "seq" : "none";
   if (mode == "seq" && threads != 1) { fprintf(stderr, "seq carries the held word in frame order: one thread\n"); return 2; }
   const auto axes = replayAxes(mj, dims);
@@ -172,6 +151,6 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (cmd == "replay" && argc > 2) return replay(argv[2], argc > 3 ? atoi(argv[3]) : 0, argc > 4 ? std::max(1, atoi(argv[4])) : 1, argc > 5 ? argv[5] : "");
-  fprintf(stderr, "lizard_cpu_check info | replay <run> [frames] [threads] [seq|none]  (the run at $LIZ_BARCODE/captures/v0.3/<run>, ../research by default)\n");
+  fprintf(stderr, "lizard_cpu_check info | replay <run> [frames] [threads] [seq|none]  (the recording $LIZ_BARCODE/captures/v0.3/<run>.lizard, ../research by default)\n");
   return 2;
 }

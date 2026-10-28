@@ -60,9 +60,10 @@ struct CameraFrame {
   float lens[4] = {0, 0, 0, 0};
 };
 
-// ai: f with its raw frame developed to luma on the calling thread (a buffer of that thread's, good until its next
-// ai: call), or f itself where it has none
-CameraFrame developedOnCpu(const CameraFrame& f);
+// ai: f with its raw frame developed to luma on the calling thread into `luma` (the caller's, good until its next use),
+// ai: or f itself where it has none. No thread_local: MinGW's emulated TLS corrupts the heap where a thread with a
+// ai: destructor-holding one exits (the desktop's Windows build)
+CameraFrame developedOnCpu(const CameraFrame& f, std::vector<uint8_t>& luma);
 
 class Receiver {
  public:

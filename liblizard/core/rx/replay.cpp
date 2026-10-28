@@ -1,8 +1,9 @@
-// ai: Save replays (replay.h): a frame a file as it comes, the window of the newest `keep` held by deleting the oldest,
-// ai: the frames renamed into order and the run's meta written at its end.
+// ai: Save replays (replay.h): a frame a scratch file as it comes, the window of the newest `keep` held by deleting the
+// ai: oldest, the run's .lizard written at its end.
 #include "replay.h"
 
 #include "json.hpp"
+#include "lizfile.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -25,12 +26,15 @@ using json = nlohmann::json;
 // ai: camera stops launches once a lane is free (2026-10-08; before, at its bound of 1.5 batches of arrivals), then runs
 constexpr auto HELD_WAIT = std::chrono::seconds(4);
 
-// ai: A folder of its own: one that holds anything already is refused, never emptied (emptying it, a proposed fix for
-// ai: a reused folder, would have deleted whatever a replay was pointed at by mistake: a run, the captures; 2026-10-03).
-Replay::Replay(std::string dir_, std::string run_, int keep_) : dir(std::move(dir_)), run(std::move(run_)), keep(std::max(1, keep_)) {
+// ai: A file and a scratch folder of its own: a file there already is refused, as is a scratch folder that holds anything,
+// ai: never emptied (emptying it, a proposed fix for a reused folder, would have deleted whatever a replay was pointed at
+// ai: by mistake: a run, the captures; 2026-10-03).
+Replay::Replay(std::string file_, std::string run_, int keep_)
+    : file(std::move(file_)), dir(file + ".frames"), run(std::move(run_)), keep(std::max(1, keep_)) {
   std::error_code ec;
   const fs::path p = fs::u8path(dir);
-  if (fs::exists(p, ec) && !fs::is_empty(p, ec)) err = "the replay's folder " + dir + " holds files already";
+  if (fs::exists(fs::u8path(file), ec)) err = "the replay " + file + " exists already";
+  else if (fs::exists(p, ec) && !fs::is_empty(p, ec)) err = "the replay's scratch folder " + dir + " holds files already";
   else {
     fs::create_directories(p, ec);
     if (ec) err = "the replay's folder: " + ec.message();
@@ -125,8 +129,6 @@ int Replay::finish(const std::string& rxStats, const std::string& rows, const st
   if (ended) { if (err.empty()) err = "the run has ended"; return -1; }
   ended = true;
   if (broken) return -1;
-  // ai: A write that failed ended the frames there; the ones kept before it still make a run, its meta saying why.
-  const std::string stopped = err;
   using ojson = nlohmann::ordered_json;
   const json st = json::parse(rxStats.empty() ? "{}" : rxStats, nullptr, false);
   const json word = st.is_object() && st.contains("word") ? st["word"] : json();
@@ -140,41 +142,42 @@ int Replay::finish(const std::string& rxStats, const std::string& rows, const st
     config = {{"from", "band"}, {"spec", {{"phy", "focus"}, {"n", focus_n_for(8 * v)}, {"subch", 8 * v}, {"mode", 1}, {"span", 2 * FOCUS_RING[r]}, {"bitmap", 3}, {"stream", "shake256"}}}};
   }
   const ojson extra = ojson::parse(more.empty() ? "{}" : more, nullptr, false);
-  // ai: meta.json first: without it no tool reads the folder as a run, and it names the frames as they will be (0000
-  // ai: on, the kept ones in order). On a full disk the oldest frames make room for it, one at a time, up to 8 (9 MB
-  // ai: at the 1080 crop), since 2026-10-03 (a full disk failed the run at its end, and the app deleted every frame).
-  for (int tries = 0;; tries++) {
-    ojson sizes = ojson::array(), ms = ojson::array(), axes = ojson::array(), lenses = ojson::array();
-    for (auto& f : kept) {
-      sizes.push_back({f.w, f.h}); ms.push_back(f.ms); axes.push_back(std::isnan(f.ax) || std::isnan(f.ay) ? ojson() : ojson({f.ax, f.ay}));
-      lenses.push_back(f.lens[3] > 0 ? ojson({f.lens[0], f.lens[1], f.lens[2], f.lens[3]}) : ojson());
-    }
-    ojson meta = {{"run", run}, {"w", kept.empty() ? 0 : kept[0].w}, {"h", kept.empty() ? 0 : kept[0].h}, {"frames", kept.size()}, {"of", keep},
-                  {"sizes", sizes}, {"ms", ms}, {"axes", axes}, {"lens", lenses}, {"taken", taken}, {"config", config},
-                  {"decoder", st.is_object() ? st.value("decoder", "") : ""}, {"layout", st.is_object() ? st.value("layout", "") : ""}};
-    if (!stopped.empty()) meta["error"] = stopped;
-    if (extra.is_object()) for (auto& [k, val] : extra.items()) meta[k] = val;
-    const std::string m = meta.dump(1);
-    if (put(dir + "/meta.json", m.data(), m.size())) break;
-    if (tries >= 8 || kept.empty()) return -1;
-    std::error_code ec;
-    fs::remove(fs::u8path(path(kept.front().i)), ec);
-    held -= (int64_t)kept.front().w * kept.front().h;
-    kept.pop_front();
+  // ai: The file: the frames oldest first, each scratch frame removed once it is in, so the disk holds no more than
+  // ai: before as it is written (the file is smaller); a frame that does not go in (the disk full) ends the frames
+  // ai: there, the file still finished with the ones before it, its meta saying why.
+  std::string why;
+  auto w = lizfile::Writer::create(file, why);
+  std::error_code ec;
+  if (!w) { err = why; fs::remove_all(fs::u8path(dir), ec); return -1; }
+  std::string stopped = err, px;
+  size_t n = 0;
+  for (; n < kept.size(); n++) {
+    const Kept& f = kept[n];
+    std::ifstream in(fs::u8path(path(f.i)), std::ios::binary);
+    px.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    if (px.size() != (size_t)f.w * f.h) { stopped = "read " + fs::u8path(path(f.i)).filename().string() + ": cut short"; break; }
+    if (!w->frame((const uint8_t*)px.data(), f.w, f.h, f.w, why)) { stopped = why; break; }
+    fs::remove(fs::u8path(path(f.i)), ec);
   }
-  // ai: the frames kept are consecutive (taken - n to taken - 1), so renamed in that order to 0 to n - 1 no name is
-  // ai: taken twice: each new name is lower than its old one, and the file under it went before
-  for (size_t k = 0; k < kept.size(); k++) if (kept[k].i != k) {
-    std::error_code ec;
-    fs::rename(fs::u8path(path(kept[k].i)), fs::u8path(path(k)), ec);
-    if (ec) { err = "rename: " + ec.message(); return -1; }
-    kept[k].i = k;
+  kept.resize(n);
+  ojson sizes = ojson::array(), ms = ojson::array(), axes = ojson::array(), lenses = ojson::array();
+  for (auto& f : kept) {
+    sizes.push_back({f.w, f.h}); ms.push_back(f.ms); axes.push_back(std::isnan(f.ax) || std::isnan(f.ay) ? ojson() : ojson({f.ax, f.ay}));
+    lenses.push_back(f.lens[3] > 0 ? ojson({f.lens[0], f.lens[1], f.lens[2], f.lens[3]}) : ojson());
   }
-  // ai: stats.jsonl where there is room for it: the run reads without it, and its failure is said (error())
+  ojson meta = {{"run", run}, {"w", kept.empty() ? 0 : kept[0].w}, {"h", kept.empty() ? 0 : kept[0].h}, {"frames", kept.size()}, {"of", keep},
+                {"sizes", sizes}, {"ms", ms}, {"axes", axes}, {"lens", lenses}, {"taken", taken}, {"config", config},
+                {"decoder", st.is_object() ? st.value("decoder", "") : ""}, {"layout", st.is_object() ? st.value("layout", "") : ""}};
+  if (!stopped.empty()) meta["error"] = stopped;
+  if (extra.is_object()) for (auto& [k, val] : extra.items()) meta[k] = val;
   std::string s = rows;
   if (!s.empty() && s.back() != '\n') s += '\n';
+  const int64_t bytes = w->finish(meta.dump(1), s, why);
+  w.reset();
+  fs::remove_all(fs::u8path(dir), ec);
   err = stopped;
-  if (!put(dir + "/stats.jsonl", s.data(), s.size())) err = stopped.empty() ? err : stopped + "; " + err;
+  if (bytes < 0) { err = stopped.empty() ? why : stopped + "; " + why; return -1; }
+  held = bytes;
   return (int)kept.size();
 }
 

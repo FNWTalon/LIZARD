@@ -768,6 +768,8 @@ std::string RxSession::stats() {
   o["dropped"] = s.dropped;
   o["corrupt"] = s.corrupt;
   o["convertMs"] = s.convertMs;
+  o["asks"] = s.asks;
+  o["askOn"] = s.askOn;
   {
     std::lock_guard<std::mutex> l(p.endMu);
     o["ended"] = p.ended;

@@ -335,7 +335,7 @@ class TcpWire : public Wire {
 // ai: (OPEN) and found past what the accessory still held of an earlier session (a frame partway, a write the phone
 // ai: could not finish): a header of type 1 and a length up to 64 KiB whose payload parses as this stream's hello,
 // ai: read a byte at a time so nothing past it is taken from the frames after it
-bool readHello(Wire& w, bool usb, int ms, json& out, std::string& why) {
+bool readHello(Wire& w, bool usb, int ms, json& out, std::string& why, std::mutex* sendMu = nullptr) {
   const int64_t until = steadyNs() + int64_t(ms) * 1'000'000;
   std::atomic<bool> never{false};
   auto ours = [&](const uint8_t* p, size_t n) {
@@ -352,7 +352,11 @@ bool readHello(Wire& w, bool usb, int ms, json& out, std::string& why) {
     return true;
   }
   const uint32_t open[2] = {stream::OPEN, 0};
-  if (!w.send(open, sizeof open)) { why = "the phone's accessory took nothing"; return false; }
+  {
+    std::unique_lock<std::mutex> l;
+    if (sendMu) l = std::unique_lock<std::mutex>(*sendMu);   // ai: a link whose sender runs: one message at a time
+    if (!w.send(open, sizeof open)) { why = "the phone's accessory took nothing"; return false; }
+  }
   std::vector<uint8_t> b;
   size_t at = 0;   // ai: the next place a hello may start
   for (;;) {
@@ -373,6 +377,12 @@ bool readHello(Wire& w, bool usb, int ms, json& out, std::string& why) {
   }
 }
 
+// ai: A phone as the camera. One link a camera (2026-10-27): opened by the first start (on USB at the open, its hello
+// ai: naming the phone and its crop) and kept until close, so either end's Start and Stop follow the other's (stream.h
+// ai: CAMERA): start says the phone's camera on, stop says it off once the stop has lasted CAMERA_OFF_MS (the session's
+// ai: own stop and start, a reconfigure, says nothing), and the phone's own switches are counted in stats() (asks,
+// ai: askOn) for Receive to follow. While stopped the link's frames go nowhere; its stats a second go on, so the
+// ai: phone knows a receiver is there. Either end silent QUIET_MS is gone: here the stream ends (Receive stops).
 class PhoneCamera : public Camera {
  public:
   PhoneCamera(std::string ip, uint16_t port) : ip_(std::move(ip)), port_(port) {
@@ -384,23 +394,18 @@ class PhoneCamera : public Camera {
     info_.name = heard_.name.empty() ? "Phone" : heard_.name;
     info_.detail = (heard_.layout.empty() ? std::string() : heard_.layout + ", ") + ip_;
   }
-  // ai: a phone on USB (aoa.h): the accessory opened here and its hello read, which names it and its crop; the link
-  // ai: kept for the start
+  // ai: a phone on USB (aoa.h): the link made here, its hello naming the phone and its crop
   static std::unique_ptr<PhoneCamera> overUsb(const std::string& id, std::string& why) {
     std::unique_ptr<PhoneCamera> c(new PhoneCamera());
     c->usb_ = true;
     c->info_.id = id;
     c->info_.backend = "phone";
-    std::string name;
-    c->w_ = aoa::open(id, name, why);
-    json h;
-    if (!c->w_ || !readHello(*c->w_, true, 4000, h, why)) return nullptr;
-    c->takeHello(h);
-    if (c->info_.name.empty()) c->info_.name = name.empty() ? "Phone" : name;
+    if (!c->link(why)) return nullptr;
+    if (c->info_.name.empty()) c->info_.name = c->usbName_.empty() ? "Phone" : c->usbName_;
     c->info_.detail = c->layout_ + ", USB";
     return c;
   }
-  ~PhoneCamera() override { stop(); }
+  ~PhoneCamera() override { unlink(); }
   const Info& info() const override { return info_; }
   // ai: one mode, the frames' (the beacon's last word on them; 0 x 0 before the phone sent any)
   std::vector<Mode> modes() override {
@@ -418,79 +423,43 @@ class PhoneCamera : public Camera {
   bool set(const std::string&, double, bool, std::string& why) override { why = "the phone's camera is set on the phone"; return false; }
 
   bool start(const Mode&, Sink sink, Ended ended, std::string& why) override {
-    // ai: a USB link kept from the open (no reader on it yet) is taken as it is; stop lets every other go
-    std::unique_ptr<Wire> kept = reader_.joinable() ? nullptr : std::move(w_);
-    stop();
-    json h;
-    if (usb_) {
-      std::string name;
-      w_ = kept ? std::move(kept) : aoa::open(info_.id, name, why);
-      if (!w_ || !readHello(*w_, true, 4000, h, why)) { w_.reset(); return false; }
-    } else {
-      const Sock s = dial(ip_, port_, 3000, why);
-      if (s == NONE) return false;
-      w_ = std::make_unique<TcpWire>(s);
-      if (!readHello(*w_, false, 4000, h, why)) { w_.reset(); why += " at " + ip_; return false; }
-    }
-    takeHello(h);
-    stopping_ = false;
-    offset_ = 0;
-    offsetSet_ = false;
+    if (!link(why)) return false;
     {
       std::lock_guard<std::mutex> l(mu_);
+      const uint64_t asks = st_.asks;
+      const bool askOn = st_.askOn;
       st_ = Stats{};
       st_.fps = heard_.fps;
+      st_.asks = asks;
+      st_.askOn = askOn;
     }
-    reader_ = std::thread([this, sink = std::move(sink), ended = std::move(ended)] { read(sink, ended); });
+    {
+      std::lock_guard<std::mutex> l(sinkMu_);
+      sink_ = std::move(sink);
+      ended_ = std::move(ended);
+      started_ = true;
+    }
+    offAt_ = 0;
+    if (said_ != 1 && sayCamera(true)) said_ = 1;
     return true;
   }
 
-  // ai: what this end's receiver reads, back to the phone: its series (each row's ms moved from this clock to the
-  // ai: phone camera's by the stream's offset) every 10 ms, its stats a second
+  // ai: what this end's receiver reads, back to the phone (the link's sender, back()): kept for the link's life
   void readBack(Series series, StatsJson stats) override {
-    if (!w_ || back_.joinable()) return;
-    back_ = std::thread([this, series = std::move(series), stats = std::move(stats)] {
-      double since = -1;
-      int64_t lastStats = 0;
-      std::vector<double> out;
-      std::vector<uint8_t> m;
-      // ai: a message whole in one send: one transfer on USB
-      auto say = [&](uint32_t type, const void* p, size_t n) {
-        const uint32_t head[2] = {type, static_cast<uint32_t>(n)};
-        m.resize(sizeof head + n);
-        std::memcpy(m.data(), head, sizeof head);
-        if (n) std::memcpy(m.data() + sizeof head, p, n);
-        return w_->send(m.data(), m.size());
-      };
-      while (!stopping_) {
-        if (offsetSet_) {
-          const std::vector<double> v = series(since);
-          const size_t n = v.size() > 1 ? (v.size() - 1) / 8 : 0;
-          if (n) {
-            since = v[1 + 8 * (n - 1)];
-            out.assign(v.begin(), v.begin() + 1 + 8 * n);
-            const double off = offset_ / 1e6;
-            for (size_t i = 0; i < n; i++) out[1 + 8 * i] -= off;
-            if (!say(stream::SERIES, out.data(), out.size() * sizeof(double))) break;
-          }
-        }
-        const int64_t now = steadyNs();
-        if (now - lastStats >= 1'000'000'000) {
-          lastStats = now;
-          const std::string j = stats();
-          if (!say(stream::STATS, j.data(), j.size())) break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      }
-    });
+    std::lock_guard<std::mutex> l(cbMu_);
+    series_ = std::move(series);
+    stats_ = std::move(stats);
   }
 
   void stop() override {
-    stopping_ = true;
-    if (w_) w_->cut();
-    if (reader_.joinable()) reader_.join();
-    if (back_.joinable()) back_.join();
-    w_.reset();
+    {
+      std::lock_guard<std::mutex> l(sinkMu_);
+      if (!started_) return;
+      started_ = false;
+      sink_ = nullptr;
+      ended_ = nullptr;
+    }
+    offAt_ = steadyNs() + int64_t(stream::CAMERA_OFF_MS) * 1'000'000;
   }
 
   Stats stats() override {
@@ -507,24 +476,135 @@ class PhoneCamera : public Camera {
     if (h.contains("name") && h["name"].is_string() && !h["name"].get<std::string>().empty()) info_.name = h["name"].get<std::string>();
   }
 
-  void read(const Sink& sink, const Ended& ended) {
+  // ai: The link up, or why not: TCP dialled, or the accessory opened (switched into accessory mode where it is not one
+  // ai: yet); its hello read; the reader and the link's sender started. A link that went is made again.
+  bool link(std::string& why) {
+    if (w_ && !gone_) return true;
+    unlink();
+    json h;
+    if (usb_) {
+      std::string name;
+      w_ = aoa::open(info_.id, name, why);
+      if (!w_ || !readHello(*w_, true, 4000, h, why)) { w_.reset(); return false; }
+      usbName_ = name;
+    } else {
+      const Sock s = dial(ip_, port_, 3000, why);
+      if (s == NONE) return false;
+      w_ = std::make_unique<TcpWire>(s);
+      if (!readHello(*w_, false, 4000, h, why)) { w_.reset(); why += " at " + ip_; return false; }
+    }
+    takeHello(h);
+    closing_ = false;
+    gone_ = false;
+    offset_ = 0;
+    offsetSet_ = false;
+    phoneOn_ = -1;
+    said_ = -1;
+    offAt_ = 0;
+    reader_ = std::thread([this] { read(); });
+    back_ = std::thread([this] { back(); });
+    return true;
+  }
+
+  // ai: the link let go; a stop not yet said (a close straight after it: another camera, Receive left) said first
+  void unlink() {
+    if (w_ && !gone_ && offAt_ && said_ != 0) sayCamera(false);
+    closing_ = true;
+    if (w_) w_->cut();
+    if (reader_.joinable()) reader_.join();
+    if (back_.joinable()) back_.join();
+    w_.reset();
+  }
+
+  // ai: a message whole in one send (one transfer on USB); every sender's sends one at a time
+  bool say(uint32_t type, const void* p, size_t n) {
+    std::lock_guard<std::mutex> l(sendMu_);
+    const uint32_t head[2] = {type, static_cast<uint32_t>(n)};
+    msg_.resize(sizeof head + n);
+    std::memcpy(msg_.data(), head, sizeof head);
+    if (n) std::memcpy(msg_.data() + sizeof head, p, n);
+    return w_ && w_->send(msg_.data(), msg_.size());
+  }
+  bool sayCamera(bool on) {
+    const uint32_t v = on ? 1 : 0;
+    return say(stream::CAMERA, &v, sizeof v);
+  }
+
+  // ai: the phone's camera as it says: a change after the first word is the phone's own Start or Stop
+  void phone(bool on) {
+    const int was = phoneOn_.exchange(on ? 1 : 0);
+    if (was == -1 || was == (on ? 1 : 0)) return;
+    std::lock_guard<std::mutex> l(mu_);
+    st_.asks++;
+    st_.askOn = on;
+  }
+
+  // ai: The link's sender: the receiver's series (each row's ms moved from this clock to the phone camera's by the
+  // ai: stream's offset) every 10 ms, its stats a second ({} before a start hands them over), and a stop's off once due
+  void back() {
+    double since = -1;
+    int64_t lastStats = 0;
+    std::vector<double> out;
+    while (!closing_ && !gone_) {
+      {
+        std::lock_guard<std::mutex> l(cbMu_);
+        if (series_ && offsetSet_) {
+          const std::vector<double> v = series_(since);
+          const size_t n = v.size() > 1 ? (v.size() - 1) / 8 : 0;
+          if (n) {
+            since = v[1 + 8 * (n - 1)];
+            out.assign(v.begin(), v.begin() + 1 + 8 * n);
+            const double off = offset_ / 1e6;
+            for (size_t i = 0; i < n; i++) out[1 + 8 * i] -= off;
+            if (!say(stream::SERIES, out.data(), out.size() * sizeof(double))) break;
+          }
+        }
+        const int64_t now = steadyNs();
+        if (now - lastStats >= 1'000'000'000) {
+          lastStats = now;
+          const std::string j = stats_ ? stats_() : std::string("{}");
+          if (!say(stream::STATS, j.data(), j.size())) break;
+        }
+      }
+      const int64_t due = offAt_;
+      if (due && steadyNs() >= due && !started_) {
+        offAt_ = 0;
+        if (said_ != 0 && sayCamera(false)) said_ = 0;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+
+  void read() {
     std::vector<uint8_t> b;
     uint64_t lastSeq = 0, winSeq = 0;
     int64_t winAt = 0;
-    std::string why;
-    while (!stopping_) {
+    std::string why = "the phone went";
+    while (!closing_) {
       uint32_t head[2];
-      if (!w_->recv(head, sizeof head, stopping_)) { why = "the phone went"; break; }
-      if (head[0] < stream::HELLO || head[0] > stream::OPEN || head[1] > stream::MAX_PAYLOAD) {
+      // ai: the phone says something every HEARTBEAT_MS (stream.h): QUIET_MS of nothing, it has gone (its app closed with
+      // ai: the cable in, which the accessory never says)
+      const int64_t until = steadyNs() + int64_t(stream::QUIET_MS) * 1'000'000;
+      if (!w_->recv(head, sizeof head, closing_, until)) {
+        if (steadyNs() >= until) why = "the phone went quiet";
+        break;
+      }
+      if (head[0] < stream::HELLO || head[0] > stream::CAMERA || head[1] > stream::MAX_PAYLOAD) {
         if (!usb_) { why = "the phone's stream broke"; break; }
         // ai: the accessory's bytes broke (a write the phone could not finish): read on from a hello asked for
         json h;
-        if (!readHello(*w_, true, 4000, h, why)) break;
-        takeHello(h);
+        if (!readHello(*w_, true, 4000, h, why, &sendMu_)) break;
         continue;
       }
       b.resize(head[1]);
-      if (head[1] && !w_->recv(b.data(), head[1], stopping_)) { why = "the phone went"; break; }
+      if (head[1] && !w_->recv(b.data(), head[1], closing_)) break;
+      if (head[0] == stream::CAMERA && head[1] >= 4) {
+        uint32_t v;
+        std::memcpy(&v, b.data(), 4);
+        phone(v != 0);
+        continue;
+      }
+      // ai: a hello mid-link (the phone's session begun again) changes nothing here
       if (head[0] != stream::FRAME || head[1] < stream::FRAME_HEAD) continue;
       uint64_t seq;
       int64_t ns;
@@ -533,12 +613,14 @@ class PhoneCamera : public Camera {
       std::memcpy(&ns, b.data() + 8, 8);
       std::memcpy(&w, b.data() + 16, 4);
       std::memcpy(&h, b.data() + 20, 4);
+      std::lock_guard<std::mutex> k(sinkMu_);
+      if (!started_ || !sink_) continue;
       if (static_cast<uint64_t>(w) * h != head[1] - stream::FRAME_HEAD) {
         std::lock_guard<std::mutex> l(mu_);
         st_.corrupt++;
         continue;
       }
-      // ai: the phone camera's clock onto this one's by one offset for the stream, so readBack can take it off again
+      // ai: the phone camera's clock onto this one's by one offset for the link, so back() can take it off again
       if (!offsetSet_) { offset_ = steadyNs() - ns; offsetSet_ = true; }
       {
         std::lock_guard<std::mutex> l(mu_);
@@ -558,9 +640,20 @@ class PhoneCamera : public Camera {
       f.stride = w;
       f.ns = ns + offset_;
       f.seq = seq;
-      sink(f);
+      sink_(f);
     }
-    if (!stopping_ && ended) ended(why);
+    gone_ = true;
+    Ended e;
+    {
+      std::lock_guard<std::mutex> l(sinkMu_);
+      if (started_) {
+        e = std::move(ended_);
+        started_ = false;
+        sink_ = nullptr;
+        ended_ = nullptr;
+      }
+    }
+    if (!closing_ && e) e(why);
   }
 
   const std::string ip_;
@@ -569,13 +662,23 @@ class PhoneCamera : public Camera {
   Info info_;
   Heard heard_;
   std::string layout_ = "1:1";
+  std::string usbName_;
   std::unique_ptr<Wire> w_;
-  std::atomic<bool> stopping_{false};
-  std::atomic<int64_t> offset_{0};
+  std::atomic<bool> closing_{false}, gone_{false}, started_{false};
+  std::atomic<int64_t> offset_{0}, offAt_{0};   // ai: offAt_: when a stop says the phone's camera off (0 none due)
   std::atomic<bool> offsetSet_{false};
+  std::atomic<int> phoneOn_{-1}, said_{-1};     // ai: the phone's camera as it last said, and as this end last said
   std::thread reader_, back_;
   std::mutex mu_;
   Stats st_;
+  std::mutex sinkMu_;   // ai: the sink and ended, which a frame is handed to under it
+  Sink sink_;
+  Ended ended_;
+  std::mutex cbMu_;
+  Series series_;
+  StatsJson stats_;
+  std::mutex sendMu_;
+  std::vector<uint8_t> msg_;
 };
 
 }  // namespace
@@ -611,6 +714,12 @@ std::vector<Info> phoneList(std::vector<std::string>* notes) {
     v.push_back(std::move(i));
   }
   return v;
+}
+
+std::string phoneStamp() {
+  std::string s;
+  for (const auto& h : Beacons::get().heard(nullptr)) s += h.ip + ":" + std::to_string(h.port) + ";";
+  return s + aoa::stamp();
 }
 
 std::unique_ptr<Camera> phoneOpen(const std::string& id, std::string& why) {

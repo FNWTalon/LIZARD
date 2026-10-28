@@ -140,9 +140,9 @@ private fun ReceiveSettings(r: ReceiveState) {
         // ai: a phone by its address (ReceiveState.askAddress): asked for, or the camera already one
         if (r.askAddress || r.typedPhone != null)
             Field("Phone address") { TextInput(r.typedPhone?.removePrefix("phone:")?.removeSuffix(":${ReceiveState.PHONE_PORT}").orEmpty(), "IP address") { r.choosePhoneAddress(it) } }
-        // ai: the sizes and rates the camera offers, once one has been opened (none to offer before). None for a phone:
-        // ai: its frames are its own camera's crop, set on the phone (camera/phone.cpp), not a UVC device's modes
-        if (ci != null && m != null && !r.phone) {
+        // ai: the sizes and rates the camera offers, once one has been opened (none to offer before). None for a phone
+        // ai: or an upload: their frames are a camera's crop already (camera/phone.cpp, upload.cpp), not a UVC device's modes
+        if (ci != null && m != null && !r.fixed) {
             val sizes = ci.modes.distinctBy { it.size }.sortedBy { it.w.toLong() * it.h }
             Select("Resolution", m.size, sizes.map { it.size to "${it.w} x ${it.h}" }) { r.chooseRes(it) }
             // ai: the pixel formats at this size, where there is a choice (a webcam's uncompressed one against its Motion-JPEG)
@@ -153,9 +153,9 @@ private fun ReceiveSettings(r: ReceiveState) {
                 rates.firstOrNull { ReceiveState.fpsText(it) == v }?.let { r.chooseFps(it) }
             }
         }
-        // ai: a phone crops on its side (the receiver takes its crop): no Crop here
-        if (!r.phone) Select("Crop", r.layout, listOf("1:1" to "1:1", "2:1" to "2:1")) { r.chooseLayout(it) }
-        if (!r.phone) {
+        // ai: a phone crops on its side, an upload was cropped when recorded (the receiver takes their crop): no Crop here
+        if (!r.fixed) Select("Crop", r.layout, listOf("1:1" to "1:1", "2:1" to "2:1")) { r.chooseLayout(it) }
+        if (!r.fixed) {
             ci?.control("zoom")?.let { c -> ZoomField(r, c) }
             ci?.control("exposure")?.let { c -> ExposureField(r, c) }
             ci?.control("gain")?.let { c -> GainField(r, c) }
@@ -241,7 +241,8 @@ private fun GainField(r: ReceiveState, c: ReceiveState.Control) {
 private fun ReceiveTools(r: ReceiveState) {
     Fields {
         Select("Show statistics", r.showStats, listOf(false to "Off", true to "On")) { r.chooseStats(it) }
-        Select("Save replays", r.replays, listOf(false to "Off", true to "On")) { r.chooseReplays(it) }
+        // ai: none for an upload: it is a replay already
+        if (!r.upload) Select("Save replays", r.replays, listOf(false to "Off", true to "On")) { r.chooseReplays(it) }
         if (r.showStats) {
             for (run in r.runs) {
                 CodeBlock(when (run.state) {
@@ -251,7 +252,7 @@ private fun ReceiveTools(r: ReceiveState) {
                         if (run.why.isEmpty()) "" else " (${run.why})"
                     ReceiveState.RunState.Failed -> "${run.run}: ${run.why}"
                 })
-                if (run.state == ReceiveState.RunState.Ready) Btn("Show in folder", modifier = Modifier.fillMaxWidth()) { Received.show(run.dir) }
+                if (run.state == ReceiveState.RunState.Ready) Btn("Show in folder", modifier = Modifier.fillMaxWidth()) { Received.show(run.file) }
             }
             r.lab.let { if (it.isNotEmpty()) CodeBlock(it, 13) }
             CodeBlock(r.readout)

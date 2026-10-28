@@ -940,6 +940,12 @@ const V4l2Sys* v4l2UseSys(const V4l2Sys* table) {
   return before ? before : &kernelSys();
 }
 
+std::string v4l2Stamp() {
+  std::string s;
+  for (const auto& n : kernelNodes()) s += n + ";";
+  return s;
+}
+
 std::vector<Info> v4l2List(std::vector<std::string>* notes) {
   const V4l2Sys& s = v4l2Sys();
   std::vector<Info> out;

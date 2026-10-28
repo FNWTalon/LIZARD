@@ -57,6 +57,15 @@ std::vector<Info> list(std::vector<std::string>* notes) {
   return all;
 }
 
+std::string listStamp() {
+  std::string s;
+#if defined(__linux__)
+  s += v4l2Stamp();
+#endif
+  s += phoneStamp();
+  return s;
+}
+
 // ai: the whole id goes to its backend (the id its list gave), the prefix included; a backend that gives no why for
 // ai: a refusal is named by the id
 std::unique_ptr<Camera> open(const std::string& id, std::string& why) {
@@ -74,6 +83,7 @@ std::unique_ptr<Camera> open(const std::string& id, std::string& why) {
   if (is("avf:")) return said(avfOpen(id, why));
 #endif
   if (is("phone:")) return said(phoneOpen(id, why));
+  if (is("upload:")) return said(uploadOpen(id, why));
   if (is("sim:")) return said(simOpen(id, why));
   why = "no camera " + id;
   return nullptr;
