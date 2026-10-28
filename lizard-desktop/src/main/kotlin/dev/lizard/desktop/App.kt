@@ -62,6 +62,8 @@ class App {
 
     // ai: the window put away (LizardWindow sets it): the receiver's close may wait seconds on a filing under way
     var hide: (() -> Unit)? = null
+    // ai: the window itself (LizardWindow sets it): the owner of Receive's dialogs (Chooser), which has no canvas
+    var frame: java.awt.Frame? = null
     // ai: the sender first (its presenter stopped while the window still shows its canvas), then the window hidden, then
     // ai: the receiver, whose close waits for its files' work (ReceiveState.close)
     fun close() { send.close(); runCatching { hide?.invoke() }; recv.close() }
@@ -76,7 +78,7 @@ fun ApplicationScope.LizardWindow(app: App, sendTest: SenderTest?, recvTest: Rec
     var before by remember { mutableStateOf(WindowPlacement.Floating) }
     Window(onCloseRequest = { app.close(); exitApplication() }, state = ws, title = "LIZARD", icon = rememberVectorPainter(Icons.mark)) {
         // ai: the frame white before Compose's first frame (2026-10-07): AWT's default grey showed until Skia drew
-        remember { window.background = java.awt.Color.WHITE; window.contentPane.background = java.awt.Color.WHITE }
+        remember { window.background = java.awt.Color.WHITE; window.contentPane.background = java.awt.Color.WHITE; app.frame = window }
         // ai: Keys wherever the focus is (the canvas takes none), as video players have them (2026-10-23; F11 and Escape
         // ai: before): Space or K play and pause (SendState.playPause), F or F11 full screen and back, Escape out of it,
         // ai: Ctrl+O (Command+O on macOS) add files where files are sent. A key held down acts once; the keys taken are taken whole (press,

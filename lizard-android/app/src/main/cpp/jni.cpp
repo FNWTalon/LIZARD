@@ -229,6 +229,20 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_streamAcce
   return lizard::streamAccessory(fd, [](const std::string& s) { LOGI("%s", s.c_str()); }) ? JNI_TRUE : JNI_FALSE;
 }
 
+// ai: the PC link (stream.h linkUp): up while a USB cable is in, its hello naming layout; its state for the app's poll
+extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_linkUp(JNIEnv* e, jclass, jstring layout) {
+  const char* l = e->GetStringUTFChars(layout, nullptr);
+  const std::string lay = l ? l : "1:1";
+  if (l) e->ReleaseStringUTFChars(layout, l);
+  lizard::linkUp(lay, [](const std::string& s) { LOGI("%s", s.c_str()); });
+}
+
+extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_linkDown(JNIEnv*, jclass) { lizard::linkDown(); }
+
+extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_linkState(JNIEnv* e, jclass) {
+  return e->NewStringUTF(lizard::linkState().c_str());
+}
+
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_accessoryOpen(JNIEnv*, jclass) {
   return lizard::accessoryOpen() ? JNI_TRUE : JNI_FALSE;
 }
@@ -284,8 +298,8 @@ namespace {
 std::shared_ptr<lizard::Replay>& replayOf(jlong r) { return *reinterpret_cast<std::shared_ptr<lizard::Replay>*>(r); }
 }
 
-extern "C" JNIEXPORT jlong JNICALL Java_dev_lizard_receiver_Native_replayNew(JNIEnv* e, jclass, jstring dir, jstring run, jint frames) {
-  return reinterpret_cast<jlong>(new std::shared_ptr<lizard::Replay>(std::make_shared<lizard::Replay>(str(e, dir), str(e, run), frames)));
+extern "C" JNIEXPORT jlong JNICALL Java_dev_lizard_receiver_Native_replayNew(JNIEnv* e, jclass, jstring file, jstring run, jint frames) {
+  return reinterpret_cast<jlong>(new std::shared_ptr<lizard::Replay>(std::make_shared<lizard::Replay>(str(e, file), str(e, run), frames)));
 }
 
 extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_record(JNIEnv*, jclass, jlong h, jlong replay) {
@@ -293,8 +307,8 @@ extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_record(JNIEnv*
 }
 
 // ai: The run's end (Replay::finish, which waits for the frames the GPU decoder still holds for it), the handle let
-// ai: go: {"frames", "bytes", "error"} as JSON, error the write that ended the frames early ("" none); an
-// ai: IllegalStateException where the folder, a rename or the meta failed.
+// ai: go: {"frames", "bytes", "error"} as JSON (bytes the .lizard's), error the write that ended the frames early ("" none);
+// ai: an IllegalStateException where the file could not be made.
 extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_replayEnd(JNIEnv* e, jclass, jlong replay, jstring rxStats,
     jstring rows, jstring more) {
   if (!replay) { throwJava(e, "java/lang/IllegalStateException", "no replay"); return nullptr; }

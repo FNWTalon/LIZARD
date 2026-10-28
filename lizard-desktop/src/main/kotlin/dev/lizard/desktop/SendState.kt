@@ -18,9 +18,7 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import java.awt.BasicStroke
 import java.awt.Canvas
-import java.awt.FileDialog
 import java.awt.Font
-import java.awt.Frame
 import java.awt.Graphics2D
 import java.awt.RenderingHints
 import java.awt.datatransfer.DataFlavor
@@ -29,7 +27,6 @@ import java.awt.dnd.DropTarget
 import java.awt.dnd.DropTargetAdapter
 import java.awt.dnd.DropTargetDropEvent
 import java.awt.geom.Path2D
-import javax.swing.JFileChooser
 import javax.swing.SwingUtilities
 import java.awt.Cursor
 import java.awt.EventQueue
@@ -448,63 +445,9 @@ class SendState {
     val sentBlocks: Int get() = sender?.num("blocks")?.toInt()?.takeIf { it > 0 } ?: fmt?.let { Native.blocksFor(it.subch) } ?: 0
     val tiers: String get() = sender?.str("tiers").orEmpty()
 
-    // ai: The chooser (2026-10-23; Swing's folder chooser before, which looks like no desktop's): the
-    // ai: desktop's own dialog through the XDG desktop portal (Native.portalPick: GTK's on Cinnamon and GNOME, KDE's on
-    // ai: Plasma, attached to this window, several files or several folders at once), on a thread of its own while it is
-    // ai: open; where no portal answers, zenity's (GTK's too); else, as before, AWT's FileDialog for files (GTK's) and
-    // ai: Swing's JFileChooser for folders, which AWT's cannot pick. One open at a time.
-    private var choosing = false
-    fun chooseFile() = choose(false)
-    fun chooseFolder() = choose(true)
-    private fun choose(folders: Boolean) {
-        if (choosing) return
-        choosing = true
-        val parent = runCatching { Native.windowOf(canvas) }.getOrDefault(0L)
-        val title = if (folders) "Choose folders" else "Choose files"
-        thread(name = "lizard-chooser", isDaemon = true) {
-            val got = portal(parent, title, folders) ?: zenity(title, folders)
-            EventQueue.invokeLater {
-                choosing = false
-                if (got == null) fallback(folders) else if (got.isNotEmpty()) pick(got)
-            }
-        }
-    }
-    // ai: the portal's choice as files (its file:// URIs; Windows' dialog gives paths), none when cancelled, null where it
-    // ai: could not be asked
-    private fun portal(parent: Long, title: String, folders: Boolean): List<File>? {
-        if (Native.mac) return null
-        val uris = runCatching { Native.portalPick(parent, title, folders, true) }.getOrNull()
-        if (uris == null) { System.err.println("chooser: no portal: ${runCatching { Native.txError() }.getOrDefault("")}"); return null }
-        return uris.mapNotNull { u -> runCatching { if (u.startsWith("file:")) File(java.net.URI(u)) else File(u) }.getOrNull() }
-    }
-    // ai: zenity's, a path a line; none when cancelled (exit 1), null where it is not there
-    private fun zenity(title: String, folders: Boolean): List<File>? = if (Native.mac || Native.windows) null else runCatching {
-        val p = ProcessBuilder(listOf("zenity", "--file-selection", "--multiple", "--separator=\n", "--title=$title") + (if (folders) listOf("--directory") else emptyList()))
-            .redirectError(ProcessBuilder.Redirect.DISCARD).start()
-        val out = p.inputStream.bufferedReader().readText()
-        when (p.waitFor()) { 0 -> out.lines().filter { it.isNotEmpty() }.map(::File); 1 -> emptyList(); else -> null }
-    }.getOrNull()
-    // ai: the dialogs before the portal: AWT's FileDialog (GTK's on Linux, the system's open panel on macOS), one file or
-    // ai: several, over the sender's window (the canvas's frame); a folder through Swing's chooser, which AWT's dialog
-    // ai: cannot pick, but on macOS, where the panel takes folders when asked
-    private fun fallback(folders: Boolean) {
-        if (Native.mac) {
-            System.setProperty("apple.awt.fileDialogForDirectories", folders.toString())
-            val d = FileDialog(SwingUtilities.getWindowAncestor(canvas) as? Frame, if (folders) "Choose folders" else "Choose files", FileDialog.LOAD)
-            d.isMultipleMode = true
-            d.isVisible = true
-            System.setProperty("apple.awt.fileDialogForDirectories", "false")
-            if (d.files.isNotEmpty()) pick(d.files.toList())
-        } else if (!folders) {
-            val d = FileDialog(SwingUtilities.getWindowAncestor(canvas) as? Frame, "Choose files", FileDialog.LOAD)
-            d.isMultipleMode = true
-            d.isVisible = true
-            if (d.files.isNotEmpty()) pick(d.files.toList())
-        } else {
-            val c = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY; dialogTitle = "Choose a folder" }
-            if (c.showOpenDialog(SwingUtilities.getWindowAncestor(canvas)) == JFileChooser.APPROVE_OPTION) c.selectedFile?.let { pick(listOf(it)) }
-        }
-    }
+    // ai: The chooser (Chooser.kt): several files, or several folders, over the sender's window
+    fun chooseFile() = Chooser.choose(canvas, "Choose files", false, true) { pick(it) }
+    fun chooseFolder() = Chooser.choose(canvas, "Choose folders", true, true) { pick(it) }
 
     // ai: Files and folders added (picked, dropped, handed in), walked off the UI thread
     fun pick(files: List<File>) {

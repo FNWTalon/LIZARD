@@ -15,7 +15,8 @@ for every picture. Sections 1 to 6, 10 and 12 to 14 follow the evening's code, w
 (2026-10-01), the pilots (2026-09-30, signed 2026-10-01), zstd (2026-10-05), the rate profile (2026-10-07, four
 rates since 2026-10-08), the rings 32, 64, 128 and 256, the 256 in the 96's place (2026-10-10), and one block a frame
 out of the format (2026-10-25: LIZARD-16 to LIZARD-1024, versions 2 to 128) with the 32 ring archived the same day: the
-rings are 64, 128 and 256 (3.3). Measured figures cite the record they come from.
+rings are 64, 128 and 256 (3.3), and a replay as one file, the .lizard (section 15, 2026-10-28). Measured figures
+cite the record they come from.
 
 ## Contents
 
@@ -33,6 +34,7 @@ rings are 64, 128 and 256 (3.3). Measured figures cite the record they come from
 12. [Settled and rejected](#12-settled-and-rejected-non-normative) (non-normative)
 13. [Open questions](#13-open-questions)
 14. [Changes since the 2026-09-22 spec](#14-changes-since-the-2026-09-22-spec)
+15. [Replays: the .lizard file](#15-replays-the-lizard-file)
 
 ## 1. What LIZARD is
 
@@ -3168,6 +3170,10 @@ number so references to the others hold.
 
 The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
 
+- **Replays as one file** (2026-10-28). A run of captures is a .lizard (section 15): a ZIP of stored entries, each frame
+  JPEG-LS's median prediction residuals under zstd. It replaces the folder of raw frames (NNNN.gray, meta.json,
+  stats.jsonl) and its .tar.gz; nothing reads those any more. The symbol is untouched.
+
 - **Anchors** (2026-10-27). Every symbol carries 49 squares on a 7 x 7 grid over the picture, span / 64 modules a side,
   which every receiver erases before the detrend and a receiver may read for geometry (6.13). pxm takes a floor so a
   square is at least 6 pixels (3.3, 4.2): 3 in the 64 ring and 2 in the 128, which moves the 256 picture in those two
@@ -3308,3 +3314,78 @@ The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
   width, rotations, batching blocks across lanes), which concern a decoder; its bit-mapping question is answered by
   LINEAR. Also its measured facts that were not rechecked for this rewrite (LDPC on BI-AWGN, capacity per ring, decode
   cost per stage).
+
+## 15. Replays: the .lizard file
+
+A replay is a run of captures as a receiver's decoder was handed them: the crops it read, in order, with each one's
+capture time. It is what a receiver records (Save replays), what one device hands another to decode (a phone's
+recording played on a PC) and what the reference tools replay. Every program that writes or reads one follows this
+section; the reference is `liblizard/core/rx/lizfile.h` and `lizfile.cpp` (writer, reader, and `lizard_receive pack`
+and `unpack` over them), with a reader in `liblizard/sim/lizfile.mjs`.
+
+### 15.1 The archive
+
+- A ZIP archive (PKWARE's APPNOTE) of stored entries: compression method 0 for every entry, its compressed size equal
+  to its uncompressed size, no encryption, no data descriptor, no ZIP64. A file is therefore under 4 GiB and holds at
+  most 65,535 entries; a writer refuses past either.
+- The end of central directory record's comment is the 15 ASCII bytes `LIZARD replay 1`: the kind of archive and the
+  version of this section. A reader refuses an archive whose comment does not begin `LIZARD replay `, and one of a
+  version it does not read.
+- Its entries are exactly: `NNNN.zst` for each frame (its index from 0, in decimal, at least four digits with leading
+  zeros: `0000.zst`, `0001.zst`, ..., `10000.zst`), then `stats.jsonl` where the run has rows, then `meta.json`. A writer
+  puts them in that order, the frames as they are written and `meta.json` at the end; a reader finds each by the
+  central directory and depends on no order. A frame entry missing for an index under meta.json's `frames` makes the
+  file invalid.
+- Every entry carries ZIP's CRC-32 of its bytes, which a reader checks. The reference writes the date 1980-01-01 00:00
+  on every entry, so a run packs to the same bytes; a reader ignores dates and attributes.
+
+### 15.2 meta.json
+
+A JSON object in UTF-8. What a reader takes from it:
+
+| field | meaning |
+|---|---|
+| `frames` | N, the frames in the file: entries 0 to N - 1 |
+| `w`, `h` | a frame's size in samples where `sizes` gives none |
+| `sizes` | `[w, h]` a frame, in order |
+| `ms` | each frame's capture time, ms on one clock for the run (the camera's) |
+| `axes` | each frame's `[x, y]`, in samples, where the camera's optical axis fell in it, or null (its centre) |
+| `lens` | each frame's lens as the camera reported it, `[k1, k2, k3, f]` (f in the frame's samples), or null (none) |
+| `layout` | `"1:1"` (a frame a capture) or `"2:1"` (a capture's two halves, below) |
+| `config` | the format the light last named, `{"from": "band", "spec": {...}}` (`phy`, `n`, `subch`, `mode`, `span`, `bitmap`, `stream`), or null where no word was read |
+
+In a `"2:1"` run each capture's two halves are two consecutive frames of one size with the same `ms`, the left half
+first (the top half, where the halves lay along the camera's height); a half's axis is the middle of its inner edge,
+so `axes` tells the halves apart where a run lost one. The other fields are the recorder's own and inform: `run` (its
+name), `of` (the frames it kept at most), `taken` (the frames it saw), `decoder`, `error` (what ended its frames
+early), `camera`, `zoom`, `batch`, `thermal`, `app`. `stats.jsonl` is the receiver's statistics, a JSON object a line,
+a second apart, for reading the run's phase lock and rates; no frame depends on it.
+
+### 15.3 A frame
+
+Frame i is its capture's luma, w x h samples of 8 bits (`sizes[i]`, else `w` and `h`), in rows from the top. Its entry
+is one zstd frame (RFC 8878) whose content is the frame's w h residuals in the same order:
+
+    r(x, y) = (p(x, y) - pred(x, y)) mod 256
+
+with pred JPEG-LS's median edge detector (ITU-T T.87, LOCO-I) over the neighbours to the left, above and above-left,
+a = p(x - 1, y), b = p(x, y - 1), c = p(x - 1, y - 1), each 0 where it falls outside the frame (this edge rule, not
+JPEG-LS's own, which repeats the row above):
+
+    pred = min(a, b)      where c >= max(a, b)
+           max(a, b)      where c <= min(a, b)
+           a + b - c      otherwise
+
+A reader decompresses the entry, refuses it unless it holds exactly w h bytes, and restores p(x, y) = (r(x, y) +
+pred(x, y)) mod 256 in raster order. Every valid zstd frame decodes; the level is the writer's (the reference's 1).
+
+### 15.4 Measured (non-normative)
+
+On 20 halves of 960 x 960 from a 2:1 replay (the S26 Ultra, 2026-10-28) a frame packs to 74.4% of its raw bytes at zstd
+level 1 (74.4% at 3), against 88.4% under gzip -1 and 87.3% under zstd -19 without the prediction; lossless image
+codecs read 75.3% (PNG), 73.8% (JPEG 2000), 72.9% (WebP), 72.0% and 71.0% (JPEG XL at efforts 3 and 7). The frames are
+noise-like by design, and the prediction's residuals already sit at their order-0 entropy (74.8%): a predictor fitted
+to the frame and residuals coded in classes of local activity estimate 71.9%, and were not taken. On one core a frame
+packs in 1.4 ms on the S26's big core (3.1 ms on a Ryzen 9 9950X) and unpacks in 2.0 (3.8). The twelve recordings of
+`research/captures/v0.3/` are 3.54 GB as .lizard files where they were 4.96 GB as folders of raw frames, each read back
+byte for byte.

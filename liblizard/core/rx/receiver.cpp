@@ -31,9 +31,8 @@
 
 namespace lizard {
 
-CameraFrame developedOnCpu(const CameraFrame& f) {
+CameraFrame developedOnCpu(const CameraFrame& f, std::vector<uint8_t>& luma) {
   if (!f.raw) return f;
-  thread_local std::vector<uint8_t> luma;
   luma.resize((size_t)f.width * f.height);
   developLuma(*f.raw, 0, 0, f.width, f.height, luma.data(), f.width);
   CameraFrame g = f;
@@ -615,6 +614,8 @@ class CpuReceiver : public Receiver {
   // ai: the workers' frames go into it one at a time under its own lock (xfer_rx.h)
   std::shared_ptr<XferRx> xfer;
   std::unique_ptr<CpuPool> pool;
+  std::mutex devMu;              // ai: guards `developed`, a raw frame's luma while its push runs
+  std::vector<uint8_t> developed;
   std::mutex mu;           // ai: guards the stats window, the word and the error
   // ai: The series in capture order. The pool's workers finish out of it (a capture that holds a change runs its
   // ai: LDPC to the cap while the next one is done), and a reader that asks at every capture (the phase lock since
@@ -666,7 +667,9 @@ CpuReceiver::CpuReceiver(const ReceiverConfig& c, std::function<void(uint64_t)> 
 }
 
 void CpuReceiver::push(const CameraFrame& in) {
-  const CameraFrame f = developedOnCpu(in);
+  std::unique_lock<std::mutex> dl(devMu, std::defer_lock);
+  if (in.raw) dl.lock();   // ai: the develop's buffer, one push's at a time (the frame is copied out before the push ends)
+  const CameraFrame f = developedOnCpu(in, developed);
   const double t = now();
   int lost = 0;
   std::shared_ptr<Replay> r;

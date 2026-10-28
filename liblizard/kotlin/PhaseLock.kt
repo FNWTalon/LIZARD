@@ -1,5 +1,10 @@
 package dev.lizard.phase
 
+// ai: The camera's phase lock: D6 of the pilots-only, self-healing rework, the app's lock since 2026-10-28 (an
+// ai: Experimental setting the day before; the lock before it, with its scan, holds and blocks method, is in git
+// ai: history). Engine feeds it the receiver's frames at every capture, tells it what became of each delay request
+// ai: (delayFate) and gives it no readout skew and no code row.
+
 import kotlin.math.abs
 
 // ai: The camera's phase against the display (2026-09-30).
@@ -7,18 +12,14 @@ import kotlin.math.abs
 // ai: one depends on where they start in the display's refresh. A camera and a display each keep their own clock, so
 // ai: that place slides: the S26's frame is 16.650 ms, 1.1 ms a second against a 60.00 Hz display, every phase in
 // ai: 16 s. One frame made longer moves every frame after it (Engine.delay). That is the only lever: a delay of x
-// ai: moves the phase x later, and a delay of a whole frame less x moves it x earlier (a capture skipped).
+// ai: moves the phase x later, and a delay of a whole period less x moves it x earlier (a capture skipped).
 // ai:
-// ai: Track (2026-09-30; auto, the arm before it, deleted 2026-10-01 after losing the A/B): a search that folds
-// ai: its frames' timestamps by every period the display might have, a hold at the phase that reads the most
-// ai: blocks, and a pace that is measured, never a share of the way to an estimate (its comment is above `search`).
-// ai: The pilots (research/SPEC.md 7.3; since 2026-09-30, signed since 2026-10-01, after a night of a meter on |r|
-// ai: alone, which is the same whichever neighbour a
-// ai: capture leaks from: STATUS "The pilots' phase meter", "Signed pilots"). A sender that flashes paints its count
-// ai: of pictures mod 4 into the block tails, bit 0 on the even blocks and bit 1 on the odd, and a capture reads r
-// ai: (the even blocks) and r2 (the odd): their signs the count of the picture it mostly holds, and their sizes
-// ai: what it holds of the pictures either side, each neighbour lowering the reading whose bit it does not share.
-// ai: So where the frames flash (`flashing`) track needs no search and no sweep:
+// ai: Track holds by the pilots (research/SPEC.md 7.3; signed since 2026-10-01, STATUS "Signed pilots"). The sender
+// ai: paints its count of pictures mod 4 into the block tails, bit 0 on the even blocks and bit 1 on the odd, and a
+// ai: capture reads r (the even blocks) and r2 (the odd): their signs the count of the picture it mostly holds, and
+// ai: their sizes what it holds of the pictures either side, each neighbour lowering the reading whose bit it does not
+// ai: share. Every frame of the format carries both readings (2026-10-25: one block a frame, which had bit 0 alone,
+// ai: left the format), and a frame without them is no evidence. So the hold needs no search and no sweep:
 // ai:   the hold begins where the camera is (`here`), on the first frames;
 // ai:   the leaks (`leaks`): over the frames since the last move, each reading is K less twice K times the share
 // ai:     of each neighbour whose bit differs (which neighbours do is read off the neighbouring captures' counts,
@@ -26,108 +27,132 @@ import kotlin.math.abs
 // ai:     a of the picture before and b of the one after by least squares, each reading by its own error;
 // ai:   the move: a capture that starts too early holds some of the picture before, one too late some of the
 // ai:     next, so the line goes later by `gain` ms a unit of a - b wherever that is Z of its errors from 0; the
-// ai:     gain is measured by every move (the move over what it changed a - b by). No frame's blocks are read
-// ai:     for it, nothing is fitted against phase, and the camera is kept on the line, not dithered about it;
+// ai:     gain is measured by the moves (what the captures' places moved over what it changed a - b by);
 // ai:   deep in a mix (no capture mostly one picture, so no count): a quarter of a refresh later, and look again;
-// ai:   the pace as below: each move of the line a TI-th of the way, and the hold's own spacing from the first
-// ai:     balance on, to what the leaks leave of the line's place over the time held.
-// ai: Frames that do not flash (an older sender, `usePilots` off for the A/B), or that carry no side (a format of one
-// ai: block has bit 0 alone: r and no r2, so a capture says how much of the neighbours it holds and not which; the
-// ai: decoders report the odd reading as NaN there), are read by their blocks as below.
-// ai: Hold and Scan are the measuring tools that came first, on a grid of `gridNs` (a 60 Hz refresh on the camera's
-// ai: clock): a hold of each capture's start at one point of it, and a scan of every point a step apart, a line each,
-// ai: ending as a hold at the middle of the longest run of points that read as well as the best.
-// ai: Every call is on the engine's thread.
-// ai: Plain JVM (2026-10-25, from the Android app's tree): the Android app and the desktop app both compile this file,
-// ai: each build adding liblizard/kotlin to its sources. The desktop's lever is a camera's software trigger, fired on a
-// ai: schedule the host keeps (lizard-desktop/native/camera/trigger.h; the session's rxTrigger and rxDelay): a delay of
-// ai: x moves that schedule x later, as one long frame moves Camera2's. A capture's time is its trigger's deadline,
-// ai: exact about the schedule the delays move; the exposure starts when the trigger arrives, so the host's lateness in
-// ai: sending it stays in the capture's phase as a jitter only the pilots see (a time that carried the lateness made the
-// ai: lock answer it as the schedule's own place: a frame less it asked, a capture skipped). Only the simulated camera
-// ai: takes one so far; a UVC camera has none, and the lock is off for it.
-class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GRID_NS, private val bandNs: Long = BAND_NS) {
-    enum class Mode { Off, Hold, Scan, Track }
-    // ai: r, rSd: the pilots' reading over the even blocks and its standard error; r2, r2Sd: over the odd (NaN: none)
-    class Frame(val ts: Long, val blocks: Int, val found: Boolean, val r: Double = Double.NaN, val rSd: Double = Double.NaN, val r2: Double = Double.NaN, val r2Sd: Double = Double.NaN)
+// ai:   the pace: from pairs of readings (`learn`) and from a flat top's edge reached again.
+// ai: Nothing it learns is ever certain (2026-10-26). The pace and the gain are one estimate with its covariance
+// ai: (`observe`): every pair of readings and every edge reached again is one look at them, with the variance its
+// ai: readings, the gain's own error, the view's wander over its span (a hand's, re-aims and all: VIEW_MS2) and, over what
+// ai: of it was the AIM_NS after the session's first hold began (the code in view), a hand still aiming (AIM_MS2) give it; a look beyond Z of what is
+// ai: expected moves them only as far as Z (the view jumps where a hand aims; a jump is the view's, not the
+// ai: clocks'); both drift by their own process noise between looks (GAIN_Q: the window over the code moves with a
+// ai: hand; PACE_Q: the slide the hold sees is the clocks' and a hand's slow turn, which changes within seconds). The newest N_EVID looks (of the newest LONG_NS) re-check the pace:
+// ai: where their median (a vote each, at the gain as it is) is beyond Z of its error and the pace's own, the pace is
+// ai: that median with its error (a bad start, a view's jump taken for a slide, a kept pace another screen refutes),
+// ai: and the gain goes back to what it was before those looks (they told it at a pace that was wrong). So the pace a reopen keeps is a
+// ai: prior the new session's looks confirm or overturn, and what the log claims is the estimate's own error.
+// ai: A capture's place is the time its code is read: the camera reads its rows down the sensor over its readout
+// ai: skew (Camera2's SENSOR_ROLLING_SHUTTER_SKEW, its first row to one past its last) and stamps a capture with its
+// ai: first row's (SENSOR_TIMESTAMP), so the code's mean row (the receiver's quad, a frame of the series each, as a
+// ai: share of the sensor's rows) is read at the timestamp plus the skew times that share. A code that moves up or
+// ai: down the picture (a turn of the phone, an aim moved) moves where it is read and so the mix; held on its read
+// ai: time, the camera follows it by delays, and no balance moves and no slide is left for the pace to learn.
+// ai: Self-healing (2026-10-25): what the hold knows belongs to what it describes, and goes when that does.
+// ai:   The camera's (its frame, the delays' landings, the session's first and newest capture, the newest frame
+// ai:     counted): from its own timestamps whatever the mode; afresh for a new session (`reopened`), never at a set.
+// ai:   The clocks' (the display's refresh on the camera's clock and how well it is known): the state the line steps
+// ai:     by, apart from the camera's frame, which only says how many refreshes a capture spans; kept through a
+// ai:     reopen, afresh at a set of the mode; a frame that is no whole number of refreshes is another display's.
+// ai:   The view's (the gain and its fit, a flat top's width, the code's row) and the hold's place: afresh at a
+// ai:     reopen, and the place where the camera's frame changes; a flat top's width measured again once the hold has
+// ai:     stood clear of its edges for LONG_NS, and the gain bounded by a step that crossed the top.
+// ai: A delay lands where the timestamps show it (an interval longer than the camera's frame by over half of it).
+// ai: What became of the request the host says (`delayFate`: the camera took it, or it never will: refused, failed
+// ai: before its frame, its sequence aborted), so a delay the camera did not take is known, not waited for. One the
+// ai: camera took whose interval has not shown is given up once its mark is further behind than the camera's own
+// ai: newest landings were behind theirs, and one more capture (a frame's duration sets the interval to the frame
+// ai: after it). Of a delay nothing is heard of, the camera's clock past its ask by LOST frames (taken at the newest
+// ai: time the camera is known to have reached, so a backlog after a stall of the engine's thread gives up nothing on
+// ai: its way) gives it up: Camera2 promises one or the other for every request, so only a host that breaks that
+// ai: leaves one there.
+// ai: Every call is on the engine's thread. Plain JVM (liblizard/kotlin); its one host is the Android app's Engine
+// ai: (a Camera2 lens with per-frame control: Engine.lockBarOf).
+class PhaseLock(private val say: (String) -> Unit) {
+    enum class Mode { Off, Track }
+    // ai: r, rSd: the pilots' reading over the even blocks and its standard error; r2, r2Sd: over the odd; row: the
+    // ai: code's mean row as a share of the sensor's rows, in the order the camera reads them (NaN: not known)
+    class Frame(val ts: Long, val blocks: Int, val found: Boolean, val r: Double = Double.NaN, val rSd: Double = Double.NaN,
+                val r2: Double = Double.NaN, val r2Sd: Double = Double.NaN, val row: Double = Double.NaN)
     // ai: The lock's state for the stats row and a replay's meta (Engine.phaseState, MainActivity's poll; 2026-10-04): a
-    // ai: snapshot made on the engine's thread at each decision, read from any. `arm`: pilots or blocks; `what`: the
-    // ai: word line() uses (holds, placing, searching, resting, no frames yet); the newest estimate of the leaks (a
-    // ai: and b the shares of the pictures before and after in a capture, k what a capture of one picture reads, se
-    // ai: the error of a - b, n its frames; NaN with none); the gain (ms a unit of a - b) and the pace (us a second);
-    // ai: whether the hold stands; the edge of a flat top it stepped in from (1 early, -1 late, 0 none) and the top's
-    // ai: width (ms); the delays asked since the mode was set.
+    // ai: snapshot made on the engine's thread at each decision, read from any. `arm`: pilots; `what`: the word line()
+    // ai: uses (holds, no frames yet); the newest estimate of the leaks (a and b the shares of the pictures
+    // ai: before and after in a capture, k what a capture of one picture reads, se the error of a - b, n its frames;
+    // ai: NaN with none); the gain (ms a unit of a - b) and the pace (us a second); whether the hold stands; the edge
+    // ai: of a flat top it stepped in from (1 early, -1 late, 0 none) and the top's width (ms); the delays asked since
+    // ai: the mode was set; the display's refresh on the camera's clock (ms, NaN before a hold), the refreshes a
+    // ai: capture spans, the camera's frame (ms); the longest landing of a delay in the newest LONG_NS (ms from its
+    // ai: ask, NaN none); the code's row.
     class State(val arm: String, val what: String, val a: Double, val b: Double, val k: Double, val se: Double, val n: Int,
-                val gain: Double, val pace: Double, val stood: Boolean, val edge: Int, val flatMs: Double, val delays: Int)
+                val gain: Double, val pace: Double, val stood: Boolean, val edge: Int, val flatMs: Double, val delays: Int,
+                val refreshMs: Double, val multiple: Int, val frameMs: Double, val landMs: Double, val row: Double)
     @Volatile var state: State? = null
         private set
 
-    private class Tally { var frames = 0; var short = 0; var blocks = 0L }
-
     var mode = Mode.Off
         private set
-    private var waiting = false     // ai: a delay asked and not yet seen in a result
     private var delays = 0
     private var delaysAll = 0       // ai: delays asked since the mode was set (State)
-    private var now = 0L            // ai: the newest capture's timestamp
-    private var seen = 0L           // ai: the newest frame of the series already counted, ns
-    private var plain = 0L          // ai: the camera's own frame: the last interval between two frames not delayed
+
+    // ai: the camera's: the session's first capture and its newest (frames captured outside them are another
+    // ai: session's), the newest frame of the series counted, whether the newest capture was a delayed one, its
+    // ai: readout skew (ns, the sensor's first row to one past its last); the newest RECENT_NS of intervals between two frames
+    // ai: not delayed (end, length) and their median, the camera's frame
+    private var first = 0L
+    private var now = 0L
+    private var seen = 0L
     private var wasDelayed = false
-
-    // ai: hold and scan
-    private var base = -1L          // ai: the held point, ns on the grid; -1 none
-    private val tally = HashMap<Long, Tally>()
-    private var point = -1L         // ai: scanning: the point being counted; -1 not scanning
-    private var start = -1L         // ai: the scan's first point
-
-    // ai: track
-    private var pace = 0.0          // ai: delay owed a unit of time (ns a ns); negative: earlier
-    private var rests = 0           // ai: rests in a row: each twice as long as the one before, up to REST_MOST
-    private var settle = 0L         // ai: frames after this one were captured after the last hop
-    private var rest = 0L           // ai: no moves until then
-    private var ref = 0L            // ai: the camera's own frame as it was when track first searched: what the pace is a share of
-    private var out = 0             // ai: delays asked and not yet seen in a result, and the captures since the newest was asked
-    private var outAge = 0
-    private var searching = false
-    private var searchT = 0L        // ai: a search: its first capture (its moves stop SEARCH_NS after it)
-    private var ramp = 0.0          // ai: a search: ns of its moves not yet asked
-    private val sought = ArrayList<Frame>()   // ai: a search's registered frames, in capture order, their blocks as read
-    private var fails = 0           // ai: searches in a row that found nothing to hold
-    private var line = -1L          // ai: the hold: the start of a capture on the phase it holds, the one nearest the newest capture; -1: none
-    private var line0 = 0L          // ai: `line` when the hold began (0: not begun), and the refreshes from there to `line`
-    private var slots = 0L
-    private var move = false        // ai: the line was moved: the camera follows at once, not a tooth later
+    private var skew = 0L
+    private val plains = ArrayDeque<LongArray>()
+    private var frame = 0L
+    // ai: the delay out (ns; 0: none), whether its frame was marked delayed (or the camera said it took it) and the
+    // ai: captures since, whether the capture before ended an interval that long, the camera time it was asked at; and
+    // ai: the newest LONG_NS of landings (when, ns from the ask, captures from the mark)
+    private var owed = 0L
+    private var flagged = false
+    private var flagAt = 0
+    private var longPrev = false
+    private var askT = 0L
+    private val lands = ArrayDeque<LongArray>()
+    // ai: the clocks': the display's refresh on the camera's clock is base (1 + pace) (base: the camera's frame when
+    // ai: the refresh was last taken from it; 0: not yet), how well the pace is known (ns a ns; MAX: not at all), and
+    // ai: the whole number of refreshes in the camera's frame, which the line steps
+    private var base = 0L
+    private var pace = 0.0
+    private var paceVar = PACE_VAR0   // ai: (ns a ns)²; PACE_VAR0: not measured (as far off as two clocks may be)
+    private var paceAt = 0L           // ai: the camera time the estimate's process noise was last brought to
+    private var multiple = 1
+    private val sure get() = Math.sqrt(paceVar)
+    private val refresh get() = base * (1 + pace)
+    private val period get() = refresh * multiple
+    // ai: the hold
+    private var row = ROW           // ai: the code's row, the newest frame's that has one
+    private var settle = 0L         // ai: frames after this one were captured after the last move landed
+    private var line = -1L          // ai: the read time of a capture on the phase held, the one nearest the newest capture; -1: none
+    private var move = false        // ai: the line was moved: the camera follows at once
     private var moving = false      // ai: the delay that follows it is on its way
-    private var bias = 0L           // ai: the camera is held this far later than the line (a quarter tooth either way: the dither)
-    private var snap = false        // ai: the bias just changed: the camera follows at once
-    private var askedT = 0L         // ai: when a delay was last asked
-    private val window = ArrayDeque<Frame>()  // ai: the hold's registered frames, the newest LONG_NS, their blocks as read
-    private var since = 0L          // ai: frames captured after this are the hold's; MAX: the camera is not on the line yet
-    private var level = 0.0         // ai: blocks a frame where it reads (a search's, then the hold's newest frames)
-    private var wide = 0L           // ai: the width of the phases that read, by the last search
-    private var sure = Double.MAX_VALUE       // ai: how well the pace is known (ns a ns); MAX: not at all
-    private var anchor = 0.0        // ai: the pace as last measured: the hold's moves push the pace about it, no further than `sure`
-    private var proven = false      // ai: the pace is one a hold has measured, not only what a search told
-    private var lastAt = 0L         // ai: the search before: a capture start on the middle of its arc, and the arc's width; 0: none
-    private var lastWide = 0L
-    private var flashing = false    // ai: the newest frames flash (the pilots): track holds by their leaks
-    private var plainly = false     // ai: and they have been seen not to (an older sender): a search, and blocks
-    var usePilots = true            // ai: off: the frames are read by their blocks whatever they flash (debug.lizard.pilots 0, the A/B)
-    private val lately = ArrayDeque<Frame>()   // ai: the newest registered frames with a reading, for `flashing`
-    // ai: the pilots' hold: whether the line is theirs (begun by `here`); ms the line moves a unit of a - b. The
-    // ai: reading before (a - b, its error, its frames' mean time; 0: none that showed a neighbour), the move made
-    // ai: on it (ms) and the pace it was made at; and the sums of the fit of the gain and the display's pace to the
-    // ai: readings' history (`learn`).
-    private var byLeaks = false
+    private val window = ArrayDeque<Frame>()  // ai: the hold's frames, the newest LONG_NS
+    private var since = 0L          // ai: frames captured after this are the hold's
+    private var level = 0.0         // ai: blocks a frame (the log's)
+    // ai: each capture's timestamp against the line when it was taken (ts - line, ns) and its skew, the newest LONG_NS:
+    // ai: a frame's place is that and the skew times its own row
+    private val placed = java.util.TreeMap<Long, LongArray>()
+    // ai: the pilots' fit: ms the line moves a unit of a - b. The reading before (a - b, its error, its frames' mean
+    // ai: time and place against the line; 0: none that showed a neighbour), the move made on it (ms) and the pace it
+    // ai: was made at; and the sums of the fit of the gain and the display's pace to the readings' history (`learn`).
     private var gain = GAIN_MS
+    private var gainVar = GAIN_VAR0   // ai: (ms a unit)²
+    private var gpCov = 0.0           // ai: the gain's and the pace's covariance (ms a unit, ns a ns)
     private var prevE = 0.0
     private var prevSe = 0.0
     private var prevT = 0L
     private var prevHop = 0.0
     private var prevPace = 0.0
+    private var prevX = 0.0
     private var prevSide = 0        // ai: which neighbours it showed: 1 the one before, 2 the one after, 3 both
-    private val fitS = DoubleArray(5)
-    private var pairs = 0           // ai: the pairs of readings in that fit
+    // ai: the session's newest N_EVID looks at the gain and the pace (z ms, its gain's and pace's coefficients, its
+    // ai: variance ms²) and how many the session has had
+    private val evid = ArrayDeque<DoubleArray>()
+    private var aimFrom = 0L        // ai: the session's first hold began (the code in view): a hand may still aim for AIM_NS
     private var balanced = false    // ai: this hold has said it stands (a line for the log, once a hold)
     private var lastLeak: Leak? = null   // ai: the newest estimate of the leaks (State, line)
     // ai: a top that is flat (a capture there holds neither neighbour): the edge the hold last stepped in from
@@ -138,96 +163,130 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
     private var edgeT = 0L
     private var edgeClean = false   // ai: frames since that step have held neither neighbour (it landed inside the top)
     private var flatHalf = 0L
-    // ai: whether a hold by the pilots has asked no move (State.stood), until a mix too deep to read or a new hold
+    // ai: whether the hold has asked no move (State.stood), until a mix too deep to read or a new hold
     private var stood = false
-    private var looked = 0L         // ai: when the blocks' search or hold last looked at its frames
-    fun set(m: Mode, holdUs: Long = 0) {
-        if (m == mode && (m != Mode.Hold || holdUs * 1000 % gridNs == base)) return
+
+    // ai: Track starts its hold and the clocks afresh, Off stops it; what the camera's timestamps have measured
+    // ai: stands either way (the intervals are the camera's, not the mode's).
+    fun set(m: Mode) {
+        if (m == mode) return
         mode = m
-        tally.clear(); point = -1; start = -1
-        base = if (m == Mode.Hold) holdUs * 1000 % gridNs else -1
-        pace = 0.0; rests = 0; settle = now; rest = 0
-        ref = 0; out = 0; searching = false; sought.clear(); fails = 0; line = -1; line0 = 0; move = false; moving = false
-        window.clear(); since = 0; level = 0.0; wide = 0; sure = Double.MAX_VALUE; anchor = 0.0; proven = false; lastAt = 0
-        flashing = false; plainly = false; lately.clear()
-        byLeaks = false; gain = GAIN_MS; prevT = 0; fitS.fill(0.0); pairs = 0; edgeDir = 0; flatHalf = 0; stood = false; looked = 0
-        lastLeak = null; state = null; delaysAll = 0
-        say(when (m) {
-            Mode.Off -> "phase: off"
-            Mode.Hold -> "phase: held at %.3f ms of %.3f".format(base / 1e6, gridNs / 1e6)
-            Mode.Scan -> "phase: scan"
-            Mode.Track -> "phase: track"
-        })
+        base = 0; pace = 0.0; paceVar = PACE_VAR0; paceAt = 0; multiple = 1
+        hold(); delaysAll = 0
+        say(if (m == Mode.Track) "phase: track" else "phase: off")
     }
 
-    // ai: The camera was opened again (a setting changed, the app came back): its frames start anywhere in the
-    // ai: display's refresh, but the two clocks are the ones they were, so the pace stands and only the place is
-    // ai: looked for again.
+    // ai: The camera was opened again (a setting changed, the app came back, a logical camera switched its lens): a
+    // ai: new session, its frames starting anywhere in the display's refresh and maybe on a clock restarted below the
+    // ai: old one; the display's refresh is the display's and stands, and the view's and the hold's are learned afresh.
     fun reopened() {
-        waiting = false; now = 0; plain = 0; wasDelayed = false
-        settle = 0; rest = 0
-        out = 0; searching = false; sought.clear(); fails = 0; line = -1; line0 = 0; move = false; moving = false; window.clear(); since = 0; level = 0.0
-        flashing = false; plainly = false; lately.clear()
-        byLeaks = false; prevT = 0; edgeDir = 0; stood = false; looked = 0
-        lastLeak = null; state = null
-        if (mode == Mode.Scan) { tally.clear(); point = -1; start = -1; base = -1 }
+        first = 0; now = 0; seen = 0; wasDelayed = false; skew = 0; plains.clear(); frame = 0
+        owed = 0; flagged = false; longPrev = false; askT = 0; lands.clear()
+        hold()
     }
 
-    private fun wrap(d: Long): Long { var e = d % gridNs; if (e > gridNs / 2) e -= gridNs; if (e < -gridNs / 2) e += gridNs; return e }
-    private val tracking get() = mode == Mode.Track
-    // ai: track: the display's refresh on the camera's clock, as the pace has it; and the step it lets the camera
-    // ai: slide before a delay puts it back: a quarter of the phases that read, by the last search, at most TOOTH
-    private val period get() = ref * (1 + pace)
-    private val tooth get() = if (wide > 0) (wide / 4).coerceIn(bandNs, TOOTH_NS) else TOOTH_NS
+    private fun hold() {
+        row = ROW; settle = 0; line = -1; move = false; moving = false; window.clear(); since = 0; level = 0.0; placed.clear()
+        gain = GAIN_MS; gainVar = GAIN_VAR0; gpCov = 0.0; evid.clear(); aimFrom = 0
+        prevT = 0; balanced = false; lastLeak = null
+        edgeDir = 0; flatHalf = 0; stood = false; state = null
+    }
 
-    // ai: A capture's result: its timestamp, and whether it was a delayed frame. Returns the microseconds to delay
-    // ai: the next frame by, 0 for none.
-    fun onCapture(tsNs: Long, delayed: Boolean): Long {
+    // ai: A capture's result: its timestamp, whether it was a delayed frame, and the camera's readout skew over the
+    // ai: sensor's rows (0 where the host has none). Returns the microseconds to delay the next frame by, 0 for none.
+    fun onCapture(tsNs: Long, delayed: Boolean, skewNs: Long = 0L): Long {
         if (tsNs == 0L) return 0
-        // ai: a camera's first capture: the frames the receiver still holds from before it say where another was
-        if (now == 0L) { seen = maxOf(seen, tsNs - 1); settle = maxOf(settle, tsNs - 1) }
+        if (now == 0L) { first = tsNs; settle = tsNs - 1 }
         val dt = if (now != 0L) tsNs - now else 0L
-        if (dt > 0 && !delayed && !wasDelayed) plain = dt
+        val plain = dt > 0 && !delayed && !wasDelayed
+        // ai: the camera's frame is the median of the newest RECENT_NS of intervals, and it is that only once the
+        // ai: session has run that long (a session's first intervals are often irregular, and a median of one is the
+        // ai: one, a dropped frame among them): until then a session that kept the clocks takes their period for it and
+        // ai: nothing is taken from it; a cold start, with nothing kept, begins from what is in and is put right then
+        val known = tsNs - first >= RECENT_NS
+        if (plain) {
+            plains.addLast(longArrayOf(tsNs, dt))
+            while (plains.first()[0] < tsNs - RECENT_NS) plains.removeFirst()
+            val d = LongArray(plains.size) { plains[it][1] }; d.sort()
+            frame = if (!known && base != 0L) Math.round(period) else d[(d.size - 1) / 2]
+        }
         wasDelayed = delayed
         now = tsNs
-        // ai: the delay asked has landed
-        if (delayed) waiting = false
+        skew = maxOf(0L, skewNs)
+        landed(tsNs, dt, delayed)
+        if (plain && base != 0L && known) steps()
         if (mode == Mode.Off) return 0
-        if (tracking) return track(tsNs, dt, delayed)
-        var us = 0L
-        // ai: a scan starts where the camera is, so its first point costs no jump
-        if (base < 0 && point < 0) { point = tsNs % gridNs; start = point }
-        if (!waiting) {
-            // ai: early by more than the band: delayed by what it is early. Late (a camera slower than the grid,
-            // ai: which no delay can pull back): delayed the rest of a period, a capture skipped.
-            val err = wrap(tsNs % gridNs - (if (point >= 0) point else base))
-            us = if (err < -bandNs) -err / 1000 else if (err > 2 * bandNs) (gridNs - err) / 1000 else 0L
+        return track(tsNs, delayed)
+    }
+
+    // ai: The refreshes a capture spans: the whole number nearest the camera's frame over the refresh. A frame no
+    // ai: whole number of refreshes makes to within PACE_MOST (the most two clocks differ) is not this refresh's (one
+    // ai: taken from a camera at another rate, or another screen): the refresh taken from the camera's frame afresh.
+    // ai: Either way the hold begins again where the camera is: its frames so far were captured a refresh or more apart
+    // ai: from what the line steps now, so neither their places nor their neighbours (a capture's neighbours are the
+    // ai: pictures either side only where it spans one refresh) say anything of the new hold.
+    private fun steps() {
+        val m = Math.round(frame / refresh)
+        if (m >= 1 && abs(frame / (m * refresh) - 1) <= PACE_MOST) {
+            if (m.toInt() == multiple) return
+            say("phase: the camera's frame %.3f ms is %d refreshes of %.3f ms".format(frame / 1e6, m, refresh / 1e6))
+            multiple = m.toInt()
+        } else {
+            say("phase: the camera's frame %.3f ms is no whole number of refreshes of %.3f ms: the refresh taken from it".format(frame / 1e6, refresh / 1e6))
+            base = frame; pace = 0.0; paceVar = PACE_VAR0; gpCov = 0.0; multiple = 1
+            evid.clear()
         }
-        if (us > 0) { waiting = true; delays++; delaysAll++ }
-        return us
+        if (line >= 0) here()
+    }
+
+    // ai: The delay out, whatever the mode: landed at the first interval longer than the camera's frame by over half
+    // ai: the delay, from the capture before its marked frame on (a camera that applies the longer frame captures after
+    // ai: the mark lands it there; on the S26 at the mark): only frames after it are the move's. Given up (the header
+    // ai: says when), and the camera asked onto the line afresh (a pair of readings across it counts what the captures'
+    // ai: places show it did, nothing if it never landed).
+    private fun landed(ts: Long, dt: Long, delayed: Boolean) {
+        if (owed == 0L) return
+        val long = dt - frame > owed / 2
+        val was = longPrev
+        longPrev = long
+        if (delayed) { flagged = true; flagAt = 0 }
+        if (flagged && (long || (delayed && was))) {
+            owed = 0
+            lands.addLast(longArrayOf(ts, ts - askT, flagAt.toLong()))
+            while (lands.first()[0] < ts - LONG_NS) lands.removeFirst()
+            if (moving) { moving = false; settle = ts }
+        } else if (if (flagged) ++flagAt > (lands.maxOfOrNull { it[2] }?.toInt() ?: LOST) + 1 else ts - askT > LOST * frame) {
+            if (DEBUG) say("phase: DEBUG a delay of %.3f ms not landed %.0f ms after its ask (%s): given up".format(owed / 1e6, (ts - askT) / 1e6, if (flagged) "taken, %d captures on".format(flagAt) else "nothing heard"))
+            giveUp()
+        }
+    }
+    private fun giveUp() { owed = 0; if (moving) { moving = false; move = true } }
+
+    // ai: What became of the delay asked, as the host hears it (Engine's capture callback and delay()): taken, its frame
+    // ai: captured though its result failed (its interval then shows the delay as a marked frame's would); not taken
+    // ai: (delay() refused it, its request failed before its frame, its sequence was aborted): given up at once.
+    fun delayFate(taken: Boolean) {
+        if (owed == 0L) return
+        if (taken) { flagged = true; flagAt = 0 } else giveUp()
     }
 
     // ai: The receiver's newest frames (ns on the camera's clock, verified blocks, whether a symbol was registered) and
-    // ai: the blocks a frame the word names.
+    // ai: the blocks a frame the word names. The receiver's series hands out the current camera stream's frames alone
+    // ai: (receiver.cpp's Stamps, each row with the stream its frame came in), which a clock that restarts below the
+    // ai: old one needs; a frame captured before this session's first capture is another session's here too.
     fun onWindow(given: List<Frame>, version: Int) {
-        val frames = captures(given)
-        val newest = frames.maxOfOrNull { it.ts } ?: 0L
-        // ai: before a camera's first capture the receiver's frames are another session's: counted as seen, no more
-        if (now == 0L) { seen = maxOf(seen, newest); return }
-        if (tracking && version > 0) tracked(frames.filter { it.ts > seen && it.found }.sortedBy { it.ts }, version)
-        else if (mode == Mode.Scan && version > 0 && point >= 0) scan(frames, version)
+        if (now == 0L) return
+        val frames = captures(given.filter { it.ts >= first })
+        val newest = frames.maxOfOrNull { it.ts } ?: return
+        if (mode == Mode.Track && version > 0) tracked(frames.filter { it.ts > seen && it.found && !it.r.isNaN() && !it.r2.isNaN() }.sortedBy { it.ts })
         seen = maxOf(seen, newest)
     }
 
     // ai: One frame a capture. The 2:1 crop gives the receiver two frames a capture (its halves, the capture's
     // ai: timestamp both), and they are one look at one mix of pictures: as two frames, each half's neighbouring
-    // ai: capture in `leaks` was its own twin (a left half read its after-leak as none, a right half its before-leak)
-    // ai: and each capture's mix counted twice as evidence (every reading's error about 1 / sqrt 2 of its own, so the
-    // ai: hold's tests passed on noise and `learn` trusted its first pairs: on the S26 2026-10-03, in 2:1, the pace
-    // ai: went from 1,052 to its bound, 5,000 us a second, "to 40", within 4 s of a hold beginning, and every hold
-    // ai: after it walked off the picture and was pulled back each second; STATUS "The oscillation in 2:1"). Frames
-    // ai: of one timestamp are one: each pilot reading their mean by inverse variance, the blocks their mean (a
-    // ai: symbol's, as the word's version is), found where either was.
+    // ai: capture in `leaks` was its own twin and each capture's mix counted twice as evidence (STATUS "The oscillation
+    // ai: in 2:1"). Frames of one timestamp are one: each pilot reading their mean by inverse variance, the blocks
+    // ai: and the code's row their mean, found where either was.
     private fun captures(fs: List<Frame>): List<Frame> {
         if (fs.size < 2) return fs
         val out = ArrayList<Frame>(fs.size)
@@ -247,117 +306,47 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
             return if (w == 0.0) Pair(Double.NaN, Double.NaN) else Pair(s / w, 1 / Math.sqrt(w))
         }
         val (r, rSd) = mean({ it.r }, { it.rSd }); val (r2, r2Sd) = mean({ it.r2 }, { it.r2Sd })
-        return Frame(g[0].ts, Math.round(g.sumOf { it.blocks }.toDouble() / g.size).toInt(), g.any { it.found }, r, rSd, r2, r2Sd)
+        val rows = g.filter { !it.row.isNaN() }
+        return Frame(g[0].ts, Math.round(g.sumOf { it.blocks }.toDouble() / g.size).toInt(), g.any { it.found }, r, rSd, r2, r2Sd,
+            if (rows.isEmpty()) Double.NaN else rows.sumOf { it.row } / rows.size)
     }
 
-    // ai: Track. It holds the phase at which a capture reads the most blocks. Everything it knows of where a capture
-    // ai: sat comes from the capture's own timestamp, never from what was asked of the camera, so a delay that lands
-    // ai: late, short or not at all costs nothing but time.
-    // ai:   a search, at the start and whenever the hold stops reading: the camera's phase ramps later at
-    // ai:     SEARCH_RATE (a delay asked as the last lands; on the S26 a sixteenth of a frame every seven captures,
-    // ai:     9 ms a second, faster than any drift). Its frames are folded by every period the display might have
-    // ai:     (`Fold`): at the right one the frames that read fall in one arc of the refresh. One pass of the arc
-    // ai:     fits any period; when an edge of the arc has been passed twice the period is told, to how finely the
-    // ai:     frames sample that edge over the time between the two passes, and the search ends (3 to 4 s; a pace
-    // ai:     known from before needs one pass). Nothing has to fail first and no width is assumed.
-    // ai:   the hold: a line of capture starts, a period apart, on the arc's middle. A capture that has slid a
-    // ai:     `tooth` early of it (the two clocks) is delayed back onto it, so the frames sit across a tooth of
-    // ai:     phases, and a straight line through their blocks against phase and time (`fit`) has a slope where a
-    // ai:     better phase lies to one side: the line moves a tooth that way for a slope in the newest frames, half
-    // ai:     for one only in the longer span. The criterion is the blocks a frame, not the middle of the phases
-    // ai:     that are not short.
-    // ai:     Where the two clocks hardly slide, the camera is held a quarter tooth either side of the line in
-    // ai:     turn, as often as the pace's error could carry the hold half a tooth unseen (the dither).
-    // ai:   the pace: what a search told, then the hold's own spacing: the line began on the arc's middle and is
-    // ai:     still on the arc, so its mean period since is the display's to half the arc over the time held, and
-    // ai:     that is taken whenever it is the more precise; and two searches' arcs, a whole number of refreshes
-    // ai:     apart. Between those, every move of the line also moves the pace its way (a line that has to keep
-    // ai:     moving one way is a pace that is off), a TI-th of the move a second, and never further from the last
-    // ai:     measurement than its error. A pace only a search told, whose hold stops reading before any hold has
-    // ai:     measured it, is dropped, and the next search tells it afresh. Nothing takes a share of the way to an
-    // ai:     estimate, and a hand's shake (no slope, under FELL frames) moves nothing.
-    private fun search() {
-        if (plain == 0L) return
-        if (ref == 0L) ref = plain
-        searching = true; searchT = now; ramp = 0.0; sought.clear()
-        line = -1; line0 = 0; move = false; moving = false; window.clear(); since = Long.MAX_VALUE; level = 0.0
-    }
-
-    // ai: A capture (track): the delay to ask, us.
-    private fun track(ts: Long, dt: Long, delayed: Boolean): Long {
-        if (delayed && out > 0) { out--; if (out == 0 && moving) { moving = false; settle = ts } }
-        // ai: a delay the camera never reported is given up, or nothing would be asked again
-        if (out > 0 && ++outAge > LOST) { out = 0; moving = false }
-        if (ref == 0L || ts < rest) return 0
+    // ai: A capture (track): the delay to ask, us. Where a capture sat comes from its own timestamp and its code's
+    // ai: row, never from what was asked of the camera, so a delay that lands late, short or not at all costs nothing
+    // ai: but time.
+    private fun track(ts: Long, delayed: Boolean): Long {
+        if (base == 0L || line < 0) return 0
+        // ai: its code's read time, and the line's point nearest it
+        val rt = ts + Math.round(skew * row)
+        val k = Math.round((rt - line) / period)
+        if (k != 0L) line += Math.round(k * period)
+        placed[ts] = longArrayOf(ts - line, skew)
+        while (placed.firstKey() < ts - LONG_NS) placed.pollFirstEntry()
+        // ai: nothing is asked on a delayed frame's own timestamp, nor while a delay is out
+        if (owed > 0 || delayed) return 0
         var ns = 0L
-        if (searching) {
-            if (ts - searchT < SEARCH_NS) {
-                ramp += SEARCH_RATE * dt
-                // ai: a step at most (the engine's thread may have stalled and let more owe: the frames must still
-                // ai: sample every phase, so the rest waits)
-                if (out == 0 && ramp >= ref / 64) { ns = minOf(ramp.toLong(), (ref / SEARCH_STEPS).toLong()); ramp -= ns }
-            }
-        } else if (line >= 0) {
-            // ai: the line's point nearest this capture, and how early of it the capture starts
-            val k = Math.round((ts - line) / period)
-            if (k != 0L) { line += Math.round(k * period); slots += k }
-            // ai: nothing is asked on a delayed frame's own timestamp: on the S26 it is already the later one, but a
-            // ai: camera that stamps the delayed frame before its delay would be asked for the same delay twice
-            if (out == 0 && !delayed) {
-                val placing = since == Long.MAX_VALUE
-                if (placing && abs(line - ts) < tooth / 2) { since = ts; settle = ts; line0 = line; slots = 0; bias = 0; askedT = ts }
-                else {
-                    // ai: the two clocks slide the camera across a tooth of phases, which is what a slope is read
-                    // ai: from. Where they hardly slide, the camera is held a quarter tooth later than the line, then
-                    // ai: a quarter earlier, in turn (a capture skipped every other turn), as often as the pace's
-                    // ai: error could carry the hold half a tooth unseen: every second or two while the pace is
-                    // ai: only what a search told, hardly ever once a long hold has measured it
-                    val idle = if (sure == Double.MAX_VALUE) DITHER_NS else maxOf(DITHER_NS, (tooth / 2 / sure).toLong())
-                    if (byLeaks) bias = 0
-                    else if (!placing && !move && ts - askedT > idle) { bias = if (bias > 0) -tooth / 4 else tooth / 4; snap = true; askedT = ts }
-                    val early = line + (if (placing) 0 else bias) - ts
-                    val far = if (placing || move || snap) ref / 256 else tooth
-                    // ai: early: delayed onto the line (the pilots' hold: as soon as it is a band early, a delay
-                    // ai: costing nothing and its readings wanting no spread). Late (a camera slower than the
-                    // ai: display, a line moved earlier): a frame less what it is late, a capture skipped
-                    if (early >= (if (byLeaks) minOf(far, bandNs) else far)) ns = early else if (early <= -far) ns = ref + early
-                    if (move) { if (ns != 0L) moving = true else settle = ts; move = false }
-                    snap = false
-                }
-            }
-        }
+        // ai: early: delayed onto the line as soon as it is a band early (a move's, at once). Late (a camera slower
+        // ai: than the display, a line moved earlier, a code moved down the picture): a period less what it is late,
+        // ai: a capture skipped
+        val early = line - rt
+        val far = if (move) Math.round(refresh / 256) else TOOTH_NS
+        if (early >= minOf(far, BAND_NS)) ns = early else if (early <= -far) ns = Math.round(period) + early
+        if (move) { if (ns != 0L) moving = true else settle = ts; move = false }
         if (ns <= 0) return 0
-        out++; outAge = 0; delays++; delaysAll++; askedT = ts
+        owed = ns; flagged = false; flagAt = 0; longPrev = false; askT = maxOf(ts, seen); delays++; delaysAll++
         return maxOf(1, ns / 1000)
     }
 
-    // ai: Whether the newest frames flash: of the consecutive pairs a refresh apart (the series leaves some captures
-    // ai: out) that both read |r| >= R_FLASH (a sign that is not noise), at least FLASH_PAIRS, and a quarter of them
-    // ai: of opposite signs (a picture the sender shows for k refreshes flips one pair in k; a sender that does not
-    // ai: flash flips none).
-    // ai: Null while too few pairs are readable (deep in a mix nothing has a sign): what was known stands.
-    private fun flashNow(): Boolean? {
-        val t = if (ref > 0) ref else plain
-        if (t == 0L) return null
-        var pairs = 0; var flips = 0
-        var a: Frame? = null
-        for (b in lately) {
-            if (a != null && b.ts - a.ts < t * 3 / 2 && abs(a.r) >= R_FLASH && abs(b.r) >= R_FLASH) { pairs++; if ((a.r > 0) != (b.r > 0)) flips++ }
-            a = b
-        }
-        if (pairs < FLASH_PAIRS) return null
-        return flips >= maxOf(2, pairs / 4)
-    }
-    // ai: whether a frame reads (the blocks' hold): HELD of the level's blocks
-    private fun reads(f: Frame): Boolean = f.blocks >= level * HELD
-
-    // ai: The pilots' hold begun where the camera is: the line through the newest capture, the pace as it was known.
+    // ai: The hold begun where the camera is: the line through the newest capture's read time, so the camera is on it
+    // ai: and its frames from then on are the hold's; the clocks as they are (from the camera's frame, where the refresh
+    // ai: is not known yet).
     private fun here() {
-        if (plain == 0L) return
-        if (ref == 0L) ref = plain
-        searching = false; sought.clear()
-        byLeaks = true; prevT = 0; wide = 0; edgeDir = 0; flatHalf = 0; balanced = false; stood = false; lastLeak = null
-        line = now; line0 = 0; slots = 0; move = false; moving = false; window.clear(); since = Long.MAX_VALUE; level = 0.0
+        if (frame == 0L) return
+        if (base == 0L) { base = frame; pace = 0.0; paceVar = PACE_VAR0; gpCov = 0.0; multiple = 1 }
+        prevT = 0; edgeDir = 0; flatHalf = 0; balanced = false; stood = false; lastLeak = null; placed.clear()
+        if (aimFrom == 0L) aimFrom = now
+        line = now + Math.round(skew * row); move = false; moving = false; window.clear(); since = now; settle = now; level = 0.0
+        say("phase: the hold begins: the refresh %.4f ms on the camera's clock, %d a frame of %.4f ms, the code at row %.2f".format(refresh / 1e6, multiple, frame / 1e6, row))
     }
 
     // ai: three equations in three unknowns, m a 3 x 7 array (the matrix, the right side, the identity): solved in
@@ -374,20 +363,21 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
     }
 
     // ai: What the hold's frames after `from` hold of their neighbours. A frame's count is its two signs (bit 0 from
-    // ai: r, bit 1 from r2), and so are the captures' before and after it, a refresh either side (a frame whose
+    // ai: r, bit 1 from r2), and so are the captures' before and after it, a capture either side (a frame whose
     // ai: neighbour is not in the series, or any of the three with a reading under R_FLASH, whose sign may be
     // ai: noise, is left out). Each of its readings is then, in size, K - 2 K a [the bit differs from the count
     // ai: before] - 2 K b [it differs from the count after]: K what a capture of one picture reads, a and b the
     // ai: shares of the pictures before and after. Least squares over both readings of every frame, each by its
     // ai: own error, for K, K a and K b. Null: too few frames, or frames that do not tell the three apart (a
-    // ai: sender that does not flash: no bit ever differs).
-    private class Leak(val a: Double, val b: Double, val sa: Double, val sb: Double, val n: Int, val t: Long, val k: Double)   // ai: t: the frames' mean time; k: what a capture of one picture reads
+    // ai: sender whose count does not change: no bit ever differs).
+    // ai: t: the frames' mean time; k: what a capture of one picture reads; x: the frames' mean place against the line (ns)
+    private class Leak(val a: Double, val b: Double, val sa: Double, val sb: Double, val n: Int, val t: Long, val k: Double, val x: Double)
     private fun leaks(from: Long, to: Long = Long.MAX_VALUE): Leak? {
-        val fs = window.filter { !it.r.isNaN() && !it.r2.isNaN() }
+        val fs = window
         val t = period
         val m = Array(3) { DoubleArray(7) }
         for (k in 0 until 3) m[k][4 + k] = 1.0
-        var n = 0; var ts = 0.0
+        var n = 0; var ts = 0.0; var xs = 0.0; var xn = 0
         fun sure(f: Frame) = abs(f.r) >= R_FLASH && abs(f.r2) >= R_FLASH
         fun count(f: Frame) = (if (f.r < 0) 1 else 0) or (if (f.r2 < 0) 2 else 0)
         for (i in 1 until fs.size - 1) {
@@ -402,364 +392,112 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
                 for (u in 0 until 3) { for (v in 0 until 3) m[u][v] += w * x[u] * x[v]; m[u][3] += w * x[u] * y }
             }
             n++; ts += (f.ts - from).toDouble()
+            // ai: the frame's place as its capture had it, at the frame's own row (the series' times are the captures'
+            // ai: to the ns, give or take one)
+            placed.floorEntry(f.ts + frame / 2)?.takeIf { it.key > f.ts - frame / 2 }?.let { xs += it.value[0] + it.value[1] * (if (f.row.isNaN()) row else f.row); xn++ }
         }
         if (n < L_NEED || !solve3(m)) return null
         val k = m[0][3] / m[0][0]
         if (k < R_FLASH) return null
-        return Leak(m[1][3] / m[1][1] / k, m[2][3] / m[2][2] / k, Math.sqrt(maxOf(0.0, m[1][5] / m[1][1])) / k, Math.sqrt(maxOf(0.0, m[2][6] / m[2][2])) / k, n, from + Math.round(ts / n), k)
+        return Leak(m[1][3] / m[1][1] / k, m[2][3] / m[2][2] / k, Math.sqrt(maxOf(0.0, m[1][5] / m[1][1])) / k, Math.sqrt(maxOf(0.0, m[2][6] / m[2][2])) / k, n, from + Math.round(ts / n), k, if (xn > 0) xs / xn else 0.0)
     }
 
-    // ai: The receiver's new registered frames (track), in capture order, their blocks as read.
-    private fun tracked(got: List<Frame>, version: Int) {
-        if (now < rest) return
-        for (f in got) if (!f.r.isNaN()) lately.addLast(f)
-        while (lately.size > FLASH_FRAMES) lately.removeFirst()
-        val was = flashing
-        val seen = flashNow()
-        // ai: a side: a frame with both readings (a format of one block has r alone, and a hold needs which neighbour,
-        // ai: not how much). The newest FLASH_FRAMES decide, so a format changed under the lock moves it within a
-        // ai: second either way
-        val sided = lately.count { !it.r2.isNaN() }
-        flashing = usePilots && sided > 0 && (seen ?: flashing)
-        // ai: frames with no reading at all (a decoder that reads none), or none with a side, are plainly not a
-        // ai: flashing sender's for the hold: read by their blocks
-        plainly = !usePilots || (if (seen != null && sided > 0) !seen else plainly || (got.isNotEmpty() && sided == 0))
-        if (flashing != was) say(if (flashing) "phase: the frames flash: held by the pilots' leaks" else if (sided == 0 && lately.isNotEmpty()) "phase: the frames carry no side (one reading): read by their blocks" else "phase: the frames do not flash: read by their blocks")
-        // ai: a search or a hold under way is the other kind's: frames that flash take the hold where it is, and
-        // ai: frames seen not to flash give the pilots' hold up for a search
-        if (flashing && (searching || (line >= 0 && !byLeaks))) { if (searching) here() else { byLeaks = true; prevT = 0; edgeDir = 0; flatHalf = 0 } }
-        else if (plainly && byLeaks) { byLeaks = false; search() }
-        val fs = got
-        // ai: the pilots' hold at once, unless the frames are known not to flash: a sender flashes, and waiting to
-        // ai: see it costs the start a second
-        if (!searching && line < 0) { if (fs.isNotEmpty()) { if (plainly) search() else here() }; return }
-        // ai: The frames come as the receiver reads them (a batch, or one at a time), not twice a second as they
-        // ai: did to 2026-10-01. The pilots' hold reads them as they come. The blocks' search and hold look every
-        // ai: LOOK, as the feed they were built and judged on gave them: the fold costs the engine's thread
-        // ai: milliseconds, and a slope tried at every frame is tried thirty times as often at the same Z.
-        val look = now - looked >= LOOK_NS
-        if (searching) {
-            for (f in fs) if (f.ts >= searchT) sought.add(f)
-            if (look) { looked = now; searched(version) }
-            return
-        }
-        for (f in fs) if (f.ts > since) window.addLast(f)
+    // ai: The receiver's new frames (track), in capture order: the code's row from the newest that has one, the hold
+    // ai: begun on the first, then each batch read.
+    private fun tracked(got: List<Frame>) {
+        if (got.isEmpty()) return
+        got.lastOrNull { !it.row.isNaN() }?.let { row = it.row.coerceIn(0.0, 1.0) }
+        if (line < 0) { here(); return }
+        for (f in got) if (f.ts > since) window.addLast(f)
         while (window.isNotEmpty() && window.first().ts < window.last().ts - LONG_NS) window.removeFirst()
-        if (byLeaks) { if (fs.isNotEmpty()) decide() } else if (look) { looked = now; decide() }
-    }
-
-    // ai: What the search's frames say so far. It ends the search when they tell the period (or, the pace known
-    // ai: already, show a whole pass of the arc), and gives it up when its moves are over and they do not.
-    private fun searched(version: Int) {
-        val n = sought.size
-        val over = now - searchT >= SEARCH_NS + SEARCH_LATE
-        fun gaveUp(why: String, nothing: Boolean) {
-            searching = false
-            say("phase: a search $why")
-            // ai: nothing to hold twice in a row (a display the camera's frames do not line up with, pixels too slow
-            // ai: for any phase to read): no moves for REST, twice as long each time it happens again
-            if (nothing && ++fails >= 2) {
-                val long = minOf(REST_MOST, REST_NS shl minOf(rests, 8))
-                say("phase: two searches and nothing to hold: resting %d s".format(long / 1_000_000_000))
-                fails = 0; rests++; rest = now + long
-            }
-        }
-        if (n < NEED) { if (over) gaveUp("whose frames did not come", false); return }
-        val fold = Fold(LongArray(n) { sought[it].ts }, IntArray(n) { sought[it].blocks }, ref, version)
-        if (fold.reads == 0) { if (over) gaveUp("in which no phase read", true); return }
-        val told = fold.scan()
-        if (told.every) {
-            // ai: no phase is worse than another (a picture painted for several refreshes), once the moves have
-            // ai: covered a refresh and a quarter: the hold is where the camera is
-            if ((sought[n - 1].ts - searchT) * SEARCH_RATE < 1.25 * ref && !over) return
-            searching = false; fails = 0; rests = 0
-            level = fold.level; wide = ref; line = now; move = false
-            say("phase: a search: every phase reads, %.1f blocks a frame".format(level))
-            return
-        }
-        // ai: taken when it is the more precise, or when the pace lies outside its error (a search comes after a hold
-        // ai: that did not last: fresh frames that put the period elsewhere are believed over a pace that failed)
-        if (told.told && (told.err < sure || abs(told.pace - pace) > told.err)) { pace = told.pace; sure = told.err; anchor = pace; proven = false }
-        if (sure == Double.MAX_VALUE) { if (over) gaveUp("that did not tell the display's period (%d of %d frames read)".format(fold.reads, n), true); return }
-        var arc = fold.arc(pace)
-        if (arc == null) { if (over) gaveUp("that found no arc at the pace", true); return }
-        if (!told.told && arc.travel < period * 1.25 && !over) return
-        // ai: two searches have each found the arc's middle, a whole number of refreshes apart: which number is
-        // ai: plain when the period is known to a quarter refresh over the time between (by this search's own
-        // ai: telling, or by the pace), and then that time over that number is the period, to the arcs' quarter
-        // ai: widths over the time. It is what puts right a pace a search told wrongly and the hold fell off.
-        val gap = (arc.at - lastAt).toDouble()
-        if (lastAt != 0L && gap >= PACED_NS) {
-            val by = if (told.told && told.err * gap < ref / 4) told.pace else if (sure * gap < ref / 4) pace else Double.NaN
-            val err = (arc.wide + lastWide) / 4.0 / gap
-            if (!by.isNaN() && err < sure) {
-                pace = gap / Math.round(gap / (ref * (1 + by))) / ref - 1; sure = err; anchor = pace; proven = true
-                arc = fold.arc(pace) ?: arc
-            }
-        }
-        searching = false; fails = 0; rests = 0
-        level = arc.level; wide = arc.wide; line = arc.at; move = false
-        lastAt = arc.at; lastWide = arc.wide
-        say("phase: a search: %d frames in %.1f s, %d read; %.1f ms of phases, %.1f blocks a frame; the pace %.0f us a second (to %.0f)".format(
-            n, (sought[n - 1].ts - sought[0].ts) / 1e9, fold.reads, wide / 1e6, level, pace * 1e6, sure * 1e6))
-    }
-
-    // ai: A search's frames folded by a period of the display: the frames in the order of their phases, each read
-    // ai: or not (`version`: the word's blocks a frame), and the arc of phases most likely to be the ones
-    // ai: that read: on the arc a frame reads with probability p1, off it with p0 (a picture the sender shows for
-    // ai: two refreshes reads at any phase; on the S26 and this desk's monitor a quarter of the captures off the
-    // ai: arc read), both taken from the frames themselves. Apart from the lock so that it runs on recorded frames
-    // ai: (tools/phasesim).
-    class Told(val pace: Double, val err: Double, val told: Boolean, val every: Boolean)
-    class Arc(val at: Long, val wide: Long, val travel: Double, val level: Double)
-    class Fold(private val ts: LongArray, private val blocks: IntArray, private val ref: Long, version: Int) {
-        private val n = ts.size
-        private val read: BooleanArray
-        val reads: Int
-        val level: Double
-        private val ph = DoubleArray(n)
-        private val order = IntArray(n) { it }
-        private var from = 0
-        private var len = 0
-        private var w1 = Math.log(0.95 / 0.25)
-        private var w0 = Math.log(0.05 / 0.75)
-
-        init {
-            // ai: read or not: the frames' blocks fall in two heaps (a capture that holds a change reads next to
-            // ai: nothing), and the cut between them is the one that leaves the two furthest apart for their sizes
-            // ai: (Otsu's). The heap that reads must read an eighth of the word's blocks, or no frame reads.
-            val hist = IntArray(blocks.max() + 2)
-            for (b in blocks) hist[b]++
-            var all = 0L; for (b in blocks) all += b
-            var cut = 0; var most = -1.0; var below = 0; var sum = 0L
-            for (c in 0 until hist.size - 1) {
-                below += hist[c]; sum += c.toLong() * hist[c]
-                if (below == 0 || below == n) continue
-                val gap = sum.toDouble() / below - (all - sum).toDouble() / (n - below)
-                val between = below.toDouble() * (n - below) * gap * gap
-                if (between > most) { most = between; cut = c }
-            }
-            var up = 0; var upSum = 0L
-            for (i in 0 until n) if (blocks[i] > cut) { up++; upSum += blocks[i] }
-            // ai: one heap (every frame near the same blocks): all read, or none
-            val one = most < 0 || (upSum.toDouble() / maxOf(1, up) - (all - upSum).toDouble() / maxOf(1, n - up)) * 8 < version
-            val some = 8 * (if (one) all / n else upSum / maxOf(1, up)) >= version
-            read = BooleanArray(n) { some && (one || blocks[it] > cut) }
-            reads = read.count { it }
-            level = if (reads == 0) 0.0 else (0 until n).filter { read[it] }.sumOf { blocks[it] }.toDouble() / reads
-        }
-
-        // ai: the frames' phases at the period ref (1 + d), in order (the order of the period before, put right: a
-        // ai: small change of the period moves few frames past each other), and the run of them on the circle worth
-        // ai: the most (ln of p1 over p0 for a frame that reads, of their complements for one that does not); its
-        // ai: worth is returned, its first frame and length left in `from` and `len`
-        private fun best(d: Double): Double {
-            val t = ref * (1 + d)
-            for (i in 0 until n) ph[i] = (ts[i] - ts[0]).toDouble() % t
-            for (i in 1 until n) { val o = order[i]; var j = i - 1; while (j >= 0 && ph[order[j]] > ph[o]) { order[j + 1] = order[j]; j-- }; order[j + 1] = o }
-            // ai: the best run that does not wrap, and the worst: the best that wraps is everything but the worst
-            var top = -Double.MAX_VALUE; var ts0 = 0; var te = 0; var cur = 0.0; var cs = 0
-            var low = Double.MAX_VALUE; var ls = 0; var le = 0; var cul = 0.0; var cls = 0
-            var all = 0.0
-            for (i in 0 until n) {
-                val w = if (read[order[i]]) w1 else w0
-                all += w
-                if (cur <= 0) { cur = w; cs = i } else cur += w
-                if (cur > top) { top = cur; ts0 = cs; te = i }
-                if (cul >= 0) { cul = w; cls = i } else cul += w
-                if (cul < low) { low = cul; ls = cls; le = i }
-            }
-            if (all - low > top && le - ls + 1 < n) { from = (le + 1) % n; len = n - (le - ls + 1); return all - low }
-            from = ts0; len = te - ts0 + 1
-            return top
-        }
-
-        private fun at(i: Int) = ph[order[((i % n) + n) % n]]
-        private fun gap(x: Double, y: Double, t: Double) = ((y - x) % t + t) % t
-
-        // ai: The period. Every drift is tried; the drifts whose arcs are as likely as the best to within NATS are
-        // ai: the candidates, and the middle of them all the drift. It counts as told only when the frames pass one edge of
-        // ai: the arc twice (one pass fits any period, and so does a search of just one refresh, the arc split
-        // ai: across its ends): then its error is the larger of half the candidates' span and how far apart the
-        // ai: frames either side of that edge sit, over the time between the two passes.
-        fun scan(): Told {
-            if (reads == n) return Told(0.0, 0.0, false, true)
-            // ai: every drift, coarsely (the drifts an arc fits are a few tenths of a ms a second wide), then, with p1
-            // ai: and p0 from the arc found, the drifts about the best finely. Coarse then fine is what the engine's
-            // ai: thread can afford between captures: a scan over every fine drift stalled it for frames on the S26,
-            // ai: and the search's steps grew with the stall
-            val coarse = (PACE_MOST / DRIFT_COARSE).toInt()
-            var lo = 0.0; var hi = 0.0
-            run {
-                val like = DoubleArray(2 * coarse + 1) { best((it - coarse) * DRIFT_COARSE) }
-                val near = like.max() - NATS
-                lo = (like.indexOfFirst { it >= near } - coarse) * DRIFT_COARSE; hi = (like.indexOfLast { it >= near } - coarse) * DRIFT_COARSE
-                best((lo + hi) / 2)
-                // ai: p1 and p0 from the arc just found, kept off 0 and 1
-                var inR = 0; var outR = reads
-                for (j in 0 until len) if (read[order[(from + j) % n]]) inR++
-                outR -= inR
-                val p1 = (inR.toDouble() / len).coerceIn(0.7, 0.995)
-                val p0 = (if (n > len) outR.toDouble() / (n - len) else 0.25).coerceIn(0.005, 0.6)
-                w1 = Math.log(p1 / p0); w0 = Math.log((1 - p1) / (1 - p0))
-            }
-            run {
-                val from0 = maxOf(-PACE_MOST, lo - DRIFT_COARSE); val to0 = minOf(PACE_MOST, hi + DRIFT_COARSE)
-                val m = ((to0 - from0) / DRIFT_STEP).toInt() + 1
-                val like = DoubleArray(m) { best(from0 + it * DRIFT_STEP) }
-                val near = like.max() - NATS
-                lo = from0 + like.indexOfFirst { it >= near } * DRIFT_STEP; hi = from0 + like.indexOfLast { it >= near } * DRIFT_STEP
-            }
-            val d = (lo + hi) / 2
-            val t = ref * (1 + d)
-            best(d)
-            // ai: an arc worth holding: a share of the frames, not nearly all or nearly none
-            if (len < n / 10 || len > n - n / 10) return Told(d, 0.0, false, len > n - n / 10)
-            val first = at(from); val last = at(from + len - 1)
-            val edges = doubleArrayOf(first - gap(at(from - 1), first, t) / 2, last + gap(last, at(from + len), t) / 2)
-            // ai: how far the phase had travelled by each frame (each interval's advance, to the nearest whole period)
-            val u = DoubleArray(n)
-            u[0] = ph[0]
-            for (i in 1 until n) { var a = (ts[i] - ts[i - 1]).toDouble() % t; if (a > t / 2) a -= t; u[i] = u[i - 1] + a }
-            val least = u.min() + ref / 12; val most = u.max() - ref / 12
-            var err = Double.MAX_VALUE
-            for (e in edges) {
-                // ai: the passes of this edge with frames a step clear of it on both sides: the first and the last
-                var t1 = 0L; var g1 = 0.0; var t2 = 0L; var g2 = 0.0
-                var x = e + Math.ceil((least - e) / t) * t
-                while (x <= most) {
-                    var j = 1
-                    while (j < n && u[j] < x) j++
-                    if (j < n) { if (t1 == 0L) { t1 = ts[j]; g1 = u[j] - u[j - 1] } else { t2 = ts[j]; g2 = u[j] - u[j - 1] } }
-                    x += t
-                }
-                if (t2 > t1) err = minOf(err, (abs(g1) + abs(g2)) / 2 / (t2 - t1))
-            }
-            if (err == Double.MAX_VALUE) return Told(d, 0.0, false, false)
-            err = maxOf(err, (hi - lo) / 2)
-            return Told(d, err, err <= DRIFT_ERR, false)
-        }
-
-        // ai: The arc at the drift d: a capture start on its middle (`at`), its width (from halfway between its first frame
-        // ai: and the one before to halfway between its last and the one after), how far the frames' phase travelled,
-        // ai: and the blocks of a frame that reads on it.
-        fun arc(d: Double): Arc? {
-            val t = ref * (1 + d)
-            best(d)
-            if (len < 3 || len >= n) return null
-            val first = at(from); val last = at(from + len - 1)
-            val e0 = first - gap(at(from - 1), first, t) / 2
-            val wide = gap(e0, last + gap(last, at(from + len), t) / 2, t)
-            var lo = ph[0]; var hi = ph[0]; var u = ph[0]
-            for (i in 1 until n) { var a = (ts[i] - ts[i - 1]).toDouble() % t; if (a > t / 2) a -= t; u += a; if (u < lo) lo = u; if (u > hi) hi = u }
-            var sum = 0L; var cnt = 0; var mid = 0.0
-            for (j in 0 until len) { val k = order[(from + j) % n]; mid += (ts[k] - ts[0]).toDouble() / len; if (read[k]) { sum += blocks[k]; cnt++ } }
-            // ai: the capture start on the arc's middle nearest the time the arc's own frames were taken: a period a
-            // ai: little off then moves it least
-            val at = e0 + wide / 2
-            return Arc(ts[0] + Math.round(at + Math.round((mid - at) / t) * t), Math.round(wide), hi - lo, if (cnt > 0) sum.toDouble() / cnt else 0.0)
-        }
-    }
-
-    // ai: A line through the hold's frames since `from`, and since the line last moved: blocks = a + g x + h t, x how
-    // ai: late the frame started against the hold's line (ms) and t its time (s). g: blocks a ms later; h: blocks a
-    // ai: second at one phase (the picture, the focus, a hand tiring: on the S26 it is often many of its errors with
-    // ai: every frame reading), fitted so that g is not read from it. `spread`: the frames sit at phases apart
-    // ai: enough, and not in step with time, to tell g from h. Only frames since the last move: what moved the line
-    // ai: is spent, and frames from before it would move it again (an edge left behind reads as a slope ahead; on
-    // ai: the S26 the first build's hold walked 3 ms across the phases that read that way, five moves in 10 s).
-    private class Fit(val g: Double, val zg: Double, val spread: Boolean, val mean: Double)
-    private fun fit(from: Long): Fit? {
-        val fs = window.filter { it.ts > from && it.ts > settle }
-        val n = fs.size
-        if (n < NEED) return null
-        val t0 = fs.last().ts
-        val p = period
-        val x = DoubleArray(n) { val v = (fs[it].ts - line).toDouble(); (v - Math.round(v / p) * p) / 1e6 }
-        val t = DoubleArray(n) { (fs[it].ts - t0) / 1e9 }
-        val mx = x.average(); val mt = t.average(); val my = fs.sumOf { it.blocks.toDouble() } / n
-        var sxx = 0.0; var stt = 0.0; var sxt = 0.0; var sxy = 0.0; var sty = 0.0; var syy = 0.0
-        for (i in 0 until n) {
-            val a = x[i] - mx; val b = t[i] - mt; val c = fs[i].blocks - my
-            sxx += a * a; stt += b * b; sxt += a * b; sxy += a * c; sty += b * c; syy += c * c
-        }
-        val least = tooth / 1e6 / 8
-        if (stt <= 0 || sxx / n < least * least || sxt * sxt >= 0.81 * sxx * stt) return Fit(0.0, 0.0, false, my)
-        val det = sxx * stt - sxt * sxt
-        val g = (sxy * stt - sty * sxt) / det; val h = (sty * sxx - sxy * sxt) / det
-        val s2 = maxOf(1e-9, (syy - g * sxy - h * sty) / (n - 3))
-        return Fit(g, g / Math.sqrt(s2 * stt / det), true, my)
+        decide()
     }
 
     // ai: What the hold's frames say, once a batch of them is in.
     private fun decide() {
-        if (since == Long.MAX_VALUE || move || moving || window.isEmpty()) return
-        if (byLeaks) held() else decideByBlocks()
+        if (move || moving || window.isEmpty()) return
+        held()
         snap()
-    }
-    private fun decideByBlocks() {
-        val newest = window.last().ts
-        if (window.count { it.ts > settle } < NEED) return
-        val slide = fit(newest - SHORT_NS)
-        // ai: a slope: the better phase is that way. In the newest frames it is a slide the pace misses, and the
-        // ai: line moves a tooth (the frames say nothing of phases further off than they were); only in the longer
-        // ai: span, a tilt across the phases that read, and half a tooth
-        for (f in listOfNotNull(slide, fit(newest - LONG_NS))) {
-            if (!f.spread || abs(f.zg) < Z) continue
-            val hop = (if (f.g > 0) 1 else -1) * (if (f === slide) tooth else tooth / 2)
-            line += hop; move = true
-            // ai: and the pace goes the way the line had to: a TI-th of the move a second, about the last
-            // ai: measurement and no further from it than its error
-            val far = if (sure == Double.MAX_VALUE) PACE_MOST else sure
-            pace = (pace + hop.toDouble() / TI_NS).coerceIn(anchor - far, anchor + far)
-            // ai: the hold's own spacing: the line's mean period since it began on the arc's middle, to half the
-            // ai: arc over the time held
-            val held = (line - line0).toDouble()
-            if (line0 != 0L && slots > 0 && held >= PACED_NS && wide / 2.0 / held < sure) {
-                sure = wide / 2.0 / held
-                anchor = held / slots / ref - 1; pace = anchor; proven = true
-                say("phase: held %.0f s: the pace %.0f us a second (to %.0f)".format(held / 1e9, pace * 1e6, sure * 1e6))
-            }
-            return
-        }
-        // ai: no slope, and under HELD of the newest FELL frames (more than a hand's shake lasts) read: the hold is
-        // ai: off the phases that read, where nothing slopes and nothing says which way they are
-        val tail = window.takeLast(FELL)
-        if (tail.count { reads(it) } < HELD * tail.size) {
-            say("phase: the hold stopped reading")
-            // ai: a pace only a search told, whose hold did not last: not known, and the next search tells it afresh
-            if (!proven) sure = Double.MAX_VALUE
-            search()
-            return
-        }
-        if (slide != null) level = maxOf(level * 0.98, slide.mean)
     }
 
     // ai: The gain and the display's pace from the hold's own history. Between two readings that both showed a
-    // ai: neighbour, the hold went later by the move made (h, ms) and earlier by the slide (the display's pace p
-    // ai: less the line's, over the time dt), and a - b fell by that over the gain G: G (e2 - e1) - p dt = -h -
-    // ai: pace dt. One such line a pair of readings, two unknowns: least squares over the pairs so far, each by
-    // ai: the readings' errors, the older ones fading (FADE a pair). Where the pairs do not tell the two apart
-    // ai: (a - b hardly moved), the pace alone at the gain as it is.
-    private fun learn(de: Double, dt: Double, h: Double, paceMs: Double, w: Double) {
-        val y = -h - paceMs * dt
-        for (k in 0 until 5) fitS[k] *= FADE
-        fitS[0] += w * de * de; fitS[1] += w * de * -dt; fitS[2] += w * dt * dt; fitS[3] += w * de * y; fitS[4] += w * -dt * y
-        pairs++
-        val det = fitS[0] * fitS[2] - fitS[1] * fitS[1]
-        // ai: the gain from three pairs on (two lines through two unknowns are whatever their noise says), half
-        // ai: the way to what they say at a time, and only on a pair in which a - b moved (Z of its errors): in a
-        // ai: hold that stands, a - b does not move and the pairs say nothing of it
-        var g = gain
-        if (pairs >= 3 && de * de * w > Z * Z && det > 1e-6 * fitS[0] * fitS[2]) g = (gain + ((fitS[3] * fitS[2] - fitS[4] * fitS[1]) / det).coerceIn(GAIN_LEAST, GAIN_MOST)) / 2
-        gain = g
-        // ai: the pace at that gain: of -dt p = y - G de, by least squares
-        val pMs = (fitS[4] - g * fitS[1]) / fitS[2]
-        pace = (pMs * 1e-3).coerceIn(-PACE_MOST, PACE_MOST)
-        anchor = pace
-        sure = Math.max(1e-6, g * 1e-3 / Math.sqrt(fitS[2]))
-        proven = true
+    // ai: neighbour, the captures went later by h (ms: what their own places against the line show, with the line's
+    // ai: move) and earlier by the slide (the display's pace p less the line's, over the time dt), and a - b fell by
+    // ai: that over the gain G: G (e2 - e1) - p dt = -h - pace dt, one look at (G, p) with the readings' variance
+    // ai: through the gain. The gain is told only by a pair whose move is Z of what its readings resolve (the gain
+    // ai: times the error of e2 - e1): a pair chosen by a - b's own change is chosen by its noise, and the gain told by
+    // ai: those falls toward GAIN_LEAST the longer a hold lasts; elsewhere the look tells the pace alone.
+    private fun learn(t: Long, de: Double, dt: Double, h: Double, paceMs: Double, w: Double) =
+        observe(t, -h - paceMs * dt, de, -dt * 1e3, gain * gain / w, dt, h * h * w >= Z * Z * gain * gain)
+
+    // ai: One look: z (ms) = hg gain + hp pace, its readings' variance rRead (ms²) over dt seconds to camera time t.
+    // ai: The view's wander over dt (and, over what of it was the session's first AIM_NS, an aiming hand's) is added; a look beyond Z of its expected
+    // ai: spread counts as Z (the gain and the pace move only as far as that); `both`: the gain is told too, else the
+    // ai: pace alone with the gain's error carried (its covariance kept whole either way).
+    private fun observe(t: Long, z: Double, hg: Double, hp: Double, rRead: Double, dt: Double, both: Boolean) {
+        age(t)
+        // ai: the aim: the part of the look's span within the session's first AIM_NS (a hand still aiming)
+        val aim = if (aimFrom == 0L) 0.0 else maxOf(0.0, (minOf(t, aimFrom + AIM_NS) - maxOf(t - Math.round(dt * 1e9), aimFrom)) / 1e9)
+        // ai: a look says the pace's mean over its span, which is off the pace now by the pace's own process noise over
+        // ai: the span (a random walk's mean over a span T is off its end by a third of its variance over T)
+        val span = hp * hp * PACE_Q * dt / 3
+        val r = rRead + span + VIEW_MS2 * dt + AIM_MS2 * aim * aim
+        evid.addLast(doubleArrayOf(z, hg, hp, r, rRead + span, gain, gainVar, t.toDouble())); while (evid.size > N_EVID) evid.removeFirst()
+        val nu = z - hg * gain - hp * pace
+        if (DEBUG) say("phase: DEBUG a look over %.1f s (%s): the pace %.0f us a second (to %.0f) at the gain %.1f, against %.0f (to %.0f)".format(dt, if (both) "gain too" else "pace", (z - hg * gain) / hp * 1e6, Math.sqrt((r + hg * hg * gainVar) / (hp * hp)) * 1e6, gain, pace * 1e6, sure * 1e6))
+        val pg = gainVar * hg + gpCov * hp; val pp = gpCov * hg + paceVar * hp
+        val hph = hg * pg + hp * pp
+        val s = maxOf(hph + r, nu * nu / (Z * Z))
+        if (both) {
+            val kg = pg / s; val kp = pp / s
+            gain = (gain + kg * nu).coerceIn(GAIN_LEAST, GAIN_MOST); pace = (pace + kp * nu).coerceIn(-PACE_MOST, PACE_MOST)
+            gainVar -= kg * pg; gpCov -= kg * pp; paceVar -= kp * pp
+        } else {
+            // ai: the pace's row alone (Joseph's form: the gain kept as it is, its error in the pace's)
+            val kp = pp / s
+            pace = (pace + kp * nu).coerceIn(-PACE_MOST, PACE_MOST)
+            val a = -kp * hg; val b = 1 - kp * hp
+            val gp = a * gainVar + b * gpCov
+            paceVar = a * a * gainVar + 2 * a * b * gpCov + b * b * paceVar + kp * kp * (s - hph)
+            gpCov = gp
+        }
+        gainVar = maxOf(gainVar, 1e-9); paceVar = maxOf(paceVar, 1e-18)
+        check()
     }
+
+    // ai: the process noise up to camera time t: the gain's (GAIN_Q) and the pace's (PACE_Q), each a second
+    private fun age(t: Long) {
+        if (paceAt != 0L && t > paceAt) { val s = (t - paceAt) / 1e9; gainVar += GAIN_Q * s; paceVar = minOf(PACE_VAR0, paceVar + PACE_Q * s) }
+        paceAt = maxOf(paceAt, t)
+    }
+
+    // ai: The newest N_EVID looks (of the newest LONG_NS) re-check the pace: each says the pace at the gain as it is, a vote each
+    // ai: (a jump of the view's spoils a look whatever its own error says, so none outweighs the rest); where their
+    // ai: median is beyond Z of its error (a median's: pi / 2 of a look's variance over their count, a look's the larger
+    // ai: of what its readings and the gain say, their median, and what the looks' spread about the median says: the
+    // ai: view's wander as it is, not as a hand's is supposed) and the pace's own, the pace is the median and its
+    // ai: variance the median's.
+    private fun check() {
+        // ai: (the looks of the newest LONG_NS: an older one says what the pace was)
+        while (evid.isNotEmpty() && evid.first()[7] < paceAt - LONG_NS) evid.removeFirst()
+        if (evid.size < N_EVID) return
+        val n = evid.size; val ps = DoubleArray(n); val vs = DoubleArray(n)
+        for (i in 0 until n) { val e = evid[i]; ps[i] = (e[0] - e[1] * gain) / e[2]; vs[i] = (e[4] + e[1] * e[1] * gainVar) / (e[2] * e[2]) }
+        val m = median(ps)
+        val mad = median(DoubleArray(n) { abs(ps[it] - m) })
+        val err2 = Math.PI / 2 * maxOf(median(vs), (1.4826 * mad) * (1.4826 * mad)) / n
+        if (abs(m - pace) > Z * Math.sqrt(err2 + paceVar)) {
+            if (DEBUG) say("phase: DEBUG the newest %d looks say the pace is %.0f us a second (to %.0f), not %.0f (to %.0f)".format(n, m * 1e6, Math.sqrt(err2) * 1e6, pace * 1e6, sure * 1e6))
+            pace = m.coerceIn(-PACE_MOST, PACE_MOST); paceVar = minOf(PACE_VAR0, err2); gpCov = 0.0
+            // ai: what those looks told the gain they told it at a pace that was wrong: the gain goes back to what it
+            // ai: was before the oldest of them, its variance then and its process noise since
+            val o = evid.first()
+            gain = o[5]; gainVar = o[6] + GAIN_Q * maxOf(0.0, (paceAt - o[7]) / 1e9)
+            evid.clear()
+        }
+    }
+
+    private fun median(v: DoubleArray): Double { val s = v.sortedArray(); return if (s.size % 2 == 1) s[s.size / 2] else (s[s.size / 2 - 1] + s[s.size / 2]) / 2 }
 
     // ai: The pilots' hold: what the newest frames hold of their neighbours, and the move it asks.
     // ai:   both neighbours in them (a top that bends: no phase is clean): later by the gain times a - b;
@@ -768,11 +506,12 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
     // ai:     step over the time it took, and the pace takes it (in the flat no reading shows a slide). At the
     // ai:     other edge straight from the step, the top is narrower than the step: its width is known, and the
     // ai:     hold goes to its middle;
-    // ai:   neither: the hold stands.
+    // ai:   neither: the hold stands; LONG_NS of it from the last step, and the width a step met may be the top's
+    // ai:     no longer (a window that shortened widens it): the next step is CROSS again and measures it afresh.
     // ai: Every reading that shows a neighbour, with the one before, also tells the gain and the pace (`learn`),
     // ai: and the move allows for what the hold has slid since its frames were captured.
     private fun held() {
-        val fs = window.filter { it.ts > settle && !it.r.isNaN() }
+        val fs = window.filter { it.ts > settle }
         if (fs.size < L_NEED) return
         level = maxOf(level * 0.98, fs.sumOf { it.blocks }.toDouble() / fs.size)
         // ai: the newest second's frames where they are enough (what the hold holds now, not a mean over a long
@@ -785,8 +524,11 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
             // ai: half the frames have no sure sign: frames that have one and are just too few yet (a small batch,
             // ai: its ends without a neighbour) will tell the side with the next batch, and a blind step is not it
             val mid = fs.map { abs(it.r) }.sorted()[fs.size / 2]
-            val signed = fs.count { abs(it.r) >= R_FLASH && !it.r2.isNaN() && abs(it.r2) >= R_FLASH }
-            if (mid < DEEP && 2 * signed < fs.size) { line += ref / 4; move = true; prevT = 0; edgeDir = 0; stood = false; if (DEBUG) say("phase: DEBUG deep in a mix (|r| %.2f): a quarter later".format(mid)) }
+            val signed = fs.count { abs(it.r) >= R_FLASH && abs(it.r2) >= R_FLASH }
+            if (mid < DEEP && 2 * signed < fs.size) {
+                line += Math.round(refresh / 4); move = true; prevT = 0; edgeDir = 0; flatHalf = 0; stood = false
+                if (DEBUG) say("phase: DEBUG deep in a mix (|r| %.2f): a quarter later".format(mid))
+            }
             return
         }
         val e = est.a - est.b; val se = Math.hypot(est.sa, est.sb)
@@ -800,32 +542,38 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         // ai: a pair tells the gain and the pace where a - b went straight with the hold's place between them: both
         // ai: readings showing the same neighbours (across a flat top it stands still whatever the hold does)
         val side = (if (sigA) 1 else 0) or (if (sigB) 2 else 0)
-        if (prevT != 0L && side != 0 && side == prevSide && est.t > prevT) learn(e - prevE, (est.t - prevT) / 1e9, prevHop, prevPace * 1e3, 1 / (se * se + prevSe * prevSe))
+        if (prevT != 0L && side != 0 && side == prevSide && est.t > prevT) learn(est.t, e - prevE, (est.t - prevT) / 1e9, prevHop + (est.x - prevX) / 1e6, prevPace * 1e3, 1 / (se * se + prevSe * prevSe))
         if (DEBUG) say("phase: DEBUG leaks %d frames: before %.3f (to %.3f), after %.3f (to %.3f), gain %.1f ms, pace %.0f%s".format(est.n, est.a, est.sa, est.b, est.sb, gain, pace * 1e6,
             if (flatHalf > 0) ", a flat top %.1f ms wide".format(2 * flatHalf / 1e6) else if (edgeDir != 0) ", %.1f ms in from the %s edge".format(edgeIn / 1e6, if (edgeDir > 0) "early" else "late") else ""))
         var hop = 0L
         if (sigA && sigB) {
             edgeDir = 0; flatHalf = 0
             if (abs(e) >= Z * se) hop = Math.round(gain * e * 1e6)
-            else if (!balanced && sure != Double.MAX_VALUE) {
+            else if (!balanced && paceVar < PACE_VAR0) {
                 balanced = true
                 say("phase: the hold stands: %.0f%% of the picture before and %.0f%% of the one after in a capture; the pace %.0f us a second (to %s), the line %.1f ms a unit".format(
                     100 * est.a, 100 * est.b, pace * 1e6, "%.0f".format(sure * 1e6), gain))
             }
         } else if (sigA || sigB) {
             val dir = if (sigA) 1 else -1
-            val edge = Math.round(gain * (if (sigA) est.a else est.b) * 1e6)
+            var edge = Math.round(gain * (if (sigA) est.a else est.b) * 1e6)
             if (edgeDir == dir && edgeClean && est.t - edgeT >= PACED_NS) {
                 // ai: back at the edge it stepped in from, having stood inside the top meanwhile: the slide is
                 // ai: the step (and what it is past the edge now) over the time since the step was reckoned from
-                val dt = (est.t - edgeT).toDouble()
-                pace = (pace + dir * (edgeIn + edge) / dt).coerceIn(-PACE_MOST, PACE_MOST)
-                anchor = pace; sure = (2 * gain * Math.max(est.sa, est.sb) * 1e6) / dt; proven = true
+                // ai: as a look at (G, p): p dt - dir share G = dir edgeIn + pace dt (ms), the two edges' readings' errors
+                val dt = (est.t - edgeT).toDouble(); val dtS = dt / 1e9
+                observe(est.t, dir * edgeIn / 1e6 + pace * dtS * 1e3, -dir * (if (sigA) est.a else est.b), dtS * 1e3, (2 * gain * Math.max(est.sa, est.sb)).let { it * it }, dtS, false)
                 say("phase: the hold slid %.1f ms in %.1f s: the pace %.0f us a second (to %.0f)".format((edgeIn + edge) / 1e6, dt / 1e9, pace * 1e6, sure * 1e6))
             } else if (edgeDir == -dir && est.t > edgeT && !edgeClean) {
                 // ai: the other edge, straight from a step in from the first: the top is narrower than the step,
-                // ai: as wide as what was stepped, and the hold goes to its middle
-                flatHalf = maxOf(bandNs, (edgeIn - edge) / 2)
+                // ai: as wide as what was stepped, and the hold goes to its middle. What the captures moved (their own
+                // ai: places) is the top's width and both edges' depths, each the gain times its share; a gain that puts
+                // ai: the depths alone past the move is too large (a width is never less than 0), and the move over the
+                // ai: change of a - b is the most it can be (else every step from one edge overshoots to the other, and
+                // ai: readings of one neighbour each never pair to tell the gain)
+                val moved = abs(prevHop * 1e6 + (est.x - prevX)); val de = abs(e - prevE)
+                if (prevT != 0L && prevSide == 3 - side && gain * de * 1e6 > moved) { gain = (moved / de / 1e6).coerceIn(GAIN_LEAST, GAIN_MOST); edge = Math.round(gain * (if (sigA) est.a else est.b) * 1e6) }
+                flatHalf = maxOf(BAND_NS, (edgeIn - edge) / 2)
                 say("phase: the top is %.1f ms wide".format(2 * flatHalf / 1e6))
             } else if (edgeDir == -dir) flatHalf = 0
             val step = if (flatHalf > 0) flatHalf else CROSS_NS
@@ -834,123 +582,69 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
             // ai: slide since the frames); where it was not, the hold slides on as it did, and the step is
             // ai: reckoned from the frames' own time
             edgeDir = dir; edgeIn = step; edgeT = if (pace != was) now else est.t; edgeClean = false
-        } else if (edgeDir != 0 && est.t > edgeT + LAND * ref) edgeClean = true
+        } else {
+            if (edgeDir != 0 && est.t > edgeT) edgeClean = true   // ai: (its frames are after the step landed: settle)
+            if (flatHalf > 0 && est.t - edgeT >= LONG_NS) flatHalf = 0
+        }
         // ai: the frames are old by the time they are read, and the hold slid on meanwhile at what the pace was
         // ai: off by: the move allows for it (the pace is right from now on)
-        hop = hop.coerceIn(-ref / 2, ref / 2)
+        hop = hop.coerceIn(-Math.round(refresh / 2), Math.round(refresh / 2))
         if (hop == 0L) stood = true
         // ai: (the next pair's move is this one without that allowance: its line reckons the slide at the new pace
         // ai: from the frames' own time)
-        if (side != 0) { prevE = e; prevSe = se; prevT = est.t; prevHop = hop / 1e6; prevPace = pace; prevSide = side } else prevT = 0
+        if (side != 0) { prevE = e; prevSe = se; prevT = est.t; prevHop = hop / 1e6; prevPace = pace; prevSide = side; prevX = est.x } else prevT = 0
         if (hop != 0L || pace != was) hop += Math.round((pace - was) * (now - est.t))
         if (hop != 0L) { line += hop; move = true }
     }
 
-    // ai: Counts the registered frames that sit at the scan's point (by their own timestamps), and moves the point.
-    private fun scan(frames: List<Frame>, version: Int) {
-        val t = tally.getOrPut(point) { Tally() }
-        for (f in frames) {
-            if (f.ts <= seen || !f.found || abs(wrap(f.ts % gridNs - point)) > 3 * bandNs) continue
-            t.frames++
-            if (2 * f.blocks < version) t.short++ else t.blocks += f.blocks
-        }
-        if (t.frames < SCAN_NEED) return
-        say("phase: %.3f ms: %d frames, %.0f%% short, %.1f blocks a full frame".format(point / 1e6, t.frames, 100.0 * t.short / t.frames, if (t.frames > t.short) t.blocks.toDouble() / (t.frames - t.short) else 0.0))
-        val next = (point + STEP_NS) % gridNs
-        if (abs(wrap(next - start)) >= STEP_NS / 2 && tally.size <= gridNs / STEP_NS + 1) { point = next; return }
-        // ai: the scan's end: the middle of the longest run, on the circle, of points within NEAR of the best point's
-        // ai: share of short frames
-        val pts = tally.keys.sorted()
-        val share = pts.map { tally[it]!!.let { x -> x.short.toDouble() / x.frames } }
-        val least = share.min()
-        var best = 0; var end = -1; var run = 0
-        for (k in 0 until 2 * pts.size) {
-            if (share[k % pts.size] <= least + NEAR) { run++; if (run > best && run <= pts.size) { best = run; end = k } } else run = 0
-        }
-        val from = pts[(end - best + 1) % pts.size]
-        tally.clear(); point = -1
-        if (least > 1 - NEAR) { say("phase: no point reads (the best %.0f%% short)".format(100 * least)); mode = Mode.Off; return }
-        base = (from + (best - 1) * STEP_NS / 2) % gridNs
-        mode = Mode.Hold
-        say("phase: %d of %d points read (from %.3f ms, the best %.0f%% short); held at %.3f".format(best, pts.size, from / 1e6, 100 * least, base / 1e6))
-    }
-
     // ai: track's standing, for the log's line and the snapshot
-    private val standing get() = if (now < rest) "resting" else if (searching) "searching" else if (line < 0) "no frames yet" else if (since == Long.MAX_VALUE) "placing" else "holds"
+    private val standing get() = if (line < 0) "no frames yet" else "holds"
+    private val landMs get() = lands.maxOfOrNull { it[1] }?.let { it / 1e6 } ?: Double.NaN
     private fun snap() {
         val e = lastLeak
-        state = State(if (byLeaks) "pilots" else "blocks", standing, e?.a ?: Double.NaN, e?.b ?: Double.NaN, e?.k ?: Double.NaN,
-            if (e == null) Double.NaN else Math.hypot(e.sa, e.sb), e?.n ?: 0, gain, pace * 1e6, stood, edgeDir, 2 * flatHalf / 1e6, delaysAll)
+        state = State("pilots", standing, e?.a ?: Double.NaN, e?.b ?: Double.NaN, e?.k ?: Double.NaN,
+            if (e == null) Double.NaN else Math.hypot(e.sa, e.sb), e?.n ?: 0, gain, pace * 1e6, stood, edgeDir, 2 * flatHalf / 1e6, delaysAll,
+            if (base == 0L) Double.NaN else refresh / 1e6, multiple, frame / 1e6, landMs, row)
     }
 
-    // ai: for the log, every few seconds: what is held or owed, the delays since the last call, and a pilots hold's
-    // ai: newest leaks (the prefix stays as tools/phone's readers match it)
+    // ai: for the log, every few seconds: what is held or owed, the delays since the last call, the hold's newest
+    // ai: leaks, and what a bad start is told by: the refresh on the camera's clock, the refreshes a capture spans and
+    // ai: the camera's frame, the delays' longest landing, the code's row (the prefix stays as tools/phone's readers
+    // ai: match it)
     fun line(tsNs: Long): String? {
         val d = delays; delays = 0
-        return when (mode) {
-            Mode.Off -> null
-            Mode.Track -> "phase: track%s, %s, the pace %.0f us a second (to %s), %.1f blocks a frame, %d delays%s".format(if (flashing) " by the pilots" else "",
-                standing, pace * 1e6, if (sure == Double.MAX_VALUE) "?" else "%.0f".format(sure * 1e6), level, d,
-                lastLeak?.let { if (byLeaks && standing == "holds") ", %.0f%% of the picture before and %.0f%% of the one after in a capture".format(100 * it.a, 100 * it.b) else "" } ?: "")
-            else -> if (base < 0 && point < 0) null else "phase: %.3f ms, %s %.3f, %d delays".format(tsNs % gridNs / 1e6, if (point >= 0) "scanning at" else "held at", (if (point >= 0) point else base) / 1e6, d)
-        }
+        if (mode == Mode.Off) return null
+        return "phase: track%s, %s, the pace %.0f us a second (to %s), %.1f blocks a frame, %d delays%s; the refresh %s ms, %d a frame of %.3f ms, delays landing in %s, the code at row %.2f".format(
+            if (line >= 0) " by the pilots" else "", standing, pace * 1e6, if (paceVar >= PACE_VAR0) "?" else "%.0f".format(sure * 1e6), level, d,
+            lastLeak?.let { if (standing == "holds") ", %.0f%% of the picture before and %.0f%% of the one after in a capture".format(100 * it.a, 100 * it.b) else "" } ?: "",
+            if (base == 0L) "?" else "%.4f".format(refresh / 1e6), multiple, frame / 1e6, if (lands.isEmpty()) "?" else "%.0f ms, %d captures after the mark".format(landMs, lands.maxOf { it[2] }), row)
     }
 
     companion object {
-        val DEBUG = System.getProperty("phase.debug") == "1"   // ai: tools/phasesim: the sweep's samples and a lost hold's frames
-        // ai: the most the pace may be; the rest when nothing reads, and the longest it grows to
+        val DEBUG = System.getProperty("phase.debug") == "1"   // ai: tools/phasesim: the hold's readings
+        // ai: the most the pace may be (and how far a camera's frame may be off a whole number of refreshes); how
+        // ai: late a capture may start of the line before a period less is asked; the span of frames, places and
+        // ai: landings the hold keeps; how many of its errors a reading
+        // ai: must be; the least time a flat top's edge reached again is reckoned over; the frames of camera time after
+        // ai: which a delay nothing was heard of is given up (and the captures after its mark a taken delay may land
+        // ai: while none has landed)
         const val PACE_MOST = 5e-3
-        const val REST_NS = 20_000_000_000L
-        const val REST_MOST = 320_000_000_000L
-        // ai: track. A search: how long its moves go on at most and how fast (a frame's worth in 112 frames: twice as
-        // ai: fast, with delays queued one a frame, told the period from half the time between passes and the hold
-        // ai: after it read worse in the model), the most a step of it is (a sixteenth of a frame: what the rate
-        // ai: makes where a delay lands seven captures on), how long after its moves its last frames may still come; the
-        // ai: drifts tried, finely and coarsely; how much less likely than the best a drift's arc may be and still be a candidate (ln);
-        // ai: the error under which a period counts as told (what the hold's moves can follow). The hold: the most
-        // ai: a tooth is; the two spans of frames a slope is looked for in; the frames since the last move before
-        // ai: anything is decided (and the fewest a search is fitted to); how many of its standard errors a slope
-        // ai: must be; the share of a reading frame's blocks under which a frame does not read, and the share of
-        // ai: the newest FELL frames that must read for the hold to stand; the least time the hold's own spacing
-        // ai: is taken over; the seconds over which a move of the line is a move of the pace; the least time
-        // ai: without a delay before the camera is moved about the line on purpose; the captures after which a
-        // ai: delay never reported is given up; the least time between two looks of the blocks' search or hold
-        // ai: at their frames (a little under the half second the feed came at, so a feed every half second is
-        // ai: looked at every time). None is a monitor's: the search measures the width the tooth, the moves and
-        // ai: the pace's errors come from.
-        const val SEARCH_NS = 6_000_000_000L
-        const val SEARCH_RATE = 1.0 / 112
-        const val SEARCH_STEPS = 16.0
-        const val SEARCH_LATE = 1_500_000_000L
-        const val DRIFT_STEP = 25e-6
-        const val DRIFT_COARSE = 100e-6
-        const val NATS = 2.0
-        const val DRIFT_ERR = 0.6e-3
         const val TOOTH_NS = 1_000_000L
-        const val SHORT_NS = 3_000_000_000L
         const val LONG_NS = 12_000_000_000L
-        const val NEED = 40
         const val Z = 3.0
-        const val HELD = 0.6
-        const val FELL = 120
         const val PACED_NS = 1_000_000_000L
-        const val TI_NS = 6e9
-        const val DITHER_NS = 500_000_000L
         const val LOST = 60
-        const val LOOK_NS = 450_000_000L
-        // ai: the pilots: |r| at which a reading's sign is not noise; the newest frames with a reading that say
-        // ai: whether the frames flash, and the pairs of them needed; the least error a reading is given (its own
+        // ai: the pilots: |r| at which a reading's sign is not noise; the least error a reading is given (its own
         // ai: at LIZARD-512 is about 0.02 over half the blocks); the frames an estimate of the leaks needs; the
         // ai: median |r| under which the frames are deep in a mix; the ms the line moves a unit of a - b before
         // ai: any move has measured it (under twice the least a display's own is, so a first move cannot grow the
         // ai: error: a window of 9 ms that changes pictures at one instant has 9, the S26's arithmetic about 20),
         // ai: and the least and most a measurement may say; the step in from the edge of a flat top; the span of
-        // ai: the newest frames the leaks are read from; the captures a delay takes to land; the share of a
-        // ai: neighbour under which a capture is taken to hold none of it; what a pair of readings keeps of its
-        // ai: weight in the fit of the gain and the pace with each pair after it.
+        // ai: the newest frames the leaks are read from (and the intervals the camera's frame is read from); the share
+        // ai: of a neighbour under which a capture is taken to hold none of it; what a pair of readings keeps of its
+        // ai: weight in the fit with each pair after it; how early a capture is delayed back onto the line; the code's
+        // ai: row before a frame has told it (the frame's middle, where the receiver's crops are)
         const val R_FLASH = 0.25
-        const val FLASH_FRAMES = 60
-        const val FLASH_PAIRS = 12
         const val R_NOISE_MIN = 0.005
         const val L_NEED = 12
         const val DEEP = 0.35
@@ -959,16 +653,27 @@ class PhaseLock(private val say: (String) -> Unit, private val gridNs: Long = GR
         const val GAIN_MOST = 40.0
         const val CROSS_NS = 2_000_000L
         const val RECENT_NS = 1_000_000_000L
-        const val LAND = 8
         const val LEAK = 0.02
         const val FADE = 0.85
-        // ai: hold and scan: the grid (a 60 Hz display's refresh), the band (a capture this far early is delayed
-        // ai: back), a scan's step, the frames counted at a point, and how far over the best point's share of short
-        // ai: frames a point may be and still count as reading as well
-        const val GRID_NS = 16_666_667L
         const val BAND_NS = 250_000L
-        const val STEP_NS = 1_000_000L
-        const val SCAN_NEED = 30
-        const val NEAR = 0.1
+        const val ROW = 0.5
+        // ai: the estimate (`observe`). Before any look: the pace as far off as two clocks may be, the gain anywhere
+        // ai: between its least and most (a uniform's variance). The view's wander, a random walk of the code's read
+        // ai: time: a hand-held code wanders over half the frame's readout within a minute, re-aims and all (the S26's
+        // ai: 6.26 ms readout: (3.13 ms)² a minute); a hand still aiming sweeps the code across
+        // ai: half the frame in a second, 3 ms a second of read time, for the session's first three seconds (AIM_NS),
+        // ai: three readings of RECENT_NS, which the newest N_EVID looks' median outvotes (seven outvote three). Process noise:
+        // ai: the gain is half the window over the code, which a hand moves about a millisecond in ten seconds, so
+        // ai: (0.5 ms a unit)² in ten seconds; the slide is the clocks' (which part by about 1 ppm a minute as a phone
+        // ai: warms) and a hand's slow turn (about a degree a second, 0.15 ms of read time a second on the S26, which
+        // ai: changes within about ten seconds): (0.15 ms a second)² in ten seconds.
+        const val PACE_VAR0 = PACE_MOST * PACE_MOST
+        const val GAIN_VAR0 = (GAIN_MOST - GAIN_LEAST) * (GAIN_MOST - GAIN_LEAST) / 12
+        const val VIEW_MS2 = 3.13 * 3.13 / 60
+        const val AIM_MS2 = 9.0
+        const val N_EVID = 7
+        const val AIM_NS = 3_000_000_000L
+        const val GAIN_Q = 0.025
+        const val PACE_Q = 0.15e-3 * 0.15e-3 / 10
     }
 }

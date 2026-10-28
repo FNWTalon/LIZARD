@@ -37,12 +37,12 @@ internal fun MainActivity.ReceiveSettings() {
     val s = settings
     Fields {
         // ai: the fields in the web's shape, a menu each (2026-10-06; chips until then); auto shows the decoder it runs
-        // ai: PC only with a cable in (MainActivity.usb): the PC decoder is the phone's frames over USB to a PC
-        val decoders = listOf("gpu" to "GPU", "cpu" to "CPU") + listOfNotNull(("pc" to "PC").takeIf { usb.connected || s.decoder == "pc" })
+        // ai: PC only while a PC receiver is heard on the link (MainActivity.pcPresent): the phone's frames to that PC
+        val decoders = listOf("gpu" to "GPU", "cpu" to "CPU") + listOfNotNull(("pc" to "PC").takeIf { pcPresent || s.decoder == "pc" })
         Select("Decoder", if (s.decoder == "auto") autoRan.ifEmpty { "GPU" }.lowercase() else s.decoder, decoders) { change(s.copy(decoder = it), true) }
         // ai: the most frames a GPU launch takes (Settings.batch): a launch goes as soon as a frame waits, with every
         // ai: frame then waiting up to this; 1 decodes each frame alone. The C decodes a frame at a time: not shown with it.
-        if (s.decoder == "pc") PcLinkField()
+        if (usb.connected) PcLinkField()
         if (s.decoder != "cpu" && s.decoder != "pc") Field("Batch size", "${s.frames}") {
             Bar(s.frames.toFloat(), 1f..32f, 30) { v -> val n = v.roundToInt().coerceIn(1, 32); if (n != s.frames) change(s.copy(batch = n.toString()), false) }
         }
@@ -63,32 +63,25 @@ internal fun MainActivity.ReceiveSettings() {
     }
 }
 
-// ai: The PC decoder's link (PcLink, the stream's stats): connected, the PC's address ("USB" for the accessory) and the
-// ai: frames a second it carries; else "disconnected", the USB accessory where it is open and the USB tether's address
-// ai: (no Wi-Fi: the PC decoder is the cable's, 2026-10-27), and the tethering page where the cable has neither. Read at each stats poll (a second).
+// ai: The PC link, while a cable is in (MainActivity.link, the core's linkState): a PC receiver heard, its address ("USB"
+// ai: for the accessory) and, on the PC decoder with the camera on, the frames a second it carries; else "disconnected", the USB accessory
+// ai: where it is open and the USB tether's address (no Wi-Fi: the PC link is the cable's), and the tethering page
+// ai: where the cable has neither. Read at each poll.
 @Composable
 internal fun MainActivity.PcLinkField() {
+    val lk = link
     val st = remember(raw) { runCatching { JSONObject(raw).optJSONObject("stream") }.getOrNull() }
     val addrs = remember(raw, usb) { PcLink.usbAddresses() }
     val accessory = remember(raw, usb) { Native.accessoryOpen() }
-    val port = st?.optInt("port", 47230) ?: 47230
-    val connected = st?.optBoolean("connected") == true
-    Field("PC link", if (connected) "to ${st?.optString("peer").orEmpty()}" else "disconnected") {
-        val lines = if (connected) listOf(String.format(Locale.ROOT, "%.0f of %.0f frames a second", st?.optDouble("sentFps", 0.0) ?: 0.0, st?.optDouble("cameraFps", 0.0) ?: 0.0))
+    val port = lk?.optInt("port", 47230) ?: 47230
+    val present = pcPresent
+    Field("PC link", if (present) "to ${lk?.optString("peer").orEmpty()}" else "disconnected") {
+        val lines = if (present) listOfNotNull(st?.takeIf { settings.decoder == "pc" && phase == Engine.Phase.On }?.let {
+                String.format(Locale.ROOT, "%.0f of %.0f frames a second", it.optDouble("sentFps", 0.0), it.optDouble("cameraFps", 0.0)) })
             else (listOfNotNull("USB accessory".takeIf { accessory }) + addrs.map { "USB $it:$port" }).ifEmpty { listOf("USB tethering off") }
         for (l in lines) Text(l, style = MaterialTheme.typography.bodyMedium, color = Muted)
-        if (usb.connected && !usb.tether && !accessory && !connected && addrs.isEmpty())
+        if (!usb.tether && !accessory && !present && addrs.isEmpty())
             Btn("USB tethering", modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { PcLink.openTethering(this@PcLinkField) }
-    }
-}
-
-// ai: Experimental (below Settings): a lab arm a user may try. D6 phase lock (Settings.d6): the rework's arm D6 in place
-// ai: of the phase lock, taken by the next camera session (the camera restarts)
-@Composable
-internal fun MainActivity.ReceiveExperimental() {
-    val s = settings
-    Fields {
-        Select("D6 phase lock", s.d6, listOf("off" to "Off", "on" to "On")) { change(s.copy(d6 = it), true) }
     }
 }
 

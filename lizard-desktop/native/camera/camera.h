@@ -50,10 +50,10 @@ struct Control {
 struct Info {
   // ai: unique across backends and stable across runs where the system allows (a saved choice finds it again):
   // ai: v4l2:<the /dev/v4l/by-id link, else the node>, mf:<symbolic link>, avf:<unique id>,
-  // ai: sim:0 (the simulated camera, LIZ_CAMERA_SIM)
+  // ai: sim:0 (the simulated camera, LIZ_CAMERA_SIM), upload:<path> (a replay played, never listed)
   std::string id;
   std::string name;         // ai: the device's own
-  std::string backend;      // ai: uvc, phone or sim
+  std::string backend;      // ai: uvc, phone, upload or sim
   std::string detail;       // ai: the bus, the driver
 };
 
@@ -69,7 +69,14 @@ struct Frame {
 // ai: Since start: frames handed over, dropped (the system's or the camera's: a buffer the stream lost, a sequence
 // ai: gap), corrupt (a frame that would not convert: a broken JPEG, a short buffer); the mean time to luma;
 // ai: fps, the rate the camera agreed to at start (V4L2's answer to the interval asked), 0 where it names none.
-struct Stats { uint64_t frames = 0, dropped = 0, corrupt = 0; double convertMs = 0, fps = 0; };
+struct Stats {
+  uint64_t frames = 0, dropped = 0, corrupt = 0;
+  double convertMs = 0, fps = 0;
+  // ai: a camera that is another device's (a phone, phone.cpp): the times its own Start or Stop was pressed there
+  // ai: since the open, and the last one's way (true Start), for the receiver to follow
+  uint64_t asks = 0;
+  bool askOn = false;
+};
 
 class Camera {
  public:
@@ -103,6 +110,10 @@ class Camera {
 // ai: Every backend's cameras: UVC (the system's) first, then the simulated one where LIZ_CAMERA_SIM is set. A
 // ai: backend that could not look (Media Foundation absent, a node named by LIZ_V4L2_NODES missing) says why in notes.
 std::vector<Info> list(std::vector<std::string>* notes = nullptr);
+// ai: A cheap mark of what list() would find (2026-10-27): the USB devices libusb sees (none opened), the V4L2 nodes,
+// ai: the phones whose beacons are heard. It changes where a camera may have come or gone, so a caller watches it and
+// ai: lists again only then. Media Foundation's and AVFoundation's devices are in it only through libusb.
+std::string listStamp();
 std::unique_ptr<Camera> open(const std::string& id, std::string& why);
 
 // ai: The mode a receiver starts with (camera.cpp: the rule): of those at wantW x wantH (0 any), the fastest up to

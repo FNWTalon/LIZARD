@@ -7,7 +7,7 @@
 //                                                 one batch, each frame's finder, word and blocks against the web's
 //                                                 reference at its tolerances (research/build/gpu_selftest_ref.json, or
 //                                                 _int8.json for an int8 variant); exit 1 on a difference
-//   lizard_gpu_check replay <run> [frames] [variant]   a recording (research/captures/v0.3/<run>) through the
+//   lizard_gpu_check replay <run> [frames] [variant]   a recording (research/captures/v0.3/<run>.lizard) through the
 //                                                 decoder as the web's replay runs it (batches of the batcher's size,
 //                                                 two in flight, the held word carried in capture order): frames
 //                                                 found, words, verified blocks, GPU ms a frame
@@ -16,7 +16,8 @@
 // ai: build step makes: from the root, liblizard/.tools/glslang/bin/glslang -V --target-env vulkan1.3
 // ai: liblizard/core/tools/bench_dot.comp -o liblizard/out/spv/bench_dot.spv (glslang 16, placed there by hand).
 // ai: selftest and dump read the self-test's frames and references, replay and receive a recording, ingest (Android)
-// ai: either: the lab's research/ (LIZ_BARCODE), which is not published. A run lizard_engine paint makes reads as a recording put at <LIZ_BARCODE>/captures/v0.3/<run>.
+// ai: either: the lab's research/ (LIZ_BARCODE), which is not published. A recording is a .lizard (rx/lizfile.h; tools/
+// ai: recording.h): <LIZ_BARCODE>/captures/v0.3/<run>.lizard, or the path given where <run> has a '/'.
 //
 // ai: Env: LIZ_OUT (the generated tree, liblizard/out; on the phone /data/local/tmp/lizard/out), LIZ_BARCODE (research/,
 // ai: for its build/ frames and references and its captures/ recordings), LIZ_VK_DEVICE (a substring of the device's name), LIZ_VALIDATE=1 (the
@@ -28,6 +29,7 @@
 // ai: a receiver's default, 1); the other modes' own device at LOW only with 1, for an A/B against a screen's load.
 #include "front.h"
 #include "receiver.h"
+#include "recording.h"
 #include "replay.h"
 #include "axes.h"
 extern "C" {
@@ -147,12 +149,14 @@ static int ingestCheck(Ctx& c, std::string v, const std::string& run = "") {
     S = ref["frames"][0]["w"];
     for (auto& f : ref["frames"]) frames.push_back(readAll(c.barcode + "/build/" + ref["source"].get<std::string>() + "/" + f["name"].get<std::string>()));
   } else {
-    const std::string dir = c.barcode + "/captures/v0.3/" + run;
-    auto metaBytes = readAll(dir + "/meta.json");
-    json meta = json::parse(metaBytes.begin(), metaBytes.end());
-    S = meta["w"];
-    char name[32];
-    for (int i = 0; i < std::min<int>(meta["frames"].get<int>(), 16); i++) { snprintf(name, sizeof name, "/%04d.gray", i); frames.push_back(readAll(dir + name)); }
+    std::string why;
+    auto rec = openRecording(c.barcode, run, why);
+    if (!rec) throw wg::Error(why);
+    S = rec->frames().empty() ? 0 : rec->frames()[0].w;
+    for (size_t i = 0; i < std::min<size_t>(rec->frames().size(), 16); i++) {
+      frames.emplace_back();
+      if (!rec->frame(i, frames.back(), why)) throw wg::Error(why);
+    }
     fh->plan(1080, 1080);
   }
   const uint32_t CH = std::max<uint32_t>(S, 1080), CW = std::max<uint32_t>(1920, (CH * 16 / 9 + 1) & ~1u);
@@ -242,14 +246,13 @@ static void synthRaw(const uint8_t* px, uint32_t w, uint32_t h, int format, uint
 // ai: frame pushed as a frame of that format (CameraFrame::raw), which the receiver develops (the GPU decoder on its
 // ai: device, the C on this thread).
 static int receive(Ctx& c, const std::string& run, double fps, const std::string& storeDir, const std::string& layout = "1:1") {
-  const std::string dir = c.barcode + "/captures/v0.3/" + run;
-  auto metaBytes = readAll(dir + "/meta.json");
-  json meta = json::parse(metaBytes.begin(), metaBytes.end());
+  std::string why;
+  auto rec = openRecording(c.barcode, run, why);
+  if (!rec) throw wg::Error(why);
+  const json meta = json::parse(rec->meta());
   const uint32_t W = meta["w"], H = meta["h"];
-  // ai: the frames present (a phone holds the first n of a recording), LIZ_LAPS laps over them (1 by default)
-  int frames = meta["frames"];
-  char name[32];
-  for (int i = 0; i < frames; i++) { snprintf(name, sizeof name, "/%04d.gray", i); if (!std::ifstream(dir + name).good()) { frames = i; break; } }
+  // ai: the recording's frames, LIZ_LAPS laps over them (1 by default)
+  const int frames = (int)rec->frames().size();
   if (!frames) throw wg::Error(run + ": no frames");   // ai: a replay that kept none (the camera stopped at once)
   // ai: LIZ_GROW=1 (layout 1:1): the first lap pushes each frame's centre three quarters as a frame of its own, the
   // ai: laps after it the whole frame, so the receiver plans small and must plan again for the larger crop (the
@@ -276,8 +279,9 @@ static int receive(Ctx& c, const std::string& run, double fps, const std::string
   std::atomic<int> released{0};
   auto rx = Receiver::create(cfg, [&](uint64_t) { released++; });
   if (rx && getenv("LIZ_BATCH")) rx->batchCap(atoi(getenv("LIZ_BATCH")));
-  // ai: LIZ_REPLAY=<dir> (Save replays, 2026-10-03; rx/replay.h): the newest LIZ_REPLAY_FRAMES (300) frames the
-  // ai: decoder is handed kept in <dir> as the app's Developer Tools keeps them, the run ended once the pushes are done
+  // ai: LIZ_REPLAY=<file> (Save replays, 2026-10-03; rx/replay.h): the newest LIZ_REPLAY_FRAMES (300) frames the
+  // ai: decoder is handed kept as the .lizard <file> as the app's Developer Tools keeps them, the run ended once the
+  // ai: pushes are done
   std::shared_ptr<Replay> replay;
   if (getenv("LIZ_REPLAY")) {
     replay = std::make_shared<Replay>(getenv("LIZ_REPLAY"), "run-check", getenv("LIZ_REPLAY_FRAMES") ? atoi(getenv("LIZ_REPLAY_FRAMES")) : 300);
@@ -302,10 +306,7 @@ static int receive(Ctx& c, const std::string& run, double fps, const std::string
   std::vector<std::vector<uint8_t>> px(frames);
   const auto sizes = frameSizes(meta, frames);
   for (int i = 0; i < frames; i++) {
-    snprintf(name, sizeof name, "/%04d.gray", i);
-    px[i] = readAll(dir + name);
-    if (px[i].size() != (size_t)sizes[i].first * sizes[i].second)
-      throw wg::Error(std::string(name + 1) + ": " + std::to_string(px[i].size()) + " bytes for " + std::to_string(sizes[i].first) + " x " + std::to_string(sizes[i].second));
+    if (!rec->frame((size_t)i, px[i], why)) throw wg::Error(why);
     // ai: 2:1 lays two frames side by side and LIZ_GROW crops by the run's size: both want frames of one size
     if ((layout == "2:1" || grow) && sizes[i] != sizes[0]) throw wg::Error(std::string(layout == "2:1" ? "2:1" : "LIZ_GROW") + " needs frames of one size; " + run + " holds several");
   }
@@ -512,10 +513,11 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
   const int launch = getenv("LIZ_LAUNCH") ? std::max(1, atoi(getenv("LIZ_LAUNCH"))) : 1 << 30;
   const bool perFrame = env("LIZ_PERFRAME") == "1";
   auto fh = open(c, v);
-  const std::string dir = c.barcode + "/captures/v0.3/" + run;
-  auto metaBytes = readAll(dir + "/meta.json");
-  json meta = json::parse(metaBytes.begin(), metaBytes.end());
-  const int frames = std::min<int>(limit > 0 ? limit : 1 << 30, meta["frames"].get<int>());
+  std::string why;
+  auto rec = openRecording(c.barcode, run, why);
+  if (!rec) throw wg::Error(why);
+  const json meta = json::parse(rec->meta());
+  const int frames = std::min<int>(limit > 0 ? limit : 1 << 30, (int)rec->frames().size());
   const auto sizes = frameSizes(meta, frames);
   uint32_t W = meta["w"], H = meta["h"];
   for (auto& wh : sizes) { W = std::max(W, wh.first); H = std::max(H, wh.second); }
@@ -569,17 +571,14 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
       if (it == stageSum.end()) stageSum.push_back(kv); else it->second += kv.second;
     }
   };
-  char name[32];
-  std::vector<std::vector<uint8_t>> px;
   while (next < frames || !flight.empty()) {
     if (next < frames && (int)flight.size() < fh->inflightMax() && fh->freeLane()) {
       const int nb = std::min({fh->size(), frames - next, launch});
       std::vector<Slot*> slots;
       for (int i = 0; i < nb; i++, next++) {
-        snprintf(name, sizeof name, "/%04d.gray", next);
-        auto p = readAll(dir + name);
+        std::vector<uint8_t> p;
+        if (!rec->frame((size_t)next, p, why)) throw wg::Error(why);
         const uint32_t w = sizes[next].first, h = sizes[next].second;
-        if (p.size() != (size_t)w * h) throw wg::Error(dir + name + ": " + std::to_string(p.size()) + " bytes for " + std::to_string(w) + " x " + std::to_string(h));
         // ai: A slot comes back once the batch that took it has copied it out (front.cpp takeSlot): the batch just
         // ai: launched may not have on a slow device (the iGPU, 32 frames a batch, a ring of 36), so wait for it.
         Slot* s = nullptr;

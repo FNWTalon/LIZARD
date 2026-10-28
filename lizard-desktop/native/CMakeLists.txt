@@ -85,7 +85,7 @@ add_library(lizard_api_static STATIC ${LZ}/api/api.cpp ${LZ}/api/format.cpp ${LZ
 target_include_directories(lizard_api_static PUBLIC ${LZ}/include)
 target_compile_definitions(lizard_api_static PUBLIC LIZ_STATIC PRIVATE LIZ_VERSION_STRING="desktop")
 target_link_libraries(lizard_api_static PUBLIC lizard_codec lizard_xfer_core)
-set(LIZ_CAM_SOURCES camera/camera.cpp camera/luma.cpp camera/jpeg.cpp camera/clock.cpp camera/sim.cpp camera/phone.cpp camera/aoa.cpp sim/scene.cpp)
+set(LIZ_CAM_SOURCES camera/camera.cpp camera/luma.cpp camera/jpeg.cpp camera/clock.cpp camera/sim.cpp camera/phone.cpp camera/aoa.cpp camera/upload.cpp sim/scene.cpp)
 if(UNIX AND NOT APPLE)
   list(APPEND LIZ_CAM_SOURCES camera/v4l2.cpp)
 elseif(WIN32)
@@ -99,7 +99,7 @@ target_include_directories(lizard_cam PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE
 target_include_directories(lizard_cam SYSTEM PRIVATE ${LZ}/core/third_party)
 target_include_directories(lizard_cam PRIVATE ${LZ}/core/rx)   # ai: stream.h, the phone's wire (phone.cpp)
 target_compile_options(lizard_cam PRIVATE ${LIZ_DESKTOP_WARN} $<$<NOT:$<BOOL:${MSVC}>>:-O3>)
-target_link_libraries(lizard_cam PUBLIC lizard_api_static Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(lizard_cam PUBLIC lizard_api_static lizard_replay Threads::Threads ${CMAKE_DL_LIBS})   # ai: lizard_replay: the .lizard reader (upload.cpp)
 if(WIN32)
   # ai: Media Foundation's GUIDs and DirectShow's camera-control IIDs are static data (libmfuuid, libstrmiids); its
   # ai: functions are looked up in mfplat, mf and mfreadwrite at run time, so the library loads where it is absent

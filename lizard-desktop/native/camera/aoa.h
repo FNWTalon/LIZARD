@@ -28,6 +28,8 @@ struct Found { std::string id, name, detail; };
 // ai: the phones on USB: Google's accessory devices, and the devices with a phone's interfaces (MTP, PTP, adb, a USB
 // ai: tether) that answer the accessory protocol's version; notes say why one could not be asked (no access, no driver)
 std::vector<Found> list(std::vector<std::string>* notes);
+// ai: every USB device's place and ids, none opened: a mark that changes as devices come and go ("" with no libusb)
+std::string stamp();
 // ai: the phone at id as an accessory, switched into accessory mode where it is not one yet, its accessory interface
 // ai: claimed; name its product string. Null with why where it cannot be
 std::unique_ptr<Wire> open(const std::string& id, std::string& name, std::string& why);

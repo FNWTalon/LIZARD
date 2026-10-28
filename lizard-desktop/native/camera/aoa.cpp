@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -81,6 +82,7 @@ constexpr uint8_t VENDOR_IN = 0xC0, VENDOR_OUT = 0x40;
 // ai: description, version, URI (Android offers it where no app matches), serial
 const char* const STRINGS[6] = {"LIZARD", "PC receiver", "LIZARD's PC receiver", "1", "https://github.com/FNWTalon/LIZARD", ""};
 constexpr int SWITCH_MS = 8000;   // ai: the phone's way back onto the bus as an accessory
+constexpr int64_t STALL_NS = 1'500'000'000;   // ai: a send that moves nothing this long has no phone to go to
 
 struct Usb {
   bool ok = false;
@@ -251,14 +253,18 @@ class UsbWire : public Wire {
     u_->close(h_);
   }
 
+  // ai: false where the phone takes nothing for STALL_NS (its app gone: the accessory's reads stop with the cable in)
   bool send(const void* p, size_t n) override {
     auto* b = static_cast<unsigned char*>(const_cast<void*>(p));
     size_t left = n;
+    int64_t stall = steadyNs() + STALL_NS;
     while (left) {
       if (cut_) return false;
       int done = 0;
       const int r = u_->bulkTransfer(h_, out_, b, static_cast<int>(std::min<size_t>(left, 1 << 20)), &done, 500);
       if (r != 0 && r != ERR_TIMEOUT) return false;
+      if (done > 0) stall = steadyNs() + STALL_NS;
+      else if (steadyNs() > stall) return false;
       b += done;
       left -= static_cast<size_t>(done);
     }
@@ -343,6 +349,23 @@ std::vector<Found> list(std::vector<std::string>* notes) {
   }
   if (n >= 0) u->freeDeviceList(devs, 1);
   return out;
+}
+
+std::string stamp() {
+  const Usb* u = usb();
+  if (!u->ok) return "";
+  std::string s;
+  void** devs = nullptr;
+  const std::ptrdiff_t n = u->getDeviceList(u->ctx, &devs);
+  char ids[16];
+  for (std::ptrdiff_t i = 0; i < n; i++) {
+    DevDesc dd{};
+    if (u->getDeviceDescriptor(devs[i], &dd) != 0) continue;
+    std::snprintf(ids, sizeof ids, "%04x:%04x", dd.idVendor, dd.idProduct);
+    s += placeOf(u, devs[i]) + "=" + ids + ";";
+  }
+  if (n >= 0) u->freeDeviceList(devs, 1);
+  return s;
 }
 
 std::unique_ptr<Wire> open(const std::string& id, std::string& name, std::string& why) {

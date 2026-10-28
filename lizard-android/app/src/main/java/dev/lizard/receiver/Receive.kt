@@ -67,7 +67,6 @@ internal fun MainActivity.ReceiveScreen() {
     val side: @Composable () -> Unit = {
         TransferPanel()
         Fold("Settings", isOpen("recvSettings"), { toggle("recvSettings") }) { ReceiveSettings() }
-        Fold("Experimental", isOpen("recvExperimental"), { toggle("recvExperimental") }) { ReceiveExperimental() }
         Fold("Developer Tools", isOpen("recvAdvanced"), { toggle("recvAdvanced") }) { ReceiveAdvanced() }
         About()
         Spacer(Modifier.height(24.dp))
