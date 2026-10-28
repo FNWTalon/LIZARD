@@ -116,7 +116,9 @@ export const SPAN = (n, ring = RING_DEFAULT) => 2 * RINGS[ring];
 // Modules along a side, which is what a receiver finds before it knows anything else: it identifies the ring.
 export const MODULES = (n, ring = RING_DEFAULT) => SPAN(n, ring) + 2 * OB_MARGIN;
 // Whole pixels a module in the painted symbol (src/focus.c pxm): the fewest that do not shrink the picture.
-export const CELL_OF = (n, ring = RING_DEFAULT) => Math.ceil(n / SPAN(n, ring) - 1e-4);
+// ai: and no fewer than an anchor's pattern needs, 6 px across a square of span / 64 modules (src/internal.h
+// ai: OB_ANCH_PX_MIN; SPEC 6.13): 3 in the 64 ring and 2 in the 128, which lifts their 256 picture.
+export const CELL_OF = (n, ring = RING_DEFAULT) => Math.max(Math.ceil(n / SPAN(n, ring) - 1e-4), Math.ceil((6 * 64) / SPAN(n, ring)));
 // Pixels across the painted symbol, margin not included.
 export const SAMPLES = (n, ring = RING_DEFAULT) => MODULES(n, ring) * CELL_OF(n, ring);
 // How a block's bits lie on its coefficients, src/focus.h FOCUS_BITMAP (the only map): the sender writes it into its

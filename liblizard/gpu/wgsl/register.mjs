@@ -85,7 +85,11 @@ fn levelFor(u: f32) -> u32 { return u32(clamp(floor(log2(max(u, 1.0) / 1.5)), 0.
 // a module) the image is read once a lattice point and the correlations sum those reads; otherwise each sample's
 // image position and the map's Jacobian there are found once, exactly, and an offset moves the sample by
 // J * offset (the offsets are within 0.6 module, where the map's curvature is under a thousandth of a pixel).
-export const NODES = DIMS + LEVELS + MAP + /* wgsl */ `
+// ai: centred (the anchors' lab arm's border search, wgsl/anchors.mjs ANCH_PREDICT): only a node whose meas holds the
+// ai: anchors' prediction (w 2) is measured, its window there: every sample of it and the place measured moved by that
+// ai: shift, the map's Jacobian kept; written with w 3 (a measurement, as REFIT and ANCH_REFIT read w). Every other
+// ai: node keeps what F7 measured.
+export const nodesSource = ({ centred = false } = {}) => DIMS + LEVELS + MAP + /* wgsl */ `
 // ai: light: the template's light samples (expected value 1) among those the round takes, a node of every ring.
 struct Round { steps: u32, stride: u32, p0: u32, p1: u32, step: f32, p2: f32, p3: f32, p4: f32, count: vec4u, base: vec4u, light: array<vec4u, ${LIGHT_MAX / 4}> }
 @group(0) @binding(7) var<storage, read> nodes: array<vec4f>;
@@ -109,7 +113,7 @@ var<workgroup> psv2: array<f32, ITEMS>;
 var<workgroup> psev: array<f32, ITEMS>;
 var<workgroup> ncc: array<f32, 225>;
 var<workgroup> best: atomic<u32>;
-@compute @workgroup_size(${WG}, 1, 1)
+${centred ? "var<workgroup> wm0: vec4f;\n" : ""}@compute @workgroup_size(${WG}, 1, 1)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
   let f = wg.y;
   let n = wg.x;
@@ -119,8 +123,14 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   let node = nodes[R.base[pick.x] + n];
   let M = maps[f];
   // The module size here, from the map, picks the level.
-  let c = toImage(M, node.xy);
-  let u = 0.5 * (distance(toImage(M, node.xy + vec2f(1.0, 0.0)), c) + distance(toImage(M, node.xy + vec2f(0.0, 1.0)), c));
+${centred ? `  if (li == 0u) { wm0 = meas[f * ${NODES_MAX}u + n]; }
+  let m0 = workgroupUniformLoad(&wm0);
+  if (m0.w != 2.0) { return; }
+  let cm = toImage(M, node.xy);
+  let sh = m0.xy - cm;
+  let c = cm + sh;
+  let u = 0.5 * (distance(toImage(M, node.xy + vec2f(1.0, 0.0)), cm) + distance(toImage(M, node.xy + vec2f(0.0, 1.0)), cm));` : `  let c = toImage(M, node.xy);
+  let u = 0.5 * (distance(toImage(M, node.xy + vec2f(1.0, 0.0)), c) + distance(toImage(M, node.xy + vec2f(0.0, 1.0)), c));`}
   // ai: a node the frame does not hold (2 modules in from its edge) is not measured: a symbol COMPLETE registered
   // ai: with a corner past the crop (wgsl/finder.mjs); a whole symbol's nodes, 3.5 modules inside it, never are
   let F0 = frames[f];
@@ -155,7 +165,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   if (lattice) {
     for (var q = li; q < gridN * gridN; q += WG) {
       let g = vec2f(f32(q % gridN), f32(q / gridN));
-      gv[q] = bilinear(L, f, toImage(M, origin + (g - f32(side)) * R.step));
+      gv[q] = bilinear(L, f, toImage(M, origin + (g - f32(side)) * R.step)${centred ? " + sh" : ""});
     }
   }
   for (var item = li; item < items; item += WG) { psv[item] = 0.0; psv2[item] = 0.0; psev[item] = 0.0; }
@@ -169,7 +179,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
         let g = vec2u(round((t.xy - origin) / spacing)) * ratioN;
         sp[j - c0] = vec4f(bitcast<f32>(0x40000000u | g.x | (g.y << 8u) | (u32(t.z) << 16u)), 0.0, 0.0, 0.0);
       } else {
-        let p = toImage(M, t.xy);
+        let p = toImage(M, t.xy)${centred ? " + sh" : ""};
         // The map's Jacobian at t: the homography's, then through the lens inverse (u - c = d (1 + k1 |d|^2 / R^2)
         // with d = p - c, whose 2 x 2 derivative s I + g d d^T inverts by Sherman-Morrison).
         let w = M[6] * t.x + M[7] * t.y + M[8];
@@ -265,23 +275,25 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
       if (e < 0.0) { dy = clamp(0.5 * (a - z) / e, -0.5, 0.5); }
     }
     let off = R.step * vec2f(f32(bx - side) + dx, f32(by - side) + dy);
-    meas[f * ${NODES_MAX}u + n] = vec4f(toImage(M, node.xy + off), v, 1.0);
+    meas[f * ${NODES_MAX}u + n] = vec4f(toImage(M, node.xy + off)${centred ? " + sh, v, 3.0" : ", v, 1.0"});
   }
 }
 `;
+export const NODES = nodesSource();
 
-// REFIT: the map (homography and k1 about the image centre, the form the camera model has) fitted to the measured
-// nodes by Gauss-Newton, in coordinates normalised so single precision holds: modules / M, pixels about the image
+// REFIT: the map's homography fitted to the measured nodes by Gauss-Newton (the lens is REFIT_POST's, about the
+// camera's axis; a k1 about the image centre went 2026-10-27: no block on the replays or the published lenses, 1% of
+// the frame on the iGPU), in coordinates normalised so single precision holds: modules / M, pixels about the image
 // centre / its half-diagonal. Five damped steps, each node weighted by its correlation (none under WMIN) and a
 // Huber weight on its residual (DELTA modules). Writes the map, and each node's residual (measured minus fitted,
 // image pixels) for the Coons patch; resid[f][n] = (dx, dy, weight, 0).
 //
 // The solves are written out with literal indices (generated below): an array indexed at run time lives in scratch
-// memory on a GPU, and the pivoted 9 x 9 elimination that way took over 2 ms a call on the RDNA-2 iGPU.
+// memory on a GPU, and the pivoted 9 x 9 elimination (with k1) that way took over 2 ms a call on the RDNA-2 iGPU.
 export const WMIN = 0.3, DELTA = 0.4, ITERS = 5;
-// ai: REFIT's debug words a frame (dbg, read by gpu/probe.mjs): the first refit's first iteration, th (0-8), the
-// ai: normal matrix A (9-53) and the gradient g (54-62).
-export const REFIT_DBG = 63;
+// ai: REFIT's debug words a frame (dbg, read by gpu/probe.mjs): the first refit's first iteration, th (0-7), the
+// ai: normal matrix A (8-43) and the gradient g (44-51).
+export const REFIT_DBG = 52;
 
 const unroll = (n, f) => Array.from({ length: n }, (_, i) => f(i)).join("\n");
 // Gauss-Jordan elimination with partial pivoting on N (rows x cols, the right-hand sides after the square part),
@@ -308,23 +320,23 @@ function gaussJordan(N, rows, cols, eps, ok) {
   }
   return s.join("\n");
 }
-const jacobian = unroll(9, (k) => {
-  const arr = (sign) => `array<f32, 9>(${Array.from({ length: 9 }, (_, j) => (j === k ? `t[${j}] ${sign} hs${k}` : `t[${j}]`)).join(", ")})`;
-  return `let hs${k} = ${k === 8 ? "1e-4" : "1e-3"};\nlet J${k} = (fwd(${arr("+")}, m, c, S, inv) - fwd(${arr("-")}, m, c, S, inv)) / (2.0 * hs${k});`;
+const jacobian = unroll(8, (k) => {
+  const arr = (sign) => `array<f32, 8>(${Array.from({ length: 8 }, (_, j) => (j === k ? `t[${j}] ${sign} hs${k}` : `t[${j}]`)).join(", ")})`;
+  return `let hs${k} = 1e-3;\nlet J${k} = (fwd(${arr("+")}, m, c, S) - fwd(${arr("-")}, m, c, S)) / (2.0 * hs${k});`;
 });
 const accumulate = (() => {
   const s = [];
   let q = 0;
-  for (let a = 0; a < 9; a++) {
+  for (let a = 0; a < 8; a++) {
     s.push(`jr[${a}] += w * dot(J${a}, r);`);
-    for (let b = a; b < 9; b++) s.push(`jj[${q++}] += w * dot(J${a}, J${b});`);
+    for (let b = a; b < 8; b++) s.push(`jj[${q++}] += w * dot(J${a}, J${b});`);
   }
   return s.join("\n");
 })();
 const normal = (() => {
   const s = [];
   let q = 0;
-  for (let a = 0; a < 9; a++) for (let b = a; b < 9; b++) { s.push(`N[${a}][${b}] = A[${q}]; N[${b}][${a}] = A[${q}];`); q++; }
+  for (let a = 0; a < 8; a++) for (let b = a; b < 8; b++) { s.push(`N[${a}][${b}] = A[${q}]; N[${b}][${a}] = A[${q}];`); q++; }
   return s.join("\n");
 })();
 // ai: A side's residual curve takes 1 to SIDE_MAX coefficients (a constant to a quintic in the position along it),
@@ -391,20 +403,20 @@ fn lensAt(L: Lens, p: vec2f) -> vec2f {
     - (L.t1.z * d.x + L.t1.w * d.y) * d + (t * (L.t2.x + t * (L.t2.y + t * L.t2.z))) * q;
 }
 `;
-const LENS_P = 11;
+export const LENS_P = 11;
 // ai: A node's two rows of the lens model (its dx's and its dy's), null where a column is 0 there.
 const lensRows = () => {
   const rx = ["d.x", "d.y", null, null, "1.0", null, "(-d.x * d.x)", "(-d.y * d.x)", "(t * q.x)", "(t2 * q.x)", "(t3 * q.x)"];
   const ry = [null, null, "d.x", "d.y", null, "1.0", "(-d.x * d.y)", "(-d.y * d.y)", "(t * q.y)", "(t2 * q.y)", "(t3 * q.y)"];
   return { rx, ry };
 };
-const lensIdx = (a, b) => a * LENS_P - (a * (a - 1)) / 2 + (b - a);   // ai: packed upper triangle, 66 entries
-const lensNode = /* wgsl */ `let d = (p - LF.ctr) * LF.sig;
+export const lensIdx = (a, b) => a * LENS_P - (a * (a - 1)) / 2 + (b - a);   // ai: packed upper triangle, 66 entries
+export const lensNode = /* wgsl */ `let d = (p - LF.ctr) * LF.sig;
         let q = (p - LA) * lir;
         let t = (dot(q, q) - LF.smid) * LF.ish;
         let t2 = t * t;
         let t3 = t2 * t;`;
-const lensAccumulate = (() => {
+export const lensAccumulate = (() => {
   const { rx, ry } = lensRows(), s = [];
   for (let a = 0; a < LENS_P; a++) for (let b = a; b < LENS_P; b++) {
     const t = [];
@@ -421,7 +433,7 @@ const lensAccumulate = (() => {
   return s.join("\n        ");
 })();
 // ai: The model with K radial terms at a node, from LT[K] (the coefficients in pixels).
-const lensModel = (K) => {
+export const lensModel = (K) => {
   const { rx, ry } = lensRows(), x = [], y = [];
   for (let a = 0; a < 8 + K; a++) {
     if (rx[a]) x.push(`LT[${K}][${a}] * ${rx[a]}`);
@@ -432,7 +444,7 @@ const lensModel = (K) => {
 // ai: Cholesky of the unit-diagonal 11 x 11 (Ln lower), its first failing pivot in okD (11 if none): the leading
 // ai: D x D block's factor is the factor's leading block, so one factorisation serves every K, and so does the
 // ai: forward substitution (z); each K's back substitution is its own. Literal indices only (Invariants).
-const lensSolve = (() => {
+export const lensSolve = (() => {
   const s = [];
   for (let j = 0; j < LENS_P; j++) {
     let sum = `Ns[${j}][${j}]`;
@@ -462,6 +474,21 @@ const lensSolve = (() => {
   }
   return s.join("\n      ");
 })();
+// ai: Lane 0's solve of the lens's normal equations (LP, the lanes' sums put together): unit diagonal, Cholesky, each
+// ai: K's coefficients into LT and LK (lensSolve); lensFit's and the anchors' refit's (wgsl/anchors.mjs ANCH_REFIT).
+export const lensNormalSolve = /* wgsl */ `      var Ns = array<array<f32, ${LENS_P}>, ${LENS_P}>();
+      var bs = array<f32, ${LENS_P}>();
+      var Dg = array<f32, ${LENS_P}>();
+      var Ln = array<array<f32, ${LENS_P}>, ${LENS_P}>();
+      var z = array<f32, ${LENS_P}>();
+      var Ap = array<f32, 77>();
+      ${Array.from({ length: 77 }, (_, i) => `Ap[${i}] = LP[${i}];`).join(" ")}
+      ${(() => { const s = []; for (let a = 0; a < LENS_P; a++) for (let b = a; b < LENS_P; b++) s.push(`Ns[${a}][${b}] = Ap[${lensIdx(a, b)}]; Ns[${b}][${a}] = Ap[${lensIdx(a, b)}];`); return s.join("\n      "); })()}
+      ${Array.from({ length: LENS_P }, (_, a) => `Dg[${a}] = 1.0 / sqrt(max(Ns[${a}][${a}], 1e-30));`).join("\n      ")}
+      ${Array.from({ length: LENS_P }, (_, a) => `${Array.from({ length: LENS_P }, (_, b) => `Ns[${a}][${b}] *= Dg[${a}] * Dg[${b}];`).join(" ")}\n      Ns[${a}][${a}] = Ns[${a}][${a}] * 1.0001 + 1e-9; bs[${a}] = Ap[${66 + a}] * Dg[${a}];`).join("\n      ")}
+      var okD = ${LENS_P}u;
+      ${lensSolve}
+`;
 const lensFit = /* wgsl */ `
   // ai: The lens about the camera's axis (LENS above): fitted to the nodes' residuals, kept after them, taken off them.
   {
@@ -546,19 +573,7 @@ const lensFit = /* wgsl */ `
     }
     workgroupBarrier();
     if (li == 0u && LF.on != 0u) {
-      var Ns = array<array<f32, ${LENS_P}>, ${LENS_P}>();
-      var bs = array<f32, ${LENS_P}>();
-      var Dg = array<f32, ${LENS_P}>();
-      var Ln = array<array<f32, ${LENS_P}>, ${LENS_P}>();
-      var z = array<f32, ${LENS_P}>();
-      var Ap = array<f32, 77>();
-      ${Array.from({ length: 77 }, (_, i) => `Ap[${i}] = LP[${i}];`).join(" ")}
-      ${(() => { const s = []; for (let a = 0; a < LENS_P; a++) for (let b = a; b < LENS_P; b++) s.push(`Ns[${a}][${b}] = Ap[${lensIdx(a, b)}]; Ns[${b}][${a}] = Ap[${lensIdx(a, b)}];`); return s.join("\n      "); })()}
-      ${Array.from({ length: LENS_P }, (_, a) => `Dg[${a}] = 1.0 / sqrt(max(Ns[${a}][${a}], 1e-30));`).join("\n      ")}
-      ${Array.from({ length: LENS_P }, (_, a) => `${Array.from({ length: LENS_P }, (_, b) => `Ns[${a}][${b}] *= Dg[${a}] * Dg[${b}];`).join(" ")}\n      Ns[${a}][${a}] = Ns[${a}][${a}] * 1.0001 + 1e-9; bs[${a}] = Ap[${66 + a}] * Dg[${a}];`).join("\n      ")}
-      var okD = ${LENS_P}u;
-      ${lensSolve}
-    }
+${lensNormalSolve}    }
     workgroupBarrier();
     // ai: each K's weighted residual sum over the nodes, every lane a share
     {
@@ -622,22 +637,19 @@ struct Fit { count: vec4u, base: vec4u, modules: vec4f }
 @group(0) @binding(4) var<storage, read_write> maps: array<array<f32, 16>>;
 @group(0) @binding(5) var<storage, read_write> resid: array<vec4f>;
 @group(0) @binding(6) var<uniform> P: Fit;
-// ai: Debug, REFIT_DBG words a frame: the first iteration of the first refit's th (0-8), A (9-53) and g (54-62).
+// ai: Debug, REFIT_DBG words a frame: the first iteration of the first refit's th (0-7), A (8-43) and g (44-51).
 @group(0) @binding(7) var<storage, read_write> dbg: array<f32>;
 ` + LENS + /* wgsl */ `
-var<workgroup> JJ: array<array<f32, 45>, 64>;
-var<workgroup> Jr: array<array<f32, 9>, 64>;
-var<workgroup> Ag: array<f32, 54>;
-var<workgroup> th: array<f32, 9>;
+var<workgroup> JJ: array<array<f32, 36>, 64>;
+var<workgroup> Jr: array<array<f32, 8>, 64>;
+var<workgroup> Ag: array<f32, 44>;
+var<workgroup> th: array<f32, 8>;
 var<workgroup> lastStep: f32;
 const ITERS = ${ITERS};
-// Normalised map: m in [0, 1], homography th[0..7] (th[8] = 1 implied) to u about the centre / S, then the lens.
-fn fwd(t: array<f32, 9>, m: vec2f, c: vec2f, S: f32, inv: f32) -> vec2f {
+// Normalised map: m in [0, 1], homography th[0..7] (th[8] = 1 implied) to u about the centre / S.
+fn fwd(t: array<f32, 8>, m: vec2f, c: vec2f, S: f32) -> vec2f {
   let w = t[6] * m.x + t[7] * m.y + 1.0;
-  let u = c + S * vec2f(t[0] * m.x + t[1] * m.y + t[2], t[3] * m.x + t[4] * m.y + t[5]) / w;
-  var p = u;
-  for (var i = 0; i < 6; i++) { let d = p - c; p = c + (u - c) / (1.0 + t[8] * dot(d, d) * inv); }
-  return p;
+  return c + S * vec2f(t[0] * m.x + t[1] * m.y + t[2], t[3] * m.x + t[4] * m.y + t[5]) / w;
 }
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
@@ -657,22 +669,21 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
     var h = array<f32, 9>();
     ${unroll(3, (j) => `{ let s = ${j < 2 ? "Mod" : "1.0"}; h[${j}] = (m0[${j}] - c.x * m0[${6 + j}]) / S * s; h[${3 + j}] = (m0[${3 + j}] - c.y * m0[${6 + j}]) / S * s; h[${6 + j}] = m0[${6 + j}] * s; }`)}
     ${unroll(8, (j) => `th[${j}] = h[${j}] / h[8];`)}
-    th[8] = m0[9];
   }
   workgroupBarrier();
   for (var it = 0; it < ITERS; it++) {
-    let t = array<f32, 9>(th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7], th[8]);
+    let t = array<f32, 8>(th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7]);
     // Initialised every iteration: a loop-body var without an initializer kept its old value on Chrome/Vulkan.
-    var jj = array<f32, 45>();
-    var jr = array<f32, 9>();
+    var jj = array<f32, 36>();
+    var jr = array<f32, 8>();
     for (var n = li; n < count; n += 64u) {
       let e = meas[f * ${NODES_MAX}u + n];
       if (e.w == 0.0 || e.z < ${WMIN}) { continue; }
       let m = nodes[base + n].xy / Mod;
-      let p = fwd(t, m, c, S, inv);
+      let p = fwd(t, m, c, S);
       let r = e.xy - p;
       // The module size here, in pixels, sets the Huber scale.
-      let du = distance(fwd(t, m + vec2f(1.0 / Mod, 0.0), c, S, inv), p);
+      let du = distance(fwd(t, m + vec2f(1.0 / Mod, 0.0), c, S), p);
       let rr = length(r);
       let w = e.z * select(1.0, ${DELTA} * du / rr, rr > ${DELTA} * du);
       // The Jacobian by central differences in the normalised parameters.
@@ -683,36 +694,36 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
     Jr[li] = jr;
     workgroupBarrier();
     // The normal equations summed over the lanes, one lane an entry.
-    if (li < 54u) {
+    if (li < 44u) {
       var acc = 0.0;
-      if (li < 45u) { for (var s = 0u; s < 64u; s++) { acc += JJ[s][li]; } }
-      else { for (var s = 0u; s < 64u; s++) { acc += Jr[s][li - 45u]; } }
+      if (li < 36u) { for (var s = 0u; s < 64u; s++) { acc += JJ[s][li]; } }
+      else { for (var s = 0u; s < 64u; s++) { acc += Jr[s][li - 36u]; } }
       Ag[li] = acc;
     }
     workgroupBarrier();
     if (li == 0u) {
-      var A = array<f32, 45>();
-      var g = array<f32, 9>();
-      ${unroll(45, (q) => `A[${q}] = Ag[${q}];`)}
-      ${unroll(9, (a) => `g[${a}] = Ag[${45 + a}];`)}
-      // Dense normal matrix with a little damping, scaled to a unit diagonal before elimination: the lens term is
-      // nearly collinear with the perspective terms, and unscaled that is past what single precision can solve
-      // (a float64 copy of this fit reached 0.3 samples where this reached 3.8 before the scaling).
-      var N = array<array<f32, 10>, 9>();
-      var D = array<f32, 9>();
+      var A = array<f32, 36>();
+      var g = array<f32, 8>();
+      ${unroll(36, (q) => `A[${q}] = Ag[${q}];`)}
+      ${unroll(8, (a) => `g[${a}] = Ag[${36 + a}];`)}
+      // Dense normal matrix with a little damping, scaled to a unit diagonal before elimination (when it carried a
+      // lens term, nearly collinear with the perspective terms, a float64 copy of this fit reached 0.3 samples where
+      // this reached 3.8 before the scaling).
+      var N = array<array<f32, 9>, 8>();
+      var D = array<f32, 8>();
       ${normal}
-      ${unroll(9, (a) => `D[${a}] = 1.0 / sqrt(max(N[${a}][${a}], 1e-30));`)}
-      ${unroll(9, (a) => `${unroll(9, (b) => `N[${a}][${b}] *= D[${a}] * D[${b}];`)}\nN[${a}][${a}] = N[${a}][${a}] * 1.001 + 1e-9; N[${a}][9] = g[${a}] * D[${a}];`)}
+      ${unroll(8, (a) => `D[${a}] = 1.0 / sqrt(max(N[${a}][${a}], 1e-30));`)}
+      ${unroll(8, (a) => `${unroll(8, (b) => `N[${a}][${b}] *= D[${a}] * D[${b}];`)}\nN[${a}][${a}] = N[${a}][${a}] * 1.001 + 1e-9; N[${a}][8] = g[${a}] * D[${a}];`)}
       var okSolve = true;
-      ${gaussJordan("N", 9, 10, "1e-20", "okSolve")}
+      ${gaussJordan("N", 8, 9, "1e-20", "okSolve")}
       let first = it == 0 && m0[13] == 0.0;
       if (first) {
-        ${unroll(9, (a) => `dbg[f * ${REFIT_DBG}u + ${a}u] = th[${a}]; dbg[f * ${REFIT_DBG}u + ${54 + a}u] = g[${a}];`)}
-        ${unroll(45, (q) => `dbg[f * ${REFIT_DBG}u + ${9 + q}u] = A[${q}];`)}
+        ${unroll(8, (a) => `dbg[f * ${REFIT_DBG}u + ${a}u] = th[${a}]; dbg[f * ${REFIT_DBG}u + ${44 + a}u] = g[${a}];`)}
+        ${unroll(36, (q) => `dbg[f * ${REFIT_DBG}u + ${8 + q}u] = A[${q}];`)}
       }
       if (okSolve) {
         var st = 0.0;
-        ${unroll(9, (a) => `{ let d = D[${a}] * N[${a}][9] / N[${a}][${a}]; th[${a}] += d; st += d * d; }`)}
+        ${unroll(8, (a) => `{ let d = D[${a}] * N[${a}][8] / N[${a}][${a}]; th[${a}] += d; st += d * d; }`)}
         lastStep = sqrt(st);
       } else { lastStep = -1.0; }
     }
@@ -723,7 +734,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
     var mo = array<f32, 16>();
     let t = array<f32, 9>(th[0], th[1], th[2], th[3], th[4], th[5], th[6], th[7], 1.0);
     ${unroll(3, (j) => `{ let s = ${j < 2 ? "1.0 / Mod" : "1.0"}; mo[${j}] = (S * t[${j}] + c.x * t[${6 + j}]) * s; mo[${3 + j}] = (S * t[${3 + j}] + c.y * t[${6 + j}]) * s; mo[${6 + j}] = t[${6 + j}] * s; }`)}
-    mo[9] = th[8];
+    mo[9] = 0.0;   // ai: no lens about the image centre (the map's k1 slot; the lens is REFIT_POST's)
     mo[10] = c.x;
     mo[11] = c.y;
     mo[12] = inv;
@@ -734,57 +745,9 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
   }
 }
 `;
-// ai: F7's last step, the last round's alone (2026-10-21; REFIT's own tail until then, behind m0[13] != 0): the nodes'
-// ai: residuals through the map REFIT has just written, the lens about the camera's axis, and each side's residual
-// ai: curve. Its own kernel because its arrays cost REFIT's every run: on the S26 a frame's REFIT took 0.37 ms with them
-// ai: in its code, run or not, and 0.13 without (one frame a launch). A workgroup a frame; REFIT's bindings.
-export const REFIT_POST = DIMS + MAP + /* wgsl */ `
-struct Fit { count: vec4u, base: vec4u, modules: vec4f }
-@group(0) @binding(0) var<storage, read> frames: array<Frame>;
-@group(0) @binding(1) var<storage, read> nodes: array<vec4f>;
-@group(0) @binding(2) var<storage, read> sel: array<vec4u>;
-@group(0) @binding(3) var<storage, read> meas: array<vec4f>;
-@group(0) @binding(4) var<storage, read_write> maps: array<array<f32, 16>>;
-@group(0) @binding(5) var<storage, read_write> resid: array<vec4f>;
-@group(0) @binding(6) var<uniform> P: Fit;
-// ai: Debug, REFIT_DBG words a frame: the first iteration of the first refit's th (0-8), A (9-53) and g (54-62).
-@group(0) @binding(7) var<storage, read_write> dbg: array<f32>;
-` + LENS + /* wgsl */ `
-// ai: the lens fit's working (LENS): each node's place through the map, the fit's frame, the lanes' sums, each K's
-// ai: coefficients and whether it solved, the lanes' residual sums, and the model kept.
-struct LensFrame { ctr: vec2f, sig: f32, smid: f32, ish: f32, kmax: u32, nw: u32, on: u32 }
-var<workgroup> pn: array<vec2f, ${NODES_MAX}>;
-var<workgroup> LF: LensFrame;
-var<workgroup> LS: array<array<f32, 77>, 16>;
-var<workgroup> LT: array<array<f32, ${LENS_P}>, 4>;
-var<workgroup> LK: array<u32, 4>;
-var<workgroup> LR: array<vec4f, 64>;
-var<workgroup> LZ: Lens;
-// ai: the lanes' (smin, smax, nodes) for the fit's frame, the 16 lanes' sums put together, and the nodes' residuals as
-// ai: the sides read and replace them (lane 0's loops on workgroup memory rather than on resid's, a read at a time)
-var<workgroup> LQ: array<vec4f, 64>;
-var<workgroup> LP: array<f32, 77>;
-var<workgroup> rw: array<vec4f, ${NODES_MAX}>;
-@compute @workgroup_size(64, 1, 1)
-fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
-  let f = wg.x;
-  let pick = sel[f];
-  if (frames[f].valid == 0u || pick.y == 0u) { return; }
-  let F = frames[f];
-  let count = P.count[pick.x];
-  let base = P.base[pick.x];
-  let mf = maps[f];
-  for (var n = li; n < count; n += 64u) {
-    let e = meas[f * ${NODES_MAX}u + n];
-    let ok = e.w != 0.0 && e.z >= ${WMIN};
-    let p = toImage(mf, nodes[base + n].xy);
-    pn[n] = p;
-    let r = select(vec2f(0.0), e.xy - p, ok);
-    resid[f * ${RESID}u + n] = vec4f(r, select(0.0, e.z, ok), 0.0);
-  }
-  storageBarrier();
-  workgroupBarrier();
-` + lensFit + /* wgsl */ `
+// ai: Each side's residual curve (REFIT_POST's tail, and the anchors' refit's, wgsl/anchors.mjs ANCH_REFIT): lane 0
+// ai: reads rw (the nodes' residuals after the lens, z their weight) and writes the curves to resid and rw.
+export const SIDE_FITS = /* wgsl */ `
   // What the fit leaves at the nodes is rolling-shutter wobble and lens the model missed, smooth along a side,
   // plus the measurement's own noise, which is not: on the simulator the map alone was 0.06 samples from the
   // truth and the raw residuals put it at 0.27. So each side's residual is replaced by a weighted polynomial fit
@@ -844,7 +807,58 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u
     }
     // The last corner (left side's end) is the first node: it ends up with the left side's fit alone.
   }
-}
+`;
+// ai: F7's last step, the last round's alone (2026-10-21; REFIT's own tail until then, behind m0[13] != 0): the nodes'
+// ai: residuals through the map REFIT has just written, the lens about the camera's axis, and each side's residual
+// ai: curve. Its own kernel because its arrays cost REFIT's every run: on the S26 a frame's REFIT took 0.37 ms with them
+// ai: in its code, run or not, and 0.13 without (one frame a launch). A workgroup a frame; REFIT's bindings.
+export const REFIT_POST = DIMS + MAP + /* wgsl */ `
+struct Fit { count: vec4u, base: vec4u, modules: vec4f }
+@group(0) @binding(0) var<storage, read> frames: array<Frame>;
+@group(0) @binding(1) var<storage, read> nodes: array<vec4f>;
+@group(0) @binding(2) var<storage, read> sel: array<vec4u>;
+@group(0) @binding(3) var<storage, read> meas: array<vec4f>;
+@group(0) @binding(4) var<storage, read_write> maps: array<array<f32, 16>>;
+@group(0) @binding(5) var<storage, read_write> resid: array<vec4f>;
+@group(0) @binding(6) var<uniform> P: Fit;
+// ai: Debug, REFIT_DBG words a frame: the first iteration of the first refit's th (0-7), A (8-43) and g (44-51).
+@group(0) @binding(7) var<storage, read_write> dbg: array<f32>;
+` + LENS + /* wgsl */ `
+// ai: the lens fit's working (LENS): each node's place through the map, the fit's frame, the lanes' sums, each K's
+// ai: coefficients and whether it solved, the lanes' residual sums, and the model kept.
+struct LensFrame { ctr: vec2f, sig: f32, smid: f32, ish: f32, kmax: u32, nw: u32, on: u32 }
+var<workgroup> pn: array<vec2f, ${NODES_MAX}>;
+var<workgroup> LF: LensFrame;
+var<workgroup> LS: array<array<f32, 77>, 16>;
+var<workgroup> LT: array<array<f32, ${LENS_P}>, 4>;
+var<workgroup> LK: array<u32, 4>;
+var<workgroup> LR: array<vec4f, 64>;
+var<workgroup> LZ: Lens;
+// ai: the lanes' (smin, smax, nodes) for the fit's frame, the 16 lanes' sums put together, and the nodes' residuals as
+// ai: the sides read and replace them (lane 0's loops on workgroup memory rather than on resid's, a read at a time)
+var<workgroup> LQ: array<vec4f, 64>;
+var<workgroup> LP: array<f32, 77>;
+var<workgroup> rw: array<vec4f, ${NODES_MAX}>;
+@compute @workgroup_size(64, 1, 1)
+fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) li: u32) {
+  let f = wg.x;
+  let pick = sel[f];
+  if (frames[f].valid == 0u || pick.y == 0u) { return; }
+  let F = frames[f];
+  let count = P.count[pick.x];
+  let base = P.base[pick.x];
+  let mf = maps[f];
+  for (var n = li; n < count; n += 64u) {
+    let e = meas[f * ${NODES_MAX}u + n];
+    let ok = e.w != 0.0 && e.z >= ${WMIN};
+    let p = toImage(mf, nodes[base + n].xy);
+    pn[n] = p;
+    let r = select(vec2f(0.0), e.xy - p, ok);
+    resid[f * ${RESID}u + n] = vec4f(r, select(0.0, e.z, ok), 0.0);
+  }
+  storageBarrier();
+  workgroupBarrier();
+` + lensFit + SIDE_FITS + /* wgsl */ `}
 `;
 // Where lattice node (i, j) of an nx x ny border ring sits in ring order.
 export const RING = /* wgsl */ `

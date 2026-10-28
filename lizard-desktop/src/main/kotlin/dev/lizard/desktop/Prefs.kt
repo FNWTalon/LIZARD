@@ -7,7 +7,8 @@ import java.util.prefs.Preferences
 // ai: What the sender keeps between runs (the web's send:<id> keys): the encoder (auto, gpu, cpu), the payload (file,
 // ai: test), the blocks a frame (0 auto, else 2 to 128), pictures a second, the code's size (25 to 100%), the spacing
 // ai: and the margin (modules, Pick's bounds), the ring (-1 the default, else an index into Pick.RINGS, kept as its
-// ai: cells), the codes, VSync, the folds and the rail, and whether the brightness tip was taken before a first send
+// ai: cells), the codes, VSync, the folds and the rail, and whether the brightness tip was taken
+// ai: before a first send
 // ai: (SendState.requestStart); the receiver's and Home's in a node of their own (Rx, 2026-10-25). forget(): a run that
 // ai: neither reads nor keeps either node's, every setting at its default (the test hooks', SenderTest.kt and
 // ai: ReceiverTest.kt); the receiver's set in the run held in memory.
@@ -20,8 +21,8 @@ object Prefs {
     // ai: The receiver's (2026-10-25, the web's recv:<id> keys, the Android app's "lizard" preferences): the camera (its
     // ai: id, camera.h Info::id), each camera's own resolution ("WxH") and rate, its zoom a crop at a time (as the app's
     // ai: zoom@<id>/<layout>), its exposure (us) and gain where they were set (none: the camera's own, automatic where it
-    // ai: can be), the crop (1:1, 2:1), the decoder (auto, gpu, cpu), the batch size (1 to 32), the folds and the rail,
-    // ai: Show statistics; and Home's first-run tips seen. A key is at most Preferences.MAX_KEY_LENGTH (80): a camera's
+    // ai: can be), the crop (1:1, 2:1), the decoder (auto, gpu, cpu), the batch size (1 to 32), the
+    // ai: folds and the rail, Show statistics; and Home's first-run tips seen. A key is at most Preferences.MAX_KEY_LENGTH (80): a camera's
     // ai: id past 48 characters (a long /dev/v4l/by-id path) is keyed by its hash. Under forget() the node is the run's
     // ai: own, in memory (2026-10-25): nothing kept from before is read and nothing is written, but a setting made in
     // ai: the run holds for the run, as a user's would (a camera's zoom, exposure and gain set again at its next open).

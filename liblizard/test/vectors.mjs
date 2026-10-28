@@ -75,31 +75,34 @@ const greySquare = (e, a, b) => { const o = new Uint8Array((b - a) * (b - a)); l
   }
   M._free(pDims);
 }
-// ai: 6.12 P2, LIZARD-16, every payload byte zero: n 256 in the 64 ring (the default from 2026-09-27 to 10-01): side 316,
-// ai: pxm 2, the picture from pixel 30, the resampled square [24, 292) (modules 12 to 145: the picture and its
-// ai: 3-module guard, FOCUS_CP = 3).
+// ai: 6.12 P2, LIZARD-16, every payload byte zero: n 256 in the 64 ring (the default from 2026-09-27 to 10-01): side 474,
+// ai: pxm 3 since the anchors' floor (2026-10-27; 2 and side 316 before), the picture resampled by 3/2 from pixel 45, the
+// ai: resampled square [36, 438) (modules 12 to 145: the picture and its 3-module guard, FOCUS_CP = 3), the anchors
+// ai: (SPEC 6.13) 2 modules from modules 23, 41, 60, 78, 96, 115, 133.
 {
   const e = encode(256, 16, () => {});
   want("P2 slot bits sha256", sha(e.slots), "6a1cebe89d813d0cbc345cc590f031e2c0ee48bf09dd15d384bfb12882a69e09");
   want("P2 packed first 16", hex(pack(e.slots).subarray(0, 16)), "00203e000ff403e0b8fffdcc001c1c03");
-  want("P2 drive side", String(e.side), "316");
-  want("P2 drive row 30 cols 30..33", Array.from(e.drive.subarray(30 * 316 + 30, 30 * 316 + 34), (v) => v.toFixed(7)).join(", "), "0.7305945, 0.9875329, 1.0000000, 1.0000000");
-  want("P2 grey row 30 cols 30..45", greyRow(e, 30, 30, 16), "186 252 255 255 255 192 116 96 112 132 139 132 112 96 104 135");
-  want("P2 grey row 230 cols 230..245", greyRow(e, 230, 230, 16), "255 235 152 104 83 65 49 49 68 94 119 145 162 161 143 132");
-  const sq = greySquare(e, 24, 292);
-  want("P2 square sha256", sha(sq), "1eecfb5b7940cf345cf409812c497de7bbcda44a90d143f243b7ad52e410d84d");
-  want("P2 square zeros / 255s", `${sq.filter((v) => v === 0).length} / ${sq.filter((v) => v === 255).length}`, "1628 / 1709");
-  want("P2 whole drive sha256", sha(greySquare(e, 0, 316)), "5452e1978a3904e014205d8a22c225b9659f4cf70a00ef30630fffe725128432");
+  want("P2 drive side", String(e.side), "474");
+  want("P2 drive row 45 cols 45..48", Array.from(e.drive.subarray(45 * 474 + 45, 45 * 474 + 49), (v) => v.toFixed(7)).join(", "), "0.6579847, 0.8233471, 0.9710589, 1.0000000");
+  want("P2 grey row 45 cols 45..60", greyRow(e, 45, 45, 16), "168 210 248 255 253 255 255 241 193 140 110 107 117 132 142 145");
+  want("P2 grey row 345 cols 345..360", greyRow(e, 345, 345, 16), "255 255 255 255 255 255 77 67 56 47 45 52 68 85 102 120");
+  want("P2 grey row 71 cols 66..77 (anchor 0, 0)", greyRow(e, 71, 66, 12), "0 24 72 255 0 255 255 0 255 75 72 68");
+  const sq = greySquare(e, 36, 438);
+  want("P2 square sha256", sha(sq), "a499a1ebe9e95c7abe6e67caa56e9ba267acb9e457a17e869e3cc2f1f18b9820");
+  want("P2 square zeros / 255s", `${sq.filter((v) => v === 0).length} / ${sq.filter((v) => v === 255).length}`, "2984 / 3746");
+  want("P2 whole drive sha256", sha(greySquare(e, 0, 474)), "425bb0ab8e16a12a56951a272784c8623f3a318c6e2a90bec1393fc92faba235");
 }
 // ai: 6.12 P3, LIZARD-64, every payload byte zero: n 384 in the 64 ring, side 474, pxm 3 (a copy), the picture
-// ai: from pixel 45, the resampled square [36, 438).
+// ai: from pixel 45, the resampled square [36, 438), the anchors as P2's.
 {
   const e = encode(nFor(64), 64, () => {});
   want("P3 slot bits sha256", sha(e.slots), "f93ce4c7107e054bda67f4b2d7d91b024da17dc8af24670c2ed26efc82de4f28");
   want("P3 drive side", String(e.side), "474");
   want("P3 grey row 45 cols 45..60", greyRow(e, 45, 45, 16), "151 201 220 197 182 222 255 255 191 114 83 101 128 134 136 145");
-  want("P3 square sha256", sha(greySquare(e, 36, 438)), "9cfc1129d286ced2bd750614fd314ac9e2c2f8ea0882515de3893c0a8937d0ca");
-  want("P3 whole drive sha256", sha(greySquare(e, 0, 474)), "025532283ce407bb54fe1b1333d7a33ae0391751f47b144bba0ec26b89c7c91b");
+  want("P3 grey row 71 cols 66..77 (anchor 0, 0)", greyRow(e, 71, 66, 12), "84 88 92 255 0 255 255 0 255 145 170 119");
+  want("P3 square sha256", sha(greySquare(e, 36, 438)), "20ba70f08ceea71e87cd48cecb3f6caa2f33031395febecb8e637967075fc695");
+  want("P3 whole drive sha256", sha(greySquare(e, 0, 474)), "fa03868e050a6fce0fd2c556363500d155cc5481e7c2f7208976fa4b0c2bb4e6");
 }
 // ai: 7.4, LIZARD-16, block b = id b LE32 then byte j = j mod 256.
 {

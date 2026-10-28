@@ -9,6 +9,12 @@ import android.content.Context
 // ai:   camera      a back camera's id (Engine.lenses); empty, or one the phone no longer lists, loads as the back camera
 // ai:               that focuses closest (Engine.rearId) and is stored as that id at the next save
 // ai:   resolution  1280x720 | 1920x1080 | 2560x1440 | 3840x2160, the camera's ImageReader (1920x1080)
+// ai:   format      auto | one of FORMATS the lens offers (2026-10-27, the desktop's Format): the ImageReader's format.
+// ai:               auto: PRIVATE for the GPU decoder's zero copy, YUV_420_888 for the others (Engine.open); YUV and Y8
+// ai:               push their Y plane, P010 its Y plane's top 8 bits, RAW16, RAW10 and RAW12 the frame developed to
+// ai:               luma (jni.cpp pushRaw, liblizard/core/ingest/develop.h: on the GPU decoder's device, else on the
+// ai:               CPU; RAW the lens's whole array, cropped by the zoom in the app); Private only with
+// ai:               the GPU decoder. Kept per lens, as resolution is
 // ai:   zoom        the camera's zoom ratio, 0.1 apart over its whole range (up to 4 until 2026-10-21; a slider since 2026-10-01, chips
 // ai:               of 1, 1.4 and 2 before); 1.5 by default since 2026-10-02 (the zoom of the 2:1 runs at 2.2+ MB/s;
 // ai:               1.4 before, the 2026-09-30 sweep's best, 1.7 next): the code in the middle of the lens's field, not
@@ -20,6 +26,8 @@ import android.content.Context
 // ai:               decoder is handed kept while the camera runs; off by default, to spare storage. Since 2026-10-05 the
 // ai:               switch is the session's alone, never saved (a recording left on costs every later run its lag):
 // ai:               every start begins off
+// ai:   d6          off | on: D6 phase lock (Receive's Experimental fold, 2026-10-27): on, the pilots-only rework's arm D6
+// ai:               (liblizard/kotlin/PhaseLockD6.kt) in place of PhaseLock.kt, taken at each camera session; kept
 // ai:   stats       on | off: Show statistics (Developer Tools, 2026-10-10): off hides Receive's green line once a file
 // ai:               is in ("Received <name>, <size> in <s>, <speed>"; Receive.kt TransferPanel) and Developer Tools' lab
 // ai:               line and readout (SettingsPanel.kt ReceiveAdvanced); off by default, kept
@@ -34,10 +42,12 @@ data class Settings(
     val layout: String = "1:1",
     val camera: String = "",
     val resolution: String = "1920x1080",
+    val format: String = "auto",
     val zoom: String = "1.5",
     val batch: String = "32",
     val replays: String = "off",
     val stats: String = "off",
+    val d6: String = "off",
 ) {
     val frames get() = batch.toIntOrNull()?.coerceIn(1, 32) ?: 32
     // ai: cam: the id the camera switch resolves to (Engine.rearId), null where the phone has no back camera (the
@@ -46,15 +56,16 @@ data class Settings(
         val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val e = p.edit()
             .putString("decoder", decoder).putString("layout", layout).putString("camera", camera)
-            .putString("batch", batch).putString("stats", stats)
-        e.putString(key("resolution", cam), resolution).putString(zoomKey(cam, layout), zoom)
+            .putString("batch", batch).putString("stats", stats).putString("d6", d6)
+        e.putString(key("resolution", cam), resolution).putString(key("format", cam), format).putString(zoomKey(cam, layout), zoom)
         e.apply()
     }
 
-    // ai: this, with the lens's resolution and the lens's zoom in this crop as saved for cam (else the defaults)
+    // ai: this, with the lens's resolution, format and zoom in this crop as saved for cam (else the defaults)
     fun forCamera(ctx: Context, cam: String?): Settings {
         val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         return copy(resolution = p.getString(key("resolution", cam), null) ?: Settings().resolution,
+            format = p.getString(key("format", cam), null) ?: Settings().format,
             zoom = p.getString(zoomKey(cam, layout), null) ?: Settings().zoom)
     }
 
@@ -62,6 +73,9 @@ data class Settings(
         const val PREFS = "lizard"
         val LAYOUTS = listOf("1:1", "2:1")
         val RESOLUTIONS = listOf("1280x720", "1920x1080", "2560x1440", "3840x2160")
+        // ai: the formats the app reads, the menu's order and labels (Engine.formatsOf lists those a lens offers)
+        val FORMATS = listOf("private" to "Private", "yuv" to "YUV", "y8" to "Y8", "p010" to "P010", "raw16" to "RAW16",
+            "raw10" to "RAW10", "raw12" to "RAW12")
 
         private fun key(k: String, cam: String?) = if (cam == null) k else "$k@$cam"
         private fun zoomKey(cam: String?, layout: String) = "${key("zoom", cam)}/$layout"
@@ -72,8 +86,8 @@ data class Settings(
             val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val d = Settings()
             val s = Settings(p.getString("decoder", d.decoder)!!,
-                p.getString("layout", d.layout)!!, p.getString("camera", d.camera)!!, d.resolution, d.zoom,
-                p.getString("batch", d.batch)!!, d.replays, p.getString("stats", d.stats)!!)
+                p.getString("layout", d.layout)!!, p.getString("camera", d.camera)!!, d.resolution, d.format, d.zoom,
+                p.getString("batch", d.batch)!!, d.replays, p.getString("stats", d.stats)!!, p.getString("d6", d.d6)!!)
             val cam = rearId(s.camera)
             return s.copy(camera = cam ?: s.camera).forCamera(ctx, cam)
         }

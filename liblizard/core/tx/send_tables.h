@@ -6,6 +6,8 @@
 // ai: profile), the stride, and the CRC powers gen/sender.mjs baked), and the border, the C's
 // ai: paint of the symbol (its pixels outside the square: ring, marks, band, word, margin) as grey bytes. Held to the
 // ai: web's byte for byte by `tx_check gputables` against gen/send_tables_ref.mjs (the twiddles to a float's last bit).
+// ai: The border holds the anchors' squares too (SPEC 6.13: the C paints them over the picture), and anch says where
+// ai: they are.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -42,6 +44,9 @@ struct SendTables {
   std::vector<uint32_t> taps;   // ai: 12 q words: 6 q sample indices (mod n), then 6 q weights as f32
   std::vector<uint8_t> border;  // ai: W x W grey, padded to a whole word
   std::vector<uint32_t> pu;     // ai: PARAMS_AT.words: sizes[0] (blocks), sizes[1 + c] (code c's tier: first block, first sub-channel, blocks), dims (blocks, npos, symbols an encode, 0), pw
+  // ai: the anchors (SPEC 6.13): the 8 words that follow g in rsh's G (gpu/wgsl/send.mjs GA, the manifest's gWords
+  // ai: 20): each anchor's first pixel along either axis of a symbol (margin included), then the square's side in pixels
+  std::vector<uint32_t> anch;
 };
 
 // ai: The gap between two codes of a frame, in modules, where none is set (liblizard/gpu/encoder.mjs GAP_MODULES,

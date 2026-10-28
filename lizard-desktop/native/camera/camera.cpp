@@ -52,6 +52,7 @@ std::vector<Info> list(std::vector<std::string>* notes) {
 #elif defined(__APPLE__)
   add(avfList(notes));
 #endif
+  add(phoneList(notes));
   add(simList(notes));
   return all;
 }
@@ -72,6 +73,7 @@ std::unique_ptr<Camera> open(const std::string& id, std::string& why) {
 #elif defined(__APPLE__)
   if (is("avf:")) return said(avfOpen(id, why));
 #endif
+  if (is("phone:")) return said(phoneOpen(id, why));
   if (is("sim:")) return said(simOpen(id, why));
   why = "no camera " + id;
   return nullptr;

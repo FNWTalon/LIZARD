@@ -182,6 +182,16 @@ export class Focus {
       return { q, o: g[1], n: g[2], px: g[3], i0: M.HEAP32.slice(g[4] >> 2, (g[4] >> 2) + q), w: M.HEAPF32.slice(g[5] >> 2, (g[5] >> 2) + 6 * q) };
     } finally { M._free(p); }
   }
+  // ai: The anchors' geometry in this configuration's symbol (src/focus.h focus_anchor_geom, SPEC 6.13), in modules: a
+  // ai: square's side and the seven first modules along either axis (the drive's: the RGBA adds quiet * cell).
+  anchorGeom() {
+    const p = M._malloc(32);
+    try {
+      if (M._focus_anchor_geom_get(p) !== 7) throw new Error("focus_anchor_geom: no setup");
+      const g = M.HEAP32.slice(p >> 2, (p >> 2) + 8);
+      return { side: g[0], m0: Array.from(g.slice(1)) };
+    } finally { M._free(p); }
+  }
   // Every buffer this object took from the wasm heap. One replaced without this leaves them there for the worker's
   // life: the heap never shrinks, and a receiver builds a new one on every config. The codec's own workspace
   // belongs to the module and is reused.

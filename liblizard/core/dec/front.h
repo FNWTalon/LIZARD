@@ -9,6 +9,7 @@
 // ai: finish() once its ticket is done, so two lanes can be in flight as on the web.
 #pragma once
 #include "setup.h"
+#include "develop.h"
 
 #include <cmath>
 #include <array>
@@ -27,6 +28,8 @@ struct Consts {
   uint32_t TILE, B_CEIL;
   double CAP_MS;
   uint32_t TWIN_FRAMES, TWIN_ROUNDS, VERSION_MIN, VERSION_MAX, SLOTS, ARGS_WORDS, argsWords, COUNTS, REC_BYTES, PAYLOAD;
+  // ai: the anchors' (gpu/wgsl/anchors.mjs): anchors a frame, and vec4f a frame of its record
+  uint32_t ANCH_K = 0, ANCH_REC = 0;
   std::map<std::string, uint32_t> ARGS_SLOT;
   static Consts of(const json& c);
 };
@@ -53,11 +56,16 @@ struct Lane {
   BufP dumpBuf;   // ai: LIZ_DUMP_S's copy of the back half's spectrum, made on the first batch that dumps
   bool busy = false, watched = false;
   uint32_t W = 0, H = 0;
-  BufP peaksBuf, selUni, framesBuf, mapsBuf, countsBuf, readingsBuf, candBuf, quadsBuf, scoreBuf, selBuf, resultBuf, heldUni, p5Uni, ldUni, measBuf, residBuf, refitDbg, histBuf, logitBuf, listBuf;
+  BufP peaksBuf, selUni, framesBuf, mapsBuf, countsBuf, readingsBuf, candBuf, quadsBuf, scoreBuf, selBuf, resultBuf, heldUni, p5Uni, ldUni, measBuf, residBuf, refitDbg, histBuf;
   GroupP refitGroup, refitPostGroup, pickGroup;   // ai: refitPostGroup: the tree's front.refitPost
+  // ai: the anchors (SPEC 6.13): ANCH_FIND's records (a vec4f an anchor) and ANCH_FIT's (ANCH_REC vec4f a frame,
+  // ai: which pass 1 reads), no clear (every one a batch reads is written in it); their groups bind the texture
+  // ai: (ensure's); ANCH_REFIT's does not (made with the lane)
+  BufP anchBuf, arecBuf;
+  GroupP anchFindGroup, anchFitGroup, anchRefitGroup, anchNodesGroup;
   // ai: the finder's second round (decoder.mjs, gpu/wgsl/finder.mjs REDO): its frame records and its groups over them
   BufP frames2Buf;
-  GroupP pickGroup2, redoGroup, selGroup2, classifyGroup2, classify0Group2, rankGroup2, scoreGroup2, voteGroup2, gatherGroup2, completeGroup2;
+  GroupP pickGroup2, redoGroup, selGroup2, classifyGroup2, scoreGroup2, voteGroup2, gatherGroup2, completeGroup2;
   std::shared_ptr<wg::QuerySet> qs, qsProfile;
   BufP qsBuf, qsProfileBuf;
   // ai: ensure()'s, at the lane's W x H
@@ -66,7 +74,7 @@ struct Lane {
   std::vector<Level> level;
   uint32_t slots = 0, gx = 0, gy = 0;
   BufP rawBuf, accBuf;
-  GroupP selGroup, classifyGroup, classify0Group, rankGroup, scoreGroup, voteGroup, gatherGroup, wordGroup, pyrGroup;
+  GroupP selGroup, classifyGroup, scoreGroup, voteGroup, gatherGroup, wordGroup, pyrGroup;
   std::vector<GroupP> nodesGroups;
   struct Fcn2Level { uint32_t l, w, h; GroupP group, xgroup, group2, xgroup2; BufP plane, uni; };   // ai: group2, xgroup2: a level below coarseFrom's
   std::vector<Fcn2Level> fcn2Levels;
@@ -82,6 +90,7 @@ struct Slot {
   int id = -1;
   uint32_t w = 0, h = 0;
   bool luma = false;      // ai: the host-luma path: the frame is in the slot's staging buffer, and its batch copies it into the layer
+  bool raw = false;       // ai: the develop path (enqueueRaw): the crop's samples in the slot's raw staging, which its batch develops and copies into the layer
   // ai: the batch copy that last read the layer: the slot is not written again until it is done (Vulkan orders
   // ai: nothing between the ingest's queue and the decoder's; the web's one queue ordered the next write for free)
   std::shared_ptr<wg::Ticket> reading;
@@ -109,6 +118,7 @@ struct FrameOut {
   struct { float found = 0, ring = -1; std::array<float, 8> corners{}; } finder;
   bool hasWord = false;
   struct { int version = 0, fps = 0; } word;
+  int anchors = 0;   // ai: result word 31: the anchors ANCH_FIT found on the frame (0: the frame not found)
   std::vector<uint32_t> counts;       // ai: COUNTERS a frame
   std::vector<uint32_t> backCounts;   // ai: the back half's COUNTS a frame
   std::vector<Record> records;        // ai: the frame's verified blocks
@@ -190,22 +200,34 @@ class FrontHalf {
   int cap = 256, nodesMax = 0, bankKeep = 4;
   uint32_t coarseFrom = 0;   // ai: the tree's front.coarseFrom: the bank's first round from this level
   std::array<float, 4> modules{};
-  json cascade;   // ai: { keep, precision } or null
 
   // ai: the nets now in use (measureTwins may swap a classifier for its int8 twin)
-  Pipe classify, classify0;
-  BufP weightsBuf, weightsBuf0;
+  Pipe classify;
+  BufP weightsBuf;
   json twinForms;   // ai: the twins still to measure (null once measured)
   // ai: the LDPC kernel's form in use (gpu/back/tiers.mjs exportFor: 0 the rule's "ldpc" steps, k its "ldpcAlts"[k - 1]),
   // ai: and whether the forms are still to be timed on the first batch
   int ldpcForm = 0;
   bool ldpcPending = false;
+  // ai: The anchors (SPEC 6.13; gpu/wgsl/anchors.mjs, the tree's `anch`): ANCH_FIND, ANCH_PREDICT (on ANCH_REFIT's
+  // ai: layout and group), the border's second search (anchNodes: F7's NODES centred, on its layout, its own round's
+  // ai: group, anchNodesGroup), ANCH_REFIT and ANCH_FIT after F7's REFIT_POST in its refit's pass, the C's order; a
+  // ai: batch with no F7 runs ANCH_FIND and ANCH_FIT alone. Pass 1 reads their records.
+  Pipe anchFind, anchFit, anchRefit, anchPredict, anchNodes;
+  BufP anchUni;
+  // ai: The develop (enqueueRaw; the tree's spv/ingest_develop.spv, from core/ingest/develop.comp): its pipeline, its
+  // ai: layout (the staged samples, the gamma table, the luma out) and the table (develop.h gammaLut)
+  std::shared_ptr<wg::Pipeline> developPipe;
+  std::shared_ptr<wg::BindGroupLayout> developBgl;
+  BufP developLut;
 
   int B = 0;        // ai: the lanes' size
   std::vector<std::unique_ptr<Lane>> lanes;
   struct Planned { uint32_t W = 0, H = 0; };
   std::optional<Planned> planned;
-  struct Ring { int R = 0; uint32_t W = 0, H = 0; std::shared_ptr<wg::Texture> tex; std::vector<Slot*> slots; std::vector<std::unique_ptr<Slot>> store; std::vector<BufP> staging; int head = 0; };
+  // ai: a slot's buffers by path: staging (enqueueLuma's bytes), raw (enqueueRaw's staged samples), developed (the
+  // ai: develop's luma, device memory) and develop (the develop's bind group over raw, the table and developed)
+  struct Ring { int R = 0; uint32_t W = 0, H = 0; std::shared_ptr<wg::Texture> tex; std::vector<Slot*> slots; std::vector<std::unique_ptr<Slot>> store; std::vector<BufP> staging, raw, developed; std::vector<std::shared_ptr<wg::BindGroup>> develop; int head = 0; };
   std::optional<Ring> ring;
   double lastDone = 0;
   double lastDump = 0;   // ai: LIZ_DUMP's last frame written (front.cpp run)
@@ -223,6 +245,10 @@ class FrontHalf {
   // ai: A camera frame onto the ring with no copy (core/ingest/camera.h): its buffer's crop sampled into a free
   // ai: slot's layer on the ingest's queue; any thread (the ring is under ringMu). Null when every slot is taken.
   Slot* enqueueCamera(class CameraIngest& ci, AHardwareBuffer* hb, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t tag = 0);
+  // ai: A frame in a format developed to luma (ingest/develop.h, 2026-10-27): the w x h crop at (x, y) of the
+  // ai: developed frame, its samples staged here as they are (any thread, as enqueueLuma), developed on the device by
+  // ai: the batch that takes the slot (develop.comp) and copied into its layer. Null when every slot is staged.
+  Slot* enqueueRaw(const RawFrame& r, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t tag = 0);
   CameraIngest* ingest = nullptr;   // ai: the camera ingest whose timeline a batch waits on (set by the receiver)
   std::mutex ringMu;
   void release(Slot* s);
@@ -247,7 +273,7 @@ class FrontHalf {
   std::unique_ptr<Lane> lane(int B);
   void ensure(Lane& ln, uint32_t W, uint32_t H);
   void bindNets(Lane& ln);
-  GroupP netGroup(Lane& ln, const Pipe& pipe, wg::Buffer& buf, bool small, bool second = false);
+  GroupP netGroup(Lane& ln, const Pipe& pipe, wg::Buffer& buf, bool second = false);
   void backLane(Lane& ln);
   void bindPicture(Lane& ln);
   void encodeBack(wg::Encoder& e, Lane& ln, int frames, const std::function<void(const char*)>& begin);

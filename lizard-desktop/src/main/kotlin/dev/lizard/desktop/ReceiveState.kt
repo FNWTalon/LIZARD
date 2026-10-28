@@ -203,6 +203,25 @@ class ReceiveState(private val app: App) {
         }
     }
     @Volatile private var lastNotes = ""
+    // ai: a phone's crop, from its listing's detail ("2:1, <ip>"; camera/phone.cpp), null for any other camera
+    private fun phoneLayout(cams: List<Cam>, id: String) =
+        cams.firstOrNull { it.id == id && it.backend == "phone" }?.detail?.substringBefore(",")?.trim()?.takeIf { it == "1:1" || it == "2:1" }
+    val phone get() = info?.backend == "phone" || camera.startsWith("phone:")
+    // ai: A phone by its address (2026-10-27, beside the beacon and the gateways, which a firewall or a route may defeat): the
+    // ai: Camera menu's last entry asks for it (askAddress); the address typed is the camera's id, phone:<ip>:<port>
+    // ai: (the stream's port where none is typed), listed by it while no listing has it
+    var askAddress by mutableStateOf(false)
+    val typedPhone: String? get() = camera.takeIf { c -> c.startsWith("phone:") && cameras.none { it.id == c } }
+    val cameraOptions: List<Pair<String, String>> get() =
+        cameras.map { it.id to it.label } + listOfNotNull(typedPhone?.let { it to "Phone at ${it.removePrefix("phone:").removeSuffix(":$PHONE_PORT")}" }) +
+            ("phone:" to "Phone by address")
+    fun chooseCameraOption(id: String) { if (id == "phone:") askAddress = true else { askAddress = false; chooseCamera(id) } }
+    fun choosePhoneAddress(typed: String) {
+        val a = typed.trim()
+        if (!Regex("\\d{1,3}(\\.\\d{1,3}){3}(:\\d{1,5})?").matches(a)) return
+        askAddress = false
+        chooseCamera("phone:" + if (':' in a) a else "$a:$PHONE_PORT")
+    }
 
     private fun camInfo(s: String): CamInfo? {
         val j = parse(s) ?: return null
@@ -269,11 +288,21 @@ class ReceiveState(private val app: App) {
             // ai: the cameras first: no receiver is made (the GPU's pipelines) where none is listed
             val cams = listed()
             post { cameras = cams }
-            if (cams.isEmpty()) { post(my) { phase = Phase.Error("No camera was found.") }; return }
-            val hh = session(w.decoder, w.layout)
+            // ai: a phone by its address opens unlisted
+            val typed = w.camera?.takeIf { it.startsWith("phone:") }
+            if (cams.isEmpty() && typed == null) { post(my) { phase = Phase.Error("No camera was found.") }; return }
+            val id = w.camera?.takeIf { c -> c == typed || cams.any { it.id == c } } ?: if (w.strict) throw Refused("${w.camera} is not listed") else cams[0].id
+            // ai: a phone sends its own crop (liblizard/core/rx/stream.h): the receiver crops as the phone did, from its
+            // ai: listing, else (an address typed) from its hello once open, the receiver made again for it
+            var lay = phoneLayout(cams, id) ?: w.layout
+            var hh = session(w.decoder, lay)
             Native.rxBatchCap(hh, w.batch)
-            val id = w.camera?.takeIf { c -> cams.any { it.id == c } } ?: if (w.strict) throw Refused("${w.camera} is not listed") else cams[0].id
-            val ci = openCam(hh, id, w.layout)
+            val ci = openCam(hh, id, lay)
+            if (ci.backend == "phone") ci.detail.substringBefore(",").trim().takeIf { (it == "1:1" || it == "2:1") && it != lay }?.let { l ->
+                lay = l
+                hh = session(w.decoder, l)
+            }
+            if (lay != w.layout) post { layout = lay }
             val m = w.mode?.let { modeOf(ci, it) ?: throw Refused("the camera offers no mode $it") } ?: keptMode(ci)
             if (streaming) { Native.rxStop(hh); streaming = false }
             val why = Native.rxStart(hh, m.index)
@@ -282,7 +311,7 @@ class ReceiveState(private val app: App) {
             post { info = ci }
             post(my) {
                 camera = id; mode = m
-                zoom = Prefs.Rx.zoom(id, w.layout) ?: ci.control("zoom")?.value
+                zoom = Prefs.Rx.zoom(id, lay) ?: ci.control("zoom")?.value
                 exposure = Prefs.Rx.exposure(id); gain = Prefs.Rx.gain(id)
                 phase = Phase.Loading
             }
@@ -360,6 +389,7 @@ class ReceiveState(private val app: App) {
     fun chooseCamera(id: String) {
         if (id == camera && info?.id == id) return
         camera = id; Prefs.Rx.camera = id
+        layout = phoneLayout(cameras, id) ?: Prefs.Rx.layout   // ai: a phone's crop its own; another camera's the one kept
         zoom = null; exposure = Prefs.Rx.exposure(id); gain = Prefs.Rx.gain(id)
         if (running) { stop(); start() }
         else if (sessionMade) {
@@ -752,6 +782,15 @@ class ReceiveState(private val app: App) {
     val hint: String get() {
         if (!on) return ""
         val j = stats ?: return ""
+        // ai: a phone (camera/phone.cpp): its camera's rate (its frame count's, agreedFps) against what arrives, short
+        // ai: where the link carries fewer (the phone skips evenly, 2026-10-27); a
+        // ai: phone's camera is the phone's to time, so the rules after this are not its
+        if (phone) {
+            val cam = j["camera"] as? JsonObject
+            val of = cam?.num("agreedFps") ?: 0.0
+            val got = cam?.num("fps") ?: 0.0
+            return if (of > 0 && got > 0 && got < 0.95 * of) "The link to the phone carries ${got.roundToInt()} of its ${of.roundToInt()} frames a second." else ""
+        }
         val wf = (j["word"] as? JsonObject)?.num("fps") ?: 0.0
         if (rx.bandVersion <= 0 || wf <= 0) return ""
         val cam = j["camera"] as? JsonObject
@@ -813,6 +852,7 @@ class ReceiveState(private val app: App) {
     }
 
     companion object {
+        const val PHONE_PORT = 47230   // ai: the phone's stream (liblizard/core/rx/stream.h TCP_PORT)
         const val PREVIEW = 720            // ai: the preview's long side at most, px
         const val REPLAY_FRAMES = 300      // ai: a run's frames (the web's and the app's 300)
         const val REPLAY_ROWS = 60         // ai: a run's stats rows, one a second

@@ -40,6 +40,7 @@ Consts Consts::of(const json& c) {
   k.TILE = c["TILE"]; k.B_CEIL = c["B_CEIL"]; k.CAP_MS = c["CAP_MS"];
   k.TWIN_FRAMES = c["TWIN_FRAMES"]; k.TWIN_ROUNDS = c["TWIN_ROUNDS"]; k.VERSION_MIN = c["VERSION_MIN"]; k.VERSION_MAX = c["VERSION_MAX"]; k.SLOTS = c["SLOTS"];
   k.ARGS_WORDS = c["ARGS_WORDS"]; k.argsWords = c["argsWords"]; k.COUNTS = c["COUNTS"]; k.REC_BYTES = c["REC_BYTES"]; k.PAYLOAD = c["PAYLOAD"];
+  k.ANCH_K = c["ANCH_K"]; k.ANCH_REC = c["ANCH_REC"];
   for (auto& [n, v] : c["ARGS_SLOT"].items()) k.ARGS_SLOT[n] = v;
   return k;
 }
@@ -65,13 +66,20 @@ std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const
   const double t0 = fh->now();
   fh->S = Setup::load(d, read, variant);
   const json& T = fh->S->tree;
-  // ai: what every tree gen.mjs writes since 2026-10-21 carries: the cascade, the finder's second round and F7's tail
-  if (T["cascade"].is_null() || T["front"].value("redo", json()).is_null() || T["front"].value("refitPost", json()).is_null() || !T["consts"].contains("VOTE_READS"))
+  // ai: what every tree gen.mjs writes since 2026-10-21 carries: the finder's second round and F7's tail
+  if (T["front"].value("redo", json()).is_null() || T["front"].value("refitPost", json()).is_null() || !T["consts"].contains("VOTE_READS"))
     throw wg::Error("the setup predates the finder's second round and F7's tail (liblizard/gen/gen.mjs before 2026-10-21): generate it again");
+  // ai: one classifier, cnn-v3 on every peak (2026-10-27; the cascade's cnn-v1 on its top 64 before): a tree with a
+  // ai: cascade, or with REFIT's debug words of the k1 fit, predates it
+  if (!T["cascade"].is_null() || T["consts"]["REFIT_DBG"] != 52)
+    throw wg::Error("the setup predates one classifier and REFIT without k1 (liblizard/gen/gen.mjs before 2026-10-27): generate it again");
   // ai: the smallest version a word names (LIZARD-16's 2 since 2026-10-25): a tree before it reads a word of version 1
   // ai: in F8, which a host refuses as a held version
   if (!T["consts"].contains("VERSION_MIN"))
     throw wg::Error("the setup predates one block a frame's removal (liblizard/gen/gen.mjs before 2026-10-25: its F8 takes a word of version 1): generate it again");
+  // ai: the anchors in the format (2026-10-27, SPEC 6.13): pass 1 reads their records on every frame
+  if (!T.contains("anch") || T["anch"].contains("pass1") || !T["anch"].contains("predict") || !T["consts"].contains("ANCH_K"))
+    throw wg::Error("the setup predates the anchors in the format (liblizard/gen/gen.mjs before 2026-10-27): generate it again");
   fh->C = Consts::of(T["consts"]);
   // ai: the finder's rings the C's (src/focus.h FOCUS_RING): a ring index from the GPU names the same ring in a replay's
   // ai: meta and the receiver's rows (2026-10-25, the 32 ring archived: a tree of four rings beside a C of three would
@@ -85,21 +93,37 @@ std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const
   fh->bankKeep = T["bankKeep"];
   fh->coarseFrom = T["front"]["coarseFrom"].get<uint32_t>();
   for (int i = 0; i < 4; i++) fh->modules[i] = T["modules"][i];
-  fh->cascade = T["cascade"];
   fh->S->build(fh->C.B_CEIL);
+  fh->anchFind = fh->S->pair(T["anch"]["find"]);
+  fh->anchFit = fh->S->pair(T["anch"]["fit"]);
+  fh->anchRefit = fh->S->pair(T["anch"]["refit"]);
+  fh->anchPredict = fh->S->pair(T["anch"]["predict"]);
+  fh->anchNodes = fh->S->pair(T["anch"]["nodes"]);
+  fh->anchUni = fh->S->bufPtr(T["anch"]["buffers"]["anchUni"]);
+  {
+    // ai: the develop (enqueueRaw): gen.mjs compiles every core/ingest/*.comp, so a tree without it predates it
+    std::vector<uint8_t> b;
+    try { b = read("spv/ingest_develop.spv"); } catch (const std::exception&) {}
+    if (b.size() < 20 || b.size() % 4) throw wg::Error("the setup has no develop kernel (spv/ingest_develop.spv; liblizard/gen/gen.mjs before 2026-10-27): generate it again");
+    std::vector<uint32_t> code(b.size() / 4);
+    memcpy(code.data(), b.data(), b.size());
+    fh->developBgl = d.createBindGroupLayout({wg::Bind::RO, wg::Bind::RO, wg::Bind::RW}, "developL");
+    fh->developPipe = d.createPipeline(code, fh->developBgl, "develop", "develop");
+    fh->developLut = d.createBuffer(4100, wg::STORAGE, "developLut", false);
+    uint8_t lut[4100] = {};
+    memcpy(lut, gammaLut(), 4097);
+    d.upload(*fh->developLut, 0, lut, sizeof lut);
+  }
   fh->backShared = 0;
   fh->classify = fh->P("classify");
   fh->weightsBuf = fh->FBP("weightsBuf");
-  fh->classify0 = fh->P("classify0"); fh->weightsBuf0 = fh->FBP("weightsBuf0");
   fh->twinForms = T["front"]["twins"];
-  // ai: LIZ_TWINS=int8: the classifiers' int8 twins from the start, unmeasured (the web's twins "int8"). LIZ_TWINS=small
-  // ai: (or large): that net's twin alone, the other net in its float form (what the S26 keeps: its large twin is 26
-  // ai: times its f16 form), so a timing run is in its steady state from the first batch.
+  // ai: LIZ_TWINS=int8: the classifier's int8 twin from the start, unmeasured (the web's twins "int8"), so a timing run
+  // ai: is in its steady state from the first batch.
   const std::string tw = getenv("LIZ_TWINS") ? getenv("LIZ_TWINS") : "";
-  if ((tw == "int8" || tw == "small" || tw == "large") && !fh->twinForms.is_null()) {
+  if (tw == "int8" && !fh->twinForms.is_null()) {
     const json& t = fh->twinForms;
-    if (tw != "large" && !t["small"].is_null()) { fh->classify0 = fh->S->pair(t["small"]["pipe"]); fh->weightsBuf0 = fh->S->bufPtr(t["small"]["buf"]); fh->cascade["precision"] = "int8"; fh->nets["small"] = "int8"; }
-    if (tw != "small" && !t["large"].is_null()) { fh->classify = fh->S->pair(t["large"]["pipe"]); fh->weightsBuf = fh->S->bufPtr(t["large"]["buf"]); fh->S->tree["weightsPrecision"] = "int8"; fh->nets["large"] = "int8"; }
+    if (!t["large"].is_null()) { fh->classify = fh->S->pair(t["large"]["pipe"]); fh->weightsBuf = fh->S->bufPtr(t["large"]["buf"]); fh->S->tree["weightsPrecision"] = "int8"; fh->nets["large"] = "int8"; }
     fh->twinForms = nullptr;
   }
   // ai: The LDPC kernel's forms (2026-10-08, the third 2026-10-22; gpu/wgsl/back_tiers.mjs LDPC_FORMS): all exact, "reg"
@@ -117,8 +141,8 @@ std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const
   fh->bt.fh = fh.get();
   fh->bt.budget = budget;
   fh->bt.capMs = fh->C.CAP_MS;
-  fh->log("setup " + variant + " built in " + std::to_string((int)(fh->now() - t0)) + " ms: nets bank " + fh->nets["bank"].dump() + ", small " + fh->nets["small"].dump() + ", large " + fh->nets["large"].dump() +
-          (fh->twinForms.is_null() ? "" : " (the classifiers' int8 twins measured on the first batch)"));
+  fh->log("setup " + variant + " built in " + std::to_string((int)(fh->now() - t0)) + " ms: nets bank " + fh->nets["bank"].dump() + ", classifier " + fh->nets["large"].dump() +
+          (fh->twinForms.is_null() ? "" : " (the classifier's int8 twin measured on the first batch)"));
   return fh;
 }
 
@@ -168,14 +192,18 @@ std::unique_ptr<Lane> FrontHalf::lane(int Bl) {
   ln->ldUni = mk(80, UNIFORM | COPY_DST);
   ln->measBuf = mk(16ull * C.NODES_MAX * B, STORAGE | COPY_DST | COPY_SRC);
   ln->residBuf = mk(16ull * C.RESID * B, STORAGE | COPY_DST | COPY_SRC);
+  // ai: decoder.mjs lane: the anchors' records, ANCH_FIND's and ANCH_FIT's
+  ln->anchBuf = mk(16ull * C.ANCH_K * B, STORAGE | COPY_SRC);
+  ln->arecBuf = mk(16ull * C.ANCH_REC * B, STORAGE | COPY_SRC);
   ln->refitDbg = mk(4ull * C.REFIT_DBG * B, STORAGE | COPY_SRC | COPY_DST);
   ln->histBuf = mk(4ull * C.HIST_BINS * B, STORAGE | COPY_DST | COPY_SRC);
-  ln->logitBuf = mk(4 * cap * B, STORAGE);
-  ln->listBuf = mk(4ull * cascade["keep"].get<uint32_t>() * B, STORAGE);
   auto refit = P("refit"), pick = P("pick");
   ln->refitGroup = dev.createBindGroup(refit.bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni"), ln->refitDbg});
   // ai: decoder.mjs lane: F7's last step on REFIT's bindings
   ln->refitPostGroup = dev.createBindGroup(P("refitPost").bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni"), ln->refitDbg});
+  // ai: decoder.mjs lane: the anchors' refit (gpu/wgsl/anchors.mjs ANCH_REFIT) on REFIT_POST's bindings but its debug, the
+  // ai: anchors' records, F8's lattice and the anchors' uniform (no texture, so made with the lane)
+  ln->anchRefitGroup = dev.createBindGroup(anchRefit.bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni"), ln->anchBuf, FBP("wordLatUni"), anchUni});
   ln->pickGroup = dev.createBindGroup(pick.bgl, {ln->framesBuf, ln->quadsBuf, ln->scoreBuf, ln->mapsBuf, ln->selBuf, ln->resultBuf, FBP("pickUni")});
   ln->frames2Buf = mk(16 * B, STORAGE);
   ln->pickGroup2 = dev.createBindGroup(pick.bgl, {ln->frames2Buf, ln->quadsBuf, ln->scoreBuf, ln->mapsBuf, ln->selBuf, ln->resultBuf, FBP("pickUni")});
@@ -187,20 +215,16 @@ std::unique_ptr<Lane> FrontHalf::lane(int Bl) {
   return ln;
 }
 
-// ai: decoder.mjs netGroup: a classifier's group over the lane's levels, peaks, counts and readings, and its
-// ai: weights; the cascade's small net writes its logits, the large one reads the list.
-GroupP FrontHalf::netGroup(Lane& ln, const Pipe& pipe, wg::Buffer& buf, bool small, bool second) {
+// ai: decoder.mjs netGroup: the classifier's group over the lane's levels, peaks, counts and readings, and its weights.
+GroupP FrontHalf::netGroup(Lane& ln, const Pipe& pipe, wg::Buffer& buf, bool second) {
   auto e = ln.lvEntries(second);
   e.insert(e.end(), {ln.peaksBuf, ln.countsBuf, ln.readingsBuf, FBP("p4Uni"), &buf});
-  e.push_back(small ? ln.logitBuf : ln.listBuf);
   return dev.createBindGroup(pipe.bgl, e);
 }
 
 void FrontHalf::bindNets(Lane& ln) {
-  ln.classifyGroup = netGroup(ln, classify, *weightsBuf, false);
-  ln.classify0Group = netGroup(ln, classify0, *weightsBuf0, true);
-  ln.classifyGroup2 = netGroup(ln, classify, *weightsBuf, false, true);
-  ln.classify0Group2 = netGroup(ln, classify0, *weightsBuf0, true, true);
+  ln.classifyGroup = netGroup(ln, classify, *weightsBuf);
+  ln.classifyGroup2 = netGroup(ln, classify, *weightsBuf, true);
 }
 
 // ai: back.mjs lane: transform.lane, soft.lane, ldpc.lane, then transform.bindGate (the gate zeroes the counters,
@@ -273,14 +297,15 @@ void FrontHalf::backLane(Lane& ln) {
   ln.back = std::move(b);
 }
 
-// ai: transform.mjs bindPicture: the fused pass 1 over the lane's texture, maps and residuals, again whenever the
-// ai: lane's texture is replaced.
+// ai: transform.mjs bindPicture: the fused pass 1 over the lane's texture, maps, residuals and anchors records (binding
+// ai: 10), again whenever the lane's texture is replaced.
 void FrontHalf::bindPicture(Lane& ln) {
   const json& T = S->back()["transform"];
   auto& b = *ln.back;
   for (auto& sj : T["built"]) {
     const int s = sj;
-    b.p1f[s] = dev.createBindGroup(S->bgl(T["p1fBgl"]), {ln.tex.get(), b.lists, S->bufPtr(T["twBufs"][s]), b.part, b.y, b.counts, b.params[s], ln.mapsBuf, ln.residBuf, S->bufPtr(T["picUnis"][s])});
+    std::vector<wg::Resource> e{ln.tex.get(), b.lists, S->bufPtr(T["twBufs"][s]), b.part, b.y, b.counts, b.params[s], ln.mapsBuf, ln.residBuf, S->bufPtr(T["picUnis"][s]), ln.arecBuf};
+    b.p1f[s] = dev.createBindGroup(S->bgl(T["p1fBgl"]), e);
   }
   b.picture = ln.tex.get();
 }
@@ -357,13 +382,11 @@ void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H) {
       return dev.createBindGroup(pl.bgl, e);
     };
     bindNets(ln);
-    ln.rankGroup = group(P("rank"), {ln.framesBuf, ln.logitBuf, ln.countsBuf, ln.listBuf}, false);
     ln.scoreGroup = group(P("score"), {ln.quadsBuf, FBP("planBuf"), ln.scoreBuf, FBP("planUni")}, true);
     ln.voteGroup = group(P("vote"), {ln.framesBuf, ln.readingsBuf, ln.accBuf, ln.p5Uni}, false);
     ln.gatherGroup = group(P("gather"), {ln.framesBuf, ln.readingsBuf, ln.accBuf, ln.candBuf, ln.quadsBuf, ln.p5Uni}, false);
     {
       // ai: decoder.mjs ensure: the finder's second round, the same stages over its frame records, and REDO
-      ln.rankGroup2 = group(P("rank"), {ln.frames2Buf, ln.logitBuf, ln.countsBuf, ln.listBuf}, false);
       auto lv2 = ln.lvEntries(true);
       lv2.insert(lv2.end(), {ln.quadsBuf, FBP("planBuf"), ln.scoreBuf, FBP("planUni")});
       ln.scoreGroup2 = dev.createBindGroup(P("score").bgl, lv2);
@@ -377,7 +400,19 @@ void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H) {
     }
     ln.nodesGroups.clear();
     for (auto& r : S->tree["front"]["rounds"]) ln.nodesGroups.push_back(group(P("nodesP"), {FBP("nodesBuf"), FBP("tmplBuf"), ln.mapsBuf, ln.selBuf, ln.measBuf, S->bufPtr(r)}, true));
+    ln.anchNodesGroup = group(P("nodesP"), {FBP("nodesBuf"), FBP("tmplBuf"), ln.mapsBuf, ln.selBuf, ln.measBuf, S->bufPtr(S->tree["anch"]["buffers"]["round"])}, true);
     ln.wordGroup = group(P("wordP"), {ln.mapsBuf, ln.selBuf, ln.residBuf, FBP("wordPtsBuf"), ln.resultBuf, FBP("wordUni"), FBP("wordLatUni"), ln.heldUni}, true);
+    // ai: decoder.mjs ensure: the anchors' two stages read the frame texture (binding 0), so their groups are made here
+    // ai: with it: the texture, frames, maps, sel, resid, F8's lattice and the anchors' uniform; then ANCH_FIND's
+    // ai: records, or ANCH_FIT's reading of them, its records and the result
+    {
+      const std::vector<wg::Resource> head{ln.tex.get(), ln.framesBuf, ln.mapsBuf, ln.selBuf, ln.residBuf, FBP("wordLatUni"), anchUni};
+      auto find = head, fit = head;
+      find.push_back(ln.anchBuf);
+      fit.insert(fit.end(), {ln.anchBuf, ln.arecBuf, ln.resultBuf});
+      ln.anchFindGroup = dev.createBindGroup(anchFind.bgl, find);
+      ln.anchFitGroup = dev.createBindGroup(anchFit.bgl, fit);
+    }
     // ai: decoder.mjs pyrGroup: the layer, the frame records, levels 1 to 4, the histogram and the levels' dims
     ln.pyrGroup = dev.createBindGroup(P("pyramid").bgl, {ln.tex.get(), ln.framesBuf, ln.level[0].buf, ln.level[1].buf, ln.level[2].buf, ln.level[3].buf, ln.histBuf, ln.ldUni});
   }
@@ -422,7 +457,7 @@ void FrontHalf::plan(uint32_t w, uint32_t h) {
     const double perFrame = (double)probe->laneBytes - backBytes + backBytes / Bb;
     // ai: The largest buffer a frame (the back lane's at a share of bh.B, the readback's back half share likewise).
     double largest = 0;
-    auto front1 = {probe->peaksBuf, probe->framesBuf, probe->mapsBuf, probe->countsBuf, probe->readingsBuf, probe->candBuf, probe->quadsBuf, probe->scoreBuf, probe->selBuf, probe->resultBuf, probe->measBuf, probe->residBuf, probe->refitDbg, probe->histBuf, probe->logitBuf, probe->listBuf, probe->rawBuf, probe->accBuf};
+    auto front1 = {probe->peaksBuf, probe->framesBuf, probe->mapsBuf, probe->countsBuf, probe->readingsBuf, probe->candBuf, probe->quadsBuf, probe->scoreBuf, probe->selBuf, probe->resultBuf, probe->measBuf, probe->residBuf, probe->refitDbg, probe->histBuf, probe->rawBuf, probe->accBuf, probe->anchBuf, probe->arecBuf};
     for (auto& b : front1) if (b) largest = std::max(largest, (double)b->size);
     for (auto& l : probe->level) largest = std::max(largest, (double)l.buf->size);
     for (auto& l : probe->fcn2Levels) if (l.plane) largest = std::max(largest, (double)l.plane->size);
@@ -489,6 +524,9 @@ void FrontHalf::makeRing(int R, uint32_t W, uint32_t H) {
   r.tex = dev.createTexture(W, H, (uint32_t)R, "", true);
   r.slots.assign(R, nullptr);
   r.staging.assign(R, nullptr);
+  r.raw.assign(R, nullptr);
+  r.developed.assign(R, nullptr);
+  r.develop.assign(R, nullptr);
   for (int i = 0; i < R; i++) r.store.push_back(std::make_unique<Slot>());
   ring = std::move(r);
 }
@@ -529,7 +567,38 @@ Slot* FrontHalf::enqueueLuma(const uint8_t* bytes, uint32_t w, uint32_t h, uint3
   if (!r.staging[id]) r.staging[id] = dev.createBuffer((uint64_t)r.W * r.H, wg::MAP_WRITE);
   auto& st = *r.staging[id];
   for (uint32_t y = 0; y < h; y++) memcpy(st.mapped + (uint64_t)y * w, bytes + (uint64_t)y * stride, w);
-  s->luma = true;
+  s->luma = true; s->raw = false;
+  s->id = id; s->w = w; s->h = h; s->tag = tag; s->ready = 0; s->axis = 0;
+  r.slots[id] = s;
+  return s;
+}
+
+Slot* FrontHalf::enqueueRaw(const RawFrame& raw, uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint64_t tag) {
+  std::lock_guard<std::mutex> lock(ringMu);
+  if (!ring) throw wg::Error("no ring: plan() before enqueue");
+  auto& r = *ring;
+  if (w > r.W || h > r.H) throw wg::Error(std::to_string(w) + " x " + std::to_string(h) + ": the ring holds " + std::to_string(r.W) + " x " + std::to_string(r.H));
+  const int id = takeSlot();
+  if (id < 0) return nullptr;
+  Slot* s = r.store[id].get();
+  // ai: enqueueLuma's rule: the bytes here, the device's work in the batch that takes the slot
+  const size_t bytes = rawStageBytes(raw, x, y, w, h);
+  bool bind = !r.develop[id];
+  if (!r.raw[id] || r.raw[id]->size < bytes) {
+    // ai: a quarter more than asked, so a crop a little larger keeps its buffer
+    r.raw[id] = dev.createBuffer(bytes + bytes / 4, wg::STORAGE | wg::MAP_WRITE, "", false);
+    bind = true;
+  }
+  if (!r.developed[id]) { r.developed[id] = dev.createBuffer(((uint64_t)r.W * r.H + 3) & ~3ull, wg::STORAGE, "", false); bind = true; }
+  if (bind) r.develop[id] = dev.createBindGroup(developBgl, {r.raw[id], developLut, r.developed[id]});
+  auto& st = *r.raw[id];
+  stageRaw(raw, x, y, w, h, st.mapped);
+  if (!st.coherent) {
+    VkMappedMemoryRange mr{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+    mr.memory = st.mem; mr.size = VK_WHOLE_SIZE;
+    vkFlushMappedMemoryRanges(dev.dev, 1, &mr);
+  }
+  s->luma = false; s->raw = true;
   s->id = id; s->w = w; s->h = h; s->tag = tag; s->ready = 0; s->axis = 0;
   r.slots[id] = s;
   return s;
@@ -544,7 +613,7 @@ Slot* FrontHalf::enqueueCamera(CameraIngest& ci, AHardwareBuffer* hb, uint32_t x
   if (id < 0) return nullptr;
   Slot* s = r.store[id].get();
   s->ready = ci.ingest(hb, x, y, w, h, *r.tex, (uint32_t)id);
-  s->id = id; s->w = w; s->h = h; s->tag = tag; s->luma = false; s->axis = 0;
+  s->id = id; s->w = w; s->h = h; s->tag = tag; s->luma = false; s->raw = false; s->axis = 0;
   r.slots[id] = s;
   return s;
 }
@@ -667,7 +736,8 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   }
   // ai: The slots' copies in a submit of their own, waiting for the camera ingests they copy (the ingest's queue
   // ai: signals its timeline): the slots are free to be written again once it is done, not once the batch is. A
-  // ai: host-luma slot's staging goes into its ring layer here first (enqueueLuma wrote only the bytes).
+  // ai: host-luma slot's staging goes into its ring layer here first (enqueueLuma wrote only the bytes), and a raw
+  // ai: slot's samples are developed and the luma copied in (enqueueRaw staged only the samples).
   std::shared_ptr<wg::Ticket> copies;
   {
     auto c = dev.encoder();
@@ -675,6 +745,13 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
     std::lock_guard<std::mutex> lock(ringMu);
     for (int i = 0; i < nb; i++) if (slots[i]) {
       if (slots[i]->luma) c.copyBufferToTexture(*ring->staging[slots[i]->id], 0, slots[i]->w, *ring->tex, (uint32_t)slots[i]->id, slots[i]->w, slots[i]->h);
+      if (slots[i]->raw) {
+        const int id = slots[i]->id;
+        c.setPipeline(*developPipe);
+        c.setBindGroup(*ring->develop[id]);
+        c.dispatch((uint32_t)(((uint64_t)slots[i]->w * slots[i]->h + 1023) / 1024));
+        c.copyBufferToTexture(*ring->developed[id], 0, slots[i]->w, *ring->tex, (uint32_t)id, slots[i]->w, slots[i]->h);
+      }
       c.copyTextureToTexture(*ring->tex, (uint32_t)slots[i]->id, *ln.tex, (uint32_t)i, slots[i]->w, slots[i]->h);
       wait = std::max(wait, slots[i]->ready);
     }
@@ -743,9 +820,7 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   begin("describe");
   // ai: a workgroup of a classifier takes its kernel's P patches: ceil(slots / P) workgroups a frame (decoder.mjs)
   auto net = [&](const Pipe& k, const GroupP& g, uint32_t slots) { step(k, g, ceilDiv(slots, k.P), n); };
-  net(classify0, ln.classify0Group, (uint32_t)cap);
-  step(P("rank"), ln.rankGroup, n);
-  net(classify, ln.classifyGroup, cascade["keep"].get<uint32_t>());
+  net(classify, ln.classifyGroup, (uint32_t)cap);
   begin("vote");
   // ai: F5 (wgsl/finder.mjs): VOTE a lane a reading, then GATHER a workgroup a frame (its centre peaks and their quads)
   step(P("vote"), ln.voteGroup, ceilDiv((uint32_t)cap, C.VOTE_READS), n);
@@ -760,9 +835,7 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
     step(P("redo"), ln.redoGroup, n);
     bank(2);
     step(P("select"), ln.selGroup2, n);
-    net(classify0, ln.classify0Group2, (uint32_t)cap);
-    step(P("rank"), ln.rankGroup2, n);
-    net(classify, ln.classifyGroup2, cascade["keep"].get<uint32_t>());
+    net(classify, ln.classifyGroup2, (uint32_t)cap);
     step(P("vote"), ln.voteGroup2, ceilDiv((uint32_t)cap, C.VOTE_READS), n);
     step(P("gather"), ln.gatherGroup2, n);
     // ai: F5d (wgsl/finder.mjs COMPLETE), a workgroup a (frame, quad): on a frame neither round found four corners of
@@ -778,6 +851,14 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   }
   // ai: decoder.mjs batch: the last round's residuals, lens and side fits (REFIT_POST), in its refit's pass
   if (ln.nodesGroups.size() > 1) step(P("refitPost"), ln.refitPostGroup, n);
+  // ai: decoder.mjs batch: the anchors in the same pass, behind REFIT_POST (no profile stage of its own): ANCH_FIND
+  // ai: a workgroup per (anchor, frame), ANCH_PREDICT and the border's second search (NODES centred on its own round, a
+  // ai: workgroup a node), ANCH_REFIT, then ANCH_FIT a workgroup a frame, whose records pass 1 reads
+  step(anchFind, ln.anchFindGroup, C.ANCH_K, n);
+  step(anchPredict, ln.anchRefitGroup, n);
+  step(anchNodes, ln.anchNodesGroup, (uint32_t)nodesMax, n);
+  step(anchRefit, ln.anchRefitGroup, n);
+  step(anchFit, ln.anchFitGroup, n);
   begin("word");
   step(P("wordP"), ln.wordGroup, n);
   encodeBack(e, ln, nb, begin);
@@ -913,6 +994,7 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
     fo.finder.found = r[0]; fo.finder.ring = r[2];
     for (int k = 0; k < 8; k++) fo.finder.corners[k] = r[17 + k];
     if (r[5] > 0) { fo.hasWord = true; fo.word.version = (int)r[5]; fo.word.fps = (int)r[6]; }
+    fo.anchors = (int)r[31];   // ai: ANCH_FIT's count (PICK zeroes the record: 0 on a frame not found)
     // ai: decoder.mjs pilotOf: over the blocks the version carries, where the soft stage ran (its count column 6)
     // ai: the even blocks (bit 0 of the painted count) and the odd (bit 1), each its own mean and standard error
     // ai: the blocks the frame carries: its version's under the format's rate profile (gpu/back/tiers.mjs blocks)
@@ -1039,7 +1121,7 @@ void FrontHalf::measureLdpc(Lane& ln, int nb) {
   log("LDPC forms timed on " + std::to_string(nb) + " frames: " + ldpcTimes.dump());
 }
 
-// ai: decoder.mjs measureTwins and timeArms: each classifier with an int8 twin timed in both forms on this batch's
+// ai: decoder.mjs measureTwins and timeArms: the classifier, where it has an int8 twin, timed in both forms on this batch's
 // ai: first nb frames (still on its lane), by timestamp pairs, three rounds in alternating order, the first untimed;
 // ai: the faster kept, the lanes' groups remade. A device without timestamps keeps the float forms (the web times
 // ai: submits there; every device this runs on has timestamps).
@@ -1049,15 +1131,14 @@ void FrontHalf::measureTwins(Lane& ln, int nb) {
   if (!dev.features.timestamps) { log("int8 twins not measured (no timestamps): the float files"); return; }
   struct Arm { std::string net, precision; Pipe pipe; BufP buf; GroupP group; uint32_t x; std::vector<double> ms; };
   std::vector<Arm> arms;
-  for (const char* net : {"small", "large"}) {
-    if (tf[net].is_null()) continue;
-    const bool small = std::string(net) == "small";
-    const uint32_t slots = small ? (uint32_t)cap : cascade["keep"].get<uint32_t>();
-    Arm now{net, small ? cascade["precision"].get<std::string>() : S->tree["weightsPrecision"].get<std::string>(), small ? classify0 : classify, small ? weightsBuf0 : weightsBuf, nullptr, 0, {}};
-    now.group = netGroup(ln, now.pipe, *now.buf, small);
+  if (tf["large"].is_null()) return;
+  {
+    const uint32_t slots = (uint32_t)cap;
+    Arm now{"large", S->tree["weightsPrecision"].get<std::string>(), classify, weightsBuf, nullptr, 0, {}};
+    now.group = netGroup(ln, now.pipe, *now.buf);
     now.x = ceilDiv(slots, now.pipe.P);
-    Arm twin{net, "int8", S->pair(tf[net]["pipe"]), S->bufPtr(tf[net]["buf"]), nullptr, 0, {}};
-    twin.group = netGroup(ln, twin.pipe, *twin.buf, small);
+    Arm twin{"large", "int8", S->pair(tf["large"]["pipe"]), S->bufPtr(tf["large"]["buf"]), nullptr, 0, {}};
+    twin.group = netGroup(ln, twin.pipe, *twin.buf);
     twin.x = ceilDiv(slots, twin.pipe.P);
     arms.push_back(now);
     arms.push_back(twin);
@@ -1084,7 +1165,7 @@ void FrontHalf::measureTwins(Lane& ln, int nb) {
   for (uint32_t r = 1; r < R; r++) for (uint32_t i = 0; i < A; i++) { const uint32_t k = r * A + i; arms[i].ms.push_back((double)((t[2 * k + 1] - t[2 * k]) & dev.timestampMask) * dev.timestampPeriod / 1e6); }
   auto best = [&](const std::vector<double>& v) { return *std::min_element(v.begin(), v.end()) / nb; };
   json out = {{"frames", nb}, {"by", "timestamps"}};
-  for (const char* net : {"small", "large"}) {
+  for (const char* net : {"large"}) {
     // ai: the form in use first, then its twins: the fastest is kept (the one in use on a tie)
     Arm* fl = nullptr; Arm* keep = nullptr;
     json row = json::object();
@@ -1096,15 +1177,12 @@ void FrontHalf::measureTwins(Lane& ln, int nb) {
     if (!fl) continue;
     row["kept"] = keep->precision;
     out[net] = row;
-    if (keep != fl) {
-      if (std::string(net) == "small") { classify0 = keep->pipe; weightsBuf0 = keep->buf; cascade["precision"] = "int8"; }
-      else { classify = keep->pipe; weightsBuf = keep->buf; S->tree["weightsPrecision"] = "int8"; }
-    }
+    if (keep != fl) { classify = keep->pipe; weightsBuf = keep->buf; S->tree["weightsPrecision"] = "int8"; }
     nets[net] = keep->precision;
   }
   for (auto& l : lanes) bindNets(*l);
   log("int8 twins measured on " + std::to_string(nb) + " frames: " + out.dump());
-  log("nets: bank " + nets["bank"].dump() + ", small " + nets["small"].dump() + ", large " + nets["large"].dump());
+  log("nets: bank " + nets["bank"].dump() + ", classifier " + nets["large"].dump());
 }
 
 // ai: decoder.mjs Batcher

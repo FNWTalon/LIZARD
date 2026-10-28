@@ -261,9 +261,116 @@ fn latAt(i: u32) -> f32 { return PIC.lat[i >> 2u][i & 3u]; }
 `;
 // ai: A fused sampler's head for frame f listed in `lists` (LISTS): its edge, map, ring's grid and lattice.
 export const pictureHead = (lists, B) => `  let fw: i32 = i32(${lists}[${listsHead(B)}u + 2u * f]);\n  let fh: i32 = i32(${lists}[${listsHead(B)}u + 2u * f + 1u]);\n  let M: array<f32, 16> = maps[f];\n  let pr: vec4f = PIC.ring[${lists}[${listsRing(B)}u + f]];\n  let g0: f32 = pr.x;\n  let gstep: f32 = pr.y;\n  let nn: u32 = u32(pr.z);\n  let first: u32 = u32(pr.w);\n  let cn: Corners = corners(f, nn);\n  let lz: Lens = lensOf(f);\n`;
+// ai: The anchors (SPEC 6.13; wgsl/anchors.mjs; the C's src/acquire.c anchor_find and border_fill_anchors, src/focus.c
+// ai: focus_finish_ext's erase): ANCH_SIDE x ANCH_SIDE anchors, ANCH_K a frame. ANCH_FIT writes a frame's record,
+// ai: ANCH_REC vec4f, which pass 1 reads: [0] (on, the picture's mean, 0, the anchors found);
+// ai: [1] to [3] the 9 knots of an axis in modules (the lattice's ends, the anchors' centres between) and the anchor's
+// ai: side a, the ring's span and margin, as (k0, k1, k2, k3), (k4, k5, k6, k7), (k8, a, span, margin); [4] on, the
+// ai: inner knots' residuals in image px,
+// ai: knot q = 7 j + i in .xy of [4 + q / 2] for an even q, .zw for an odd. Here, not in anchors.mjs, because pass 1
+// ai: reads it and anchors.mjs imports this module.
+export const ANCH_SIDE = 7, ANCH_K = ANCH_SIDE * ANCH_SIDE, ANCH_REC = 4 + Math.ceil(ANCH_K / 2);
+// ai: The samples the erase takes round a square on the picture's grid (src/acquire.c ob_anch_margin).
+export const ANCH_ERASE = 2;
+// ai: Pass 1's workgroup memory for the anchors: what a quad's four columns blend of each knot row, -1 to 9 (anE: rows
+// ai: 1 to 7 the inner knots', the rest 0, so a sample's 4 x 4 blend reads it with no test), an axis's 9 knots (anK),
+// ai: each anchor's erased samples on this grid, first and last (anLo, anHi), and whether the erase takes each of the
+// ai: quad's four columns (anCol: four lanes answer it once, where every lane asked it of all seven anchors before).
+const ANCH_ROWS = ANCH_SIDE + 4, ANCH_P1_BYTES = 8 * 4 * ANCH_ROWS + 4 * (ANCH_SIDE + 2) + 2 * 4 * ANCH_SIDE + 4 * 4;
 // Workgroup memory pass 1 declares for a size: the two exchange buffers and 16 B a thread of partials.
-export const pass1WorkgroupBytes = (n, prec) => 2 * n * (prec === "f16" ? 4 : 8) + 16 * (n / 8);
-export function pass1Source({ n, prec, B }) {
+// ai: and the anchors' ANCH_P1_BYTES.
+export const pass1WorkgroupBytes = (n, prec) => 2 * n * (prec === "f16" ? 4 : 8) + 16 * (n / 8) + ANCH_P1_BYTES;
+// ai: Pass 1's anchors: the record at binding 10 (the eighth storage buffer), what a quad's
+// ai: columns blend of the knot rows, and the mesh's arithmetic: the tensor cubic Hermite of src/acquire.c anch_herm4 on
+// ai: the knots in modules (4 weights an axis, a cell's first knot less one), 0 outside [k0, k8], where the border
+// ai: holds the map; anchE a knot row r (1 to 7) blended along x, anchMesh a sample's 4 x 4 blend from anE; anchIn
+// ai: whether a sample index lies in an anchor's erased range (anLo, anHi), anchInCell the same from a row's cell. The
+// ai: knots are read from the record once a workgroup into anK; no private array is indexed at a run-time value.
+const ANCH_P1 = /* wgsl */ `
+@group(0) @binding(10) var<storage, read> arec: array<vec4f>;
+var<workgroup> anE: array<vec2f, ${4 * ANCH_ROWS}>;
+var<workgroup> anK: array<f32, ${ANCH_SIDE + 2}>;
+var<workgroup> anLo: array<i32, ${ANCH_SIDE}>;
+var<workgroup> anHi: array<i32, ${ANCH_SIDE}>;
+var<workgroup> anCol: array<u32, 4>;
+struct AnchHerm { b: i32, w: vec4f, i: u32 }
+fn aknot(ab: u32, i: u32) -> f32 { return arec[ab + 1u + (i >> 2u)][i & 3u]; }
+// ai: x's cell i, the last knot <= x: the knots rise, so the count of the inner knots at or below x (i 9 outside [k0, k8])
+fn anchHerm(x: f32) -> AnchHerm {
+  if (!(x >= anK[0] && x <= anK[8])) { return AnchHerm(0, vec4f(0.0), 9u); }
+  var i: u32 = 0u;
+  for (var j: u32 = 1u; j < 8u; j++) { i += select(0u, 1u, x >= anK[j]); }
+  let ta: f32 = anK[i];
+  let tb: f32 = anK[i + 1u];
+  let hc: f32 = tb - ta;
+  let s: f32 = (x - ta) / hc;
+  let s2: f32 = s * s;
+  let s3: f32 = s2 * s;
+  let ha: f32 = (s3 - 2.0 * s2 + s) * hc;
+  let hb: f32 = (s3 - s2) * hc;
+  var w: vec4f = vec4f(0.0, 2.0 * s3 - 3.0 * s2 + 1.0, -2.0 * s3 + 3.0 * s2, 0.0);
+  if (i > 0u) { let d: f32 = tb - anK[i - 1u]; w.x -= ha / d; w.z += ha / d; } else { w.y -= ha / hc; w.z += ha / hc; }
+  if (i < 7u) { let d: f32 = anK[i + 2u] - ta; w.y -= hb / d; w.w += hb / d; } else { w.y -= hb / hc; w.z += hb / hc; }
+  return AnchHerm(i32(i) - 1, w, i);
+}
+fn anchIn(x: i32) -> bool {
+  var hit: bool = false;
+  for (var i: u32 = 0u; i < ${ANCH_SIDE}u; i++) { hit = hit || (x >= anLo[i] && x <= anHi[i]); }
+  return hit;
+}
+// ai: anchIn from the sample's cell: only the anchors of the cell's knots, i and i + 1, can erase it, every other one
+// ai: lying a cell or more away (a cell is 4.5 a or more, an erased range at most 1.25 a from its centre)
+fn anchInCell(h: AnchHerm, x: i32) -> bool {
+  if (h.i > 7u) { return false; }
+  return (h.i >= 1u && x >= anLo[h.i - 1u] && x <= anHi[h.i - 1u]) || (h.i <= 6u && x >= anLo[h.i] && x <= anHi[h.i]);
+}
+fn aval(ab: u32, c: i32, r: u32) -> vec2f {
+  if (c < 1 || c > ${ANCH_SIDE}) { return vec2f(0.0); }
+  let q: u32 = ${ANCH_SIDE}u * (r - 1u) + u32(c - 1);
+  let v: vec4f = arec[ab + 4u + (q >> 1u)];
+  return select(v.xy, v.zw, (q & 1u) == 1u);
+}
+fn anchE(ab: u32, x: f32, r: u32) -> vec2f {
+  let h: AnchHerm = anchHerm(x);
+  return h.w.x * aval(ab, h.b, r) + h.w.y * aval(ab, h.b + 1, r) + h.w.z * aval(ab, h.b + 2, r) + h.w.w * aval(ab, h.b + 3, r);
+}
+fn anchMesh(h: AnchHerm, col: u32) -> vec2f {
+  let o: u32 = ${ANCH_ROWS}u * col + u32(h.b + 1);
+  return h.w.x * anE[o] + h.w.y * anE[o + 1u] + h.w.z * anE[o + 2u] + h.w.w * anE[o + 3u];
+}
+fn sampleAtA(f: u32, M: array<f32, 16>, lz: Lens, m: vec2f, u: f32, v: f32, top: vec2f, bot: vec2f, lft: vec2f, rgt: vec2f, cn: Corners, fw: i32, fh: i32, an: vec2f) -> f32 {
+  let p = toImage(M, m);
+  return bilin0(f, p + lensAt(lz, p) + coonsMix(u, v, top, bot, lft, rgt, cn) + an, fw, fh);
+}
+`;
+// ai: The anchors' head: the frame's record, on, and the picture's mean. Every frame the gate lists has its record on
+// ai: (ANCH_FIT writes it on every frame the finder found or the host told), so its branches below never take the
+// ai: other side; they stay because a branch a row bounds how far the compiler interleaves the eight unrolled rows
+// ai: (RADV: 96 VGPRs with them, 128 without, and the iGPU's pass 1 0.06 ms a frame slower at nt 768).
+const anchHead = () => `  let ab: u32 = f * ${ANCH_REC}u;\n  let ahd: vec4f = arec[ab];\n  let aon: bool = ahd.x > 0.5;\n  let amean: f32 = ahd.y;\n`;
+// ai: The anchors' erased samples on pass 1's grid, in integers, so no device's rounding decides one (lanes 0 to 6, an
+// ai: anchor each, its centre read from the record, so they are made beside the knots, before the first barrier): a
+// ai: sample within the square's half side and ANCH_ERASE + 0.5 of the picture's samples (span / n
+// ai: modules each) of its centre c = m0 + a / 2 on both axes, ties included (the C erases the samples the square
+// ai: touches and ANCH_ERASE round it, src/focus.c focus_finish_ext). Pass 1's sample k sits at margin + span (1 / (2 n)
+// ai: + k / nt) modules (PIC: the picture's first sample, the step span / nt); with span = 64 a, times 2 n nt, the bound
+// ai: |x_k - c| <= e is L <= 128 n a k <= U, L = nt (2 n (m0 - margin) - 64 a (2 ANCH_ERASE + 2)) and U = nt (2 n (m0 -
+// ai: margin + a) + 128 a ANCH_ERASE), both positive and under 2^31 in every ring and size.
+const anchErase = (n, picture) => `      if (tid < ${ANCH_SIDE}u) {
+        let ag: vec4f = arec[ab + 3u];
+        let ia: i32 = i32(ag.y);
+        let img: i32 = i32(ag.w);
+        let im0: i32 = i32(aknot(ab, tid + 1u)) - ia / 2;
+        let ed: i32 = ${128 * picture} * ia;
+        let el: i32 = ${n} * (${2 * picture} * (im0 - img) - ${64 * (2 * ANCH_ERASE + 2)} * ia);
+        let eu: i32 = ${n} * (${2 * picture} * (im0 - img + ia) + ${128 * ANCH_ERASE} * ia);
+        anLo[tid] = max((el + ed - 1) / ed, 0);
+        anHi[tid] = min(eu / ed, ${n - 1});
+      }
+`;
+// ai: pass1Source's options: n the transform's size (nt), prec, B, and picture, the picture's own size (n where the
+// ai: transform is not taken down), which the anchors' erase's margin is in.
+export function pass1Source({ n, prec, B, picture = n }) {
   const cpw = CPW, { ty, ld } = store(prec);
   const T = n / 8, quads = cpw / 4, f16 = prec === "f16";
   const lanes = [["v0", "buf0"], ["v1", "buf1"]];
@@ -272,13 +379,29 @@ export function pass1Source({ n, prec, B }) {
     body += `  {\n    let xq: u32 = x0 + ${4 * q}u;\n`;
     // The top and bottom curves and the blend weight across depend on the column alone: once a column, not a sample.
     for (let k = 0; k < 4; k++) body += `    let mx${k}: f32 = g0 + f32(xq + ${k}u) * gstep;\n    let u${k}: f32 = coonsT(mx${k}, first, nn);\n    let tp${k}: vec2f = curve(f, 0u, mx${k}, first, nn);\n    let bt${k}: vec2f = curve(f, 2u, mx${k}, first, nn);\n`;
+    // ai: The anchors' columns: each inner knot row blended along x at the quad's four columns (anE, made once a
+    // ai: workgroup, mx as above), and which columns the squares' erase takes.
+    {
+      body += `    var aix: vec4<bool> = vec4<bool>(false);\n    if (aon) {\n`;
+      body += `      if (tid < ${ANCH_SIDE + 2}u) { anK[tid] = aknot(ab, tid); }\n` + anchErase(n, picture) + `      workgroupBarrier();\n      if (tid < 4u) { anCol[tid] = select(0u, 1u, anchIn(i32(xq + tid))); }\n`;
+      body += `      for (var ai: u32 = tid; ai < ${4 * ANCH_ROWS}u; ai += T) {\n        let arow: u32 = ai % ${ANCH_ROWS}u;\n        var aev: vec2f = vec2f(0.0);\n`;
+      body += `        if (arow >= 2u && arow <= ${ANCH_SIDE + 1}u) { aev = anchE(ab, g0 + f32(xq + ai / ${ANCH_ROWS}u) * gstep, arow - 1u); }\n        anE[ai] = aev;\n      }\n      workgroupBarrier();\n`;
+      body += `      aix = vec4<bool>(${[0, 1, 2, 3].map((k) => `anCol[${k}] != 0u`).join(", ")});\n    }\n`;
+    }
     body += `    var z: array<vec4f, 8> = array<vec4f, 8>(vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0), vec4f(0.0));\n`;
     body += `    var s1: vec4f = vec4f(0.0);\n    var sc: vec4f = vec4f(0.0);\n    var sq: vec4f = vec4f(0.0);\n`;
     for (let r = 0; r < 8; r++) {
       body += `    {\n      let y: u32 = tid + ${r * T}u;\n`;
       // The left and right curves and the weight down, once a row for the quad's four samples.
       body += `      let my: f32 = g0 + f32(y) * gstep;\n      let v: f32 = coonsT(my, first, nn);\n      let lf: vec2f = curve(f, 3u, my, first, nn);\n      let rg: vec2f = curve(f, 1u, my, first, nn);\n`;
-      body += `      var zz: vec4f = vec4f(${[0, 1, 2, 3].map((k) => `sampleAt(f, M, lz, vec2f(mx${k}, my), u${k}, v, tp${k}, bt${k}, lf, rg, cn, fw, fh)`).join(",\n        ")});\n`;
+      {
+        // ai: Every sample takes the mesh's displacement before its bilinear read, and a sample in an anchor's erased
+        // ai: range on both axes takes the picture's mean, before z and the detrend's sums (the C erases before its
+        // ai: detrend).
+        body += `      var zz: vec4f = vec4f(amean);\n      if (aon) {\n        let ah: AnchHerm = anchHerm(my);\n`;
+        body += `        zz = vec4f(${[0, 1, 2, 3].map((k) => `sampleAtA(f, M, lz, vec2f(mx${k}, my), u${k}, v, tp${k}, bt${k}, lf, rg, cn, fw, fh, anchMesh(ah, ${k}u))`).join(",\n          ")});\n`;
+        body += `        zz = select(zz, vec4f(amean), aix & vec4<bool>(anchInCell(ah, i32(y))));\n      }\n`;
+      }
       body += `      z[${r}] = zz;\n`;
       // The detrend basis along y: c = (2 y + 1 - n) / n, q = c^2 less its mean (src/focus.c ws_init).
       body += `      let c: f32 = f32(2 * i32(y) + 1 - i32(N)) / f32(N);\n      s1 += zz;\n      sc += zz * c;\n      sq += zz * (c * c - P.m2);\n    }\n`;
@@ -319,13 +442,10 @@ export function pass1Source({ n, prec, B }) {
 @group(0) @binding(7) var<storage, read> maps: array<array<f32, 16>>;
 @group(0) @binding(8) var<storage, read> resid: array<vec4f>;
 ` + PICTURE + MAP + LUM0 + COONS + /* wgsl */ `
-fn sampleAt(f: u32, M: array<f32, 16>, lz: Lens, m: vec2f, u: f32, v: f32, top: vec2f, bot: vec2f, lft: vec2f, rgt: vec2f, cn: Corners, fw: i32, fh: i32) -> f32 {
-  let p = toImage(M, m);
-  return bilin0(f, p + lensAt(lz, p) + coonsMix(u, v, top, bot, lft, rgt, cn), fw, fh);
-}
-`;
+` + ANCH_P1;
   // Per workgroup: the frame's size (from the gate), map and border corners.
-  const head = pictureHead("lists", B);
+  // ai: and the frame's anchors record (anchHead)
+  const head = pictureHead("lists", B) + anchHead();
   return (f16 ? "enable f16;\n" : "") + PARAMS + source + /* wgsl */ `
 @group(0) @binding(1) var<storage, read> lists: array<u32>;
 @group(0) @binding(2) var<storage, read> tw: array<vec2f>;

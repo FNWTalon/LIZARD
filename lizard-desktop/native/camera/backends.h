@@ -25,6 +25,10 @@ std::unique_ptr<Camera> mfOpen(const std::string& id, std::string& why);
 std::vector<Info> avfList(std::vector<std::string>* notes);
 std::unique_ptr<Camera> avfOpen(const std::string& id, std::string& why);
 #endif
+// ai: phone.cpp: a phone streaming its frames over TCP (phone:<ipv4>:<port>, 2026-10-27; liblizard/core/rx/stream.h),
+// ai: listed while its beacon is heard, or over USB as an Android Open Accessory (phone:usb:<place>, aoa.h); every system
+std::vector<Info> phoneList(std::vector<std::string>* notes);
+std::unique_ptr<Camera> phoneOpen(const std::string& id, std::string& why);
 // ai: sim.cpp: the simulated camera (sim:0), listed only where LIZ_CAMERA_SIM is set; its value is sim/scene.h parse's
 // ai: spec, plus the camera's own keys: camfps (its frame rate, 60), camppm (its clock against the host's, 0), format
 // ai: (the Pix its frames come in, grey by default: yuyv, nv12, mjpeg exercise luma.h and jpeg.h)

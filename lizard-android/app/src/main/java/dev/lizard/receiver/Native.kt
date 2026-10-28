@@ -19,6 +19,13 @@ object Native {
     // ai: frame's px, [k1, k2, k3, f], or null (Engine.lensOf)
     @JvmStatic external fun push(h: Long, hb: HardwareBuffer?, luma: ByteBuffer?, width: Int, height: Int, stride: Int,
                                  timestampNs: Long, tag: Long, lens: FloatArray?)
+    // ai: A frame in a format developed to luma (Engine.develop: P010, RAW16, RAW10, RAW12; jni.cpp): plane 0 (its row and
+    // ai: pixel strides), the format, the image's size, the crop of it read (x0, y0, w, h; the whole frame for P010) and
+    // ai: bin (1, or 2 for a 2 x 2 bin of a RAW crop), the CFA and levels (Engine.levelsOf), then as push. The receiver
+    // ai: develops it to luma (liblizard/core/ingest/develop.h: the GPU decoder on its device, the C on this thread)
+    // ai: before push returns, and releases tag as for any frame.
+    @JvmStatic external fun pushRaw(h: Long, plane: ByteBuffer, rowStride: Int, pixelStride: Int, format: Int, width: Int, height: Int,
+                                    x0: Int, y0: Int, w: Int, hh: Int, bin: Int, cfa: Int, levels: FloatArray, timestampNs: Long, tag: Long, lens: FloatArray?)
     // ai: whether this receiver reads luma bytes (the C on the CPU) rather than the camera's buffer in place
     @JvmStatic external fun wantsLuma(h: Long): Boolean
     @JvmStatic external fun stats(h: Long): String
@@ -49,6 +56,10 @@ object Native {
     @JvmStatic external fun replayEnd(replay: Long, rxStats: String, rows: String, more: String): String
     // ai: a system property ("" when unset), for switches set over adb while the app runs
     @JvmStatic external fun prop(name: String): String
+    // ai: the PC stream over USB (PcLink): a USB accessory's fd, detached, to the core's bridge, which closes it; false
+    // ai: where one is open already
+    @JvmStatic external fun streamAccessory(fd: Int): Boolean
+    @JvmStatic external fun accessoryOpen(): Boolean
 
     // ai: The sender (2026-10-01; liblizard/core/tx/sender.h, jni.cpp's Tx): a file (its path in the app's cache; "" for the test
     // ai: stream) to a handle, 0 with txError() saying why; the format to paint ("" or the codec's refusal; painter 0 the
@@ -69,6 +80,9 @@ object Native {
     // ai: and the ring's tally since the last call (JSON)
     @JvmStatic external fun txPost(h: Long, surface: android.view.Surface, vsync: Long, expected: Long, vsyncNs: Long, w: Int, h2: Int): Int
     @JvmStatic external fun txPostStats(h: Long): String
+    // ai: the view's surface destroyed (SurfaceHolder.Callback.surfaceDestroyed): its window and rings let go, since the
+    // ai: same Surface object comes back holding another window once the view is attached again (2026-10-27)
+    @JvmStatic external fun txSurfaceGone(h: Long)
     @JvmStatic external fun txStats(h: Long): String
     @JvmStatic external fun txDestroy(h: Long)
 

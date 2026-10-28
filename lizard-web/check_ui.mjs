@@ -124,7 +124,7 @@ const SIZES = [
   const MEASURE_SEND = `(() => {
     const $ = (id) => document.getElementById(id), box = (el) => { const b = el.getBoundingClientRect(); return { top: b.top, bottom: b.bottom, left: b.left, right: b.right, w: b.width, h: b.height }; };
     return { iw: innerWidth, ih: innerHeight, sw: document.documentElement.scrollWidth, main: box(document.querySelector("main")), c: box($("c")),
-      state: $("state").textContent, nums: $("nums").textContent, lab: $("tx").textContent.split("\\n")[0], go: $("go").disabled, full: document.body.classList.contains("full"), dev: $("dev").open, hint: !$("hint").hidden,
+      state: $("state").textContent, nums: $("nums").textContent, lab: $("tx").textContent.split("\\n")[0], go: $("go").disabled, full: document.body.classList.contains("full"), dev: $("dev").open, hint: !$("pick").hidden && $("sel").hidden,
       buttons: [...document.querySelectorAll("#side button:not([hidden]), #side .btn")].map((b) => b.textContent), bar: [...document.querySelectorAll(".bar .brand, .bar h1, .bar > .btn, .bar > button")].filter((b) => b.checkVisibility()).map((b) => b.textContent).join(","), railHome: document.getElementById("railHome")?.getAttribute("href") ?? "" };
   })()`;
   const same = (a, b) => ["top", "left", "w", "h"].every((k) => Math.abs(a[k] - b[k]) < 0.5);
@@ -134,16 +134,16 @@ const SIZES = [
     await sleep(300);
     const idle = await evaluate(s, MEASURE_SEND);
     if (k === 0) check(!idle.dev, `send ${z.name}: the Developer panel is closed on a fresh profile`);
-    check(idle.state === "" && idle.hint && idle.go && idle.buttons.join() === "Start,Fullscreen", `send ${z.name}: idle, no state line, the hint shown, buttons ${idle.buttons.join(" and ")}, Start ${idle.go ? "disabled" : "ENABLED"}`);
+    check(idle.state === "" && idle.hint && idle.go && idle.buttons.join() === "Start,Fullscreen", `send ${z.name}: idle, no state line, the File and Folder tiles shown, buttons ${idle.buttons.join(" and ")}, Start ${idle.go ? "disabled" : "ENABLED"}`);
     // ai: Home in the bar in portrait, in the rail's last square in landscape, where the bar has the collapser (2026-10-05)
     check(idle.bar === (z.w > z.h ? "Send,Receiver,Sidebar" : "Home,Send,Receiver") && idle.railHome === "index.html", `send ${z.name}: the bar "${idle.bar}", the rail's Home "${idle.railHome}"`);
-    // ai: The middle of the page is the only file picker (2026-09-26: the Choose file button deleted): a tap on
-    // ai: it must open the chooser, which the DevTools protocol intercepts here instead of showing.
+    // ai: The File tile opens the chooser (2026-10-26; a tap on the middle of the page until then), which the DevTools
+    // ai: protocol intercepts here instead of showing.
     if (k === 0) {
       await s.send("Page.setInterceptFileChooserDialog", { enabled: true });
       const opened = new Promise((ok) => { s.on("Page.fileChooserOpened", () => ok(true)); setTimeout(() => ok(false), 3000); });
-      await s.send("Runtime.evaluate", { expression: `document.querySelector("main").click()`, userGesture: true });
-      check(await opened, `send ${z.name}: a tap on the middle opens the file chooser`);
+      await s.send("Runtime.evaluate", { expression: `document.getElementById("addFiles").click()`, userGesture: true });
+      check(await opened, `send ${z.name}: the File tile opens the file chooser`);
       // ai: Ctrl+O, as a video player opens a file (2026-10-23)
       const byKey = new Promise((ok) => { s.on("Page.fileChooserOpened", () => ok(true)); setTimeout(() => ok(false), 3000); });
       await press(s, "o", "KeyO", 79, 2);
@@ -258,7 +258,7 @@ const SIZES = [
       await s.send("DOM.setFileInputFiles", { objectId: result.objectId, files });
     };
     const LIST = `(() => ({ rows: [...document.querySelectorAll("#pickList .t")].map((t) => t.textContent), subs: [...document.querySelectorAll("#pickList .s")].map((t) => t.textContent),
-      state: document.getElementById("state").textContent, hint: !document.getElementById("hint").hidden, pick: !document.getElementById("pick").hidden, go: document.getElementById("go").disabled }))()`;
+      state: document.getElementById("state").textContent, hint: !document.getElementById("pick").hidden && document.getElementById("sel").hidden, pick: !document.getElementById("sel").hidden, go: document.getElementById("go").disabled }))()`;
     const step = async (what, rows, state) => {
       await until(s, `(${LIST}).rows.join("|") === ${JSON.stringify(rows.join("|"))} && /^${state.replace(/[.()]/g, "\\$&")}/.test(document.getElementById("state").textContent)`, 8000, what).catch(() => {});
       const m = await evaluate(s, LIST);
@@ -306,9 +306,9 @@ const SIZES = [
     await setFiles("file", [long]);
     await until(s, `(${HEAD})?.end === ".txt,"`, 8000, "the long name's line").catch(() => {});
     const one = await evaluate(s, HEAD);
-    const row = await evaluate(s, `(() => { const t = document.querySelector("#pickList .t"); return { cut: t.scrollWidth > t.clientWidth, over: getComputedStyle(t).textOverflow, title: t.title }; })()`);
-    check(one?.end === ".txt," && one.cut && one.over === "ellipsis" && one.oneLine && row.cut && row.title.endsWith("is wide.txt"),
-      `send: a long name's head on one line, its stem cut and ".txt," whole (${JSON.stringify(one)}), its row cut (${row.over})`);
+    const row = await evaluate(s, `(() => { const t = document.querySelector("#pickList .t"), st = t.querySelector(".stem"); return { cut: st.scrollWidth > st.clientWidth, over: getComputedStyle(st).textOverflow, end: st.nextElementSibling.textContent, title: t.title }; })()`);
+    check(one?.end === ".txt," && one.cut && one.over === "ellipsis" && one.oneLine && row.cut && row.end === ".txt" && row.title.endsWith("is wide.txt"),
+      `send: a long name's head on one line, its stem cut and ".txt," whole (${JSON.stringify(one)}), its tile's stem cut and ".txt" kept (${row.over})`);
     await setFiles("file", [long2]);
     await until(s, `(${HEAD})?.end === " and 1 more.tar,"`, 8000, "the bundle's line").catch(() => {});
     const two = await evaluate(s, HEAD);

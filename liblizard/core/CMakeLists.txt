@@ -62,7 +62,7 @@ else()
   target_link_libraries(wg PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
-add_library(dec STATIC dec/setup.cpp dec/front.cpp ingest/camera.cpp)
+add_library(dec STATIC dec/setup.cpp dec/front.cpp ingest/camera.cpp ingest/develop.cpp)
 target_include_directories(dec PUBLIC dec ingest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_include_directories(dec SYSTEM PUBLIC ${TP})
 # ai: the codec for its ring table: a setup is held to the rings the C reads (dec/front.cpp create)
@@ -150,7 +150,8 @@ target_link_libraries(lizard_replay PUBLIC lizard_codec)
 
 # ai: the receiver (rx/receiver.h): a decoder (the GPU's, or the C on the CPU), the camera ingest and the transfer
 # ai: behind one object, for the app
-add_library(lizard_rx STATIC rx/receiver.cpp)
+add_library(lizard_rx STATIC rx/receiver.cpp rx/stream.cpp)
 target_include_directories(lizard_rx PUBLIC rx)
+target_include_directories(lizard_rx SYSTEM PRIVATE ${TP})
 target_link_libraries(lizard_rx PUBLIC dec lizard_xfer lizard_cpu lizard_replay)
 endif()

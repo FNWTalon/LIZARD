@@ -28,6 +28,9 @@ std::string SendConsts::load(const std::string& manifest, const std::vector<uint
   std::memcpy(tab.data(), tabBytes.data(), 4 * words);
   if (pw.size() != 120) return "the sender's pw words are not 120";
   if (slots < 1 + static_cast<int>(codeRate.size())) return "the paint's uniform holds " + std::to_string(slots) + " sizes, too few for the codes' tiers";
+  // ai: rsh's G with the anchors' 8 words (SPEC 6.13, gpu/wgsl/send.mjs GA_BYTES); a tree from before them names none
+  if (!j.contains("gWords")) return "the sender's manifest predates the anchors in the format (no gWords): regenerate liblizard/out";
+  if (j["gWords"] != 20) return "rsh reads " + j["gWords"].dump() + " words of G, the painter writes 20";
   return "";
 }
 
@@ -125,13 +128,21 @@ std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTa
   }
   t.pu[k.paramsDims] = static_cast<uint32_t>(f.blocks); t.pu[k.paramsDims + 1] = static_cast<uint32_t>(t.npos); t.pu[k.paramsDims + 2] = static_cast<uint32_t>(frames * codes);
   std::copy(k.pw.begin(), k.pw.end(), t.pu.begin() + k.paramsPw);
-  // ai: the border: the C's paint of the symbol with every block zero (only the square depends on them)
+  // ai: the border: the C's paint of the symbol with every block zero (only the square depends on them, and not the
+  // ai: anchors' squares in it: focus_encode paints them over the picture, the same whatever the blocks)
   std::vector<uint8_t> zero(static_cast<size_t>(f.blocks) * f.block_bytes, 0), rgba(static_cast<size_t>(t.W) * t.W * 4);
   std::vector<float> drive(static_cast<size_t>(f.px) * f.px);
   focus_encode(&f, zero.data(), drive.data());
   focus_paint_rgba(&f, drive.data(), rgba.data());
   t.border.assign(4 * ((static_cast<size_t>(t.W) * t.W + 3) / 4), 0);
   for (size_t i = 0; i < static_cast<size_t>(t.W) * t.W; i++) t.border[i] = rgba[4 * i];
+  // ai: the anchors' runs in a symbol's pixels (src/focus.c focus_encode: square i from module m0(i) of the drive, a
+  // ai: modules a side, the drive FOCUS_QUIET modules into the symbol), d and e of rsh's G (gpu/wgsl/send.mjs GA)
+  int geo8[8];
+  focus_anchor_geom(&f, geo8);
+  t.anch.assign(8, 0);
+  for (int i = 0; i < 7; i++) t.anch[i] = static_cast<uint32_t>((geo8[1 + i] + FOCUS_QUIET) * f.pxm);
+  t.anch[7] = static_cast<uint32_t>(geo8[0] * f.pxm);
   return "";
 }
 

@@ -135,10 +135,14 @@ private fun ReceiveSettings(r: ReceiveState) {
     Fields {
         // ai: GPU and CPU; with neither chosen the decoder is auto's and the one it runs on is shown
         Select("Decoder", if (r.decoder == "auto") r.autoRan.ifEmpty { "GPU" }.lowercase() else r.decoder, listOf("gpu" to "GPU", "cpu" to "CPU")) { r.chooseDecoder(it) }
-        Select("Camera", r.camera.ifEmpty { r.cameras.firstOrNull()?.id ?: "" }, r.cameras.map { it.id to it.label }, blank = "Camera",
-            onOpen = { r.refreshCameras() }) { r.chooseCamera(it) }
-        // ai: the sizes and rates the camera offers, once one has been opened (none to offer before)
-        if (ci != null && m != null) {
+        Select("Camera", r.camera.ifEmpty { r.cameras.firstOrNull()?.id ?: "" }, r.cameraOptions, blank = "Camera",
+            onOpen = { r.refreshCameras() }) { r.chooseCameraOption(it) }
+        // ai: a phone by its address (ReceiveState.askAddress): asked for, or the camera already one
+        if (r.askAddress || r.typedPhone != null)
+            Field("Phone address") { TextInput(r.typedPhone?.removePrefix("phone:")?.removeSuffix(":${ReceiveState.PHONE_PORT}").orEmpty(), "IP address") { r.choosePhoneAddress(it) } }
+        // ai: the sizes and rates the camera offers, once one has been opened (none to offer before). None for a phone:
+        // ai: its frames are its own camera's crop, set on the phone (camera/phone.cpp), not a UVC device's modes
+        if (ci != null && m != null && !r.phone) {
             val sizes = ci.modes.distinctBy { it.size }.sortedBy { it.w.toLong() * it.h }
             Select("Resolution", m.size, sizes.map { it.size to "${it.w} x ${it.h}" }) { r.chooseRes(it) }
             // ai: the pixel formats at this size, where there is a choice (a webcam's uncompressed one against its Motion-JPEG)
@@ -149,10 +153,13 @@ private fun ReceiveSettings(r: ReceiveState) {
                 rates.firstOrNull { ReceiveState.fpsText(it) == v }?.let { r.chooseFps(it) }
             }
         }
-        Select("Crop", r.layout, listOf("1:1" to "1:1", "2:1" to "2:1 (experimental)")) { r.chooseLayout(it) }
-        ci?.control("zoom")?.let { c -> ZoomField(r, c) }
-        ci?.control("exposure")?.let { c -> ExposureField(r, c) }
-        ci?.control("gain")?.let { c -> GainField(r, c) }
+        // ai: a phone crops on its side (the receiver takes its crop): no Crop here
+        if (!r.phone) Select("Crop", r.layout, listOf("1:1" to "1:1", "2:1" to "2:1")) { r.chooseLayout(it) }
+        if (!r.phone) {
+            ci?.control("zoom")?.let { c -> ZoomField(r, c) }
+            ci?.control("exposure")?.let { c -> ExposureField(r, c) }
+            ci?.control("gain")?.let { c -> GainField(r, c) }
+        }
         // ai: the most frames a GPU launch takes (the app's Batch size): none for the C, which decodes a frame at a time
         if (!r.cpu) Field("Batch size", "${r.batch}") {
             Bar(r.batch.toFloat(), 1f..32f, 30, done = { r.commitBatch() }) { r.chooseBatch(it.roundToInt()) }

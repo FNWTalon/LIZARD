@@ -21,11 +21,18 @@
 // ai: Env: LIZ_OUT (the generated tree, liblizard/out; on the phone /data/local/tmp/lizard/out), LIZ_BARCODE (research/,
 // ai: for its build/ frames and references and its captures/ recordings), LIZ_VK_DEVICE (a substring of the device's name), LIZ_VALIDATE=1 (the
 // ai: Khronos validation layer), LIZ_CACHE=<path> (the pipeline cache file), LIZ_BUDGET=<MB> (the decoder's memory
-// ai: budget; 2048 by default, the web's on the S26).
+// ai: budget; 2048 by default, the web's on the S26). The anchors each frame read (SPEC 6.13): selftest prints them a
+// ai: frame and replay's totals line ends with them; LIZ_PERFRAME=1 (replay): a
+// ai: line a frame as it comes back, "frame <index> found <0|1> ring <r> version <v> held <0|1> blocks <n> anchors <k>".
+// ai: LIZ_YIELD_GPU=0|1: receive's ReceiverConfig::yieldGpu (the decoder's queues at the global priority LOW where offered;
+// ai: a receiver's default, 1); the other modes' own device at LOW only with 1, for an A/B against a screen's load.
 #include "front.h"
 #include "receiver.h"
 #include "replay.h"
 #include "axes.h"
+extern "C" {
+#include "focus.h"
+}
 #include <algorithm>
 #include <atomic>
 #include <deque>
@@ -37,6 +44,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <set>
 
 using namespace lizard;
@@ -96,7 +104,8 @@ static int dump(Ctx& c, std::string v, const std::string& dir) {
   auto out = fh->finish(fh->run(slots, 0));
   Lane& ln = *fh->lanes[0];
   std::vector<std::pair<std::string, BufP>> bufs = {{"peaks", ln.peaksBuf}, {"counts", ln.countsBuf}, {"readings", ln.readingsBuf}, {"raw", ln.rawBuf}, {"acc", ln.accBuf},
-    {"quads", ln.quadsBuf}, {"score", ln.scoreBuf}, {"result", ln.resultBuf}, {"maps", ln.mapsBuf}, {"resid", ln.residBuf}, {"meas", ln.measBuf}, {"logit", ln.logitBuf}, {"list", ln.listBuf}};
+    {"quads", ln.quadsBuf}, {"score", ln.scoreBuf}, {"result", ln.resultBuf}, {"maps", ln.mapsBuf}, {"resid", ln.residBuf}, {"meas", ln.measBuf}};
+  bufs.push_back({"anch", ln.anchBuf}); bufs.push_back({"arec", ln.arecBuf});
   for (size_t i = 0; i < ln.level.size(); i++) bufs.push_back({"level" + std::to_string(i + 1), ln.level[i].buf});
   for (size_t i = 0; i < ln.fcn2Levels.size(); i++) if (ln.fcn2Levels[i].plane) bufs.push_back({"plane" + std::to_string(i + 1), ln.fcn2Levels[i].plane});
   auto& b = *ln.back;
@@ -187,13 +196,51 @@ static int ingestCheck(Ctx& c, std::string v, const std::string& run = "") {
 }
 #endif
 
+// ai: A recording's luma frame made into a camera frame of a developed format (LIZ_RAW: receive and replay below): bin samples a
+// ai: pixel each way (P010: 1) and a margin of 4 about them, the light (v / 255)^2.2 under an RGGB sensor's own response
+// ai: (R 0.5, G 1, B 0.625; black 64, white 1023, 4095 for RAW12), which the levels' gains undo; P010 v x 4 + 1 in the
+// ai: top 10 bits. Rows padded by 16 bytes, so the develop reads a stride that is not a row's length.
+struct SynthRaw {
+  std::vector<uint8_t> plane;
+  RawFrame r;
+};
+static void synthRaw(const uint8_t* px, uint32_t w, uint32_t h, int format, uint32_t bin, SynthRaw& out) {
+  const uint32_t e = format == RAW_FMT_P010 ? 1 : bin, m = 4, rw = w * e + 2 * m, rh = h * e + 2 * m;
+  const float black = 64, white = format == RAW_FMT_RAW12 ? 4095.f : 1023.f, resp[4] = {0.5f, 1.0f, 1.0f, 0.625f};
+  RawFrame& r = out.r;
+  r = RawFrame();
+  r.format = format; r.bin = e; r.x0 = m; r.y0 = m; r.pixelStride = 2;
+  for (int p = 0; p < 4; p++) { r.levels[p] = black; r.levels[5 + p] = 1.0f / resp[p]; }
+  r.levels[4] = white;
+  r.rowStride = (uint32_t)rawRowBytes(format, rw, 2) + 16;
+  out.plane.assign((size_t)r.rowStride * rh, 0);
+  uint16_t lut[4][256];
+  for (int p = 0; p < 4; p++) for (int v = 0; v < 256; v++)
+    lut[p][v] = format == RAW_FMT_P010 ? (uint16_t)(v * 4 + 1) : (uint16_t)std::lround(black + std::pow(v / 255.0, 2.2) * resp[p] * (white - black));
+  for (uint32_t Y = 0; Y < rh; Y++) {
+    uint8_t* row = &out.plane[(size_t)Y * r.rowStride];
+    const bool in = Y >= m && Y < m + h * e;
+    for (uint32_t X = 0; X < rw; X++) {
+      const uint8_t v = in && X >= m && X < m + w * e ? px[(size_t)((Y - m) / e) * w + (X - m) / e] : 128;
+      const uint16_t sv = lut[((Y & 1) << 1) | (X & 1)][v];
+      if (format == RAW_FMT_P010) { const uint16_t t = (uint16_t)(sv << 6); row[2 * X] = (uint8_t)t; row[2 * X + 1] = (uint8_t)(t >> 8); }
+      else if (format == RAW_FMT_RAW16) { row[2 * X] = (uint8_t)sv; row[2 * X + 1] = (uint8_t)(sv >> 8); }
+      else if (format == RAW_FMT_RAW10) { uint8_t* g = row + (X >> 2) * 5; g[X & 3] = (uint8_t)(sv >> 2); g[4] |= (uint8_t)((sv & 3) << (2 * (X & 3))); }
+      else { uint8_t* g = row + (X >> 1) * 3; if (X & 1) { g[1] = (uint8_t)(sv >> 4); g[2] |= (uint8_t)((sv & 15) << 4); } else { g[0] = (uint8_t)(sv >> 4); g[2] |= (uint8_t)(sv & 15); } }
+    }
+  }
+  r.plane = out.plane.data();
+}
+
 // ai: receive: a recording through the whole receiver (rx/receiver.h) at a camera's pace (fps, 60 by default):
 // ai: the queue, the batches, the held word, the judge, the dedupe and the transfer, the stats printed each second.
 // ai: layout 2:1: each camera frame is two recorded frames side by side (2W x H), which the receiver cuts in half.
 // ai: A frame's timestamp is its push time on the steady clock, and the receiver's series is asked after every push as
 // ai: the app's phase lock asks it (Receiver::series): the last line but one says how old a frame's row was when it
 // ai: came, and the verified blocks of every row. LIZ_BATCH=<n>: the most frames a launch takes (Receiver::batchCap,
-// ai: the app's Batch size); a launch goes as soon as a frame waits either way.
+// ai: the app's Batch size); a launch goes as soon as a frame waits either way. LIZ_RAW, LIZ_RAW_BIN (replay's): each
+// ai: frame pushed as a frame of that format (CameraFrame::raw), which the receiver develops (the GPU decoder on its
+// ai: device, the C on this thread).
 static int receive(Ctx& c, const std::string& run, double fps, const std::string& storeDir, const std::string& layout = "1:1") {
   const std::string dir = c.barcode + "/captures/v0.3/" + run;
   auto metaBytes = readAll(dir + "/meta.json");
@@ -214,11 +261,17 @@ static int receive(Ctx& c, const std::string& run, double fps, const std::string
   // ai: recording's smaller frames on that plan: what a plan grown for a higher resolution costs the frames of a
   // ai: lower one (the phone's camera reopened smaller), read off the stats' gpuMs against a run without it.
   const uint32_t planSide = getenv("LIZ_PLAN") ? (uint32_t)atoi(getenv("LIZ_PLAN")) : 0;
+  const std::string rawName = env("LIZ_RAW");
+  const int rawFmt = rawName == "raw16" ? RAW_FMT_RAW16 : rawName == "raw10" ? RAW_FMT_RAW10 : rawName == "raw12" ? RAW_FMT_RAW12 : rawName == "p010" ? RAW_FMT_P010 : 0;
+  if (!rawName.empty() && (!rawFmt || grow)) throw wg::Error("LIZ_RAW=" + rawName + ": raw16, raw10, raw12 or p010, and not with LIZ_GROW");
+  const uint32_t rawBin = env("LIZ_RAW_BIN") == "2" ? 2 : 1;
+  SynthRaw sr;
   ReceiverConfig cfg;
   cfg.assets = c.out; cfg.cacheDir = storeDir; cfg.storeDir = storeDir; cfg.layout = layout;
   // ai: LIZ_DECODER: auto (the default), gpu or cpu; LIZ_CPU_THREADS: the CPU decoder's workers (0: its pool's rule)
   if (getenv("LIZ_DECODER")) cfg.decoder = getenv("LIZ_DECODER");
   if (getenv("LIZ_CPU_THREADS")) cfg.cpuThreads = atoi(getenv("LIZ_CPU_THREADS"));
+  if (getenv("LIZ_YIELD_GPU")) cfg.yieldGpu = env("LIZ_YIELD_GPU") == "1";   // ai: ReceiverConfig::yieldGpu, its default unset
   cfg.log = [](const std::string& m) { std::cout << "  " << m << std::endl; };
   std::atomic<int> released{0};
   auto rx = Receiver::create(cfg, [&](uint64_t) { released++; });
@@ -286,6 +339,7 @@ static int receive(Ctx& c, const std::string& run, double fps, const std::string
       const uint32_t s = std::min(W, H) * 3 / 4, x = (W - s) / 2, y = (H - s) / 2;
       f.luma = px[k].data() + (size_t)y * W + x; f.width = s; f.height = s; f.stride = W;
     } else { f.luma = px[k].data(); f.width = sizes[k].first; f.height = sizes[k].second; f.stride = sizes[k].first; }
+    if (rawFmt) { synthRaw(f.luma, f.width, f.height, rawFmt, rawBin, sr); f.raw = &sr.r; f.luma = nullptr; f.stride = 0; }
     f.tag = (uint64_t)i;
     f.timestampNs = nowNs();
     rx->push(f);
@@ -438,15 +492,25 @@ static int selftest(Ctx& c, std::string v) {
     if (!why.empty()) bad++;
   }
   printf("%s: %d blocks (reference %d), %d of %d frames differ; batch %.2f ms of GPU (%d frames)\n", v.c_str(), blocks, refBlocks, bad, n, out.gpuMs.value_or(-1), n);
+  // ai: the anchors found on each frame
+  printf("anchors found, a frame:");
+  for (int i = 0; i < n; i++) printf(" %d", out.frames[i].anchors);
+  printf("\n");
   return bad ? 1 : 0;
 }
 
 // ai: A recording through the decoder as the web's replay runs it (scripts/exp/gpu_captures.mjs): the frames in capture
 // ai: order, batches of the batcher's size, two in flight, each launched with the last word read so far.
+// ai: LIZ_RAW=raw16|raw10|raw12|p010 (2026-10-27, the develop: ingest/develop.h), LIZ_RAW_BIN=1|2 (1): each frame
+// ai: made into that format (synthRaw) and staged by enqueueRaw, its batch keeping it, and the layer the GPU developed
+// ai: held to the CPU's develop of the same samples byte for byte (the line "develop:"); LIZ_RAW_CPU=1 the CPU's
+// ai: develop pushed as luma instead (the blocks of the two runs alike).
 // ai: LIZ_LAUNCH=<n>: at most n frames a launch on the same plan (the app's receiver launches 1 or 2 halves), so
-// ai: PROFILE=1 times each stage at the app's launch size.
+// ai: PROFILE=1 times each stage at the app's launch size. LIZ_PERFRAME=1: a line a frame (the header's form); the
+// ai: totals line ends with the anchors found and a found frame's median.
 static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
   const int launch = getenv("LIZ_LAUNCH") ? std::max(1, atoi(getenv("LIZ_LAUNCH"))) : 1 << 30;
+  const bool perFrame = env("LIZ_PERFRAME") == "1";
   auto fh = open(c, v);
   const std::string dir = c.barcode + "/captures/v0.3/" + run;
   auto metaBytes = readAll(dir + "/meta.json");
@@ -459,10 +523,20 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
   for (auto& wh : sizes) dims.push_back({(int)wh.first, (int)wh.second});
   const auto axes = replayAxes(meta, dims);
   fh->plan(W, H);
+  const std::string rawName = env("LIZ_RAW");
+  const int rawFmt = rawName == "raw16" ? RAW_FMT_RAW16 : rawName == "raw10" ? RAW_FMT_RAW10 : rawName == "raw12" ? RAW_FMT_RAW12 : rawName == "p010" ? RAW_FMT_P010 : 0;
+  if (!rawName.empty() && !rawFmt) throw wg::Error("LIZ_RAW=" + rawName + ": raw16, raw10, raw12 or p010");
+  const uint32_t rawBin = env("LIZ_RAW_BIN") == "2" ? 2 : 1;
+  const bool rawCpu = env("LIZ_RAW_CPU") == "1";
+  std::map<uint64_t, std::vector<uint8_t>> rawRef;   // ai: each staged frame's CPU develop, by tag, until its batch is read
+  long rawFrames = 0, rawDiffer = 0, rawBytes = 0;
+  int rawMaxDiff = 0;
+  if (rawFmt) printf("frames as %s at bin %u, %s\n", rawName.c_str(), rawFmt == RAW_FMT_P010 ? 1 : rawBin, rawCpu ? "the CPU's develop pushed as luma" : "developed on the GPU, held to the CPU's develop");
   std::deque<std::unique_ptr<InFlight>> flight;
   int held = 0, found = 0, words = 0, heldFrames = 0, next = 0;
   long blocks = 0, codewords = 0, iterations = 0;   // ai: the LDPC's codewords run and iterations summed (the back half's COUNTS 3 and 7)
   std::vector<float> pilots, pilots2;   // ai: each frame's pilot readings where read (SPEC 7.3): the even blocks', the odd blocks'
+  std::vector<int> anchors;   // ai: the anchors each found frame read
   double gpuMs = 0, gpuFrames = 0;
   std::vector<std::pair<std::string, double>> stageSum;
   const double t0 = fh->now();
@@ -471,6 +545,17 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
     flight.pop_front();
     for (auto& fo : out.frames) {
       if (fo.empty) continue;
+      auto rf = rawRef.find(fo.tag);
+      if (rf != rawRef.end() && fo.luma.empty()) rawRef.erase(rf);   // ai: a keep the device refused (front.cpp run)
+      else if (rf != rawRef.end()) {
+        if (fo.luma.size() != rf->second.size()) throw wg::Error("frame " + std::to_string(fo.tag) + ": " + std::to_string(fo.luma.size()) + " bytes kept for " + std::to_string(rf->second.size()));
+        long d = 0;
+        for (size_t b = 0; b < fo.luma.size(); b++) if (fo.luma[b] != rf->second[b]) { d++; rawMaxDiff = std::max(rawMaxDiff, std::abs(fo.luma[b] - rf->second[b])); }
+        rawFrames++; rawBytes += (long)fo.luma.size(); rawDiffer += d;
+        rawRef.erase(rf);
+      }
+      if (perFrame) printf("frame %llu found %d ring %d version %d held %d blocks %zu anchors %d\n", (unsigned long long)fo.tag, fo.finder.found == 1 ? 1 : 0, fo.ring, fo.version, fo.held ? 1 : 0, fo.records.size(), fo.anchors);
+      if (fo.finder.found == 1) anchors.push_back(fo.anchors);
       found += fo.finder.found == 1;
       blocks += (long)fo.records.size();
       if (fo.backCounts.size() > 7) { codewords += fo.backCounts[3]; iterations += fo.backCounts[7]; }
@@ -497,13 +582,22 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
         if (p.size() != (size_t)w * h) throw wg::Error(dir + name + ": " + std::to_string(p.size()) + " bytes for " + std::to_string(w) + " x " + std::to_string(h));
         // ai: A slot comes back once the batch that took it has copied it out (front.cpp takeSlot): the batch just
         // ai: launched may not have on a slow device (the iGPU, 32 frames a batch, a ring of 36), so wait for it.
-        Slot* s = fh->enqueueLuma(p.data(), w, h, w, (uint64_t)next);
-        for (int t = 0; !s && t < 20000; t++) { std::this_thread::sleep_for(std::chrono::microseconds(250)); s = fh->enqueueLuma(p.data(), w, h, w, (uint64_t)next); }
+        Slot* s = nullptr;
+        SynthRaw sr;
+        if (rawFmt) {
+          synthRaw(p.data(), w, h, rawFmt, rawBin, sr);
+          std::vector<uint8_t> dev((size_t)w * h);
+          developLuma(sr.r, 0, 0, w, h, dev.data(), w);
+          if (rawCpu) p = std::move(dev); else rawRef[(uint64_t)next] = std::move(dev);
+        }
+        auto put = [&] { return rawFmt && !rawCpu ? fh->enqueueRaw(sr.r, 0, 0, w, h, (uint64_t)next) : fh->enqueueLuma(p.data(), w, h, w, (uint64_t)next); };
+        s = put();
+        for (int t = 0; !s && t < 20000; t++) { std::this_thread::sleep_for(std::chrono::microseconds(250)); s = put(); }
         if (!s) throw wg::Error("the ring is full");
         if (!std::isnan(axes[next][0])) s->axis = axisWord(axes[next][0], axes[next][1]);
         slots.push_back(s);
       }
-      flight.push_back(fh->run(slots, held, env("PROFILE") == "1"));
+      flight.push_back(fh->run(slots, held, env("PROFILE") == "1", rawFmt && !rawCpu ? (int)slots.size() : 0));
     } else drain();
   }
   const double ms = fh->now() - t0;
@@ -512,9 +606,20 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
     for (auto& [k, v] : stageSum) printf(" %s %.2f", k.c_str(), v / std::max(1.0, gpuFrames));
     printf("\n");
   }
-  printf("%s: %d frames, %d found, %d words, %d held, %ld verified blocks; %.2f ms of GPU a frame, %.0f frames a second end to end (%s, batches of %d)\n", run.c_str(), frames, found, words, heldFrames, blocks,
-         gpuFrames ? gpuMs / gpuFrames : -1, frames / (ms / 1000), v.c_str(), fh->B);
+  std::string anch;
+  {
+    std::sort(anchors.begin(), anchors.end());
+    long sum = 0;
+    for (int a : anchors) sum += a;
+    const size_t k = anchors.size();
+    char m[96];
+    snprintf(m, sizeof m, "; %ld anchors found, a found frame's median %g", sum, k ? (k % 2 ? anchors[k / 2] : 0.5 * (anchors[k / 2 - 1] + anchors[k / 2])) : 0.0);
+    anch = m;
+  }
+  printf("%s: %d frames, %d found, %d words, %d held, %ld verified blocks; %.2f ms of GPU a frame, %.0f frames a second end to end (%s, batches of %d)%s\n", run.c_str(), frames, found, words, heldFrames, blocks,
+         gpuFrames ? gpuMs / gpuFrames : -1, frames / (ms / 1000), v.c_str(), fh->B, anch.c_str());
   printf("ldpc: %ld codewords, %ld iterations (%.2f a codeword)\n", codewords, iterations, codewords ? (double)iterations / codewords : 0.0);
+  if (rawFmt && !rawCpu) printf("develop: %ld frames, %ld bytes, %ld differ from the CPU's (most by %d)%s\n", rawFrames, rawBytes, rawDiffer, rawMaxDiff, rawFrames < frames ? " (some frames not kept)" : "");
   for (auto* pv : {&pilots, &pilots2}) if (!pv->empty()) {
     std::vector<float> v = *pv;
     std::sort(v.begin(), v.end());
@@ -529,7 +634,9 @@ int main(int argc, char** argv) {
   try {
     Ctx c;
     auto log = [](const std::string& m) { std::cout << m << std::endl; };
-    c.dev = wg::Device::create(env("LIZ_VK_DEVICE"), env("LIZ_VALIDATE") == "1", log);
+    wg::DeviceExtras ex;
+    ex.lowPriority = env("LIZ_YIELD_GPU") == "1";   // ai: the queues at low priority, as a receiver's with yieldGpu
+    c.dev = wg::Device::create(env("LIZ_VK_DEVICE"), env("LIZ_VALIDATE") == "1", log, ex);
     if (!env("LIZ_CACHE").empty()) c.dev->loadCache(env("LIZ_CACHE"));
     c.variants = variantsFor(*c.dev);
     c.out = env("LIZ_OUT", "out");

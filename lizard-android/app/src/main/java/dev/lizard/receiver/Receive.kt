@@ -50,9 +50,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 
-// ai: Receive (2026-10-01): the bar, fixed, and under it the camera's crop, the transfer's panel, then Settings and
-// ai: Developer Tools, rows that open (the camera still running, so its readouts can be watched while aiming), and
-// ai: About; the words are Readout.kt's, the web receiver's. As the web page since 2026-10-02: landscape is a column on
+// ai: Receive (2026-10-01): the bar, fixed, and under it the camera's crop, the transfer's panel, then Settings
+// ai: and Developer Tools, rows that open (the camera still running, so its readouts can be
+// ai: watched while aiming), and About; the words are Readout.kt's, the web receiver's. As the web page since 2026-10-02: landscape is a column on
 // ai: the left, the bar over the rest scrolling on its own and a hairline on its right, and the camera on the right, as
 // ai: big as the rest of the screen allows and centred there (the camera on the left before, 2026-10-01); portrait the
 // ai: bar over one column that scrolls. Settings in place of the transfer's panel, by a gear in the bar, until then.
@@ -67,6 +67,7 @@ internal fun MainActivity.ReceiveScreen() {
     val side: @Composable () -> Unit = {
         TransferPanel()
         Fold("Settings", isOpen("recvSettings"), { toggle("recvSettings") }) { ReceiveSettings() }
+        Fold("Experimental", isOpen("recvExperimental"), { toggle("recvExperimental") }) { ReceiveExperimental() }
         Fold("Developer Tools", isOpen("recvAdvanced"), { toggle("recvAdvanced") }) { ReceiveAdvanced() }
         About()
         Spacer(Modifier.height(24.dp))

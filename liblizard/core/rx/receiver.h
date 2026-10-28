@@ -14,6 +14,8 @@ struct AHardwareBuffer;
 
 namespace lizard {
 
+struct RawFrame;   // ai: ingest/develop.h
+
 class Replay;   // ai: replay.h
 class XferRx;   // ai: xfer_rx.h
 
@@ -25,7 +27,8 @@ struct ReceiverConfig {
   std::string storeDir;    // ai: the transfer's chunks and the received file
   // ai: auto: the GPU decoder's best variant where the device runs one and is no software device (Vulkan's CPU type:
   // ai: lavapipe, SwiftShader; 2026-10-25), else the C on the CPU, why in its stats' gpuWhy; gpu: the GPU decoder on
-  // ai: any device, a software one too, else an error; cpu: the C
+  // ai: any device, a software one too, else an error; cpu: the C; pc: none here, the frames served to a PC that
+  // ai: decodes them (stream.h, 2026-10-27)
   std::string decoder = "auto";
   int cpuThreads = 0;             // ai: the CPU decoder's workers: 0 the pool's own rule (cpu/pool.h), else that many
   std::string precision = "auto"; // ai: auto (the best the device runs of the variants the assets hold), int8, f16, f32
@@ -33,6 +36,11 @@ struct ReceiverConfig {
   // ai: 1:1 the frame's centre square; 2:1 its centre 2:1 region along the long side, cut in half, each half a
   // ai: frame of its own (two symbols a camera frame: the sender's two codes side by side)
   std::string layout = "1:1";
+  // ai: the GPU decoder's queues at the global priority LOW where the device offers it (wg::DeviceExtras::lowPriority):
+  // ai: the screen, the preview and the compositor first, the decode in its slack (2026-10-27: on the S26, the lag
+  // ai: replay beside the app's camera and screen, the screen's 99th percentile frame 23 to 81 ms to 17 to 19, as with
+  // ai: no decoder, for 5.92 to 6.38 ms of GPU a half, every half decoded)
+  bool yieldGpu = true;
   std::function<void(const std::string&)> log;
 };
 
@@ -41,6 +49,9 @@ struct ReceiverConfig {
 struct CameraFrame {
   AHardwareBuffer* hb = nullptr;   // ai: the camera's buffer (zero copy), or null with luma set
   const uint8_t* luma = nullptr;   // ai: a Y plane (the CPU fallback, and desktop replays)
+  // ai: or a frame to develop to luma (ingest/develop.h: P010, RAW16, RAW10, RAW12; width x height the developed
+  // ai: frame's): the GPU decoder develops it on its device, the others on the pushing thread (developedOnCpu)
+  const RawFrame* raw = nullptr;
   uint32_t width = 0, height = 0, stride = 0;
   int64_t timestampNs = 0;
   uint64_t tag = 0;
@@ -48,6 +59,10 @@ struct CameraFrame {
   // ai: length f; f 0 none. The C's lens model takes it (src/focus.h focus_set_lens); a replay's meta records it.
   float lens[4] = {0, 0, 0, 0};
 };
+
+// ai: f with its raw frame developed to luma on the calling thread (a buffer of that thread's, good until its next
+// ai: call), or f itself where it has none
+CameraFrame developedOnCpu(const CameraFrame& f);
 
 class Receiver {
  public:
@@ -67,7 +82,8 @@ class Receiver {
   // ai: where they mean the same (lizard-web/recv.mjs). `windowSecs`: the length of the window the goodput and
   // ai: the registered share are over (a window opens at a stream's first frame and closes a second or more on, at the
   // ai: next frame the C is handed or decodes, the next batch the GPU delivers; the figures 0 until a stream's first
-  // ai: closes: cameraClosed); `B` and `cap` (the GPU decoder): the batcher's size and batchCap's n.
+  // ai: closes: cameraClosed); `B` and `cap` (the GPU decoder): the batcher's size and batchCap's n; `anchors` (the GPU
+  // ai: decoder): the median of the anchors it read over the window's found frames (SPEC 6.13), null with the C.
   virtual std::string stats() = 0;
   // ai: The newest frames with no JSON, for a reader that asks at every capture (the app's phase lock, Engine.kt):
   // ai: [the version the last read word names, 0 before any, then 8 doubles a frame for every frame of the stats'

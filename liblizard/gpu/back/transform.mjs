@@ -9,6 +9,7 @@
 // ai: Pass 1 is fused: it samples the frame through the front half's texture, maps and residuals (bindPicture), on the
 // ai: grid of the frame's (ring, picture) pair (`picture`: the front half's rings, where each ring puts a picture and
 // ai: its lattice). The grid pass 1, which read F9's sampled grid, went 2026-10-22.
+// ai: It reads the front half's anchors records too (binding 10: SPEC 6.13, the mesh the anchors give and their erase).
 import { init, Focus } from "../../sim/ob.mjs";
 import { SIZES, CPW, ARGS_WORDS, ARGS_SLOT, LATTICE_MAX, argsWords, listsWords, gateRowsAt, gateWords, gateSource, pass1Source, reduceSource, pass2Source } from "../wgsl/back_transform.mjs";
 import { RING_COUNT } from "../wgsl/finder.mjs";
@@ -144,22 +145,25 @@ export class Transform {
     const layout = (types) => d.createBindGroupLayout({ entries: types.map((type, binding) => entry(binding, type)) });
     t.gateBgl = layout([RO, RO, RW, RW, UN, RW, RW, RW, RW]);
     // The fused pass 1: the frame texture, lists, twiddles, PART, Y, counters and params, then maps, resid and PIC.
+    // ai: and the anchors' records at binding 10 (read-only: eight storage buffers)
     const texEntry = { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float", viewDimension: "2d-array" } };
-    const fusedTail = [RO, RO, RW, RW, RW, UN, RO, RO, UN].map((type, k) => entry(k + 1, type));
+    const fusedTail = [RO, RO, RW, RW, RW, UN, RO, RO, UN, RO].map((type, k) => entry(k + 1, type));
     t.p1fBgl = d.createBindGroupLayout({ entries: [texEntry, ...fusedTail] });
     t.redBgl = layout([RO, RO, RW, UN]);
     t.p2Bgl = layout([RO, RO, RO, RO, RO, RO, UN, RW, RW, UN]);
     const pipe = (bgl, code, label) => d.createComputePipelineAsync({ label, layout: d.createPipelineLayout({ bindGroupLayouts: [bgl] }), compute: { module: d.createShaderModule({ label, code }), entryPoint: "main" } });
+    t.pipe = pipe;
     // ai: The gate's rows table: an entry a block count up to the largest built size's.
     const counts = 1 + Math.max(...t.built.map((s) => tables[s].blocks));
     const jobs = [pipe(t.gateBgl, gateSource(B, { blkStride, counts }), "back gate")];
     t.reduce = []; t.pass2 = []; t.pass1f = [];
     const set = (arr, s) => (p) => { arr[s] = p; };
     for (const s of t.built) {
-      const { nt: n } = tables[s];
+      // ai: pass 1 at the size's nt with the picture's own n for the anchors' erase
+      const { nt: n, n: picture } = tables[s];
       jobs.push(pipe(t.redBgl, reduceSource({ n, B }), `back reduce ${n}`).then(set(t.reduce, s)));
       jobs.push(pipe(t.p2Bgl, pass2Source({ n, prec: precision, B }), `back pass2 ${n}`).then(set(t.pass2, s)));
-      jobs.push(pipe(t.p1fBgl, pass1Source({ n, prec: precision, B }), `back pass1 fused ${n}`).then(set(t.pass1f, s)));
+      jobs.push(pipe(t.p1fBgl, pass1Source({ n, prec: precision, B, picture }), `back pass1 fused ${n}`).then(set(t.pass1f, s)));
     }
     const done = await Promise.all(jobs);
     t.gate = done[0];
@@ -241,14 +245,16 @@ export class Transform {
 
   // The fused pass 1's bind groups over the front half's frame texture (a 2d-array view, a frame a layer), maps (16
   // f32 a frame) and residuals (NODES_MAX vec4f a frame); made again whenever the front half replaces the texture.
-  bindPicture(ln, { texView, mapsBuf, residBuf }) {
+  // ai: arecBuf: the front half's anchors records (ANCH_REC vec4f a frame), binding 10.
+  bindPicture(ln, { texView, mapsBuf, residBuf, arecBuf }) {
     const d = this.device;
+    if (!arecBuf) throw new Error("pass 1 bound with no anchors records");
     ln.p1fGroups = [];
     for (const s of this.built) {
-      const at = [ln.listsBuf, this.twBufs[s], ln.partBuf, ln.yBuf, ln.countsBuf, ln.params[s], mapsBuf, residBuf, this.picUnis[s]].map((buffer, k) => [k + 1, buffer]);
+      const at = [ln.listsBuf, this.twBufs[s], ln.partBuf, ln.yBuf, ln.countsBuf, ln.params[s], mapsBuf, residBuf, this.picUnis[s], arecBuf].map((buffer, k) => [k + 1, buffer]);
       ln.p1fGroups[s] = d.createBindGroup({ layout: this.p1fBgl, entries: [{ binding: 0, resource: texView }, ...at.map(([binding, buffer]) => ({ binding, resource: { buffer } }))] });
     }
-    ln.picture = { texView, mapsBuf, residBuf };
+    ln.picture = { texView, mapsBuf, residBuf, arecBuf };
   }
 
   // The zeroing gate's bind group, once the lane holds the LDPC's V, ITS and REC.

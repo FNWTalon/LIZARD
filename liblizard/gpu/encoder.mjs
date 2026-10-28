@@ -42,7 +42,7 @@
 // ai: change leaves an older one's last frames at the old rate). batch 16 and sub 4 unless asked, sub then batch halved
 // ai: while the device cannot hold a configuration's buffers (cfg.batch, cfg.sub say what it got).
 import { irowsSource, ipicSource } from "./wgsl/inverse.mjs";
-import { paintSource, tposeSource, rsvSource, rshSource, presentSource, TPOSE_TILE, RSV_THREADS, RSH_THREADS } from "./wgsl/send.mjs";
+import { paintSource, tposeSource, rsvSource, rshSource, presentSource, TPOSE_TILE, RSV_THREADS, RSH_THREADS, GA_BYTES } from "./wgsl/send.mjs";
 import { transformTables } from "./back/transform.mjs";
 import { whiten, perm } from "./back/bitmap.mjs";
 import { ruleTables } from "./back/codes.mjs";
@@ -201,7 +201,7 @@ export class GpuEncoder {
     try {
       alive();
       if (fps) fc.setFps(fps);
-      const g = fc.resampleGeom(), V = fc.blocks, B = fc.blockBytes, W = fc.side + 2 * fc.quiet * fc.cell;
+      const g = fc.resampleGeom(), ag = fc.anchorGeom(), V = fc.blocks, B = fc.blockBytes, W = fc.side + 2 * fc.quiet * fc.cell;
       const want = profile.reduce((a, t) => a + t.count, 0);
       if (g.n !== n || tb.blocks !== subch / 8 || V !== want || B !== PAYLOAD) throw new Error(`the tables (${tb.blocks} chunks at ${n}, a profile of ${want} blocks) and the codec (${V} of ${B} B at ${g.n}) disagree`);
       const [irows, ipic] = await pipes;
@@ -216,7 +216,7 @@ export class GpuEncoder {
       while (!c) {
         sub = Math.min(sub, batch);
         if (batch < 1) throw new Unavailable(`no configuration of LIZARD-${subch} at ${n} fits this device's memory`);
-        const t = this.shape({ spec, codes, gapModules: gap, tb, g, fc, V, B, W, batch, sub, irows, ipic }), z = t.sizes;
+        const t = this.shape({ spec, codes, gapModules: gap, tb, g, ag, fc, V, B, W, batch, sub, irows, ipic }), z = t.sizes;
         t.profile = profile;
         if (z.FRAME > most) { batch = Math.floor(batch / 2); continue; }
         if (Math.max(z.BLOCKS, z.S, z.Y, z.PQT, z.PIC) > most) {
@@ -246,7 +246,7 @@ export class GpuEncoder {
   }
 
   // ai: A configuration's numbers and its buffers' sizes: halves of `batch` frames, scratch for `sub` (R symbols).
-  shape({ spec, codes, gapModules = GAP_MODULES, tb, g, fc, V, B, W, batch, sub, irows, ipic }) {
+  shape({ spec, codes, gapModules = GAP_MODULES, tb, g, ag, fc, V, B, W, batch, sub, irows, ipic }) {
     const { n, subch, span = 0 } = spec, q = g.q, R = sub * codes;
     // ai: two codes a gap of gapModules modules apart (2026-09-30; a slider since 2026-10-03; lizard-web/send-worker.mjs
     // ai: paints the same gap): the frame is codes W + (codes - 1) gap wide, the gap the margin's colour (wgsl/send.mjs rsh pixel)
@@ -261,7 +261,10 @@ export class GpuEncoder {
       // ai: rsv writes TMP.
       PQT: R * 4 * Math.max(n * n, copy ? 0 : q * n), PIC: R * n * n * 4, FRAME: batch * FS * 4,
     };
-    return { spec, n, subch, span, codes, gap, V, B, W, FW, RW, FS, q, sq: g.o + fc.quiet * fc.cell, words, Vr, sStride, yStride, batch, sub, R, copy, sizes, irows, ipic, bufs: [], whole: 0, frameMs: null, focus: null,
+    // ai: the anchors' runs in a symbol's pixels for RSH's G (gpu/wgsl/send.mjs GA: each square's first pixel along
+    // ai: either axis, the drive fc.quiet modules into the symbol, then the side; core/tx/send_tables.cpp the same)
+    const anch = [...ag.m0.map((m) => (m + fc.quiet) * fc.cell), ag.side * fc.cell];
+    return { spec, n, subch, span, codes, gap, V, B, W, FW, RW, FS, q, sq: g.o + fc.quiet * fc.cell, words, Vr, sStride, yStride, batch, sub, R, copy, sizes, irows, ipic, anch, bufs: [], whole: 0, frameMs: null, focus: null,
       label: `LIZARD-${subch} at ${n}, ${W} px a symbol${codes > 1 ? ` x ${codes}` : ""}` };
   }
 
@@ -287,7 +290,7 @@ export class GpuEncoder {
     const taps = new ArrayBuffer(48 * q), idx = new Uint32Array(taps, 0, 6 * q);
     for (let x = 0; x < q; x++) for (let t = 0; t < 6; t++) idx[6 * x + t] = (((g.i0[x] + t) % n) + n) % n;
     new Float32Array(taps, 24 * q, 6 * q).set(g.w);
-    c.g = new Uint32Array([n, q, c.sq, W, codes, c.FW, c.RW, c.FS, 1, 0, c.gap, 0]);
+    c.g = new Uint32Array([n, q, c.sq, W, codes, c.FW, c.RW, c.FS, 1, 0, c.gap, 0, ...c.anch]);
     c.BLOCKS = buf(c.sizes.BLOCKS, U.STORAGE | U.COPY_DST);
     c.staging = new Uint8Array(c.sizes.BLOCKS);
     const UV = buf(4 * tb.UV.length, U.STORAGE | U.COPY_DST, tb.UV);
@@ -301,8 +304,8 @@ export class GpuEncoder {
     const PIC = buf(c.sizes.PIC, U.STORAGE);
     const TAPS = buf(48 * q, U.STORAGE | U.COPY_DST, new Uint8Array(taps));
     c.BORDER = buf(W * W, U.STORAGE | U.COPY_DST);
-    const GU = (c.GU = buf(48, U.UNIFORM | U.COPY_DST, c.g));
-    c.PG = buf(48, U.UNIFORM | U.COPY_DST, c.g);
+    const GU = (c.GU = buf(GA_BYTES, U.UNIFORM | U.COPY_DST, c.g));
+    c.PG = buf(GA_BYTES, U.UNIFORM | U.COPY_DST, c.g);
     c.FRAME = [buf(c.sizes.FRAME, U.STORAGE | U.COPY_SRC), buf(c.sizes.FRAME, U.STORAGE | U.COPY_SRC)];
     const group = (k, list) => d.createBindGroup({ layout: this.bgl[k], entries: list.map((r, binding) => ({ binding, resource: r.buffer ? r : { buffer: r } })) });
     c.paintGroup = group("paint", [c.BLOCKS, this.TAB, UV, c.S, PU]);

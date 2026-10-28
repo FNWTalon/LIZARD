@@ -57,10 +57,10 @@ import kotlin.math.roundToInt
 // ai: it has a window (addNotify), is shown or resized, and, before that window goes (removeNotify: a dispose, a window
 // ai: made again), stops the presenter on it. A click on it does nothing in full screen (2026-10-24: Escape, F, F11 and
 // ai: the rail's collapser leave it); the Idle
-// ai: (2026-10-07, the web's hint in the middle of its page and the app's code box) it is the file's area: the soft fill, the file icon and "Choose files" over the link "or a folder", or the choice's
-// ai: name once one is chosen, or "Test stream"; a click opens the file dialog (the link, the folder chooser), and files
-// ai: and folders dropped on it are taken (the test stream off; several, or a folder, one tar since 2026-10-16). AWT
-// ai: paints that itself, since nothing of Compose can be drawn over a heavyweight canvas.
+// ai: (2026-10-07, the web's middle of its page and the app's code box) it is the file's area: the file upload (since
+// ai: 2026-10-26 the File and Folder tiles and the selection's card, paintUpload), or "Test stream"; files and folders
+// ai: dropped on it are taken (the test stream off; several, or a folder, one tar since 2026-10-16). AWT paints that
+// ai: itself, since nothing of Compose can be drawn over a heavyweight canvas.
 class CodeCanvas(private val s: SendState) : Canvas() {
     @Volatile var presenting = false
     // ai: how near the left edge the pointer shows full screen's rail, the window's units
@@ -70,7 +70,9 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         background = java.awt.Color.WHITE
         isFocusable = false
         addComponentListener(object : ComponentAdapter() {
-            override fun componentResized(e: ComponentEvent) { s.areaChanged(); s.canvasMoved() }
+            // ai: a resize repaints the idle area too: nothing else does on a heavyweight canvas that shrinks (no expose), so
+            // ai: the file upload stayed at the old size until the next change (2026-10-26)
+            override fun componentResized(e: ComponentEvent) { s.areaChanged(); s.canvasMoved(); if (!presenting) repaint() }
             override fun componentMoved(e: ComponentEvent) = s.canvasMoved()
         })
         if (Native.mac) addHierarchyBoundsListener(object : java.awt.event.HierarchyBoundsAdapter() {
@@ -81,22 +83,19 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         addHierarchyListener { e -> if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) s.areaChanged() }
         addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
-                if (!s.full && chooses()) {
-                    if (listing()) hits.firstOrNull { it.first.contains(e.point) }?.second?.invoke()
-                    else if (folderLink?.contains(e.point) == true) s.chooseFolder() else s.chooseFile()
-                }
+                if (!s.full && chooses()) hits.firstOrNull { it.first.contains(e.point) }?.second?.invoke()
             }
         })
-        // ai: over the list, the hand only on what takes a click; full screen's rail near the left edge
+        // ai: over the file upload, the hand only on what takes a click; full screen's rail near the left edge
         addMouseMotionListener(object : MouseAdapter() {
             override fun mouseMoved(e: MouseEvent) {
                 if (s.full) { if (e.x < EDGE_NEAR && !s.edgeRail) s.edgeRail = true; return }
-                if (!listing() || !chooses()) return
+                if (!uploading() || !chooses()) return
                 val c = if (hits.any { it.first.contains(e.point) }) Cursor.HAND_CURSOR else Cursor.DEFAULT_CURSOR
                 if (cursor.type != c) cursor = Cursor.getPredefinedCursor(c)
             }
         })
-        addMouseWheelListener { e -> if (listing()) { scroll += e.wheelRotation * 48; repaint() } }
+        addMouseWheelListener { e -> if (uploading()) { scroll += e.wheelRotation * 48; repaint() } }
         // ai: Files and folders dropped are added (a run stops first, as the web's does; refused while sending until
         // ai: 2026-10-23); the window's column takes them too (Screen.kt), and the area's outline says so while a drag is over
         dropTarget = DropTarget(this, object : DropTargetAdapter() {
@@ -111,25 +110,36 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     }
 
     private fun chooses() = !s.sending && !s.test
-    private fun listing() = !s.test && s.items.isNotEmpty()
-    private var folderLink: Rectangle? = null   // ai: where "or a folder" was painted, while it shows
-    private var hits: List<Pair<Rectangle, () -> Unit>> = emptyList()   // ai: the list's controls as last painted
+    // ai: a pick being walked or the bundle made again (`reading`, which every add, remove and Clear sets) keeps the upload
+    // ai: up, the column's state line saying "Reading the files" (a cover took the area for it until 2026-10-26: a flash)
+    private fun uploading() = !s.test
+    private var hits: List<Pair<Rectangle, () -> Unit>> = emptyList()   // ai: the file upload's controls as last painted
     private var scroll = 0
 
-    // ai: the look for the state: a hand over the file's area, the default cursor otherwise (shown in full screen too,
-    // ai: 2026-10-07); over the list, the hand on its controls alone (mouseMoved)
+    // ai: the look for the state: the default cursor, the hand over the file upload's controls alone (mouseMoved)
     fun idleLook() {
-        cursor = if (chooses() && !listing()) Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) else Cursor.getDefaultCursor()
+        cursor = Cursor.getDefaultCursor()
         repaint()
     }
 
     override fun update(g: Graphics) = paint(g)
+    // ai: Drawn off screen at the screen's pixels, then put on screen in one copy (2026-10-26): drawn straight onto the
+    // ai: heavyweight canvas, each repaint (a wheel step, a removal) showed the area cleared and half drawn for a moment.
+    private var back: BufferedImage? = null
     override fun paint(g: Graphics) {
-        if (presenting) return
-        val g2 = g as Graphics2D
+        if (presenting || width <= 0 || height <= 0) return
+        val t = graphicsConfiguration?.defaultTransform
+        val sx = t?.scaleX ?: 1.0; val sy = t?.scaleY ?: 1.0
+        val bw = (width * sx).roundToInt().coerceAtLeast(1); val bh = (height * sy).roundToInt().coerceAtLeast(1)
+        val img = back?.takeIf { it.width == bw && it.height == bh } ?: BufferedImage(bw, bh, BufferedImage.TYPE_INT_RGB).also { back = it }
+        val g2 = img.createGraphics()
+        try { g2.scale(sx, sy); draw(g2) } finally { g2.dispose() }
+        g.drawImage(img, 0, 0, width, height, null)
+    }
+    private fun draw(g2: Graphics2D) {
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
         g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-        if (listing()) paintList(g2) else paintHint(g2)
+        if (uploading()) paintUpload(g2) else paintHint(g2)
         // ai: a drag over the window: the web's dashed outline, 12 px in
         if (s.dragOver) {
             g2.color = FG; g2.stroke = BasicStroke(3f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(9f, 6f), 0f)
@@ -137,78 +147,103 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         }
     }
 
+    // ai: the test stream: the soft fill, the file icon and the line 8 px under it
     private fun paintHint(g2: Graphics2D) {
         g2.color = SOFT   // ai: the soft fill (Parts.kt Soft)
         g2.fillRect(0, 0, width, height)
         g2.color = MUTED
-        // ai: the file icon (Parts.kt Icons.file, Feather's on a 24 grid, 2 px strokes), then the line 8 px under it
         val cx = width / 2.0; val cy = height / 2.0 - 16
         drawIcon(g2, FILE_ICON, cx - 12, cy - 12)
-        val text = if (s.test) "Test stream" else if (s.reading) "Reading the files" else "Choose files"
+        val text = "Test stream"
         g2.font = face(Font.PLAIN, 14)
         val fm = g2.fontMetrics
         g2.drawString(text, (cx - fm.stringWidth(text) / 2.0).toFloat(), (cy + 12 + 8 + fm.ascent).toFloat())
-        // ai: a folder instead (the web's hint link), underlined in the text's colour under the line
-        folderLink = null
-        if (chooses() && !s.reading) {
-            val link = "or a folder"; val w = fm.stringWidth(link)
-            val x = (cx - w / 2.0).toInt(); val base = (cy + 12 + 8 + fm.ascent + fm.height + 4).toInt()
-            g2.color = FG
-            g2.drawString(link, x, base)
-            g2.stroke = BasicStroke(1f)
-            g2.drawLine(x, base + 2, x + w, base + 2)
-            folderLink = Rectangle(x - 8, base - fm.ascent - 4, w + 16, fm.height + 8)
-        }
     }
 
-    // ai: The selection (2026-10-23, the web's #pick): on white, a column at most 416 px wide, centred, a row an item (a
-    // ai: soft square with its icon, its name, "N files · size" for a folder or its size, Remove), then Add files, Add a
-    // ai: folder and Clear as the soft pills; scrolled by the wheel where it is taller than the area.
-    private fun paintList(g2: Graphics2D) {
+    // ai: The file upload (2026-10-26, LocalSend's geometry; the web's #pick, the Android app's Upload): on white, centred
+    // ai: in a column at most 576 px wide, the File and Folder tiles (104 px tall on the soft fill, an icon over one word,
+    // ai: one row across the column), and under them, while the selection holds something, its card (the card fill): the
+    // ai: count with Clear (the state line says the size), then a tile an item on white (its icon, its name with the stem
+    // ai: cut and the ending kept, "N files" or its size, an x at its corner that removes it), in rows stretched across
+    // ai: the card, 104 px the narrowest before one folds; the card takes what height is left (a row of items at least) and
+    // ai: only its items scroll, down, by the wheel.
+    private fun paintUpload(g2: Graphics2D) {
         g2.color = java.awt.Color.WHITE
         g2.fillRect(0, 0, width, height)
         val items = s.items.toList()
-        val w = min(width - 32, 416); val x0 = (width - w) / 2
-        val rowH = 64; val btnH = 40
-        val total = items.size * rowH + 12 + btnH
+        val t = 104; val gap = 12; val ig = 8
+        val cardW = min(width - 32, 576)
+        val perRow = maxOf(1, (cardW - 24 + ig) / (t + ig))
+        val iw = (cardW - 24 - (perRow - 1) * ig) / perRow
+        val rows = (items.size + perRow - 1) / perRow
         val avail = height - 32
-        scroll = scroll.coerceIn(0, maxOf(0, total - avail))
-        var y = if (total <= avail) (height - total) / 2 else 16 - scroll
+        val gridH = rows * t + (rows - 1) * ig
+        val cardH = if (items.isEmpty()) 0 else minOf(4 + 48 + 4 + gridH + 12, maxOf(avail - t - 16, 4 + 48 + 4 + t + 12))
+        val viewH = cardH - (4 + 48 + 4 + 12)   // ai: the items' window inside the card
+        scroll = scroll.coerceIn(0, maxOf(0, gridH - viewH))
+        val total = t + if (items.isEmpty()) 0 else 16 + cardH
+        var y = if (total <= avail) (height - total) / 2 else 16
         val got = ArrayList<Pair<Rectangle, () -> Unit>>()
-        val name = face(Font.BOLD, 15); val sub = face(Font.PLAIN, 13)
-        for ((i, it) in items.withIndex()) {
-            g2.color = SOFT; g2.fillRoundRect(x0, y + 12, 40, 40, 20, 20)
-            g2.color = FG; drawIcon(g2, if (it.dir) FOLDER_ICON else FILE_ICON, x0 + 8.0, y + 20.0)
-            val textW = w - 52 - 48
-            g2.font = name; g2.color = FG
-            g2.drawString(fit(g2, it.name, textW), x0 + 52, y + 12 + 17)
-            g2.font = sub; g2.color = MUTED
-            val line = if (it.dir) "${it.files} ${if (it.files == 1) "file" else "files"} · ${Readout.bytes(it.size)}${if (it.links > 0) ", ${it.links} ${if (it.links == 1) "link" else "links"} skipped" else ""}"
-                else Readout.bytes(it.size)
-            g2.drawString(fit(g2, line, textW), x0 + 52, y + 12 + 36)
-            // ai: Remove: an x in a 40 px square at the row's end
-            val rx = x0 + w - 40; val ry = y + 12
-            g2.color = FG; g2.stroke = BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-            g2.drawLine(rx + 14, ry + 14, rx + 26, ry + 26); g2.drawLine(rx + 26, ry + 14, rx + 14, ry + 26)
-            val key = it.key
-            got += Rectangle(rx, ry, 40, 40) to { s.remove(key) }
-            if (i < items.size - 1) { g2.color = LINE; g2.fillRect(x0, y + rowH - 1, w, 1) }
-            y += rowH
+        val tiles = listOf<Triple<Path2D, String, () -> Unit>>(Triple(FILE_ICON, "File") { s.chooseFile() }, Triple(FOLDER_ICON, "Folder") { s.chooseFolder() })
+        val tw = (cardW - (tiles.size - 1) * gap) / tiles.size
+        var x = (width - cardW) / 2
+        g2.font = face(Font.BOLD, 15)
+        for ((icon, label, act) in tiles) {
+            g2.color = SOFT; g2.fillRoundRect(x, y, tw, t, 24, 24)
+            g2.color = FG; drawIcon(g2, icon, x + tw / 2.0 - 16, y + 22.0, 32.0 / 24)
+            val fm = g2.fontMetrics
+            g2.drawString(label, x + (tw - fm.stringWidth(label)) / 2, y + 22 + 32 + 8 + fm.ascent)
+            got += Rectangle(x, y, tw, t) to act
+            x += tw + gap
         }
-        y += 12
-        g2.font = face(Font.BOLD, 14)
-        val fm = g2.fontMetrics
-        val buttons = listOf<Pair<String, () -> Unit>>("Add files" to { s.chooseFile() }, "Add a folder" to { s.chooseFolder() }, "Clear" to { s.clearPicks() })
-        // ai: centred under the list (2026-10-23; from its left edge before, which read off centre)
-        var x = x0 + (w - (buttons.sumOf { fm.stringWidth(it.first) + 40 } + 8 * (buttons.size - 1))) / 2
-        for ((label, act) in buttons) {
-            val bw = fm.stringWidth(label) + 40
-            g2.color = SOFT; g2.fillRoundRect(x, y, bw, btnH, btnH, btnH)
-            g2.color = FG; g2.drawString(label, x + 20, y + (btnH - fm.height) / 2 + fm.ascent)
-            got += Rectangle(x, y, bw, btnH) to act
-            x += bw + 8
+        if (items.isNotEmpty()) {
+            y += t + 16
+            val cx = (width - cardW) / 2
+            g2.color = CARD; g2.fillRoundRect(cx, y, cardW, cardH, 24, 24)
+            g2.font = face(Font.BOLD, 14); g2.color = FG
+            var fm = g2.fontMetrics
+            g2.drawString("${items.size} ${if (items.size == 1) "item" else "items"}", cx + 16, y + 4 + (48 - fm.height) / 2 + fm.ascent)
+            g2.font = face(Font.BOLD, 15); fm = g2.fontMetrics
+            val clear = Rectangle(cx + cardW - 12 - (fm.stringWidth("Clear") + 24), y + 8, fm.stringWidth("Clear") + 24, 40)
+            g2.drawString("Clear", clear.x + 12, clear.y + (40 - fm.height) / 2 + fm.ascent)
+            got += clear to { s.clearPicks() }
+            val top = y + 4 + 48 + 4
+            val view = Rectangle(cx, top, cardW, viewH)
+            val clip = g2.clip
+            g2.clip(view)
+            for ((i, it) in items.withIndex()) {
+                val ix = cx + 12 + (i % perRow) * (iw + ig); val iy = top + (i / perRow) * (t + ig) - scroll
+                if (iy + t < top || iy > top + viewH) continue
+                g2.color = java.awt.Color.WHITE; g2.fillRoundRect(ix, iy, iw, t, 24, 24)
+                g2.color = MUTED; drawIcon(g2, if (it.dir) FOLDER_ICON else FILE_ICON, ix + iw / 2.0 - 14, iy + 18.0, 28.0 / 24)
+                g2.font = face(Font.BOLD, 13); g2.color = FG; fm = g2.fontMetrics
+                val name = fitName(g2, it.name, iw - 16)
+                g2.drawString(name, ix + (iw - fm.stringWidth(name)) / 2, iy + 18 + 28 + 6 + fm.ascent)
+                val nameBottom = iy + 18 + 28 + 6 + fm.height
+                g2.font = face(Font.PLAIN, 12); g2.color = MUTED; fm = g2.fontMetrics
+                val sub = fit(g2, if (it.dir) "${it.files} ${if (it.files == 1) "file" else "files"}" else Readout.bytes(it.size), iw - 16)
+                g2.drawString(sub, ix + (iw - fm.stringWidth(sub)) / 2, nameBottom + fm.ascent)
+                // ai: Remove: an x in a 28 px square at the tile's top right
+                val rx = ix + iw - 30; val ry = iy + 2
+                g2.color = FG; g2.stroke = BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+                g2.drawLine(rx + 9, ry + 9, rx + 19, ry + 19); g2.drawLine(rx + 19, ry + 9, rx + 9, ry + 19)
+                val key = it.key
+                Rectangle(rx, ry, 28, 28).intersection(view).takeIf { !it.isEmpty }?.let { r -> got += r to { s.remove(key) } }
+            }
+            g2.clip = clip
         }
         hits = got
+    }
+
+    // ai: a name cut to the room as the web's .fname and the Android app's NameLine cut it: the stem with an ellipsis, its
+    // ai: ending (Readout.nameParts) kept whole
+    private fun fitName(g2: Graphics2D, name: String, room: Int): String {
+        val fm = g2.fontMetrics
+        if (fm.stringWidth(name) <= room) return name
+        val (stem, end) = Readout.nameParts(name)
+        var t = stem
+        while (t.isNotEmpty() && fm.stringWidth("$t…$end") > room) t = t.dropLast(1)
+        return if (t.isEmpty()) fit(g2, name, room) else "$t…$end"
     }
 
     // ai: a line cut on a character with an ellipsis where it is wider than the room
@@ -219,10 +254,11 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         while (t.isNotEmpty() && fm.stringWidth("$t…") > room) t = t.dropLast(1)
         return "$t…"
     }
-    private fun drawIcon(g2: Graphics2D, icon: Path2D, x: Double, y: Double) {
+    // ai: an icon on its 24 grid at (x, y), k times its size, its 2 px strokes scaled with it (as an svg.i drawn larger)
+    private fun drawIcon(g2: Graphics2D, icon: Path2D, x: Double, y: Double, k: Double = 1.0) {
         g2.stroke = BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
         val t = g2.transform
-        g2.translate(x, y); g2.draw(icon); g2.transform = t
+        g2.translate(x, y); g2.scale(k, k); g2.draw(icon); g2.transform = t
     }
 
     companion object {
@@ -236,7 +272,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         private val FG = java.awt.Color(0x11, 0x11, 0x11)
         private val MUTED = java.awt.Color(0x66, 0x66, 0x66)
         private val SOFT = java.awt.Color(0xF1, 0xF1, 0xF1)
-        private val LINE = java.awt.Color(0xE4, 0xE4, 0xE4)
+        private val CARD = java.awt.Color(0xF6, 0xF6, 0xF6)
         // ai: Feather's file and folder (Parts.kt Icons.file; the app's ic_folder) on a 24 grid
         private val FILE_ICON = Path2D.Double().apply {
             moveTo(14.0, 2.0); lineTo(6.0, 2.0); curveTo(4.9, 2.0, 4.0, 2.9, 4.0, 4.0); lineTo(4.0, 20.0); curveTo(4.0, 21.1, 4.9, 22.0, 6.0, 22.0)

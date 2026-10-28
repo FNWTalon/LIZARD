@@ -453,6 +453,9 @@ struct RxSession::Impl {
         modeNow = {{"w", m.width}, {"h", m.height}, {"format", m.format}, {"fps", m.fps}};
       }
       say("camera: started " + std::to_string(m.width) + " x " + std::to_string(m.height) + " " + m.format + " at " + num(m.fps, 2) + " fps");
+      // ai: a phone's stream reads back what the receiver reads of it (camera.h readBack): the receiver in hand's
+      camera->readBack([this](double since) { const auto r = current(); return r ? r->r->series(since) : std::vector<double>{0}; },
+                       [this] { const auto r = current(); return r ? r->r->stats() : std::string("{}"); });
       setAgain();
     }
     try {

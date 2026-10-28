@@ -53,7 +53,7 @@ struct Info {
   // ai: sim:0 (the simulated camera, LIZ_CAMERA_SIM)
   std::string id;
   std::string name;         // ai: the device's own
-  std::string backend;      // ai: uvc or sim
+  std::string backend;      // ai: uvc, phone or sim
   std::string detail;       // ai: the bus, the driver
 };
 
@@ -92,6 +92,12 @@ class Camera {
   // ai: changed. The simulated camera (sim.cpp) has nothing to put back: its exposure and gain are the model's own.
   virtual void stop() = 0;
   virtual Stats stats() = 0;
+  // ai: What the receiver reads of a started stream, for a camera that hands it back to its source (a phone, phone.cpp,
+  // ai: 2026-10-27: its phase lock steers by the pilots read here): the receiver's series and its stats JSON, callable
+  // ai: from any thread until stop. The session gives them after each start; every other camera ignores them.
+  using Series = std::function<std::vector<double>(double sinceMs)>;
+  using StatsJson = std::function<std::string()>;
+  virtual void readBack(Series series, StatsJson stats) { (void)series; (void)stats; }
 };
 
 // ai: Every backend's cameras: UVC (the system's) first, then the simulated one where LIZ_CAMERA_SIM is set. A

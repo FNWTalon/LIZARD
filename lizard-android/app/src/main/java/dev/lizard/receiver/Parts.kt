@@ -269,6 +269,56 @@ fun Btn(text: String, kind: Kind = Kind.Tonal, enabled: Boolean = true, modifier
     }
 }
 
+// ai: The senders' file upload (2026-10-26, LocalSend's geometry; the web's ui.css .tile and .itile): a Tile is a button
+// ai: 104 dp tall, an icon over one word; an ItemTile one item on the selection's card, its icon, its name with the stem
+// ai: cut and the ending kept (Readout.nameParts), the line under it, and an x at its corner that removes it. Each as
+// ai: wide as its row gives it (TileRows), 104 dp the least.
+const val TILE = 104
+
+@Composable
+fun Tile(icon: Int, label: String, width: Dp, enabled: Boolean = true, onClick: () -> Unit) {
+    val tint = if (enabled) Fg else Fg.copy(alpha = .38f)
+    Column(Modifier.width(width).height(TILE.dp).clip(RoundedCornerShape(12.dp)).background(Soft).clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+        verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(painterResource(icon), contentDescription = null, Modifier.size(32.dp), tint = tint)
+        Text(label, style = MaterialTheme.typography.labelLarge, color = tint)
+    }
+}
+
+@Composable
+fun ItemTile(name: String, sub: String, icon: Int, width: Dp, enabled: Boolean = true, onRemove: () -> Unit) {
+    val (stem, end) = Readout.nameParts(name)
+    val name13 = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium)
+    Box(Modifier.width(width).height(TILE.dp).clip(RoundedCornerShape(12.dp)).background(Bg)) {
+        Column(Modifier.fillMaxSize().padding(8.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(painterResource(icon), contentDescription = null, Modifier.padding(bottom = 6.dp).size(28.dp), tint = Muted)
+            Row {
+                Text(stem, style = name13, color = Fg, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                Text(end, style = name13, color = Fg, maxLines = 1)
+            }
+            Text(sub, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Normal), color = Muted, maxLines = 1)
+        }
+        Box(Modifier.align(Alignment.TopEnd).padding(2.dp).size(28.dp).clip(CircleShape).clickable(enabled = enabled, role = Role.Button, onClick = onRemove)
+            .semantics { contentDescription = "Remove $name" }, contentAlignment = Alignment.Center) {
+            Icon(painterResource(R.drawable.ic_x), contentDescription = null, Modifier.size(16.dp), tint = if (enabled) Fg else Fg.copy(alpha = .38f))
+        }
+    }
+}
+
+// ai: n things in rows across `width`, each `gap` apart: as many columns as fit at TILE dp or more, each column stretched
+// ai: to share the width, so a full row fills it and a short last row keeps the columns' width; cell(i, w) draws the i-th
+// ai: at width w (the web's grid: repeat(auto-fill, minmax(104px, 1fr)))
+@Composable
+fun TileRows(n: Int, width: Dp, gap: Dp, cell: @Composable (Int, Dp) -> Unit) {
+    val cols = maxOf(1, ((width + gap) / (TILE.dp + gap)).toInt())
+    val w = (width - gap * (cols - 1)) / cols
+    Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+        for (r in 0 until (n + cols - 1) / cols) Row(horizontalArrangement = Arrangement.spacedBy(gap)) {
+            for (i in r * cols until minOf(n, (r + 1) * cols)) cell(i, w)
+        }
+    }
+}
+
 @Composable
 fun Meter(frac: Double?) {
     if (frac == null) return

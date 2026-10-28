@@ -119,6 +119,8 @@ void Setup::build(int B) {
   auto t0 = std::chrono::steady_clock::now();
   std::vector<std::string> ids;
   idsIn(tree["front"], ids);
+  // ai: the anchors' stages (gen.mjs exportAnch), with the front half
+  idsIn(tree.at("anch"), ids);
   // ai: layouts before pipelines before buffers, so a pipeline's layout is there and its compile starts early
   std::stable_sort(ids.begin(), ids.end(), [](const std::string& a, const std::string& b) { auto r = [](char c) { return c == 'L' ? 0 : c == 'p' ? 1 : 2; }; return r(a[0]) < r(b[0]); });
   make(ids);

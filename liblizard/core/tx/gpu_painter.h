@@ -5,7 +5,8 @@
 // ai: ipic, tpose, rsv unless the taps are copies, rsh), their grey W x W pixels read back: on a phone's shared
 // ai: memory a copy, not a transfer. The square is within a grey level of the C's (the transform's rounding), the
 // ai: border the C's to the byte; check() holds a device to that, as the web's auto does before it takes the GPU
-// ai: (2026-09-29: a sender's symbol need only decode).
+// ai: (2026-09-29: a sender's symbol need only decode). The anchors' squares inside the square (SPEC 6.13) are the C's
+// ai: bytes too, so they are the C's to the byte as the border is.
 #pragma once
 #include <cstdint>
 #include <functional>
@@ -36,6 +37,8 @@ class GpuPainter {
   // ai: the frame ring (2026-10-07): FRAME holds depth() frames, the most of `aheadFrames` and `aheadBytes` allow and at
   // ai: least 2 frames + margin + 1 (halved while the device cannot hold them, never under the floor), frame seq at slot
   // ai: seq mod depth. ringOnly: the ring alone (the CPU's painters fill it), no pipelines' buffers. "" or why not.
+  // ai: Every picture with its 7 x 7 anchors as the C paints them (the border's bytes over their squares:
+  // ai: send_tables.h anch, gpu/wgsl/send.mjs rshSource).
   std::string configure(int subch, int span, int fps, int frames = 4, int codes = 1, int gap = GAP_MODULES,
                         int aheadFrames = 0, uint64_t aheadBytes = 0, int margin = 0, bool ringOnly = false);
   int frames() const { return frames_; }
@@ -63,8 +66,9 @@ class GpuPainter {
   double encode(const uint8_t* blocks, int count, int parity, std::vector<uint8_t>* out, uint64_t seq = 0);
 
   // ai: frames painted here and by the C (its own codec, told the same counts): the border's pixels equal, the square's
-  // ai: within one grey level (gpu/encoder.mjs checkNow's rule).
-  struct Check { bool ok = false; long borderDiff = 0, squareDiff = 0; int squareMax = 0; };
+  // ai: within one grey level (gpu/encoder.mjs checkNow's rule), the anchors' squares' pixels equal: anchorPx compared,
+  // ai: anchorDark of them 0 here (their dark rings: the anchors are there), anchorDiff apart.
+  struct Check { bool ok = false; long borderDiff = 0, squareDiff = 0, anchorPx = 0, anchorDark = 0, anchorDiff = 0; int squareMax = 0; };
   Check check(const uint8_t* blocks, int count);
 
  private:

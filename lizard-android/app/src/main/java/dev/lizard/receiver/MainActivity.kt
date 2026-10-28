@@ -25,6 +25,8 @@ import android.provider.MediaStore
 import android.provider.Settings as AndroidSettings
 import android.util.Log
 import android.view.WindowManager
+import android.hardware.usb.UsbAccessory
+import android.hardware.usb.UsbManager
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.activity.ComponentActivity
@@ -70,7 +72,7 @@ import java.util.TimeZone
 class MainActivity : ComponentActivity() {
     // ai: the folds' keys, and the two collapsers' (Receive's column, the sending screen's panel; landscape)
     companion object {
-        val FOLDS = listOf("recvSettings", "recvAdvanced", "sendSettings", "sendAdvanced", "recvCollapsed", "sendCollapsed")
+        val FOLDS = listOf("recvSettings", "recvExperimental", "recvAdvanced", "sendSettings", "sendAdvanced", "recvCollapsed", "sendCollapsed")
         // ai: the received tars' unpacking (keep), one at a time, off the main thread and the engine's
         private val unpacker = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "lizard-unpack") }
         // ai: Save replays: the frames a replay keeps, and the seconds of stats rows its stats.jsonl holds
@@ -205,6 +207,13 @@ class MainActivity : ComponentActivity() {
     // ai: Receive from the shortcut or `--es screen receive`; Send from its shortcut, or with files another app shared to LIZARD (one,
     // ai: or several since 2026-10-16: one transfer, as the sender bundles them)
     private fun handle(i: Intent?) {
+        // ai: the PC's USB accessory (PcLink): opened, and Receive, where the PC decoder serves it
+        if (i?.action == UsbManager.ACTION_USB_ACCESSORY_ATTACHED) {
+            @Suppress("DEPRECATION") val acc = i.getParcelableExtra<UsbAccessory>(UsbManager.EXTRA_ACCESSORY)
+            PcLink.openAccessory(this, acc)
+            go(Screen.Receive)
+            return
+        }
         if (i?.action == Intent.ACTION_SEND || i?.action == Intent.ACTION_SEND_MULTIPLE) {
             @Suppress("DEPRECATION") val us = if (i.action == Intent.ACTION_SEND) listOfNotNull(i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))
                 else i.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
@@ -239,7 +248,7 @@ class MainActivity : ComponentActivity() {
     // ai: The whole phone's power off the charger (2026-10-08, for the heat's levers): the battery's discharge current
     // ai: (BatteryManager CURRENT_NOW, uA, negative while it discharges on the S26) times its voltage, null while
     // ai: plugged in, when it measures the charger instead; read once a second, the stats row's `powerW` and
-    // ai: `batteryC`, a `power:` log line every 5 s with the mean.
+    // ai: `batteryC`, a `power:` log line every 5 s with the mean (and the thermal headroom, headroom()).
     internal var powerW: Double? = null
     internal var batteryC = 0.0
     private var powerSum = 0.0
@@ -253,6 +262,14 @@ class MainActivity : ComponentActivity() {
         powerW = if (plugged || ua == Int.MIN_VALUE || mv <= 0) null else abs(ua.toDouble()) * mv / 1e9
         powerW?.let { powerSum += it; powerN++ }
     }
+    // ai: the thermal headroom 10 s ahead for the power line (2026-10-26: whether a live run's slow seconds were the phone's
+    // ai: heat, which the status says only in steps): PowerManager's, Android 11 and up, 1.0 where the phone throttles;
+    // ai: "" where it gives none (NaN when asked again within a second, or unsupported)
+    private fun headroom(): String {
+        if (Build.VERSION.SDK_INT < 30) return ""
+        val h = getSystemService(PowerManager::class.java)?.getThermalHeadroom(10) ?: return ""
+        return if (h.isNaN()) "" else ", thermal headroom %.2f".format(h)
+    }
     private val heatListener = PowerManager.OnThermalStatusChangedListener { if (it != heat) Log.i(Engine.TAG, "thermal status $it"); heat = it }
     override fun onResume() {
         super.onResume()
@@ -261,6 +278,7 @@ class MainActivity : ComponentActivity() {
         // ai: the permission again: it may have been given in Android's settings meanwhile
         granted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         if (granted) denied = false
+        PcLink.openAccessory(this)
         if (wantsCamera()) startCamera()
         else if (screen == Screen.Receive && !granted && !asked) askCamera()
     }
@@ -589,8 +607,8 @@ class MainActivity : ComponentActivity() {
                 // ai: the phone's power once a second (readPower), its 5 s mean in the log
                 if (tick % 4 == 0) {
                     readPower()
-                    if (tick % 20 == 0 && powerN > 0) { Log.i(Engine.TAG, "power: %.2f W (5 s mean), battery %.1f C".format(powerSum / powerN, batteryC)); powerSum = 0.0; powerN = 0 }
-                    else if (tick % 20 == 0) Log.i(Engine.TAG, "power: plugged in, battery %.1f C".format(batteryC))
+                    if (tick % 20 == 0 && powerN > 0) { Log.i(Engine.TAG, "power: %.2f W (5 s mean), battery %.1f C%s".format(powerSum / powerN, batteryC, headroom())); powerSum = 0.0; powerN = 0 }
+                    else if (tick % 20 == 0) Log.i(Engine.TAG, "power: plugged in, battery %.1f C%s".format(batteryC, headroom()))
                 }
                 // ai: the unfinished transfers on Home, once a second (a transfer in hand writes its meta.json as it goes)
                 if (tick % 4 == 0 && screen == Screen.Home) partials = withContext(Dispatchers.IO) { partialStore.list() }
@@ -624,8 +642,9 @@ class MainActivity : ComponentActivity() {
                     while (statsRows.size > REPLAY_LOG) statsRows.removeFirst()
                 }
                 // ai: Save replays: a run while the switch is on and this activity's camera runs, ended when either stops
+                // ai: (never on the PC decoder, which keeps no frames)
                 val mine = runs.lastOrNull { it.state == ReplayState.Recording && it.owner === engine }
-                val replaying = settings.replays == "on" && phase == Engine.Phase.On
+                val replaying = settings.replays == "on" && settings.decoder != "pc" && phase == Engine.Phase.On
                 if (replaying && mine == null) beginReplay()
                 else if (!replaying && mine != null) endReplay(mine)
                 delay(250)
