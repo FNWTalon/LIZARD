@@ -1,0 +1,58 @@
+// ai: A camera frame's crop developed to the 8-bit luma the decoder reads (develop.h, whose CPU develop this matches
+// ai: byte for byte): the crop's samples as the host staged them (stageRaw: a header, then rows `pitch` bytes apart),
+// ai: each to light by its 2 x 2 position's black level and scale, clipped to [0, 4096], a 2 x 2 bin summed in the
+// ai: CPU's order and quartered, then the gamma table's step; P010 its samples' top bytes. Four pixels an invocation,
+// ai: in raster order, into a word of the output (w x h bytes), which the batch copies into the slot's layer.
+#version 450
+layout(local_size_x = 256) in;
+layout(set = 0, binding = 0, std430) readonly buffer Stage { uint w[]; } st;
+layout(set = 0, binding = 1, std430) readonly buffer Lut { uint w[]; } lut;
+layout(set = 0, binding = 2, std430) writeonly buffer Out { uint w[]; } dst;
+
+uint kind, w, h, bin, pitch, ps, off, cfaRow;
+vec4 black, scale;
+
+uint byteAt(uint b) { return (st.w[b >> 2] >> ((b & 3u) * 8u)) & 0xffu; }
+uint lutAt(uint i) { return (lut.w[i >> 2] >> ((i & 3u) * 8u)) & 0xffu; }
+
+// ai: sample x of staged row y (develop.cpp rawAt's layouts)
+uint sampleAt(uint y, uint x) {
+  const uint b = 64u + y * pitch;
+  if (kind == 1u) { const uint p = b + x * ps; return byteAt(p) | (byteAt(p + 1u) << 8); }
+  if (kind == 2u) { const uint g = b + (x >> 2) * 5u, k = x & 3u; return (byteAt(g + k) << 2) | ((byteAt(g + 4u) >> (2u * k)) & 3u); }
+  const uint g = b + (x >> 1) * 3u;
+  return (x & 1u) != 0u ? ((byteAt(g + 1u) << 4) | (byteAt(g + 2u) >> 4)) : ((byteAt(g) << 4) | (byteAt(g + 2u) & 15u));
+}
+
+float lin(uint v, uint p) {
+  precise float f = (float(v) - black[p]) * scale[p];
+  return f <= 0.0 ? 0.0 : (f >= 4096.0 ? 4096.0 : f);
+}
+
+uint pixel(uint u, uint v) {
+  if (kind == 0u) return byteAt(64u + v * pitch + (off + u) * ps + 1u);
+  if (bin == 2u) {
+    const uint r0 = 2u * v, r1 = r0 + 1u, c0 = off + 2u * u, c1 = c0 + 1u;
+    const uint p0 = ((cfaRow + r0) & 1u) << 1, p1 = ((cfaRow + r1) & 1u) << 1;
+    precise float s = lin(sampleAt(r0, c0), p0 | (c0 & 1u)) + lin(sampleAt(r0, c1), p0 | (c1 & 1u));
+    s = s + lin(sampleAt(r1, c0), p1 | (c0 & 1u));
+    s = s + lin(sampleAt(r1, c1), p1 | (c1 & 1u));
+    return lutAt(uint(s * 0.25));
+  }
+  const uint c = off + u;
+  return lutAt(uint(lin(sampleAt(v, c), (((cfaRow + v) & 1u) << 1) | (c & 1u))));
+}
+
+void main() {
+  kind = st.w[0]; w = st.w[1]; h = st.w[2]; bin = st.w[3]; pitch = st.w[4]; ps = st.w[5]; off = st.w[6]; cfaRow = st.w[7];
+  black = vec4(uintBitsToFloat(st.w[8]), uintBitsToFloat(st.w[9]), uintBitsToFloat(st.w[10]), uintBitsToFloat(st.w[11]));
+  scale = vec4(uintBitsToFloat(st.w[12]), uintBitsToFloat(st.w[13]), uintBitsToFloat(st.w[14]), uintBitsToFloat(st.w[15]));
+  const uint g = gl_GlobalInvocationID.x, n = w * h;
+  if (g * 4u >= n) return;
+  uint word = 0u;
+  for (uint j = 0u; j < 4u; j++) {
+    const uint i = g * 4u + j;
+    if (i < n) word |= pixel(i % w, i / w) << (8u * j);
+  }
+  dst.w[g] = word;
+}

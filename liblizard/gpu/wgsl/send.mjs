@@ -22,6 +22,10 @@
 // ai: would have given exactly (rshSource({ copy: true })).
 // ai: PRESENT, a render pass onto the canvas: pixel (x, y) shows the frame's byte (x / whole, y / whole), grey.
 // ai: The tolerance: the square within one grey level of the C's (its FFT's rounding differs), the border equal.
+// ai: The anchors (SPEC 6.13; src/focus.c focus_encode paints them): RSH and its copy form take the border's byte over
+// ai: the anchors' squares too, BORDER being the C's paint (core/tx/send_tables.cpp, gpu/encoder.mjs), so the anchors
+// ai: are the C's to the byte and nothing here draws them; RSH's uniform two vec4u longer (GA: each anchor's first
+// ai: pixel and the side).
 
 import { CRC_SPLIT, PARAMS_STRUCT } from "./back_ldpc.mjs";
 import { KNOWN, NC } from "./back_tiers.mjs";
@@ -29,6 +33,7 @@ import { KNOWN, NC } from "./back_tiers.mjs";
 export const TPOSE_TILE = 16;
 export const RSV_THREADS = 64;
 export const RSH_THREADS = 64;
+export const GA_BYTES = 80;
 
 // ai: G: a = (n, q, sq, W): the picture, the square's pixels, its first pixel in a symbol (margin included), the
 // ai: symbol's width; c = (whole, f0, gap, 0): the present's whole canvas px a frame px, an encode's first frame, and the gap
@@ -39,6 +44,12 @@ export const RSH_THREADS = 64;
 // ai: scratch, symbol r = frame codes + code, a workgroup z each (RSH: a frame, written to frame f0 + z of FRAME).
 const G = /* wgsl */ `
 struct G { a: vec4u, b: vec4u, c: vec4u }
+`;
+// ai: RSH's G: G, then d = the first pixel of anchors 0 to 3 along either axis of a symbol (margin included: the same
+// ai: on both axes, a 7 x 7 grid), e = anchors 4 to 6's and the square's side in pixels. 80 B (GA_BYTES); the other
+// ai: stages read G's 48 of the same buffer.
+const GA = /* wgsl */ `
+struct G { a: vec4u, b: vec4u, c: vec4u, d: vec4u, e: vec4u }
 `;
 
 // ai: PAINT, a workgroup a (block, symbol), 128 threads (src/focus.c focus_encode and map_out, the C's arithmetic
@@ -256,6 +267,9 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 
 // ai: Bindings: TMP (ro, f32; with copy the picture, PIC, n x n a symbol), TAPS (ro), BORDER (ro, one symbol's bytes,
 // ai: four a u32), FRAME (rw, a half's frames FS words apart), G. Dispatch (ceil(RW / RSH_THREADS), W, frames).
+// ai: A pixel on an anchor's row and column takes BORDER's byte as the border's do: a row's test once a thread (a
+// ai: workgroup is one row, so it is uniform there), a column's only on such a row, each seven wrapped differences
+// ai: against the side (integers alone: no device's rounding moves an anchor's edge).
 export function rshSource({ copy = false } = {}) {
   const inside = copy ? /* wgsl */ `
     let v: f32 = clamp(TMP[k * P.a.x * P.a.x + TAPS[6u * (y - sq) + 2u] * P.a.x + TAPS[6u * xx + 2u]], 0.0, 1.0);` : /* wgsl */ `
@@ -265,13 +279,25 @@ export function rshSource({ copy = false } = {}) {
       v = v + bitcast<f32>(TAPS[6u * q + 6u * xx + t]) * TMP[base + TAPS[6u * xx + t]];
     }
     v = clamp(v, 0.0, 1.0);`;
-  return G + /* wgsl */ `
+  const A = {
+    struct: GA,
+    fn: /* wgsl */ `
+// ai: whether v, a symbol's pixel along either axis, lies on one of the anchors' seven runs (P.d, P.e.xyz from their
+// ai: first pixels, P.e.w long)
+fn onAnchor(v: u32) -> bool {
+  let s: u32 = P.e.w;
+  return (v - P.d.x < s) | (v - P.d.y < s) | (v - P.d.z < s) | (v - P.d.w < s) | (v - P.e.x < s) | (v - P.e.y < s) | (v - P.e.z < s);
+}`,
+    sig: ", ra: bool", test: " && !(ra && onAnchor(xs))", row: /* wgsl */ `
+  let ra: bool = onAnchor(y);`, arg: ", ra",
+  };
+  return A.struct + /* wgsl */ `
 @group(0) @binding(0) var<storage, read> TMP: array<f32>;
 @group(0) @binding(1) var<storage, read> TAPS: array<u32>;
 @group(0) @binding(2) var<storage, read> BORDER: array<u32>;
 @group(0) @binding(3) var<storage, read_write> FRAME: array<u32>;
-@group(0) @binding(4) var<uniform> P: G;
-fn pixel(x: u32, y: u32, f: u32) -> u32 {
+@group(0) @binding(4) var<uniform> P: G;${A.fn}
+fn pixel(x: u32, y: u32, f: u32${A.sig}) -> u32 {
   let q: u32 = P.a.y;
   let sq: u32 = P.a.z;
   let W: u32 = P.a.w;
@@ -281,7 +307,7 @@ fn pixel(x: u32, y: u32, f: u32) -> u32 {
   // ai: margin's byte beside it
   loop { if (xs < W + P.c.z) { break; } xs = xs - W - P.c.z; k = k + 1u; }
   if (xs >= W) { xs = W - 1u; }
-  if (xs >= sq && xs < sq + q && y >= sq && y < sq + q) {
+  if (xs >= sq && xs < sq + q && y >= sq && y < sq + q${A.test}) {
     let xx: u32 = xs - sq;` + inside + /* wgsl */ `
     return min(u32(v * 255.0 + 0.5), 255u);
   }
@@ -293,11 +319,11 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let wx: u32 = id.x;
   let y: u32 = id.y;
   let f: u32 = id.z;
-  if (wx >= P.b.z) { return; }
+  if (wx >= P.b.z) { return; }${A.row}
   var word: u32 = 0u;
   for (var b: u32 = 0u; b < 4u; b = b + 1u) {
     let x: u32 = 4u * wx + b;
-    if (x < P.b.y) { word = word | (pixel(x, y, f) << (8u * b)); }
+    if (x < P.b.y) { word = word | (pixel(x, y, f${A.arg}) << (8u * b)); }
   }
   FRAME[(P.c.y + f) * P.b.w + y * P.b.z + wx] = word;
 }

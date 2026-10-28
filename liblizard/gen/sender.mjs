@@ -14,7 +14,7 @@ const imp = (p) => import(new URL(p, LIB).href);
 // ai: { modules: { name: WGSL }, manifest (setup/send.json), tab: TAB's bytes (blobs/<hash>.bin) }
 export async function senderSetup() {
   const { irowsSource, ipicSource } = await imp("gpu/wgsl/inverse.mjs");
-  const { paintSource, tposeSource, rsvSource, rshSource, TPOSE_TILE, RSV_THREADS, RSH_THREADS } = await imp("gpu/wgsl/send.mjs");
+  const { paintSource, tposeSource, rsvSource, rshSource, TPOSE_TILE, RSV_THREADS, RSH_THREADS, GA_BYTES } = await imp("gpu/wgsl/send.mjs");
   const { SLOTS, SIZES } = await imp("gpu/wgsl/common.mjs");
   const { PARAMS_AT } = await imp("gpu/wgsl/back_ldpc.mjs");
   const { CODES } = await imp("gpu/wgsl/back_tiers.mjs");
@@ -37,6 +37,7 @@ export async function senderSetup() {
     modules: Object.keys(modules).map((k) => `send_${k}`), sizes: SIZES, slots: SLOTS, paramsAt: PARAMS_AT,
     tposeTile: TPOSE_TILE, rsvThreads: RSV_THREADS, rshThreads: RSH_THREADS, blockBytes: 480, payload: PAYLOAD, clip: CLIP, gapModules: GAP_MODULES,
     codes: CODES.map(({ rate, subs }) => ({ rate, subs })), pw: Array.from(crcPowers(PAYLOAD)), tab: { blob: `blobs/${tabHash}.bin`, words: tab.length },
+    gWords: GA_BYTES / 4,
   };
   return { modules, manifest, tab: { hash: tabHash, bytes: tabBytes } };
 }

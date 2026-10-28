@@ -27,6 +27,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -52,6 +53,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.geometry.Offset
@@ -295,6 +302,23 @@ fun <T> Select(title: String, value: T, options: List<Pair<T, String>>, blank: S
             }
         }
     }
+}
+
+// ai: A line of text in the select's look (2026-10-27, the phone's address): the soft fill, 8 dp corners, the
+// ai: placeholder muted while empty; done with the text at Enter, or as the focus leaves it changed
+@Composable
+fun TextInput(value: String, placeholder: String, done: (String) -> Unit) {
+    var text by remember(value) { mutableStateOf(value) }
+    BasicTextField(text, { text = it }, singleLine = true, textStyle = MaterialTheme.typography.bodyLarge.copy(color = Fg), cursorBrush = SolidColor(Fg),
+        modifier = Modifier.fillMaxWidth().heightIn(min = 40.dp).clip(RoundedCornerShape(8.dp)).background(Soft)
+            .onPreviewKeyEvent { e -> if (e.key == Key.Enter && e.type == KeyEventType.KeyUp) { done(text.trim()); true } else false }
+            .onFocusChanged { if (!it.isFocused && text.trim() != value) done(text.trim()) },
+        decorationBox = { inner ->
+            Box(Modifier.padding(horizontal = 12.dp).heightIn(min = 40.dp), contentAlignment = Alignment.CenterStart) {
+                if (text.isEmpty()) Text(placeholder, style = MaterialTheme.typography.bodyLarge, color = Muted)
+                inner()
+            }
+        })
 }
 
 // ai: A row's more menu (the web's .menu: the more icon, its actions in a list on white with a hairline round it, 12 dp

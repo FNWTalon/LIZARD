@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -18,10 +20,10 @@ import java.util.Locale
 import kotlin.math.roundToInt
 import org.json.JSONObject
 
-// ai: Settings, as the web's pages hold them since 2026-10-02. Receive: under
-// ai: the transfer, Settings (the decoder and its batch size, the camera: lens, resolution, zoom, crop), Developer Tools (Save
-// ai: replays, the lab line, the readout: the decoder, camera, code, file, lock and heat a line each) and About, the camera running beside
-// ai: them. Home: the tips again, the received files with Delete all, About. The Settings screen, reached by a gear on
+// ai: Settings, as the web's pages hold them since 2026-10-02. Receive: under the transfer, Settings (the decoder and
+// ai: its batch size, the camera: lens, resolution, format, zoom, crop), Developer Tools (Save replays, the lab line, the
+// ai: readout: the decoder, camera, code, file, lock and heat a line each) and About,
+// ai: the camera running beside them. Home: the tips again, the received files with Delete all, About. The Settings screen, reached by a gear on
 // ai: Home and Receive, went with them. Options bare, no descriptions.
 
 // ai: The decoder (2026-10-01: auto by default, the user free to switch; auto takes the GPU where the phone runs it,
@@ -35,18 +37,58 @@ internal fun MainActivity.ReceiveSettings() {
     val s = settings
     Fields {
         // ai: the fields in the web's shape, a menu each (2026-10-06; chips until then); auto shows the decoder it runs
-        Select("Decoder", if (s.decoder == "auto") autoRan.ifEmpty { "GPU" }.lowercase() else s.decoder, listOf("gpu" to "GPU", "cpu" to "CPU")) { change(s.copy(decoder = it), true) }
+        Select("Decoder", if (s.decoder == "auto") autoRan.ifEmpty { "GPU" }.lowercase() else s.decoder, listOf("gpu" to "GPU", "cpu" to "CPU", "pc" to "PC")) { change(s.copy(decoder = it), true) }
         // ai: the most frames a GPU launch takes (Settings.batch): a launch goes as soon as a frame waits, with every
         // ai: frame then waiting up to this; 1 decodes each frame alone. The C decodes a frame at a time: not shown with it.
-        if (s.decoder != "cpu") Field("Batch size", "${s.frames}") {
+        if (s.decoder == "pc") PcLinkField()
+        if (s.decoder != "cpu" && s.decoder != "pc") Field("Batch size", "${s.frames}") {
             Bar(s.frames.toFloat(), 1f..32f, 30) { v -> val n = v.roundToInt().coerceIn(1, 32); if (n != s.frames) change(s.copy(batch = n.toString()), false) }
         }
         // ai: the back cameras by lens, one chosen (2026-10-05; an Auto chip, the closest-focusing lens, until then: the
         // ai: setting now holds that lens's id itself, Settings.load)
         Select("Camera", s.camera, caps?.lenses.orEmpty().map { it.id to it.label }, blank = "Camera") { change(s.copy(camera = it), true) }
         Select("Resolution", s.resolution, Settings.RESOLUTIONS.map { it to it }, enabledFor = { caps == null || it in caps.sizes }) { change(s.copy(resolution = it), true) }
+        // ai: the camera's format (Settings.format, 2026-10-27, as the desktop's Format): Auto, or each the lens offers at
+        // ai: this resolution (RAW at any: the lens's whole array) that the decoder reads (Private with the GPU decoder
+        // ai: alone); shown where there is a choice
+        val fmts = Settings.FORMATS.filter { (k, _) ->
+            val z = caps?.formats?.get(k)
+            z != null && (k.startsWith("raw") || s.resolution in z) && !(k == "private" && (s.decoder == "cpu" || s.decoder == "pc"))
+        }
+        if (fmts.size > 1 || s.format != "auto") Select("Format", s.format, listOf("auto" to "Auto") + fmts) { change(s.copy(format = it), true) }
         ZoomField(caps?.zoom)
-        Select("Crop", s.layout, Settings.LAYOUTS.map { it to if (it == "2:1") "2:1 (experimental)" else it }) { change(s.copy(layout = it), true) }
+        Select("Crop", s.layout, Settings.LAYOUTS.map { it to it }) { change(s.copy(layout = it), true) }
+    }
+}
+
+// ai: The PC decoder's link (PcLink, the stream's stats): connected, the PC's address ("USB" for the accessory) and the
+// ai: frames a second it carries; else the USB accessory where it is open and the addresses this phone is reached at,
+// ai: and the tethering page where a cable is in with neither. Read at each stats poll (a second).
+@Composable
+internal fun MainActivity.PcLinkField() {
+    val st = remember(raw) { runCatching { JSONObject(raw).optJSONObject("stream") }.getOrNull() }
+    val usb = remember(raw) { PcLink.usb(this) }
+    val addrs = remember(raw) { PcLink.addresses() }
+    val accessory = remember(raw) { Native.accessoryOpen() }
+    val port = st?.optInt("port", 47230) ?: 47230
+    val connected = st?.optBoolean("connected") == true
+    Field("PC link", if (connected) "to ${st?.optString("peer").orEmpty()}" else "waiting") {
+        val lines = if (connected) listOf(String.format(Locale.ROOT, "%.0f of %.0f frames a second", st?.optDouble("sentFps", 0.0) ?: 0.0, st?.optDouble("cameraFps", 0.0) ?: 0.0))
+            else (listOfNotNull("USB accessory".takeIf { accessory }) + addrs.map { (k, a) -> "$k $a:$port" })
+                .ifEmpty { listOf(if (usb.connected) "USB tethering off" else "No network") }
+        for (l in lines) Text(l, style = MaterialTheme.typography.bodyMedium, color = Muted)
+        if (usb.connected && !usb.tether && !accessory && !connected && addrs.none { it.first == "USB" })
+            Btn("USB tethering", modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { PcLink.openTethering(this@PcLinkField) }
+    }
+}
+
+// ai: Experimental (below Settings): a lab arm a user may try. D6 phase lock (Settings.d6): the rework's arm D6 in place
+// ai: of the phase lock, taken by the next camera session (the camera restarts)
+@Composable
+internal fun MainActivity.ReceiveExperimental() {
+    val s = settings
+    Fields {
+        Select("D6 phase lock", s.d6, listOf("off" to "Off", "on" to "On")) { change(s.copy(d6 = it), true) }
     }
 }
 
@@ -59,7 +101,8 @@ internal fun MainActivity.ReceiveAdvanced() {
     // ai: Download carried 6 dp of their own until then); Show statistics first, then Save replays and its runs
     Fields {
         Select("Show statistics", s.stats, listOf("off" to "Off", "on" to "On")) { change(s.copy(stats = it), false) }
-        Select("Save replays", s.replays, listOf("off" to "Off", "on" to "On")) { change(s.copy(replays = it), false) }
+        // ai: none for the PC decoder: the stream receiver keeps no frames, the PC's own Save replays records them
+        if (s.decoder != "pc") Select("Save replays", s.replays, listOf("off" to "Off", "on" to "On")) { change(s.copy(replays = it), false) }
         // ai: the runs in the order begun: the newest finished, then those still recording or saving
         for (rp in MainActivity.runs) {
             if (s.stats == "on") CodeBlock(when (rp.state) {
@@ -98,7 +141,14 @@ private fun MainActivity.devReadout(): String {
         put("decoder", if (dec.startsWith("gpu")) "GPU ${dec.removePrefix("gpu").trim()}${if (j.optBoolean("zeroCopy")) ", zero-copy" else ""}, " +
                 "batches up to ${j.optInt("cap")}, ${f(j.optDouble("gpuMs", 0.0), 2)} ms of GPU a frame"
             else if (dec == "cpu") "CPU, ${j.optInt("threads")} of ${j.optInt("threadsMax")} threads${if (j.optBoolean("simd")) ", NEON" else ""}, " +
-                "${f(j.optDouble("cpuMs", 0.0), 1)} ms a frame" else dec,
+                "${f(j.optDouble("cpuMs", 0.0), 1)} ms a frame"
+            // ai: PC (liblizard/core/rx/stream.h): the stream's own line, the PC's decode after it
+            else if (dec.startsWith("pc")) j.optJSONObject("stream")?.let { st ->
+                (if (st.optBoolean("connected")) "to the PC at ${st.optString("peer")}" else "waiting for the PC on port ${st.optInt("port")}") +
+                    ", ${f(st.optDouble("sentFps", 0.0), 0)} of ${f(st.optDouble("cameraFps", 0.0), 0)} frames a second sent, ${f(st.optDouble("MBps", 0.0), 1)} MB/s, " +
+                    "${st.optLong("dropped")} dropped${dec.removePrefix("pc").removePrefix(":").trim().let { if (it.isEmpty()) "" else "; the PC's $it" }}"
+            } ?: dec
+            else dec,
             j.optString("gpuWhy").takeIf { dec == "cpu" && it.isNotEmpty() }?.let { "no GPU: $it" })
     }
     val c = cam

@@ -74,6 +74,8 @@ std::string Sender::configure(const TxFormat& f) {
   }
   assets_ = f.assets;
   const int aheadFrames = std::max(1, static_cast<int>(std::lround(f.fps * f.aheadSecs)));
+  // ai: the GPU painter paints the anchors as the C does (their squares the C's bytes, gpu_painter.h), and auto's check
+  // ai: holds its frames to the C's with them
   if (f.painter != 0) {
     try {
       gpuWhy_ = gpu_->configure(f.subch, f.span, f.fps, 4, f.codes, f.gap, aheadFrames, f.aheadBytes, f.margin, false);
@@ -86,7 +88,8 @@ std::string Sender::configure(const TxFormat& f) {
           stream_fill(static_cast<uint32_t>(t), o + ID_BYTES, PAYLOAD);
         }
         const auto c = gpu_->check(blocks.data(), k);
-        if (!c.ok) gpuWhy_ = "its frames are not the C's (border " + std::to_string(c.borderDiff) + " pixels apart, the square up to " + std::to_string(c.squareMax) + " levels)";
+        if (!c.ok) gpuWhy_ = "its frames are not the C's (border " + std::to_string(c.borderDiff) + " pixels apart, the square up to " + std::to_string(c.squareMax) + " levels" +
+                             (c.anchorDiff ? ", the anchors " + std::to_string(c.anchorDiff) + " pixels apart" : "") + ")";
       }
     } catch (const std::exception& e) { gpuWhy_ = e.what(); }
     if (gpuWhy_.empty()) gpu = true;

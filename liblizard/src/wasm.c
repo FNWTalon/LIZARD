@@ -191,6 +191,11 @@ int ob_test_thin_score_out(const uint8_t *img, int w, int h, const float *centre
   return fready ? ob_test_thin_score(&F.frame, img, w, h, centres, hyp, merged, out) : 0;
 }
 void ob_test_finder_out(float *out) { for (int k = 0; k < 8; k++) out[k] = ob_finder_info[k]; }
+// ai: the anchors (SPEC 6.13): how many the last acquisition counted (-1 where it made no mesh), and their geometry in
+// ai: the current symbol for the sender's WebGPU encoder (focus.h focus_anchor_geom: out[0] the side, out[1..7] the
+// ai: first modules; 7, or 0 before a setup)
+int focus_anchors_found(void) { return ob_anch_found; }
+int focus_anchor_geom_get(int *out) { return fready ? focus_anchor_geom(&F, out) : 0; }
 int ob_test_fmt_cells(void) { return fready ? ob_fmt_side_cells(F.frame.w < F.frame.h ? F.frame.w : F.frame.h, F.frame.reserve) : 0; }
 
 // The current layout's mark geometry (acquire.c ob_mark_geom), for gpu/tables.mjs and scripts/exp/fmt_word.mjs.

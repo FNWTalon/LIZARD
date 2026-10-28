@@ -8,6 +8,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.unit.Dp
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.VerticalDivider
@@ -17,7 +19,6 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextDecoration
 import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
@@ -39,6 +40,10 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Spacer
@@ -47,11 +52,18 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import kotlinx.coroutines.delay
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -71,7 +83,6 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import java.util.Locale
 import androidx.activity.compose.BackHandler
-import androidx.compose.runtime.DisposableEffect
 
 // ai: Send (2026-10-01): the web sender's job on the phone, the C on the CPU or the GPU painting (`painter` below;
 // ai: liblizard/core/tx/sender.h). A file chosen here or shared to LIZARD from another app is copied into the cache and
@@ -79,7 +90,7 @@ import androidx.compose.runtime.DisposableEffect
 // ai: format is the largest the code's square holds (Pick, the web's pickVersion), in the default ring, at Settings'
 // ai: FPS (60 unless set; until 2026-10-02 "Receiving with" named it, the app 60, a browser 24); frames go onto a
 // ai: SurfaceView at that pace (a Choreographer callback each vsync posting the next painted frame when one is due; the
-// ai: surface asks the display for that rate, the switch always made), the screen kept on, at the Brightness set, its
+// ai: surface asks the display for that rate, the switch always made), the screen kept on, at the Brightness set (the phone's own unless moved), its
 // ai: bars hidden. The test stream is Developer Tools' (Payload). Vsync-locked since 2026-10-02: on
 // ai: Android 13 and up each frame is due by its frame timeline's expected presentation time and posted for that vsync
 // ai: (jni.cpp GpuRing, Ring), not into the window's queue at whatever refresh it is latched for; below 13, and for the
@@ -130,11 +141,12 @@ class SendState(private val a: MainActivity) {
     // ai: the same day. Under VSync Pick.FPS's menu (2026-10-23; a kept rate read as the nearest), without it a 1 to 60
     // ai: slider; VSync turned on takes a slider's rate to the nearest of the menu's.
     var rate by mutableStateOf(prefs.getInt("sendFps", 60).let { if (vsyncOn) Pick.fpsOf(it) else it.coerceIn(1, 60) })
-    // ai: The screen's brightness while sending (2026-10-02), 1 to 100%, 100 at every launch (2026-10-03; kept as
-    // ai: `sendBrightness` before, so a slider moved once dimmed
-    // ai: every later send). The window's own override, so the phone's setting is left as it
-    // ai: was once sending stops; set at Start (screenFor), the settings being the idle screen's.
-    var brightness by mutableStateOf(100)
+    // ai: The screen's brightness while sending (2026-10-02): 0 the phone's own (System, at every launch since
+    // ai: 2026-10-27: forcing 100 at each Start, the default from 2026-10-03, was a nuisance and did not always hold), or
+    // ai: 1 to 100% once the slider is moved, the window's own override, so the phone's setting is left as it was once
+    // ai: sending stops; set at Start (screenFor), the settings being the idle screen's.
+    var brightness by mutableStateOf(0)
+    private val brightnessOverride get() = if (brightness > 0) brightness / 100f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
     // ai: Painting with (2026-10-02; the web's encoder switch): auto (the GPU
     // ai: where it builds and its first frames are the C's, else the CPU), the GPU (liblizard/core/tx/gpu_painter.h) or the CPU's
     // ai: painters; kept.
@@ -143,9 +155,20 @@ class SendState(private val a: MainActivity) {
     // ai: apart (0 to 64, 12 unless set); kept. The format is picked for one code's share of the box (roomOf).
     var codes by mutableStateOf(prefs.getInt("sendCodes", 1).coerceIn(1, 2))
     var gap by mutableStateOf(prefs.getInt("sendGap", 12).coerceIn(0, 64))
-    // ai: the code box's width over its height: the codes and the gaps between them, each code as tall as the box (a gap
-    // ai: of `gap` modules a share of one code's side, its margin in: the web's gapFrac)
-    val aspect get() = codes + (codes - 1) * gap / (Pick.modules() + 2.0 * Pick.QUIET)
+    // ai: Margin (2026-10-27; the web's and the desktop's since 2026-10-23):
+    // ai: the light between a code's ring and the box's edge, modules, its quiet zone (Pick.QUIET) at least and
+    // ai: MARGIN_MAX at most, MARGIN_DEFAULT unless set; kept (sendMargin). Not painted: the box keeps it round the code's
+    // ai: surface (CodeBox), as the desktop's presenter keeps it round the frame.
+    var margin by mutableStateOf(prefs.getInt("sendMargin", MARGIN_DEFAULT).coerceIn(Pick.QUIET, MARGIN_MAX))
+    private val sideModules get() = Pick.modules() + 2.0 * Pick.QUIET   // ai: a painted symbol's side, its quiet zone in
+    private val past get() = (margin - Pick.QUIET).toDouble()           // ai: the margin past that quiet zone, modules
+    // ai: the painted frame's width over its height: the codes and the gaps between them, each code as tall as the frame
+    // ai: (a gap of `gap` modules a share of one code's side: the web's gapFrac)
+    private val frameAspect get() = codes + (codes - 1) * gap / sideModules
+    // ai: the code box's: the frame and the margin past its quiet zone at each edge
+    val aspect get() = (frameAspect * sideModules + 2 * past) / (sideModules + 2 * past)
+    // ai: that margin a share of the box's height (CodeBox's padding round the surface)
+    val edgeShare get() = past / (sideModules + 2 * past)
     var phase by mutableStateOf<Phase>(Phase.Idle)
     // ai: Paused (2026-10-02): nothing presented, the run
     // ai: kept, the last picture left on screen (a receiver holds what it has); a resume presents at once (tick)
@@ -154,7 +177,8 @@ class SendState(private val a: MainActivity) {
 
     private var h = 0L
     private var surface: Surface? = null
-    var shown by mutableStateOf(false)   // ai: a picture has been presented since the start (Send.kt CodeBox's overlay)
+    var shown by mutableStateOf(false)   // ai: a picture has been presented on this surface (Send.kt CodeBox's overlay)
+    private var placed = false           // ai: and placed for the surface's current size (a post sets the ring's geometry)
     private var room = 0
     private var configured = 0          // ai: the room the sender was last configured for
     private var due = 0L
@@ -279,8 +303,8 @@ class SendState(private val a: MainActivity) {
     }
     // ai: the window holds the brightness while sending (screenFor), so a move mid-send is applied at once
     fun chooseBrightness(b: Int) {
-        brightness = b.coerceIn(1, 100)
-        if (phase == Phase.On) a.window.let { w -> w.attributes = w.attributes.apply { screenBrightness = brightness / 100f } }
+        brightness = if (b <= 0) 0 else b.coerceAtMost(100)
+        if (phase == Phase.On) a.window.let { w -> w.attributes = w.attributes.apply { screenBrightness = brightnessOverride } }
     }
     fun pause(p: Boolean) { if (phase == Phase.On) paused = p }
     // ai: what the code offers at most, KB/s: blocks a frame x 469 B x pictures a second; null before the first configure
@@ -288,8 +312,10 @@ class SendState(private val a: MainActivity) {
     fun choosePainter(p: String) { painter = p; prefs.edit().putString("sendPainter", p).apply(); if (phase == Phase.On) reconfigure() }
     fun chooseCodes(c: Int) { codes = c.coerceIn(1, 2); prefs.edit().putInt("sendCodes", codes).apply(); if (phase == Phase.On) reconfigure() }
     fun chooseGap(g: Int) { gap = g.coerceIn(0, 64); prefs.edit().putInt("sendGap", gap).apply(); unsettled = true }
+    // ai: at the slider's release (the box resized once: a resize mid-send reconfigures where the room changed)
+    fun chooseMargin(m: Int) { margin = m.coerceIn(Pick.QUIET, MARGIN_MAX); prefs.edit().putInt("sendMargin", margin).apply() }
     // ai: one code's room in the view, px: the box's height, or its width's share where that is less
-    private fun roomOf() = min((vw / aspect).toInt(), vh)
+    private fun roomOf() = min((vw / frameAspect).toInt(), vh)   // ai: the surface holds the frame alone
     // ai: the column's edge let go (2026-10-05): the format re-picked for the box it left
     fun resized() { if (phase == Phase.On && roomOf() != configured) reconfigure() }
 
@@ -349,7 +375,7 @@ class SendState(private val a: MainActivity) {
         val b = choice
         if (!test && (b == null || reading)) return
         phase = Phase.Preparing
-        shown = false
+        shown = false; placed = false
         // ai: the file's transfer still being made (or its make let go): Start waits for it
         if (!test && made == 0L) { if (!makingNow) make(); startWhenMade = true; return }
         go()
@@ -392,7 +418,7 @@ class SendState(private val a: MainActivity) {
         runFile?.delete(); runFile = null
         startWhenMade = false
         if (phase == Phase.On || phase == Phase.Preparing) phase = Phase.Idle
-        shown = false
+        shown = false; placed = false
         stats = Stats(); paused = false
         screenFor(false)
         // ai: the next Start's transfer, made afresh while the app is in front (a stop from onPause makes none: Start does)
@@ -428,11 +454,15 @@ class SendState(private val a: MainActivity) {
     internal val holder = object : SurfaceHolder.Callback {
         override fun surfaceCreated(hd: SurfaceHolder) { surface = hd.surface }
         override fun surfaceChanged(hd: SurfaceHolder, format: Int, w: Int, hh: Int) {
+            if (w != vw || hh != vh) placed = false   // ai: a picture placed for this size wanted, paused or not
             surface = hd.surface; vw = w; vh = hh
             // ai: not while the column's edge is being dragged: the code's box changes every frame of it (resized after)
             if (phase == Phase.On && roomOf() != configured && !a.sideDragging) reconfigure()
         }
-        override fun surfaceDestroyed(hd: SurfaceHolder) { surface = null }
+        // ai: the view detached (the code's box moved between full screen and the page, 2026-10-27) destroys its surface,
+        // ai: and the ring's child surface went with it while posts went on into it, the code black on the page
+        // ai: the next surface shows a picture even while paused (tick, tickVsync), the file's look over it until then
+        override fun surfaceDestroyed(hd: SurfaceHolder) { surface = null; shown = false; placed = false; if (h != 0L) Native.txSurfaceGone(h) }
     }
 
     // ai: each frame callback (the window's queue): the next painted frame when one is due at the asked rate (half a vsync
@@ -440,9 +470,11 @@ class SendState(private val a: MainActivity) {
     private fun tick(t: Long) {
         val period = 1_000_000_000L / fps
         val s = surface
-        if (paused) due = 0L   // ai: presented at once on a resume
+        // ai: paused: presented at once on a resume; a surface with no picture placed for its size (the paused page's, or
+        // ai: one resized under it: the column folded) takes one
+        if (paused && placed) due = 0L
         else if (s != null && configured > 0 && t >= due - 4_000_000L) {
-            if (Native.txPresent(h, s)) { due = if (due == 0L || t - due > period) t + period else due + period; if (!shown) shown = true }
+            if (Native.txPresent(h, s)) { due = if (due == 0L || t - due > period) t + period else due + period; shown = true; placed = true }
         }
         pollStats(t)
     }
@@ -464,14 +496,16 @@ class SendState(private val a: MainActivity) {
         val perV = if (vsyncNs > 0) askedNs.toDouble() / vsyncNs else 0.0
         val per = Math.round(perV)
         val periodNs = if (per >= 1 && vsyncNs > 0 && abs(perV - per) <= 0.01 * per) per * vsyncNs else askedNs
-        if (paused) { due = 0L; lastTimeline = tls.lastOrNull()?.expectedPresentationTimeNanos ?: lastTimeline }
+        // ai: paused, as the window's queue (tick): nothing posted once this surface shows a picture placed for its size
+        if (paused && placed) { due = 0L; lastTimeline = tls.lastOrNull()?.expectedPresentationTimeNanos ?: lastTimeline }
         else for (tl in tls) {
+            if (paused && placed) break
             val t = tl.expectedPresentationTimeNanos
             if (t <= lastTimeline) continue
             lastTimeline = t
             if (s == null || configured <= 0 || t + vsyncNs / 2 < due) continue
             when (Native.txPost(h, s, tl.vsyncId, t, vsyncNs, vw, vh)) {
-                1 -> { due = if (due == 0L || t - due > periodNs) t + periodNs else due + periodNs; if (!shown) shown = true }
+                1 -> { due = if (due == 0L || t - due > periodNs) t + periodNs else due + periodNs; shown = true; placed = true }
                 0 -> due = t + periodNs
                 else -> { toWindowQueue(runCatching { JSONObject(Native.txPostStats(h)).optString("error") }.getOrDefault("")); return }
             }
@@ -530,7 +564,7 @@ class SendState(private val a: MainActivity) {
         val c = WindowCompat.getInsetsController(w, w.decorView)
         if (on) {
             w.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            w.attributes = w.attributes.apply { screenBrightness = brightness / 100f }
+            w.attributes = w.attributes.apply { screenBrightness = brightnessOverride }
             c.hide(WindowInsetsCompat.Type.systemBars())
         } else {
             w.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -556,27 +590,38 @@ internal fun MainActivity.SendScreen() {
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     // ai: one code view for both layouts: a turn of the phone moves the surface rather than making another
     val code = remember { movableContentOf<Modifier> { m -> CodeBox(m) } }
-    // ai: Fullscreen (2026-10-06, the web's #fs): the code alone on the page's white, as large as the screen allows,
-    // ai: the system bars hidden; Back brings the screen back (the bars too, unless a send keeps them hidden), and a tap
-    // ai: on it does nothing since 2026-10-24 (owner: "clicking on the sender should not remove fullscreen"). The code's
-    // ai: surface moves, not remade (movableContentOf).
-    var full by remember { mutableStateOf(false) }
-    if (full) {
-        BackHandler { full = false }
-        DisposableEffect(Unit) {
-            val c = WindowCompat.getInsetsController(window, window.decorView)
-            c.hide(WindowInsetsCompat.Type.systemBars())
-            onDispose { if (send.phase != SendState.Phase.On && send.phase != SendState.Phase.Preparing) c.show(WindowInsetsCompat.Type.systemBars()) }
-        }
-        BoxWithConstraints(Modifier.fillMaxSize().background(Bg), contentAlignment = Alignment.Center) {
+    // ai: While a send runs the code is the whole screen (2026-10-26; a Fullscreen button did this from 2026-10-06 and is
+    // ai: gone from the app): the code alone on the page's white, as large as the screen allows, the bars hidden
+    // ai: (screenFor); Back stops the send and brings the page back. As the desktop's full screen: a tap within EDGE of the
+    // ai: left edge shows the collapsed column over the code (Rail: its collapser, Pause or Resume, the rate, Home), a tap
+    // ai: elsewhere or RAIL_MS untouched hides it. The page is left full screen only while paused (2026-10-27; the
+    // ai: collapser opened it with the send running before):
+    // ai: the collapser pauses and opens the page with the column, Resume takes the code full screen again. Preparing keeps
+    // ai: the page (its Stop). The code's view moves between the two (its surface made again, SendState.holder).
+    val running = s.phase == SendState.Phase.On
+    if (running && !s.paused) {
+        var rail by remember { mutableStateOf(false) }
+        var touched by remember { mutableStateOf(0) }
+        LaunchedEffect(rail, touched) { if (rail) { delay(RAIL_MS); rail = false } }
+        BackHandler { s.stop() }
+        // ai: the code and the rail clear of the display's cutout (2026-10-27: the app is edge to edge, and the S26's punch
+        // ai: hole sat over the code's left margin), the page's white under it; the tap's edge measured from the screen's
+        BoxWithConstraints(Modifier.fillMaxSize().background(Bg).pointerInput(Unit) {
+            detectTapGestures { at -> rail = at.x < EDGE.toPx(); touched++ }
+        }.windowInsetsPadding(WindowInsets.displayCutout), contentAlignment = Alignment.Center) {
             val a = s.aspect.toFloat()
             val w = minOf(maxWidth, maxHeight * a)
             code(Modifier.size(w, w / a))
+            if (rail) Row(Modifier.align(Alignment.CenterStart).fillMaxHeight().background(Bg).pointerInput(Unit) { detectTapGestures { touched++ } }) {
+                Rail(onClick = { rail = false; s.pause(true); if (isOpen("sendCollapsed")) toggle("sendCollapsed") },
+                    foot = { Square { IconBtn(R.drawable.ic_back, "Home") { go(MainActivity.Screen.Home) } } }) { SendRail() }
+                VerticalDivider(color = Line)
+            }
         }
         return
     }
     val side: @Composable () -> Unit = {
-        SendPanel { full = true }
+        SendPanel()
         Fold("Settings", isOpen("sendSettings"), { toggle("sendSettings") }) {
             Fields {
                 // ai: two groups (2026-10-23): Code, what the symbol carries, then Display, how this phone paints and shows it
@@ -594,11 +639,14 @@ internal fun MainActivity.SendScreen() {
                     // ai: stays auto and the menu shows the painter running; a choice takes that painter outright
                     Select("Encoder", if (s.painter == "auto") s.stats.painter.ifEmpty { "gpu" } else s.painter, listOf("gpu" to "GPU", "cpu" to "CPU")) { s.choosePainter(it) }
                     Select("VSync", s.vsyncOn, listOf(true to "On", false to "Off")) { s.chooseVsync(it) }
-                    Field("Brightness", "${s.brightness}%") {
-                        Bar(s.brightness.toFloat(), 1f..100f, 98) { v -> val n = v.roundToInt(); if (n != s.brightness) s.chooseBrightness(n) }
-                    }
+                    AutoSlider("Brightness", s.brightness, 0, 1..100, { "$it%" }, {}, auto = "System") { if (it != s.brightness) s.chooseBrightness(it) }
                     // ai: the gap between two codes (the web's #gap)
                     if (s.codes == 2) Field("Gap", "${s.gap} modules") { Bar(s.gap.toFloat(), 0f..64f, 63, { s.settle() }) { v -> val g = v.roundToInt(); if (g != s.gap) s.chooseGap(g) } }
+                    // ai: the light round the code (SendState.margin), its label live and the box resized at the release
+                    var m by remember { mutableStateOf<Int?>(null) }
+                    Field("Margin", "${m ?: s.margin} modules") {
+                        Bar((m ?: s.margin).toFloat(), Pick.QUIET.toFloat()..MARGIN_MAX.toFloat(), MARGIN_MAX - Pick.QUIET - 1, { m?.let { s.chooseMargin(it) }; m = null }) { v -> m = v.roundToInt() }
+                    }
                 }
             }
         }
@@ -615,12 +663,18 @@ internal fun MainActivity.SendScreen() {
         TopBar("Send", onBack = { go(MainActivity.Screen.Home) }) { SwapBtn("Receiver") { go(MainActivity.Screen.Receive) } }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             Spacer(Modifier.height(8.dp))
-            code(Modifier.fillMaxWidth().aspectRatio(s.aspect.toFloat()))
+            // ai: the code's box, its shape the code's; while it holds the file upload and something is chosen, at least
+            // ai: UPLOAD_ONE_ROW tall (the tiles and the card with a row of items, which scroll inside the card), so a 2:1
+            // ai: box no longer hides the selection under its tiles
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val h = maxWidth / s.aspect.toFloat()
+                code(Modifier.fillMaxWidth().height(if (uploading() && s.items.isNotEmpty()) maxOf(h, UPLOAD_ONE_ROW) else h))
+            }
             side()
         }
     } else BoxWithConstraints(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
-        // ai: no narrower than Start, Stop or Resume beside Fullscreen with no label folded (2026-10-06)
-        val sideLo = CellsFloor(listOf("Start", "Stop", "Resume", "Fullscreen"), 2)
+        // ai: no narrower than Resume beside Stop with no label folded (2026-10-06, Fullscreen among them until 2026-10-26)
+        val sideLo = CellsFloor(listOf("Start", "Stop", "Resume"), 2)
         val sideW = SideWidth(maxWidth, sideDp, sideLo)
         val screenW = maxWidth
         Row(Modifier.fillMaxSize()) {
@@ -636,14 +690,36 @@ internal fun MainActivity.SendScreen() {
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().padding(16.dp), contentAlignment = Alignment.Center) {
                 val a = s.aspect.toFloat()
                 val w = minOf(maxWidth, maxHeight * a)
-                code(Modifier.size(w, w / a))   // ai: square for one code, about 2:1 for two
+                // ai: square for one code, about 2:1 for two; while it holds the file upload with something chosen, as tall
+                // ai: as the tiles and a row of items need, up to the room there is
+                code(Modifier.size(w, if (uploading() && s.items.isNotEmpty()) minOf(maxHeight, maxOf(w / a, UPLOAD_ONE_ROW)) else w / a))
             }
         }
     }
 }
 
+// ai: full screen's rail (the Send page's code alone while a send runs): how near the left edge a tap shows it, and how
+// ai: long it stays untouched
+private val EDGE = 72.dp
+private const val RAIL_MS = 4000L
+
+// ai: the upload's height with one row of items: its padding, the tiles, the gap, the card's head and one row
+// ai: Margin's bounds and default in modules, the web's (send.mjs marginOf) and the desktop's (Room.kt)
+private const val MARGIN_MAX = 34
+private const val MARGIN_DEFAULT = 8
+private val UPLOAD_ONE_ROW = (16 + TILE + 16 + 4 + 48 + 4 + TILE + 12 + 16).dp
+
+// ai: whether the code's box holds the file upload: no picture shown yet and a file the payload. A pick being walked
+// ai: or the bundle being made again (`reading`, which every add, remove and Clear sets) keeps it: the state line says
+// ai: "Reading the files" (the box swapped to a cover for that until 2026-10-26, a flash at every removal).
+private fun MainActivity.uploading(): Boolean {
+    val s = send
+    val sending = s.phase == SendState.Phase.On || s.phase == SendState.Phase.Preparing
+    return !(sending && s.shown) && !s.test
+}
+
 // ai: The code's box: while sending the code itself, painted into a SurfaceView the box's size (SendState.holder); idle,
-// ai: on the soft fill as Receive's camera-off cover, the file to send or "Choose a file", a tap choosing one.
+// ai: the file upload (Upload).
 @Composable
 private fun MainActivity.CodeBox(modifier: Modifier) {
     val s = send
@@ -652,47 +728,58 @@ private fun MainActivity.CodeBox(modifier: Modifier) {
     // ai: black from its making until its first frame, through Preparing (a file compressed) and the first presents,
     // ai: and a box drawn over it in the window hides it
     val shown = sending && s.shown
-    Box(modifier.clipToBounds().background(if (shown) Bg else Soft), contentAlignment = Alignment.Center) {
-        if (sending) AndroidView({ ctx -> SurfaceView(ctx).apply { holder.addCallback(s.holder) } }, Modifier.fillMaxSize())
-        // ai: nothing chosen: "Choose files" (a tap on the box) with a folder and photos and videos under it; once
-        // ai: something is, the selection's list (PickList) until the first picture shows
-        if (!shown && !s.test && s.items.isNotEmpty()) PickList(sending)
-        else if (!shown) Column(Modifier.fillMaxSize().background(Soft).clickable(enabled = !s.test && !sending) { pickFile() }, verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+    BoxWithConstraints(modifier.clipToBounds().background(if (shown || uploading()) Bg else Soft), contentAlignment = Alignment.Center) {
+        // ai: the surface the frame's shape, the margin past its quiet zone the box's light round it (SendState.margin)
+        if (sending) AndroidView({ ctx -> SurfaceView(ctx).apply { holder.addCallback(s.holder) } }, Modifier.fillMaxSize().padding(maxHeight * s.edgeShare.toFloat()))
+        // ai: idle: the file upload (Upload) until the first picture shows; the test stream says so on the soft fill instead
+        if (uploading()) Upload(sending)
+        else if (!shown) Column(Modifier.fillMaxSize().background(Soft), verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally) {
             Icon(painterResource(R.drawable.ic_file), contentDescription = null, Modifier.size(24.dp), tint = Muted)
-            Text(if (s.test) "Test stream" else if (s.reading) "Reading the files" else "Choose files", style = MaterialTheme.typography.bodyMedium, color = Muted,
+            Text("Test stream", style = MaterialTheme.typography.bodyMedium, color = Muted,
                 textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 16.dp))
-            // ai: a folder, or photos and videos, instead (the web's hint link): their own taps, the box's tap the files
-            if (!s.test && !sending && !s.reading) {
-                Text("or a folder", style = MaterialTheme.typography.bodyMedium, color = Fg, textDecoration = TextDecoration.Underline,
-                    modifier = Modifier.clickable { pickFolder() }.padding(horizontal = 16.dp, vertical = 4.dp))
-                Text("or photos and videos", style = MaterialTheme.typography.bodyMedium, color = Fg, textDecoration = TextDecoration.Underline,
-                    modifier = Modifier.clickable { pickMedia() }.padding(horizontal = 16.dp, vertical = 4.dp))
-            }
         }
     }
 }
 
-// ai: The selection (2026-10-23): a row an item (its icon, its name, "N files · size" for a folder or its size, Remove),
-// ai: scrolling when long, then Add files, Add a folder, Photos and videos and Clear; nothing changes while sending.
-@OptIn(ExperimentalLayoutApi::class)
+// ai: The file upload (2026-10-26, LocalSend's geometry; the web's #pick): the File, Folder and Media tiles (Parts.kt
+// ai: Tile), and under them, while the selection holds something, its card: the count with Clear (the state line says
+// ai: the size), then a tile an item (ItemTile, its x removing it), the items in rows stretched across the column
+// ai: (TileRows, 104 dp the least before a fold), the three tiles always one row; nothing changes while sending. Centred
+// ai: in the box; only the card scrolls: its items one row scrolling sideways in landscape, rows scrolling down in portrait.
 @Composable
-private fun MainActivity.PickList(sending: Boolean) {
+private fun MainActivity.Upload(sending: Boolean) {
     val s = send
-    Column(Modifier.fillMaxSize().background(Bg).padding(horizontal = 16.dp, vertical = 8.dp)) {
-        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
-            s.items.forEachIndexed { i, it ->
-                ListRow(it.name, sub = if (it.dir) "${it.files} ${if (it.files == 1) "file" else "files"} · ${Readout.bytes(it.size)}" else Readout.bytes(it.size),
-                    lead = if (it.dir) R.drawable.ic_folder else R.drawable.ic_file, divider = i < s.items.size - 1,
-                    trailing = { IconBtn(R.drawable.ic_x, "Remove ${it.name}", enabled = !sending) { s.remove(it.key) } })
+    val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    BoxWithConstraints(Modifier.fillMaxSize().background(Bg)) {
+        val w = minOf(maxWidth - 32.dp, 576.dp)
+        Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
+            val tiles = listOf(Triple(R.drawable.ic_file, "File") { pickFile() }, Triple(R.drawable.ic_folder, "Folder") { pickFolder() },
+                Triple(R.drawable.ic_image, "Media") { pickMedia() })
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                tiles.forEach { (icon, label, act) -> Tile(icon, label, (w - 12.dp * (tiles.size - 1)) / tiles.size, enabled = !sending, onClick = act) }
             }
-        }
-        // ai: centred under the list (2026-10-23; from its left edge before, which read off centre)
-        FlowRow(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Btn("Add files", enabled = !sending) { pickFile() }
-            Btn("Add a folder", enabled = !sending) { pickFolder() }
-            Btn("Photos and videos", enabled = !sending) { pickMedia() }
-            Btn("Clear", enabled = !sending) { s.clear() }
+            if (s.items.isNotEmpty()) Column(Modifier.width(w).weight(1f, fill = false).clip(RoundedCornerShape(12.dp)).background(Card)
+                .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 12.dp)) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("${s.items.size} ${if (s.items.size == 1) "item" else "items"}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+                    Btn("Clear", Kind.Text, enabled = !sending) { s.clear() }
+                }
+                val items = s.items.toList()
+                val item: @Composable (Int, Dp) -> Unit = { i, iw ->
+                    val it = items[i]
+                    ItemTile(it.name, if (it.dir) "${it.files} ${if (it.files == 1) "file" else "files"}" else Readout.bytes(it.size),
+                        if (it.dir) R.drawable.ic_folder else R.drawable.ic_file, iw, enabled = !sending) { s.remove(it.key) }
+                }
+                if (landscape) {
+                    // ai: one row at the columns' width (TileRows' rule), scrolling sideways past what fits
+                    val gap = 8.dp; val inner = w - 24.dp
+                    val cols = maxOf(1, ((inner + gap) / (TILE.dp + gap)).toInt())
+                    Row(Modifier.padding(top = 4.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                        items.indices.forEach { item(it, (inner - gap * (cols - 1)) / cols) }
+                    }
+                } else Box(Modifier.padding(top = 4.dp).weight(1f, fill = false).verticalScroll(rememberScrollState())) { TileRows(items.size, w - 24.dp, 8.dp, item) }
+            }
         }
     }
 }
@@ -701,7 +788,7 @@ private fun MainActivity.PickList(sending: Boolean) {
 // ai: "Preparing", "Sending" with the bytes that go, "Paused", or what went wrong), then Start, or Stop (Resume beside it
 // ai: while paused), then the rate the code carries.
 @Composable
-private fun MainActivity.SendPanel(onFull: () -> Unit) {
+private fun MainActivity.SendPanel() {
     val s = send
     val on = s.phase == SendState.Phase.On
     val busy = on || s.phase == SendState.Phase.Preparing
@@ -724,24 +811,15 @@ private fun MainActivity.SendPanel(onFull: () -> Unit) {
         s.choice != null -> sized
         else -> ""
     }
-    // ai: the web sender's order (2026-10-06): the buttons first (Start or Stop beside Fullscreen; paused, Resume and
-    // ai: Stop on one row and Fullscreen under them, so no label folds), then the state line, then the rate as the
-    // ai: web's figures line, 14 sp grey
+    // ai: the web sender's order (2026-10-06): the buttons first (Start; Stop while preparing; paused, Resume beside Stop),
+    // ai: then the state line, then the rate as the web's figures line, 14 sp grey. No Fullscreen (2026-10-26): a send
+    // ai: running is the whole screen.
     Column(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        val fs: @Composable (Modifier) -> Unit = { m -> Btn("Fullscreen", modifier = m, onClick = onFull) }
-        if (!busy) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Btn("Start", Kind.Primary, enabled = s.test || s.ready, modifier = Modifier.weight(1f)) { s.requestStart() }
-            fs(Modifier.weight(1f))
-        } else if (s.paused) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Btn("Resume", Kind.Primary, modifier = Modifier.weight(1f)) { s.pause(false) }
-                Btn("Stop", modifier = Modifier.weight(1f)) { s.stop() }
-            }
-            fs(Modifier.fillMaxWidth())
-        } else Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (!busy) Btn("Start", Kind.Primary, enabled = s.test || s.ready, modifier = Modifier.fillMaxWidth()) { s.requestStart() }
+        else if (s.paused) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Btn("Resume", Kind.Primary, modifier = Modifier.weight(1f)) { s.pause(false) }
             Btn("Stop", modifier = Modifier.weight(1f)) { s.stop() }
-            fs(Modifier.weight(1f))
-        }
+        } else Btn("Stop", modifier = Modifier.fillMaxWidth()) { s.stop() }
     }
     // ai: a line naming the file holds its head on one line (Parts.kt NameLine, 2026-10-23)
     val named = !s.test && err == null && (s.phase == SendState.Phase.Preparing || (on && !s.paused) || (!on && !s.reading && s.choice != null))
@@ -785,13 +863,14 @@ private fun sendLab(s: SendState): String {
 // ai: Blocks a frame (send.html #blocks and #subchAuto), 0 for auto: the slider's leftmost step is auto (2026-10-05; an
 // ai: Auto chip at the title row's end until then), its value "Auto, 60, 28.1 KB" while what auto takes is known
 // ai: ("Auto" before the first configure), every step right of it a count by hand. value the setting, shown what auto
-// ai: takes now (0 while unknown), range the counts; the step left of them auto.
+// ai: takes now (0 while unknown), range the counts; the step left of them auto. Brightness the same with its leftmost
+// ai: step the phone's own (`auto` "System", 2026-10-27).
 @Composable
-private fun AutoSlider(title: String, value: Int, shown: Int, range: IntRange, text: (Int) -> String, done: () -> Unit, choose: (Int) -> Unit) {
-    val auto = value == 0
-    val b = if (auto) shown else value
+private fun AutoSlider(title: String, value: Int, shown: Int, range: IntRange, text: (Int) -> String, done: () -> Unit, auto: String = "Auto", choose: (Int) -> Unit) {
+    val isAuto = value == 0
+    val b = if (isAuto) shown else value
     val lo = range.first - 1
-    Field(title, if (auto) (if (b > 0) "Auto, ${text(b)}" else "Auto") else text(b)) {
-        Bar((if (auto) lo else value).toFloat(), lo.toFloat()..range.last.toFloat(), range.last - lo - 1, done) { val v = it.roundToInt(); choose(if (v < range.first) 0 else v) }
+    Field(title, if (isAuto) (if (b > 0) "$auto, ${text(b)}" else auto) else text(b)) {
+        Bar((if (isAuto) lo else value).toFloat(), lo.toFloat()..range.last.toFloat(), range.last - lo - 1, done) { val v = it.roundToInt(); choose(if (v < range.first) 0 else v) }
     }
 }

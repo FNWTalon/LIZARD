@@ -57,7 +57,8 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
 
     // ai: what the rear camera offers, read once at start-up for Settings' choices
     // ai: zoom: the camera's CONTROL_ZOOM_RATIO_RANGE (Android 11 and up), null where it has none
-    data class Caps(val sizes: Set<String>, val lenses: List<Lens>, val zoom: Range<Float>? = null)
+    // ai: formats: each format the lens offers that the app reads (Settings.FORMATS' keys), with its sizes ("WxH")
+    data class Caps(val sizes: Set<String>, val lenses: List<Lens>, val zoom: Range<Float>? = null, val formats: Map<String, Set<String>> = emptyMap())
     // ai: a back camera an app can open: its id, and a label from its lens (focal length, horizontal field of view,
     // ai: whether it is a logical camera that switches between lenses)
     data class Lens(val id: String, val label: String)
@@ -78,6 +79,10 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     private var reader: ImageReader? = null
     private var gen = 0   // ai: bumped by every close: a callback of a camera already closed is ignored
     private val phase = PhaseLock({ Log.i(TAG, it) })   // ai: engine thread only
+    // ai: the experimental arm D6 (Settings.d6 "on", liblizard/kotlin/PhaseLockD6.kt), chosen at each camera session;
+    // ai: no readout skew and no code row, as it ran on 2026-10-26
+    private val phaseD6 = dev.lizard.phase.d6.PhaseLock({ Log.i(TAG, it) })
+    @Volatile private var d6 = false
     // ai: The phase lock learns the display's pace and its gain afresh every run (2026-10-03): from 2026-10-01 to
     // ai: 2026-10-03 they were kept in the preferences (phasePace, phaseGain, no longer read) and given back when track
     // ai: was next set, and a pace learned to its bound (5 ms a second) in 2:1 was given back to every run after it
@@ -90,6 +95,31 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     // ai: (DISTORTION_CORRECTION_MODE not off). Its principal point is not taken: on the S26's main camera at 2.2x the
     // ai: frame's centre read 14% more blocks as the axis (research/STATUS.md "The camera's report of its lens").
     @Volatile private var lensReport: FloatArray? = null
+    // ai: A reader format developed to luma by the receiver (2026-10-27: Settings.format; jni.cpp pushRaw): the format, the
+    // ai: whole array's size, the lens's CFA (SENSOR_INFO_COLOR_FILTER_ARRANGEMENT), its levels a 2 x 2 position
+    // ai: (black[4], white, gain[4]: the result's dynamic black and white where given, else the characteristics', the
+    // ai: white balance's gains by the CFA); null for PRIVATE, YUV and Y8, which push as before.
+    private class Develop(val fmt: Int, val w: Int, val h: Int, val cfa: Int, @Volatile var levels: FloatArray)
+    @Volatile private var develop: Develop? = null
+    @Volatile private var wantedSize = Pair(1920, 1080)   // ai: the Resolution setting, which shapes a RAW frame's crop
+    // ai: a RAW frame's levels a 2 x 2 position (row-major: (0,0), (1,0), (0,1), (1,1)): black[4], the white level, the
+    // ai: white balance's gain[4] (COLOR_CORRECTION_GAINS by the CFA; 1 where none or the sensor has no Bayer CFA). r:
+    // ai: the newest capture result (its dynamic black and white levels, Android 12 and up), else the characteristics'
+    private fun levelsOf(ch: CameraCharacteristics, r: android.hardware.camera2.CaptureResult?): FloatArray {
+        val o = FloatArray(9)
+        val dyn = if (r != null && Build.VERSION.SDK_INT >= 31) r.get(android.hardware.camera2.CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL) else null
+        val pat = ch.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)
+        for (p in 0..3) o[p] = dyn?.getOrNull(p) ?: pat?.getOffsetForIndex(p % 2, p / 2)?.toFloat() ?: 0f
+        val dw = if (r != null && Build.VERSION.SDK_INT >= 31) r.get(android.hardware.camera2.CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL) else null
+        o[4] = (dw ?: ch.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL) ?: 1023).toFloat()
+        val g = r?.get(android.hardware.camera2.CaptureResult.COLOR_CORRECTION_GAINS)
+        // ai: each position's colour as RggbChannelVector's index: RGGB, GRBG, GBRG, BGGR
+        val col = when (ch.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT)) {
+            0 -> intArrayOf(0, 1, 2, 3); 1 -> intArrayOf(1, 0, 3, 2); 2 -> intArrayOf(2, 3, 0, 1); 3 -> intArrayOf(3, 2, 1, 0); else -> null
+        }
+        for (p in 0..3) o[5 + p] = if (g == null || col == null) 1f else g.getComponent(col[p])
+        return o
+    }
     private fun lensOf(ch: CameraCharacteristics, r: android.hardware.camera2.CaptureResult, w: Int, h: Int): FloatArray? {
         if (Build.VERSION.SDK_INT < 28) return null
         val mode = r.get(android.hardware.camera2.CaptureResult.DISTORTION_CORRECTION_MODE)
@@ -114,7 +144,9 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
             (r.get(CaptureResult.SENSOR_FRAME_DURATION) ?: 0L) / 1e6, (r.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW) ?: 0L) / 1e6,
             r.get(CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID))
     }
-    fun phaseState(): PhaseLock.State? = phase.state
+    fun phaseState(): PhaseLock.State? = if (!d6) phase.state else phaseD6.state?.let {
+        PhaseLock.State("d6 " + it.arm, it.what, it.a, it.b, it.k, it.se, it.n, it.gain, it.pace, it.stood, it.edge, it.flatMs, it.delays)
+    }
     // ai: Whether the open lens can take the phase lock's delay frame (2026-10-22): one request with auto-exposure off
     // ai: and a longer SENSOR_FRAME_DURATION (delay below), applied to that frame alone. That needs manual sensor
     // ai: control and per-frame control; on a lens without them the longer frame lands late or not at all, and the
@@ -254,7 +286,8 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         val all = (sizes(map, ImageFormat.PRIVATE) + sizes(map, ImageFormat.YUV_420_888))
             .map { "${it.width}x${it.height}" }.toSet()
         val zr = if (Build.VERSION.SDK_INT >= 30) ch.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE) else null
-        return Caps(Settings.RESOLUTIONS.filter { it in all }.toSet(), lenses(), zr)
+        val formats = Settings.FORMATS.mapNotNull { (k, _) -> formatOf(k)?.let { f -> sizes(map, f).map { "${it.width}x${it.height}" }.toSet() }?.takeIf { it.isNotEmpty() }?.let { k to it } }.toMap()
+        return Caps(Settings.RESOLUTIONS.filter { it in all }.toSet(), lenses(), zr, formats)
     }
 
     private fun backIds() = cm.cameraIdList.filter {
@@ -339,6 +372,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     @SuppressLint("MissingPermission")   // ai: MainActivity starts the engine only once the permission is granted
     private fun open(s: Settings) {
         zoom = s.zoom.toFloatOrNull() ?: 1f
+        s.resolution.split("x").mapNotNull { it.toIntOrNull() }.takeIf { it.size == 2 }?.let { wantedSize = Pair(it[0], it[1]) }
         closeCamera()
         opening = true
         ensureReceiver(s)
@@ -351,11 +385,20 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         val priv = sizes(map, ImageFormat.PRIVATE)
         val yuv = sizes(map, ImageFormat.YUV_420_888)
         var note = ""
-        val size = if (want in priv || want in yuv) want else {
-            val near = (priv.ifEmpty { yuv }).minBy { Math.abs(it.width * it.height - ww * wh) }
-            note = "no $want output, $near instead"
-            near
-        }
+        // ai: the format asked (Settings.format; null auto): Private only for a receiver that takes the camera's buffer
+        // ai: (the GPU decoder's zero copy), one the lens does not offer falls to auto
+        var asked = formatOf(s.format)
+        if (asked == ImageFormat.PRIVATE && luma) { asked = null; note = "Private needs the GPU decoder, auto instead" }
+        if (asked != null && sizes(map, asked).isEmpty()) { note = "no ${s.format} on this lens, auto instead"; asked = null }
+        val offers = if (asked != null) sizes(map, asked) else priv + yuv
+        val size = if (asked != null && asked in RAWS) offers.maxBy { it.width.toLong() * it.height }
+            else if (want in offers) want else {
+                val near = (if (asked != null) offers else priv.ifEmpty { yuv }).minBy { Math.abs(it.width * it.height - ww * wh) }
+                note = (if (note.isEmpty()) "" else "$note; ") + "no $want output, $near instead"
+                near
+            }
+        develop = if (asked == null || asked !in DEVELOPED) null else Develop(asked, size.width, size.height,
+            ch.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT) ?: 0, levelsOf(ch, null))
         val offered = ranges(ch)
         val fps = pickFps(offered)
         // ai: the preview: the largest of the same shape up to 1280 wide (it is only for aiming), else the capture's size
@@ -376,12 +419,12 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                 if (g != gen) { d.close(); return }
                 device = d
                 opening = false
-                // ai: the CPU decoder reads the Y plane's bytes: YUV_420_888 for it, the GPU's own layout otherwise
-                val fmt = if (size in priv && !luma) ImageFormat.PRIVATE else ImageFormat.YUV_420_888
+                // ai: auto: the CPU decoder reads the Y plane's bytes, YUV_420_888 for it, the GPU's own layout otherwise
+                val fmt = asked ?: if (size in priv && !luma) ImageFormat.PRIVATE else ImageFormat.YUV_420_888
                 session(d, g, fmt, size, surface, fps, ch) { format ->
                     val minNs = map.getOutputMinFrameDuration(format, size)
                     main.post {
-                        onCamera(CamInfo(id, if (format == ImageFormat.PRIVATE) "PRIVATE" else "YUV_420_888", size,
+                        onCamera(CamInfo(id, nameOf(format), size,
                             preview, fps, minNs / 1e6, ch.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0, note))
                     }
                 }
@@ -398,9 +441,12 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     // ai: CPU decoder can lock its Y plane) where the session refuses it
     private fun session(d: CameraDevice, g: Int, fmt: Int, size: Size, preview: android.view.Surface, fps: Range<Int>,
                         ch: CameraCharacteristics, ok: (Int) -> Unit) {
-        val usage = if (luma) HardwareBuffer.USAGE_CPU_READ_OFTEN else HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or
+        // ai: a format developed or read as a plane (Y8, P010, RAW) is read on the CPU and closed inside its push, so a
+        // ai: few images do (RAW16 at the S26's 4080 x 3060 is 25 MB each)
+        val plane = fmt in DEVELOPED || fmt == ImageFormat.Y8
+        val usage = if (luma || plane) HardwareBuffer.USAGE_CPU_READ_OFTEN else HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE or
             (if (fmt == ImageFormat.PRIVATE) 0L else HardwareBuffer.USAGE_CPU_READ_OFTEN)
-        val r = try { ImageReader.newInstance(size.width, size.height, fmt, MAX_IMAGES, usage) } catch (e: Exception) {
+        val r = try { ImageReader.newInstance(size.width, size.height, fmt, if (plane) PLANE_IMAGES else MAX_IMAGES, usage) } catch (e: Exception) {
             if (fmt == ImageFormat.PRIVATE) return session(d, g, ImageFormat.YUV_420_888, size, preview, fps, ch, ok)
             return fail("The camera's frames cannot be read: ${e.message}", e)
         }
@@ -412,7 +458,13 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         // ai: the preview's size set again here, on the thread that creates the session and right before it does:
         // ai: the view may have reset it since open() (previewSize above)
         previewSize?.let { p -> texture?.setDefaultBufferSize(p.width, p.height) }
-        val outs = listOf(OutputConfiguration(r.surface), OutputConfiguration(preview))
+        // ai: P010 is the 10-bit stream: HLG10 where the lens lists it (a 10-bit output asks a profile beyond STANDARD)
+        val rout = OutputConfiguration(r.surface)
+        if (fmt == ImageFormat.YCBCR_P010 && Build.VERSION.SDK_INT >= 33) {
+            val dr = ch.get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES)?.supportedProfiles.orEmpty()
+            if (android.hardware.camera2.params.DynamicRangeProfiles.HLG10 in dr) rout.dynamicRangeProfile = android.hardware.camera2.params.DynamicRangeProfiles.HLG10
+        }
+        val outs = listOf(rout, OutputConfiguration(preview))
         val exec = Executor { h.post(it) }
         // ai: the call itself can throw (2026-10-06, the S26: CameraAccessException "Error configuring streams: Broken
         // ai: pipe" from endConfigure, the camera service's side gone, which killed the app on the engine thread):
@@ -505,14 +557,36 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                         // ai: debug.lizard.phase <us> | scan | track` (read twice a second): a hold at that
                         // ai: point of a 60 Hz grid, a scan of every point with a line each, or track's automatic
                         // ai: hold; unset, track (always on since 2026-10-10: the Phase lock setting went). Anything else: off.
-                        init { phase.reopened(); if (bar != null) phase.set(PhaseLock.Mode.Off) }
+                        // ai: the lock this session runs: Settings.d6 (the Experimental fold), read as the session opens
+                        init {
+                            d6 = wanted?.d6 == "on"
+                            Log.i(TAG, "phase: lock " + (if (d6) "d6" else "standard") + " (session)")
+                            phase.reopened(); phaseD6.reopened()
+                            if (d6) fedMs = -1.0
+                            delayAsked = null
+                            if (bar != null) { phase.set(PhaseLock.Mode.Off); phaseD6.set(dev.lizard.phase.d6.PhaseLock.Mode.Off) }
+                        }
+                        // ai: D6 is told what became of its delay request: its frame failed (captured or not), or its sequence aborted
+                        override fun onCaptureFailed(s: CameraCaptureSession, q: CaptureRequest, f: android.hardware.camera2.CaptureFailure) {
+                            if (q !== delayAsked) return
+                            delayAsked = null
+                            if (d6) phaseD6.delayFate(f.wasImageCaptured())
+                        }
+                        override fun onCaptureSequenceAborted(s: CameraCaptureSession, seq: Int) {
+                            if (delayAsked == null || seq != delaySeq) return
+                            delayAsked = null
+                            if (d6) phaseD6.delayFate(false)
+                        }
                         override fun onCaptureCompleted(s: CameraCaptureSession, q: CaptureRequest, r: android.hardware.camera2.TotalCaptureResult) {
                             val ts = r.get(android.hardware.camera2.CaptureResult.SENSOR_TIMESTAMP) ?: 0L
+                            if (q === delayAsked) delayAsked = null
                             // ai: the lens's report a half-second (a zoom moves it; nothing else does on the S26)
                             if (lensAt++ % 30 == 0) {
                                 val was = lensReport
                                 lensReport = lensOf(ch, r, size.width, size.height)
                                 if (!(lensReport contentEquals was)) Log.i(TAG, "lens: " + (lensReport?.let { "k %.5f %.5f %.5f, f %.1f px".format(it[0], it[1], it[2], it[3]) } ?: "no report"))
+                                // ai: a developed format's levels from the newest result (the white balance moves them)
+                                develop?.let { it.levels = levelsOf(ch, r) }
                             }
                             val delayed = q.get(CaptureRequest.CONTROL_AE_MODE) == CameraMetadata.CONTROL_AE_MODE_OFF
                             // ai: a delay is asked from the camera's own frame: a delayed frame's duration is not it
@@ -549,7 +623,10 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                                 phase.usePilots = Native.prop("debug.lizard.pilots") != "0"
                                 // ai: track always (2026-10-10: the setting and its off went); `debug.lizard.phase` the tools' override
                                 // ai: (scan, track, off, or a hold at that many us); off on a lens that cannot delay a frame (lockBar)
-                                when (val want = if (bar != null) "off" else Native.prop("debug.lizard.phase").ifEmpty { "track" }) {
+                                val want = if (bar != null) "off" else Native.prop("debug.lizard.phase").ifEmpty { "track" }
+                                // ai: D6 has Track and Off alone: the tools' scan and holds are the standard lock's
+                                if (d6) phaseD6.set(if (want == "track") dev.lizard.phase.d6.PhaseLock.Mode.Track else dev.lizard.phase.d6.PhaseLock.Mode.Off)
+                                else when (want) {
                                     "scan" -> phase.set(PhaseLock.Mode.Scan)
                                     "track" -> phase.set(PhaseLock.Mode.Track)
                                     else -> want.toLongOrNull()?.let { phase.set(PhaseLock.Mode.Hold, it) } ?: phase.set(PhaseLock.Mode.Off)
@@ -557,11 +634,11 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
                             }
                             // ai: the lock's frames as the receiver reads them, at every capture (twice a second
                             // ai: from the stats' JSON to 2026-10-01: a reading reached the lock 0.7 s old)
-                            feed(phase)
-                            val us = phase.onCapture(ts, delayed)
-                            if (us > 0) delay(cs, b, us, this, quiet = true)
+                            if (d6) feedD6() else feed(phase)
+                            val us = if (d6) phaseD6.onCapture(ts, delayed) else phase.onCapture(ts, delayed)
+                            if (us > 0 && !delay(cs, b, us, this, quiet = true, lock = true) && d6) phaseD6.delayFate(false)
                             if (n % 60 == 0) rx()?.let { Log.i(TAG, it) }
-                            if (n % 300 == 0) phase.line(ts)?.let { Log.i(TAG, it) }
+                            if (n % 300 == 0) (if (d6) phaseD6.line(ts) else phase.line(ts))?.let { Log.i(TAG, it) }
                             if (n++ % 300 != 0) return
                             val now = System.nanoTime()
                             val im = images.get()
@@ -636,7 +713,10 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
     // ai: it is read off the captures since the last line, whatever share of them the phase let through: clean are
     // ai: those with at least half the blocks
     // ai: of the third best of them (and an eighth of the word's), and the ceiling is their mean, 469 B a block, at
-    // ai: the painted rate or the camera's if that is lower. tools/phone/ladder.py makes the table by format.
+    // ai: the painted rate or the camera's if that is lower. tools/phone/ladder.py makes the table by format. At the
+    // ai: end (2026-10-26, so a slow second says which of three it was): the clean captures that read no new block
+    // ai: (the screen showed that picture to a capture before: a sender or compositor late), the frames the receiver
+    // ai: dropped, and the decode's ms a frame (GPU, else the C's on the CPU). The tools' patterns stop before them.
     private var rxSeen = 0.0   // ai: the newest capture already counted, ms on the camera's clock (engine thread)
     // ai: the focus region follows the code's box where it moved by more than a tenth of its size (a dead band, so a
     // ai: hand's jitter does not reissue the repeating request each second)
@@ -655,6 +735,7 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         j.optJSONArray("codeBox")?.let { a -> if (a.length() == 4) aimFocus(DoubleArray(4) { a.optDouble(it) }) }
         val a = j.optJSONArray("series")
         val blocks = ArrayList<Int>()
+        val fresh = ArrayList<Int>()   // ai: each registered capture's new blocks, beside its verified ones
         var newest = rxSeen; var first = Double.MAX_VALUE; var all = 0
         if (a != null) for (i in 0 until a.length()) {
             val f = a.optJSONArray(i) ?: continue
@@ -663,16 +744,19 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
             all++
             if (ms > newest) newest = ms
             if (ms < first) first = ms
-            if (f.optInt(3) == 1) blocks.add(f.optInt(1))
+            if (f.optInt(3) == 1) { blocks.add(f.optInt(1)); fresh.add(f.optInt(2)) }
         }
         rxSeen = newest
         val w = j.optJSONObject("word")
         val version = w?.optInt("version") ?: 0
         val painted = w?.optInt("fps") ?: 0
         if (version == 0 || blocks.size < 8 || 2 * blocks.size < all) return null
-        blocks.sortDescending()
-        val least = maxOf(1, (blocks[minOf(2, blocks.size - 1)] + 1) / 2, (Native.blocksFor(8 * version) + 7) / 8)
+        val byBlocks = blocks.sortedDescending()
+        val least = maxOf(1, (byBlocks[minOf(2, byBlocks.size - 1)] + 1) / 2, (Native.blocksFor(8 * version) + 7) / 8)
         val clean = blocks.filter { it >= least }
+        val repeated = blocks.indices.count { blocks[it] >= least && fresh[it] == 0 }
+        val gpuMs = j.optDouble("gpuMs", 0.0)
+        val cost = if (gpuMs > 0) "%.2f ms of GPU a frame".format(gpuMs) else "%.1f ms of CPU a frame".format(j.optDouble("cpuMs", 0.0))
         val each = if (clean.isEmpty()) 0.0 else clean.average()
         val camera = if (all > 1 && newest > first) (all - 1) * 1000.0 / (newest - first) else 0.0
         val rate = if (painted > 0) minOf(painted.toDouble(), camera) else camera
@@ -682,9 +766,9 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         // ai: of 52 blocks a clean capture, later runs 38 to 44 with timing, heat and leaks the same)
         val crop = wanted?.resolution?.split("x")?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == 2 }?.let { (w, h) ->
             if (wanted?.layout == "2:1") minOf(maxOf(w, h) / 2, minOf(w, h)) else minOf(w, h) } ?: 0
-        return "rx: %s, LIZARD-%d painted %d, goodput %.0f KB/s, %d of %d captures clean, %.1f blocks a clean capture, ceiling %.0f KB/s, %d frames a second, symbol %.0f px of a %d crop, found %.0f%%".format(
+        return "rx: %s, LIZARD-%d painted %d, goodput %.0f KB/s, %d of %d captures clean, %.1f blocks a clean capture, ceiling %.0f KB/s, %d frames a second, symbol %.0f px of a %d crop, found %.0f%%, %d repeated, %d dropped, %s".format(
             j.optString("state"), 8 * version, painted, j.optDouble("goodputKBs", 0.0), clean.size, blocks.size, each, each * 469 * rate / 1000, j.optInt("processedFps"),
-            j.optDouble("side", 0.0), crop, 100 * j.optDouble("foundShare", 0.0))
+            j.optDouble("side", 0.0), crop, 100 * j.optDouble("foundShare", 0.0), repeated, j.optInt("dropped"), cost)
     }
 
     // ai: The receiver's frames since the last call (Native.series: ms on the camera's clock, verified blocks, new
@@ -713,15 +797,34 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         if (t1 - t0 > 20_000_000L) Log.i(TAG, "phase: the feed took %d ms".format((t1 - t0) / 1_000_000))
     }
 
+    // ai: D6's feed: feed's, its frames D6's (no code row: D6 takes the frame's middle)
+    private fun feedD6() {
+        val p = phaseD6
+        val hnd = handle
+        if (hnd == 0L) return
+        if (p.mode != dev.lizard.phase.d6.PhaseLock.Mode.Track) return
+        val a = try { Native.series(hnd, fedMs) } catch (_: Throwable) { return }
+        val n = (a.size - 1) / 8
+        if (n <= 0) return
+        val frames = ArrayList<dev.lizard.phase.d6.PhaseLock.Frame>(n)
+        for (i in 0 until n) { val o = 1 + 8 * i; frames.add(dev.lizard.phase.d6.PhaseLock.Frame((a[o] * 1e6).toLong(), a[o + 1].toInt(), a[o + 3] == 1.0, a[o + 4], a[o + 5], a[o + 6], a[o + 7])) }
+        fedMs = a[1 + 8 * (n - 1)]
+        p.onWindow(frames, a[0].toInt())
+    }
+
     // ai: One frame made `us` microseconds longer, so every frame after it starts that much later: the camera's phase
     // ai: against the display's refresh, moved (2026-09-30; a browser's camera has no such control). Camera2 takes a
     // ai: frame's duration from the request only with auto-exposure off, so the one frame carries the sensor's last
     // ai: exposure and sensitivity itself; the repeating request, with auto-exposure, goes on after it.
-    private fun delay(cs: CameraCaptureSession, b: CaptureRequest.Builder, us: Long, cb: CameraCaptureSession.CaptureCallback, quiet: Boolean = false) {
-        val r = last ?: return
-        val exp = r.get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME) ?: return
-        val iso = r.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY) ?: return
-        val dur = r.get(android.hardware.camera2.CaptureResult.SENSOR_FRAME_DURATION) ?: return
+    // ai: Whether the request went to the camera; `lock`: the phase lock's, whose failure or abort the callback tells D6
+    // ai: (delayAsked, delaySeq: the one out; null none)
+    private var delayAsked: CaptureRequest? = null
+    private var delaySeq = -1
+    private fun delay(cs: CameraCaptureSession, b: CaptureRequest.Builder, us: Long, cb: CameraCaptureSession.CaptureCallback, quiet: Boolean = false, lock: Boolean = false): Boolean {
+        val r = last ?: return false
+        val exp = r.get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME) ?: return false
+        val iso = r.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY) ?: return false
+        val dur = r.get(android.hardware.camera2.CaptureResult.SENSOR_FRAME_DURATION) ?: return false
         b.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
         b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exp)
         b.set(CaptureRequest.SENSOR_SENSITIVITY, iso)
@@ -731,10 +834,12 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, null)
         b.set(CaptureRequest.SENSOR_SENSITIVITY, null)
         b.set(CaptureRequest.SENSOR_FRAME_DURATION, null)
-        try {
-            cs.capture(one, cb, h)
+        return try {
+            val seq = cs.capture(one, cb, h)
+            if (lock) { delayAsked = one; delaySeq = seq }
             if (!quiet) Log.i(TAG, "delay: one frame of %.3f ms asked (%.3f and %.3f more), exposure %.2f ms, iso %d".format((dur + us * 1000) / 1e6, dur / 1e6, us / 1e3, exp / 1e6, iso))
-        } catch (e: Exception) { Log.w(TAG, "delay: ${e.message}") }
+            true
+        } catch (e: Exception) { Log.w(TAG, "delay: ${e.message}"); false }
     }
 
     // ai: every image the reader holds, in order; one the receiver cannot take is released by it at once, and one push
@@ -745,8 +850,38 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
             images.incrementAndGet()
             val hnd = handle
             if (hnd == 0L) { img.close(); continue }
-            // ai: the CPU decoder takes plane 0 (Y), copies its crop inside push and releases the image there
-            val hb = if (luma) null else img.hardwareBuffer
+            // ai: a developed format (P010, RAW): plane 0 handed to the receiver, which develops it to luma (the GPU decoder
+            // ai: on its device, the C on this thread) and lets the image go inside the push
+            val dv = develop
+            if (dv != null && dv.fmt == img.format) {
+                val p0 = img.planes.firstOrNull()
+                if (p0 == null) { img.close(); continue }
+                val tag = Native.hold(img, null, this)
+                val raw = dv.fmt in RAWS
+                // ai: RAW is the lens's whole array (the ISP's zoom crops the processed streams alone): the zoom's centred
+                // ai: crop, at the Resolution setting's shape, a 2 x 2 bin where that still holds the setting's size
+                var x0 = 0; var y0 = 0; var cw = img.width; var chh = img.height; var bin = 1
+                if (raw) {
+                    val (rw, rh) = wantedSize
+                    val z = zoom.coerceAtLeast(1f)
+                    cw = (img.width / z).toInt(); chh = (img.height / z).toInt()
+                    if (cw.toLong() * rh > chh.toLong() * rw) cw = (chh.toLong() * rw / rh).toInt() else chh = (cw.toLong() * rh / rw).toInt()
+                    cw = cw and 7.inv(); chh = chh and 7.inv()
+                    x0 = ((img.width - cw) / 2) and 1.inv(); y0 = ((img.height - chh) / 2) and 1.inv()
+                    if (cw / 2 >= rw && chh / 2 >= rh) bin = 2
+                }
+                try {
+                    Native.pushRaw(hnd, p0.buffer, p0.rowStride, p0.pixelStride, dv.fmt, img.width, img.height, x0, y0, cw, chh, bin,
+                        dv.cfa, dv.levels, img.timestamp, tag, if (raw) null else lensReport)
+                } catch (e: IllegalArgumentException) {
+                    Log.w(TAG, "push: ${e.message}")
+                    Native.release(tag)
+                }
+                continue
+            }
+            // ai: the CPU decoder takes plane 0 (Y), copies its crop inside push and releases the image there; Y8 is
+            // ai: plane 0 alone, read the same way whatever the decoder
+            val hb = if (luma || img.format == ImageFormat.Y8) null else img.hardwareBuffer
             val plane = if (hb == null) img.planes.firstOrNull() else null
             val tag = Native.hold(img, hb, this)
             try {
@@ -799,5 +934,20 @@ class Engine(private val ctx: Context, private val onPhase: (Phase) -> Unit, pri
         // ai: throttled GPU (batches of 250 ms) left the camera no buffer and it delivered 45 to 52 frames a second
         // ai: (S26, 2026-09-30).
         const val MAX_IMAGES = 32
+        const val PLANE_IMAGES = 6   // ai: a format read on the CPU and closed inside its push (Y8, P010, RAW)
+        // ai: Settings.FORMATS' keys to ImageFormat (P010 from Android 12), and their names in the readout
+        fun formatOf(k: String): Int? = when (k) {
+            "private" -> ImageFormat.PRIVATE; "yuv" -> ImageFormat.YUV_420_888; "y8" -> ImageFormat.Y8
+            "p010" -> if (Build.VERSION.SDK_INT >= 31) ImageFormat.YCBCR_P010 else null
+            "raw16" -> ImageFormat.RAW_SENSOR; "raw10" -> ImageFormat.RAW10; "raw12" -> ImageFormat.RAW12
+            else -> null
+        }
+        fun nameOf(f: Int) = when (f) {
+            ImageFormat.PRIVATE -> "PRIVATE"; ImageFormat.YUV_420_888 -> "YUV_420_888"; ImageFormat.Y8 -> "Y8"
+            ImageFormat.RAW_SENSOR -> "RAW16"; ImageFormat.RAW10 -> "RAW10"; ImageFormat.RAW12 -> "RAW12"
+            else -> if (Build.VERSION.SDK_INT >= 31 && f == ImageFormat.YCBCR_P010) "P010" else "format $f"
+        }
+        val RAWS = setOf(ImageFormat.RAW_SENSOR, ImageFormat.RAW10, ImageFormat.RAW12)
+        val DEVELOPED = RAWS + (if (Build.VERSION.SDK_INT >= 31) setOf(ImageFormat.YCBCR_P010) else emptySet())
     }
 }

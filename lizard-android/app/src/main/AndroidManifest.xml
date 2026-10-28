@@ -6,7 +6,11 @@
      files (filesDir/library, Library.kt) to the app that opens or shares one. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- ai: the PC decoder's stream (2026-10-27; liblizard/core/rx/stream.h): a TCP server and a UDP beacon on the
+         phone's own links to a PC (USB tethering, Wi-Fi), the only sockets the app opens -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.hardware.camera" android:required="true" />
+    <uses-feature android:name="android.hardware.usb.accessory" android:required="false" />
     <application
         android:label="LIZARD"
         android:icon="@mipmap/ic_launcher"
@@ -31,6 +35,12 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="*/*" />
             </intent-filter>
+            <!-- ai: the PC's USB accessory (2026-10-27, PcLink; lizard-desktop/native/camera/aoa.cpp): Android starts
+                 Receive for it with the accessory's permission given -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
+            </intent-filter>
+            <meta-data android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" android:resource="@xml/accessory_filter" />
         </activity>
         <provider
             android:name="androidx.core.content.FileProvider"

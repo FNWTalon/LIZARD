@@ -25,8 +25,9 @@ import { SAMPLE } from "./wgsl/sample.mjs";
 import { SLOTS, axisWord } from "./wgsl/common.mjs";
 import { SELECT } from "./wgsl/bank.mjs";
 import { VOTE, GATHER, COMPLETE, SCORE, PICK, REDO, K, CELL, HYP, RING_COUNT, VOTE_READS } from "./wgsl/finder.mjs";
-import { NODES, REFIT, REFIT_POST, NODES_MAX, LIGHT_MAX, RESID, WINDOW, SUB, REFIT_DBG, ringOrder } from "./wgsl/register.mjs";
+import { NODES, nodesSource, REFIT, REFIT_POST, NODES_MAX, LIGHT_MAX, RESID, WINDOW, SUB, REFIT_DBG, ringOrder } from "./wgsl/register.mjs";
 import { WORD, wordUniform, wordPoints, wordLattice, heldUniform } from "./wgsl/word.mjs";
+import { ANCH_FIND, ANCH_PREDICT, ANCH_REFIT, ANCH_FIT, ANCH_K, ANCH_REC, anchUniform } from "./wgsl/anchors.mjs";
 import { gridOf, slotOf } from "./tables.mjs";
 import { VERSION_MIN, VERSION_MAX } from "./wordcode.mjs";
 // The classifier kernel and its weight packers come from one module: classify_gemm.mjs lays the weights out for its
@@ -114,13 +115,15 @@ export const CAP_MS = 400, B_CEIL = 32, BUDGET_MIN = 128 * MiB;   // ai: 32 sinc
 // ai: reads four times the patches the marks need").
 export const CAP = 256;
 export const budgetFor = (limits) => limits?.maxBufferSize || BUDGET_MIN;
-// ai: The receivers' decoder, stated once: the classifiers installed (paths under liblizard/: cnn-v1, and cnn-v3 as the
-// ai: cascade's first net) and the options every receiver builds FrontHalf with, read by the native setup
-// ai: (../gen/gen.mjs, a tree a variant) and the lab's opener (scripts/pages/gpu_open.mjs, whose self-test makes the
-// ai: references the native self-test is held to). large and small: those files' documents (cnn/netfile.mjs loadNet).
-// ai: The caller adds precision, subgroups, backN, log, probe and twins.
-export const INSTALLED = Object.freeze({ large: "gpu/cnn/weights.safetensors", small: CASCADE.weights });
-export const receiverOptions = (large, small) => ({ B: "auto", capMs: CAP_MS, inflight: "auto", cap: CAP, register: true, weights: large, cascade: { weights: small, keep: CASCADE.keep }, back: "gpu" });
+// ai: The receivers' decoder, stated once: the classifier installed (a path under liblizard/: cnn-v3 on every peak,
+// ai: since 2026-10-27; the cascade's cnn-v1 on its top 64 before, which read the same blocks to 0.15% on the
+// ai: published lenses and today's replay for less of the iGPU's frame) and the options every receiver builds
+// ai: FrontHalf with, read by the native setup (../gen/gen.mjs, a tree a variant) and the lab's opener
+// ai: (scripts/pages/gpu_open.mjs, whose self-test makes the references the native self-test is held to). net: that
+// ai: file's document (cnn/netfile.mjs loadNet). The caller adds precision, subgroups, backN, log, probe and twins.
+// ai: The cascade stays create's option for the lab (CASCADE).
+export const INSTALLED = Object.freeze({ classifier: CASCADE.weights });
+export const receiverOptions = (net) => ({ B: "auto", capMs: CAP_MS, inflight: "auto", cap: CAP, register: true, weights: net, back: "gpu" });
 
 // ai: INT8, the WGSL language feature the int8 nets need, is constants.mjs's (imported and re-exported above).
 export const PRECISIONS = ["int8", "f16", "f32"];
@@ -201,6 +204,9 @@ export class FrontHalf {
   // ai: fh.nets says what each net runs in.
   // ai: fh.boot: what create spent, ms: the device, the int8 twins fetched, the front half's pipelines (build), the
   // ai: probe kit and the back half (under B "auto" built here at B_CEIL, 2026-09-29), and the total.
+  // ai: The anchors (SPEC 6.13; wgsl/anchors.mjs) always: ANCH_FIND, ANCH_PREDICT, the border's second search,
+  // ai: ANCH_REFIT and ANCH_FIT after F7 (ANCH_FIND and ANCH_FIT alone in a told batch), pass 1 reading their records,
+  // ai: frames[i].anchors the anchors a frame read. The wasm back half's F9 reads no anchors (the C's finish erases them).
   static async create(adapter, tables, { B = "auto", budget = budgetFor(adapter?.limits), capMs = CAP_MS, restart = 0, cap = CAP, register = true, log = () => {}, weights = null, precision = "f32", cascade = null, inflight = "auto", back = "gpu", backN = 1024, subgroups = true, probe = false, twins = null } = {}) {
     if (back !== "wasm" && back !== "gpu") throw new Error(`back ${back}`);
     if (tables?.rings?.length !== RING_COUNT || tables.pictures?.length !== SLOTS) throw new Error(`tables: gpu/tables.mjs formatTables(), ${RING_COUNT} rings and ${SLOTS} pictures`);
@@ -544,7 +550,8 @@ export class FrontHalf {
     // Rounds of the node search: +-3 modules at half a module, one template sample a module; then +-0.6 at a
     // ai: fifth, all four. Each with every node's count of the light samples it takes (wgsl/register.mjs Round.light).
     if (nodes.length / 4 > LIGHT_MAX) throw new Error(`${nodes.length / 4} nodes over the rings, room for ${LIGHT_MAX}`);
-    this.rounds = [[6, SUB * SUB, 0.5], [3, 1, 0.2]].map(([steps, stride, step]) => {
+    // ai: a round's uniform (steps, stride, step), kept as a maker for the anchors' own round (buildAnchors)
+    this.roundOf = ([steps, stride, step]) => {
       const ab = new ArrayBuffer(64 + 4 * LIGHT_MAX), u = new Uint32Array(ab), fl = new Float32Array(ab);
       u.set([steps, stride]); fl[4] = step; u.set(count, 8); u.set(nbase, 12);
       for (let q = 0; q < nodes.length / 4; q++) {
@@ -554,11 +561,41 @@ export class FrontHalf {
       const b = d.createBuffer({ size: ab.byteLength, usage: U.UNIFORM | U.COPY_DST });
       d.queue.writeBuffer(b, 0, ab);
       return b;
-    });
+    };
+    this.rounds = [[6, SUB * SUB, 0.5], [3, 1, 0.2]].map(this.roundOf);
     const fitAb = new ArrayBuffer(48);
     new Uint32Array(fitAb).set(count, 0); new Uint32Array(fitAb).set(nbase, 4); new Float32Array(fitAb).set(this.modules, 8);
     this.fitUni = d.createBuffer({ size: 48, usage: U.UNIFORM | U.COPY_DST });
     d.queue.writeBuffer(this.fitUni, 0, fitAb);
+    await this.buildAnchors();
+  }
+
+  // ai: The anchors' stages (wgsl/anchors.mjs), once, from build(): ANCH_FIND, ANCH_PREDICT, the border's second search
+  // ai: (nodesC: wgsl/register.mjs nodesSource centred, on NODES' layout, with its own round, anchRound), ANCH_REFIT (ANCH_PREDICT
+  // ai: on its layout, so its group serves both), ANCH_FIT, their uniform (anchUni: each ring's knots, a, span and
+  // ai: margin).
+  async buildAnchors() {
+    if (this.anchFind) return;
+    const P = (code, entries) => this.pipeline(code, entries);
+    // ai: 0 to 6 the same in both: the frame texture, frames, maps, sel, resid, the lattice (F8's wordLatUni), anchUni;
+    // ai: then ANCH_FIND's anch (rw), ANCH_FIT's anch (ro), arec and result (rw)
+    // ai: ANCH_REFIT between them, on REFIT_POST's first seven (frames, nodes, sel, meas, maps, resid, fitUni; meas and
+    // ai: maps written too), the anchors' records (rw), the lattice and anchUni
+    const [anchFind, anchFit, anchRefit] = await Promise.all([
+      P(ANCH_FIND, ["tex", "ro", "ro", "ro", "ro", "uniform", "uniform", "rw"]),
+      P(ANCH_FIT, ["tex", "ro", "ro", "ro", "ro", "uniform", "uniform", "ro", "rw", "rw"]),
+      P(ANCH_REFIT, ["ro", "ro", "ro", "rw", "rw", "rw", "uniform", "rw", "uniform", "uniform"]),
+    ]);
+    const on = async (code, bgl) => ({ p: await computePipeline(this.device, { code, layout: this.device.createPipelineLayout({ bindGroupLayouts: [bgl] }) }), bgl });
+    const [anchPredict, nodesC] = await Promise.all([on(ANCH_PREDICT, anchRefit.bgl), on(nodesSource({ centred: true }), this.nodesP.bgl)]);
+    const au = anchUniform(this.tables.rings);
+    this.anchUni = this.device.createBuffer({ size: au.byteLength, usage: U.UNIFORM | U.COPY_DST });
+    this.device.queue.writeBuffer(this.anchUni, 0, au);
+    // ai: the border's second search's own round: +-0.4 module at a fifth, every template sample (F7's fine round's
+    // ai: +-0.6: 0.07% more blocks over the published lenses for 0.06 to 0.08 ms more of the S26's half; +-0.2 no
+    // ai: cheaper there and 0.22% fewer; one sample a module 4.2% fewer)
+    const anchRound = this.roundOf([2, 1, 0.2]);
+    Object.assign(this, { anchFind, anchPredict, nodesC, anchRound, anchFit, anchRefit });
   }
 
   // One lane: the buffers a batch writes, sized for B frames, and the bind groups over them that do not depend on
@@ -595,6 +632,10 @@ export class FrontHalf {
     ln.ldUni = d.createBuffer({ size: 80, usage: U.UNIFORM | U.COPY_DST });
     ln.measBuf = d.createBuffer({ size: 16 * NODES_MAX * B, usage: U.STORAGE | U.COPY_DST | U.COPY_SRC });
     ln.residBuf = d.createBuffer({ size: 16 * RESID * B, usage: U.STORAGE | U.COPY_DST | U.COPY_SRC });
+    // ai: The anchors (buildAnchors): ANCH_FIND's records (a vec4f an anchor) and ANCH_FIT's (ANCH_REC vec4f a frame,
+    // ai: which pass 1 reads). Every one a batch reads is written in it: no clear.
+    ln.anchBuf = d.createBuffer({ size: 16 * ANCH_K * B, usage: U.STORAGE | U.COPY_SRC });
+    ln.arecBuf = d.createBuffer({ size: 16 * ANCH_REC * B, usage: U.STORAGE | U.COPY_SRC });
     ln.refitDbg = d.createBuffer({ size: 4 * REFIT_DBG * B, usage: U.STORAGE | U.COPY_SRC | U.COPY_DST });
     ln.histBuf = d.createBuffer({ size: 4 * HIST_BINS * B, usage: U.STORAGE | U.COPY_DST | U.COPY_SRC });
     if (this.cascade) {
@@ -606,6 +647,10 @@ export class FrontHalf {
       .map((buffer, binding) => ({ binding, resource: { buffer } })) });
     ln.refitGroup = fitGroup(this.refit);
     ln.refitPostGroup = fitGroup(this.refitPost);
+    // ai: the anchors' refit (wgsl/anchors.mjs ANCH_REFIT): REFIT_POST's bindings but its debug, the anchors' records,
+    // ai: F8's lattice and the anchors' uniform; none is the texture, so it is made with the lane
+    ln.anchRefitGroup = d.createBindGroup({ layout: this.anchRefit.bgl, entries: [ln.framesBuf, this.nodesBuf, ln.selBuf, ln.measBuf,
+      ln.mapsBuf, ln.residBuf, this.fitUni, ln.anchBuf, this.wordLatUni, this.anchUni].map((buffer, binding) => ({ binding, resource: { buffer } })) });
     const pickGroup = (frames) => d.createBindGroup({ layout: this.pick.bgl, entries: [frames, ln.quadsBuf, ln.scoreBuf, ln.mapsBuf, ln.selBuf, ln.resultBuf, ln.pickUni]
       .map((buffer, binding) => ({ binding, resource: { buffer } })) });
     ln.pickGroup = pickGroup(ln.framesBuf);
@@ -691,7 +736,14 @@ export class FrontHalf {
       this.completeGroup2 = group(this.complete, [this.readingsBuf, this.quadsBuf, this.p5Uni], 7, this.lvEntries2);
       this.redoGroup = group(this.redo, [this.framesBuf, this.selBuf, this.frames2Buf, this.accBuf, this.readingsBuf, this.candBuf, this.quadsBuf, this.p5Uni]);
       this.nodesGroups = this.rounds.map((r) => group(this.nodesP, [this.nodesBuf, this.tmplBuf, this.mapsBuf, this.selBuf, this.measBuf, r], 7));
+      this.anchNodesGroup = group(this.nodesP, [this.nodesBuf, this.tmplBuf, this.mapsBuf, this.selBuf, this.measBuf, this.anchRound], 7);
       this.wordGroup = group(this.wordP, [this.mapsBuf, this.selBuf, this.residBuf, this.wordPtsBuf, this.resultBuf, this.wordUni, this.wordLatUni, this.heldUni], 7);
+      // ai: The anchors' two stages read the frame texture (binding 0), so their groups are made here with it.
+      {
+        const tex = [{ binding: 0, resource: this.texView }], common = [this.framesBuf, this.mapsBuf, this.selBuf, this.residBuf, this.wordLatUni, this.anchUni];
+        this.anchFindGroup = group(this.anchFind, [...common, this.anchBuf], 1, tex);
+        this.anchFitGroup = group(this.anchFit, [...common, this.anchBuf, this.arecBuf, this.resultBuf], 1, tex);
+      }
       this.pyrGroup = d.createBindGroup({ layout: this.pyramid.bgl, entries: [{ binding: 0, resource: this.texView }, { binding: 1, resource: { buffer: this.framesBuf } },
         ...this.level.map((lv, i) => ({ binding: 2 + i, resource: { buffer: lv.buf } })), { binding: 6, resource: { buffer: this.histBuf } }, { binding: 7, resource: { buffer: this.ldUni } }] });
       this.sampleGroup = null;
@@ -723,8 +775,9 @@ export class FrontHalf {
       this.sampleGroup = null;
     }
     // The fused pass 1's bind groups hold the texture's view, which the W, H branch above replaces.
+    // ai: arecBuf: the anchors' records, pass 1's binding 10.
     if (!this.sampled && this.backPicture !== this.texView) {
-      this.bh.bindPicture(this.backLane, { texView: this.texView, mapsBuf: this.mapsBuf, residBuf: this.residBuf });
+      this.bh.bindPicture(this.backLane, { texView: this.texView, mapsBuf: this.mapsBuf, residBuf: this.residBuf, arecBuf: this.arecBuf });
       this.backPicture = this.texView;
     }
     if (this.gridBuf && !this.sampleGroup) {
@@ -1077,6 +1130,9 @@ export class FrontHalf {
     d.pushErrorScope("validation");
     this.ensure(W, H, nmax, grid);
     const find = !maps;
+    // ai: The anchors' stages run behind F7's last round (anch); a batch with no F7 (told, or register off) runs
+    // ai: ANCH_FIND and ANCH_FIT alone, through the map it holds, so pass 1 has every frame's record.
+    const anch = find && this.register && this.rounds.length > 1;
     const G = this.slotsG;
     d.queue.writeBuffer(this.heldUni, 0, heldUniform(held));
     // Every slot's frame record is written, so a slot past nb (or a gate slot past B) reads as no frame.
@@ -1107,7 +1163,7 @@ export class FrontHalf {
     // ai: The finder's second round (wgsl/finder.mjs REDO) wherever it runs: the bank's levels below COARSE_FROM for the
     // ai: frames the first round did not find, and the finder again on those frames.
     const second = find && !inject;
-    const STAGES = ["pyramid", "bank", "select", "describe", "vote", "score", ...(second ? ["find2"] : []), ...this.rounds.flatMap((_, r) => [`nodes${r + 1}`, `refit${r + 1}`]), "word", ...(grid ? ["sample"] : []), ...(this.bh ? BACK_PASSES : [])];
+    const STAGES = ["pyramid", "bank", "select", "describe", "vote", "score", ...(second ? ["find2"] : []), ...this.rounds.flatMap((_, r) => [`nodes${r + 1}`, `refit${r + 1}`]), ...(anch ? [] : ["anchors"]), "word", ...(grid ? ["sample"] : []), ...(this.bh ? BACK_PASSES : [])];
     if (profile && this.qs && this.qs.count < 2 * STAGES.length) { this.qs.destroy(); this.qs = d.createQuerySet({ type: "timestamp", count: 2 * STAGES.length }); this.qsBuf.destroy(); this.qsBuf = d.createBuffer({ size: 8 * 2 * STAGES.length, usage: U.QUERY_RESOLVE | U.COPY_SRC }); }
     const pair = (k) => (this.qs ? { timestampWrites: { querySet: this.qs, beginningOfPassWriteIndex: 2 * k, endOfPassWriteIndex: 2 * k + 1 } } : {});
     // ai: Each slot's crop from its ring layer into the lane's layer i (1.2 MB at 1080, about 0.1 ms a batch): no
@@ -1186,6 +1242,23 @@ export class FrontHalf {
         // ai: the last round's residuals, lens and side fits (REFIT_POST), in its refit's profile pass: REFIT's own tail
         // ai: until 2026-10-21, which ran in every round but the first (m0[13] != 0)
         if (this.rounds.length > 1) step(this.refitPost, this.refitPostGroup, nb);
+        // ai: the anchors' arm (wgsl/anchors.mjs), in the same pass: ANCH_FIND a workgroup per (anchor, frame), then
+        // ai: ANCH_PREDICT (the border's places from the anchors), the border searched again about them (nodesC on its own
+        // ai: round, a workgroup a node), ANCH_REFIT (the lens refitted over the border and the anchors) and ANCH_FIT, a
+        // ai: workgroup a frame each
+        if (anch) {
+          step(this.anchFind, this.anchFindGroup, ANCH_K, nb);
+          step(this.anchPredict, this.anchRefitGroup, nb);
+          step(this.nodesC, this.anchNodesGroup, this.nodesMax, nb);
+          step(this.anchRefit, this.anchRefitGroup, nb);
+          step(this.anchFit, this.anchFitGroup, nb);
+        }
+      }
+    }
+    if (!anch) {
+      begin("anchors");
+      for (const [pl, group, x] of [[this.anchFind, this.anchFindGroup, ANCH_K], [this.anchFit, this.anchFitGroup, 1]]) {
+        pass.setPipeline(pl.p); pass.setBindGroup(0, group); pass.dispatchWorkgroups(x, nb);
       }
     }
     // ai: F8 on every frame the finder found or the host told: the word through the final map, a workgroup a frame,
@@ -1222,7 +1295,8 @@ export class FrontHalf {
     // Debug: the finder's intermediate buffers, read back separately (never on a timed path).
     let dbg = null;
     if (debug && find) {
-      const parts = [["readings", this.readingsBuf], ["cand", this.candBuf], ["quads", this.quadsBuf], ["score", this.scoreBuf], ["result", this.resultBuf], ["meas", this.measBuf], ["resid", this.residBuf], ["maps", this.mapsBuf], ["refit", this.refitDbg]];
+      const parts = [["readings", this.readingsBuf], ["cand", this.candBuf], ["quads", this.quadsBuf], ["score", this.scoreBuf], ["result", this.resultBuf], ["meas", this.measBuf], ["resid", this.residBuf], ["maps", this.mapsBuf], ["refit", this.refitDbg],
+        ["anch", this.anchBuf], ["arec", this.arecBuf]];
       const size = parts.reduce((a, [, b]) => a + b.size, 0);
       dbg = { buf: d.createBuffer({ size, usage: U.MAP_READ | U.COPY_DST }), parts };
       let o = 0;
@@ -1298,6 +1372,8 @@ export class FrontHalf {
         const n = size >= 0 ? this.tables.pictures[size].n : 0, sampled = version > 0 && (!find || r[0] === 1);
         return {
         ring, version, n, size, held: r[30] === 1, sampled, finder: find ? { found: r[0], score: r[1], ring: r[2], orient: r[3], quad: r[4], H: r.slice(8, 17), corners: r.slice(17, 25), depths: r.slice(25, 29) } : null,
+        // ai: the anchors ANCH_FIT counted on the frame (result word 31; 0 where it was not found)
+        anchors: r[31],
         // ai: F8's reading (wgsl/word.mjs): the version and rate the band states and the best word's soft score, null
         // ai: when no word was taken.
         word: r[5] > 0 ? { version: r[5], fps: r[6], score: r[7] } : null,

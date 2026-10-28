@@ -10,7 +10,7 @@ import { DEFAULT_LOG2 } from "../liblizard/sim/xfer.mjs";
 import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor } from "../liblizard/sim/lizard_pick.mjs";
 import { GAP_MODULES } from "../liblizard/gpu/encoder.mjs";
 import { bundle } from "./tar.mjs";
-import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, collapser, sideResizer, icon, sayName } from "./ui.mjs";
+import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, collapser, sideResizer, icon, sayName, nameParts } from "./ui.mjs";
 
 // The room a format needs holds the codec's margin (src/focus.h FOCUS_QUIET), and only the codec knows it.
 await initOb();
@@ -730,28 +730,28 @@ function madeFor(m) {
   p.sent = m.sent;
   if (!running) showReady();
 }
-// ai: The list over <main> (#pick) while the selection holds something and no send paints, the hint while it holds
-// ai: nothing: a row an item (its icon, its name, "N files · size" for a folder or its size, Remove), then Add files,
-// ai: Add a folder and Clear.
+// ai: The file upload over <main> (#pick, 2026-10-26, LocalSend's geometry) while no send paints and the payload is a
+// ai: file: the File and Folder tiles, and under them, while the selection holds something, its card (#sel): the count
+// ai: with Clear (the state line says the size), then a square an item (its icon, its name with the stem cut and the ending kept, "N files" for
+// ai: a folder or its size, an x that removes it).
 function renderPick() {
-  const list = $("pickList");
-  list.replaceChildren(...items.map((it) => {
-    const li = document.createElement("li"), lead = document.createElement("span"), body = document.createElement("span");
-    const t = document.createElement("span"), sub = document.createElement("span"), rm = document.createElement("button");
-    li.className = "item";
-    lead.className = "lead"; lead.append(icon(it.dir ? "folder" : "file"));
-    body.className = "body"; t.className = "t"; t.textContent = it.name; t.title = it.name; sub.className = "s";
-    sub.textContent = it.dir ? `${it.files} ${it.files === 1 ? "file" : "files"} · ${bytes(it.size)}` : bytes(it.size);
-    body.append(t, sub);
-    rm.type = "button"; rm.className = "btn icon"; rm.title = `Remove ${it.name}`; rm.append(icon("x"));
+  $("selSum").textContent = `${items.length} ${items.length === 1 ? "item" : "items"}`;
+  $("pickList").replaceChildren(...items.map((it) => {
+    const li = document.createElement("li"), t = document.createElement("span"), stem = document.createElement("span");
+    const end = document.createElement("span"), sub = document.createElement("span"), rm = document.createElement("button");
+    const [a, b] = nameParts(it.name);
+    li.className = "itile";
+    t.className = "t fname"; t.title = it.name; stem.className = "stem"; stem.textContent = a; end.textContent = b; t.append(stem, end);
+    sub.className = "s"; sub.textContent = it.dir ? `${it.files} ${it.files === 1 ? "file" : "files"}` : bytes(it.size);
+    rm.type = "button"; rm.className = "icon x"; rm.title = `Remove ${it.name}`; rm.append(icon("x"));
     rm.onclick = (e) => { e.stopPropagation(); remove(it.key); };
-    li.append(lead, body, rm);
+    li.append(icon(it.dir ? "folder" : "file"), t, sub, rm);
     return li;
   }));
 }
 function showChoice(painting) {
-  $("hint").hidden = painting || isTest() || items.length > 0;
-  $("pick").hidden = painting || isTest() || items.length === 0;
+  $("pick").hidden = painting || isTest();
+  $("sel").hidden = items.length === 0;
   renderPick();
 }
 // ai: An input's files are taken as they are picked and the input emptied, so the same pick again is a new pick. Each
@@ -788,8 +788,7 @@ async function takeShared() {
   if (got.length) add(got);
 }
 const canFolders = "webkitdirectory" in $("folder");
-$("orFolder").hidden = $("addFolder").hidden = !canFolders;
-$("folderBtn").onclick = (e) => { e.stopPropagation(); $("folder").click(); };
+$("addFolder").hidden = !canFolders;
 $("addFiles").onclick = (e) => { e.stopPropagation(); $("file").click(); };
 $("addFolder").onclick = (e) => { e.stopPropagation(); $("folder").click(); };
 $("clearPick").onclick = (e) => { e.stopPropagation(); clearPick(); };
@@ -853,12 +852,11 @@ $("fs").onclick = enterFull;
 // ai: the sidebar collapser (ui.mjs): <main> grows, and the ResizeObserver re-picks as for Fullscreen
 collapser($("collapse"), "send:collapsed");
 sideResizer("send:side");   // ai: the column's edge dragged to resize it (2026-10-05); <main> re-picks as for a resized window
-// ai: A tap on the middle, while its hint asks for a file, opens the picker (the page's only one). In full screen it
-// ai: does nothing (2026-10-24, owner: "clicking on the sender should not remove fullscreen"), except in the fallback,
-// ai: body.full with no browser full screen behind it, where a phone has no Escape and the tap is the only way back.
+// ai: A tap on the code in full screen does nothing (2026-10-24), except in the fallback, body.full with no browser full
+// ai: screen behind it, where a phone has no Escape and the tap is the only way back. The File tile opens the picker
+// ai: (until 2026-10-26 a tap on the middle did).
 main.addEventListener("click", () => {
-  if (document.body.classList.contains("full")) { if (!fsElement()) leaveFull(); }
-  else if (!$("hint").hidden) $("file").click();
+  if (document.body.classList.contains("full") && !fsElement()) leaveFull();
 });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.body.classList.contains("full")) leaveFull(); });
 // ai: Keys as video players have them (2026-10-23): Space, K or the media key play and pause (playPause), F full screen

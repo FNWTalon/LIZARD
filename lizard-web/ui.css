@@ -150,6 +150,25 @@ button.item{width:100%;justify-content:flex-start;padding:8px 0;font-weight:400;
 .item .t{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .item .s{font-size:14px;color:var(--muted)}
 .lead{display:grid;place-items:center;width:40px;height:40px;border-radius:10px;background:var(--soft);flex:none}
+/* ai: The senders' file upload (2026-10-26, LocalSend's geometry; the apps' Parts the same): .tile a button 104 px tall,
+   an icon over one word; .sel the selection's card, its count and Clear on one line over its items (.itile: the icon,
+   the name with its stem cut and its ending kept, the size, an x at its corner). The tiles share one row across the
+   width, always; the items are a grid stretched across it, 104 px the narrowest before one folds to the next row, a
+   short last row keeping the columns' width (auto-fill). */
+.tiles{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:12px}
+.tile{flex-direction:column;gap:8px;width:100%;height:104px;padding:0;border-radius:12px;font-weight:500}
+.tile svg.i{width:32px;height:32px}
+.sel{padding:4px 12px 12px;border-radius:12px;background:var(--card)}
+.sel>.head{display:flex;align-items:center;gap:8px;min-height:40px;padding-left:4px}
+.sel>.head>span{flex:1 1 auto;min-width:0;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.items{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:8px;margin:4px 0 0;padding:0;list-style:none}
+.itile{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-width:0;
+  height:104px;padding:8px;border-radius:12px;background:var(--bg)}
+.itile>svg.i{width:28px;height:28px;margin-bottom:4px;color:var(--muted)}
+.itile .t{max-width:100%;font-size:13px;font-weight:500;line-height:1.3}
+.itile .s{font-size:12px;color:var(--muted);white-space:nowrap}
+.itile .x{position:absolute;top:2px;right:2px;width:28px;min-width:28px;height:28px;min-height:28px;padding:0;background:transparent}
+.itile .x svg.i{width:16px;height:16px}
 /* ai: The received files (home.mjs): the row opens its file; the more icon's menu holds Open, Save, Share, Delete. */
 .files .name{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500;text-decoration:none}
 .files .meta{display:block;overflow:hidden;text-overflow:ellipsis;font-weight:400;font-size:14px;color:var(--muted)}

@@ -7,7 +7,7 @@
 //
 //   const bh = await BackHalf.build(device, { B, sizes, precision, picture });
 //   const ln = bh.lane({ framesBuf, selBuf });   // one a lane in flight
-//   bh.bindPicture(ln, { texView, mapsBuf, residBuf });   // pass 1 samples the frame itself
+//   bh.bindPicture(ln, { texView, mapsBuf, residBuf, arecBuf });   // pass 1 samples the frame itself (arecBuf: the anchors' records)
 //   bh.encode(enc, ln, { ts });   // or bh.encode(pass, ln) inside an open compute pass
 //   bh.readback(enc, ln, readBuf, offset); ... parseReadback(mapped, offset, bh.dims)
 import { Transform, transformTables, TRANSFORM_DOWN } from "./transform.mjs";
@@ -86,6 +86,7 @@ export class BackHalf {
 
   // The fused pass 1 over the front half's frame texture view (2d-array, a frame a layer), maps and residuals. Call
   // again whenever the front half replaces the texture.
+  // ai: picture.arecBuf: the front half's anchors records (SPEC 6.13).
   bindPicture(ln, picture) { this.transform.bindPicture(ln, picture); }
 
   // ai: The chain's six dispatches in order (PASSES). target: a GPUCommandEncoder (a compute pass a stage, a timestamp

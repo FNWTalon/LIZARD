@@ -153,8 +153,10 @@ std::string GpuPainter::configure(int subch, int span, int fps, int frames, int 
         d.upload(*TAPS_, 0, t.taps.data(), 4 * t.taps.size());
         BORDER_ = d.createBuffer(t.border.size(), STORAGE | COPY_DST, "send BORDER", false);
         d.upload(*BORDER_, 0, t.border.data(), t.border.size());
-        GU_ = d.createBuffer(48, UNIFORM | COPY_DST, "send GU", false);
+        // ai: G and the anchors' 8 words after it (rsh reads 80 B, the other stages 48)
+        GU_ = d.createBuffer(48 + 4 * t.anch.size(), UNIFORM | COPY_DST, "send GU", false);
         d.writeBuffer(*GU_, 0, t.g.data(), 48);
+        d.writeBuffer(*GU_, 48, t.anch.data(), 4 * t.anch.size());
         gPaint_ = d.createBindGroup(bglPaint_, {BLOCKS_, TAB_, UV_, S_, PU_});
         gIrows_ = d.createBindGroup(bglIrows_, {S_, TW_, Y_, ROWS_, SU_});
         gIpic_ = d.createBindGroup(bglIpic_, {Y_, TW_, PQT_, SU_});
@@ -239,6 +241,8 @@ GpuPainter::Check GpuPainter::check(const uint8_t* blocks, int count) {
   std::vector<std::vector<uint8_t>> got(frames_);
   std::vector<float> drive(static_cast<size_t>(f_.px) * f_.px);
   std::vector<uint8_t> rgba(static_cast<size_t>(t.W) * t.W * 4);
+  // ai: a symbol's row or column on one of the anchors' runs (send_tables.h anch): a pixel on both is an anchor's
+  auto onRun = [&](int v) { for (int i = 0; i < 7; i++) if (static_cast<uint32_t>(v) - t.anch[i] < t.anch[7]) return true; return false; };
   for (int f0 = 0; f0 < count; f0 += frames_) {
     const int k = std::min(frames_, count - f0);
     encode(blocks + f0 * perFrame, k, f0 & 3, got.data());
@@ -249,11 +253,16 @@ GpuPainter::Check GpuPainter::check(const uint8_t* blocks, int count) {
         focus_encode(&f_, blocks + (f0 + i) * perFrame + cd * per, drive.data());
         focus_paint_rgba(&f_, drive.data(), rgba.data());
         const int x0 = cd * (t.W + t.gap);
-        for (int y = 0; y < t.W; y++) for (int x = 0; x < t.W; x++) {
-          const int dv = std::abs(int(got[i][static_cast<size_t>(y) * t.FW + x0 + x]) - int(rgba[4 * (static_cast<size_t>(y) * t.W + x)]));
-          if (!dv) continue;
-          if (x >= t.sq && x < t.sq + t.q && y >= t.sq && y < t.sq + t.q) { c.squareDiff++; c.squareMax = std::max(c.squareMax, dv); }
-          else c.borderDiff++;
+        for (int y = 0; y < t.W; y++) {
+          const bool ra = onRun(y);
+          for (int x = 0; x < t.W; x++) {
+            const uint8_t g = got[i][static_cast<size_t>(y) * t.FW + x0 + x];
+            const int dv = std::abs(int(g) - int(rgba[4 * (static_cast<size_t>(y) * t.W + x)]));
+            if (ra && onRun(x)) { c.anchorPx++; c.anchorDark += g == 0; c.anchorDiff += dv != 0; continue; }
+            if (!dv) continue;
+            if (x >= t.sq && x < t.sq + t.q && y >= t.sq && y < t.sq + t.q) { c.squareDiff++; c.squareMax = std::max(c.squareMax, dv); }
+            else c.borderDiff++;
+          }
         }
         if (cd + 1 < t.codes) for (int y = 0; y < t.W; y++) for (int x = 0; x < t.gap; x++)
           if (got[i][static_cast<size_t>(y) * t.FW + x0 + t.W + x] != rgba[4 * (static_cast<size_t>(y) * t.W + t.W - 1)]) c.borderDiff++;
@@ -261,7 +270,7 @@ GpuPainter::Check GpuPainter::check(const uint8_t* blocks, int count) {
     }
   }
   focus_parity(&f_, 0);
-  c.ok = c.borderDiff == 0 && c.squareMax <= 1;
+  c.ok = c.borderDiff == 0 && c.squareMax <= 1 && c.anchorDiff == 0;
   return c;
 }
 

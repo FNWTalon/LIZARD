@@ -88,7 +88,7 @@ if(EMSCRIPTEN)
       _ob_test_mesh_tables_out _ob_test_fmt_plan _ob_test_fmt_cells _ob_test_thin_plan _ob_test_thin_score_out
       _ob_test_finder_out _focus_rx_acquire _focus_rx_acquire_quad _focus_rx_finish _focus_shape _focus_pos_ptr
       _focus_tables_out _focus_rx_ldpc _focus_block_subs _focus_ldpc_tables _focus_tiers_for _focus_set_axis _focus_set_lens
-      _focus_lens_set _focus_fmt_check_out _focus_fmt_soft_out _focus_grid_out _ob_test_crc_hash
+      _focus_lens_set _focus_anchors_found _focus_anchor_geom_get _focus_fmt_check_out _focus_fmt_soft_out _focus_grid_out _ob_test_crc_hash
       _ob_test_crc_gate_out _ob_dbg_hash _stream_fill _xfer_layout _xfer_id_of _xfer_kind_of _xfer_hdr_write _xfer_hdr_parse
       _xfer_mf_parse _xfer_chunk_ok _xfer_manifest_blocks _xfer_manifest_write _xfer_manifest_check _xfer_root
       _xfer_chunk_cv _xfer_b3_hash _xfer_b3_sub

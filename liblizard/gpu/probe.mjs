@@ -108,10 +108,13 @@ export class Probe {
       ["maps", ln.mapsBuf, per(ln.mapsBuf), Float32Array],
       // ai: F7's working: meas (a node: image x, y, correlation, 1 where measured), resid after the side fits (a node:
       // ai: the fitted residual x, y, then the measured residual x, y) and REFIT's debug words (wgsl/register.mjs
-      // ai: REFIT_DBG, 63 floats a frame: the first iteration's theta 0-8, normal matrix 9-53 and gradient 54-62), so a
+      // ai: REFIT_DBG, 52 floats a frame: the first iteration's theta 0-7, normal matrix 8-43 and gradient 44-51), so a
       // ai: frame's registration can be held against another's.
       ["meas", ln.measBuf, per(ln.measBuf), Float32Array], ["resid", ln.residBuf, per(ln.residBuf), Float32Array], ["refit", ln.refitDbg, per(ln.refitDbg), Float32Array],
       ...(ln.logitBuf ? [["logits", ln.logitBuf, per(ln.logitBuf), Float32Array]] : []), ...(ln.listBuf ? [["list", ln.listBuf, per(ln.listBuf), Uint32Array]] : []),
+      // ai: the anchors' arm, where it is on (wgsl/anchors.mjs): ANCH_FIND's record an anchor (ANCH_REFIT's where it
+      // ai: refitted the frame) and ANCH_FIT's a frame
+      ["anch", ln.anchBuf, per(ln.anchBuf), Float32Array], ["arec", ln.arecBuf, per(ln.arecBuf), Float32Array],
       ...(score2 ? [["score2", score2, 4 * HYP, Float32Array], ["scoreDbg", dbg, 16 * 8 * HYP, Float32Array]] : [])];
     let off = 0;
     const at = parts.map(([, , bytes]) => { const o = off; off += bytes * nb; return o; });

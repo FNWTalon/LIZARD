@@ -293,6 +293,17 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   qci.queueFamilyIndex = d->family;
   qci.queueCount = d->twoQueues ? 2 : 1;
   qci.pQueuePriorities = prio;
+  // ai: the global priority LOW (DeviceExtras::lowPriority): the KHR extension's struct, which the EXT's aliases
+  VkDeviceQueueGlobalPriorityCreateInfoKHR gpri{VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR};
+  gpri.globalPriority = VK_QUEUE_GLOBAL_PRIORITY_LOW_KHR;
+  if (extras.lowPriority) {
+    const char* gx = has(VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME) ? VK_KHR_GLOBAL_PRIORITY_EXTENSION_NAME : has(VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME) ? VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME : nullptr;
+    if (gx) {
+      if (!enabledHas(gx)) enable.push_back(gx);
+      qci.pNext = &gpri;
+      d->lowPriority = true;
+    }
+  }
   VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
   dci.pNext = &e2;
   dci.queueCreateInfoCount = 1;
@@ -312,9 +323,10 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   check(vkCreatePipelineCache(d->dev, &pci, nullptr, &d->cache), "vkCreatePipelineCache");
 
   char line[512];
-  snprintf(line, sizeof line, "device %s (Vulkan %u.%u.%u%s%s): f16 %d, int8 %d, dot %d, subgroup shuffle %d (size %u), zero-init %d, ingest ycbcr %d r8 %d timeline %d ahb %d, queues %d, timestamps %d (%.3f ns a tick); shared memory %u B, storage range %llu MB, buffer %llu MB, device memory %llu MB",
+  snprintf(line, sizeof line, "device %s (Vulkan %u.%u.%u%s%s): f16 %d, int8 %d, dot %d, subgroup shuffle %d (size %u), zero-init %d, ingest ycbcr %d r8 %d timeline %d ahb %d, queues %d%s, timestamps %d (%.3f ns a tick); shared memory %u B, storage range %llu MB, buffer %llu MB, device memory %llu MB",
            d->name.c_str(), VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion), d->driver.empty() ? "" : ", ", d->driver.c_str(),
-           F.f16, F.int8, F.dot, F.subgroupShuffle, F.subgroupSize, F.zeroInit, F.ycbcr, F.storageR8, F.timeline, F.ahb, d->twoQueues ? 2 : 1, F.timestamps, d->timestampPeriod, L.maxComputeSharedMemorySize,
+           F.f16, F.int8, F.dot, F.subgroupShuffle, F.subgroupSize, F.zeroInit, F.ycbcr, F.storageR8, F.timeline, F.ahb, d->twoQueues ? 2 : 1,
+           d->lowPriority ? " at low priority" : extras.lowPriority ? " (no global priority here: the default)" : "", F.timestamps, d->timestampPeriod, L.maxComputeSharedMemorySize,
            (unsigned long long)(L.maxStorageBufferRange >> 20), (unsigned long long)(L.maxBufferSize >> 20), (unsigned long long)(L.deviceLocalBytes >> 20));
   d->log(line);
   return d;

@@ -21,6 +21,8 @@
 // ai:       a code a frame, and meta.json), which lizard_gpu_check replay reads (2026-10-07, the GPU's rate profile)
 // ai:   LIZ_SPAN=<2 B> tx_check paint ...   the symbols in ring B (2026-10-10; 128, the 64 ring's, unset): 512 the 256 ring
 // ai:   LIZ_TYPE=<media type> tx_check paint <file> ...   the header carries that type, as the apps' files do (2026-10-10)
+// ai:   tx_check gpucheck ...   the GPU's frames against the C's: the anchors' squares (SPEC 6.13) to the byte besides
+// ai:   the border, their pixels and the dark ones counted
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -45,6 +47,7 @@
 #include "xfer_tx.h"
 
 extern "C" {
+#include "focus.h"
 #include "shake.h"
 }
 
@@ -261,13 +264,15 @@ int main(int argc, char** argv) {
     std::unique_ptr<GpuPainter> g;
     try { g = GpuPainter::create(assets(), [](const std::string& m) { printf("%s\n", m.c_str()); }); }
     catch (const std::exception& e) { printf("FAIL no GPU painter: %s\n", e.what()); return 1; }
-    const std::string ce = g->configure(subch, 2 * FOCUS_RING[ring], 60, 4, codes);
+    const std::string ce = g->configure(subch, 2 * FOCUS_RING[ring], 60, 4, codes, GAP_MODULES, 0, 0, 0, false);
     if (!ce.empty()) { printf("FAIL configure: %s\n", ce.c_str()); return 1; }
     const int V = subch / 8 * codes, R = g->frames();
     const auto blocks = testBlocks(std::max(frames, R), V);
     const auto c = g->check(blocks.data(), frames);
-    printf("check, %d frames of LIZARD-%d x %d in the %d ring on %s: border %ld pixels apart, the square %ld pixels apart, at most %d levels: %s\n",
-           frames, subch, codes, FOCUS_RING[ring], g->device().c_str(), c.borderDiff, c.squareDiff, c.squareMax, c.ok ? "ok" : "FAILED");
+    char an[160] = "";
+    snprintf(an, sizeof an, ", the anchors %ld pixels (%ld dark) %ld apart", c.anchorPx, c.anchorDark, c.anchorDiff);
+    printf("check, %d frames of LIZARD-%d x %d in the %d ring on %s: border %ld pixels apart, the square %ld pixels apart, at most %d levels%s: %s\n",
+           frames, subch, codes, FOCUS_RING[ring], g->device().c_str(), c.borderDiff, c.squareDiff, c.squareMax, an, c.ok ? "ok" : "FAILED");
     std::vector<std::vector<uint8_t>> out(R);
     double gpu = 0, wall = 0;
     const int encodes = 16;
@@ -303,8 +308,8 @@ int main(int argc, char** argv) {
     const int subch = atoi(argv[2]), frames = argc > 3 ? atoi(argv[3]) : 32;
     Sender s(nullptr, 0, "", "");
     TxFormat f;
-    f.subch = subch; f.span = 128; f.fps = 60; f.threads = 1;
-    if (!s.configure(f).empty()) return 1;
+    f.subch = subch; f.span = 128; f.fps = 60; f.threads = 1; f.assets = assets();
+    if (const std::string e = s.configure(f); !e.empty()) { fprintf(stderr, "bench: %s\n", e.c_str()); return 1; }
     std::vector<uint8_t> rgba(static_cast<size_t>(s.side()) * s.side() * 4);
     const double t0 = nowMs();
     for (int k = 0; k < frames; k++) while (!s.take(rgba.data(), s.side() * 4)) std::this_thread::sleep_for(std::chrono::microseconds(100));

@@ -7,7 +7,9 @@
 // ai:     every frame then staged (since 2026-10-08: nothing held back to fill a batch), two in flight, finishes them,
 // ai:     keeps the held word, and hands each frame's verified blocks to the transfer.
 #include "receiver.h"
+#include "develop.h"
 #include "crops.h"
+#include "stream.h"
 #include "replay.h"
 #include "front.h"
 #include "camera.h"
@@ -28,6 +30,17 @@
 #include <vector>
 
 namespace lizard {
+
+CameraFrame developedOnCpu(const CameraFrame& f) {
+  if (!f.raw) return f;
+  thread_local std::vector<uint8_t> luma;
+  luma.resize((size_t)f.width * f.height);
+  developLuma(*f.raw, 0, 0, f.width, f.height, luma.data(), f.width);
+  CameraFrame g = f;
+  g.raw = nullptr; g.hb = nullptr;
+  g.luma = luma.data(); g.stride = f.width;
+  return g;
+}
 
 namespace {
 
@@ -159,7 +172,8 @@ class GpuReceiver : public Receiver {
   float lensNow[4] = {0, 0, 0, 0};   // ai: the newest frame's lens report (CameraFrame::lens), for the replay's GPU-kept frames; under mu
   // ai: fresh: data ids new to the dedupe (the series' and the lock's); useful: what goodputKBs counts (rateFold)
   // ai: bx0..by1: the box of the codes found in the window, camera pixels from the frame's centre (the app's focus region)
-  struct Win { int arrived = 0, dropped = 0, processed = 0, found = 0, words = 0, test = 0; long blocks = 0, fresh = 0, useful = 0; double gpuMs = 0, gpuFrames = 0, side = 0, held = 0, heldMax = 0; int heldN = 0; double bx0 = 1e30, by0 = 1e30, bx1 = -1e30, by1 = -1e30; } win, last;
+  // ai: anchors: the anchors each frame the GPU's finder found read
+  struct Win { int arrived = 0, dropped = 0, processed = 0, found = 0, words = 0, test = 0; long blocks = 0, fresh = 0, useful = 0; double gpuMs = 0, gpuFrames = 0, side = 0, held = 0, heldMax = 0; int heldN = 0; double bx0 = 1e30, by0 = 1e30, bx1 = -1e30, by1 = -1e30; std::vector<int> anchors; } win, last;
   uint64_t takenSeen = 0;   // ai: the transfer's taken() at the last window's close, or at its opening
   double winStart = 0;
   // ai: the window's stream (receiver.h cameraClosed): stream counts the camera's closes, and a frame's figures go to
@@ -206,7 +220,9 @@ bool GpuReceiver::start(std::string& why, bool software) {
   // ai: LIZ_VK_DEVICE (a substring of a device's name) picks the device on a machine with several, as the check
   // ai: tools take it; unset on a phone. Before 2026-09-30 the receiver took the first device whatever it named, so
   // ai: `receive` on the desktop ran on the 4090 under LIZ_VK_DEVICE=AMD.
-  dev = wg::Device::create(!cfg.device.empty() ? cfg.device : getenv("LIZ_VK_DEVICE") ? getenv("LIZ_VK_DEVICE") : "", false, log);
+  wg::DeviceExtras ex;
+  ex.lowPriority = cfg.yieldGpu;
+  dev = wg::Device::create(!cfg.device.empty() ? cfg.device : getenv("LIZ_VK_DEVICE") ? getenv("LIZ_VK_DEVICE") : "", false, log, ex);
   // ai: A device of type CPU (lavapipe, SwiftShader) runs the kernels as threads on the cores the C decodes on, slower
   // ai: by far: auto takes the C there, before any pipeline is built (2026-10-25: the PC receiver's auto on a machine
   // ai: whose one Vulkan device is llvmpipe, the Windows test VM's, took 11.6 s for a batch of one frame and the screen
@@ -287,7 +303,8 @@ void GpuReceiver::push(const CameraFrame& f) {
   uint64_t ready = 0;
   for (int k = 0; k < crops; k++) {
     try {
-      if (f.hb && ci) got[k] = fh->enqueueCamera(*ci, f.hb, cx[k], cy[k], side, side, f.tag);
+      if (f.raw) got[k] = fh->enqueueRaw(*f.raw, cx[k], cy[k], side, side, f.tag);
+      else if (f.hb && ci) got[k] = fh->enqueueCamera(*ci, f.hb, cx[k], cy[k], side, side, f.tag);
       else if (f.luma) got[k] = fh->enqueueLuma(f.luma + (size_t)cy[k] * f.stride + cx[k], side, side, f.stride, f.tag);
       if (got[k]) { float a[2]; axisOf(f, cr, k, a); got[k]->axis = axisWord(a[0], a[1]); }
     } catch (const std::exception& e) {
@@ -298,7 +315,7 @@ void GpuReceiver::push(const CameraFrame& f) {
   }
   if (!got[0] && !got[1]) { { std::lock_guard<std::mutex> l(mu); win.dropped++; } drop(f.tag); return; }
   // ai: the camera's buffer back once the last of its ingests has run (they complete in order on their queue); a
-  // ai: luma frame was copied into the slots' staging, so its buffer is free at once
+  // ai: luma or raw frame was copied into the slots' staging, so its buffer is free at once
   if (ready) { std::lock_guard<std::mutex> l(relMu); toRelease.push_back({ready, f.tag, now}); relCv.notify_one(); }
   else drop(f.tag);
   std::lock_guard<std::mutex> l(mu);
@@ -470,6 +487,7 @@ void GpuReceiver::deliver(BatchOut& out, const Kept& k) {
       win.processed++;
       win.found += fo.finder.found == 1;
       if (fo.finder.found == 1) win.side += sideOf(fo.finder.corners.data());
+      if (fo.finder.found == 1) win.anchors.push_back(fo.anchors);
       // ai: the code's corners from the frame's centre: the crop's corners less its axis point (the axis word: half
       // ai: pixels each + 32768; 0 the crop's centre)
       if (fo.finder.found == 1) {
@@ -532,6 +550,14 @@ std::string GpuReceiver::stats() {
   auto p = xfer->progress();
   std::lock_guard<std::mutex> l(mu);
   const double n = std::max(1, lastFrames);
+  // ai: the median of the anchors read over the last window's found frames (0 where it found none)
+  json anchors;
+  {
+    std::vector<int> a = last.anchors;
+    std::sort(a.begin(), a.end());
+    const size_t k = a.size();
+    anchors = k ? (k % 2 ? (double)a[k / 2] : 0.5 * (a[k / 2 - 1] + a[k / 2])) : 0.0;
+  }
   json j = {
     // ai: the test stream in the last window's frames comes first (2026-10-05): what the camera reads now is the state, over
     // ai: a file received or in progress, which comes back once the camera is on its frames again
@@ -542,7 +568,7 @@ std::string GpuReceiver::stats() {
     {"codeBox", last.bx1 > last.bx0 ? json::array({last.bx0, last.by0, last.bx1, last.by1}) : json()},
     {"heldMs", last.heldN ? last.held / last.heldN : 0}, {"heldMaxMs", last.heldMax}, {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.useful * 469 / 1000.0 / lastSecs},
     {"gpuMs", last.gpuFrames ? last.gpuMs / last.gpuFrames : 0}, {"B", fh ? batchSize : 0}, {"cap", cap.load()},
-    {"bandVersion", lastWord.is_null() ? json() : lastWord["version"]}, {"word", lastWord},
+    {"bandVersion", lastWord.is_null() ? json() : lastWord["version"]}, {"word", lastWord}, {"anchors", anchors},
     {"totals", {{"frames", totalFrames}, {"blocks", totalBlocks}}}, {"series", stamps.series},
     // ai: a file only once a header named one: the page reads a file's presence as a transfer under way; type, the
     // ai: header's media type, is what the app opens and shares the file as (2026-10-01)
@@ -639,7 +665,8 @@ CpuReceiver::CpuReceiver(const ReceiverConfig& c, std::function<void(uint64_t)> 
       (gpuWhy.empty() ? "" : " (no GPU decoder: " + gpuWhy + ")"));
 }
 
-void CpuReceiver::push(const CameraFrame& f) {
+void CpuReceiver::push(const CameraFrame& in) {
+  const CameraFrame f = developedOnCpu(in);
   const double t = now();
   int lost = 0;
   std::shared_ptr<Replay> r;
@@ -750,6 +777,8 @@ std::string CpuReceiver::stats() {
 // ai: why it is not the GPU's goes to the C's stats as gpuWhy ("a software Vulkan device: llvmpipe (...)"). transfer:
 // ai: the one to go on with (create's from), null for one of its own.
 static std::unique_ptr<Receiver> made(const ReceiverConfig& c, std::function<void(uint64_t tag)> release, std::shared_ptr<XferRx> transfer) {
+  // ai: pc: this end decodes nothing, its frames go to a PC that does (stream.h); the transfer is the PC's
+  if (c.decoder == "pc") return makeStreamReceiver(c, std::move(release));
   std::string why;
   if (c.decoder != "cpu") {
     try {

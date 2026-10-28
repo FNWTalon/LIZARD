@@ -77,6 +77,7 @@ LIZARD was chosen over the binary grid code, which carries more above its cliff 
 | guard | depths 12 to 14, the picture's periodic extension (4.4) |
 | margin | the 2 modules of light round the symbol, `FOCUS_QUIET`, which the codec paints (4.8). The C's variable `margin` is the 15-module border depth, not this |
 | mark | a corner mark, the 12 x 12 module square at each corner (4.5) |
+| anchor | one of the 49 squares painted over the picture on a 7 x 7 grid, span / 64 modules a side, whose middles give the geometry inside the border (6.13) |
 | band | depths 5 and 6 of the border, in cells (4.6) |
 | cell | a 2 x 2 module square of the band: a track cell or a word cell. A test cell is one capture condition of a simulator sweep |
 | word | the format word, one Reed-Solomon codeword over the band's W word cells a side (5.1) |
@@ -367,23 +368,26 @@ three module counts identify the ring and nothing else, and the word says what i
 
 In ring B carrying a picture of n samples:
 
-- Pixels a module in the painted image: pxm = ceil(n / span - 0.0001), in single precision (`liblizard/src/focus.c:init`). It is
-  a whole number, so no module is split across pixels.
+- Pixels a module in the painted image: pxm = max(ceil(n / span - 0.0001), ceil(384 / span)), the first in single
+  precision (`liblizard/src/focus.c:init`). It is a whole number, so no module is split across pixels. The second term is
+  the anchors' floor (6.13): a square of span / 64 modules is then at least 6 pixels a side, so pxm is at least 3 in the
+  64 ring and 2 in the 128; it lifts the 256 picture in those two rings and no other.
 - Picture samples a module: scale = n / span. The picture keeps its n samples and is resampled to fill its span
-  modules (span x pxm pixels), so it is never shrunk; the upscale is pxm x span / n (6.8). Where span divides n, pxm =
-  scale and the resampling is an exact copy, one pixel a sample: every picture in the 64 ring, every picture but
-  384 in the 128 ring, and 512, 1024 and 1536 in the 256 ring. The 128 ring upscales 384 by 1.333; the 256 ring
-  upscales 256 by 2 and 384 and 768 by 1.333, a picture under 512 samples painted at one pixel a module.
+  modules (span x pxm pixels), so it is never shrunk; the upscale is pxm x span / n (6.8). Where pxm = scale the
+  resampling is an exact copy, one pixel a sample: every picture but 256 in the 64 ring, 512 and up in the 128 ring,
+  and 512, 1024 and 1536 in the 256 ring. The 64 ring upscales 256 by 1.5; the 128 ring upscales 256 by 2 and 384 by
+  1.333; the 256 ring upscales 256 by 2 and 384 and 768 by 1.333, a picture under 512 samples painted at one pixel a
+  module.
 
 | ring B | span | S | with margin | n | samples a module | pxm | upscale | symbol, px | with margin, px |
 |---|---|---|---|---|---|---|---|---|---|
-| 64 | 128 | 158 | 162 | 256 | 2 | 2 | 1 (copy) | 316 | 324 |
+| 64 | 128 | 158 | 162 | 256 | 2 | 3 | 1.5 | 474 | 486 |
 | 64 | 128 | 158 | 162 | 384 | 3 | 3 | 1 (copy) | 474 | 486 |
 | 64 | 128 | 158 | 162 | 512 | 4 | 4 | 1 (copy) | 632 | 648 |
 | 64 | 128 | 158 | 162 | 768 | 6 | 6 | 1 (copy) | 948 | 972 |
 | 64 | 128 | 158 | 162 | 1024 | 8 | 8 | 1 (copy) | 1264 | 1296 |
 | 64 | 128 | 158 | 162 | 1536 | 12 | 12 | 1 (copy) | 1896 | 1944 |
-| 128 | 256 | 286 | 290 | 256 (default) | 1 | 1 | 1 (copy) | 286 | 290 |
+| 128 | 256 | 286 | 290 | 256 (default) | 1 | 2 | 2 | 572 | 580 |
 | 128 | 256 | 286 | 290 | 384 (default) | 1.5 | 2 | 1.333 | 572 | 580 |
 | 128 | 256 | 286 | 290 | 512 (default) | 2 | 2 | 1 (copy) | 572 | 580 |
 | 128 | 256 | 286 | 290 | 768 (default) | 3 | 3 | 1 (copy) | 858 | 870 |
@@ -642,15 +646,16 @@ and reverted that day (section 12).
 
 ### 4.2 Whole pixels a module
 
-- The border is painted at `pxm = ceil(n / span - 1e-4)` pixels a module (`liblizard/src/focus.c:init`). The `1e-4` keeps a span
-  that divides n at exactly n / span.
+- The border is painted at `pxm = max(ceil(n / span - 1e-4), ceil(384 / span))` pixels a module
+  (`liblizard/src/focus.c:init`). The `1e-4` keeps a span that divides n at exactly n / span; the second term is the
+  anchors' floor (3.3, 6.13).
 - Every module of the outer border (depths 0 to 11, the corner marks included) MUST be painted as a `pxm x pxm` block
   of one level, covering drive pixels `[x * pxm, (x + 1) * pxm) x [y * pxm, (y + 1) * pxm)`. No module is split. The
   guard's modules are not one level: the resampler paints them pixel by pixel, as it paints the picture (4.4, 6.8).
 - The picture is on its own grid. It keeps its n samples and is resampled (Lanczos-3, periodic) to fill its span
-  modules, upscaled by `pxm / scale` and never shrunk: 1, an exact copy, for every picture in the 64 ring, for
-  every n but 384 in the 128 ring and for n = 512, 1024 and 1536 in the 256 ring; 4/3 (n = 384) in the 128 ring, and 2
-  (n = 256) or 4/3 (n = 384, 768) in the 256 ring (3.3). Picture
+  modules, upscaled by `pxm / scale` and never shrunk: 1, an exact copy, for every n but 256 in the 64 ring, for n = 512
+  and up in the 128 ring and for n = 512, 1024 and 1536 in the 256 ring; 3/2 (n = 256) in the 64 ring, 2 (n = 256) or
+  4/3 (n = 384) in the 128 ring, and 2 (n = 256) or 4/3 (n = 384, 768) in the 256 ring (3.3). Picture
   sample x (0 to n - 1) is centred at module coordinate `15 + (x + 0.5) / scale` on each axis (6.8, 6.9). Nothing
   light lies between the border and the picture: the guard (4.4) touches both.
 
@@ -1210,13 +1215,13 @@ n follows from subch by the rule in 3.2, span from the ring (3.3), and pxm and t
 
 | ring B | n | scale = n / span (samples a module) | pxm | upscale pxm / scale | resampled square: side, first pixel |
 |---|---|---|---|---|---|
-| 64 | 256 | 2 | 2 | 1 (copy) | 268, from 24 |
+| 64 | 256 | 2 | 3 | 3/2 = 1.5 | 402, from 36 |
 | 64 | 384 | 3 | 3 | 1 (copy) | 402, from 36 |
 | 64 | 512 | 4 | 4 | 1 (copy) | 536, from 48 |
 | 64 | 768 | 6 | 6 | 1 (copy) | 804, from 72 |
 | 64 | 1024 | 8 | 8 | 1 (copy) | 1072, from 96 |
 | 64 | 1536 | 12 | 12 | 1 (copy) | 1608, from 144 |
-| 128 | 256 (default) | 1 | 1 | 1 (copy) | 262, from 12 |
+| 128 | 256 (default) | 1 | 2 | 2 | 524, from 24 |
 | 128 | 384 (default) | 3/2 = 1.5 | 2 | 4/3 = 1.3333 | 524, from 24 |
 | 128 | 512 (default) | 2 | 2 | 1 (copy) | 524, from 24 |
 | 128 | 768 (default) | 3 | 3 | 1 (copy) | 786, from 36 |
@@ -1229,8 +1234,9 @@ n follows from subch by the rule in 3.2, span from the ring (3.3), and pxm and t
 | 256 | 1024 | 2 | 2 | 1 (copy) | 1036, from 24 |
 | 256 | 1536 | 3 | 3 | 1 (copy) | 1554, from 36 |
 
-pxm = ceil(n / span) is the painter's whole number of pixels a module (`focus.c` `init` computes
-`ceilf(scale - 1e-4)`, which is the same on every row; the `1e-4` keeps a scale that is a whole number at that number).
+pxm = max(ceil(n / span), ceil(384 / span)) is the painter's whole number of pixels a module (`focus.c` `init` computes
+`ceilf(scale - 1e-4)`, which is the same on every row, the `1e-4` keeping a scale that is a whole number at that
+number, and then the anchors' floor, 6.13).
 The square is (span + 2 cp) pxm pixels from (15 - cp) pxm, with cp = 3 the guard in modules (6.8): (span + 6) pxm from
 12 pxm, read from the painted layout's cells on every row (2026-09-27 evening; the 256 ring's rows, in the 96 ring's
 place, from the codec on 2026-10-25).
@@ -1587,47 +1593,54 @@ and it decodes as `v = floor(p / (n * bw)) * bw + (p mod bw)`, `u' = floor(p / b
 LIZARD-16, -48, -64, -144, -256 and -576, each at its n of 3.2 (2026-09-27). The offsets depend on n and the (u, v)
 entries do not: all 44 formats that moved n on 2026-09-27 decode to the same (u, v) list at the new n as at the old.
 
-**P2, LIZARD-16 (n = 256, 2 blocks) in the 64 ring (span 128), every payload byte zero.**
+**P2, LIZARD-16 (n = 256, 2 blocks) in the 64 ring (span 128), every payload byte zero.** Values since 2026-10-27, the
+anchors painted (6.13) and pxm raised to their floor, 3 (it was 2, the drive 316 x 316 and a copy).
 
 - slot bits, one byte (0 or 1) a slot, 10,240 bytes: SHA-256
   `6a1cebe89d813d0cbc345cc590f031e2c0ee48bf09dd15d384bfb12882a69e09`
 - the same packed 8 to a byte, first slot in the most significant bit, first 16 bytes:
   `00203e000ff403e0b8fffdcc001c1c03`
 - sigma = 101.192885, L = 202.385770
-- drive 316 x 316 (S = 158, pxm = 2; scale = pxm, so the picture is copied one pixel a sample). Drive values at row 30,
-  columns 30 to 33 (the picture's first pixel row and column): 0.7305945, 0.9875329, 1.0000000, 1.0000000
-- grey bytes at row 30, columns 30 to 45: `186 252 255 255 255 192 116 96 112 132 139 132 112 96 104 135`
-- grey bytes at row 230, columns 230 to 245: `255 235 152 104 83 65 49 49 68 94 119 145 162 161 143 132`
-- grey bytes of the resampled square, pixels [24, 292) on both axes (modules [12, 146)), row by row, 71,824 bytes:
-  SHA-256 `1eecfb5b7940cf345cf409812c497de7bbcda44a90d143f243b7ad52e410d84d`; 1628 of them are 0 and 1709 are 255
-- grey bytes of the whole drive, border included, 99,856 bytes: SHA-256
-  `5452e1978a3904e014205d8a22c225b9659f4cf70a00ef30630fffe725128432`
+- drive 474 x 474 (S = 158, pxm = 3; scale = 2, so the picture is upscaled by 3/2 through the taps of 6.8). Drive values
+  at row 45, columns 45 to 48 (the picture's first pixel row and column): 0.6579847, 0.8233471, 0.9710589, 1.0000000
+- grey bytes at row 45, columns 45 to 60: `168 210 248 255 253 255 255 241 193 140 110 107 117 132 142 145`
+- grey bytes at row 345, columns 345 to 360: `255 255 255 255 255 255 77 67 56 47 45 52 68 85 102 120`
+- the anchors (6.13): a = 2 modules, 6 pixels, from modules 23, 41, 60, 78, 96, 115, 133 on either axis. Grey bytes at
+  row 71 (anchor (0, 0)'s third pixel row), columns 66 to 77, the square at columns 69 to 74:
+  `0 24 72 255 0 255 255 0 255 75 72 68`
+- grey bytes of the resampled square, pixels [36, 438) on both axes (modules [12, 146)), row by row, 161,604 bytes:
+  SHA-256 `a499a1ebe9e95c7abe6e67caa56e9ba267acb9e457a17e869e3cc2f1f18b9820`; 2984 of them are 0 and 3746 are 255
+- grey bytes of the whole drive, border included, 224,676 bytes: SHA-256
+  `425bb0ab8e16a12a56951a272784c8623f3a318c6e2a90bec1393fc92faba235`
 
 **P3, LIZARD-64 (n = 384, 8 blocks) in the 64 ring (span 128), every payload byte zero.** The first 16 packed slot bytes
 are those of P2, since block 0's payload, codeword and whitening are the same.
 
 - slot bits, one byte a slot, 40,960 bytes: SHA-256 `f93ce4c7107e054bda67f4b2d7d91b024da17dc8af24670c2ed26efc82de4f28`
-- drive 474 x 474 (S = 158, pxm = 3; scale = 3, so the picture is copied one pixel a sample, as in P2); the picture
-  starts at pixel 45
+- drive 474 x 474 (S = 158, pxm = 3; scale = 3, so the picture is copied one pixel a sample); the picture starts at
+  pixel 45
 - grey bytes at row 45, columns 45 to 60: `151 201 220 197 182 222 255 255 191 114 83 101 128 134 136 145`
+- the anchors as in P2. Grey bytes at row 71, columns 66 to 77: `84 88 92 255 0 255 255 0 255 145 170 119`
 - grey bytes of the resampled square, pixels [36, 438) (modules [12, 146)), 161,604 bytes: SHA-256
-  `9cfc1129d286ced2bd750614fd314ac9e2c2f8ea0882515de3893c0a8937d0ca`
+  `20ba70f08ceea71e87cd48cecb3f6caa2f33031395febecb8e637967075fc695`
 - grey bytes of the whole drive, 474 x 474, 224,676 bytes: SHA-256
-  `025532283ce407bb54fe1b1333d7a33ae0391751f47b144bba0ec26b89c7c91b`. The border holds the RS(16, 3) word (5.2)
+  `fa03868e050a6fce0fd2c556363500d155cc5481e7c2f7208976fa4b0c2bb4e6`. The border holds the RS(16, 3) word (5.2)
 
-P2, P3 and 7.4 moved with the 3/4 and 7/8 tables of 2026-10-08 (8.3, 8.6; the previous values are those of the vectors
-script's history). P2 and P3 moved to the 64 ring when it became the default for every picture (2026-09-27 evening); that morning they were
-in the 32 and 48 rings, and P3 was at n = 512 before the picture sizes of 3.2. Both are copies, so neither goes through
-the Lanczos taps: in the 64 ring every picture is a copy, and only four (ring, picture) pairs resample (6.8), 384 in
-the 128 ring, the default since 2026-10-01, among them.
+P2 and P3 moved with the anchors (2026-10-27: their squares, and P2's pxm), P2, P3 and 7.4 with the 3/4 and 7/8 tables
+of 2026-10-08 (8.3, 8.6; the previous values are those of the vectors script's history). P2 and P3 moved to the 64 ring
+when it became the default for every picture (2026-09-27 evening); that morning they were in the 32 and 48 rings, and
+P3 was at n = 512 before the picture sizes of 3.2. P3 is a copy; P2 goes through the Lanczos taps since the anchors'
+floor raised its pxm, one of the six (ring, picture) pairs that resample (6.8), with 256 and 384 in the 128 ring, the
+default since 2026-10-01.
 
 `test/vectors.mjs <ob.mjs>`, run from `liblizard/`, checks 5.2 (the six words read back out of the painted
-cells), P2, P3, 7.4 and 9.3 against a build (all ok on the evening build of 2026-09-27, on that of 2026-10-04 and on
-that of 2026-10-25, 20 s)
+cells), P2, P3, 7.4 and 9.3 against a build (all ok on the evening build of 2026-09-27, on that of 2026-10-04, on that
+of 2026-10-25 and, with P2 and P3 remade, on that of 2026-10-27, 20 s)
 and prints three digests over the whole ladder to diff two builds: every format's cell map at five rates, its drive on
 a fixed payload, and `_focus_pos_ptr`, each format in the 64 ring (span 128). "Every format" there is the 64 formats of
 before 2026-10-01, LIZARD-16 to -1024 in steps of 16 (two blocks), not every whole number of blocks. Since 2026-10-25
-they are cells `9ffe76a7804c3d95`, drives `dcd4270abe52fb63`, order `60842c81479e470a`. The cells digest hashes each
+they are cells `9ffe76a7804c3d95`, drives `461e6cc4a2927c3b` (since 2026-10-27, the anchors painted; `dcd4270abe52fb63`
+from 2026-10-25), order `60842c81479e470a`. The cells digest hashes each
 format's layout dimensions with its cells, and those lost the `thin` flag that day (always 1; with it put back as 1
 the digest is `e8ae1656c90e4552`, as before): no cell moved. The drives were `3f8e49cfe13a5596` before the code rate
 followed the frequency and the tables of 2026-10-08 changed what a fixed payload paints. With the 64 ring the default, the cells and drives of LIZARD-16 to -128 moved (that morning they
@@ -1637,6 +1650,54 @@ the offsets of P1, which depend on n.
 
 The double-precision implementation of 6.8 was held against P2 and P3 on the n / 8 + 60 border (2026-09-24) and has
 not been run on these.
+
+### 6.13 Anchors (normative)
+
+Every symbol carries 49 anchors: squares painted over the picture on a 7 x 7 grid, whose middles a receiver finds and
+reads its geometry from inside the border (2026-10-27). A lens bends the picture between the border's nodes, which the
+border alone cannot see; the anchors measure it there.
+
+- **Geometry.** In ring B (span = 2B modules), a square is a = span / 64 modules a side: 2, 4 and 8 in the 64, 128 and
+  256 rings. Square (i, j), 0 <= i, j < 7, covers module columns [m0(i), m0(i) + a) and rows [m0(j), m0(j) + a), with
+  m0(i) = floor(15 + span (i + 0.5) / 7 - a / 2 + 0.5) in double precision, the same on both axes
+  (`liblizard/src/acquire.c` `ob_anchor_m0`):
+
+  | ring B | a, modules | m0(0) to m0(6) |
+  |---|---|---|
+  | 64 | 2 | 23, 41, 60, 78, 96, 115, 133 |
+  | 128 | 4 | 31, 68, 104, 141, 178, 214, 251 |
+  | 256 | 8 | 48, 121, 194, 267, 340, 413, 486 |
+
+  The 49 squares cover 49 a^2 / span^2 = 1.2% of the picture in every ring and every picture size.
+- **Pattern.** A square is a pxm drive pixels a side, and pxm is at least 384 / span (3.3, 4.2), so a square is never
+  under 6 pixels. Its drive pixel (x, y), 0 <= x, y < a pxm, with h = a pxm / 2 and d = max(|x + 0.5 - h|, |y + 0.5 - h|)
+  / h, is light (1.0) where d < 0.25 or d >= 0.6 and dark (0.0) otherwise: a light middle, a dark ring, a light rim, at
+  the border's two levels. Under 6 pixels the light middle falls between pixels and the square paints as a dark dot,
+  which a reader cannot tell from the picture's own texture; that is what the floor under pxm is for.
+- **Painting.** After the picture is resampled into the drive (6.8), every square overwrites the drive pixels it covers.
+  No slot, block or coefficient changes for it: the pilots, the rate profile and the word are as they were. A painter
+  that computes the square elsewhere (the GPU painters) takes the anchors' pixels from the reference paint, as it takes
+  the border's.
+- **Erasing (a receiver MUST).** Before the detrend (6.10) and the transform, a receiver sets every picture sample that
+  a square touches, and 2 samples beyond it on each side, to the picture's mean: on either axis the samples from
+  floor((m0(i) - 15) scale) - 2 to ceil((m0(i) + a - 15) scale) - 1 + 2, clamped to [0, n - 1], scale = n / span, for
+  each i, the 49 products of the 7 ranges on the two axes (`liblizard/src/focus.c` `focus_finish_ext`). The mean need not
+  be exact (the reference takes it over every eighth sample each way): an erased sample carries nothing. A receiver
+  erases whether or not it found the anchors, on every frame.
+- **Reading them (informative).** How a receiver uses the anchors for geometry is the receiver's (10.1, 10.2). The
+  reference finds each square through its current map by the pattern's normalised correlation, three modules wide and
+  then in rounds through the lens model the ones found give, accepting a reading at 0.6 that is not on its window's edge;
+  holds the readings to the border nodes' robust rule (one further from the model the rest give than half a module or
+  three robust spreads is dropped); and takes them into the geometry only where 12 or more remain, the lens model's
+  terms, so that the rule has as many readings over as the model takes. Fewer, a false reading is fitted exactly: a
+  blurred 64-ring symbol at 2.7 camera pixels a module with 8 readings, one 2.3 modules off, read 0 blocks of 23 that way
+  and 16 without the anchors.
+
+What they buy and cost (11; `research/build/anchors/PLAN.md` in the lab): over 69 published lens calibrations, each
+applied by its own library (OpenCV, lensfun), in 434 cells of four placements, the GPU decoder reads 97.7% of the
+lens-free blocks with the anchors against 66.2% from the border alone, the C 97.0% against 68.6% (2026-10-27). Erased, a
+symbol with the anchors painted reads -1.6% to 0.0% of the blocks one without them read, in every ring. A receiver that
+does not erase them loses 3 to 41%.
 
 ## 7. Blocks, the bit mapping and the transfer
 
@@ -2717,8 +2778,15 @@ decode of one known codec, is `focus_acquire` then `focus_finish`:
    them winning. A best score of 0.06 from either path is accepted. If nothing is and a mark was seen, the image is
    cropped round each box the mark implies (up to 4 a layout) and searched again, the best crop's reading winning and
    a rotation at a flat 0.15 ending the search (`mark_crop`).
-4. **Register** (`liblizard/src/acquire.c:acquire_core`). A homography from the quad. The corner nodes, then the border nodes in
-   rings outward, are each refined by correlation against the border as painted (`refine_node`, 4.10), reading a
+4. **Register** (`liblizard/src/acquire.c:acquire_core`). A homography from the quad, the corner nodes refined on it. Then
+   the anchors (6.13, `anchor_register`): each square found through the corners' homography three modules wide by the
+   pattern's normalised correlation (box sums of the window's integral images), a parabola each way, accepted at 0.6
+   and never on the window's edge; then, round after round, those still missing through the homography and the lens
+   model the found ones give, each round's readings held to the border's robust rule (`anchor_model_free`: one further
+   from the model than half a module or three robust spreads is dropped). Where 12 or more remain (`OB_ANCH_MIN`, the
+   lens model's terms), a corner further than 3 modules from where they put it is searched again from that model, and
+   the model over the anchors and the corners seeds every border node's search below. The border nodes in rings
+   outward are each refined by correlation against the border as painted (`refine_node`, 4.10), reading a
    box-blurred copy of the border band once a module spans 2 px or more (`border_blur`: whenever its box has a radius, floor(mpx / 2) >= 1). Each
    side's nodes are then moved along the side onto a cubic fitted to their along-side displacement, the across-side
    part and the corners kept as measured (`smooth_along`, since 2026-09-27): a display that scales the symbol by a
@@ -2731,12 +2799,18 @@ decode of one known codec, is `focus_acquire` then `focus_finish`:
    inside the symbol's quad, since the border then spans no radius near the axis. Where the camera reports its lens
    (`focus_set_lens`: k1 to k3 in Android's `LENS_DISTORTION` form and the focal length), that radial shape about the
    axis is one more candidate, a single column whose strength the fit sets. Then a Coons patch of what the fit leaves.
-   Non-normative: a receiver may model the lens otherwise.
+   With the anchors (`border_fill_anchors`), the fit runs over the trusted border nodes and the anchors together, robust
+   over the border; the Coons patch takes what it leaves on the border, and a cubic mesh what the anchors still see
+   inside (a 9 x 9 knot grid an axis: the lattice's ends and the seven anchors' centres, each knot an anchor's reading
+   shrunk by its share of signal over the readings' own noise, a missing one its found neighbours' mean, a tensor
+   cubic Hermite between); the anchors are then found again through that mesh a module wide and the fill made once
+   more. Non-normative: a receiver may model the lens otherwise.
 5. **Format word**, before anything is sampled (5.4), in the ring that registered. The blind receiver hands the
    registration over to the picture the word names, or the held one (5.5).
 6. **Sample** (`liblizard/src/acquire.c:ob_sample_grid`). The n x n picture at the points of 6.9, through the homography plus the
    bilinear node correction, a strip of 64 columns at a time.
-7. **Detrend** (6.10), fitted while the strips are sampled and subtracted in the spectrum.
+7. **Detrend** (6.10), fitted while the strips are sampled and subtracted in the spectrum, after the anchors' squares are
+   erased (6.13), strip by strip as each is sampled.
 8. **Transform.** Along y a strip at a time, two real columns packed as one complex transform; along x only the kept
    rows, v < n / 2.
 9. **Pilot alignment, soft values, decline gate and LDPC** (8.5). Since 2026-10-01 the grid's shift is fitted from the
@@ -2757,8 +2831,8 @@ by its JavaScript host in `liblizard/gpu/`, and run natively on Vulkan (`libliza
 SPIR-V for the host in `liblizard/core/`). A batch of frames is one command encoder and one readback: a trained proposer and a
 trained classifier find the corner marks, votes along the symbol's diagonals find its centre, the timing track scores
 every quad, orientation and ring (`liblizard/gpu/wgsl/finder.mjs` `RING_COUNT` 3, 96 hypotheses: 4 quads x 8 orientations x 3
-rings), PICK picks the ring, the border nodes are refitted against that ring's nodes, the word is read and the picture
-sampled, and a back half on the device does the transform with the detrend, the pilots' grid alignment (10.1, step 9;
+rings), PICK picks the ring, the border nodes are refitted against that ring's nodes, the anchors (6.13) are found
+through the border's map and steer it, the word is read and the picture sampled, and a back half on the device does the transform with the detrend, the pilots' grid alignment (10.1, step 9;
 since 2026-10-01), the soft values and the decline gate, the LDPC (its stop a small learned net a code,
 `liblizard/gpu/back/stop/`) and the CRC-32. The rate profile is one stage there (`liblizard/gpu/back/tiers.mjs`,
 `liblizard/gpu/wgsl/back_tiers.mjs`): every version's tiers a row of a table, each block's soft values, estimate,
@@ -2767,6 +2841,17 @@ ring) and the pictures apart (`liblizard/gpu/tables.mjs` `formatTables()` return
 `liblizard/sim/lizard_pick.mjs` `PICTURE_SIZES`; a frame's sample grid is its (ring, picture) pair's, `gridOf`). A device with
 32 KB of workgroup memory and no `shader-f16` builds no 1536 picture (pass 1 needs 33,792 B in f32), as it built no
 2048 before.
+
+The anchors (`liblizard/gpu/wgsl/anchors.mjs`, since 2026-10-26; in the format since 2026-10-27), the GPU's own algorithm
+for what the C reads: after F7's last fit, ANCH_FIND searches each square one side of it each way about where the map
+puts it (a window of the pattern's normalised correlation from box sums of its integral images, a parabola each way,
+found at 0.6 off the window's edge); where 12 or more were found (ANCH_MIN, the C's), ANCH_PREDICT puts each border node
+where the anchors' own lens fit says it is, the border is searched again about those places (F7's node search, centred,
++-0.4 module), ANCH_REFIT fits the lens about the axis again over the border and the anchors, and ANCH_FIT carries what
+the anchors still see onto the mesh's knots (a 9 x 9 grid an axis, a tensor cubic Hermite between them) with the
+picture's mean, into a record a frame. Pass 1 reads every frame's record: each sample through the mesh, the squares and
+2 samples round them set to the mean before the detrend (6.13), decided in integers on its own grid. A batch told its
+maps runs ANCH_FIND and ANCH_FIT alone.
 
 The word stage, F8 (`liblizard/gpu/wgsl/word.mjs`), bootstraps as the C does (5.5): one code a ring, read over every
 version 2 to 128 (a candidate of version 1 skipped, as 0 and 129 to 255 are), sets the frame's selection to (ring,
@@ -2889,6 +2974,7 @@ Each of these was built and measured, or decided. The reason given is the one on
 | QR and Aztec are not baselines, and their code is deleted: LIZARD is compared against other apps | the research had settled that a beefier QR is not the option; the baselines dated from when a new format was in doubt, and FOCUS showed that OFDM, in luma only, does better and accelerates well on a GPU | 2026-09-26, deleted 2026-10-09; `research/01`, `04`, `09` |
 | Wirehair and zstd are fixed and out of scope (LZMA on paper until 2026-10-05, never applied; zstd chosen over it and GDeflate: ratio within 5 to 10% of xz at level 19 at compressors a phone keeps ahead of the channel with, where GDeflate keeps DEFLATE's ratio for a GPU decode speed the channel cannot use) | the scope is the 2D code | project rules; STATUS "zstd, a chunk at a time" |
 | No SharedArrayBuffer, so no wasm threads | workers cannot share a heap, and per-worker memory is the number that matters on a phone | project rules |
+| Anchors in every symbol, unsignalled, as the pilots are: 49 squares of span / 64 modules on a 7 x 7 grid over the picture, a light middle, a dark ring and a light rim, erased by every receiver; pxm at least 384 / span so a square has 6 pixels (2026-10-27) | the border cannot see a lens's bend inside the picture: over 69 published lens calibrations today's decoders kept 61 to 69% of the lens-free blocks, with the anchors 96 to 98%, at -1.6% to 0.0% where there is no lens; 7 x 7 is every ring's plateau, and the size the ring's (a square found by its camera pixels); under 6 pixels the pattern paints as a dark dot the readers took the picture's texture for | STATUS "Interior anchors planned", "The anchors are the format" |
 
 **Rejected**
 
@@ -3082,6 +3168,12 @@ number so references to the others hold.
 
 The 2026-09-22 text is kept at `archive/stash/spec-2026-09-22/SPEC.md`.
 
+- **Anchors** (2026-10-27). Every symbol carries 49 squares on a 7 x 7 grid over the picture, span / 64 modules a side,
+  which every receiver erases before the detrend and a receiver may read for geometry (6.13). pxm takes a floor so a
+  square is at least 6 pixels (3.3, 4.2): 3 in the 64 ring and 2 in the 128, which moves the 256 picture in those two
+  rings (LIZARD-16 to -32 there) from 2 and 1 and resamples it (6.2, 6.8); every other pair's pxm and border bytes are
+  as before. No slot, block, coefficient or word bit changes. P2 and P3 (6.12) were remade; 5.2, 7.4 and 9.3 hold. The
+  reference decoders read them (10.1 step 4, 10.2).
 - **One block a frame out** (2026-10-25). LIZARD-8, version 1, left the format: the ladder is LIZARD-16 to LIZARD-1024,
   versions 2 to 128, 127 formats (3.1). A word naming version 1 is refused as any invalid word is (5.1 to 5.4); the
   word's layout is unchanged, its version byte still 1 to 128 with 1 invalid. No sender paints it, the codec builds no

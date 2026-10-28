@@ -318,7 +318,7 @@ static int init(focus_t *f, int n, int subch, const focus_tier_t *tier, int tier
   f->n = n; f->subch = subch; f->clip = clip > 0 ? clip : 2.0f; f->bw = bw; f->vblocks = vmax / bw + 1;
   f->tilt = tilt > 0 ? tilt : 0;   // also turns a NaN (an argument a JS caller left out) into none
   f->scale = (float)n / span;
-  f->pxm = (int)ceilf(f->scale - 1e-4f);   // whole pixels a module, never fewer than the picture's samples
+  f->pxm = focus_pxm_for(n, span);
 
   // THE RULE: the border grows OUTWARDS to hold its marks and nothing ever reaches into the picture. The picture is
   // an inverse FFT, so a hole in it is not a local cost: measured at about eight times its area in payload, and
@@ -481,6 +481,13 @@ void focus_paint_grey(const focus_t *f, const float *drive, uint8_t *grey) {
       o[x] = (uint8_t)v;
     }
   }
+}
+
+// ai: focus.h: the side and the seven first modules focus_encode paints the anchors at, for a painter elsewhere
+int focus_anchor_geom(const focus_t *f, int out[8]) {
+  out[0] = ob_anchor_side(&f->frame);
+  for (int i = 0; i < OB_ANCH_K; i++) out[1 + i] = ob_anchor_m0(&f->frame, i);
+  return OB_ANCH_K;
 }
 
 void focus_free(focus_t *f) {
@@ -779,6 +786,23 @@ void focus_encode(const focus_t *f, const uint8_t *blocks, float *drive) {
   // picture's far side, corners included, and the wrap is a torus and not four strips. Blur at a corner of the
   // picture mixes two sides at once, and a strip only answers one of them.
   resample(f, w, drive, cp);
+  // ai: the anchors (SPEC 6.13): every anchor's square painted over the picture at the border's dark and light, the
+  // ai: pattern as acquire.c anchor_find reads it (a light middle to a quarter of the half-side, a dark ring to 0.6 of
+  // ai: it, a light rim; the Chebyshev distance of each drive pixel's middle from the square's)
+  {
+    const int a = ob_anchor_side(&f->frame), side = a * C;
+    const float half = 0.5f * (float)side;
+    for (int j = 0; j < OB_ANCH_K; j++) for (int i = 0; i < OB_ANCH_K; i++) {
+      const int x0 = ob_anchor_m0(&f->frame, i) * C, y0 = ob_anchor_m0(&f->frame, j) * C;
+      for (int y = 0; y < side; y++) {
+        float *row = drive + (size_t)(y0 + y) * W + x0;
+        for (int x = 0; x < side; x++) {
+          const float d = fmaxf(fabsf((float)x + 0.5f - half), fabsf((float)y + 0.5f - half)) / half;
+          row[x] = d < 0.25f || d >= 0.6f ? 1.0f : 0.0f;
+        }
+      }
+    }
+  }
   ob_prof_ms[PROF_F_ENC_REST] += ob_now_ms() - tall;
 }
 
@@ -851,6 +875,14 @@ int focus_n_for(int subch) {
   const double r = sqrt(2.0 * FOCUS_SUB * subch / 3.14159265358979323846);
   for (int i = 0; i < FOCUS_NPICTURES; i++) if (FOCUS_PICTURES[i] >= 3 * r) return FOCUS_PICTURES[i];
   return FOCUS_PICTURES[FOCUS_NPICTURES - 1];
+}
+
+int focus_pxm_for(int n, int span) {
+  int pxm = (int)ceilf((float)n / span - 1e-4f);   // whole pixels a module, never fewer than the picture's samples
+  // ai: and never fewer than an anchor's pattern needs (SPEC 6.13: a square of span / 64 modules OB_ANCH_PX_MIN pixels
+  // ai: a side, so 3 in the 64 ring and 2 in the 128; it lifts the 256 picture there, 2 and 1 by its samples alone)
+  const int pxa = (OB_ANCH_PX_MIN * 64 + span - 1) / span;
+  return pxm < pxa ? pxa : pxm;
 }
 
 // A registration held and not finished, let go of.
@@ -939,12 +971,52 @@ int focus_finish_ext(const focus_t *f, float *grid, const int8_t *ext_llr, const
   // A caller that brings its own soft values brings the spectrum's whole product with them, so none of this
   // runs. The registration still has to be let go, which is why the free below is outside the guard.
   if (ext_llr) { ob_reg_free(&reg); goto have_llr; }
+  // ai: the anchors (SPEC 6.13): every sample an anchor's square touches and ob_anch_margin round it set to the
+  // ai: picture's mean before the detrend and the transform, on every frame, however many anchors its acquisition
+  // ai: found (the margin measured: on the S26's lenses an erased sample more costs about 0.2 dB in a 1:1 crop, one
+  // ai: fewer 0.15; research/build/anchors/PLAN.md). The squares sit on a lattice, so one range of samples a lattice
+  // ai: index serves both axes (elo, ehi).
+  int elo[OB_ANCH_K], ehi[OB_ANCH_K];
+  float mv = 0;
+  {
+    const int a = ob_anchor_side(&f->frame);
+    for (int i = 0; i < OB_ANCH_K; i++) {
+      const int m0 = ob_anchor_m0(&f->frame, i);
+      const int lo = (int)floorf((m0 - f->margin) * f->scale) - ob_anch_margin, hi = (int)ceilf((m0 + a - f->margin) * f->scale) - 1 + ob_anch_margin;
+      elo[i] = lo < 0 ? 0 : lo; ehi[i] = hi > n - 1 ? n - 1 : hi;
+    }
+    // ai: the mean of a caller's grid over every sample; of one sampled here, over every eighth sample each way (a
+    // ai: whole grid sampled for its mean alone was 9.4 MB at 1536, faulted in every frame)
+    double mean = 0;
+    if (grid) {
+      for (size_t k = 0; k < (size_t)n * n; k++) mean += grid[k];
+      mean /= (double)n * n;
+    } else {
+      const int c = n / 8;
+      float *row = w->wre;
+      for (int r = 0; r < c; r++) {
+        ob_sample_grid(&f->frame, &im, &reg, g0, g0, 8 * step, 0, c, r, 1, row, c);
+        for (int k = 0; k < c; k++) mean += row[k];
+      }
+      mean /= (double)c * c;
+    }
+    mv = (float)mean;
+    if (grid) for (int j = 0; j < OB_ANCH_K; j++) for (int i = 0; i < OB_ANCH_K; i++)
+      for (int y = elo[j]; y <= ehi[j]; y++) for (int x = elo[i]; x <= ehi[i]; x++) grid[(size_t)(x / sw) * n * sw + (size_t)y * sw + x % sw] = mv;
+  }
   for (int x0 = 0; x0 < n; x0 += sw) {
     double ta = ob_now_ms();
     // The strip either comes from the caller or is taken here. Everything downstream works on `z`, so the two
     // paths differ in this one pointer and nothing else.
     float *z = grid ? grid + (size_t)(x0 / sw) * n * sw : w->wre;
-    if (!grid) ob_sample_grid(&f->frame, &im, &reg, g0, g0, step, x0, sw, 0, n, w->wre, sw);
+    if (!grid) {
+      ob_sample_grid(&f->frame, &im, &reg, g0, g0, step, x0, sw, 0, n, w->wre, sw);
+      for (int i = 0; i < OB_ANCH_K; i++) {
+        const int xl = elo[i] > x0 ? elo[i] : x0, xh = ehi[i] < x0 + sw - 1 ? ehi[i] : x0 + sw - 1;
+        if (xl > xh) continue;
+        for (int j = 0; j < OB_ANCH_K; j++) for (int y = elo[j]; y <= ehi[j]; y++) for (int x = xl; x <= xh; x++) z[(size_t)y * sw + x - x0] = mv;
+      }
+    }
     double tb = ob_now_ms(); ob_prof_ms[PROF_F_SAMPLE] += tb - ta;
     for (int y = 0; y < n; y++) {
       double rs, rx, rq;

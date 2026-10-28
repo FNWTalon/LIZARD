@@ -33,7 +33,7 @@ liz_geometry geometryOf(const liz_format& f) {
   liz_geometry g{};
   g.n = focus_n_for(8 * f.blocks);
   g.span = spanOf(r);
-  g.pxm = int(std::ceil(double(g.n) / g.span - 1e-4));
+  g.pxm = focus_pxm_for(g.n, g.span);
   g.side = (modulesOf(r) + 2 * FOCUS_QUIET) * g.pxm;
   g.gap = f.codes > 1 ? LIZ_GAP_MODULES * g.pxm : 0;
   g.width = f.codes * g.side + (f.codes - 1) * g.gap;

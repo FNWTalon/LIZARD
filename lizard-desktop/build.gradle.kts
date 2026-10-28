@@ -113,7 +113,7 @@ val fonts by tasks.registering(Sync::class) {
 sourceSets.main {
     resources.srcDir(bundle); resources.srcDir(buildInfo); resources.srcDir(fonts)
     kotlin.srcDir(layout.projectDirectory.dir("../liblizard/kotlin"))
-    kotlin.exclude("PhaseLock.kt")
+    kotlin.exclude("PhaseLock.kt", "PhaseLockD6.kt")
 }
 
 // ai: after packageDeb: the native library's own Depends added (packaging/deb-deps.sh says which and why)

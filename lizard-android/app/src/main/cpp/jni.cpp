@@ -8,13 +8,17 @@
 #include <stdlib.h>
 #include <sys/system_properties.h>
 
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "receiver.h"
+#include "develop.h"
 #include "replay.h"
 #include "sender.h"
+#include "stream.h"
 
 #include <android/native_window_jni.h>
 #include <android/surface_control.h>
@@ -34,6 +38,9 @@
 #include <sys/ioctl.h>
 
 #include "wg.h"
+extern "C" {
+#include "focus.h"
+}
 
 #define TAG "lizard"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -166,6 +173,46 @@ extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_push(JNIEnv* e
   rx(h)->push(f);
 }
 
+// ai: A frame in a format the decoders do not read as it is (2026-10-27, Receive's Format: Engine.develop): P010,
+// ai: RAW16, RAW10, RAW12, described for the receiver, which develops it to luma (core/ingest/develop.h: the GPU
+// ai: decoder on its device, the C on this thread). The crop (x0, y0, w, h: even, from Engine) is all that is read;
+// ai: P010's bin is 1.
+extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_pushRaw(JNIEnv* e, jclass, jlong h, jobject plane, jint rowStride,
+    jint pixelStride, jint format, jint width, jint height, jint x0, jint y0, jint w, jint hh, jint bin, jint cfa, jfloatArray levels,
+    jlong timestampNs, jlong tag, jfloatArray lens) {
+  (void)cfa;   // ai: the levels already carry each position's colour (Engine.levelsOf)
+  const uint8_t* src = plane ? static_cast<const uint8_t*>(e->GetDirectBufferAddress(plane)) : nullptr;
+  const jlong cap = plane ? e->GetDirectBufferCapacity(plane) : 0;
+  if (!h || !src) { throwJava(e, "java/lang/IllegalArgumentException", !h ? "no receiver" : "a frame with no plane"); return; }
+  if (!lizard::rawFormatKnown(format)) { throwJava(e, "java/lang/IllegalArgumentException", "format " + std::to_string(format) + " is not developed here"); return; }
+  if (bin != 1 && bin != 2) bin = 1;
+  if (format == lizard::RAW_FMT_P010) bin = 1;
+  if (x0 < 0 || y0 < 0 || w < bin || hh < bin || x0 + w > width || y0 + hh > height) {
+    throwJava(e, "java/lang/IllegalArgumentException", "a crop outside the frame");
+    return;
+  }
+  const int ps = pixelStride > 0 ? pixelStride : 2;
+  if (static_cast<jlong>(static_cast<size_t>(y0 + hh - 1) * rowStride + lizard::rawRowBytes(format, x0 + w, ps)) > cap) {
+    throwJava(e, "java/lang/IllegalArgumentException", "the plane is shorter than its rows");
+    return;
+  }
+  lizard::RawFrame r;
+  r.plane = src;
+  r.rowStride = static_cast<uint32_t>(rowStride);
+  r.pixelStride = static_cast<uint32_t>(ps);
+  r.format = format;
+  r.x0 = static_cast<uint32_t>(x0); r.y0 = static_cast<uint32_t>(y0); r.bin = static_cast<uint32_t>(bin);
+  if (levels && e->GetArrayLength(levels) >= 9) e->GetFloatArrayRegion(levels, 0, 9, r.levels);
+  lizard::CameraFrame f;
+  f.raw = &r;
+  f.width = static_cast<uint32_t>(w / bin);
+  f.height = static_cast<uint32_t>(hh / bin);
+  f.timestampNs = timestampNs;
+  f.tag = static_cast<uint64_t>(tag);
+  if (lens && e->GetArrayLength(lens) >= 4) e->GetFloatArrayRegion(lens, 0, 4, f.lens);
+  rx(h)->push(f);
+}
+
 // ai: a system property's value ("" when unset): the switches a run driven over adb sets while the app runs
 // ai: (Engine.kt's delay test, debug.lizard.nudge)
 extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_prop(JNIEnv* e, jclass, jstring name) {
@@ -174,6 +221,16 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_prop(JNIEnv
   __system_property_get(n, v);
   e->ReleaseStringUTFChars(name, n);
   return e->NewStringUTF(v);
+}
+
+// ai: a USB accessory's fd (PcLink.openAccessory: UsbManager's, detached) to the PC stream's bridge (stream.h), which
+// ai: closes it; false where one is open already
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_streamAccessory(JNIEnv*, jclass, jint fd) {
+  return lizard::streamAccessory(fd, [](const std::string& s) { LOGI("%s", s.c_str()); }) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_accessoryOpen(JNIEnv*, jclass) {
+  return lizard::accessoryOpen() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_wantsLuma(JNIEnv*, jclass, jlong h) {
@@ -366,26 +423,35 @@ struct GpuRing {
   uint64_t posts = 0, late = 0, behind = 0, shownN = 0;
   std::map<int, uint64_t> held;
   std::string error;
+  // ai: The ring's Vulkan objects let go, on the painter's device, once its filler is stopped (each expand was waited
+  // ai: before its slot was filled, so none is in flight): with the ring's drop, on the thread that owns the sender,
+  // ai: while the device lives. A completion still owed holds the ring past that (its buffers and surface are the
+  // ai: compositor's until then) and can come on a binder thread after a stop freed the device: ~GpuRing there called
+  // ai: vkDeviceWaitIdle on the freed device (2026-10-27, SIGSEGV), so the destructor touches no Vulkan once this ran.
+  void releaseVk() {
+    if (!dev) return;
+    for (auto& x : slots) {
+      if (x.view) vkDestroyImageView(dev->dev, x.view, nullptr);
+      if (x.img) vkDestroyImage(dev->dev, x.img, nullptr);
+      if (x.mem) vkFreeMemory(dev->dev, x.mem, nullptr);
+      x.view = VK_NULL_HANDLE; x.img = VK_NULL_HANDLE; x.mem = VK_NULL_HANDLE; x.set = VK_NULL_HANDLE;
+    }
+    if (fence) vkDestroyFence(dev->dev, fence, nullptr);
+    if (dpool) vkDestroyDescriptorPool(dev->dev, dpool, nullptr);
+    if (pipe) vkDestroyPipeline(dev->dev, pipe, nullptr);
+    if (pl) vkDestroyPipelineLayout(dev->dev, pl, nullptr);
+    if (dsl) vkDestroyDescriptorSetLayout(dev->dev, dsl, nullptr);
+    if (pool) vkDestroyCommandPool(dev->dev, pool, nullptr);
+    fence = VK_NULL_HANDLE; dpool = VK_NULL_HANDLE; pipe = VK_NULL_HANDLE; pl = VK_NULL_HANDLE; dsl = VK_NULL_HANDLE; pool = VK_NULL_HANDLE;
+    dev = nullptr;
+  }
   ~GpuRing() {
     if (filler.joinable()) {
       { std::lock_guard<std::mutex> l(m); stop = true; }
       cv.notify_all();
       filler.join();
     }
-    if (dev) {
-      vkDeviceWaitIdle(dev->dev);
-      for (auto& x : slots) {
-        if (x.view) vkDestroyImageView(dev->dev, x.view, nullptr);
-        if (x.img) vkDestroyImage(dev->dev, x.img, nullptr);
-        if (x.mem) vkFreeMemory(dev->dev, x.mem, nullptr);
-      }
-      if (fence) vkDestroyFence(dev->dev, fence, nullptr);
-      if (dpool) vkDestroyDescriptorPool(dev->dev, dpool, nullptr);
-      if (pipe) vkDestroyPipeline(dev->dev, pipe, nullptr);
-      if (pl) vkDestroyPipelineLayout(dev->dev, pl, nullptr);
-      if (dsl) vkDestroyDescriptorSetLayout(dev->dev, dsl, nullptr);
-      if (pool) vkDestroyCommandPool(dev->dev, pool, nullptr);
-    }
+    releaseVk();   // ai: a ring never dropped (makeGpuRing's that failed), on the thread that made it
     for (auto& x : slots) { if (x.fence >= 0) close(x.fence); if (x.b) AHardwareBuffer_release(x.b); }
     for (auto& p : pending) if (p.fd >= 0) close(p.fd);
     if (sc) ASurfaceControl_release(sc);
@@ -438,6 +504,20 @@ struct Tx {
   std::string error;           // ai: why the vsync present was refused (txPostStats' error)
 };
 Tx* tx(jlong h) { return reinterpret_cast<Tx*>(h); }
+// ai: A GPU ring's filler stopped and joined. The filler holds the ring itself (fillRing's shared_ptr), so dropping
+// ai: the Tx's reference never reaches ~GpuRing's join: a filler left running went on reading t->s, and txDestroy's
+// ai: free of the sender crashed it (Sender::takeSlot on a freed mutex, every stop from 2026-10-07 to 2026-10-26).
+void stopFiller(GpuRing& r) {
+  { std::lock_guard<std::mutex> l(r.m); r.stop = true; }
+  r.cv.notify_all();
+  if (r.filler.joinable()) r.filler.join();
+}
+// ai: a ring done with: its filler stopped and its Vulkan objects let go while the painter's device lives (releaseVk);
+// ai: its buffers and surface stay until the compositor's completions owed let it go
+void endRing(GpuRing& r) {
+  stopFiller(r);
+  r.releaseVk();
+}
 void dropRing(Tx* t) {
   if (t->gringOld) {
     ASurfaceTransaction* tr = ASurfaceTransaction_create();
@@ -447,6 +527,7 @@ void dropRing(Tx* t) {
     t->gringOld.reset();
   }
   if (t->gring) {
+    endRing(*t->gring);
     ASurfaceTransaction* tr = ASurfaceTransaction_create();
     ASurfaceTransaction_reparent(tr, t->gring->sc, nullptr);
     ASurfaceTransaction_apply(tr);
@@ -556,6 +637,11 @@ void fillRing(std::shared_ptr<GpuRing> r, Tx* t) {
     x.filled = true;
     x.seq = seq;
   }
+}
+// ai: the ring's filler started (made, or again after a configure that kept the frame's size: txConfigure)
+void startFiller(Tx* t, const std::shared_ptr<GpuRing>& r) {
+  { std::lock_guard<std::mutex> l(r->m); r->stop = false; }
+  r->filler = std::thread([r, t] { fillRing(r, t); });
 }
 
 // ai: a transaction's completion on the GPU ring: the buffer it replaced free once its release fence signals, and
@@ -688,7 +774,7 @@ bool makeGpuRing(Tx* t, int side, int width) {
     t->error = e.what();
     return false;
   }
-  r->filler = std::thread([r, t] { fillRing(r, t); });
+  startFiller(t, r);
   t->gring = r;
   t->ringSide = side; t->ringW = width; t->dstW = t->dstH = 0;
   __android_log_print(ANDROID_LOG_INFO, "lizard", "send: a GPU ring of %d buffers (%d x %d), filled ahead on %s", depth, width, side, dev->name.c_str());
@@ -704,11 +790,10 @@ bool postGpu(Tx* t, int side, int width, int64_t vsync, int64_t expected, int64_
     // ai: shows black until its first fill, tens of ms, which flashed the code at every change); a ring that never
     // ai: posted has nothing on screen and goes at once
     if (t->gring && !t->gringOld && t->gring->last >= 0) {
-      { std::lock_guard<std::mutex> l(t->gring->m); t->gring->stop = true; }
-      t->gring->cv.notify_all();
-      if (t->gring->filler.joinable()) t->gring->filler.join();
+      endRing(*t->gring);
       t->gringOld = std::move(t->gring);
     } else if (t->gring) {
+      endRing(*t->gring);
       ASurfaceTransaction* tr = ASurfaceTransaction_create();
       ASurfaceTransaction_reparent(tr, t->gring->sc, nullptr);
       ASurfaceTransaction_apply(tr);
@@ -884,10 +969,19 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txConfigure
   f.aheadSecs = 1.0;
   f.aheadBytes = 96ull << 20;
   f.margin = 2;
-  f.hostFrames = !(tx(h)->gpuExpand && vsynced == JNI_TRUE);
-  tx(h)->fps = vsync == JNI_TRUE ? fps : 0;
-  tx(h)->assets = f.assets;
-  return e->NewStringUTF(tx(h)->s->configure(f).c_str());
+  Tx* t = tx(h);
+  f.hostFrames = !(t->gpuExpand && vsynced == JNI_TRUE);
+  t->fps = vsync == JNI_TRUE ? fps : 0;
+  t->assets = f.assets;
+  // ai: the GPU ring's filler stopped across the configure, which makes the painter's frame ring again under it: a
+  // ai: slot taken meanwhile met that ring gone or remade, which refused the vsync present for the rest of the send
+  // ai: (2026-10-27: the column opened mid-send, the room changed at the same frame size, the code black after). The
+  // ai: ring stays, its picture on screen; at the same frame size its filler starts again, at another the next post
+  // ai: makes the ring of that size (postGpu).
+  if (t->gring) stopFiller(*t->gring);
+  const std::string err = t->s->configure(f);
+  if (t->gring && err.empty() && t->s->side() == t->ringSide && t->s->width() == t->ringW) startFiller(t, t->gring);
+  return e->NewStringUTF(err.c_str());
 }
 
 // ai: The device and the GPU painter made ahead, off the main thread: "" or why there is none. Then the probe: whether
@@ -982,6 +1076,13 @@ extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_txPresent(
   ANativeWindow_unlockAndPost(t->win);
   return ok ? JNI_TRUE : JNI_FALSE;
 }
+
+// ai: The view's surface destroyed: the window and every ring on it let go, so the next post or present takes the
+// ai: window anew. A SurfaceView detached and attached again (the code's box moved between layouts) hands back the
+// ai: same Surface object over a new window, which the object test in txPost and txPresent does not see: the ring's
+// ai: child surface stayed on the destroyed one (offscreen, the new surface's black showing), a ring made then found no
+// ai: parent ("no child surface"), and the window's queue posted into the old window (2026-10-27).
+extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_txSurfaceGone(JNIEnv* e, jclass, jlong h) { if (h) dropWindow(e, tx(h)); }
 
 extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txStats(JNIEnv* e, jclass, jlong h) { return e->NewStringUTF(tx(h)->s->stats().c_str()); }
 

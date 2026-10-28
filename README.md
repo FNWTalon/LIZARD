@@ -71,7 +71,10 @@ character one module wide and two tall (`▀` the top module dark, `▄` the bot
 default, and the 256 ring have the same border with longer sides.
 
 - **The picture** is n x n samples (256 to 1536 a side, depending on how much the frame carries), drawn on the
-  screen at whole pixels. Only data is ever painted inside it.
+  screen at whole pixels. Only data is painted inside it, apart from the anchors.
+- **The anchors** are 49 small squares on a 7 x 7 grid painted over the picture (a light middle, a dark ring, a light
+  rim; 1.2% of the picture), whose middles show the receiver how a lens bends the picture between the border's nodes,
+  which the border alone cannot see. A receiver erases them before it reads the data.
 - **The border** is 15 modules deep, a module being the border's unit square, as in QR codes. Going inwards:
   - a **corner mark** at each corner, for finding the code and fixing its perspective;
   - a **dark ring** all the way round, the line the receiver aligns to;
@@ -110,8 +113,8 @@ received archive into a folder, and the web receiver offers it as the `.tar` it 
    then XORed with a pseudo-random sequence, so that neither a burst of damage nor repetitive data lines up.
 7. **Turn bits into waves.** Each pair of bits picks one of four phases (QPSK) for one frequency, the lowest
    frequencies first. A few known symbols, the **pilots**, fill each block's spare slots.
-8. **Make the picture.** An inverse 2D FFT adds all the waves into one grey image; the rare extremes are clipped, and
-   the image is scaled onto the screen's pixels.
+8. **Make the picture.** An inverse 2D FFT adds all the waves into one grey image; the rare extremes are clipped, the
+   image is scaled onto the screen's pixels, and the anchors are painted over it.
 9. **Add the border and show the frame**, typically 60 pictures a second on a steady schedule.
 
 ## Receiving, step by step
@@ -121,11 +124,12 @@ received archive into a folder, and the web receiver offers it as the `.tar` it 
 2. **Find the code.** Locate the corner marks, then test each candidate against the timing track in every
    orientation and border size.
 3. **Register (deskew).** Work out exactly where every point of the code falls in the camera image, allowing for
-   perspective, lens distortion and the display's own scaling, to about a tenth of a module.
+   perspective, lens distortion and the display's own scaling, to about a tenth of a module. The border gives the
+   outline; the anchors give the lens's bend inside it.
 4. **Read the format word.** It gives the version, and from that where every block lies and which code rate it uses.
    If a frame's word cannot be read, the last word that was read is used.
-5. **Sample and transform.** Read the picture at the sender's sample positions and take a 2D FFT, back to
-   frequencies. Remove the screen's uneven brightness, and use the pilots to correct any offset of a fraction of a
+5. **Sample and transform.** Read the picture at the sender's sample positions, erase the anchors, and take a 2D
+   FFT, back to frequencies. Remove the screen's uneven brightness, and use the pilots to correct any offset of a fraction of a
    sample that registration left behind.
 6. **Estimate confidence.** For each group of 320 frequencies (a sub-channel), estimate the signal and the noise, and
    turn each received bit into a confidence value rather than a bare 0 or 1 (a soft decision).
@@ -341,8 +345,8 @@ decoder), and natively in the Android and desktop apps on a pool of threads (NEO
    track against every ring and orientation. The fallbacks are fitting the border's lines, then cropping round a mark
    that was seen.
 2. **Register.** A homography from the quad, then every border node refined by correlation against the border as
-   painted. Each side's nodes are smoothed along it, which absorbs a display's fractional scaling. The interior is
-   filled from the border alone.
+   painted. Each side's nodes are smoothed along it, which absorbs a display's fractional scaling. The anchors are
+   found through that map, and where 12 or more hold, the lens is fitted again with them inside the border.
 3. **Read the word** in the ring that registered, and take the picture size, blocks and rates it names.
 4. **Sample and transform.** The n x n picture is sampled through the registration and detrended, then goes through
    a 2D FFT (radix 2, with one radix-3 stage for the 3 x 2^k sizes).
@@ -359,11 +363,12 @@ submission and one readback. The nets and kernels run in int8 where a device sup
 
 1. **Front half: find and register.**
    - A pyramid of each frame feeds a trained fully convolutional proposer, which marks likely corner marks.
-   - Two trained classifiers in a cascade say, for each candidate, whether it is a mark, which way is out, and how
-     big a module is.
+   - A trained classifier says, for each candidate, whether it is a mark, which way is out, and how big a module is.
    - Votes along the symbol's diagonals find each centre.
    - Every quad, orientation and ring is scored against the timing track.
    - The border nodes are fitted to the ring that won, each side's curve chosen by its own evidence.
+   - The anchors are found through that fit, a mesh is laid through their middles, and the border is searched again
+     from what they say.
    - The format word is read.
 2. **Back half: decode, per picture size.** Sample the picture and take its 2D DFT on the device, align the grid
    from the pilots, and make soft values for each code rate's blocks. Then run layered min-sum LDPC, one dispatch per
@@ -378,7 +383,7 @@ paints each frame:
 - Encode each block with LDPC and spread its bits over its slots, with whitening and pilots.
 - Place them as QPSK on the picture's coefficients and take the inverse transform.
 - Clip to grey and resample onto whole pixels per module.
-- Put the border round it.
+- Paint the anchors over it and put the border round it.
 
 The C paints on the CPU: in a web worker, or on threads in the native senders. The GPU encoder paints the same
 symbol in WebGPU on the web page, and as the same kernels on Vulkan in the Android app and the desktop sender. The
@@ -410,6 +415,10 @@ not how steadily it paces on real hardware. The desktop app's receiver (UVC came
 AVFoundation) is checked against fake camera devices and a simulated camera filming a simulated screen; with a real
 camera it has run once, a 2013 USB webcam (a Logitech C930e on Linux) reading 90 to 120 kB/s (reported, not logged),
 which no phase lock helps: a webcam cannot delay a single frame, so a sender for one paints at most half its rate.
+It also takes a phone as its camera, the phone keeping its own camera control and phase lock: the Android app's PC
+decoder sends its camera's crop over any IP route (a USB tether, Wi-Fi), or over the cable alone as an Android Open
+Accessory (with libusb on the PC; on Windows a WinUSB driver bound with Zadig), skipping evenly what the link cannot
+carry, and the PC decodes it. That path has run over loopback and a stand-in for the accessory, not yet over a cable.
 
 ## Layout
 

@@ -10,6 +10,8 @@
 // ai: classifiers f16 with their int8 twins built beside; f16; f32), subgroups whether the classifiers reduce by
 // ai: shuffles. The back half is built at every batch size a device may need (B_CEIL down to 1: plan() rebuilds it
 // ai: at Bmax where memory holds fewer frames), all at workgroup memory 32 KB, the floor every phone we know has.
+// ai: The anchors' stages (gpu/wgsl/anchors.mjs, SPEC 6.13) are a setup's `anch` (exportAnch), built with the front
+// ai: half; pass 1, every back half's, reads their records.
 //
 //   node liblizard/gen/gen.mjs [out]      (lizard-android/build.sh gen; out defaults to liblizard/out)
 // ai: Writes out/setup/<variant>.json, out/blobs/<hash>.bin (the buffers' bytes), out/wgsl/<hash>.wgsl (as the web host made it),
@@ -68,6 +70,7 @@ const { formatTables, PICTURES } = await imp("gpu/tables.mjs");
 const { loadNet } = await imp("gpu/cnn/netfile.mjs");
 const { K, CELL, HYP, RING_COUNT, VOTE_READS } = await imp("gpu/wgsl/finder.mjs");
 const { NODES_MAX, RESID, REFIT_DBG } = await imp("gpu/wgsl/register.mjs");
+const { ANCH_K, ANCH_REC } = await imp("gpu/wgsl/anchors.mjs");
 const { HIST_BINS, PYRAMID_BLOCK } = await imp("gpu/wgsl/pyramid.mjs");
 const { TILE } = await imp("gpu/wgsl/bank_fcn2.mjs");
 const { SLOTS } = await imp("gpu/wgsl/common.mjs");
@@ -77,9 +80,9 @@ const { COUNTS } = await imp("gpu/back/back.mjs");
 const { REC_BYTES } = await imp("gpu/back/ldpc.mjs");
 const { PAYLOAD } = await imp("gpu/back/ref_ldpc.mjs");
 
-// ai: The classifiers the native receiver runs (gpu/decoder.mjs INSTALLED): cnn-v1, and cnn-v3 as the cascade's first
-// ai: net, paths under liblizard/ (as the app's build needs them).
-const LARGE = INSTALLED.large, SMALL = INSTALLED.small;
+// ai: The classifier the native receiver runs (gpu/decoder.mjs INSTALLED): cnn-v3 on every peak, a path under
+// ai: liblizard/ (as the app's build needs it).
+const NET = INSTALLED.classifier;
 // ai: The device the setup is made for: 32 KB of workgroup memory (every phone we know, and what Chrome gives the
 // ai: desktop's GPUs), the rest generous; plan()'s memory limits are the real device's, read at run time.
 const LIMITS = { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 2 ** 31, maxComputeWorkgroupStorageSize: 32768, maxStorageBuffersPerShaderStage: 16, maxTextureArrayLayers: 2048, maxComputeInvocationsPerWorkgroup: 256 };
@@ -172,21 +175,33 @@ function exportTree(fh, v) {
   return {
     variant: v.name, precision: fh.precision, floatPrecision: fh.floatPrecision, subgroups: v.subgroups, features: fh.features, nets: fh.nets,
     consts: { LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, RING_SLACK, K, CELL, HYP, RING_COUNT, VOTE_READS, NODES_MAX, RESID, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK, TAU, EPS,
-      TILE, B_CEIL, CAP_MS, TWIN_FRAMES, TWIN_ROUNDS, VERSION_MIN, VERSION_MAX, SLOTS, ARGS_WORDS, ARGS_SLOT, argsWords, COUNTS, REC_BYTES, PAYLOAD },
+      TILE, B_CEIL, CAP_MS, TWIN_FRAMES, TWIN_ROUNDS, VERSION_MIN, VERSION_MAX, SLOTS, ARGS_WORDS, ARGS_SLOT, argsWords, COUNTS, REC_BYTES, PAYLOAD, ANCH_K, ANCH_REC },
     cap: fh.cap, nodesMax: fh.nodesMax, modules: Array.from(fh.modules), bankKeep: fh.bank.KEEP,
-    cascade: fh.cascade ? { keep: fh.cascade.keep, precision: fh.cascade.weights.precision } : null, weightsPrecision: fh.weights.precision,
+    cascade: null, weightsPrecision: fh.weights.precision,
     front: {
-      pyramid: pb(fh.pyramid), classify: pbNet(fh.classify), classify0: pbNet(fh.classify0), rank: pb(fh.rank),
+      pyramid: pb(fh.pyramid), classify: pbNet(fh.classify),
       vote: pb(fh.vote), gather: pb(fh.gather), complete: pb(fh.complete), score: pb(fh.score), pick: pb(fh.pick), nodesP: pb(fh.nodesP), refit: pb(fh.refit), refitPost: pb(fh.refitPost), wordP: pb(fh.wordP), select: pb(fh.select),
       // ai: the finder's second round (gpu/wgsl/finder.mjs REDO; gpu/bank_fcn2.mjs COARSE_FROM)
       redo: pb(fh.redo), coarseFrom: fh.bank.COARSE_FROM,
       fcn2: pb(fh.fcn2), fcn2X: pb(fh.fcn2X), fcn2Form: { TX: f.TX, TY: f.TY, XB: f.XB, walk: f.walk, xplane: f.xplane, int8: f.int8, store: f.store, name: f.name },
-      buffers: Object.fromEntries(["planBuf", "planUni", "p4Uni", "pickUni", "nodesBuf", "tmplBuf", "wordPtsBuf", "wordUni", "wordLatUni", "fitUni", "weightsBuf", "weightsBuf0"].map((k) => [k, idOf(fh[k])])),
+      buffers: Object.fromEntries(["planBuf", "planUni", "p4Uni", "pickUni", "nodesBuf", "tmplBuf", "wordPtsBuf", "wordUni", "wordLatUni", "fitUni", "weightsBuf"].map((k) => [k, idOf(fh[k])])),
       rounds: fh.rounds.map(idOf),
-      twins: tf ? { large: twin(tf.large), small: twin(tf.small) } : null,
+      twins: tf ? { large: twin(tf.large) } : null,
     },
     pictures: PICTURES.map(({ n, subch, lo, hi }) => ({ n, subch, lo, hi })),
     backs: {},
+  };
+}
+
+// ai: The anchors' stages (gpu/wgsl/anchors.mjs), which the native host builds with the front half (core/dec/setup.cpp
+// ai: build): ANCH_FIND and ANCH_FIT ({ p, bgl }) and their uniform (anchUni).
+function exportAnch(fh) {
+  return {
+    // ai: refit: ANCH_REFIT ({ p, bgl }), which runs between ANCH_FIND and ANCH_FIT; predict: ANCH_PREDICT on its layout,
+    // ai: and nodes: the border's second search (F7's NODES centred) on NODES' layout with its own round
+    // ai: (buffers.round), both run before it
+    find: pb(fh.anchFind), predict: pb(fh.anchPredict), nodes: pb(fh.nodesC), refit: pb(fh.anchRefit), fit: pb(fh.anchFit),
+    buffers: { anchUni: idOf(fh.anchUni), round: idOf(fh.anchRound) },
   };
 }
 
@@ -368,17 +383,18 @@ function sourcesHash() {
 async function main() {
   for (const d of ["setup", "wgsl", "naga", "spv", "blobs"]) mkdirSync(new URL(`${d}/`, OUT), { recursive: true });
   const tables = await formatTables();
-  const large = await loadNet(new URL(LARGE, LIB)), small = await loadNet(new URL(SMALL, LIB));
+  const net = await loadNet(new URL(NET, LIB));
   const modules = new Map(), summary = [], blobs = new Map();
   for (const v of VARIANTS) {
     const rec = new Recorder(), log = [];
     const adapter = mockAdapter(rec, { features: FEATURES, limits: LIMITS });
     const fh = await FrontHalf.create(adapter, tables, {
-      ...receiverOptions(large, small), precision: v.precision, subgroups: v.subgroups, backN: 1536, log: (m) => log.push(m), probe: false, twins: null,
+      ...receiverOptions(net), precision: v.precision, subgroups: v.subgroups, backN: 1536, log: (m) => log.push(m), probe: false, twins: null,
     });
     const tree = exportTree(fh, v);
     tree.backs[fh.bh.B] = exportBack(fh.bh);
     for (const B of BACK_B.filter((b) => b !== fh.bh.B)) { await fh.buildBack(B, true); tree.backs[B] = exportBack(fh.bh); }
+    tree.anch = exportAnch(fh);
     tree.log = log.filter((m) => !m.startsWith("built in "));   // ai: no wall-clock line: two gens write the same tree
     const objects = exportObjects(rec, tree, blobs);
     tree.objects = objects;
@@ -430,7 +446,7 @@ async function main() {
   const kept = new Set([...VARIANTS.map((v) => `setup/${v.name}.json`), "setup/send.json", ...[...blobs.keys(), send.tab.hash].map((h) => `blobs/${h}.bin`)]);
   for (const h of [...modules.keys(), ...Object.keys(send.modules).map((k) => `send_${k}`)]) for (const f of [`wgsl/${h}.wgsl`, `naga/${h}.wgsl`, `spv/${h}.raw.spv`, `spv/${h}.spv`]) kept.add(f);
   for (const [dir, names] of [[ingestDir, "ingest_"], [txDir, "send_"]]) for (const f of readdirSync(dir).filter((f) => f.endsWith(".comp"))) kept.add(`spv/${names}${f.replace(/\.comp$/, "")}.spv`);
-  const ours = { setup: /\.json$/, blobs: /^[0-9a-f]{16}\.bin$/, wgsl: /\.wgsl$/, naga: /\.wgsl$/, spv: /^([0-9a-f]{16}(\.raw)?|send_\w+|ingest_\w+)\.spv$/ };
+  const ours = { setup: /\.json$/, blobs: /^[0-9a-f]{16}\.bin$/, wgsl: /\.wgsl$/, naga: /\.wgsl$/, spv: /^([0-9a-f]{16}|send_\w+|ingest_\w+)(\.raw)?\.spv$/ };
   let gone = 0;
   for (const [d, re] of Object.entries(ours)) for (const f of readdirSync(new URL(`${d}/`, OUT))) if (re.test(f) && !kept.has(`${d}/${f}`)) { rmSync(new URL(`${d}/${f}`, OUT)); gone++; }
   if (gone) console.log(`${gone} files of an earlier run let go`);

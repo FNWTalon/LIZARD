@@ -180,6 +180,10 @@ struct Ticket {
 struct DeviceExtras {
   std::vector<std::string> instanceExts, deviceExts;
   bool graphics = false;
+  // ai: the queues at the global priority LOW where the device has VK_KHR_global_priority or VK_EXT_global_priority
+  // ai: (2026-10-27, for a receiver's decoder: the screen, the preview and the compositor go first, the decode in its
+  // ai: slack); the driver's default where it has neither. `lowPriority` on the Device says which took.
+  bool lowPriority = false;
 };
 
 struct Device {
@@ -192,6 +196,7 @@ struct Device {
   VkQueue queue2 = VK_NULL_HANDLE;
   VkCommandPool pool2 = VK_NULL_HANDLE;
   bool twoQueues = false;
+  bool lowPriority = false;   // ai: the queues made at the global priority LOW (DeviceExtras::lowPriority, where offered)
   uint32_t family = 0;
   VkCommandPool pool = VK_NULL_HANDLE;
   VkPipelineCache cache = VK_NULL_HANDLE;
