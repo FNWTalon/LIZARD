@@ -1,8 +1,8 @@
 # LIZARD
 
 LIZARD moves files from a screen to a phone camera, one way, with no network between them. The sending screen plays
-a stream of grey pictures; the phone films them and rebuilds the file. From a 1080p monitor to a recent phone it has
-carried up to about 4 MB/s (see [Status](#status)).
+a stream of grey pictures; the phone films them and rebuilds the file. From a 1080p monitor to a recent phone it
+carries about 4 MB/s (see [Status](#status)).
 
 - **Demo:** [fosslabs.dev](https://fosslabs.dev)
 - **How it works:** [an example on video](https://www.youtube.com/shorts/pjcAtQ7GcVQ)
@@ -294,7 +294,8 @@ h = G \, e
 
 where $`G`$, in milliseconds per unit of $`e`$, is learned as the lock runs (below). The only timing control the camera
 API gives is to make one frame longer: a single capture request with frame duration $`T_c + h`$ shifts every capture
-after it by $`h`$. A move earlier by $`x`$ is therefore made as a move later by $`T_d - x`$, one picture less $`x`$.
+after it by $`h`$. A move earlier by $`x`$ is therefore made as a move later by $`T_d - x`$, one picture less $`x`$. The
+camera reports whether it took each such request, so one it refused or aborted is known at once, not waited for.
 
 - Neither neighbour shows (both shares under 2%): the captures are clean, and the hold stands.
 - Only one shows: the captures sit at the edge of a clean region; the hold steps out of that edge and 2 ms in.
@@ -309,8 +310,14 @@ G \, \Delta e - p \, \tau = -h - p_{\mathrm{line}} \, \tau
 ```
 
 where $`p`$ is the display's pace against the camera (its slide per second) and $`p_{\mathrm{line}}`$ is the pace the
-hold assumed over that interval. Least squares over successive pairs of fits, the older ones fading, gives $`G`$ and
-$`p`$, and the hold cancels the measured slide as it goes instead of waiting for it to show up as an error.
+hold assumed over that interval. Each such pair of fits, and each return to a clean region's edge, is one observation
+of $`G`$ and $`p`$. The two are kept as one estimate with its covariance and updated observation by observation, as a
+Kalman filter does: each observation weighted by the variance its readings, the gain's own error and the wander of the
+camera's view give it; one far from what is expected moving the estimate only a bounded step (a jerk of the hand is
+not a drift of the clocks); both allowed to drift by their own process noise between observations. The newest
+observations also re-check the pace: where their median disagrees with the estimate beyond both errors, the estimate
+takes their value, so a bad start, or a pace kept from another screen, heals within seconds. The hold cancels the
+measured slide as it goes instead of waiting for it to show up as an error.
 
 The pilots do one more job in both decoders: the known symbols sit at every frequency, so they also measure any
 offset of a fraction of a sample left in the sampling grid (a grid offset turns each coefficient by an angle that
@@ -330,9 +337,11 @@ grows with its frequency), which is turned back before decoding.
   correct far more errors.
 - **One large code with many blocks**, rather than many small codes side by side: each small code would need its own
   finder marks and quiet zone, while one code spends its border once.
-- **Everything in the border, nothing inside.** The picture is a sum of waves that each span all of it, so cutting a
-  hole in it for an alignment mark costs much more than the hole's area (about eight times, measured). Finding and
-  deskewing use the border alone.
+- **The border outside, only small anchors inside.** The picture is a sum of waves that each span all of it, so a
+  hole cut in it costs more than the hole's area. Finding the code and its perspective use the border alone. The
+  border cannot see how a lens bends the picture between its edges, though, so 49 small anchors (1.2% of the picture)
+  are painted inside it and erased before the data is read: over 69 published lens calibrations, simulated, the GPU
+  decoder keeps about two thirds of its lens-free blocks without them and about 97% with them.
 - **A fountain and hashes, no back channel.** The camera can miss any frames; the file still arrives, and it is
   verified end to end.
 - **The decoder on the GPU.** Each frame needs finding, registering, a 2D FFT of up to 1536 x 1536 samples and LDPC
@@ -376,9 +385,9 @@ grows with its frequency), which is turned back before decoding.
 - **FOCUS** (Hermans et al., MobiSys 2016) made one OFDM code whose spectrum is split into sub-channels ordered by
   frequency, so a weaker camera decodes the inner ones; each sub-channel carried its own Reed-Solomon-coded fragment.
 
-LIZARD keeps FOCUS's modulation (frequency-ordered sub-channels of QPSK) and adds the self-describing border, soft
-LDPC with a code rate that follows the frequency, the interleaving, the pilots and the camera's phase lock, the
-transfer in the light, and the GPU decoder.
+LIZARD keeps FOCUS's modulation (frequency-ordered sub-channels of QPSK) and adds the self-describing border, the
+anchors, soft LDPC with a code rate that follows the frequency, the interleaving, the pilots and the camera's phase
+lock, the transfer in the light, and the GPU decoder.
 
 ## The format
 
@@ -393,11 +402,12 @@ format's arithmetic. Its sections:
 | 3. The formats | the 127 versions (LIZARD-16 to LIZARD-1024: sub-channels in steps of 8), the rate profile that sets each block's code rate, the picture size each version takes, the three rings, capacity, and how a sender picks a version for a screen |
 | 4. The border | module by module: rim, ring, gap, band, guard, the corner marks, the timing track and the margin |
 | 5. The format word | its fields (magic, version, display rate), its Reed-Solomon code and where its cells sit in each ring |
-| 6. The picture | the coefficient order, QPSK, the transform, clipping to grey, resampling onto the painted grid and where a receiver samples |
+| 6. The picture | the coefficient order, QPSK, the transform, clipping to grey, resampling onto the painted grid, the anchors, and where a receiver samples |
 | 7. Blocks and the transfer | the block, its bit map and whitening, the pilots, the block id, chunks and their fountains, the header and manifest blocks, and when a file is accepted |
 | 8. The LDPC code | the four quasi-cyclic codes (7/8, 3/4, 2/3, 1/2) as printed base matrices, their encoding, and soft-decision decoding |
 | 9 to 10 | frames over time (the display rate, the test stream, the fountain) and the two reference receivers |
-| 11 to 14 | measured facts, what was settled or rejected and why, open questions, and the changes over time |
+| 11 to 14 | the measurement behind the clip ratio, the main design choices and why, the open questions, and how the format changes |
+| 15. Replays | the `.lizard` file: its entries, the frame codec, and how a reader opens one |
 
 The format is not frozen: a sender and a receiver need the same release.
 
@@ -465,20 +475,18 @@ either painter decodes the same; the GPU's picture is within a grey level of the
 ## Status
 
 A research project, not a released product, and the format still changes. Measured on one phone (Samsung S26 Ultra)
-and the author's monitors:
+and the author's 1080p office monitors, by hand:
 
 | receiver | rate |
 |---|---|
-| Android app, two codes side by side (2:1 crop) | 3.8 MB/s median and 4.0 max over 13 minutes on a 1080p monitor (logged 2026-10-08): two LIZARD-592 codes of 70 blocks each at 60 pictures a second from the desktop sender, 96% of the blocks read on a clean capture |
-| Android app, one code | 1.3 to 1.6 MB/s logged (2026-10-01, before the code rate followed the frequency) |
-| Chrome on the same phone, through the web receiver's former GPU decoder | about 0.55 to 0.8 MB/s (one code, 2026-09-27, before the code rate followed the frequency). That decoder left the page on 2026-10-25; the page now decodes with the C, and no current figure for the page's C decoder on a phone exists |
+| Android app, two codes side by side (2:1 crop) | 4.1 MB/s median and 4.5 max over 27 s (logged 2026-10-27): two LIZARD-664 codes of 81 blocks each in the 256 ring at 60 pictures a second (the test stream), about 4.6 MB/s offered |
 
-Once the Android app's phase lock holds, the rate stays: its holds, by hand, read 0 to 3% of captures short (one
-phone, two monitors). What moves the rate from there is the camera, not the decoder: the app asks the camera for its
-picture with no sharpening, noise reduction or other enhancement (each is a filter over the code), and a phone that
-has warmed delivers fewer frames. The rate also depends heavily on the sending screen (contrast and brightness at
-their maximum, a steady frame rate) and on the receiving camera: phone cameras through a native app work best,
-browser cameras on laptops and webcams poorly.
+No current figure exists for one code alone (1:1), nor for the web receiver, which decodes with the C, on a phone.
+
+Once the Android app's phase lock holds, the rate stays. What moves it from there is the camera and the screen, not
+the decoder: the app asks the camera for its picture with no sharpening, noise reduction or other enhancement (each is
+a filter over the code), and the sending screen has to show every picture once, at a steady rate. The receiving
+camera matters most: phone cameras through a native app work best, browser cameras on laptops and webcams poorly.
 
 Everything was built and measured on Linux x86-64. The desktop app also runs on Windows and on macOS (Apple
 Silicon, through MoltenVK); there its sender has been checked only on virtual machines (Windows on a software Vulkan
@@ -523,8 +531,7 @@ liblizard/build.sh mvp         # the same module as WebAssembly 1.0 (lizard-mvp.
 
 `liblizard/build/ob.mjs`, the path the pages and tools import the codec by, re-exports the module. The web pages
 load its SIMD build, which needs WebAssembly SIMD and wasm exception handling (the library's `init()` falls back to
-the MVP build elsewhere; [liblizard/README.md](liblizard/README.md)). `liblizard/build.sh wirehair` and
-`liblizard/build.sh zstd`, the steps that once built those two separately, now run the default build.
+the MVP build elsewhere; [liblizard/README.md](liblizard/README.md)).
 
 **The web app.** Serve the repository's root over HTTP and open `lizard-web/index.html`; a camera needs HTTPS or
 localhost. `node lizard-web/server.mjs` serves it on 8080 and, with a self-signed certificate made by openssl, on 8443

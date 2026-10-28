@@ -42,7 +42,7 @@ static int ob_lens_no_report(void) {
 // ai: focus_encode paints them over the picture. acquire_core finds them through the corners' homography first, three
 // ai: modules wide, in rounds through the lens model the ones found so far give (anchor_grow), starts every border
 // ai: node's search from that model plus its measured neighbours' residuals from it, and fills the interior from the
-// ai: border and the anchors (border_fill_anchors) where it found eight or more; focus_finish erases them always.
+// ai: border and the anchors (border_fill_anchors) where it found OB_ANCH_MIN (12) or more; focus_finish erases them always.
 //
 // ai: the samples erased round an anchor's square (focus.c): two, measured on the published lenses' captures (one left
 // ai: the blurred rim in where the map sits a few tenths of a sample off: 26 of 192 frames lost blocks; three read as two)
