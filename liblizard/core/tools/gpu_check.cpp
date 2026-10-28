@@ -7,7 +7,7 @@
 //                                                 one batch, each frame's finder, word and blocks against the web's
 //                                                 reference at its tolerances (research/build/gpu_selftest_ref.json, or
 //                                                 _int8.json for an int8 variant); exit 1 on a difference
-//   lizard_gpu_check replay <run> [frames] [variant]   a recording (research/captures/v0.3/<run>.lizard) through the
+//   lizard_gpu_check replay <run> [frames] [variant]   a recording (research/replays/<run>.lizard) through the
 //                                                 decoder as the web's replay runs it (batches of the batcher's size,
 //                                                 two in flight, the held word carried in capture order): frames
 //                                                 found, words, verified blocks, GPU ms a frame
@@ -17,10 +17,10 @@
 // ai: liblizard/core/tools/bench_dot.comp -o liblizard/out/spv/bench_dot.spv (glslang 16, placed there by hand).
 // ai: selftest and dump read the self-test's frames and references, replay and receive a recording, ingest (Android)
 // ai: either: the lab's research/ (LIZ_BARCODE), which is not published. A recording is a .lizard (rx/lizfile.h; tools/
-// ai: recording.h): <LIZ_BARCODE>/captures/v0.3/<run>.lizard, or the path given where <run> has a '/'.
+// ai: recording.h): <LIZ_BARCODE>/replays/<run>.lizard, or the path given where <run> has a '/'.
 //
 // ai: Env: LIZ_OUT (the generated tree, liblizard/out; on the phone /data/local/tmp/lizard/out), LIZ_BARCODE (research/,
-// ai: for its build/ frames and references and its captures/ recordings), LIZ_VK_DEVICE (a substring of the device's name), LIZ_VALIDATE=1 (the
+// ai: for its build/ frames and references and its replays/), LIZ_VK_DEVICE (a substring of the device's name), LIZ_VALIDATE=1 (the
 // ai: Khronos validation layer), LIZ_CACHE=<path> (the pipeline cache file), LIZ_BUDGET=<MB> (the decoder's memory
 // ai: budget; 2048 by default, the web's on the S26). The anchors each frame read (SPEC 6.13): selftest prints them a
 // ai: frame and replay's totals line ends with them; LIZ_PERFRAME=1 (replay): a

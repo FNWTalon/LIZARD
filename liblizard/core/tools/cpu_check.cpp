@@ -1,7 +1,7 @@
 // ai: The CPU decoder's check: recorded frames through the native C (cpu/codec.h), on one thread or several.
 //   lizard_cpu_check info
 //   lizard_cpu_check replay <run> [frames] [threads] [seq|none]
-// ai: replay: the frames of the recording research/captures/v0.3/<run>.lizard (tools/recording.h; a path with a '/'
+// ai: replay: the frames of the recording research/replays/<run>.lizard (tools/recording.h; a path with a '/'
 // ai: too), each decoded once. seq (one thread, the default there): the held word is the last word read in frame order, as the
 // ai: web's blind replay carries it (sim/phy.mjs makeBlind), so the block total is comparable with
 // ai: `node scripts/exp/capture_check.mjs` (its default arm, blind) on the same run. none (the default on several
@@ -151,6 +151,6 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (cmd == "replay" && argc > 2) return replay(argv[2], argc > 3 ? atoi(argv[3]) : 0, argc > 4 ? std::max(1, atoi(argv[4])) : 1, argc > 5 ? argv[5] : "");
-  fprintf(stderr, "lizard_cpu_check info | replay <run> [frames] [threads] [seq|none]  (the recording $LIZ_BARCODE/captures/v0.3/<run>.lizard, ../research by default)\n");
+  fprintf(stderr, "lizard_cpu_check info | replay <run> [frames] [threads] [seq|none]  (the recording $LIZ_BARCODE/replays/<run>.lizard, ../research by default)\n");
   return 2;
 }
