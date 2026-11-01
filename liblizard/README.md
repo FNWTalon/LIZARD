@@ -32,8 +32,8 @@ reference the engine's C++ lock (`core/rx/phase_lock`) is held to; neither app c
    rate its word states, and one code or two side by side.
    `liz_geometry_of` gives what it paints; `liz_room_for` and `liz_pick` the room a symbol needs on a display and the
    most blocks that fit a room.
-2. **The per-frame codec**, on the CPU (NEON on arm64, WebAssembly SIMD in the wasm build, scalar elsewhere and in the
-   wasm MVP build).
+2. **The per-frame codec**, on the CPU (NEON on arm64, SSE4.1 on x86-64 with AVX2 and AVX-512 forms of the LDPC chosen
+   at run time, WebAssembly SIMD in the wasm build, scalar elsewhere and in the wasm MVP build).
    `liz_encoder_paint`: a frame's blocks to its picture, grey or four bytes a pixel, the frame's count for the pilots.
    `liz_decode`: a captured image, or one region of it (`liz_layout_rects`: the centre square, or the two halves of a
    2:1 region), to its verified blocks; the caller keeps the held word (the last word read), the one thing carried from

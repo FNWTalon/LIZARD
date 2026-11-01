@@ -12,8 +12,8 @@ export function whiten(count) {
 
 const gcd = (a, b) => { while (b) { const t = a % b; a = b; b = t; } return a; };
 
-// Slot i of a block carries sent bit perm[i], codeword bit np + perm[i] (focus.c perm_fill; np the bits a code never
-// sends, 128 at 7/8, 0 elsewhere): n is the sent length nt. The format's one bit map, LINEAR (src/focus.h
+// Slot i of a block carries sent bit perm[i], codeword bit sentBit(code, perm[i]) (focus.c perm_fill, sent_bit; below):
+// n is the sent length nt. The format's one bit map, LINEAR (src/focus.h
 // FOCUS_BITMAP): slot i takes bit i P mod n, P the integer nearest n over the golden ratio squared, stepped up until
 // prime to n.
 export function perm(n) {
@@ -23,6 +23,11 @@ export function perm(n) {
   for (let i = 0; i < n; i++) p[i] = (i * P) % n;
   return p;
 }
+
+// ai: Sent bit j's codeword bit (focus.c sent_bit): every bit is sent but a code's last np data bits, the 7/8 code's 128
+// ai: zeros past the block (data column 30, known to a decoder), which no slot carries (unsent); np 0 at 3/4, 2/3, 1/2.
+export const sentBit = (code, j) => (j < code.k - code.np ? j : j + code.np);
+export const unsent = (code, j) => j >= code.k - code.np && j < code.k;
 
 export function inverse(p) {
   const inv = new Int32Array(p.length);

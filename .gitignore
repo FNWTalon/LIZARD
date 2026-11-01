@@ -4,6 +4,7 @@
 /scripts/
 /research/*
 !/research/SPEC.md
+/replays
 /.vscode/
 CLAUDE.md
 

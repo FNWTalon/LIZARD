@@ -122,7 +122,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
   let layAt: u32 = TAB[h + 6u];
   let permAt: u32 = TAB[h + 7u];
   let slots: u32 = TAB[h + 8u];   // ai: the block's slots: its sent bits, then its pilots
-  let nt: u32 = TAB[h + 9u];   // ai: the bits sent, n less the code's first np (the 7/8 code's 128): the slots the codeword fills
+  let nt: u32 = TAB[h + 9u];   // ai: the bits sent, n less the code's np never sent (the 7/8 code's 128 known zeros): the slots the codeword fills
   let cpl: u32 = (m + TH - 1u) / TH;
   let slot0: u32 = tt.y + (b - tt.x) * slots;
   // ai: this block's bit of its symbol's frame's count: the pilots' flip
@@ -188,7 +188,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
   }
   workgroupBarrier();
   // ai: Slots 2 cc and 2 cc + 1 of coefficient cc (every code's nt is even: a pair is inside the sent bits or past them),
-  // ai: one bit map word the pair (each entry a codeword bit, the never-sent np already added); the whitening at the frame's slot.
+  // ai: one bit map word the pair (each entry a codeword bit, the never-sent ones already skipped: back/bitmap.mjs sentBit); the whitening at the frame's slot.
   let uvBase: u32 = P.sizes[0].y + slot0 / 2u;
   let sBase: u32 = r * P.dims.y;
   for (var cc: u32 = i; cc < slots / 2u; cc = cc + TH) {

@@ -7,7 +7,7 @@
 //   st.blocks[v]       // the blocks a frame of version v carries (its pilots and blocks are read over them)
 //   st.exportFor(idOf) // what the native host replays (../../gen/gen.mjs, core/dec/front.cpp)
 import { N_FOR, subchOf } from "../../sim/lizard_pick.mjs";
-import { whiten, perm, inverse } from "./bitmap.mjs";
+import { whiten, perm, inverse, unsent } from "./bitmap.mjs";
 import { ruleTables } from "./codes.mjs";
 import { crcPowers, PAYLOAD, stopFor } from "./ref_ldpc.mjs";
 import { netWords } from "./stop/rule.mjs";
@@ -36,9 +36,10 @@ export function ruleContents(rt, nets = []) {
     tab[o + 1] = rt.profiles[v].used;
   }
   rt.codes.forEach((code, c) => {
-    // ai: codeword bit j's slot: the bit map over the nt sent bits, offset by the np never sent, which read 0xffff (no slot)
+    // ai: codeword bit j's slot: the bit map over the nt sent bits (bitmap.mjs sentBit), 0xffff (no slot) for a bit never
+    // ai: sent (the 7/8 code's known zeros, which the LDPC takes as known from KNOWN whatever INV says)
     const inv = inverse(perm(code.nt));
-    for (let j = 0; j < code.n; j++) tab[L.inv[c] + (j >> 1)] |= (j < code.np ? 0xffff : inv[j - code.np]) << (16 * (j & 1));
+    for (let j = 0; j < code.n; j++) tab[L.inv[c] + (j >> 1)] |= (unsent(code, j) ? 0xffff : inv[j < code.k - code.np ? j : j - code.np]) << (16 * (j & 1));
   });
   const w = whiten(WHITE_SLOTS);
   for (let i = 0; i < WHITE_SLOTS; i++) if (w[i]) tab[L.WHITE + (i >> 5)] |= 1 << (i & 31);

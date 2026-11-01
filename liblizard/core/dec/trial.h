@@ -57,10 +57,10 @@ struct TrialFrames {
   double paintMs = 0;
 };
 // ai: The known frames' noise, grey levels (standard deviation): from lizard_gpu_check noise on the 4090 (2026-11-01,
-// ai: the 476-byte block's z-128 codes at 39/15/20 of the slots; every variant and form, 448 blocks a run): every block
-// ai: read from 0 to 20, the first lost at 22 (the float variants and int8; int8-sg at 24); 14 the nearest whole level
-// ai: at least 3.5 dB inside that edge (3.9 dB). Under the format before (473 bytes) the edge was 36 and the level 24.
-constexpr double TRIAL_NOISE = 14;
+// ai: the 476-byte block's z-128 codes, every frame in its own paint at 2 or more pixels a module; every variant and
+// ai: form, 448 blocks a run): every block read from 0 to 32, the first lost at 36, as under the format before; 24 is
+// ai: 3.5 dB inside that edge. (With LIZARD-128 painted at a pixel a module and shown at two, the first block lost at 22.)
+constexpr double TRIAL_NOISE = 24;
 // ai: pictures: the setup's ("pictures", a size each with its top sub-channels)
 TrialFrames paintTrial(const json& pictures, double noise = TRIAL_NOISE);
 

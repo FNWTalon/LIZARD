@@ -45,7 +45,7 @@
 import { irowsSource, ipicSource } from "./wgsl/inverse.mjs";
 import { paintSource, tposeSource, rsvSource, rshSource, presentSource, TPOSE_TILE, RSV_THREADS, RSH_THREADS, GA_BYTES } from "./wgsl/send.mjs";
 import { transformTables } from "./back/disc.mjs";
-import { whiten, perm } from "./back/bitmap.mjs";
+import { whiten, perm, sentBit } from "./back/bitmap.mjs";
 import { ruleTables } from "./back/codes.mjs";
 import { CODES, WHITE_SLOTS } from "./plan/back_tiers.mjs";
 import { PARAMS_AT } from "./wgsl/back_ldpc.mjs";
@@ -64,7 +64,7 @@ const BLOCK_BYTES = 480;
 // ai: The paint's TAB (wgsl/send.mjs paintSource) from the codec's codes (back/codes.mjs ruleTables: { codes }, the
 // ai: codes in CODES' order): word 0 the whitening's offset; 16 words a code at 16 + 16 c, (n, k, m, z, mb, rows,
 // ai: lay, perm, slots, nt: slots a block's); a code's block rows' first entries (mb + 1), its entries (col | shift << 16), its bit map
-// ai: (slot i's codeword bit, np + perm[i], in the half i & 1 of word i >> 1, over the nt sent bits); the whitening, a
+// ai: (slot i's codeword bit, back/bitmap.mjs sentBit of perm[i], in the half i & 1 of word i >> 1, over the nt sent bits); the whitening, a
 // ai: bit a slot of the frame over 1024 sub-channels and a word past them. The same for every format: gen/sender.mjs
 // ai: bakes it for the native painter.
 export function sendTab({ codes }) {
@@ -82,7 +82,7 @@ export function sendTab({ codes }) {
     for (let r = 0; r <= c.mb; r++) tab[a.rows + r] = c.lay[r];
     for (let e = 0; e < c.slots; e++) tab[a.lay + e] = c.lay[c.mb + 1 + 2 * e] | (c.lay[c.mb + 2 + 2 * e] << 16);
     const p = perm(c.nt);
-    for (let i = 0; i < c.nt; i++) tab[a.pm + (i >> 1)] |= (c.np + p[i]) << (16 * (i & 1));
+    for (let i = 0; i < c.nt; i++) tab[a.pm + (i >> 1)] |= sentBit(c, p[i]) << (16 * (i & 1));
   });
   const w = whiten(WHITE_SLOTS);
   for (let i = 0; i < WHITE_SLOTS; i++) if (w[i]) tab[WHITE + (i >> 5)] |= 1 << (i & 31);

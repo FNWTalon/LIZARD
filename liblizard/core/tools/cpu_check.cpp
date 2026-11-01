@@ -1,6 +1,6 @@
 // ai: The CPU decoder's check: recorded frames through the native C (cpu/codec.h), on one thread or several.
 //   lizard_cpu_check info
-//   lizard_cpu_check replay <run> [frames] [threads] [seq|none]
+//   lizard_cpu_check replay <run> [frames] [threads] [seq|none|time]
 // ai: replay: the frames of the recording research/replays/<run>.lizard (tools/recording.h; a path with a '/'
 // ai: too), each decoded once. seq (one thread, the default there): the held word is the last word read in frame order, as the
 // ai: web's blind replay carries it (sim/phy.mjs makeBlind), so the block total is comparable with
@@ -9,7 +9,9 @@
 // ai: result does not depend on the order frames finish in, and the digest over every frame's result (what it found,
 // ai: its word, its blocks, each block's iterations and estimate) is the same at any thread count: the race check. On
 // ai: one thread a second digest, "floats", is the codec's own hash of the floats and soft values behind each decode:
-// ai: with the first, the vector build's check against the scalar one.
+// ai: with the first, the vector build's check against the scalar one. time (one thread): seq without that hash, which
+// ai: hashes every coefficient and soft value of a frame (about 4 ms a frame on an S26 core): the stage times as the
+// ai: receivers run.
 // ai: info runs on its own; replay reads a recording, the lab's research/ (LIZ_BARCODE), which is not published.
 // ai: Env: LIZ_BARCODE (../research), LIZ_PASSES (1: timing passes over the frames), LIZ_NMAX (1536: every picture of the ladder, as the receiver's pool).
 #include "codec.h"
@@ -74,7 +76,8 @@ static int replay(const std::string& run, int want, int threads, std::string mod
   frames = (int)px.size();
   if (!frames) { fprintf(stderr, "no frames in %s\n", recordingPath(envOr("LIZ_BARCODE", "../research"), run).c_str()); return 2; }
   if (mode.empty()) mode = threads == 1 ? "seq" : "none";
-  if (mode == "seq" && threads != 1) { fprintf(stderr, "seq carries the held word in frame order: one thread\n"); return 2; }
+  if ((mode == "seq" || mode == "time") && threads != 1) { fprintf(stderr, "%s carries the held word in frame order: one thread\n", mode.c_str()); return 2; }
+  const bool hashing = threads == 1 && mode != "time", ordered = mode == "seq" || mode == "time";
   const auto axes = replayAxes(mj, dims);
   const int passes = std::max(1, atoi(envOr("LIZ_PASSES", "1").c_str())), nmax = atoi(envOr("LIZ_NMAX", "1536").c_str());
   std::vector<FrameResult> res(frames);
@@ -93,14 +96,14 @@ static int replay(const std::string& run, int want, int threads, std::string mod
       cpu_prof_reset();
       for (int i = t; i < frames; i += threads) {
         FrameResult r;
-        if (threads == 1) cpu_hash_arm();
+        if (hashing) cpu_hash_arm();
         const double a = nowMs();
         cpu_dec_set_axis(axes[i][0], axes[i][1]);
-        r.got = cpu_dec_frame(d, px[i].data(), dims[i].first, dims[i].second, mode == "seq" ? held : 0, blocks.data(), ok.data(), &r.fr);
+        r.got = cpu_dec_frame(d, px[i].data(), dims[i].first, dims[i].second, ordered ? held : 0, blocks.data(), ok.data(), &r.fr);
         r.ms = nowMs() - a;
         if (r.fr.word) held = r.fr.version;
         r.digest = digestOf(d, r.fr, r.got, blocks.data(), ok.data(), bb);
-        if (threads == 1) r.deep = cpu_hash_take();
+        if (hashing) r.deep = cpu_hash_take();
         res[i] = r;
       }
       if (threads == 1) for (int k = 0; k < CPU_PROF_N; k++) prof[k] = cpu_prof_ms(k);
@@ -125,7 +128,7 @@ static int replay(const std::string& run, int want, int threads, std::string mod
   double sum = 0;
   for (double v : ms) sum += v;
   char deepText[40] = "";
-  if (threads == 1) snprintf(deepText, sizeof deepText, ", floats %016llx", (unsigned long long)deep);
+  if (hashing) snprintf(deepText, sizeof deepText, ", floats %016llx", (unsigned long long)deep);
   printf("%s: %d frames, %d found, %d words, %d held, %d finished, %ld verified blocks; digest %016llx%s (%s, %s)\n", run.c_str(), frames, found, words, held, finished, blocks,
          (unsigned long long)all, deepText, mode.c_str(), cpu_simd() ? "vector" : "scalar");
   printf("  %d thread%s: %.2f ms a frame on its thread (median %.2f, slowest %.1f); a pass of the frames %.0f ms, %.1f frames a second\n", threads, threads == 1 ? "" : "s", sum / frames, ms[ms.size() / 2],
@@ -149,6 +152,6 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (cmd == "replay" && argc > 2) return replay(argv[2], argc > 3 ? atoi(argv[3]) : 0, argc > 4 ? std::max(1, atoi(argv[4])) : 1, argc > 5 ? argv[5] : "");
-  fprintf(stderr, "lizard_cpu_check info | replay <run> [frames] [threads] [seq|none]  (the recording $LIZ_BARCODE/replays/<run>.lizard, ../research by default)\n");
+  fprintf(stderr, "lizard_cpu_check info | replay <run> [frames] [threads] [seq|none|time]  (the recording $LIZ_BARCODE/replays/<run>.lizard, ../research by default)\n");
   return 2;
 }

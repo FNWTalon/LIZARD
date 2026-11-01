@@ -291,8 +291,8 @@ room (3.5, 9.5).
 | 1/2 | 7680 | 7680 (7680) | 128 | 0 | 3840 | 0 |
 
 - A block's slots are its code's nt sent bits and then its tail, the slots that carry the pilots (7.3): 16 at 7/8 and
-  32 at 3/4; a 2/3 or 1/2 block has none. Every code is lifted by z = 128 (section 8); the 7/8 code's first data
-  column, its first 128 bits, is never sent (np = 128, 8.6).
+  32 at 3/4; a 2/3 or 1/2 block has none. Every code is lifted by z = 128 (section 8); the 7/8 code's last data
+  column, the 128 zero information bits past the CRC, is never sent (np = 128, 8.6).
 - The information word is the 476 block bytes and their CRC-32, 3840 bits, the k of the 3/4, 2/3 and 1/2 codes; the
   7/8 code's k holds 128 zero bits past them (7.1). A block is 476 bytes whatever its rate (`focus.h:FOCUS_BLOCK`, `focus.c:init`, `block_bytes`).
 - The first 4 of the 476 bytes are the block id (7.5), which leaves 472 useful bytes (3776 bits).
@@ -1003,35 +1003,35 @@ Decoded, the entries equal 6.3's sort at every coefficient of LIZARD-64, -144, -
 enlarged by 4/3 through the taps of 6.8.
 
 - slot bits, one byte (0 or 1) a slot, 40,960 bytes: P3's (the slots do not depend on the ring), SHA-256
-  `aa838dca9d956b1a005ef5577514aafd5e5e955c44d0dd00fdbd7901668a8915`
+  `04e27f794b080a1ebc30d409405851e011e18ac904c713fa75f9bb6917799353`
 - the same packed 8 to a byte, first slot in the most significant bit, first 16 bytes:
   `00043e000efd03e0f0ffffcc000c0c03`
 - sigma = 202.385773, L = 404.771545
 - drive 572 x 572 (S = 286, pxm = 2; scale = 1.5, so the picture is upscaled by 4/3 through the taps of 6.8). Drive
-  values at row 30, columns 30 to 33 (the picture's first pixel row and column): 0.5042297, 0.4902562, 0.7274472, 1.0000000
-- grey bytes at row 30, columns 30 to 45: `129 125 185 255 255 206 133 124 184 244 237 166 92 58 75 113`
-- grey bytes at row 345, columns 345 to 360: `119 104 105 107 114 138 176 206 195 142 71 21 13 46 127 216`
+  values at row 30, columns 30 to 33 (the picture's first pixel row and column): 0.4950773, 0.4724883, 0.6975312, 0.9888784
+- grey bytes at row 30, columns 30 to 45: `126 120 178 252 255 209 139 131 188 242 231 160 91 65 89 129`
+- grey bytes at row 345, columns 345 to 360: `113 94 95 99 110 140 183 217 207 151 75 18 5 35 118 211`
 - the anchors (6.13): a = 4 modules, 8 pixels, from modules 31, 68, 104, 141, 178, 214, 251 on either axis. Grey bytes at
   row 64 (anchor (0, 0)'s third pixel row), columns 60 to 71, the square at columns 62 to 69:
-  `53 107 255 255 0 0 0 0 255 255 117 129`
+  `62 111 255 255 0 0 0 0 255 255 106 114`
 - grey bytes of the resampled square, pixels [24, 548) on both axes (modules [12, 274)), row by row, 274,576 bytes:
-  SHA-256 `c1d3c53aef9a077764fa93f1b81d3b3f8e5528d60966da5ae988aa1a8b02618c`; 4888 of them are 0 and 6929 are 255
+  SHA-256 `8aeda0414b3b27d7711a5acd994531a16c14acffb8f0a4f025cb65a59d4de4e3`; 4897 of them are 0 and 6900 are 255
 - grey bytes of the whole drive, border included, 327,184 bytes: SHA-256
-  `84526dc2734030b98a2892f90fec31144ad0ef7e0fe5418e8bc130d46e7dbdbe`
+  `27c1a4bdd0794e7b955a94a7336f78a51e1186b0a38b17e772ec05d8b12ddb77`
 
 **P3, LIZARD-64 (n = 384, 7 blocks) in the 64 ring, every payload byte zero.** pxm = 3, scale 3: a copy. Its slot bits
 are P2's.
 
-- slot bits, one byte a slot, 40,960 bytes: SHA-256 `aa838dca9d956b1a005ef5577514aafd5e5e955c44d0dd00fdbd7901668a8915`
+- slot bits, one byte a slot, 40,960 bytes: SHA-256 `04e27f794b080a1ebc30d409405851e011e18ac904c713fa75f9bb6917799353`
 - drive 474 x 474 (S = 158, pxm = 3; scale = 3, so the picture is copied one pixel a sample); the picture starts at
   pixel 45
-- grey bytes at row 45, columns 45 to 60: `137 159 255 255 160 119 202 253 183 91 70 104 139 143 123 139`
+- grey bytes at row 45, columns 45 to 60: `136 154 247 255 163 126 206 249 176 91 81 119 148 139 109 122`
 - the anchors (6.13): a = 2 modules, 6 pixels, from modules 23, 41, 60, 78, 96, 115, 133 on either axis. Grey bytes at
-  row 71 (anchor (0, 0)'s third pixel row), columns 66 to 77, the square at columns 69 to 74: `57 88 121 255 0 255 255 0 255 93 105 98`
+  row 71 (anchor (0, 0)'s third pixel row), columns 66 to 77, the square at columns 69 to 74: `62 96 126 255 0 255 255 0 255 86 96 91`
 - grey bytes of the resampled square, pixels [36, 438) (modules [12, 146)), 161,604 bytes: SHA-256
-  `458729a5285a7c68be00958695118db08f011773a852fa4d65f82146e1028a0f`
+  `35967d2409d3eff8c40d94b1e449bd6a70c1bbf432d532c6074c6600f7209f3b`
 - grey bytes of the whole drive, 474 x 474, 224,676 bytes: SHA-256
-  `e5d430387739564fea4a55dc88ce34422a2199e0c7cb729b22b0f861b2a69a6d`. The border holds the RS(16, 3) word (5.2)
+  `db6422590e50b169cfee2561e925bec21be730286e32b3e68f11168aecf7a1a6`. The border holds the RS(16, 3) word (5.2)
 
 **Digests over the ladder.** `node test/vectors.mjs [ob.mjs]`, run from `liblizard/`, checks 5.2, P2, P3, 7.4 and 9.3
 against a build and prints three digests to diff two builds, each over LIZARD-64 to -1024 in steps of 16 in the 64
@@ -1111,18 +1111,19 @@ component (6.5). In LIZARD-656 the blocks start at frame slots 0, 4496, ..., 157
 
 ### 7.3 The bit map
 
-A codeword has n bits, of which the first np are never sent (np = 128 at 7/8, 0 otherwise, 8.6); the nt = n - np sent
-bits fill the first nt of the block's L_b slots, and the rest is the tail. The format's one map is LINEAR
+A codeword has n bits, of which np are never sent: codeword bits k - np to k - 1, the 7/8 code's zero information bits
+past the CRC (np = 128 at 7/8, 0 otherwise, 8.6). Sent bit t is codeword bit s(t) = t for t < k - np and t + np
+otherwise; the nt = n - np sent bits fill the first nt of the block's L_b slots, and the rest is the tail. The format's one map is LINEAR
 (`focus.h:FOCUS_BITMAP` = 3). For block b, its codeword c (section 8), the whitening w and the pilot bit q:
 
 ```
-slot[i] = (i < nt ? c[np + ((st * i) mod nt)] : q) XOR w[S_b + i],    i = 0 .. L_b - 1
+slot[i] = (i < nt ? c[s((st * i) mod nt)] : q) XOR w[S_b + i],    i = 0 .. L_b - 1
 ```
 
 Frame slot i of the padding (S_B(V) <= i < 640 subch) is w[i]: a coefficient there carries the whitening alone.
 
 **The permutation** (`focus.c:perm_fill`). The stride st is floor(0.3819660113 nt + 0.5) (1/phi^2), then raised by 1
-until gcd(st, nt) = 1. Sent bit t (codeword bit np + t) lies on slot st^-1 t mod nt.
+until gcd(st, nt) = 1. Sent bit t (codeword bit s(t)) lies on slot st^-1 t mod nt.
 
 | rate | nt | np | st | st^-1 mod nt | tail slots T | tail coefficients of the block |
 |---|---|---|---|---|---|---|
@@ -1195,7 +1196,7 @@ Bit strings are hex, four bits a digit, the first bit the most significant. The 
 | codeword bits 3840 to k - 1 | 128 zeros | 128 zeros | 128 zeros | 128 zeros |
 | codeword bits k to k + 127 (parity p_0 to p_127) | `e9266e19f9d8d7cc96857e9f8fc572c9` | `e6d991e606272833697a8160703a8d36` | `e9266e19f9d8d7cc96857e9f8fc57236` | `e6d991e606272833697a8160703a8dc9` |
 | whitening under its slots 0 to 127 (frame slots S_b to S_b + 127) | `00003e000ffc03e0f8ffffce000c1c03` | `602e8acbffa7681694d5881cc9170bd7` | `ab494584c3ea397d5a2dac3f3057b275` | `4531d3c6175609fb2e6d3dc7950a6a68` |
-| slots 0 to 127 | `76307924e151d57c8782f7c4e1adde13` | `161aedcf100bb682a3e8c01628a6c9c7` | `dd7d02a02c46efe92550a435d1f66065` | `3301b4c2f9fbd767195075cd74bbb878` |
+| slots 0 to 127 | `75327e236757d37a0084f2c064a9db97` | `1518eac8960db08464eec512ada2cc43` | `de7f05a7aa40e9efa256a13154f265e1` | `3003b3c57ffdd161de5670c9f1bfbdfc` |
 | the tail (the pilots), c = 0 | slots 4480 to 4495 `5a69` | slots 4480 to 4495 `6e57` | slots 4480 to 4495 `80c1` | slots 4480 to 4495 `bc79` |
 | the tail, c = 1 | `a596` | `6e57` | `7f3e` | `bc79` |
 | the tail, c = 2 | `5a69` | `91a8` | `80c1` | `4386` |
@@ -1222,7 +1223,7 @@ The padding's first 128 slots, frame slots 36,576 to 36,703, are the whitening t
 
 SHA-256 of each whole codeword, packed most significant bit first (a 7/8 codeword's 4608 bits include the 128 never
 sent): block 0 (4608 bits) `a62fac54602b23b03e30eb47aaa7f8e983f7d19bc8c7e13713eba2640a23c088`, block 1 (4608 bits) `152ae7463835c31782ca4980d5c592c817b1b66a3a7b976c47fd0f5f436a6700`, block 2 (4608 bits) `602e5bbe31440df25be5562e371c15eb771046800dd05375348c84bf7b182e07`, block 3 (4608 bits) `3fda58ac7bd787b16da65e3da29ea12528f98a3a8bf41020f8fffd30517d95d4`, block 4 (5120 bits) `3be83a78fef345f13645e840469519501a7b01da4576f78d8a5b5713d7fd7035`, block 5 (5760 bits) `958111ce99624a166d811a1f75c056f3a09127a58238d7d84c3b4abe28886671`, block 6 (7680 bits) `2925aaea9a62cbe2c1b4b6c546071eaf2e96a5cd70b9edcb5e4de979155609b8`. SHA-256 of the frame's 40,960 slots
-packed the same way (5120 bytes), c = 0: `f0c188c164a38767e4ef8538f96bafb9ef6bda900ff3969571cb17839418c7ed`. At c = 1, 2 and 3 (`f.setParity(c)` before the encode below;
+packed the same way (5120 bytes), c = 0: `994f4750a6596def85a66fdbcacb9866edbbc827c1c408ad6ba5e010793b46cb`. At c = 1, 2 and 3 (`f.setParity(c)` before the encode below;
 only the pilot slots of the blocks whose bit is 1 differ):
 `e5bbfe8c31afa6ba38bfa27dbd3c621f1d51f8982f6be2db08dda65231b117b5`,
 `26d07dc9a5636e452679c3429d31b7ea3b7f0a11064dc5831dd5571552232ebe`,
@@ -1511,7 +1512,7 @@ r \ j  18  19  20  21  22  23  24  25  26  27  28  29
 ### 8.3 How the tables were made (non-normative)
 
 All four come from `scripts/exp/ldpc_opt.py` `generate(z, mb, kb, degrees(kb, heavy), seed, np)` at z = 128, which
-regenerates them exactly: 7/8 (5 block rows, 31 data columns, 5 of degree 5, seed 1, the first column never sent), 3/4
+regenerates them exactly: 7/8 (5 block rows, 31 data columns, 5 of degree 5, seed 1), 3/4
 (10, 30, 6 of degree 10, seed 2), 2/3 (15, 30, 7 of degree 11, seed 1), 1/2 (30, 30, 12 of degree 8, seed 1); the other
 data columns of degree 3. The columns are placed in order, each edge in the lightest block row, and every shift of 0 to
 z - 1 is scored by the exact count of 4- and 6-cycles through the whole base matrix, the staircase included. The heavy
@@ -1537,9 +1538,9 @@ as it likes. The reference (`focus.c` `focus_finish_ext`, `axis_info`, `map_in`;
   the means of |y|^2 and |y|^4; A2 = sqrt(max(0, 2 m2^2 - m4)), the signal power; N = max(m2 - A2, 0.02 m2); each
   axis LLR = 0.7 x 2 sqrt(2 A2) / N x y_axis, clipped to [-10, 10] and stored as int8 = round(8 x LLR), ties to even,
   for every slot of the frame. A block reads its slots' values whatever sub-channels they fall in.
-- **Per block**, slot order to codeword order: L_code[np + (st i mod nt)] = L_slot[i] for i < nt, negated where
-  w[S_b + i] = 1; the tail dropped; at 7/8 the 128 zero information bits past the CRC fed as certain zeros (+127) and
-  the 128 bits never sent as 0 (nothing known).
+- **Per block**, slot order to codeword order: L_code[s(st i mod nt)] = L_slot[i] for i < nt, negated where
+  w[S_b + i] = 1; the tail dropped; at 7/8 the 128 bits never sent, the zero information bits past the CRC, fed as
+  certain zeros (+127).
 - **Decline gate.** Each sub-channel's information per coded bit is J(2 sqrt(A2 / N)), with
   J(sigma) = (1 - 2^(-0.3073 sigma^1.787))^1.1064; a block's estimate is the mean over its slots of their sub-channels'
   information (each sub-channel weighted by the block's slots in it), and a block whose estimate is under 0.2 k / nt
@@ -1557,9 +1558,9 @@ data column j, codeword bit k + c is parity bit c, and check c = mb i + r (r the
 0 to 127) holds data bit 128 j + ((i - sh[r][j]) mod 128) for each shift of block row r, parity bit c - 1 when c > 0,
 and parity bit c. Encoding is 8.4's accumulator over the m checks.
 
-The 7/8 code's data column 0 (codeword bits 0 to 127, the first 128 information bits: block bytes 0 to 15) is never
-sent. A block's 4480 code slots carry codeword bits 128 to 4607 (7.3); a receiver feeds bits 0 to 127 as nothing known,
-and the code recovers them.
+The 7/8 code's data column 30 (codeword bits 3840 to 3967, the 128 zero information bits past the CRC) is never sent.
+A block's 4480 code slots carry codeword bits 0 to 3839 and 3968 to 4607 (7.3); a receiver feeds bits 3840 to 3967 as
+certain zeros.
 
 | | 7/8 | 2/3 | 1/2 |
 |---|---|---|---|
@@ -1567,14 +1568,14 @@ and the code recovers them.
 | codeword n | 4608 = 36 z, of which 4480 = 35 z sent | 5760 = 45 z | 7680 = 60 z |
 | information k | 3968 = 31 z | 3840 = 30 z | 3840 = 30 z |
 | parity bits and checks m | 640 = 5 z | 1920 = 15 z | 3840 = 30 z |
-| base graph | 5 block rows, 31 data columns, column 0 never sent | 15 block rows, 30 data columns | 30 block rows, 30 data columns |
+| base graph | 5 block rows, 31 data columns, column 30 (the zeros) never sent | 15 block rows, 30 data columns | 30 block rows, 30 data columns |
 | data column degree | 5 for columns 0 to 4, 3 for 5 to 30 | 11 for columns 0 to 6, 3 for 7 to 29 | 8 for columns 0 to 11, 3 for 12 to 29 |
 | data circulants | 103, 21 in rows 0, 1, 3 and 20 in rows 2, 4 | 146, 10 in rows 0, 3, 4, 6 to 12, 14 and 9 in rows 1, 2, 5, 13 | 150, 5 in every block row |
 | check degree | 22 or 23: 20 or 21 data bits and 2 parity bits (check 0 one fewer) | 11 or 12 (check 0 one fewer) | 7 (check 0 one fewer) |
 | edges | 14,463 | 22,527 | 26,879 |
 | H, FNV-1a over row pointers and column indices (`liblizard/test/ldpc_table.c`) | 6f67223a | 27d3a72e | 721499de |
 
-The reference ships them as `ldpc_base.h:LDPC_BASE78` (`LDPC_BASE78_NP` = 1, the columns never sent), `LDPC_BASE23` and
+The reference ships them as `ldpc_base.h:LDPC_BASE78` (`LDPC_BASE78_NP` = 1, the last data columns never sent), `LDPC_BASE23` and
 `LDPC_BASE12`, from which `ldpc_init` builds the codes by their rates.
 
 **The 7/8 shift table** (a dash: no circulant):
@@ -1801,7 +1802,7 @@ two pilot readings (7.3), and the Android app holds its camera's phase against t
 ### 10.1 The C decoder (`liblizard/src/`)
 
 The reference, built to wasm for the web receiver (a worker pool, one thread a worker) and natively for the apps
-(NEON on arm64, `liblizard/core/cpu/`). `wasm.c:focus_any_setup(nmax)` builds a codec a ring;
+(NEON on arm64, SSE4.1 on x86-64, `liblizard/core/cpu/`). `wasm.c:focus_any_setup(nmax)` builds a codec a ring;
 `focus_any_rx(img, iw, ih, gamma, mesh, blocks, ok, held)` registers the frame against the three rings' layouts, reads
 the word in the ring that registered, builds (and caches, `FOCUS_ANY_PICS` = 2) the codec for that ring and version,
 and finishes the frame there, or at the held version `held` (0 for none) when the word does not read. The steps of one
@@ -1861,7 +1862,7 @@ one phone, 2:1, the 256 ring).
 | Every code at z = 128, each its own base graph; the block 476 bytes | a z that fills 64-lane waves and 128-lane workgroups: on recorded captures re-modulated under the codes (the integrated GPU, the learned stops on) 6 to 7% more blocks per GPU millisecond than the codes before (z 93, 106, 120, 160) at the same split, 9 to 10% on the same captures 1 dB worse; block lengths from half to twice 473 bytes moved that by a few percent at most. 476 bytes and the CRC-32 fill the 3/4, 2/3 and 1/2 codes' k: no information bit there is a known zero |
 | Blocks packed by slots, the remainder padded | whole sub-channels a block would fix each code's length to a multiple of 640 slots; the padding is under 2% of a frame from LIZARD-320 up |
 | H a printed table, not a construction | a construction would let a change of seed or score move the format silently |
-| No 5G NR tables, no polar codes | patents; the 7/8 code borrows only the idea of a column never sent |
+| No 5G NR tables, no polar codes | patents |
 | Three rings, any ring for any picture, version decoupled from size | the ring is the sync layer chosen for the room, the word says what is inside |
 | No retry at the other rings when a word fails | a frame whose word fails has failed throughout |
 | Picture sizes 256, 384, 512, 768, 1024, 1152, 1280, 1536 | no step more than 1.5 times the samples; 1152 and 1280 cut the samples a sender paints and the C reads by 0.56 and 0.69 for the formats between 1024 and 1536; radix 2 with radix-3 and radix-5 stages |

@@ -421,7 +421,7 @@ between frames is the last format word it read: a frame whose own word is unread
 ### Receiving on the CPU (`liblizard/src/`)
 
 The reference decoder, in C. It runs as WebAssembly with SIMD in a pool of web workers (the web receiver's one
-decoder), and natively in the Android and desktop apps on a pool of threads (NEON on arm64):
+decoder), and natively in the Android and desktop apps on a pool of threads (NEON on arm64, SSE4.1 on x86-64):
 
 1. **Find.** The image goes to luma, and a local threshold makes a black and white copy for the finder alone. The
    corner marks are searched for at full, half and quarter scale. Each candidate quad is scored by reading the timing

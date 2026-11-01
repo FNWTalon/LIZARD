@@ -80,10 +80,15 @@ static void whiten_fill(uint8_t *out, int n) {
   for (int i = 0; i < n; i++) { const uint32_t b = ((s >> 22) ^ (s >> 17)) & 1; s = ((s << 1) | b) & 0x7fffff; out[i] = (uint8_t)b; }
 }
 static int gcd(int a, int b) { while (b) { const int t = a % b; a = b; b = t; } return a; }
-// Slot i of a block carries sent bit perm[i], which is codeword bit np + perm[i] (np the bits the code never sends,
-// 128 at 7/8, 0 elsewhere): n here is the sent length. Slot i takes bit i P mod n, P near n over the golden ratio and
-// prime to n: every run of the codeword, a circulant's z bits (128) or the parity chain, lands spread over the
-// whole ring (focus.h FOCUS_BITMAP).
+// Slot i of a block carries sent bit perm_fill's perm[i], which is codeword bit sent_bit(perm[i]) (below): n here is the
+// sent length (ai: a tier's table holds the two composed, codeword bits, made once in focus_setup). Slot i takes bit
+// i P mod n, P near n over the golden ratio and prime to n: every run of the codeword, a circulant's z bits (128) or
+// the parity chain, lands spread over the whole ring (focus.h FOCUS_BITMAP).
+// ai: Sent bit j's codeword bit: every bit of the codeword is sent but the code's last np data bits, the 7/8 code's 128
+// ai: zeros past the block (its data column 30, known to a decoder), which no slot carries; the 3/4, 2/3 and 1/2 codes
+// ai: send every bit (np 0). The 7/8 code's first data column, never sent until 2026-11-01, is sent (0.37 dB better at
+// ai: the same slots: STATUS "Which bits a block leaves unsent").
+static inline int sent_bit(const ldpc_t *c, int j) { return j < c->k - c->np ? j : j + c->np; }
 static void perm_fill(int *perm, int n) {
   int P = (int)(0.3819660113 * n + 0.5);
   while (gcd(P, n) != 1) P++;
@@ -94,18 +99,20 @@ static void perm_fill(int *perm, int n) {
 // ai: the count 0 before 2026-09-30, one bit for every block until 2026-10-01), whitened too. first is the block's
 // first coefficient (its first slot over 2: every block's slots are even).
 static void map_out(const focus_t *f, const struct focus_ws *w, int t, int b, int first, int nb, const uint8_t *cw, uint8_t *slot) {
-  const int nt = f->code[t].nt, np = f->code[t].np, *perm = w->perm[t];
+  const ldpc_t *c = &f->code[t];
+  const int nt = c->nt, *perm = w->perm[t];
   const uint8_t q = (uint8_t)((f->parity >> (b & 1)) & 1);
   const uint8_t *wh = w->white + 2 * (size_t)first;
-  for (int i = 0; i < nb; i++) slot[i] = (uint8_t)((i < nt ? cw[np + perm[i]] : q) ^ wh[i]);
+  for (int i = 0; i < nb; i++) slot[i] = (uint8_t)((i < nt ? cw[perm[i]] : q) ^ wh[i]);
 }
 // The soft values the other way: slot order in, codeword order out, the whitening taken back off by sign; the bits
-// never sent come in as 0, nothing known.
+// never sent come in as 0 here (the 7/8 code's known zeros, which the caller then sets known with the block's others).
 static void map_in(const focus_t *f, const struct focus_ws *w, int t, int first, const int8_t *slot, int8_t *cw) {
-  const int nt = f->code[t].nt, np = f->code[t].np, *perm = w->perm[t];
+  const ldpc_t *c = &f->code[t];
+  const int nt = c->nt, *perm = w->perm[t];
   const uint8_t *wh = w->white + 2 * (size_t)first;
-  for (int i = 0; i < np; i++) cw[i] = 0;
-  for (int i = 0; i < nt; i++) cw[np + perm[i]] = wh[i] ? (int8_t)-slot[i] : slot[i];
+  for (int i = c->k - c->np; i < c->k; i++) cw[i] = 0;
+  for (int i = 0; i < nt; i++) cw[perm[i]] = wh[i] ? (int8_t)-slot[i] : slot[i];
 }
 
 // ai: The grid's shift from the pilots (2026-10-01; the format paints them whatever the phone, so a decoder may steer
@@ -361,6 +368,7 @@ static int init(focus_t *f, int n, int subch, const focus_tier_t *tier, int tier
   for (int t = 0; t < f->tiers; t++) {
     if (!(f->ws->perm[t] = malloc((size_t)f->code[t].n * sizeof(int)))) { focus_free(f); return -1; }
     perm_fill(f->ws->perm[t], f->code[t].nt);
+    for (int i = 0; i < f->code[t].nt; i++) f->ws->perm[t][i] = sent_bit(&f->code[t], f->ws->perm[t][i]);
   }
   f->bitmap = FOCUS_BITMAP;
   return 0;
@@ -1174,8 +1182,12 @@ have_llr:
       if (its < 0) continue;
       int B = f->block_bytes;
       uint8_t *dst = blocks + (size_t)b * B;
-      memset(dst, 0, (size_t)B);
-      for (int i = 0; i < B * 8; i++) dst[i >> 3] |= (uint8_t)(bits[i] << (7 - (i & 7)));
+      // ai: a byte at a time from its eight bits (each 0 or 1), most significant first; or-ing each bit into its byte
+      // ai: in memory chained eight stores and loads a byte (2026-11-01: 18% of this function on the S26)
+      for (int j = 0; j < B; j++) {
+        const uint8_t *q = bits + 8 * j;
+        dst[j] = (uint8_t)(q[0] << 7 | q[1] << 6 | q[2] << 5 | q[3] << 4 | q[4] << 3 | q[5] << 2 | q[6] << 1 | q[7]);
+      }
       uint32_t crc = 0;
       for (int i = 0; i < 32; i++) crc = (crc << 1) | bits[B * 8 + i];
       if (crc != ob_crc32(dst, B)) continue;
