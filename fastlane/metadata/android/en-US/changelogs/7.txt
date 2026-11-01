@@ -1,0 +1,4 @@
+- A new format: blocks of 476 bytes on new LDPC codes, packed tighter. 0.6's codes do not read here.
+- One look on the phone and the desktop: both apps share one interface.
+- Receiving runs in the library's receive session on both apps.
+- The GPU decoder checks its forms on known frames at the first start and falls back from any that reads wrong.
