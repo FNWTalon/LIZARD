@@ -6,7 +6,7 @@ carries about 4 MB/s (see [Status](#status)).
 
 - **Demo:** [fosslabs.dev](https://fosslabs.dev)
 - **How it works:** [an example on video](https://www.youtube.com/shorts/pjcAtQ7GcVQ)
-- **Apps:** [0.6 (alpha)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.6): the Android app, and the desktop app for Linux, Windows and macOS, which sends, and receives through a USB or built-in camera or an Android phone on a cable
+- **Apps:** [0.7 (beta)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.7): the Android app, and the desktop app for Linux, Windows and macOS, which sends, and receives through a USB or built-in camera or an Android phone on a cable
 
 ## The idea
 
