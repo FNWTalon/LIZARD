@@ -470,7 +470,7 @@ static float rnd_f(void) { return (float)((int)(rnd() & 0xffff) - 32768) / 32768
 // ai: The transform's kernels on every shape a stage takes: sizes on the radix-2 schedule and with the radix-3 stage,
 // ai: column counts that leave each remainder of a vector of four, both directions, a pitch wider than the block.
 static void synth_fft(void) {
-  static const int ROWS[] = { 2, 4, 8, 12, 64, 96, 128, 256, 384, 512, 768, 1024, 1536 }, COLS[] = { 1, 2, 3, 4, 5, 7, 8, 32, 61, 64 };
+  static const int ROWS[] = { 2, 4, 8, 12, 64, 96, 128, 256, 384, 512, 768, 1024, 1152, 1280, 1536 }, COLS[] = { 1, 2, 3, 4, 5, 7, 8, 32, 61, 64 };
   {
     for (size_t r = 0; r < sizeof ROWS / sizeof *ROWS; r++) {
       const int rows = ROWS[r];
@@ -556,7 +556,7 @@ static uint8_t *paint_page(const focus_t *f, const uint8_t *blocks, int P, int *
 // ai: Every ring with every picture size: painted, read by the blind receiver, every block back byte for byte. The
 // ai: pairs and their payload are scripts/exp/ring_pairs.mjs's, the gate that holds the same on wasm.
 static int synth_pairs(void) {
-  static const int SUBCH[] = { 16, 48, 96, 320, 336, 1024 };   // ai: 256, 384, 512, 768, 1024, 1536
+  static const int SUBCH[] = { 16, 48, 96, 320, 336, 656, 800, 1024 };   // ai: 256, 384, 512, 768, 1024, 1152, 1280, 1536
   static rx_t rx;
   int fails = 0, idx = 0;
   dig_t total = DIG0;
@@ -575,7 +575,7 @@ static int synth_pairs(void) {
     decode_one(&rx, img, S, S, 0, 1, &o);
     int back = 0;
     for (int b = 0; b < f.blocks; b++) back += rx.ok[b] && !memcmp(rx.blocks + (size_t)b * rx.B, blocks + (size_t)b * f.block_bytes, (size_t)f.block_bytes);
-    const int good = o.ring == r && o.n == n && o.has_word && o.version == subch / FOCUS_GROUP && back == f.blocks;
+    const int good = o.ring == r && o.n == n && o.has_word && o.version == subch / FOCUS_STEP && back == f.blocks;
     if (!good) fails++;
     char name[64];
     snprintf(name, sizeof name, "ring%d_n%d_%dpx", FOCUS_RING[r], n, S);
@@ -595,7 +595,7 @@ static int synth_lab(void) {
   static const struct { int n, subch, span; float tilt; int tiers; } LAB[] = {
     { 256, 48, 256, 0, 0 }, { 1024, 192, 256, 0, 0 }, { 512, 320, 256, 9, 0 }, { 512, 0, 256, 9, 1 }, { 384, 64, 256, 0, 0 },
     { 768, 144, 512, 0, 0 }, { 384, 64, 512, 0, 0 }, { 768, 320, 128, 0, 0 } };
-  static const focus_tier_t TIERS[3] = { { 6, 8, 7 }, { 4, 12, 8 }, { 2, 12, 12 } };
+  static const focus_tier_t TIERS[3] = { { 6, 8, 0 }, { 4, 12, 0 }, { 2, 12, 0 } };   // ai: rate, blocks (a block's slots its rate's)
   int fails = 0;
   for (size_t k = 0; k < sizeof LAB / sizeof *LAB; k++) {
     focus_t f;

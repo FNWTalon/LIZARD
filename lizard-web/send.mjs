@@ -6,8 +6,8 @@
 // ai: the whole ladder (up to LIZARD-560 until 2026-09-29, APP_TOP). The lab's switches are in Settings and Developer
 // ai: Tools, their ids the URL presets.
 import { init as initOb } from "../liblizard/sim/ob.mjs";
-import { DEFAULT_LOG2 } from "../liblizard/sim/xfer.mjs";
-import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor } from "../liblizard/sim/lizard_pick.mjs";
+import { DEFAULT_LOG2, PAYLOAD } from "../liblizard/sim/xfer.mjs";
+import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor, STEP } from "../liblizard/sim/lizard_pick.mjs";
 import { GAP_MODULES } from "../liblizard/gpu/encoder.mjs";
 import { bundle } from "./tar.mjs";
 import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, collapser, sideResizer, icon, sayName, nameParts } from "./ui.mjs";
@@ -201,25 +201,24 @@ function gpuGiveUp(e) {
   if (running) go();
 }
 
-// ai: Blocks a frame, a slider (2026-10-01): any whole number of blocks from 2 to 128 (one block a frame is no format
-// ai: since 2026-10-25), a block 8 sub-channels (src/focus.h FOCUS_GROUP), which is what the format word names, so every
-// ai: step is a symbol every receiver reads; the menu of 64 versions before stepped by two blocks. #subch holds what the
-// ai: page reads, "auto" or the sub-channels; the slider (#blocks) is a view over it, kept out of the saved settings, its
-// ai: first step (1) auto (2026-10-05; an Auto box beside it before). The slider commits on release (a re-pick for every
-// ai: step dragged would rebuild the encoder each time); under auto its label says what auto took, once known ("Auto,
-// ai: 59, 27.7 KB").
+// ai: The format's size, a slider (2026-10-01): every version from 2 to 64, 16 sub-channels a step (src/focus.h
+// ai: FOCUS_STEP, sim/lizard_pick.mjs STEP), which is what the format word names, so every step is a symbol every
+// ai: receiver reads (steps of 8 sub-channels from 2026-10-01 to 2026-10-29). #subch holds what the page reads, "auto"
+// ai: or the sub-channels; the slider (#blocks) is a view over it, kept out of the saved settings, its first step (1)
+// ai: auto (2026-10-05; an Auto box beside it before; 0 while the ladder started at version 1). The slider commits on release (a re-pick for every step dragged
+// ai: would rebuild the encoder each time); under auto its label says what auto took, once known ("Auto, 54, 25.3 KB").
 function showBlocks() {
-  const auto = $("subch").value === "auto", b = auto ? (shown ? shown.subch / 8 : 0) : +$("subch").value / 8;
+  const auto = $("subch").value === "auto", b = auto ? (shown ? shown.subch / STEP : 0) : +$("subch").value / STEP;
   $("blocks").value = auto ? "1" : String(b);
   $("blocksOut").textContent = auto ? (b ? `Auto, ${blocksText(b)}` : "Auto") : blocksText(b);
 }
 // ai: the title says "Blocks a frame", so the value is the count and its bytes alone, which fit beside it in the 20rem column
-// ai: "59, 27.7 KB": the blocks a frame of the slider's size carries (the format's rate profile, 2026-10-07: 59 at
-// ai: its 60) and what they hold, under the title "Blocks" (2026-10-05; "60 blocks, ..." before); send.html's inline
+// ai: "54, 25.3 KB": the blocks a frame of the slider's size carries (the format's rate profile, 2026-10-07: 54 at
+// ai: its 30, LIZARD-480) and what they hold, under the title "Blocks" (2026-10-05; "60 blocks, ..." before); send.html's inline
 // ai: script draws the same before the first paint
-const blocksText = (v) => { const b = blocksFor(8 * v); return `${b}, ${((b * 469) / 1000).toFixed(1)} KB`; };
+const blocksText = (v) => { const b = blocksFor(STEP * v); return `${b}, ${((b * PAYLOAD) / 1000).toFixed(1)} KB`; };
 $("blocks").addEventListener("input", () => { const v = +$("blocks").value; $("blocksOut").textContent = v > 1 ? blocksText(v) : "Auto"; });
-$("blocks").addEventListener("change", () => { const v = +$("blocks").value; $("subch").value = v > 1 ? String(8 * v) : "auto"; $("subch").dispatchEvent(new Event("change")); });
+$("blocks").addEventListener("change", () => { const v = +$("blocks").value; $("subch").value = v > 1 ? String(STEP * v) : "auto"; $("subch").dispatchEvent(new Event("change")); });
 $("subch").addEventListener("change", showBlocks);
 // ai: The page's defaults are LIZARD-480 at 60 painted a second (2026-10-01, the night the Android app, its camera's
 // ai: phase held, read 93 to 95% of it; auto and 24 a second before), in send.html
@@ -398,7 +397,7 @@ function setPaused(p) {
   showRail();
 }
 // ai: The collapsed rail (send.html #rail): pause while sending, play to resume or to start, and the code's capacity,
-// ai: what it offers at most (codes x blocks a frame x 469 B x pictures a second), while a run is configured. Written
+// ai: what it offers at most (codes x blocks a frame x 472 B x pictures a second), while a run is configured. Written
 // ai: only when it changes (tick calls it every frame). The pictures a second are the asked rate, or the browser's own
 // ai: animation frames where fewer (drawFps, measured each second while sending; since 2026-10-04, so an external
 // ai: limiter shows in the MB/s: Edge's efficiency mode drew 30 of 60 while the rail offered 60's capacity).
@@ -573,7 +572,7 @@ async function start() {
         `\nworker ${ahead.size} ready ahead, ${behind} animation frames found nothing ready\nanimation frames ${afps.toFixed(1)} a second, the screen ${(1000 / tickMs).toFixed(1)} Hz by their intervals; pictures held 1, 2, 3, 4+ refreshes: ${held.join(", ")}\n${encLine}`;
       $("tx").textContent = line;
       offeredKBs = (painted / dt) * cfg.codes * cfg.blocksPerFrame * cfg.usefulBytes / 1000;
-      // ai: #tx's first line names the format (auto(): "LIZARD-480 (59 blocks), picture ..."; the lab line #lab did until
+      // ai: #tx's first line names the format (auto(): "LIZARD-480 (54 blocks), picture ..."; the lab line #lab did until
       // ai: 2026-10-02, repeating #nums' rate and pass: deleted). The user's figure (#nums): the offered rate alone (the
       // ai: pass went to #tx on 2026-10-05).
       $("nums").textContent = rate(offeredKBs);
@@ -604,7 +603,7 @@ function stop() {
 // A resize, a rotation or going fullscreen changes what fits, and both numbers are picked from it.
 // ai: Re-pick; the receiver reads the new version from the next frame's word.
 // This is safe mid-transfer because block_bytes is the same at every rate
-// (src/focus.c: the smallest k / 8 - 4 among the rate profile's codes, held to 473 B), not from n or the sub-channel
+// (src/focus.h FOCUS_BLOCK, 476 B at every rate), not from n or the sub-channel
 // count, so bytes per block does not move and Wirehair, being rateless, does not mind that a frame now carries a
 // different number of blocks. The check below refuses the change if that ever stops being true.
 //
@@ -958,13 +957,11 @@ new ResizeObserver(paintSurround).observe(bgc.parentElement);
 for (const el of document.querySelectorAll("#dev select, #dev input, #logs select")) if (el.type !== "file" && !("view" in el.dataset)) persist(el, `send:${el.id}`);
 // ai: a menu takes a preset only where it is one of its options (?ring=auto, from before the menu lost its auto, keeps the default)
 for (const [k, v] of URLP) { const el = $(k); if (el && "value" in el && el.type !== "file" && (el.tagName !== "SELECT" || [...el.options].some((o) => o.value === v))) el.value = v; }
-// ai: A preset or a kept value that is no format, a whole number of blocks from 2 to 128 (?subch=20, ?subch=8), is no
-// ai: symbol: back to auto, and say so, rather than paint it. A kept one (no preset) is kept as auto from here, as the
-// ai: native apps read a kept one block a frame; a preset never overwrites the kept setting.
+// ai: A preset that is no format, every multiple of 16 from 32 to 1024 (?subch=16, ?subch=24), is no symbol: back to
+// ai: auto, and say so, rather than paint it.
 if ($("subch").value !== "auto" && !VERSIONS.includes(+$("subch").value)) {
-  $("tx").textContent = `${$("subch").value} sub-channels is no format (a multiple of 8 from 16 to 1024): showing auto`;
+  $("tx").textContent = `${$("subch").value} sub-channels is no format (a multiple of 16 from 32 to 1024): showing auto`;
   $("subch").value = "auto";
-  if (!URLP.has("subch")) try { localStorage.setItem("send:subch", "auto"); } catch {}
 }
 showBlocks();
 showEnc();

@@ -1,10 +1,9 @@
 // Which LIZARD code to show, from the room available and nothing else. No DOM: lizard-web/send.mjs
 // reads its controls and calls this, scripts/exp/pick_check.mjs exercises it exhaustively.
 //
-// A VERSION IS ITS SUB-CHANNEL COUNT and nothing else, and the natural unit is the BLOCK of 8 sub-channels
-// (src/focus.h FOCUS_GROUP): the codec rejects a count that is not a multiple of 8. So version k = 8k sub-channels;
-// the blocks a frame are the rate profile's (tiersFor below), k of them to LIZARD-120 and at most 4 under k above,
-// each 469 B of payload.
+// A FORMAT IS ITS SUB-CHANNEL COUNT and nothing else, a multiple of 16 (src/focus.h FOCUS_STEP): the codec rejects any
+// other count. Version k is 16k sub-channels, the number its word carries; the blocks a frame are the rate profile's
+// (tiersFor below), fewer than 2k of them (7 at LIZARD-64, 124 at LIZARD-1024), each 472 B of payload.
 //
 // THE FIRST LADDER (2026-09-20, one code rate; the history of the decision, not the rule: VERSIONS below is).
 // Versions 2 to 32, so 16 to 256 sub-channels in steps of 8. The version number IS the block count, which is worth
@@ -67,34 +66,47 @@ export const PAINTED_MARGIN = () => {
 };
 // Until 2026-10-01 every multiple of 16 from 16 to 1024: 64 formats (2026-09-23: even QR, whose ECC must be harsher for
 // paper, has 40 versions, and a computer-generated symbol can allow more). 16 is for televisions and far away, 1024 for
-// 4K capture, top-end phones and GPU decoding. The word carries the version, subch / 8, so these were versions 2, 4,
+// 4K capture, top-end phones and GPU decoding. The word carried the version as subch / 8 then, so these were versions 2, 4,
 // ... 128, and a version off that ladder (LIZARD-8, -24, every odd version) was the sender's to refuse (2026-09-24): a
 // receiver reads any version exactly as it reads the ladder, with no flag. Past LIZARD-1024 the codec refuses to build
 // a symbol at all (src/focus.c init), since the word cannot name its version.
 // This replaced LIZARD-16 / 64 / 128 / 192 / 256 (2026-09-21), whose reasoning is above and in STATUS.md.
-// ai: Every whole number of blocks from 2 to 128 (LIZARD-16 to -1024, 127 formats): the slider steps a block of 8
-// ai: sub-channels (src/focus.h FOCUS_GROUP), the word naming subch / 8. One block a frame, LIZARD-8, was on the ladder
-// ai: from 2026-10-01 to 2026-10-25 and left it: a frame of one block has no diversity and carries one pilot parity
-// ai: alone; every format of two blocks or more carries a pilot block of each (src/fmt.h OB_FMT_VERSION_MIN). The 64
-// ai: of 16 to 1024 by 16 before 2026-10-01.
-export const VERSIONS = Array.from({ length: 127 }, (_, i) => 8 * (i + 2));
+// ai: Every multiple of 16 from 64 to 1024 (LIZARD-64 to -1024, 61 formats, since 2026-11-01), the word naming
+// ai: subch / 16, versions 4 to 64 (src/focus.h FOCUS_STEP, src/fmt.h OB_FMT_VERSION_MIN, OB_FMT_VERSION_MAX); the slider
+// ai: steps 16 sub-channels. The smallest, LIZARD-64, carries seven blocks (7/8 x 4, 3/4, 2/3, 1/2), two 7/8 pilot
+// ai: blocks of each parity. LIZARD-32 and -48 left on 2026-11-01 (their odd blocks' pilots one 7/8 block's 8
+// ai: coefficients, which read past the pilots' model on mixed captures and under 0.9 on clean ones); from 2026-10-29 to
+// ai: 2026-10-31 the ladder started at LIZARD-16 (two 3/4 blocks; under the slot-packed profile one 7/8 and one 3/4, too
+// ai: few pilots for the phase lock's two readings); from 2026-10-01 to 2026-10-29 it
+// ai: stepped by 8, versions subch / 8 (LIZARD-8, one block a frame, on it until 2026-10-25; a frame of one block has
+// ai: no diversity and carries one pilot parity alone).
+// ai: STEP: the sub-channels a version (src/focus.h FOCUS_STEP); subchOf and versionOf go between the two.
+export const STEP = 16;
+export const VERSIONS = Array.from({ length: 61 }, (_, i) => STEP * (i + 4));
 export const NAME = (subch) => `LIZARD-${subch}`;
-export const versionOf = (subch) => subch / 8;   // what the format word carries; the blocks a frame are blocksFor's
-// ai: The format's rate profile (2026-10-07, four rates since 2026-10-08; src/focus.c focus_tiers_for, the same
-// ai: integers and order of search): [[rate, blocks, subs], ...] inner first, 7/8 blocks of 7 sub-channels on about
-// ai: TIER_IN percent of them, 3/4 blocks of 8 filling, 2/3 blocks of 9 on about TIER_23 percent, 1/2 blocks of 12 on
-// ai: about the outer TIER_OUT percent; the tiers with blocks only; [] for a count that is no format's. blocksFor:
-// ai: the blocks a frame carries, each 473 B.
-export const TIER_IN = 39, TIER_23 = 15, TIER_OUT = 20;
+export const subchOf = (version) => STEP * version;
+export const versionOf = (subch) => subch / STEP;   // what the format word carries; the blocks a frame are blocksFor's
+// ai: The format's rate profile (2026-10-07, four rates since 2026-10-08, packed by slots since 2026-10-31;
+// ai: src/focus.c focus_tiers_for, the same integers and order of search): [[rate, blocks, slots], ...] inner first
+// ai: over the frame's 640 subch slots, 7/8 blocks of 4496 slots on about TIER_IN thousandths of them, 3/4 blocks of
+// ai: 5152 filling (the remainder padded), 2/3 blocks of 5760 on about TIER_23 thousandths, 1/2 blocks of 7680 on about
+// ai: the outer TIER_OUT; the tiers with blocks only; [] for a count that is no format's. blocksFor: the blocks a frame
+// ai: carries, each 476 B. BLOCK_SLOTS: a block's slots by rate index (src/focus.c focus_block_slots: its code's sent
+// ai: bits, then its pilots, 16 at 7/8 and 32 at 3/4).
+export const TIER_IN = 390, TIER_23 = 150, TIER_OUT = 200;
+export const BLOCK_SLOTS = { 6: 4496, 4: 5152, 3: 5760, 2: 7680 };
 export function tiersFor(subch) {
-  if (subch < 16 || subch % 8 || subch > 1024) return [];
+  if (subch < VERSIONS[0] || subch % STEP || subch > VERSIONS.at(-1)) return [];
+  // ai: in units of 16 slots (every block's slots are a multiple of 16): the same order and ties as the C's slots, and
+  // ai: every cost an integer under 2^53 (each term's root at most 1000 x 40,960)
+  const u = 16, all = (640 * subch) / u, s7 = BLOCK_SLOTS[6] / u, s3 = BLOCK_SLOTS[4] / u, s2 = BLOCK_SLOTS[3] / u, s1 = BLOCK_SLOTS[2] / u;
   let best = -1, ba = 0, bt = 0, bc = 0;
-  for (let a = 0; 7 * a <= subch - 8; a++) for (let t = 0; 7 * a + 9 * t <= subch - 8; t++) for (let c = 0; 7 * a + 9 * t + 12 * c <= subch - 8; c++) {
-    if ((subch - 7 * a - 9 * t - 12 * c) % 8) continue;
-    const d7 = 700 * a - TIER_IN * subch, d3 = 900 * t - TIER_23 * subch, d2 = 1200 * c - TIER_OUT * subch, cost = d7 * d7 + d3 * d3 + d2 * d2;
+  for (let a = 0; s7 * a <= all - s3; a++) for (let t = 0; s7 * a + s2 * t <= all - s3; t++) for (let c = 0; s7 * a + s2 * t + s1 * c <= all - s3; c++) {
+    const d7 = 1000 * s7 * a - TIER_IN * all, d3 = 1000 * s2 * t - TIER_23 * all, d2 = 1000 * s1 * c - TIER_OUT * all, cost = d7 * d7 + d3 * d3 + d2 * d2;
     if (best < 0 || cost < best) { best = cost; ba = a; bt = t; bc = c; }
   }
-  return [...(ba ? [[6, ba, 7]] : []), [4, (subch - 7 * ba - 9 * bt - 12 * bc) / 8, 8], ...(bt ? [[3, bt, 9]] : []), ...(bc ? [[2, bc, 12]] : [])];
+  const m = Math.floor((all - s7 * ba - s2 * bt - s1 * bc) / s3);
+  return [...(ba ? [[6, ba, BLOCK_SLOTS[6]]] : []), [4, m, BLOCK_SLOTS[4]], ...(bt ? [[3, bt, BLOCK_SLOTS[3]]] : []), ...(bc ? [[2, bc, BLOCK_SLOTS[2]]] : [])];
 }
 export const blocksFor = (subch) => tiersFor(subch).reduce((n, [, b]) => n + b, 0);
 // The border in modules a side, which src/focus.c sets as the corner mark's own size plus the guard interval,
@@ -158,9 +170,12 @@ export const SUBCH_CAP = (n) => Math.floor(Math.PI * n * n / (8 * 320));
 // ai: times the samples for one more block. scripts/exp/focus_nfit.mjs on the rings (simulator, told): 0.85% fewer
 // ai: blocks over eight formats at the smaller sizes, the sampler and transform 0.62 to 0.69 of their time; the "1024
 // ai: is 2 to 4% worse" above did not repeat. 1536 holds LIZARD-1024 (3R = 1370), so 2048 is no ladder size. The GPU
-// ai: decoder's picture slots are this list's indices (gpu/tables.mjs PICTURES, gpu/wgsl/back_transform.mjs SIZES).
+// ai: decoder's picture slots are this list's indices (gpu/tables.mjs PICTURES, gpu/plan/back_transform.mjs SIZES).
 // ai: src/focus.c FOCUS_PICTURES is the same list.
-export const PICTURE_SIZES = [256, 384, 512, 768, 1024, 1536];
+// ai: 1152 (9 x 2^7) and 1280 (5 x 2^8) since 2026-10-29: LIZARD-576 to -720 and -728 to -888 (n / 2R 1.50 to 1.68)
+// ai: paint and read 0.56 and 0.69 of 1536's samples; the GPU decoder reads both at 1024 as it did their 1536
+// ai: (gpu/back/transform.mjs TRANSFORM_DOWN).
+export const PICTURE_SIZES = [256, 384, 512, 768, 1024, 1152, 1280, 1536];
 export const N_FOR = (subch) => PICTURE_SIZES.find((n) => n >= 3 * R_RING(subch)) ?? PICTURE_SIZES.at(-1);
 // Camera px a cycle the top ring must still get, fitted by focus_sweep.mjs (SUBCH set; archive/focus-capacity/), 2026-09-20. It was
 // 2.5, and two things were wrong with that: the border was counted in the application and not in the fit, and the
@@ -238,9 +253,9 @@ export function pickVersion(roomPx, top = VERSIONS.at(-1), ring = null) {
   const r = ring ?? RING_DEFAULT;
   for (const v of VERSIONS) if (v <= top && ROOM_FOR(v, r) <= roomPx && v > subch) subch = v;
   const n = N_FOR(subch), samples = SAMPLES(n, r);
-  // ai: `tight` is a room too small even for the fallback (LIZARD-16, 175 px in the default ring, which no real device is). `squeezed` is a room
+  // ai: `tight` is a room too small even for the fallback (LIZARD-64, 349.2 px in the default ring, which no real device is). `squeezed` is a room
   // that cannot hold the picture's samples at all, which only matters to a page that paints nearest: an
-  // oversampled picture survives being shown smaller than its sample count, and LIZARD-16 reads whole at 0.3
+  // oversampled picture survives being shown smaller than its sample count, and LIZARD-16 read whole at 0.3
   // device px a sample. Both reported, never silent.
   return { n, subch, ring: r, span: SPAN(n, r), version: versionOf(subch), samples, scale: roomPx / samples, needPx: ROOM_FOR(subch, r),
     cameraPx: CAMERA_PX_FOR(subch, r),

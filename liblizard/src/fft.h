@@ -9,8 +9,8 @@
 // re, im: the block's first row; row r starts at r * pitch (pitch >= cols, so a block can be a slice of a wider
 // array). Forward is exp(-i), inverse exp(+i) and NOT scaled: callers that need the
 // identity divide by rows themselves, and FOCUS normalizes by the picture's RMS anyway.
-// ai: rows: a power of two, or 3 times one (384, 768, 1536), which takes one radix-3 stage (fft.c rows3); any other
-// ai: size is not transformed. Radix 2 is the CPU transform (2026-09-23: radix 4 was 4 to 15% slower on the desktop and
+// ai: rows: 2^a 3^b 5^c. A power of two is radix 2 alone; 384, 768 and 1536 add one radix-3 stage, 1152 two (fft.c
+// ai: rows3) and 1280 one radix-5 stage (rows5); any other size is not transformed. Radix 2 is the CPU transform (2026-09-23: radix 4 was 4 to 15% slower on the desktop and
 // ai: a third slower on the S26 at a strip of 64, research/10 s12; it left the code on 2026-10-25).
 void fft_cols(float *re, float *im, int rows, int cols, int pitch, int inverse);
 

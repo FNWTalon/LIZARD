@@ -1,6 +1,6 @@
 /* ai: liblizard: the LIZARD code as a library (2026-10-03): the C (NEON on arm64) and the GPU through Vulkan behind one
  * ai: portable API, with no UI. A luminance-only animated barcode: a frame is a grey picture whose FFT
- * ai: coefficients carry blocks of 473 bytes (a 4-byte little-endian id and 469 of payload, CRC-checked), inside a
+ * ai: coefficients carry blocks of 476 bytes (a 4-byte little-endian id and 472 of payload, CRC-checked), inside a
  * ai: border that says what is inside; a file goes as a fountain-coded transfer verified by its BLAKE3 root.
  * ai:
  * ai: Layers, each usable alone:
@@ -60,11 +60,11 @@ enum {
 };
 
 enum {
-  LIZ_BLOCK = 473,         /* ai: a block: the id and the payload */
+  LIZ_BLOCK = 476,         /* ai: a block: the id and the payload */
   LIZ_ID_BYTES = 4,        /* ai: the id, little-endian */
-  LIZ_PAYLOAD = 469,
-  LIZ_MIN_BLOCKS = 2,      /* ai: the smallest format's size (LIZARD-16): one block a frame is no format */
-  LIZ_MAX_BLOCKS = 128,    /* ai: the largest format's size (LIZARD-1024; its symbol carries liz_blocks_for(128)) */
+  LIZ_PAYLOAD = 472,
+  LIZ_MIN_BLOCKS = 4,      /* ai: the smallest format's size (LIZARD-64, seven blocks a symbol) */
+  LIZ_MAX_BLOCKS = 64,     /* ai: the largest format's size (LIZARD-1024; its symbol carries liz_blocks_for(64)) */
   LIZ_RINGS = 3,           /* ai: the borders: rings of 64, 128 or 256 cells a side */
   LIZ_RING_DEFAULT = -1,   /* ai: the senders' default ring, the 128 */
   LIZ_GAP_MODULES = 12,    /* ai: two codes side by side are this many modules apart */
@@ -80,9 +80,9 @@ typedef enum {
 
 /* ---- 1. format arithmetic ---------------------------------------------------------------------------------------- */
 
-/* ai: blocks: the format's size, 2 to 128 (LIZARD-16 to LIZARD-1024: the number is 8 x blocks), the version its word
+/* ai: blocks: the format's size, 4 to 64 (LIZARD-64 to LIZARD-1024: the number is 16 x blocks), the version its word
  * ai: names; a symbol of it carries liz_blocks_for(blocks) blocks, the code's rate following the frequency (7/8 on its
- * ai: lowest sub-channels, then 3/4 and 2/3, 1/2 on its highest: 51 at LIZARD-432); ring: 0 to LIZ_RINGS - 1 (the 64,
+ * ai: lowest frequencies, then 3/4 and 2/3, 1/2 on its highest: 48 at LIZARD-432); ring: 0 to LIZ_RINGS - 1 (the 64,
  * ai: 128 and 256 rings) or LIZ_RING_DEFAULT;
  * ai: fps: 1 to 255, the display rate the symbol's word states; codes: 1, or 2 symbols side by side (one format, one
  * ai: word, the frame's blocks split between them, the first code the first ones). */
@@ -104,11 +104,11 @@ LIZ_API int liz_geometry_of(const liz_format *format, liz_geometry *out);
 /* ai: The pixels a side a symbol of this many blocks needs on a display for its outer coefficients to keep 2.7 pixels
  * ai: a cycle (the web sender's ROOM_FOR); a negative error for an argument out of range. */
 LIZ_API double liz_room_for(int blocks, int ring);
-/* ai: The blocks a symbol of a format's size (blocks, 2 to 128) carries: the format's rate profile's count; 0 outside. */
+/* ai: The blocks a symbol of a format's size (blocks, 2 to 64) carries: the format's rate profile's count; 0 outside. */
 LIZ_API int liz_blocks_for(int blocks);
 /* ai: The largest size (blocks) a symbol may have, at most top_blocks, for codes symbols in a room of w x h display
  * ai: pixels (the web sender's pickVersion: each symbol's room is the width over codes and the gaps, against the
- * ai: height); at least LIZ_MIN_BLOCKS; top_blocks 2 to 128. */
+ * ai: height); at least LIZ_MIN_BLOCKS; top_blocks 4 to 64. */
 LIZ_API int liz_pick(double w, double h, int codes, int ring, int top_blocks);
 
 /* ---- 2. the per-frame codec -------------------------------------------------------------------------------------- */
@@ -307,6 +307,98 @@ LIZ_API int liz_sender_ready(liz_sender *s);
  * ai: yet (dst untouched). Each frame taken once; show them in order, each for as long as the display rate asks. */
 LIZ_API int liz_sender_take(liz_sender *s, uint8_t *dst, int stride, liz_pixfmt fmt);
 LIZ_API const char *liz_sender_stats(liz_sender *s);
+
+/* ---- 5. the receive session: a camera into a receiver, with what a receiving app does around it ---------------- */
+/* ai: What every app's receive screen runs (core/rx/session.h): a camera of the system's (UVC through V4L2, Media
+ * ai: Foundation or AVFoundation; Android's back cameras through Camera2; a phone streaming to this machine; a replay
+ * ai: played as a camera, upload:<path>; the simulated camera where LIZ_CAMERA_SIM is set) feeding a receiver, and
+ * ai: around them the phase lock where the camera can delay a capture (Android's), the phase a screen shows, the
+ * ai: camera's settings kept per camera, a verified file taken out of the store into the data folder's kept/ for the
+ * ai: app to place, the camera stopped once a file is in, one session a data folder (a lock), Save replays, the stats
+ * ai: and the preview. Every call returns at once: the work runs in order on the session's own thread, and a refusal
+ * ai: is the phase's error (liz_session_stats) or a line in the log; liz_session_free blocks. Strings are UTF-8; a
+ * ai: function writing JSON into json (at most cap bytes, ended by a NUL) returns the whole JSON's length, so a
+ * ai: return of cap or more asks for a larger buffer. The JSON's field names are the apps' (not a stable interface).
+ * ai: Desktop systems and Android (since 2026-10-31): elsewhere (wasm) liz_session_new says LIZ_E_UNSUPPORTED. */
+typedef struct liz_session liz_session;
+typedef struct {
+  const char *assets;      /* ai: the GPU's kernels and nets; NULL: the CPU decoder alone */
+  const char *cache_dir;   /* ai: the GPU's pipeline cache; NULL none */
+  const char *data_dir;    /* ai: the session's folder: store/ (unfinished transfers kept to resume), kept/, replays/,
+                            * ai: receive.lock, cameras.json */
+  const char *decoder;     /* ai: "auto" (NULL), "gpu" or "cpu", as liz_receiver_config's decoder; "pc" on Android: the
+                            * ai: frames served to a PC that decodes them (liz_link) */
+  const char *layout;      /* ai: "1:1" (NULL) or "2:1" (liz_layout_rects) */
+  int forget_settings;     /* ai: 1: the camera settings held for this session alone, none read or written (a test's) */
+  void (*log)(void *user, const char *line);   /* ai: NULL none; called from the session's threads */
+  void *user;
+} liz_session_config;
+/* ai: NULL for a decoder or layout it does not know, or no data folder (LIZ_E_ARG). The data folder's lock is taken on
+ * ai: the session's thread: held by another session, every start says so (another LIZARD window is receiving). */
+LIZ_API liz_session *liz_session_new(const liz_session_config *config);
+/* ai: Blocks: the calls before it done, the camera stopped and closed (its controls put back), a recording replay
+ * ai: written, the receiver let go, the lock released. Not on a UI thread. */
+LIZ_API void liz_session_free(liz_session *s);
+
+/* ai: Every camera listed: {"cameras": [{id, name, backend, detail}], "notes": [why a backend saw none]}; opens
+ * ai: devices to look (seconds on some systems). The stamp changes when the list may have (nothing opened). */
+LIZ_API size_t liz_cameras(char *json, size_t cap);
+LIZ_API size_t liz_cameras_stamp(char *out, size_t cap);
+/* ai: The camera by id ("" the first listed; one that does not open and is not listed, the first listed in its place),
+ * ai: its kept settings taken up. */
+LIZ_API void liz_session_open(liz_session *s, const char *camera_id);
+LIZ_API void liz_session_close(liz_session *s);
+/* ai: zoom, exposure (us), gain or any control the camera lists, to value or the camera's automatic; kept for the
+ * ai: camera and set after each start. "mode": an index into the camera's modes, kept as its mode. */
+LIZ_API void liz_session_set(liz_session *s, const char *control, double value, int automatic);
+/* ai: The camera's stream into the receiver: mode NULL or "" the camera's kept mode, else an index or "WxH@fps". */
+LIZ_API void liz_session_start(liz_session *s, const char *mode);
+LIZ_API void liz_session_stop(liz_session *s);
+/* ai: Another decoder or crop: the receiver made again on the transfer in hand, which goes on. */
+LIZ_API void liz_session_reconfigure(liz_session *s, const char *decoder, const char *layout);
+LIZ_API void liz_session_batch_cap(liz_session *s, int frames);
+
+/* ai: The receiver's stats and the session's: phase ("idle", "starting", "loading", "on", "error") and why, the camera,
+ * ai: live, asked, autoRan, kept {taken, root, error}, replays, the platform's fields (session.h stats). Never waits. */
+LIZ_API size_t liz_session_stats(liz_session *s, char *json, size_t cap);
+/* ai: The camera open: {info, modes, pick, controls, mode, streaming, kept {mode, zoom, exposure, gain}}, {} none. */
+LIZ_API size_t liz_session_camera(liz_session *s, char *json, size_t cap);
+/* ai: The newest frame's crop as the decoder reads it, newer than since, area-averaged to at most side pixels on its
+ * ai: long side, into out (w x h bytes, at most cap): 1 with w, h and its frame's count in seq; 0 none newer. */
+LIZ_API int liz_session_preview(liz_session *s, uint64_t since, int side, uint8_t *out, size_t cap, uint32_t *w, uint32_t *h,
+                                uint64_t *seq);
+
+/* ai: An unfinished transfer let go by its root or its folder's id; the transfer in hand and its file let go. */
+LIZ_API void liz_session_forget(liz_session *s, const char *root);
+LIZ_API void liz_session_clear(liz_session *s);
+/* ai: Save replays on or off (a run while the camera reads, data_dir/replays/<run>.lizard); meta_json the platform's
+ * ai: fields for the run's meta.json. liz_session_extra: the platform's own fields (a JSON object: heat, power), merged
+ * ai: into the stats and each replay row from then on. */
+LIZ_API void liz_session_replays(liz_session *s, int on, const char *meta_json);
+LIZ_API void liz_session_extra(liz_session *s, const char *json);
+
+/* ai: The platform's hooks, Android's (elsewhere LIZ_E_UNSUPPORTED). The app's preview surface (an ANativeWindow*,
+ * ai: the session takes its own reference; NULL drops it), each camera's second stream from then on: blocks until the
+ * ai: camera writes to it or no longer does (the app releases a surface it dropped after that); size the surface to
+ * ai: the mode's preview (liz_session_camera's modes, "preview") before the start. The PC link, process-wide and no
+ * ai: session's (a PC sees the phone whether a session lives or not): up while a USB cable is in (up 1, its hello
+ * ai: naming layout), down after (up 0); its frames packed as .lizard frames or raw; its state as JSON (up, present,
+ * ai: connected, peer, port, want {seq, on}, accessory; {} elsewhere); a USB accessory's fd to its bridge, which closes
+ * ai: it (LIZ_E_STATE where one is up already, the fd closed; elsewhere the fd stays the caller's). */
+LIZ_API int liz_session_preview_window(liz_session *s, void *native_window);
+LIZ_API int liz_link(int up, const char *layout);
+LIZ_API int liz_link_pack(int on);
+LIZ_API size_t liz_link_state(char *json, size_t cap);
+LIZ_API int liz_usb_accessory(int fd);
+
+/* ai: The data folder with or without a session: the verified files taken into kept/ and not yet placed, oldest first
+ * ai: ([{id, name, type, root, path, at}]); one placed by the app (its kept/<id> deleted); the unfinished transfers,
+ * ai: newest first ([{id, name, length, fraction, root, at}]); one deleted (LIZ_E_STATE while a session holds the folder:
+ * ai: liz_session_forget then; a session of this process being freed is waited for, up to 10 s). */
+LIZ_API size_t liz_kept(const char *data_dir, char *json, size_t cap);
+LIZ_API int liz_kept_placed(const char *data_dir, const char *kept_id);
+LIZ_API size_t liz_partials(const char *data_dir, char *json, size_t cap);
+LIZ_API int liz_partial_delete(const char *data_dir, const char *id);
 
 #ifdef __cplusplus
 }

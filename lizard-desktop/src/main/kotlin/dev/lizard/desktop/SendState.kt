@@ -9,13 +9,9 @@ import dev.lizard.readout.Readout
 import dev.lizard.tar.Bundle
 import dev.lizard.tar.TAR_TYPE
 import dev.lizard.tar.TarEntry
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.jsonObject
 import java.awt.BasicStroke
 import java.awt.Canvas
 import java.awt.Font
@@ -31,9 +27,7 @@ import javax.swing.SwingUtilities
 import java.awt.Cursor
 import java.awt.EventQueue
 import java.awt.Graphics
-import java.awt.Point
 import java.awt.Rectangle
-import java.awt.Toolkit
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import java.awt.event.HierarchyEvent
@@ -47,6 +41,10 @@ import kotlin.concurrent.thread
 import kotlin.math.floor
 import kotlin.math.min
 import kotlin.math.roundToInt
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.unit.dp
+import dev.lizard.ui.*
+import kotlinx.coroutines.runBlocking
 
 // ai: The code area (the web's <main>): a heavyweight AWT canvas, a native window of its own inside the Compose window
 // ai: (Screen.kt's SwingPanel), on which the presenter's swapchain draws; white, and nothing painted over the
@@ -80,16 +78,42 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         addHierarchyListener { e -> if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) s.areaChanged() }
         addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
-                if (!s.full && chooses()) hits.firstOrNull { it.first.contains(e.point) }?.second?.invoke()
+                if (!s.full && !nearEdge(e) && chooses()) hits.firstOrNull { it.first.contains(e.point) }?.second?.invoke()
             }
+            override fun mousePressed(e: MouseEvent) {
+                if (e.button == MouseEvent.BUTTON1 && nearEdge(e)) { pressX = e.xOnScreen; pressed = true }
+            }
+            override fun mouseReleased(e: MouseEvent) {
+                pressed = false
+                if (gripped) { gripped = false; grip?.done(); grip?.hover(nearEdge(e)) }
+            }
+            override fun mouseExited(e: MouseEvent) { if (!gripped) grip?.hover(false) }
         })
-        // ai: over the file upload, the hand only on what takes a click; full screen's rail near the left edge
+        // ai: over the file upload, the hand only on what takes a click; the left-right resize cursor over the column's
+        // ai: edge; full screen's rail near the left edge
         addMouseMotionListener(object : MouseAdapter() {
             override fun mouseMoved(e: MouseEvent) {
-                if (s.full) { if (e.x < EDGE_NEAR && !s.edgeRail) s.edgeRail = true; return }
-                if (!uploading() || !chooses()) return
-                val c = if (hits.any { it.first.contains(e.point) }) Cursor.HAND_CURSOR else Cursor.DEFAULT_CURSOR
+                if (s.full && !s.leased) { if (e.x < EDGE_NEAR && !s.edgeRail) s.edgeRail = true; return }
+                val near = nearEdge(e)
+                grip?.hover(near)
+                val c = when {
+                    near -> Cursor.E_RESIZE_CURSOR
+                    uploading() && chooses() && hits.any { it.first.contains(e.point) } -> Cursor.HAND_CURSOR
+                    else -> Cursor.DEFAULT_CURSOR
+                }
                 if (cursor.type != c) cursor = Cursor.getPredefinedCursor(c)
+            }
+            // ai: the edge dragged by the pointer's move on the screen (the canvas moves under it as the column resizes);
+            // ai: AWT's units are the window's logical pixels, Compose's dp on the desktop. Taken at the first move, as
+            // ai: Compose's drag is, so a press and release alone neither saves the width nor re-picks.
+            override fun mouseDragged(e: MouseEvent) {
+                val g = grip ?: return
+                if (!pressed) return
+                val dx = e.xOnScreen - pressX
+                if (dx == 0) return
+                if (!gripped) { gripped = true; g.start() }
+                pressX = e.xOnScreen
+                g.drag(dx.dp)
             }
         })
         addMouseWheelListener { e -> if (uploading()) { scroll += e.wheelRotation * 48; repaint() } }
@@ -107,6 +131,13 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     }
 
     private fun chooses() = !s.sending && !s.test
+    // ai: the column's edge over the canvas's left EdgeStrip (dev.lizard.ui.EdgeGrip: Compose neither draws nor hears over
+    // ai: this heavyweight), given by the code area while the column is open, null otherwise (DesktopSend.CodeArea)
+    var grip: EdgeGrip? = null
+    private var pressed = false   // ai: the first button went down on the edge
+    private var gripped = false   // ai: and the edge is being dragged
+    private var pressX = 0
+    private fun nearEdge(e: MouseEvent) = grip != null && !s.full && e.x < EdgeStrip.value
     // ai: a pick being walked or the bundle made again (`reading`, which every add, remove and Clear sets) keeps the upload
     // ai: up, the column's state line saying "Reading the files" (a cover took the area for it until 2026-10-26: a flash)
     private fun uploading() = !s.test
@@ -124,6 +155,8 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     // ai: heavyweight canvas, each repaint (a wheel step, a removal) showed the area cleared and half drawn for a moment.
     private var back: BufferedImage? = null
     override fun paint(g: Graphics) {
+        // ai: the code shown on a monitor of its own: the area here plain, a line saying where (the window is the control)
+        if (s.leased) { paintLeased(g as Graphics2D); return }
         if (presenting || width <= 0 || height <= 0) return
         val t = graphicsConfiguration?.defaultTransform
         val sx = t?.scaleX ?: 1.0; val sy = t?.scaleY ?: 1.0
@@ -144,9 +177,22 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         }
     }
 
+    // ai: the control window's area while the code plays on a monitor of its own: "Playing on <monitor>" (or "Paused
+    // ai: on"), centred on the soft fill
+    private fun paintLeased(g2: Graphics2D) {
+        g2.color = SOFT
+        g2.fillRect(0, 0, width, height)
+        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+        g2.color = FG
+        g2.font = face(Font.PLAIN, 16)
+        val text = "${if (s.paused) "Paused" else "Playing"} on ${s.leasedOn}"
+        val fm = g2.fontMetrics
+        g2.drawString(text, ((width - fm.stringWidth(text)) / 2.0).toFloat(), ((height - fm.height) / 2.0 + fm.ascent).toFloat())
+    }
+
     // ai: the test stream: the soft fill, the file icon and the line 8 px under it
     private fun paintHint(g2: Graphics2D) {
-        g2.color = SOFT   // ai: the soft fill (Parts.kt Soft)
+        g2.color = SOFT   // ai: the soft fill (the theme's Soft)
         g2.fillRect(0, 0, width, height)
         g2.color = MUTED
         val cx = width / 2.0; val cy = height / 2.0 - 16
@@ -157,13 +203,15 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         g2.drawString(text, (cx - fm.stringWidth(text) / 2.0).toFloat(), (cy + 12 + 8 + fm.ascent).toFloat())
     }
 
-    // ai: The file upload (2026-10-26, LocalSend's geometry; the web's #pick, the Android app's Upload): on white, centred
-    // ai: in a column at most 576 px wide, the File and Folder tiles (104 px tall on the soft fill, an icon over one word,
-    // ai: one row across the column), and under them, while the selection holds something, its card (the card fill): the
-    // ai: count with Clear (the state line says the size), then a tile an item on white (its icon, its name with the stem
-    // ai: cut and the ending kept, "N files" or its size, an x at its corner that removes it), in rows stretched across
-    // ai: the card, 104 px the narrowest before one folds; the card takes what height is left (a row of items at least) and
-    // ai: only its items scroll, down, by the wheel.
+    // ai: The file upload (2026-10-26, LocalSend's geometry; the web's #pick): on white, a column at most 576 px wide
+    // ai: centred in the canvas, the whole centred in its height where it fits, else from 16 px down (the phone's shared
+    // ai: Upload stretches across its area at the top; a desktop window keeps the centred column, 2026-11-01): the File and
+    // ai: Folder tiles (104 px tall on the soft fill, an icon over one word, one row in equal cells), and under them, while
+    // ai: the selection holds something, its card as wide (the card fill): the count with Clear (the state line says the
+    // ai: size), then a tile an item on white (its icon, its name with the stem cut and the ending kept, "N files" or its
+    // ai: size, an x at its corner that removes it), in rows stretched across the card, 104 px the narrowest before one
+    // ai: folds; the card takes what height is left (a row of items at least) and only its items scroll, down, by the
+    // ai: wheel. The tiles' words, the count, Clear and the items' names bold, the lines under the names plain.
     private fun paintUpload(g2: Graphics2D) {
         g2.color = java.awt.Color.WHITE
         g2.fillRect(0, 0, width, height)
@@ -259,18 +307,20 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     }
 
     companion object {
-        // ai: Inter (Parts.kt's face, the web's) for the text AWT paints here, the variable file at its default instance,
-        // ai: bold derived; the platform's sans where it does not load (2026-10-25: that sans read beside Compose's
-        // ai: Inter until then)
+        // ai: Inter (the shared theme's face, the web's: dev.lizard.ui interBytes) for the text AWT paints here, the
+        // ai: variable file at its default instance, bold derived; the platform's sans where it does not load
+        // ai: (2026-10-25: that sans read beside Compose's Inter until then)
         private val inter: Font? = runCatching {
-            CodeCanvas::class.java.getResourceAsStream("/fonts/inter/InterVariable.ttf")?.use { Font.createFont(Font.TRUETYPE_FONT, it) }
+            Font.createFont(Font.TRUETYPE_FONT, java.io.ByteArrayInputStream(runBlocking { interBytes() }))
         }.getOrNull()
         private fun face(style: Int, size: Int): Font = inter?.deriveFont(style, size.toFloat()) ?: Font(Font.SANS_SERIF, style, size)
-        private val FG = java.awt.Color(0x11, 0x11, 0x11)
-        private val MUTED = java.awt.Color(0x66, 0x66, 0x66)
-        private val SOFT = java.awt.Color(0xF1, 0xF1, 0xF1)
-        private val CARD = java.awt.Color(0xF6, 0xF6, 0xF6)
-        // ai: Feather's file and folder (Parts.kt Icons.file; the app's ic_folder) on a 24 grid
+        // ai: the shared theme's colours as AWT's
+        private fun awt(c: androidx.compose.ui.graphics.Color) = java.awt.Color(c.toArgb(), true)
+        private val FG = awt(Fg)
+        private val MUTED = awt(Muted)
+        private val SOFT = awt(Soft)
+        private val CARD = awt(Card)
+        // ai: Feather's file and folder (the shared Icons.file and Icons.folder) on a 24 grid
         private val FILE_ICON = Path2D.Double().apply {
             moveTo(14.0, 2.0); lineTo(6.0, 2.0); curveTo(4.9, 2.0, 4.0, 2.9, 4.0, 4.0); lineTo(4.0, 20.0); curveTo(4.0, 21.1, 4.9, 22.0, 6.0, 22.0)
             lineTo(18.0, 22.0); curveTo(19.1, 22.0, 20.0, 21.1, 20.0, 20.0); lineTo(20.0, 8.0); closePath()
@@ -365,8 +415,8 @@ class SendState {
     var enc by mutableStateOf(Prefs.enc.let { if (it == "gpu" || it == "cpu") it else "auto" })
     // ai: the painter the sender runs on now, "gpu" or "cpu" ("" before a send): the Encoder chip auto marks (2026-10-05)
     val painterNow: String get() = sender?.str("painter") ?: ""
-    // ai: 0 auto, else 2 to 128 (a kept 1, one block a frame, which is no format, reads as auto)
-    var blocks by mutableStateOf(Prefs.blocks.coerceIn(0, 128).let { if (it == 1) 0 else it })
+    // ai: 0 auto, else a version 1 to 64 (16 sub-channels a step, Pick.STEP)
+    var blocks by mutableStateOf(Prefs.blocks.let { if (it in Pick.VERSION_MIN..Pick.VERSION_MAX) it else 0 })
     var fps by mutableStateOf(if (Prefs.vsync) Pick.fpsOf(Prefs.fps) else Prefs.fps.coerceIn(1, 60))
     // ai: VSync (2026-10-23, on by default): while the code is shown its monitor holds a refresh the rate divides, the
     // ai: nearest 60 Hz, where its own does not (a 165 Hz laptop at 60: pictures of 3, 3, 2 and 3 refreshes), and is put
@@ -380,6 +430,7 @@ class SendState {
     var codes by mutableStateOf(if (Prefs.codes == 2) 2 else 1)
     var settingsOpen by mutableStateOf(Prefs.settingsOpen)
     var toolsOpen by mutableStateOf(Prefs.toolsOpen)
+    var experimentalOpen by mutableStateOf(Prefs.experimentalOpen)
     var collapsed by mutableStateOf(Prefs.collapsed)
 
     var phase by mutableStateOf<Phase>(Phase.Idle)
@@ -390,6 +441,23 @@ class SendState {
     // ai: there, and the presenter bypassed the compositor.
     var full by mutableStateOf(false)
     var fullscreen: ((Boolean) -> Unit)? = null
+    // ai: Full screen on the display itself (2026-10-31, Exclusive fullscreen on): a Fullscreen press while the codes
+    // ai: play (sending, not paused) takes the monitor under the window's centre from the desktop (Native.presentStart's
+    // ai: direct; X11 through VK_EXT_acquire_xlib_display) and shows the code alone on it, presented FIFO at the
+    // ai: display's own refresh. With another monitor the window, moved there by the window manager, is the control
+    // ai: (Pause, Stop, Fullscreen, its keys; the code area plain); on the only monitor the presenter holds the keyboard
+    // ai: and the pointer and any key or click gives it back, as Stop does. The window is then put back where it was
+    // ai: (keepPlace before, placeBack after, App.kt). Where no monitor is lent (Windows, macOS, Wayland, a driver
+    // ai: without the extensions, a press while nothing plays), the window manager's full screen as before.
+    // ai: an experimental setting, off unless chosen (Prefs.exclusiveFull; X11 alone offers the lease): off, Fullscreen is
+    // ai: the window manager's full screen whatever the system
+    var exclusiveFull by mutableStateOf(Prefs.exclusiveFull)
+    var leased by mutableStateOf(false)
+    // ai: the taken monitor's name (its EDID's, else the output's: the stats' directName), the control window's line
+    var leasedOn = ""
+        private set
+    var keepPlace: (() -> Unit)? = null
+    var placeBack: (() -> Unit)? = null
     // ai: full screen's rail shown (Screen.kt EdgeRail): the pointer came within EDGE_NEAR of the code area's left edge
     var edgeRail by mutableStateOf(false)
     // ai: the window maximized, as a title bar's double click does (Main.kt sets it; the test hook's `max` step)
@@ -420,6 +488,9 @@ class SendState {
     private var runTest = false
     private var runName = ""
     private val timer = Timer(1000) { poll() }
+    // ai: while the monitor is taken: the presenter's word read five times a second, so a key or a click that gave it
+    // ai: back brings the window back at once
+    private val leaseTimer = Timer(200) { if (leased && p != 0L && parse(Native.presentStats(p))?.str("direct").isNullOrEmpty()) leaseEnded() }
 
     val presenting get() = p != 0L
     val sending get() = phase == Phase.On || phase == Phase.Preparing
@@ -431,14 +502,14 @@ class SendState {
     // ai: the margin past the quiet zone the presenter keeps at the area's edges, for the ring configured
     private val edge get() = Room.edgeShare(fmt?.span ?: Pick.span(ringIndex), margin).toFloat()
     // ai: what auto takes in the area now (0 while it has no size): the configured format's while sending
-    val autoBlocks get() = fmt?.takeIf { blocks == 0 }?.let { it.subch / 8 } ?: if (areaW > 0 && areaH > 0) Pick.pick(room, ringIndex) / 8 else 0
-    // ai: what the code offers at most, KB/s: codes x blocks a frame x 469 B x the pictures a second it can show, the
+    val autoBlocks get() = fmt?.takeIf { blocks == 0 }?.let { it.subch / Pick.STEP } ?: if (areaW > 0 && areaH > 0) Pick.pick(room, ringIndex) / Pick.STEP else 0
+    // ai: what the code offers at most, KB/s: codes x blocks a frame x 472 B x the pictures a second it can show, the
     // ai: asked rate or the measured refresh where lower, so a limit outside the sender shows in the figure
     // ai: (2026-10-04); null before a configure
     val capacityKBs: Double? get() {
         val f = fmt ?: return null
         val hz = present?.num("hz") ?: 0.0
-        return f.codes * sentBlocks * 469.0 * (if (hz > 0) min(f.fps.toDouble(), hz) else f.fps.toDouble()) / 1000
+        return f.codes * sentBlocks * Pick.PAYLOAD.toDouble() * (if (hz > 0) min(f.fps.toDouble(), hz) else f.fps.toDouble()) / 1000
     }
     // ai: the blocks a code of the painted format carries, from the sender's stats, the configured format's before the
     // ai: first stats; its profile, "" none
@@ -599,6 +670,7 @@ class SendState {
         timer.stop()
         settle.stop()
         if (p != 0L) { Native.presentStop(p); p = 0L }
+        if (leased) leaseEnded()
         canvas.presenting = false
         canvas.repaint()
         if (h != 0L && h != preparing) Native.txDestroy(h)
@@ -631,16 +703,72 @@ class SendState {
         if (phase != Phase.On) return
         paused = on
         if (p != 0L) Native.presentPause(p, on)
+        if (leased) canvas.repaint()
+        if (!on) takeOver()
     }
 
-    fun toggleFull() { full = !full; edgeRail = false; fullscreen?.invoke(full) }
+    fun toggleFull() {
+        edgeRail = false
+        if (leased) { if (p != 0L) { Native.presentStop(p); p = 0L }; leaseEnded(); if (sending) begin(); return }
+        full = !full
+        if (full && exclusiveFull && phase == Phase.On && !paused && p != 0L && lease()) return
+        fullscreen?.invoke(full)
+    }
+    // ai: Exclusive fullscreen from the window manager's full screen: the codes began playing there (Start, Resume) or
+    // ai: the setting was turned on while they play. That full screen is left first, so keepPlace keeps the window's
+    // ai: own place, and the monitor taken once the manager has given the window back (takeOverSoon); where no monitor
+    // ai: is lent the window goes back to the manager's full screen, and no take-over is tried again this session
+    private var leaseRefused = false
+    private fun takeOver() {
+        if (!full || leased || leaseRefused || !exclusiveFull || phase != Phase.On || paused || p == 0L) return
+        fullscreen?.invoke(false)
+        takeOverSoon.restart()
+    }
+    private val takeOverSoon = Timer(400) {
+        if (leased || !exclusiveFull || phase != Phase.On || paused || p == 0L) return@Timer
+        full = true
+        if (!lease()) { leaseRefused = true; fullscreen?.invoke(true) }
+    }.apply { isRepeats = false }
+    // ai: the presenter begun again on the monitor under the window: true where the monitor was taken; else the new
+    // ai: presenter shows the window as the old one did
+    private fun lease(): Boolean {
+        keepPlace?.invoke()
+        Native.presentStop(p); p = 0L
+        val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, vsync, true, canvas.place())
+        if (pr == 0L) { fail("The code cannot be shown: ${Native.txError()}"); return true }
+        p = pr
+        if (paused) Native.presentPause(p, true)
+        val st = parse(Native.presentStats(p))
+        leased = st?.str("direct").orEmpty().isNotEmpty()
+        leasedOn = st?.str("directName").orEmpty().ifEmpty { st?.str("direct").orEmpty() }
+        if (leased) {
+            // ai: the format for the monitor taken: its pixels the area (an auto pick, Size, Margin and Spacing measured on
+            // ai: it), held while leased; each setting changed in the control window re-picks on it
+            st?.str("directPx")?.split("x")?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == 2 && it[0] > 0 && it[1] > 0 }
+                ?.let { areaW = it[0]; areaH = it[1] }
+            leaseTimer.start(); canvas.repaint(); repick()
+        }
+        return leased
+    }
+    // ai: the monitor given back (a key or a click to the presenter, Stop, the window closing): full screen left and
+    // ai: the window where it was before
+    private fun leaseEnded() {
+        leaseTimer.stop()
+        leased = false
+        full = false
+        placeBack?.invoke()
+        // ai: the area's size followed again: read now, and re-picked where the presenter goes on in the window
+        if (canvas.isDisplayable) { val (w, hh) = canvas.devicePx(); areaW = w; areaH = hh }
+        if (p != 0L) settle.restart()
+    }
     // ai: the manager's own word on the window (its shortcut, a leave of its own, a request of ours taken): followed,
     // ai: nothing asked
-    fun fullFromManager(on: Boolean) { if (on != full) { full = on; edgeRail = false } }
+    fun fullFromManager(on: Boolean) { if (!leased && on != full) { full = on; edgeRail = false } }
 
     fun toggleRail() { collapsed = !collapsed; Prefs.collapsed = collapsed }
     fun toggleSettings() { settingsOpen = !settingsOpen; Prefs.settingsOpen = settingsOpen }
     fun toggleTools() { toolsOpen = !toolsOpen; Prefs.toolsOpen = toolsOpen }
+    fun toggleExperimental() { experimentalOpen = !experimentalOpen; Prefs.experimentalOpen = experimentalOpen }
 
     // ai: the settings: each kept as it moves; a slider's committed on release (commit), a chip's at once
     fun chooseTest(on: Boolean) { test = on; Prefs.payload = if (on) "test" else "file" }
@@ -666,7 +794,7 @@ class SendState {
             }
         }
     }
-    fun chooseBlocks(b: Int) { blocks = b.coerceIn(0, 128).let { if (it == 1) 0 else it }; Prefs.blocks = blocks }
+    fun chooseBlocks(b: Int) { blocks = if (b in Pick.VERSION_MIN..Pick.VERSION_MAX) b else 0; Prefs.blocks = blocks }
     fun chooseFps(v: Int) { fps = v.coerceIn(1, 60); Prefs.fps = fps }
     fun chooseVsync(on: Boolean) {
         vsync = on; Prefs.vsync = on
@@ -678,6 +806,19 @@ class SendState {
     fun chooseMargin(v: Int) { margin = v.coerceIn(Pick.QUIET, Room.MARGIN_MAX); Prefs.margin = margin }
     fun chooseRing(v: Int) { ring = if (v in Pick.RINGS.indices) v else -1; Prefs.ring = ring; repick() }
     fun chooseCodes(v: Int) { codes = if (v == 2) 2 else 1; Prefs.codes = codes; repick() }
+    // ai: Exclusive fullscreen's warning (Screen.kt ExclusiveTip), once: the first turn-on asks first; Cancel leaves it
+    // ai: off and the warning for the next turn-on
+    var askExclusive by mutableStateOf(false)
+    fun answerExclusive(go: Boolean) {
+        askExclusive = false
+        if (go) { Prefs.exclusiveSeen = true; chooseExclusiveFull(true) }
+    }
+    // ai: turned on in full screen while the codes play: the monitor taken (takeOver); turned off while it is: given back
+    fun chooseExclusiveFull(on: Boolean) {
+        if (on && !exclusiveFull && !Prefs.exclusiveSeen) { askExclusive = true; return }
+        exclusiveFull = on; Prefs.exclusiveFull = on
+        if (on) takeOver() else if (leased) toggleFull()
+    }
     fun commitFps() {
         if (phase != Phase.On) return
         configure()
@@ -695,6 +836,9 @@ class SendState {
     // ai: (2026-10-04, on a real screen: about 0.5 s of stalled presents a transition); the presenter meanwhile
     // ai: scales the picture it has into the new area.
     fun areaChanged() {
+        // ai: while a monitor is taken the area is the monitor's (lease): the control window's is no measure of it (read
+        // ai: again at leaseEnded)
+        if (leased) return
         val (w, hh) = if (canvas.isDisplayable) canvas.devicePx() else 0 to 0
         areaW = w; areaH = hh
         if (p == 0L) repick() else settle.restart()
@@ -714,18 +858,19 @@ class SendState {
         if (h == 0L || p != 0L || !canvas.isShowing || areaW <= 0 || areaH <= 0) return
         if (!configure()) return
         canvas.presenting = true
-        val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, vsync, canvas.place())
+        val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, vsync, false, canvas.place())
         if (pr == 0L) { fail("The code cannot be shown: ${Native.txError()}"); return }
         p = pr
         if (paused) Native.presentPause(p, true)
         timer.start()
+        takeOver()
     }
 
     // ai: The format the area holds now, configured where it changed: blocks set by hand win, else the largest the room
     // ai: holds (Pick, the web's pickVersion). false where it was refused (the run then ends with why).
     private fun configure(): Boolean {
         if (h == 0L) return false
-        val subch = if (blocks > 0) 8 * blocks else Pick.pick(room, ringIndex)
+        val subch = if (blocks > 0) Pick.STEP * blocks else Pick.pick(room, ringIndex)
         val f = Format(subch, Pick.span(ringIndex), fps, codes, if (codes > 1) Room.gapOf(spacing) else 0,
             when (enc) { "cpu" -> 0; "gpu" -> 1; else -> 2 })
         if (f == fmt) return true
@@ -757,7 +902,7 @@ class SendState {
     private fun sizeText() = if (compressed > 0) "${Readout.bytes(compressed)} (${Readout.bytes(fileSize)}\u00a0raw)" else "${Readout.bytes(fileSize)}\u00a0raw"
 
     // ai: The state line (the web's #state): what is sent, paused, or the error (red; Main.kt colours it). A line naming
-    // ai: the file says so in three parts, the name between (2026-10-23), for Parts.kt NameLine to hold its head on one
+    // ai: the file says so in three parts, the name between (2026-10-23), for the shared NameLine to hold its head on one
     // ai: line; any other is all `before`.
     data class StateLine(val before: String, val name: String? = null, val after: String = "")
     val stateParts: StateLine get() = when (val ph = phase) {
@@ -771,13 +916,13 @@ class SendState {
     val stateLine: String get() = stateParts.let { "${it.before}${it.name ?: ""}${it.after}" }
 
     // ai: The figures (the web's #nums): the rate the pictures actually presented carry (the presenter's fresh pictures a
-    // ai: second x codes x blocks a frame x 469 B, so a limit outside the sender shows in the figure; 2026-10-04); the
+    // ai: second x codes x blocks a frame x 472 B, so a limit outside the sender shows in the figure; 2026-10-04); the
     // ai: pass, beside it until 2026-10-05, is the readout's.
     val figures: String get() {
         if (phase != Phase.On || paused) return ""
         val f = fmt ?: return ""
         val pr = present ?: return ""
-        return Readout.rate(pr.num("shownFps") * f.codes * sentBlocks * 469 / 1000.0)
+        return Readout.rate(pr.num("shownFps") * f.codes * sentBlocks * Pick.PAYLOAD / 1000.0)
     }
 
     // ai: The readout (the web's #tx, Developer Tools): the format and why, the file, the frame on the surface, a frame's
@@ -792,10 +937,10 @@ class SendState {
             if (blocks > 0) ", set by hand" else ", chosen from a ${room.roundToInt()} px room and nothing else"
         if (!runTest) l += "file $fileSize B${sd.num("sentBytes").toLong().let { if (it in 1 until fileSize) ", $it B as sent (zstd)" else "" }}: ${sd.num("chunks").toInt()} chunk${if (sd.num("chunks").toInt() == 1) "" else "s"}, " +
             "${sd.num("lap").toInt()} data blocks a pass, BLAKE3 ${sd.str("root").take(16)}..., header in the light" +
-            (sd.num("pass").let { p -> if (p >= 1) "\npass ${floor(p).toInt()}" + (sd.num("offeredKBs").let { k -> if (k > 0 && sd.num("lap") > 0) ", ${Fmt.f1(sd.num("lap") / (k * 1000 / 469))} s a pass" else "" }) else "" })
+            (sd.num("pass").let { p -> if (p >= 1) "\npass ${floor(p).toInt()}" + (sd.num("offeredKBs").let { k -> if (k > 0 && sd.num("lap") > 0) ", ${Fmt.f1(sd.num("lap") / (k * 1000 / Pick.PAYLOAD))} s a pass" else "" }) else "" })
         l += "frame ${sd.num("width").toInt()} x ${sd.num("side").toInt()} px" + (if (f.codes > 1) ", ${f.codes} side by side $spacing modules apart" else "") + ", margin $margin modules" +
             (pr?.let { " on a ${it.str("surface").replace("x", " x ")} px surface" } ?: "")
-        l += "${if (f.codes > 1) "${f.codes} x " else ""}$b x 469 B = ${f.codes * b * 469} B per frame"
+        l += "${if (f.codes > 1) "${f.codes} x " else ""}$b x ${Pick.PAYLOAD} B = ${f.codes * b * Pick.PAYLOAD} B per frame"
         if (pr != null) {
             l += "shown ${Fmt.f1(pr.num("shownFps"))}/s of ${f.fps} asked, ${Fmt.f1(pr.num("presentsPerSec"))} presents a second, the screen " +
                 "${Fmt.f1(pr.num("hz"))} Hz${if (pr.num("modeHz") > 0) " (its mode ${Fmt.f1(pr.num("modeHz"))})" else ""}" +
@@ -819,8 +964,3 @@ class SendState {
     }
 }
 
-private val json = Json { ignoreUnknownKeys = true }
-fun parse(s: String): JsonObject? = runCatching { json.parseToJsonElement(s).jsonObject }.getOrNull()
-fun JsonObject.num(k: String) = (this[k] as? JsonPrimitive)?.doubleOrNull ?: 0.0
-fun JsonObject.str(k: String) = (this[k] as? JsonPrimitive)?.contentOrNull ?: ""
-fun JsonObject.flag(k: String) = (this[k] as? JsonPrimitive)?.booleanOrNull ?: false

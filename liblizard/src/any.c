@@ -4,9 +4,11 @@
 
 // ai: The largest sub-channel count whose picture is n: the top of n (the ring codecs' format, which registers any).
 static int top_subch(int n) {
-  for (int s = FOCUS_GROUP * OB_FMT_VERSION_MAX; s >= FOCUS_GROUP * OB_FMT_VERSION_MIN; s -= FOCUS_GROUP) if (focus_n_for(s) == n) return s;
+  for (int s = FOCUS_STEP * OB_FMT_VERSION_MAX; s >= FOCUS_STEP * OB_FMT_VERSION_MIN; s -= FOCUS_STEP) if (focus_n_for(s) == n) return s;
   return 0;
 }
+// ai: The ring codecs' picture: the smallest a format has (the ladder's foot's, 384 since LIZARD-32 left it).
+static int ring_n(void) { return focus_n_for(FOCUS_STEP * OB_FMT_VERSION_MIN); }
 void focus_any_free(focus_any_t *a) {
   for (int r = 0; r < FOCUS_RINGS; r++) focus_free(&a->ring[r]);
   for (int i = 0; i < FOCUS_ANY_PICS; i++) { if (a->pic_n[i]) focus_free(&a->pic[i]); a->pic_n[i] = 0; }
@@ -14,17 +16,17 @@ void focus_any_free(focus_any_t *a) {
 }
 int focus_any_init(focus_any_t *a, int nmax) {
   focus_any_free(a);
-  if (nmax < 256 || nmax > 2048) return -1;
+  if (nmax < ring_n() || nmax > 2048) return -1;
   for (int r = 0; r < FOCUS_RINGS; r++) {
-    if (focus_init(&a->ring[r], 256, top_subch(256), 2, 2 * FOCUS_RING[r], 0)) { for (int q = 0; q < r; q++) focus_free(&a->ring[q]); return -1; }
+    if (focus_init(&a->ring[r], ring_n(), top_subch(ring_n()), 2, 2 * FOCUS_RING[r], 0)) { for (int q = 0; q < r; q++) focus_free(&a->ring[q]); return -1; }
   }
   a->nmax = nmax; a->ready = 1;
   return a->ring[0].block_bytes;
 }
-// ai: The codec for subch sub-channels (picture n) in ring r: the ring's own where it is that format (n = 256 at its
+// ai: The codec for subch sub-channels (picture n) in ring r: the ring's own where it is that format (n = ring_n() at its
 // ai: top), else the cache, else built now. Each count is a format of its own (its rate profile), not a prefix.
 static focus_t *pic_for(focus_any_t *a, int r, int n, int subch) {
-  if (n == 256 && subch == top_subch(256)) return &a->ring[r];
+  if (n == ring_n() && subch == top_subch(n)) return &a->ring[r];
   int slot = -1, oldest = 0;
   for (int i = 0; i < FOCUS_ANY_PICS; i++) {
     if (a->pic_n[i] == n && a->pic_subch[i] == subch && a->pic_ring[i] == r) { a->pic_used[i] = ++a->pic_clock; return &a->pic[i]; }
@@ -46,8 +48,8 @@ int focus_any_frame(focus_any_t *a, const uint8_t *img, int iw, int ih, float ga
   const ob_fmt_t *fm = focus_fmt_rx(&a->ring[wi]);
   const int version = fm ? fm->version : held, known = version >= OB_FMT_VERSION_MIN && version <= OB_FMT_VERSION_MAX;
   a->held = !fm && known;
-  const int n = known ? focus_n_for(FOCUS_GROUP * version) : 0;
-  focus_t *pic = n && n <= a->nmax ? pic_for(a, wi, n, FOCUS_GROUP * version) : 0;
+  const int n = known ? focus_n_for(FOCUS_STEP * version) : 0;
+  focus_t *pic = n && n <= a->nmax ? pic_for(a, wi, n, FOCUS_STEP * version) : 0;
   if (!pic || (pic != &a->ring[wi] && !focus_hand_over(&a->ring[wi], pic))) { focus_release(&a->ring[wi]); return 0; }
   a->last = pic; a->n = n;
   return focus_finish(pic, NULL, blocks, ok, res);
@@ -55,7 +57,7 @@ int focus_any_frame(focus_any_t *a, const uint8_t *img, int iw, int ih, float ga
 int focus_any_top(const focus_any_t *a) {
   if (!a->ready) return 0;
   int top = 0;
-  for (int s = FOCUS_GROUP * OB_FMT_VERSION_MIN; s <= FOCUS_GROUP * OB_FMT_VERSION_MAX; s += FOCUS_GROUP) if (focus_n_for(s) <= a->nmax && focus_blocks_for(s) > top) top = focus_blocks_for(s);
+  for (int s = FOCUS_STEP * OB_FMT_VERSION_MIN; s <= FOCUS_STEP * OB_FMT_VERSION_MAX; s += FOCUS_STEP) if (focus_n_for(s) <= a->nmax && focus_blocks_for(s) > top) top = focus_blocks_for(s);
   return top;
 }
 const ob_fmt_t *focus_any_word(const focus_any_t *a) { return a->which >= 0 ? focus_fmt_rx(&a->ring[a->which]) : 0; }

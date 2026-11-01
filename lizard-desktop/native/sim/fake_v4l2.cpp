@@ -20,14 +20,14 @@
 #include <stdexcept>
 #include <thread>
 
-#include "camera/jpeg.h"
-#include "sim/scene.h"
+#include "cam/jpeg.h"
+#include "cam/scene.h"
 
 namespace lizard::sim {
 
 namespace {
 
-// ai: steadyNs's clock (camera/clock.h: std::chrono::steady_clock, CLOCK_MONOTONIC here)
+// ai: steadyNs's clock (cam/clock.h: std::chrono::steady_clock, CLOCK_MONOTONIC here)
 int64_t nowNs() {
   using namespace std::chrono;
   return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();

@@ -25,11 +25,14 @@
 
 #include "store.h"
 
+extern "C" {
+#include "xfer.h"
+}
+
 namespace lizard {
 
-constexpr int XFER_BLOCK_BYTES = 473;   // ai: src/xfer.h XFER_BLOCK: the id (4, little-endian) and the payload (469)
-struct Block { std::array<uint8_t, XFER_BLOCK_BYTES> bytes; };
-static_assert(sizeof(Block) == XFER_BLOCK_BYTES, "a vector of Blocks is the packed blocks");
+struct Block { std::array<uint8_t, XFER_BLOCK> bytes; };
+static_assert(sizeof(Block) == XFER_BLOCK, "a vector of Blocks is the packed blocks");
 
 // ai: What a frame's verified blocks came to: seen, those not judged bad (control blocks and repeats in); bad, a test
 // ai: frame's data blocks that are not the stream's; test, the frame was the test stream's; judged, the data blocks
@@ -76,7 +79,7 @@ class XferRxCore {
   XferRxCore& operator=(const XferRxCore&) = delete;
 
   // ai: One block a judge passed on (the fountain worker's take).
-  void block(const uint8_t* block473);
+  void block(const uint8_t* blk);
   // ai: The transfer in hand and every file received let go (the page's Clear); transfers a store parked stay.
   void clearAll();
   // ai: A transfer let go by its root (hex, or its first 16 digits): the one in hand, or one the store parked
@@ -102,12 +105,12 @@ class XferJudge {
  public:
   using Pass = std::function<void(const uint8_t*)>;
   explicit XferJudge(const std::atomic<uint64_t>& rootGen) : gen_(rootGen) {}
-  // ai: A frame's verified blocks, packed (473 B each): judged, deduplicated, and each one the transfer should take
+  // ai: A frame's verified blocks, packed (476 B each): judged, deduplicated, and each one the transfer should take
   // ai: handed to pass, control blocks first.
   FrameVerdict frame(const uint8_t* blocks, size_t count, const Pass& pass);
   // ai: One block past the judge: true when its id is new data. A control block is always passed on (its id is every
   // ai: transfer's; only its bytes say which) and is never new.
-  bool take(const uint8_t* block473, const Pass& pass);
+  bool take(const uint8_t* blk, const Pass& pass);
   // ai: The ids forgotten (the page's Clear).
   void clear();
 

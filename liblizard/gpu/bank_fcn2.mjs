@@ -1,21 +1,20 @@
-// The filter bank as the trained proposer, version 2 (wgsl/bank_fcn2.mjs, scripts/gpu/cnn/proposer/README.md "Version 2"), to
-// the contract in wgsl/bank.mjs: levels 1 to 4 (level 0's slots stay empty), one workgroup a region of 16 x 16
-// tiles. The map does not depend on the region, so the region is the largest the device's workgroup memory holds
-// (32 x 32 in f16 or halves where it gives 64 KB, 32 x 16 in 32 KB). With the X plane (the default) an X pass writes
-// each level's standardised map once, halves where the activations are halves, and the network kernel reads it; the
-// fused form recomputes it on every region's halo instead. The shader runs in f16 when the decoder's precision is
-// f16, else f32 storage where it fits, else f32 with halves stored. A device too small for all of them gets FitError.
+// The filter bank as the trained proposer, version 2 (glsl/bank_fcn2.mjs, plan/bank_fcn2.mjs; scripts/gpu/cnn/proposer/README.md
+// "Version 2"), to the contract in glsl/bank.mjs: levels 1 to 4 (level 0's slots stay empty), one workgroup a region of
+// 16 x 16 tiles. The map does not depend on the region, so the region is the largest the device's workgroup memory
+// holds (32 x 32 in f16 or halves where it gives 64 KB, 32 x 16 in 32 KB). An X pass writes each level's standardised
+// map once, halves where the activations are halves, and the network kernel reads it. The shader runs in f16 when the
+// decoder's precision is f16, else f32 storage where it fits, else f32 with halves stored. A device too small for all
+// of them gets FitError.
 // ai: FitError leaves the device with no GPU decoder: the C decodes (since 2026-09-26, no DoG bank to fall to).
-//
-// ?fcnstore= (FCN_STORE in the harness), comma separated: packed or f32 forces the storage, region=32x16 the region,
-// fused the one-kernel form, xblock=32x32 the X pass's block (each a form a smaller device is given, run where a larger
-// one fits), unfit the fallback (FitError: the C decodes), weights=<path under liblizard/> another version 2 weights file.
-// ai: The decoder's precision "int8" runs the int8 form (wgsl/bank_fcn2.mjs) on a q8 file (cnn/q8.mjs): the one named
-// ai: by weights=, else WEIGHTS_INT8; a float precision runs a float form on a float file. Either refuses the other's
-// ai: file, and a precision it does not know.
-import { fcn2Source, fcn2Plan, fcn2Forms, fcn2Bytes, KEEP, TILE } from "./wgsl/bank_fcn2.mjs";
+// ai: The decoder's precision "int8" runs the int8 form on a q8 file (cnn/q8.mjs), WEIGHTS_INT8; a float precision
+// ai: runs a float form on a float file. Either refuses the other's file, and a precision it does not know.
+// ai: A lane's planes and bind groups and the dispatches (the WebGPU host's ensure, dispatch and grids2) are the native
+// ai: host's (core/dec/front.cpp); the fused one-kernel form and the lab's ?fcnstore= forms went with the WGSL
+// ai: decoder (archive/webgpu-decoder/).
+import { fcn2Plan, fcn2Forms, fcn2Bytes, KEEP } from "./plan/bank_fcn2.mjs";
+import { fcn2Source } from "./glsl/bank_fcn2.mjs";
 import { loadNet } from "./cnn/netfile.mjs";
-import { LEVELS, TAU, EPS } from "./constants.mjs";   // ai: not ./decoder.mjs, which imports this module (constants.mjs)
+import { LEVELS } from "./constants.mjs";   // ai: not ./decoder.mjs, which imports this module (constants.mjs)
 
 export { KEEP };
 // ai: The installed proposer since 2026-10-03: the final retrain's arm A seed 1 trained further on blown-out scenes
@@ -33,88 +32,36 @@ export const REFERENCE = "../research/results/gpu/prop_blown/pb-s1.ref";
 // ai: (research/results/gpu/prop_blown/pb-s1-q8-f15.safetensors, the floor 0.15), installed 2026-10-03; the one before it,
 // ai: weights2-q8-before-blown.safetensors (research/results/gpu/final/a-s1-q8.safetensors, reference a-s1-q8.ref there), and
 // ai: before that weights2-q8-before-final.safetensors (research/results/gpu/q8/p2q8p-s2.json, reference research/results/gpu/q8/reference-p2q8p-s2.bin).
-// ai: weights= (the harness's FCN_STORE=weights=<path>) runs another.
 export const WEIGHTS_INT8 = "gpu/cnn/proposer/weights2-q8.safetensors";
 export const REFERENCE_INT8 = "../research/results/gpu/prop_blown/pb-s1-q8.ref";
-const U = globalThis.GPUBufferUsage ?? {};
-const ceilDiv = (a, b) => Math.ceil(a / b);
 
 export class FitError extends Error {}
 
-export function storeOptions(s = globalThis.location ? new URLSearchParams(globalThis.location.search).get("fcnstore") ?? "" : "") {
-  const o = {};
-  for (const kv of s.split(",").filter(Boolean)) { const i = kv.indexOf("="); if (i < 0) o[kv] = true; else o[kv.slice(0, i)] = kv.slice(i + 1); }
-  return o;
-}
-
 export async function build(fh) {
-  const o = storeOptions();
-  // ai: a path under liblizard/, or a candidate under research/ (../research/..., the trainers' and the checks')
-  if (o.weights && (o.weights.replace(/^\.\.\/research\//, "").includes("..") || o.weights.startsWith("/"))) throw new Error(`fcn2 weights ${o.weights}: a path under liblizard/ or ../research/`);
   if (!["int8", "f16", "f32"].includes(fh.precision)) throw new Error(`fcn2 bank: precision ${fh.precision}: int8, f16 or f32`);
-  const int8 = fh.precision === "int8", file = o.weights ?? (int8 ? WEIGHTS_INT8 : WEIGHTS);
-  if (!file) throw new Error("fcn2 bank: fcnstore weights= names no file");
+  const int8 = fh.precision === "int8", file = int8 ? WEIGHTS_INT8 : WEIGHTS;
   const json = await loadNet(new URL(`../${file}`, import.meta.url));
   const f16 = !int8 && fh.floatPrecision === "f16";
   const limit = fh.device.limits.maxComputeWorkgroupStorageSize;
   let forms;
-  try { forms = fcn2Forms(json, { f16, int8, force: o }); } catch (e) { throw new Error(`fcn2 bank ${fh.precision}, ${file}: ${e.message}`); }
-  // ai: A value that leaves no form is a mistake, not a small device: FitError would hide it as a device too small.
-  if (!forms.length) throw new Error(`fcn2 bank: fcnstore ${JSON.stringify(o)} matches no form; the forms are ${fcn2Forms(json, { f16, int8 }).map((t) => t.name).join(", ")}`);
-  const form = o.unfit ? null : forms.find((t) => t.bytes <= limit);
+  try { forms = fcn2Forms(json, { f16, int8 }).filter((t) => t.xplane); } catch (e) { throw new Error(`fcn2 bank ${fh.precision}, ${file}: ${e.message}`); }
+  const form = forms.find((t) => t.bytes <= limit);
   // ai: int8 too big for the device is a failed int8 build, not a small device: the caller's precision chain then
   // ai: tries f16 or f32, whose halves-stored forms are smaller.
-  if (!form && int8 && !o.unfit) throw new Error(`fcn2 bank int8: ${Math.min(...forms.map((t) => t.bytes))} bytes of workgroup memory at the least, the device gives ${limit}`);
+  if (!form && int8) throw new Error(`fcn2 bank int8: ${Math.min(...forms.map((t) => t.bytes))} bytes of workgroup memory at the least, the device gives ${limit}`);
   if (!form) throw new FitError(`fcn2 bank: ${Math.min(...forms.map((t) => t.bytes))} bytes of workgroup memory at the least, the device gives ${limit}`);
   const plan = fcn2Plan(json);
-  const src = fcn2Source(json, { ...form, stage: form.xplane ? "net" : "all" });
+  // ai: the plane form's two kernels (glsl/bank_fcn2.mjs): the network on the plane, and the X pass
+  const src = fcn2Source(json, { ...form, stage: "net" });
   fh.fcn2 = await fh.pipeline(src, ["ro", "ro", "rw", "rw", "uniform"]);
-  fh.fcn2X = form.xplane ? await fh.pipeline(fcn2Source(json, { ...form, stage: "x" }), ["ro", "ro", "rw", "uniform"]) : null;
+  fh.fcn2X = await fh.pipeline(fcn2Source(json, { ...form, stage: "x" }), ["ro", "ro", "rw", "uniform"]);
   fh.fcn2Form = form;
   fh.bankStore = form.name;
   fh.log(`fcn2 bank ${json.spec ?? ""} (${file}) ${form.name}: ${plan.macs} MACs a map pixel, box ${plan.K}, floor ${plan.floor}, ${form.bytes} bytes of workgroup memory (network ${fcn2Bytes(src)}; the device gives ${limit}), levels 1 to ${LEVELS - 1}`);
 }
 
 // ai: The finder's first round runs levels COARSE_FROM up on every frame; levels below it run in its second round
-// ai: (decoder.mjs batch, wgsl/finder.mjs REDO), on the frames the first did not find. On the S26's 2:1 replays level 1
+// ai: (core/dec/front.cpp's batch, glsl/finder.mjs REDO), on the frames the first did not find. On the S26's 2:1 replays level 1
 // ai: was 72% of this stage's time; without it the 128 ring's replay read every frame as before and the 256 ring's
 // ai: found 165 of 192 (2026-10-21).
 export const COARSE_FROM = 2;
-
-// dimsAt(l): the level's (w, h) at the current capacity; bases[l]: where its slots start; slots: a frame's total.
-// With the plane, each level has one per lane: B frames of rows x stride rounded up to even, halves in pairs or f32.
-// ai: A level below COARSE_FROM also has group2 and xgroup2, the same over the second round's frame records.
-export function ensure(fh, dimsAt, bases, slots) {
-  const d = fh.device, form = fh.fcn2Form;
-  for (const lv of fh.fcn2Levels ?? []) lv.plane?.destroy();
-  fh.fcn2Levels = [];
-  for (let l = 1; l < LEVELS; l++) {
-    const uni = d.createBuffer({ size: 32, usage: U.UNIFORM | U.COPY_DST }), ab = new ArrayBuffer(32), u = new Uint32Array(ab), f = new Float32Array(ab);
-    const [w, h] = dimsAt(l);
-    u.set([l, w, h, slots]); f[4] = TAU; f[5] = EPS; u[6] = bases[l]; u[7] = ceilDiv(w, TILE);
-    d.queue.writeBuffer(uni, 0, ab);
-    // ai: int8: Xq, a byte a pixel at a row stride rounded up to four (a word never straddles two rows).
-    const plane = !form.xplane ? null : d.createBuffer({ size: form.int8 ? ((w + 3) & ~3) * h * fh.B : (form.store === "f32" ? 4 : 2) * (w + (w & 1)) * h * fh.B, usage: U.STORAGE });
-    const group = (frames) => d.createBindGroup({ layout: fh.fcn2.bgl, entries: [
-      { binding: 0, resource: { buffer: plane ?? fh.level[l - 1].buf } }, { binding: 1, resource: { buffer: frames } }, { binding: 2, resource: { buffer: fh.rawBuf } },
-      { binding: 3, resource: { buffer: fh.countsBuf } }, { binding: 4, resource: { buffer: uni } }] });
-    const xgroup = (frames) => (plane ? d.createBindGroup({ layout: fh.fcn2X.bgl, entries: [fh.level[l - 1].buf, frames, plane, uni].map((buffer, binding) => ({ binding, resource: { buffer } })) }) : null);
-    const fine = l < COARSE_FROM;
-    fh.fcn2Levels.push({ l, w, h, group: group(fh.framesBuf), xgroup: xgroup(fh.framesBuf), group2: fine ? group(fh.frames2Buf) : null, xgroup2: fine ? xgroup(fh.frames2Buf) : null, plane });
-  }
-}
-
-// ai: round 0: every level (a batch with no second round); 1: the first round's levels; 2: the second round's.
-export function dispatch(pass, fh, B, round = 0) {
-  const { TX, TY } = fh.fcn2Form;
-  const levels = round === 0 ? fh.fcn2Levels : fh.fcn2Levels.filter((lv) => (lv.l < COARSE_FROM) === (round === 2));
-  if (fh.fcn2X) {
-    pass.setPipeline(fh.fcn2X.p);
-    for (const lv of levels) { pass.setBindGroup(0, round === 2 ? lv.xgroup2 : lv.xgroup); pass.dispatchWorkgroups(ceilDiv(lv.w, fh.fcn2Form.XB[0]), ceilDiv(lv.h, fh.fcn2Form.XB[1]), B); }
-  }
-  pass.setPipeline(fh.fcn2.p);
-  for (const lv of levels) {
-    pass.setBindGroup(0, round === 2 ? lv.group2 : lv.group);
-    pass.dispatchWorkgroups(ceilDiv(ceilDiv(lv.w, TILE * TX), fh.fcn2Form.walk), ceilDiv(lv.h, TILE * TY), B);
-  }
-}

@@ -69,7 +69,7 @@ std::unique_ptr<GpuPainter> GpuPainter::create(const std::string& assets, std::f
 }
 
 GpuPainter::~GpuPainter() {
-  if (dev_) dev_->waitIdle();
+  try { if (dev_) dev_->waitIdle(); } catch (const std::exception&) {}   // ai: a lost or hung device (wg::Lost): nothing to wait for
   gPaint_.reset(); gIrows_.reset(); gIpic_.reset(); gTpose_.reset(); gRsv_.reset(); gRsh_.reset();
   if (fReady_) focus_free(&f_);
 }

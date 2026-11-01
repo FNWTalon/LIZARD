@@ -1,7 +1,7 @@
 /* Wirehair for the transfer (src/xfer.h), in the browser and natively: a narrow C ABI shaped
  * around what the transfer's header and manifest already carry.
  *
- * They give each chunk's bytes as sent, in blocks of 469 bytes. Wirehair's V2 decoder
+ * They give each chunk's bytes as sent, in blocks of 472 bytes. Wirehair's V2 decoder
  * wants a 32-byte serialized wire profile instead, and every field of that profile is
  * either a pinned constant or derivable from those EXCEPT `seed_attempt`, which the
  * encoder picks. So the sender reads its chosen seed back out of the profile and sends it

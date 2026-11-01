@@ -38,9 +38,10 @@ int focus_setup(int n, int subch, float clip, int span, float tilt) {
   fready = 1;
   return F.block_bytes;
 }
-// Up to four runs (FOCUS_TIERS) of blocks at different code rates (focus.h): rate index, blocks, sub-channels a block; a run of 0 blocks ends the list.
-int focus_setup_tiers(int n, float clip, int span, float tilt, int r0, int b0, int s0, int r1, int b1, int s1, int r2, int b2, int s2, int r3, int b3, int s3) {
-  const focus_tier_t all[FOCUS_TIERS] = { { r0, b0, s0 }, { r1, b1, s1 }, { r2, b2, s2 }, { r3, b3, s3 } };
+// Up to four runs (FOCUS_TIERS) of blocks at different code rates (focus.h): rate index and blocks (a block's slots are
+// its rate's, focus_block_slots); a run of 0 blocks ends the list.
+int focus_setup_tiers(int n, float clip, int span, float tilt, int r0, int b0, int r1, int b1, int r2, int b2, int r3, int b3) {
+  const focus_tier_t all[FOCUS_TIERS] = { { r0, b0, 0 }, { r1, b1, 0 }, { r2, b2, 0 }, { r3, b3, 0 } };
   int tiers = 0;
   while (tiers < FOCUS_TIERS && all[tiers].blocks > 0) tiers++;
   if (fready) { focus_free(&F); fready = 0; }
@@ -51,10 +52,10 @@ int focus_setup_tiers(int n, float clip, int span, float tilt, int r0, int b0, i
 // ai: A receiver told nothing: the module's one blind receiver (any.h), behind the exports.
 static focus_any_t ANY = { .which = -1 };
 // ai: nmax: the largest picture this receiver decodes (1536, the ladder's top, in every receiver since 2026-09-29). Returns the
-// ai: block bytes (473), or -1.
+// ai: block bytes (476), or -1.
 int focus_any_setup(int nmax) { return focus_any_init(&ANY, nmax); }
-// ai: blocks and ok hold focus_any_max_blocks() blocks. held: the sub-channel count / 8 of the last word the caller
-// ai: read (its version field), 0 for none. Returns the blocks decoded; focus_any_which says which ring registered
+// ai: blocks and ok hold focus_any_max_blocks() blocks. held: the version (sub-channels / 16) of the last word the
+// ai: caller read, 0 for none. Returns the blocks decoded; focus_any_which says which ring registered
 // ai: (-1 none), focus_any_n the picture finished (0 none), focus_any_held whether the held configuration stood in.
 int focus_any_rx(const uint8_t *img, int iw, int ih, float gamma, int mesh, uint8_t *blocks, uint8_t *ok, int held) {
   return focus_any_frame(&ANY, img, iw, ih, gamma, mesh, blocks, ok, held, &R);
@@ -214,11 +215,11 @@ void focus_tables_out(float *out) { if (fready) focus_tables(&F, out); }
 int focus_rx_ldpc(const int8_t *llr, const float *est, uint8_t *blocks, uint8_t *ok) {
   return fready ? focus_finish_ext(&F, 0, llr, est, blocks, ok, &R) : 0;
 }
-// Which global sub-channel each block starts at, and how many it spans: what maps a flat per-sub-channel
-// soft-value array onto the blocks.
-void focus_block_subs(int32_t *first, int32_t *count) {
+// Which slot of the frame each block starts at, and how many it spans: what maps a flat per-slot soft-value array
+// (subch runs of 2 * FOCUS_SUB) onto the blocks.
+void focus_block_runs(int32_t *first, int32_t *count) {
   if (!fready) return;
-  for (int b = 0; b < F.blocks; b++) { first[b] = F.block_sub[b]; count[b] = F.tier[F.block_tier[b]].subs; }
+  for (int b = 0; b < F.blocks; b++) { first[b] = F.block_slot[b]; count[b] = F.tier[F.block_tier[b]].slots; }
 }
 
 // The LDPC code of a tier, for a decoder running elsewhere: tier is an index into the frame's tiers (focus.h
@@ -254,7 +255,7 @@ void xfer_layout(int32_t *out) {
 uint32_t xfer_id_of(uint32_t chunk, uint32_t symbol) { return xfer_id(chunk, symbol); }
 int xfer_kind_of(uint32_t id) { return xfer_id_kind(id); }
 
-// The header's 469 bytes from its fields: length in bytes, the chunk size's log2, the codec, the one chunk's seed
+// The header's 472 bytes from its fields: length in bytes, the chunk size's log2, the codec, the one chunk's seed
 // attempt and bytes as sent (0 and 0 unless the file is one chunk), the root's 32 bytes, and name and media type as
 // bytes with their lengths (0 for none). 0, or -1 for fields the layout refuses.
 int xfer_hdr_write(uint8_t *payload, double length, int chunk_log2, int codec, int seed, double sent, const uint8_t *root,

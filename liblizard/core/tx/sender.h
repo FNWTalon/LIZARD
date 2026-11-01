@@ -21,7 +21,7 @@
 
 namespace lizard {
 
-// ai: The symbol (lizard-web/send.mjs spec): subch the sub-channels (the version is subch / 8; 0 is no format, refused),
+// ai: The symbol (lizard-web/send.mjs spec): subch the sub-channels (the version is subch / 16; 0 is no format, refused),
 // ai: span the ring's (2 x its cells; 0 the default ring, src/focus.h FOCUS_RING_DEFAULT), fps the display rate the word
 // ai: states; the picture is the format's (focus_n_for(subch): a receiver takes it from the version); threads the painters. painter (2026-10-02, the
 // ai: web's encoder switch): 0 the C on the CPU, 1 the GPU (gpu_painter.h; its absence an error), 2 auto: the GPU where

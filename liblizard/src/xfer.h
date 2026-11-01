@@ -8,18 +8,19 @@
 // chaining values of all the chunks combine to the root (2026-09-24).
 //
 // ---- The block ----
-// Every LIZARD block is 473 bytes (src/focus.c block_bytes, the same in all 128 formats and at every rate): the id, uint32
-// little-endian in bytes 0 to 3, then XFER_PAYLOAD = 469 bytes of payload.
+// Every LIZARD block is 476 bytes (src/focus.c block_bytes, the same in every format and at every rate; with its CRC-32
+// the 3840 data bits of the 3/4, 2/3 and 1/2 codes): the id, uint32 little-endian in bytes 0 to 3, then XFER_PAYLOAD =
+// 472 bytes of payload (473 and 469 until 2026-11-01).
 //
 //   id bits 31..18  chunk   0 .. 16382 a chunk of the file, 16383 (XFER_CONTROL) a control block
 //   id bits 17..0   symbol  a data block: the Wirehair block id within its chunk's fountain
 //                           a control block: 0 the header, 1 + m manifest block m (m < XFER_MAX_MANIFEST, 1366), the rest reserved
 //
 // Why 18 bits of symbol. Wirehair takes at most 64,000 source blocks (liblizard/wirehair/shim.cpp), so the largest chunk
-// is 16 MiB (35,773 blocks of 469 bytes; 32 MiB would be 71,546). Repair ids run past the source count without end,
-// and a sender that runs out of field wraps and repeats ids the receiver may already hold. 2^18 is 7.3 times the
+// is 16 MiB (35,545 blocks of 472 bytes; 32 MiB would be 71,090). Repair ids run past the source count without end,
+// and a sender that runs out of field wraps and repeats ids the receiver may already hold. 2^18 is 7.4 times the
 // source blocks of a 16 MiB chunk and 29 times those of a 4 MiB one: a receiver has to miss 86% of a 16 MiB chunk's
-// blocks before the sender repeats one. 16 bits would repeat at 45%.
+// blocks before the sender repeats one. 16 bits would repeat at 46%.
 // Why 14 bits of chunk. 16,383 chunks: 16 GiB at 1 MiB a chunk, 64 GiB at 4 MiB, 256 GiB at 16 MiB. A file of
 // several GB at a few MiB a chunk is two thousand or so.
 // Why the control range is at the top: a data block's id is then its chunk and symbol as they are, chunk 0's
@@ -38,9 +39,10 @@
 // (one chunk: from the header), so it builds no chunk's decoder before the manifest is in; the control cycle puts the
 // manifest within an eighth of a lap, and under the interleaved schedule no chunk completes sooner anyway.
 //
-// ---- The header block (id XFER_ID_HEADER = 0xfffc0000), 469 bytes, little-endian ----
-//     0    1  version      XFER_VERSION = 2; a receiver refuses any other (-2). 1 until 2026-10-05: seeds at 3 and
-//                          4 (one for every chunk but the last, one for the last), type to 162, no codec, no sent
+// ---- The header block (id XFER_ID_HEADER = 0xfffc0000), 472 bytes, little-endian ----
+//     0    1  version      XFER_VERSION = 3; a receiver refuses any other (-2). 2 until 2026-11-01: blocks of 469
+//                          bytes; 1 until 2026-10-05: seeds at 3 and 4 (one for every chunk but the last, one for the
+//                          last), type to 162, no codec, no sent
 //     1    1  hash         XFER_HASH_BLAKE3 = 1; 0 and 2..255 refused (-3), the room for another hash
 //     2    1  chunk_log2   the chunk size is 1 << chunk_log2 bytes, 10 .. 24
 //     3    1  codec        XFER_CODEC_NONE = 0: every chunk is sent as its bytes; XFER_CODEC_ZSTD = 1: a chunk sent
@@ -56,20 +58,21 @@
 //   307  158  type         the media type, ASCII, zero padded; empty for none
 //   465    4  sent         the one chunk's bytes as sent (its frame, or its own), u32, 1 .. its length; 0 when the
 //                          file is not one chunk
+//   469    3  reserved, 0
 // Every byte past a length is zero and the parse insists, so a block that is not a header rarely passes for one.
-// Version 2 also fixes the fountain: Wirehair V2, profile WIREHAIR_V2_PROFILE_CERTIFIED_2026_07 (the shim pins it), at
-// 469-byte blocks, and the codec, zstd frames. A change to any is a new version.
+// Version 3 also fixes the fountain: Wirehair V2, profile WIREHAIR_V2_PROFILE_CERTIFIED_2026_07 (the shim pins it), at
+// 472-byte blocks, and the codec, zstd frames. A change to any is a new version.
 //
 // The seed attempt. Wirehair picks the attempt (0 .. 255) from the block count alone, and with compression every
 // chunk has its own count, so every chunk's attempt travels: in the manifest, or for a one-chunk file in the header.
-// A chunk of one block (sent 469 bytes or less) is not fountained, since Wirehair refuses a one-block message (-9):
+// A chunk of one block (sent 472 bytes or less) is not fountained, since Wirehair refuses a one-block message (-9):
 // its sent bytes go zero padded as symbol 0, repeated as the sender cycles, and its seed is 0.
 //
 // ---- The manifest blocks (id XFER_ID_MANIFEST + m, m = 0 .. xfer_manifest_blocks(chunks) - 1) ----
 //     0    8  tag          the root's first 8 bytes, so a block of another transfer is refused before it is used
 //     8  444  entries      chunks 12 m .. 12 m + 11, 37 bytes each, in order: the chaining value (32), sent (4,
 //                          u32), the seed attempt (1); zero past the last chunk
-//   452   17  reserved, 0
+//   452   20  reserved, 0
 // A file of two chunks or more has ceil(chunks / 12) of them; a file of one chunk or none has none, since its root is
 // the one chunk's own hash and is checked from the chunk, and its sent and seed are in the header.
 //
@@ -90,10 +93,10 @@
 #include <stdint.h>
 
 enum {
-  XFER_ID_BYTES = 4, XFER_PAYLOAD = 469, XFER_BLOCK = XFER_ID_BYTES + XFER_PAYLOAD,
+  XFER_ID_BYTES = 4, XFER_PAYLOAD = 472, XFER_BLOCK = XFER_ID_BYTES + XFER_PAYLOAD,
   XFER_SYMBOL_BITS = 18, XFER_CHUNK_BITS = 14,
   XFER_CONTROL = (1 << XFER_CHUNK_BITS) - 1, XFER_MAX_CHUNKS = XFER_CONTROL,
-  XFER_VERSION = 2, XFER_HASH_BLAKE3 = 1, XFER_CODEC_NONE = 0, XFER_CODEC_ZSTD = 1,
+  XFER_VERSION = 3, XFER_HASH_BLAKE3 = 1, XFER_CODEC_NONE = 0, XFER_CODEC_ZSTD = 1,
   XFER_LOG2_MIN = 10, XFER_LOG2_MAX = 24,
   XFER_CV = 32, XFER_SENT_BYTES = 4, XFER_SEED_BYTES = 1, XFER_ENTRY = XFER_CV + XFER_SENT_BYTES + XFER_SEED_BYTES,
   XFER_PER_BLOCK = 12,
@@ -139,7 +142,7 @@ typedef struct {
 uint32_t xfer_chunk_count(uint64_t length, int chunk_log2);
 // Bytes of chunk `index` under h (the file's own, not as sent), 0 past the last.
 size_t xfer_chunk_len(const xfer_header_t *h, uint32_t index);
-// The Wirehair source blocks of a chunk sent as `sent` bytes, ceil(sent / 469); 1 means sent unfountained as symbol 0.
+// The Wirehair source blocks of a chunk sent as `sent` bytes, ceil(sent / 472); 1 means sent unfountained as symbol 0.
 uint32_t xfer_blocks(uint32_t sent);
 // 0 where `sent` and `seed` can be chunk `index`'s under h: sent 1 .. its length, shorter only under a codec, and a
 // seed only for 2 blocks or more. What the header (one chunk) and the manifest entries are held to.
@@ -150,7 +153,7 @@ int xfer_manifest_blocks(uint32_t chunks);
 // caller's (the codec, and for a one-chunk file its sent and seed). 0, or -1 for a length or chunk size the layout
 // cannot carry.
 int xfer_header_init(xfer_header_t *h, uint64_t length, int chunk_log2);
-// The 469-byte payload from h, or -1 where h is inconsistent (the same checks the parse makes).
+// The 472-byte payload from h, or -1 where h is inconsistent (the same checks the parse makes).
 int xfer_header_write(const xfer_header_t *h, uint8_t *payload);
 // 0, or XFER_ERR / XFER_ERR_VERSION / XFER_ERR_HASH / XFER_ERR_CODEC.
 int xfer_header_parse(const uint8_t *payload, xfer_header_t *h);

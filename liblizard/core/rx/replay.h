@@ -33,13 +33,13 @@ class Replay {
   bool hold(int n);
   void release(int n);
   // ai: a frame: w x h bytes, rows `stride` apart; ms, its capture's time on the camera's clock; held, one hold()'s;
-  // ai: ax, ay where the camera's optical axis fell in it (NaN: its centre); lens, the camera's report of its lens
-  // ai: (k1, k2, k3, f px; null or f 0 none). Written as it comes, and the oldest past `keep` deleted.
-  void frame(const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride, double ms, bool held = false, float ax = NAN, float ay = NAN, const float* lens = nullptr);
+  // ai: ax, ay where the camera's optical axis fell in it (NaN: its centre). Written as it comes, and the oldest past
+  // ai: `keep` deleted.
+  void frame(const uint8_t* px, uint32_t w, uint32_t h, uint32_t stride, double ms, bool held = false, float ax = NAN, float ay = NAN);
   // ai: The run's end, once the held frames have come (or a few seconds have passed): the file written, the frames
   // ai: kept oldest first (each scratch frame removed once it is in), then stats.jsonl (`rows`, a row a line), then
   // ai: meta.json (run, w, h, frames, of, sizes as the web's; ms, each frame's capture time; axes, each frame's camera
-  // ai: axis ([x, y], null the centre); lens, each frame's lens report ([k1, k2, k3, f], null none); taken, the frames
+  // ai: axis ([x, y], null the centre); taken, the frames
   // ai: the run saw; config, the format the light last named, from the receiver's stats JSON `rxStats` (its word) as
   // ai: the web names it; decoder and layout from the same; error, where a write failed and ended the frames early;
   // ai: then the fields of the object `more`), its frames those in the file. The frames kept, or -1 when the file
@@ -50,7 +50,7 @@ class Replay {
   std::string error();
 
  private:
-  struct Kept { uint64_t i; uint32_t w, h; double ms; float ax, ay; std::array<float, 4> lens; };
+  struct Kept { uint64_t i; uint32_t w, h; double ms; float ax, ay; };
   // ai: Two locks: hm guards the holds alone (a push holds a frame under the receiver's lock, which must never wait on
   // ai: a frame's write), mu the files and the window.
   std::mutex hm, mu;

@@ -5,8 +5,9 @@ import java.io.File
 // ai: The app's native side (lizard-desktop/native over liblizard/core): the sender (tx_jni.cpp over lizard_tx: a sender on
 // ai: a mapped file or the test stream, its painters, the C on the CPU or the Vulkan painter, liblizard/core/tx/
 // ai: gpu_painter), the presenter (presenter.cpp, which takes the sender's frames in order and shows them on the code
-// ai: area's canvas through its own Vulkan swapchain, FIFO), the desktop's file chooser and full screen, and the
-// ai: receiver (rx_jni.cpp over rx_session.h: a camera into liblizard/core's Receiver, the GPU decoder or the C). load()
+// ai: area's canvas through its own Vulkan swapchain, FIFO), the desktop's file chooser and full screen; and the
+// ai: receive session's natives (liblizard/api/jni_session.cpp, dev.lizard.Session's: a camera into liblizard/core's
+// ai: Receiver, the GPU decoder or the C), registered as the library loads (jni_util.cpp JNI_OnLoad). load()
 // ai: first: it extracts the bundled library, the GPU painter's kernels and tables and the decoder's setups, blobs and
 // ai: modules (build.gradle.kts `bundle`) to a folder under the cache named by the hash the build wrote at the top of
 // ai: files.txt (Native.cache: ~/.cache/lizard-sender on Linux), loads the JDK's jawt (the presenter finds the canvas's
@@ -29,7 +30,7 @@ object Native {
     // ai: the frame's own (Room.edgeShare); the frame stretched (linear).
     // ai: place: macOS's layer over the canvas (CodeCanvas.place), ignored elsewhere; presentPlace when the canvas moves.
     // ai: vsync: the monitor held at a refresh fps divides while presenting (presenter.h setVsync), presentVsync after.
-    @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, edge: Float, vsync: Boolean, place: FloatArray): Long
+    @JvmStatic external fun presentStart(canvas: java.awt.Component, tx: Long, fps: Int, size: Float, edge: Float, vsync: Boolean, direct: Boolean, place: FloatArray): Long
     @JvmStatic external fun presentPlace(p: Long, place: FloatArray)
     // ai: the desktop's file chooser (2026-10-23, native/portal.cpp): the window manager's window around a canvas (0 none,
     // ai: on the UI thread), and the XDG portal's OpenFile attached to it (Windows: the shell's dialog), blocking until it
@@ -47,44 +48,6 @@ object Native {
     @JvmStatic external fun presentPause(p: Long, on: Boolean)
     @JvmStatic external fun presentStats(p: Long): String
     @JvmStatic external fun presentStop(p: Long)
-
-    // ai: The receiver (2026-10-25, native/rx_jni.cpp over native/rx_session.h): a camera (native/camera/camera.h: V4L2,
-    // ai: Media Foundation or AVFoundation for UVC devices; the simulated camera for the tests) feeding liblizard/core's
-    // ai: Receiver. Every string crosses as the text it is (UTF-16 here, UTF-8 there), every JSON as rx_session.h
-    // ai: describes it; a refusal is its sentence ("" none). Calls that can wait, never on the UI thread (ReceiveState's
-    // ai: own thread): rxCameras (a listing opens each device), rxCreate and rxConfigure (a receiver made), rxOpen,
-    // ai: rxStart, and the camera calls that queue behind them (rxSet, rxStop, rxClose), rxClear and rxForget (the
-    // ai: transfer's worker), rxReplayEnd. rxStats, rxCamera and rxPreview wait on nothing.
-    // ai: the cameras every backend sees: {"cameras": [{id, name, backend, detail}], "notes": [why a backend saw none]}
-    @JvmStatic external fun rxCameras(): String
-    // ai: a cheap mark of what is plugged in (camera.h listStamp): rxCameras again only where it changed
-    @JvmStatic external fun rxCamerasStamp(): String
-    // ai: a session with its receiver (decoder auto|gpu|cpu, layout 1:1|2:1): 0, why in txError()
-    @JvmStatic external fun rxCreate(assets: String, cacheDir: String, storeDir: String, decoder: String, layout: String): Long
-    @JvmStatic external fun rxConfigure(h: Long, decoder: String, layout: String): String
-    @JvmStatic external fun rxOpen(h: Long, id: String): String
-    @JvmStatic external fun rxClose(h: Long)
-    // ai: the camera open: {info, modes, pick, controls}, {} none (rx_session.h camera)
-    @JvmStatic external fun rxCamera(h: Long): String
-    @JvmStatic external fun rxSet(h: Long, control: String, value: Double, automatic: Boolean): String
-    @JvmStatic external fun rxStart(h: Long, mode: Int): String
-    @JvmStatic external fun rxStop(h: Long)
-    // ai: the receiver's stats (liblizard/core/rx/receiver.h) with the camera's line in "camera"
-    @JvmStatic external fun rxStats(h: Long): String
-    // ai: the newest frame's crop newer than `since`, at most `side` px on its long side, into out (sized side x side):
-    // ai: [seq, w, h], or null where none came
-    @JvmStatic external fun rxPreview(h: Long, since: Long, side: Int, out: ByteArray): LongArray?
-    // ai: the received file's path once verified, else ""; clear forgets the transfer and its file; forget one by root
-    @JvmStatic external fun rxFile(h: Long): String
-    @JvmStatic external fun rxClear(h: Long)
-    @JvmStatic external fun rxForget(h: Long, root: String)
-    @JvmStatic external fun rxBatchCap(h: Long, n: Int)
-    // ai: Save replays (core/rx/replay.h): a run's folder of the newest `frames` frames the decoder takes; rxRecord(h, 0)
-    // ai: stops; rxReplayEnd ends the run: {"frames", "bytes", "error"}
-    @JvmStatic external fun rxReplayNew(file: String, run: String, frames: Int): Long
-    @JvmStatic external fun rxRecord(h: Long, replay: Long)
-    @JvmStatic external fun rxReplayEnd(replay: Long, rxStats: String, rows: String, more: String): String
-    @JvmStatic external fun rxDestroy(h: Long)
 
     // ai: the GPU tree (setup/send.json, the decoder's six setups, blobs/, spv/), as liblizard/out holds it
     lateinit var assets: String

@@ -13,7 +13,7 @@ const want = (name, ok, got) => { if (!ok) fails++; console.log(`${ok ? "ok  " :
 const P = 24;   // ai: white round the symbol
 const fa = new FocusAny(1536);
 // ai: the smallest formats, where each parity is read over one or two blocks, and one with more of each
-for (const subch of [16, 24, 48]) {
+for (const subch of [64, 80, 96]) {
   // ai: the blocks with a tail: the 7/8 (rate index 6) and 3/4 (4) ones
   const tails = tiersFor(subch).reduce((k, [rate, b]) => k + (rate === 6 || rate === 4 ? b : 0), 0);
   const n = N_FOR(subch), fc = new Focus(n, subch, 1);

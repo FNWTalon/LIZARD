@@ -1,24 +1,23 @@
 // ai: The GPU back half composed (DESIGN.md section 9): the transform (A), the soft values (B) and the LDPC with its
 // ai: CRC and compaction (C) as one object that owns the stages, their tables and one set of derived strides
-// ai: (dims.mjs), makes a lane's buffers over the front half's frames and sel buffers, and appends the chain's
-// ai: six dispatches to a batch's command stream. What the host reads back is the result buffer of verified blocks
-// ai: (REC: id and payload a record), the verdict a block (V, ITS) and the counters a frame (BCOUNTS); nothing else
-// ai: leaves the device. Runs in the browser; node imports it for parseReadback and the constants.
+// ai: (dims.mjs), built by the setup (../decoder.mjs, on ../../gen/mockgpu.mjs's recording device) and exported for the
+// ai: native host (../../gen/gen.mjs exportBack, which reads every field built here). A lane's buffers, the chain's six
+// ai: dispatches in a batch and its readback are the native host's (core/dec/front.cpp); what it reads back is the
+// ai: result buffer of verified blocks (REC: id and payload a record), the verdict a block (V, ITS), the counters a
+// ai: frame (BCOUNTS) and PILOT; nothing else leaves the device. The WebGPU host's lane, encode and readback went with
+// ai: the WGSL decoder (archive/webgpu-decoder/).
 //
 //   const bh = await BackHalf.build(device, { B, sizes, precision, picture });
-//   const ln = bh.lane({ framesBuf, selBuf });   // one a lane in flight
-//   bh.bindPicture(ln, { texView, mapsBuf, residBuf, arecBuf });   // pass 1 samples the frame itself (arecBuf: the anchors' records)
-//   bh.encode(enc, ln, { ts });   // or bh.encode(pass, ln) inside an open compute pass
-//   bh.readback(enc, ln, readBuf, offset); ... parseReadback(mapped, offset, bh.dims)
-import { Transform, transformTables, TRANSFORM_DOWN } from "./transform.mjs";
+import { Transform } from "./transform.mjs";
+import { transformTables, TRANSFORM_DOWN } from "./disc.mjs";
 import { build as buildSoft } from "./soft.mjs";
-import { build as buildLdpc, unpackRecords, REC_BYTES } from "./ldpc.mjs";
+import { build as buildLdpc } from "./ldpc.mjs";
 import { derived } from "./dims.mjs";
-import { PAYLOAD } from "./ref_ldpc.mjs";
-import { pass1WorkgroupBytes, SLOTS } from "../wgsl/back_transform.mjs";
+import { pass1WorkgroupBytes, SLOTS } from "../plan/back_transform.mjs";
 import { RuleStage } from "./tiers.mjs";
+import { ruleTables } from "./codes.mjs";
+import { NC } from "../plan/back_tiers.mjs";
 
-export const PASSES = ["gate", "pass1", "reduce", "pass2", "soft", "ldpc"];
 // BCOUNTS: u32 [B][8] a batch, what each column holds and who writes it.
 export const COUNT = { columns: 0, rows: 1, stored: 2, tried: 3, verified: 4, records: 5, subch: 6, iterations: 7 };
 export const COUNTS = 8;
@@ -54,8 +53,11 @@ export class BackHalf {
     Object.assign(bh, { device, B, precision, sizes: bsizes, tables, dims, log });
     // ai: The stages built at once (2026-09-29, the GPU worker's start: STATUS "The ramp at the start"): none reads
     // ai: another's build, and none compiles under an error scope (../pipeline.mjs).
+    // ai: each version's blocks a code, a byte a code in CODES' order, the gate's codes table (the LDPC's dispatches)
+    const rt = await ruleTables(), codes = new Uint32Array(rt.profiles.length);
+    rt.profiles.forEach((p, v) => { for (const t of p ?? []) { if (t.count > 255 || t.c >= NC) throw new Error(`version ${v}: ${t.count} blocks of code ${t.c}: the gate's codes table holds a byte a code`); codes[v] |= t.count << (8 * t.c); } });
     [bh.transform, bh.soft, bh.ldpc] = await Promise.all([
-      Transform.build(device, { B, tables, precision, blkStride: dims.blkStride, picture }),
+      Transform.build(device, { B, tables, precision, blkStride: dims.blkStride, picture, codes }),
       buildSoft(device, { B, sizes: bsizes, tables }),
       buildLdpc(device, { B, sizes: bsizes }),
     ]);
@@ -69,90 +71,4 @@ export class BackHalf {
     log(`back half: ${precision}, sizes ${dims.served.map((s) => `${bsizes[s].n}/${bsizes[s].subch} (${bsizes[s].blocks} chunks)`).join(", ")}; S ${dims.sStride} entries, L ${dims.lStride} words, ${dims.blkStride} blocks a frame; records cap ${dims.recCap}; readback ${(bh.readBytes / 1024).toFixed(0)} KB a batch`);
     return bh;
   }
-
-  // One lane's buffers over the front half's: framesBuf (Frame { w, h, size, valid } a frame) and selBuf (vec4u
-  // ai: (ring, 1 + version, picture slot, 0) a frame). Named as DESIGN section 2 names them (S, L,
-  // BLK, V, ITS, REC, LISTS, ARGS, BCOUNTS); bindPicture rebinds pass 1 in place when the front half's texture changes.
-  // ai: ln.bytes is the lane's device memory.
-  lane({ framesBuf, selBuf }) {
-    const ln = this.transform.lane({ framesBuf, selBuf });
-    ln.S = ln.sBuf; ln.LISTS = ln.listsBuf; ln.ARGS = ln.argsBuf; ln.BCOUNTS = ln.countsBuf;
-    this.soft.lane(ln);
-    this.ldpc.lane(ln);
-    this.rule.lane(ln);
-    this.transform.bindGate(ln);
-    return ln;
-  }
-
-  // The fused pass 1 over the front half's frame texture view (2d-array, a frame a layer), maps and residuals. Call
-  // again whenever the front half replaces the texture.
-  // ai: picture.arecBuf: the front half's anchors records (SPEC 6.13).
-  bindPicture(ln, picture) { this.transform.bindPicture(ln, picture); }
-
-  // ai: The chain's six dispatches in order (PASSES). target: a GPUCommandEncoder (a compute pass a stage, a timestamp
-  // ai: pair each at qs[base + 2k] when ts = { qs, base } is given), or an open GPUComputePassEncoder (the dispatches
-  // ai: appended, no timestamps). Nothing is cleared from the host: the gate zeroes the counters, verdicts and record
-  // ai: count. frames: the batch's slots (at most B); the soft values and the LDPC dispatch only those.
-  encode(target, ln, { ts = null, frames = this.B } = {}) {
-    const t = this.transform, r = this.rule;
-    // ai: the soft values and the LDPC by the format's rate profile (tiers.mjs)
-    this.steps(target, ts, [(p) => t.dispatchGate(p, ln), (p) => t.dispatchPass1(p, ln), (p) => t.dispatchReduce(p, ln), (p) => t.dispatchPass2(p, ln), (p) => r.dispatchSoft(p, ln, frames), (p) => r.dispatchLdpc(p, ln, frames)]);
-  }
-
-  steps(target, ts, steps) {
-    if (typeof target.beginComputePass !== "function") { for (const step of steps) step(target); return; }
-    steps.forEach((step, k) => {
-      const p = target.beginComputePass(ts ? { timestampWrites: { querySet: ts.qs, beginningOfPassWriteIndex: ts.base + 2 * k, endOfPassWriteIndex: ts.base + 2 * k + 1 } } : {});
-      step(p);
-      p.end();
-    });
-  }
-
-  // The copies of what the host reads, into readBuf at offset (a multiple of 4): REC, V, ITS, BCOUNTS in that order.
-  // ai: then PILOT (a block's pilots, f32 blocksMax a frame, since 2026-09-30). Encoded after the lane's last pass.
-  // ai: Returns the bytes used (readBytes).
-  readback(enc, ln, readBuf, offset = 0) {
-    const parts = [[ln.REC, this.bytes.REC], [ln.V, this.bytes.V], [ln.ITS, this.bytes.ITS], [ln.BCOUNTS, this.bytes.BCOUNTS], [ln.PILOT, this.bytes.PILOT]];
-    let o = offset;
-    for (const [buf, size] of parts) { enc.copyBufferToBuffer(buf, 0, readBuf, o, size); o += size; }
-    return this.readBytes;
-  }
-
-  // Destroys a lane's buffers (the front half's three are the caller's).
-  destroyLane(ln) {
-    for (const [k, v] of Object.entries(ln)) if (v && typeof v.destroy === "function" && !["framesBuf", "selBuf"].includes(k)) v.destroy();
-  }
-}
-
-// One readback as the host reads it: the verified blocks as records (frame, block, iterations, id, the 473 payload
-// bytes with the id first) and, a frame, the verdicts and iteration counts a block (blocksMax each) and the counters
-// (COUNT). buffer: an ArrayBuffer holding a readback() range at offset. dims: { B, blocksMax, recCap } (BackHalf.dims
-// with B, or a result header's).
-export function parseReadback(buffer, offset, { B, blocksMax, recCap }) {
-  const recBytes = 4 + REC_BYTES * recCap, vBytes = 4 * B * blocksMax, cBytes = 4 * COUNTS * B, pBytes = 4 * B * blocksMax + 8 * B;   // ai: the pilots, then a frame's shift
-  const rec = new Uint8Array(buffer, offset, recBytes);
-  const V = new Uint32Array(buffer.slice(offset + recBytes, offset + recBytes + vBytes));
-  const ITS = new Int32Array(buffer.slice(offset + recBytes + vBytes, offset + recBytes + 2 * vBytes));
-  const counts = new Uint32Array(buffer.slice(offset + recBytes + 2 * vBytes, offset + recBytes + 2 * vBytes + cBytes));
-  const pilots = new Float32Array(buffer.slice(offset + recBytes + 2 * vBytes + cBytes, offset + recBytes + 2 * vBytes + cBytes + pBytes));
-  const { count, frames } = unpackRecords(rec, V, ITS, { B, blocksMax, recCap });
-  const records = recordsOf(buffer, offset, count, { B, blocksMax });
-  return {
-    count, records, V, ITS, counts,
-    frames: frames.map((fr, f) => ({ verdict: fr.verdict, its: fr.its, bytes: fr.bytes, records: fr.records, counts: Array.from(counts.subarray(COUNTS * f, COUNTS * (f + 1))), pilots: pilots.subarray(blocksMax * f, blocksMax * (f + 1)), shift: [pilots[B * blocksMax + 2 * f], pilots[B * blocksMax + 2 * f + 1]] })),
-  };
-}
-
-// ai: REC's first `count` records (the count word at offset, then REC_BYTES a record), a record's frame and block from
-// ai: its tag word and index its place in REC; one past the batch's slots or the block count is skipped, as
-// ai: unpackRecords skips it.
-function recordsOf(buffer, offset, count, { B, blocksMax }) {
-  const dv = new DataView(buffer, offset), records = [];
-  for (let r = 0; r < count; r++) {
-    const o = 4 + REC_BYTES * r, tag = dv.getUint32(o, true), f = tag & 0xffff, b = tag >>> 16;
-    if (f >= B || b >= blocksMax) continue;
-    const payload = new Uint8Array(buffer.slice(offset + o + 8, offset + o + 8 + PAYLOAD));
-    records.push({ frame: f, block: b, its: dv.getInt32(o + 4, true), id: dv.getUint32(o + 8, true), payload, index: r });
-  }
-  return records;
 }

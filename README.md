@@ -34,8 +34,8 @@ In signal-processing terms this is OFDM, the modulation used by Wi-Fi and 4G/5G,
 ```
  ▄▄▄▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
  ██▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
- ██  ▄▄▄▄▄▄    ▄▄  ▄▄    ▄▄    ▄▄  ▄▄  ▄▄▄▄    ▄▄    ▄▄▄▄▄▄▄▄▄▄▄
- ██  ██████    ▀▀  ▀▀    ▀▀    ▀▀  ▀▀  ▀▀▀▀    ▀▀    ▀▀▀▀▀▀▀▀▀▀▀
+ ██  ▄▄▄▄▄▄    ▄▄  ▄▄    ▄▄    ▄▄  ▄▄  ▄▄▄▄    ▄▄    ▄▄  ▄▄  ▄▄▄
+ ██  ██████    ▀▀  ▀▀    ▀▀    ▀▀  ▀▀  ▀▀▀▀    ▀▀    ▀▀  ▀▀  ▀▀▀
  ██  ██████
  ▀▀  ▀▀▀▀▀▀
  ██         ┌───────────────────────────────────────────────────
@@ -43,34 +43,34 @@ In signal-processing terms this is OFDM, the modulation used by Wi-Fi and 4G/5G,
  ██  ▄▄     │
  ██  ██     │
  ██  ▀▀     │   the picture
- ██         │
- ██         │   grey, looks like noise;
- ██         │   its spatial frequencies
- ██  ▄▄     │   carry the data
- ██  ██     │
- ██  ▀▀     │
- ██         │
  ██  ▄▄     │
- ██  ▀▀     │
- ██  ▄▄     │
- ██  ▀▀     │
- ██  ▄▄     │
- ██  ▀▀     │
- ██  ▄▄     │
- ██  ▀▀     │
+ ██  ██     │   grey, looks like noise;
+ ██  ██     │   its spatial frequencies
+ ██  ▀▀     │   carry the data
  ██  ▄▄     │
  ██  ▀▀     │
  ██         │
  ██  ▄▄     │
- ██  ██     │
+ ██  ▀▀     │
+ ██  ▄▄     │
+ ██  ▀▀     │
+ ██  ▄▄     │
+ ██  ▀▀     │
+ ██  ▄▄     │
+ ██  ▀▀     │
+ ██  ▄▄     │
+ ██  ▀▀     │
+ ██  ▄▄     │
+ ██  ▀▀     │
+ ██  ▄▄     │
  ██  ▀▀     │
 ```
 
-The top-left corner of a real symbol, module for module: LIZARD-16 in the 64 ring (158 modules a side), each
+The top-left corner of a real symbol, module for module: LIZARD-64 in the 64 ring (158 modules a side), each
 character one module wide and two tall (`▀` the top module dark, `▄` the bottom, `█` both). The 128 ring, the
 default, and the 256 ring have the same border with longer sides.
 
-- **The picture** is n x n samples (256 to 1536 a side, depending on how much the frame carries), drawn on the
+- **The picture** is n x n samples (384 to 1536 a side, depending on how much the frame carries), drawn on the
   screen at whole pixels. Only data is painted inside it, apart from the anchors.
 - **The anchors** are 49 small squares on a 7 x 7 grid painted over the picture (a light middle, a dark ring, a light
   rim; 1.2% of the picture), whose middles show the receiver how a lens bends the picture between the border's nodes,
@@ -91,12 +91,12 @@ Several files or a folder are first packed into one tar archive and sent as that
 received archive into a folder, and the web receiver offers it as the `.tar` it is.
 
 1. **Split the file** into 4 MiB chunks, each compressed with zstd where that makes it smaller.
-2. **Fountain-code each chunk** (Wirehair). The encoder can produce as many 469-byte pieces as needed, and any set
+2. **Fountain-code each chunk** (Wirehair). The encoder can produce as many 472-byte pieces as needed, and any set
    slightly larger than the chunk rebuilds it, whichever pieces they are. A missed frame costs only time, and nothing
    ever has to go back to the sender.
 3. **Describe the file** in a header block (name, size, BLAKE3 hash) and manifest blocks (each chunk's hash and
    size), sent in the same stream as the data.
-4. **Make blocks.** A block is a 4-byte id (which chunk, which piece), 469 bytes of payload and a CRC-32.
+4. **Make blocks.** A block is a 4-byte id (which chunk, which piece), 472 bytes of payload and a CRC-32.
 5. **Add error correction.** Each block becomes one LDPC codeword. How much protection it gets depends on where it
    will sit in the spectrum:
 
@@ -108,7 +108,8 @@ received archive into a folder, and the web receiver offers it as the `.tar` it 
    | highest frequencies | the finest grain | worst | 1/2 (half the bits are protection) |
 
    The code rate is the share of the sent bits that is data. About 39% of the frequencies get 7/8, 15% get 2/3,
-   20% get 1/2, and the rest 3/4.
+   20% get 1/2, and the rest 3/4. The blocks are packed one after another from the lowest frequency, and the few
+   frequencies left at the top carry no data.
 6. **Interleave and scramble.** Each codeword's bits are spread over all of its frequencies by a fixed permutation,
    then XORed with a pseudo-random sequence, so that neither a burst of damage nor repetitive data lines up.
 7. **Turn bits into waves.** Each pair of bits picks one of four phases (QPSK) for one frequency, the lowest
@@ -357,10 +358,10 @@ grows with its frequency), which is turned back before decoding.
 | picture | the grey square inside the border | data area |
 | coefficient | one 2D spatial frequency of the picture, carrying two bits as one of four phases | subcarrier carrying a QPSK symbol |
 | sub-channel | 320 consecutive coefficients, ordered from coarse to fine | group of subcarriers |
-| block | 473 bytes (a 4-byte id and 469 of payload) plus a CRC-32, sent as one LDPC codeword over 7 to 12 sub-channels | codeword, packet |
+| block | 476 bytes (a 4-byte id and 472 of payload) plus a CRC-32, sent as one LDPC codeword over 2,248 to 3,840 consecutive frequencies by its code rate | codeword, packet |
 | code rate | the share of the sent bits that is data | code rate |
 | rate profile | which code rate each block gets, by its frequencies | unequal error protection |
-| version, LIZARD-k | how much a frame holds: LIZARD-k has k sub-channels and is version k / 8. LIZARD-592 holds 72 blocks, about 33.8 KB | QR version (capacity) |
+| version, LIZARD-k | how much a frame holds: LIZARD-k has k sub-channels and is version k / 16. LIZARD-592 holds 71 blocks, about 33.5 KB | QR version (capacity) |
 | ring | the border's size: 64, 128 or 256 band cells a side, 128 by default. It does not depend on the version: any ring can carry any picture. A larger ring gives the picture more of the screen but asks for a steadier camera | none (a QR code's size follows its version) |
 | format word | the short Reed-Solomon-coded header in the border, naming the version and the frame rate | format information |
 | timing track | the known pattern in the border's band | timing pattern |
@@ -399,7 +400,7 @@ format's arithmetic. Its sections:
 | section | covers |
 |---|---|
 | 1 to 2 | what LIZARD is, its terms, its fixed constraints (luminance only, generic screens and cameras, a border that grows outwards only, a self-describing symbol), and what conformance means |
-| 3. The formats | the 127 versions (LIZARD-16 to LIZARD-1024: sub-channels in steps of 8), the rate profile that sets each block's code rate, the picture size each version takes, the three rings, capacity, and how a sender picks a version for a screen |
+| 3. The formats | the 61 versions (LIZARD-64 to LIZARD-1024: sub-channels in steps of 16), the rate profile that sets each block's code rate, the picture size each version takes, the three rings, capacity, and how a sender picks a version for a screen |
 | 4. The border | module by module: rim, ring, gap, band, guard, the corner marks, the timing track and the margin |
 | 5. The format word | its fields (magic, version, display rate), its Reed-Solomon code and where its cells sit in each ring |
 | 6. The picture | the coefficient order, QPSK, the transform, clipping to grey, resampling onto the painted grid, the anchors, and where a receiver samples |
@@ -424,24 +425,24 @@ decoder), and natively in the Android and desktop apps on a pool of threads (NEO
 
 1. **Find.** The image goes to luma, and a local threshold makes a black and white copy for the finder alone. The
    corner marks are searched for at full, half and quarter scale. Each candidate quad is scored by reading the timing
-   track against every ring and orientation. The fallbacks are fitting the border's lines, then cropping round a mark
-   that was seen.
+   track against every ring and orientation. The fallback is fitting the border's lines.
 2. **Register.** A homography from the quad, then every border node refined by correlation against the border as
-   painted. Each side's nodes are smoothed along it, which absorbs a display's fractional scaling. The anchors are
-   found through that map, and where 12 or more hold, the lens is fitted again with them inside the border.
+   painted. The anchors are found through that map, and where 12 or more hold, the lens is fitted again with them
+   inside the border.
 3. **Read the word** in the ring that registered, and take the picture size, blocks and rates it names.
 4. **Sample and transform.** The n x n picture is sampled through the registration and detrended, then goes through
-   a 2D FFT (radix 2, with one radix-3 stage for the 3 x 2^k sizes).
+   a 2D FFT (radix 2, with radix-3 and radix-5 stages for the sizes that are not powers of two).
 5. **Decode.** Align the grid from the pilots, make soft values for each block's sub-channels, skip blocks too weak to
    try, run layered min-sum LDPC, and check the CRC-32.
 
 ### Receiving on the GPU (`liblizard/gpu/`)
 
-Designed from the format for the GPU, not ported from the C. It is written in WGSL; its setup (the kernels' sizes,
-tables and nets) is built by its JavaScript host in `liblizard/gpu/`, and the WGSL is compiled to SPIR-V by naga and
-run by a C++ Vulkan host (`liblizard/core/`) in the Android and desktop apps; in the Android app it takes camera
-frames with no copy. The web receiver does not run it: it decodes with the C. Frames go in batches: one batch is one
-submission and one readback. The nets and kernels run in int8 where a device supports it, else f16, else f32.
+Designed from the format for the GPU, not ported from the C. Its kernels are written in GLSL; its setup (the kernels'
+sizes, tables and nets) is built by its JavaScript host in `liblizard/gpu/`, and the kernels are compiled to SPIR-V by
+glslang and run by a C++ Vulkan host (`liblizard/core/`) in the Android and desktop apps; in the Android app it takes
+camera frames with no copy. The web receiver does not run it: it decodes with the C. Frames go in batches: one
+batch is one submission and one readback. The nets and kernels run in int8 where a device supports it, else f16, else
+f32.
 
 1. **Front half: find and register.**
    - A pyramid of each frame feeds a trained fully convolutional proposer, which marks likely corner marks.
@@ -504,9 +505,10 @@ Windows and macOS have not run on a cable yet.
 
 | folder | what it is |
 |---|---|
-| `liblizard/` | the library: the C codec (`src/`, the format's reference), the GPU decoder's WGSL and its host and the sender's WebGPU encoder (`gpu/`), the native engine (`core/`: the decoder on Vulkan, the C on the CPU, the transfer, the sender), the generator that compiles the GPU decoder for Vulkan (`gen/`), and a C API with WebAssembly and Kotlin bindings (`include/`, `api/`, `bindings/`) |
+| `liblizard/` | the library: the C codec (`src/`, the format's reference), the GPU decoder's GLSL kernels and their setup and the sender's WebGPU encoder (`gpu/`), the native engine (`core/`: the decoder on Vulkan, the C on the CPU, the transfer, the sender), the generator that compiles the GPU decoder for Vulkan (`gen/`), and a C API with WebAssembly and Kotlin bindings (`include/`, `api/`, `bindings/`) |
 | `lizard-web/` | the web app: sender and receiver pages, installable as a PWA |
 | `lizard-android/` | the Android app: receiver and sender, native Vulkan decoding |
+| `lizard-ui/` | the Android and desktop apps' screens, in Compose Multiplatform, written once: Home, Send and Receive, their theme, icons and parts, each screen over an interface the app implements with its own platform views; built by each app's own Gradle build as its `:lizard-ui` |
 | `lizard-desktop/` | the desktop app: sender and receiver, a Compose Desktop app drawing the code through a native Vulkan presenter and reading a camera (V4L2, Media Foundation or AVFoundation), a phone's stream or a `.lizard` replay into the native decoders |
 | `research/SPEC.md` | the format specification |
 
@@ -541,11 +543,14 @@ static site. Its checks (`lizard-web/check_send.mjs`, `check_ui.mjs`, `check_app
 Google Chrome, as `google-chrome` on the PATH.
 
 **The GPU kernels**, into `liblizard/out/`, need Rust 1.87 or later for [naga](https://github.com/gfx-rs/wgpu/tree/trunk/naga),
-and SPIRV-Tools' `spirv-val` and shaderc's `glslc`: the Android NDK 27.1's (`ANDROID_NDK_HOME`, else
-`$ANDROID_HOME/ndk/27.1.12297006`, else `~/Android/Sdk/ndk/27.1.12297006`) or any on the PATH. No GPU is needed.
+[glslang](https://github.com/KhronosGroup/glslang) 16.6.0 for the kernels written in GLSL, and SPIRV-Tools' `spirv-val`
+and shaderc's `glslc`: the Android NDK 27.1's (`ANDROID_NDK_HOME`, else `$ANDROID_HOME/ndk/27.1.12297006`, else
+`~/Android/Sdk/ndk/27.1.12297006`) or any on the PATH. `lizard-android/build.sh tools` builds naga's tool and, on
+Linux x86-64 and macOS, downloads glslang's release build into `liblizard/.tools/glslang`, checked by its SHA-256
+(elsewhere, a glslang 16.6.0 on the PATH); the build refuses any other glslang version. No GPU is needed.
 
 ```
-lizard-android/build.sh tools  # naga 30.0.1, once
+lizard-android/build.sh tools  # naga 30.0.1 and glslang 16.6.0, once
 lizard-android/build.sh gen    # the GPU decoder's and encoder's kernels and tables
 ```
 
@@ -558,7 +563,9 @@ with the packages `platforms;android-36`, `build-tools;35.0.0`, `ndk;27.1.122970
 or later).
 
 **The desktop app** needs CMake 3.22 or later (with `JAVA_HOME` naming a JDK where CMake does not find one for its
-JNI headers) and, on Linux, the X11 and XRandR development files; `packageDeb`
+JNI headers) and, on Linux, the X11 and XRandR development files. Its Gradle build includes the shared UI
+(`lizard-ui/`), whose Android target it configures but never builds: Gradle fetches the Android Gradle plugin, and no
+Android SDK is needed; `packageDeb`
 also needs `dpkg-deb` and `fakeroot`. On Linux its receiver loads TurboJPEG (`libturbojpeg.so.0`) at run time for
 cameras that send MJPEG; Windows and macOS decode MJPEG themselves.
 
@@ -595,4 +602,6 @@ tools); then `./gradlew packageDmg`.
 
 ## License
 
-Apache License 2.0 (LICENSE). Third-party code and attributions are listed in NOTICE.
+Mozilla Public License 2.0 (LICENSE). The copyleft is per file: changes to LIZARD's own files are shared under the
+MPL, while LIZARD can be built into a larger work under any license, closed source included. Releases up to 0.6 were
+published under the Apache License 2.0. Third-party code and attributions are listed in NOTICE.

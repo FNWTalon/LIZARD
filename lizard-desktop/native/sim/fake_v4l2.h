@@ -31,7 +31,7 @@
 // ai: Frames come from a producer thread at the interval on the device's own clock (an offset and a ppm against
 // ai: steadyNs's), stamped CLOCK_MONOTONIC at the frame's start (start of exposure, as uvcvideo), each delivered an
 // ai: interval later; the sequence counts every frame the device makes, so a frame with no buffer queued is a gap, as
-// ai: on uvcvideo. The picture: a scene (sim/scene.h, rendered at each frame's start) where the device's config names
+// ai: on uvcvideo. The picture: a scene (cam/scene.h, rendered at each frame's start) where the device's config names
 // ai: one, else a moving gradient (gradient()); the luma packed into the format (YUV with chroma 128, Y16 the luma
 // ai: shifted to the top, Bayer the luma at every site, RGB grey, MJPEG through jpeg.h's encoder with its tables cut).
 // ai: Faults per device: a share of frames flagged V4L2_BUF_FLAG_ERROR, a share of MJPEG frames cut short (10 to 60%
@@ -44,7 +44,7 @@
 #include <string>
 #include <vector>
 
-#include "camera/v4l2_sys.h"
+#include "cam/v4l2_sys.h"
 
 namespace lizard::sim {
 
@@ -59,7 +59,7 @@ struct FakeFaults {
 
 struct FakeDevice {
   std::string profile;        // ai: c930e, uvc60, mono, bayer, stepwise, formats, card, meta
-  std::string scene;          // ai: sim/scene.h parse's spec, its frame size the format's; "" the gradient
+  std::string scene;          // ai: cam/scene.h parse's spec, its frame size the format's; "" the gradient
   double offsetMs = 0;        // ai: the device clock's first frame past the stream's start
   double ppm = 0;             // ai: the device clock against steadyNs's (+: fast, its frames closer together)
   int quality = 90;           // ai: its MJPEG frames' JPEG quality

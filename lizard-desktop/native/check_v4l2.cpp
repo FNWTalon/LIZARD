@@ -1,10 +1,10 @@
-// ai: cam_check v4l2 (2026-10-25): the V4L2 backend (camera/v4l2.cpp) against sim/fake_v4l2's devices, the fake's
+// ai: cam_check v4l2 (2026-10-25): the V4L2 backend (liblizard/core/cam/v4l2.cpp) against sim/fake_v4l2's devices, the fake's
 // ai: table installed before any backend call, so no device node is probed, listed or opened: the kernel's table is
 // ai: only asked with LIZ_V4L2_NODES set (env), which never reads /dev, and the probe's default (/dev/video*) is
 // ai: checked through probedNodes with one of the check's own. Cases: env, list, open, modes, pick, controls, set,
 // ai: start-stop, refuse, stream, stepwise, formats, faults, eio, set-streaming; then the ones that need the
 // ai: conversions, TurboJPEG, the simulated screen and the session: mjpeg (the luma within JPEG's loss of the
-// ai: gradient; frames cut short handed over, decoded to their cut), session (the scene's test stream through RxSession
+// ai: gradient; frames cut short handed over, decoded to their cut), session (the scene's test stream through the session
 // ai: on the CPU decoder: 60 blocks at 30 painted over MJPEG 1920x1080 and YUYV 640x480, 16 blocks over YUYV 640x480),
 // ai: file (a file received over MJPEG, byte for byte). The folders the session cases make are removed after them.
 // ai: Arguments: case names (prefixes) to run, all where none; a name that is no case's, or that runs nothing, is
@@ -35,15 +35,15 @@
 #include <thread>
 #include <vector>
 
-#include "camera/backends.h"
-#include "camera/camera.h"
-#include "camera/jpeg.h"
-#include "camera/luma.h"
-#include "camera/v4l2_sys.h"
+#include "cam/backends.h"
+#include "cam/camera.h"
+#include "cam/jpeg.h"
+#include "cam/luma.h"
+#include "cam/v4l2_sys.h"
 #include "json.hpp"
-#include "rx_session.h"
+#include "session.h"
 #include "sim/fake_v4l2.h"
-#include "sim/scene.h"
+#include "cam/scene.h"
 #endif
 
 namespace lizard::check {
@@ -1086,18 +1086,19 @@ Session viaSession(const std::string& scene, const std::string& format, uint32_t
     out.error = std::string("no folder for the session's store: ") + std::strerror(errno);
     return out;
   }
-  RxSession::Config cfg;
+  lizard::Session::Config cfg;
   cfg.assets = LIZ_ASSETS;
-  cfg.storeDir = dir.path;
+  cfg.dataDir = dir.path;
   cfg.decoder = "cpu";
   cfg.layout = "1:1";
+  cfg.forgetSettings = true;
   std::string why;
-  auto s = RxSession::create(cfg, why);
+  auto s = lizard::Session::create(cfg, why);
   if (!s) {
     out.error = "session: " + why;
     return out;
   }
-  if (!s->open(idOf(f, 0), why)) {
+  if (!lizard::done(s->open(idOf(f, 0)), why)) {
     out.error = "open: " + why;
     return out;
   }
@@ -1117,7 +1118,7 @@ Session viaSession(const std::string& scene, const std::string& format, uint32_t
     out.error = "the session lists no " + format + " mode at that size";
     return out;
   }
-  if (!s->start(mode, why)) {
+  if (!lizard::done(s->start(std::to_string(mode)), why)) {
     const std::string fe = f.served(0).error;
     out.error = "start: " + why + (fe.empty() ? "" : " (" + fe + ")");
     return out;
@@ -1133,12 +1134,20 @@ Session viaSession(const std::string& scene, const std::string& format, uint32_t
     if (done && done(out.last)) break;
   }
   out.secs = nowS() - t0;
-  const std::string got = s->file();
-  if (!got.empty()) {
-    // ai: out of the store before the session goes (the store empties its finished folders at the next receiver)
-    std::ifstream in(got, std::ios::binary);
-    out.file.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    out.received = true;
+  // ai: a verified file the session takes out of the store into the data folder's kept/ (session.h), a tick after
+  const auto verified = [&] {
+    const json f = out.last.is_object() && out.last.contains("file") ? out.last["file"] : json();
+    return f.is_object() && f.value("verified", false);
+  };
+  for (const double t1 = nowS(); verified() && nowS() - t1 < 2;) {
+    const json k = json::parse(lizard::Session::kept(dir.path), nullptr, false);
+    if (k.is_array() && !k.empty()) {
+      std::ifstream in(k.back().value("path", ""), std::ios::binary);
+      out.file.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+      out.received = true;
+      break;
+    }
+    sleepMs(50);
   }
   s->stop();
   s.reset();
@@ -1204,7 +1213,7 @@ void caseFile(Run& r) {
   std::mt19937 g(11);
   for (auto& b : bytes) b = (uint8_t)g();
   std::ofstream(path, std::ios::binary).write((const char*)bytes.data(), (std::streamsize)bytes.size());
-  const Session s = viaSession("blocks=60 fps=30 seed=5 file=" + path, "MJPG", 1920, 1080, 30, 40, [](const json& j) {
+  const Session s = viaSession("blocks=30 fps=30 seed=5 file=" + path, "MJPG", 1920, 1080, 30, 40, [](const json& j) {
     return j.contains("file") && j["file"].is_object() && j["file"].value("verified", false);
   });
   if (!s.error.empty()) {

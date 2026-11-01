@@ -13,13 +13,15 @@
 extern "C" {
 #include "focus.h"
 #include "shake.h"
+#include "xfer.h"
 }
 
 namespace lizard {
 
 namespace {
 double nowMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
-constexpr int PAYLOAD = 469, ID_BYTES = 4;
+constexpr int PAYLOAD = XFER_PAYLOAD, ID_BYTES = XFER_ID_BYTES;
+constexpr int TX_GPU_FRAMES = 32;   // ai: frames a GPU encode at most (configure)
 bool control(uint32_t id) { return (id >> 18) == 0x3fff; }   // ai: sim/xfer.mjs isControlId
 // ai: a string's text fit for the stats JSON (a driver's message may hold quotes or a backslash)
 std::string esc(const std::string& s) {
@@ -75,10 +77,12 @@ std::string Sender::configure(const TxFormat& f) {
   assets_ = f.assets;
   const int aheadFrames = std::max(1, static_cast<int>(std::lround(f.fps * f.aheadSecs)));
   // ai: the GPU painter paints the anchors as the C does (their squares the C's bytes, gpu_painter.h), and auto's check
-  // ai: holds its frames to the C's with them
+  // ai: holds its frames to the C's with them. Encodes of up to TX_GPU_FRAMES frames: the painter runs ahead of the
+  // ai: screen, so a deep encode adds no latency and spreads each dispatch's fixed cost (halved where the device
+  // ai: cannot hold them).
   if (f.painter != 0) {
     try {
-      gpuWhy_ = gpu_->configure(f.subch, f.span, f.fps, 4, f.codes, f.gap, aheadFrames, f.aheadBytes, f.margin, false);
+      gpuWhy_ = gpu_->configure(f.subch, f.span, f.fps, TX_GPU_FRAMES, f.codes, f.gap, aheadFrames, f.aheadBytes, f.margin, false);
       if (gpuWhy_.empty() && f.painter == 2) {
         const int k = std::min(2, gpu_->frames()), T = probe.blocks * f.codes, B = probe.block_bytes;
         std::vector<uint8_t> blocks(static_cast<size_t>(k) * T * B);
@@ -113,7 +117,7 @@ std::string Sender::configure(const TxFormat& f) {
   side_ = probe.px + 2 * FOCUS_QUIET * probe.pxm;
   gap_ = f.codes > 1 ? f.gap * probe.pxm : 0;
   width_ = f.codes * side_ + (f.codes - 1) * gap_;
-  // ai: the profile as text: "7/8 x 24, 3/4 x 17, 2/3 x 16, 1/2 x 10" at LIZARD-568 (the stats' tiers), read before
+  // ai: the profile as text: "7/8 x 34, 3/4 x 18, 2/3 x 10, 1/2 x 10" at LIZARD-592 (the stats' tiers), read before
   // ai: the probe is freed
   tiers_.clear();
   for (int t = 0; t < probe.tiers; t++) tiers_ += (t ? ", " : "") + std::string(probe.tier[t].rate == 6 ? "7/8" : probe.tier[t].rate == 4 ? "3/4" : probe.tier[t].rate == 3 ? "2/3" : "1/2") + " x " + std::to_string(probe.tier[t].blocks);
@@ -373,7 +377,7 @@ uint32_t Sender::ringFrameWords() const { return gpu_ ? gpu_->frameWords() : 0; 
 uint32_t Sender::ringRowWords() const { return gpu_ ? gpu_->rowWords() : 0; }
 
 // ai: The stats a second (the app asks): label, n, subch, fps (asked), shownFps (frames on the screen a second over the
-// ai: window), offeredKBs (data blocks shown a second x 469 B, 1000 B a KB, as the page's), paintMs (a frame's encode
+// ai: window), offeredKBs (data blocks shown a second x 472 B, 1000 B a KB, as the page's), paintMs (a frame's encode
 // ai: and paint on one painter; on the GPU its ms a frame, an encode's timestamps over its frames), painters (the
 // ai: GPU's: frames an encode), painter ("gpu" or "cpu"), device (the GPU's), gpuWhy (why not the GPU where it was
 // ai: asked for), ahead (painted, not shown), side, test, and for a file chunks, lap (data blocks a lap), pass (laps

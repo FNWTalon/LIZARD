@@ -4,8 +4,10 @@
 // ai: of an encoder but its first (`hazard`), and after the head. Nothing waits on the device but Ticket::wait,
 // ai: flush() and waitIdle().
 #include "wg.h"
+#include "vk_present_timing.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -40,12 +42,14 @@ void check(VkResult r, const char* what) {
   if (r == VK_SUCCESS) return;
   std::string m = std::string(what) + ": " + resultName(r) + " (" + std::to_string((int)r) + ")";
   if (r == VK_ERROR_OUT_OF_DEVICE_MEMORY || r == VK_ERROR_OUT_OF_HOST_MEMORY) { OutOfMemory e(m); e.code = r; throw e; }
+  if (r == VK_ERROR_DEVICE_LOST) { Lost e(m); e.code = r; throw e; }
   Error e(m);
   e.code = r;
   throw e;
 }
 
 static std::string lower(std::string s) { for (auto& c : s) c = (char)tolower((unsigned char)c); return s; }
+static double steadyMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
 std::string Device::autoId(char kind) { return std::string("n") + kind + std::to_string(nextId++); }
 
@@ -137,9 +141,13 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   vkGetPhysicalDeviceProperties(pick, &props);
   d->name = props.deviceName;
   d->type = props.deviceType;
+  // ai: the hang's bound: none on a software device, whose batches take seconds (wg.h HANG_MS)
+  d->hangMs = d->type == VK_PHYSICAL_DEVICE_TYPE_CPU ? 0 : HANG_MS;
+  if (const char* h = getenv("LIZ_HANG_MS")) d->hangMs = (uint32_t)std::max(0, atoi(h));
   d->apiVersion = std::min(props.apiVersion, app.apiVersion);
   d->vendorId = props.vendorID;
   d->deviceId = props.deviceID;
+  d->driverVersion = props.driverVersion;
   if (d->apiVersion < VK_API_VERSION_1_1) throw Error(d->name + " offers Vulkan 1.0; 1.1 is needed");
   auto exts = deviceExtensions(pick);
   auto has = [&](const char* e) { return std::find(exts.begin(), exts.end(), e) != exts.end(); };
@@ -189,6 +197,7 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   F.subgroupShuffle = (sub.supportedOperations & VK_SUBGROUP_FEATURE_SHUFFLE_BIT) && (sub.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT);
   F.subgroupSize = sub.subgroupSize;
   F.zeroInit = zeroExt && zeroF.shaderZeroInitializeWorkgroupMemory;
+  F.int16 = f2.features.shaderInt16;
   F.ycbcr = ycF.samplerYcbcrConversion;
   F.timeline = tlExt && tlF.timelineSemaphore;
   F.storageR8 = f2.features.shaderStorageImageExtendedFormats;
@@ -280,7 +289,32 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
     else enable.erase(std::remove_if(enable.begin(), enable.end(), [](const char* s) {
       return !strcmp(s, VK_KHR_PRESENT_ID_EXTENSION_NAME) || !strcmp(s, VK_KHR_PRESENT_WAIT_EXTENSION_NAME); }), enable.end());
   }
+  // ai: present_id2 and present_timing (2026-10-31, the desktop presenter's schedule on the display's own refresh
+  // ai: times): with their features (presentId2; presentTiming, and presentAtAbsoluteTime where the device has it) where
+  // ai: the device has the extensions, present_timing's other needs (calibrated_timestamps) and both features, else
+  // ai: neither (`has` says which took)
+  VkPhysicalDevicePresentId2FeaturesKHR pid2E{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR};
+  VkPhysicalDevicePresentTimingFeaturesEXT ptE{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT};
+  if (enabledHas(VK_EXT_PRESENT_TIMING_EXTENSION_NAME) || enabledHas(VK_KHR_PRESENT_ID_2_EXTENSION_NAME)) {
+    VkPhysicalDevicePresentId2FeaturesKHR pid2Q{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR};
+    VkPhysicalDevicePresentTimingFeaturesEXT ptQ{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT};
+    pid2Q.pNext = &ptQ;
+    VkPhysicalDeviceFeatures2 q2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    q2.pNext = &pid2Q;
+    vkGetPhysicalDeviceFeatures2(pick, &q2);
+    const bool timing = enabledHas(VK_EXT_PRESENT_TIMING_EXTENSION_NAME) && enabledHas(VK_KHR_PRESENT_ID_2_EXTENSION_NAME) &&
+                        enabledHas(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) && pid2Q.presentId2 && ptQ.presentTiming;
+    if (timing) {
+      pid2E.presentId2 = VK_TRUE;
+      ptE.presentTiming = VK_TRUE;
+      ptE.presentAtAbsoluteTime = ptQ.presentAtAbsoluteTime;
+      chain(pid2E);
+      chain(ptE);
+    } else enable.erase(std::remove_if(enable.begin(), enable.end(), [](const char* s) {
+      return !strcmp(s, VK_EXT_PRESENT_TIMING_EXTENSION_NAME) || !strcmp(s, VK_KHR_PRESENT_ID_2_EXTENSION_NAME); }), enable.end());
+  }
   e2.features.shaderStorageImageExtendedFormats = F.storageR8;
+  e2.features.shaderInt16 = F.int16;
   // ai: a portability layer's device (MoltenVK) must have its subset enabled when it lists it
   if (has("VK_KHR_portability_subset")) enable.push_back("VK_KHR_portability_subset");
 #ifdef __ANDROID__
@@ -323,9 +357,9 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
   check(vkCreatePipelineCache(d->dev, &pci, nullptr, &d->cache), "vkCreatePipelineCache");
 
   char line[512];
-  snprintf(line, sizeof line, "device %s (Vulkan %u.%u.%u%s%s): f16 %d, int8 %d, dot %d, subgroup shuffle %d (size %u), zero-init %d, ingest ycbcr %d r8 %d timeline %d ahb %d, queues %d%s, timestamps %d (%.3f ns a tick); shared memory %u B, storage range %llu MB, buffer %llu MB, device memory %llu MB",
+  snprintf(line, sizeof line, "device %s (Vulkan %u.%u.%u%s%s): f16 %d, int8 %d, int16 %d, dot %d, subgroup shuffle %d (size %u), zero-init %d, ingest ycbcr %d r8 %d timeline %d ahb %d, queues %d%s, timestamps %d (%.3f ns a tick); shared memory %u B, storage range %llu MB, buffer %llu MB, device memory %llu MB",
            d->name.c_str(), VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion), VK_API_VERSION_PATCH(props.apiVersion), d->driver.empty() ? "" : ", ", d->driver.c_str(),
-           F.f16, F.int8, F.dot, F.subgroupShuffle, F.subgroupSize, F.zeroInit, F.ycbcr, F.storageR8, F.timeline, F.ahb, d->twoQueues ? 2 : 1,
+           F.f16, F.int8, F.int16, F.dot, F.subgroupShuffle, F.subgroupSize, F.zeroInit, F.ycbcr, F.storageR8, F.timeline, F.ahb, d->twoQueues ? 2 : 1,
            d->lowPriority ? " at low priority" : extras.lowPriority ? " (no global priority here: the default)" : "", F.timestamps, d->timestampPeriod, L.maxComputeSharedMemorySize,
            (unsigned long long)(L.maxStorageBufferRange >> 20), (unsigned long long)(L.maxBufferSize >> 20), (unsigned long long)(L.deviceLocalBytes >> 20));
   d->log(line);
@@ -333,20 +367,29 @@ std::unique_ptr<Device> Device::create(const std::string& want, bool validate, s
 }
 
 Device::~Device() {
-  if (dev) vkDeviceWaitIdle(dev);
+  // ai: abandoned (a hung submit, wg.h): nothing waited for or destroyed, the buffers' handles dropped with them
+  if (dev && !abandoned) vkDeviceWaitIdle(dev);
   writes.clear();
   inits.clear();
   // ai: an upload's staging buffer waits here until a submit takes it; one queued after the last submit would otherwise
   // ai: be destroyed with the members, after vkDestroyDevice (a segfault in the driver's vkDestroyBuffer on the S26)
   staging.clear();
+  if (abandoned) return;
   if (cache) { saveCache(); vkDestroyPipelineCache(dev, cache, nullptr); }
+  if (linear) vkDestroySampler(dev, linear, nullptr);
   if (pool) vkDestroyCommandPool(dev, pool, nullptr);
   if (pool2) vkDestroyCommandPool(dev, pool2, nullptr);
   if (dev) vkDestroyDevice(dev, nullptr);
   if (instance) vkDestroyInstance(instance, nullptr);
 }
 
-void Device::waitIdle() { check(vkDeviceWaitIdle(dev), "vkDeviceWaitIdle"); }
+// ai: Bounded as a Ticket is (a submit behind everything on the queue, then the device's own wait); nothing on an
+// ai: abandoned device.
+void Device::waitIdle() {
+  if (abandoned) return;
+  if (hangMs) { Encoder e = encoder(); submit(e)->wait(); }
+  check(vkDeviceWaitIdle(dev), "vkDeviceWaitIdle");
+}
 
 // ai: The pipeline cache from a file this device wrote before (Vulkan refuses another device's or driver's through
 // ai: the header), and back to it at the end: a second start compiles nothing (STATUS "The ramp at the start").
@@ -450,6 +493,7 @@ Buffer::~Buffer() {
     auto& in = dev->inits;
     in.erase(std::remove_if(in.begin(), in.end(), [this](const Device::Init& x) { return x.owner == this; }), in.end());
   }
+  if (dev->abandoned) return;
   if (buf) vkDestroyBuffer(dev->dev, buf, nullptr);
   if (mem) { vkFreeMemory(dev->dev, mem, nullptr); dev->allocated -= size; }
 }
@@ -517,6 +561,7 @@ Texture::~Texture() {
     auto& in = dev->inits;
     in.erase(std::remove_if(in.begin(), in.end(), [this](const Device::Init& x) { return x.owner == this; }), in.end());
   }
+  if (dev->abandoned) return;
   if (view) vkDestroyImageView(dev->dev, view, nullptr);
   if (img) vkDestroyImage(dev->dev, img, nullptr);
   if (mem) { vkFreeMemory(dev->dev, mem, nullptr); dev->allocated -= (uint64_t)w * h * layers; }
@@ -525,9 +570,24 @@ Texture::~Texture() {
 static VkDescriptorType descriptorOf(Bind b) {
   switch (b) {
     case Bind::Tex: return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    case Bind::Sampler: return VK_DESCRIPTOR_TYPE_SAMPLER;
     case Bind::Uniform: return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     default: return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   }
+}
+
+// ai: The texture unit's bilinear filter (WebGPU's filtering sampler with magFilter linear, clamp-to-edge): R8_UNORM
+// ai: in optimal tiling filters linearly on every Vulkan device (a required format feature). The weights are the
+// ai: device's fixed point (subTexelPrecisionBits, 8 on the 4090, RADV and the Adreno 840).
+VkSampler Device::linearSampler() {
+  if (linear) return linear;
+  VkSamplerCreateInfo ci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  ci.magFilter = ci.minFilter = VK_FILTER_LINEAR;
+  ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  ci.addressModeU = ci.addressModeV = ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  ci.maxLod = 0.0f;
+  check(vkCreateSampler(dev, &ci, nullptr, &linear), "vkCreateSampler");
+  return linear;
 }
 
 std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const std::vector<Bind>& entries, const std::string& id) {
@@ -542,6 +602,7 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const std::vector
     b.descriptorType = descriptorOf(entries[i]);
     b.descriptorCount = 1;
     b.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    if (entries[i] == Bind::Sampler) { linearSampler(); b.pImmutableSamplers = &linear; }
     bs.push_back(b);
   }
   VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -551,7 +612,7 @@ std::shared_ptr<BindGroupLayout> Device::createBindGroupLayout(const std::vector
   return L;
 }
 
-BindGroupLayout::~BindGroupLayout() { if (dev && dsl) vkDestroyDescriptorSetLayout(dev->dev, dsl, nullptr); }
+BindGroupLayout::~BindGroupLayout() { if (dev && dsl && !dev->abandoned) vkDestroyDescriptorSetLayout(dev->dev, dsl, nullptr); }
 
 std::shared_ptr<Pipeline> Device::createPipeline(const std::vector<uint32_t>& spirv, std::shared_ptr<BindGroupLayout> bgl, const std::string& id, const std::string& label, const std::vector<uint32_t>& spec) {
   auto p = std::make_shared<Pipeline>();
@@ -585,21 +646,22 @@ std::shared_ptr<Pipeline> Device::createPipeline(const std::vector<uint32_t>& sp
 }
 
 Pipeline::~Pipeline() {
-  if (!dev) return;
+  if (!dev || dev->abandoned) return;
   if (pipe) vkDestroyPipeline(dev->dev, pipe, nullptr);
   if (layout) vkDestroyPipelineLayout(dev->dev, layout, nullptr);
 }
 
 std::shared_ptr<BindGroup> Device::createBindGroup(std::shared_ptr<BindGroupLayout> bgl, const std::vector<Resource>& entries, const std::string& id) {
-  if (entries.size() != bgl->entries.size()) throw Error("bind group of " + std::to_string(entries.size()) + " entries on layout " + bgl->id + " of " + std::to_string(bgl->entries.size()));
+  uint32_t nTex = 0, nSmp = 0, nSto = 0, nUni = 0;
+  for (auto b : bgl->entries) { if (b == Bind::Tex) nTex++; else if (b == Bind::Sampler) nSmp++; else if (b == Bind::Uniform) nUni++; else nSto++; }
+  if (entries.size() + nSmp != bgl->entries.size()) throw Error("bind group of " + std::to_string(entries.size()) + " entries on layout " + bgl->id + " of " + std::to_string(bgl->entries.size() - nSmp) + " resources");
   auto g = std::make_shared<BindGroup>();
   g->dev = this;
   g->bgl = bgl;
   g->id = id.empty() ? autoId('g') : id;
-  uint32_t nTex = 0, nSto = 0, nUni = 0;
-  for (auto b : bgl->entries) { if (b == Bind::Tex) nTex++; else if (b == Bind::Uniform) nUni++; else nSto++; }
   std::vector<VkDescriptorPoolSize> sizes;
   if (nTex) sizes.push_back({VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, nTex});
+  if (nSmp) sizes.push_back({VK_DESCRIPTOR_TYPE_SAMPLER, nSmp});
   if (nSto) sizes.push_back({VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nSto});
   if (nUni) sizes.push_back({VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nUni});
   VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -615,29 +677,32 @@ std::shared_ptr<BindGroup> Device::createBindGroup(std::shared_ptr<BindGroupLayo
   std::vector<VkDescriptorBufferInfo> bi(entries.size());
   std::vector<VkDescriptorImageInfo> ii(entries.size());
   std::vector<VkWriteDescriptorSet> ws;
-  for (uint32_t i = 0; i < entries.size(); i++) {
+  // ai: binding i takes resource k; an immutable sampler's binding is the layout's and takes none (no write)
+  for (uint32_t i = 0, k = 0; i < bgl->entries.size(); i++) {
+    if (bgl->entries[i] == Bind::Sampler) continue;
     VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     w.dstSet = g->set;
     w.dstBinding = i;
     w.descriptorCount = 1;
     w.descriptorType = descriptorOf(bgl->entries[i]);
     if (bgl->entries[i] == Bind::Tex) {
-      if (!entries[i].tex) throw Error("bind group on " + bgl->id + ": binding " + std::to_string(i) + " wants a texture");
-      ii[i] = {VK_NULL_HANDLE, entries[i].tex->view, VK_IMAGE_LAYOUT_GENERAL};
-      w.pImageInfo = &ii[i];
+      if (!entries[k].tex) throw Error("bind group on " + bgl->id + ": binding " + std::to_string(i) + " wants a texture");
+      ii[k] = {VK_NULL_HANDLE, entries[k].tex->view, VK_IMAGE_LAYOUT_GENERAL};
+      w.pImageInfo = &ii[k];
     } else {
-      Buffer* b = entries[i].buf;
+      Buffer* b = entries[k].buf;
       if (!b) throw Error("bind group on " + bgl->id + ": binding " + std::to_string(i) + " wants a buffer");
-      bi[i] = {b->buf, 0, VK_WHOLE_SIZE};
-      w.pBufferInfo = &bi[i];
+      bi[k] = {b->buf, 0, VK_WHOLE_SIZE};
+      w.pBufferInfo = &bi[k];
     }
     ws.push_back(w);
+    k++;
   }
   vkUpdateDescriptorSets(dev, (uint32_t)ws.size(), ws.data(), 0, nullptr);
   return g;
 }
 
-BindGroup::~BindGroup() { if (dev && pool) vkDestroyDescriptorPool(dev->dev, pool, nullptr); }
+BindGroup::~BindGroup() { if (dev && pool && !dev->abandoned) vkDestroyDescriptorPool(dev->dev, pool, nullptr); }
 
 std::shared_ptr<QuerySet> Device::createQuerySet(uint32_t count, const std::string& id) {
   auto q = std::make_shared<QuerySet>();
@@ -651,7 +716,7 @@ std::shared_ptr<QuerySet> Device::createQuerySet(uint32_t count, const std::stri
   return q;
 }
 
-QuerySet::~QuerySet() { if (dev && pool) vkDestroyQueryPool(dev->dev, pool, nullptr); }
+QuerySet::~QuerySet() { if (dev && pool && !dev->abandoned) vkDestroyQueryPool(dev->dev, pool, nullptr); }
 
 void Device::writeBuffer(Buffer& b, uint64_t off, const void* data, uint64_t size) {
   if (off + size > b.size) throw Error("writeBuffer past " + b.id + "'s " + std::to_string(b.size) + " bytes");
@@ -895,6 +960,7 @@ std::shared_ptr<Ticket> Device::submit(Encoder& enc, VkSemaphore wait, uint64_t 
     si.pWaitDstStageMask = &stage;
   }
   check(vkQueueSubmit(queue, 1, &si, t->fence), "vkQueueSubmit");
+  t->t0 = steadyMs();
   enc.cb = VK_NULL_HANDLE;
   t->keep = std::move(staging);
   staging.clear();
@@ -909,21 +975,50 @@ void Device::flush() {
 
 bool Ticket::done() {
   if (!fence) return true;
+  if (dev->lost) throw Lost("the device is lost (" + dev->name + ")");
   VkResult r = vkGetFenceStatus(dev->dev, fence);
-  if (r == VK_NOT_READY) return false;
+  if (r == VK_NOT_READY) {
+    if (dev->hangMs && steadyMs() - t0 > dev->hangMs) hung();
+    return false;
+  }
+  if (r == VK_ERROR_DEVICE_LOST) dev->lost = true;
   check(r, "vkGetFenceStatus");
   return true;
 }
 
 void Ticket::wait() {
   if (!fence) return;
-  check(vkWaitForFences(dev->dev, 1, &fence, VK_TRUE, UINT64_MAX), "vkWaitForFences");
+  if (dev->lost) throw Lost("the device is lost (" + dev->name + ")");
+  const double left = dev->hangMs ? std::max(0.0, dev->hangMs - (steadyMs() - t0)) : 0;
+  VkResult r = vkWaitForFences(dev->dev, 1, &fence, VK_TRUE, dev->hangMs ? (uint64_t)(left * 1e6) : UINT64_MAX);
+  if (r == VK_TIMEOUT) hung();
+  if (r == VK_ERROR_DEVICE_LOST) dev->lost = true;
+  check(r, "vkWaitForFences");
+}
+
+// ai: A submit past the hang's bound (wg.h HANG_MS): the device is lost to its user whatever comes next; the driver gets
+// ai: SETTLE_MS to finish the submit or lose the device, and doing neither the device is abandoned.
+void Ticket::hung() {
+  const uint32_t ms = dev->hangMs;
+  dev->lost = true;
+  const VkResult r = vkWaitForFences(dev->dev, 1, &fence, VK_TRUE, SETTLE_MS * 1000000ull);
+  if (r == VK_TIMEOUT) dev->abandoned = true;
+  const std::string m = "a submit not done in " + std::to_string(ms) + " ms on " + dev->name + ": taken as hung, " +
+                        (r == VK_TIMEOUT ? "and abandoned (not done or lost " + std::to_string(SETTLE_MS) + " ms later)"
+                         : r == VK_SUCCESS ? "done " + std::to_string((int)(steadyMs() - t0)) + " ms after it went"
+                                           : std::string("then lost (") + resultName(r) + ")");
+  if (dev->log) dev->log("device: " + m);
+  Lost e(m);
+  e.code = VK_ERROR_DEVICE_LOST;
+  throw e;
 }
 
 Ticket::~Ticket() {
-  if (!dev) return;
+  if (!dev || dev->abandoned) return;   // ai: the fence and command buffers left (Device::abandoned)
   if (fence) {
-    vkWaitForFences(dev->dev, 1, &fence, VK_TRUE, UINT64_MAX);
+    // ai: bounded as wait is: a fence still not done then is a hang no one waited on, and the device is abandoned
+    const uint64_t ns = dev->hangMs ? (uint64_t)(dev->hangMs + SETTLE_MS) * 1000000ull : UINT64_MAX;
+    if (vkWaitForFences(dev->dev, 1, &fence, VK_TRUE, ns) == VK_TIMEOUT) { dev->lost = true; dev->abandoned = true; return; }
     vkDestroyFence(dev->dev, fence, nullptr);
   }
   // ai: freed by the recording thread (Device::encoder), whichever thread drops the ticket

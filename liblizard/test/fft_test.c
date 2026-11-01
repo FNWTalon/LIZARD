@@ -27,10 +27,13 @@ int main(void) {
   // the codec's; archive/stash/fft-gen2 has four more, archive/fft-bench radix 4). The error allowed grows with log n,
   // which is how a float transform's error grows.
   {
-  double worstAll = 0;
-  // ai: The powers of two to 1024, then 3 x 2^k to 1536, which take a radix-3 stage.
-  for (int three = 0; three < 2; three++)
-  for (int rows = three ? 3 : 2; rows <= (three ? 1536 : 1024); rows <<= 1) for (int cols = 1; cols <= 9; cols += 4) for (int inverse = 0; inverse < 2; inverse++) {
+  // ai: The powers of two to 1024, then 3 x 2^k to 1536, which take a radix-3 stage; then the other 2^a 3^b 5^c to
+  // ai: 1536: 5, 9, 15, 25, 27, 45, 75, 81 times 2^k, which take radix-5 stages (rows5) or more than one radix-3 stage
+  // ai: (the ladder's 1152 is 9 x 2^7, its 1280 5 x 2^8). Each family's worst error is printed on its own.
+  const int base[] = { 1, 3, 5, 9, 15, 25, 27, 45, 75, 81 };
+  double worstFam[10] = { 0 };
+  for (int fam = 0; fam < 10; fam++)
+  for (int rows = base[fam] == 1 ? 2 : base[fam]; rows <= (base[fam] == 1 ? 1024 : 1536); rows <<= 1) for (int cols = 1; cols <= 9; cols += 4) for (int inverse = 0; inverse < 2; inverse++) {
     int pitch = cols + 3; float *re = malloc(sizeof(float) * rows * pitch), *im = malloc(sizeof(float) * rows * pitch), *r0 = malloc(sizeof(float) * rows * pitch), *i0 = malloc(sizeof(float) * rows * pitch);
     for (int i = 0; i < rows * pitch; i++) { r0[i] = re[i] = (float)rand() / RAND_MAX - 0.5f; i0[i] = im[i] = (float)rand() / RAND_MAX - 0.5f; }
     fft_cols(re, im, rows, cols, pitch, inverse);
@@ -43,10 +46,11 @@ int main(void) {
     }
     double bits = 0; for (int t = rows; t > 1; t >>= 1) bits++;
     if (worst > 2e-5 * bits * sqrt((double)rows)) { fails++; printf("FAIL fft_cols rows %d cols %d inverse %d: %.2e\n", rows, cols, inverse, worst); }
-    if (worst / (bits * sqrt((double)rows)) > worstAll) worstAll = worst / (bits * sqrt((double)rows));
+    if (worst / (bits * sqrt((double)rows)) > worstFam[fam]) worstFam[fam] = worst / (bits * sqrt((double)rows));
     free(re); free(im); free(r0); free(i0);
   }
-  printf("sizes 2 to 1024 and 3 to 1536, forward and inverse, against the definition: worst error %.2e x log2(n) sqrt(n)\n", worstAll);
+  printf("sizes 2 to 1024 and 3 to 1536, forward and inverse, against the definition: worst error %.2e x log2(n) sqrt(n)\n", worstFam[0] > worstFam[1] ? worstFam[0] : worstFam[1]);
+  for (int fam = 2; fam < 10; fam++) printf("  %d x 2^k from %d to 1536: worst error %.2e x log2(n) sqrt(n)\n", base[fam], base[fam], worstFam[fam]);
   }
   // 512 x 512 against the transform it replaced, then a round trip and the symmetry of a real input.
   int n = 512; size_t nn = (size_t)n * n;
@@ -75,6 +79,22 @@ int main(void) {
   printf("768 x 768: round trip %.2e, hermitian residue %.2e\n", err, herm);
   if (!(err < 1e-5f && herm < 0.05f)) fails++;
   free(re); free(im); free(ref);
+  // ai: the same at the ladder's 1152 (two radix-3 stages) and 1280 (a radix-5 stage)
+  const int more[] = { 1152, 1280 };
+  for (int q = 0; q < 2; q++) {
+    n = more[q]; nn = (size_t)n * n;
+    re = malloc(sizeof(float) * nn); im = calloc(nn, sizeof(float)); ref = malloc(sizeof(float) * nn);
+    for (size_t i = 0; i < nn; i++) ref[i] = re[i] = (float)rand() / RAND_MAX - 0.5f;
+    fft2d(re, im, n, 0);
+    herm = 0;
+    for (int y = 0; y < n; y++) for (int x = 0; x < n; x++) { int j = ((n - y) % n) * n + (n - x) % n, i = y * n + x; herm = fmaxf(herm, fabsf(re[i] - re[j]) + fabsf(im[i] + im[j])); }
+    fft2d(re, im, n, 1);
+    err = 0;
+    for (size_t i = 0; i < nn; i++) err = fmaxf(err, fabsf(re[i] - ref[i]) + fabsf(im[i]));
+    printf("%d x %d: round trip %.2e, hermitian residue %.2e\n", n, n, err, herm);
+    if (!(err < 1e-5f && herm < 0.05f)) fails++;
+    free(re); free(im); free(ref);
+  }
   printf("%d failures\n", fails);
   return fails != 0;
 }

@@ -18,8 +18,9 @@ import java.net.NetworkInterface
 // ai: USB_STATE broadcast: a cable in, and whether its tethering function, rndis or ncm, is on), the addresses a PC on
 // ai: the cable reaches this phone at (a USB tether's), and Android's tethering page: no app may switch the tether
 // ai: on itself (the system's TetheringManager is for privileged apps). And the USB accessory (2026-10-27): the PC's
-// ai: (lizard-desktop/native/camera/aoa.cpp) opened and handed to the core's bridge
-// ai: (liblizard/core/rx/stream.h streamAccessory), which carries the stream as a TCP connection does.
+// ai: (liblizard/core/cam/aoa.cpp) opened and handed to the core's bridge
+// ai: (liblizard/core/rx/stream.h streamAccessory, through the receive session's usbAccessory), which carries the stream
+// ai: as a TCP connection does.
 object PcLink {
     // ai: the strings the PC switches a phone into accessory mode with (aoa.cpp), which res/xml/accessory_filter.xml
     // ai: matches: Android starts this activity for such an accessory with its permission given
@@ -28,10 +29,12 @@ object PcLink {
     private const val PERMISSION = "dev.lizard.receiver.USB_ACCESSORY"
     private var asked = false
 
-    // ai: the PC's accessory to the bridge where none is open (MainActivity: its intent, each resume). Without the
-    // ai: permission it is asked once a process; the answer comes back as PERMISSION, which tries again.
-    fun openAccessory(ctx: Context, given: UsbAccessory? = null) {
-        if (Native.accessoryOpen()) return
+    // ai: the PC's accessory to the bridge where none is open (MainActivity: its intent, each resume; the receive
+    // ai: session's hook). Without the permission it is asked once a process; the answer comes back as PERMISSION,
+    // ai: which tries again.
+    fun openAccessory(a: MainActivity, given: UsbAccessory? = null) {
+        val ctx: Context = a
+        if (a.receive.accessoryOpen()) return
         val um = ctx.getSystemService(UsbManager::class.java) ?: return
         val acc = (listOfNotNull(given) + um.accessoryList.orEmpty()).firstOrNull { it.manufacturer == MANUFACTURER && it.model == MODEL } ?: return
         if (!um.hasPermission(acc)) {
@@ -39,16 +42,16 @@ object PcLink {
             asked = true
             val app = ctx.applicationContext
             val back = object : BroadcastReceiver() {
-                override fun onReceive(c: Context, i: Intent) { app.unregisterReceiver(this); openAccessory(app) }
+                override fun onReceive(c: Context, i: Intent) { app.unregisterReceiver(this); openAccessory(a) }
             }
             if (Build.VERSION.SDK_INT >= 33) app.registerReceiver(back, IntentFilter(PERMISSION), Context.RECEIVER_NOT_EXPORTED)
             else app.registerReceiver(back, IntentFilter(PERMISSION))
             um.requestPermission(acc, PendingIntent.getBroadcast(app, 0, Intent(PERMISSION).setPackage(app.packageName), PendingIntent.FLAG_MUTABLE))
             return
         }
-        val pfd = runCatching { um.openAccessory(acc) }.onFailure { Log.w(Engine.TAG, "accessory: ${it.message}") }.getOrNull() ?: return
-        Log.i(Engine.TAG, "accessory: ${acc.manufacturer} ${acc.model} ${acc.version} open")
-        Native.streamAccessory(pfd.detachFd())
+        val pfd = runCatching { um.openAccessory(acc) }.onFailure { Log.w(TAG, "accessory: ${it.message}") }.getOrNull() ?: return
+        Log.i(TAG, "accessory: ${acc.manufacturer} ${acc.model} ${acc.version} open")
+        a.receive.usbAccessory(pfd.detachFd())
     }
 
     data class Usb(val connected: Boolean, val tether: Boolean)

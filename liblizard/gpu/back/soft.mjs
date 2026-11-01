@@ -1,7 +1,7 @@
-// The soft values' tables and lane buffers, which the rate profile's stage (tiers.mjs) decodes through: the UV
-// table a size (transform.mjs discLayout) with each coefficient's (u, v) behind it, the per-size params
-// (wgsl/back_tiers.mjs Params), and a lane's L (int8 slot order, 4 a u32, lStride words a frame), BLK (a block:
-// bitcast f32 estimate, u32 declined) and PILOT. Every stride comes from dims.mjs derived().
+// The soft values' tables, which the rate profile's stage (tiers.mjs) decodes through: the UV table a size
+// (transform.mjs discLayout) with each coefficient's (u, v) behind it, the per-size params (glsl/back_tiers.mjs
+// PARAMS), and the sizes of a lane's L (int8 slot order, 4 a u32, lStride words a frame), BLK (a block: bitcast f32
+// estimate, u32 declined) and PILOT, which the native host makes. Every stride comes from dims.mjs derived().
 // ai: Its own soft and align kernels, which decoded one code rate, went 2026-10-22 (the profile's since 2026-10-07).
 import { derived } from "./dims.mjs";
 
@@ -23,7 +23,7 @@ export async function build(device, { B, sizes, tables }) {
     device.queue.writeBuffer(uvBuf, 4 * uvOff[s], tables[s].UV);
     device.queue.writeBuffer(uvBuf, 4 * (uvTotal + uvOff[s]), tables[s].UC);
   }
-  // ai: Params a size (wgsl/back_tiers.mjs Params): the slot, UV's offset, the strides, the batch size, UC's offset
+  // ai: Params a size (glsl/back_tiers.mjs PARAMS): the slot, UV's offset, the strides, the batch size, UC's offset
   // ai: and n, in a 48-byte uniform.
   const params = [];
   for (const s of served) {
@@ -35,15 +35,5 @@ export async function build(device, { B, sizes, tables }) {
   }
   // ai: PILOT: a block's pilots, blocksMax a frame, then a frame's shift, two each (talign)
   const bytes = { L: 4 * B * lStride, BLK: 8 * B * blocksMax, PILOT: 4 * B * blocksMax + 8 * B };
-  return {
-    B, sizes, served, dims, sStride, lStride, subchMax, blocksMax, bytes, uvBuf, uvOff, uvTotal, params,
-    // lane: { S, LISTS, BCOUNTS } from part A. Adds L, BLK and PILOT.
-    lane(ln) {
-      ln.L = device.createBuffer({ size: bytes.L, usage: U.STORAGE | U.COPY_SRC });
-      ln.BLK = device.createBuffer({ size: bytes.BLK, usage: U.STORAGE | U.COPY_SRC });
-      ln.PILOT = device.createBuffer({ size: bytes.PILOT, usage: U.STORAGE | U.COPY_SRC });
-      ln.bytes = (ln.bytes ?? 0) + bytes.L + bytes.BLK + bytes.PILOT;
-      return ln;
-    },
-  };
+  return { B, sizes, served, dims, sStride, lStride, subchMax, blocksMax, bytes, uvBuf, uvOff, uvTotal, params };
 }

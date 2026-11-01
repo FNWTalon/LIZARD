@@ -43,12 +43,12 @@ static Run feed(XferRx& rx, const std::vector<uint8_t>& s) {
   std::thread reader([&] {
     while (!stop) { auto p = rx.progress(); if (p.queued > maxQ) maxQ = p.queued; std::this_thread::sleep_for(std::chrono::microseconds(500)); }
   });
-  const size_t n = s.size() / XFER_BLOCK_BYTES;
+  const size_t n = s.size() / XFER_BLOCK;
   int frames = 0, seen = 0, bad = 0, test = 0, judged = 0, fresh = 0;
   const double t = nowMs();
   for (size_t f = 0; f * 40 < n; f++) {
     std::vector<Block> fr(std::min<size_t>(40, n - f * 40));
-    for (size_t k = 0; k < fr.size(); k++) memcpy(fr[k].bytes.data(), s.data() + (f * 40 + k) * XFER_BLOCK_BYTES, XFER_BLOCK_BYTES);
+    for (size_t k = 0; k < fr.size(); k++) memcpy(fr[k].bytes.data(), s.data() + (f * 40 + k) * XFER_BLOCK, XFER_BLOCK);
     auto v = rx.frame(fr);
     frames++; seen += v.seen; bad += v.bad; test += v.test; judged += v.judged; fresh += v.fresh;
   }
@@ -101,8 +101,8 @@ int main(int argc, char** argv) {
   const json ref = json::parse(rf);
   const std::string root = ref["root"];
   auto log = [](const std::string& s) { printf("  [log] %s\n", s.c_str()); };
-  printf("stream: %zu blocks (%zu frames of 40), a lap %d blocks, joined at frame %d; file %zu B\n", stream.size() / XFER_BLOCK_BYTES,
-         (stream.size() / XFER_BLOCK_BYTES + 39) / 40, ref["lap"].get<int>(), ref["join"].get<int>(), file.size());
+  printf("stream: %zu blocks (%zu frames of 40), a lap %d blocks, joined at frame %d; file %zu B\n", stream.size() / XFER_BLOCK,
+         (stream.size() / XFER_BLOCK + 39) / 40, ref["lap"].get<int>(), ref["join"].get<int>(), file.size());
 
   namespace sfs = std::filesystem;
   for (const char* d : {"/store", "/store-bad", "/store-test", "/store-resume", "/store-fresh", "/store-forget"}) sfs::remove_all(dir + d);
@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
            "every frame test, its one wrong block bad, none forwarded");
   }
   {
-    const size_t n = stream.size() / XFER_BLOCK_BYTES, half = (n / 2 / 40) * 40 * XFER_BLOCK_BYTES;
+    const size_t n = stream.size() / XFER_BLOCK, half = (n / 2 / 40) * 40 * XFER_BLOCK;
     const std::vector<uint8_t> first(stream.begin(), stream.begin() + half), second(stream.begin() + half, stream.end());
     const std::string id = root.substr(0, 16);
     printf("resume: the first half into one receiver, the second into the next on the same directory:\n");

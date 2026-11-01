@@ -8,8 +8,8 @@ import java.io.OutputStream
 
 // ai: Several files or a folder as one POSIX tar, the way a sender bundles them into one transfer (the transfer's zstd
 // ai: compresses each 4 MiB chunk of the tar as of any file), and the reader a receiver unpacks one with. Plain JVM, no
-// ai: Android: the Android app and the desktop sender both compile this file (each build adds liblizard/kotlin to its
-// ai: sources). The web's twin is lizard-web/tar.mjs.
+// ai: Android: the Android app and the desktop app both use it, compiled with their shared UI (lizard-ui, whose commonMain
+// ai: takes liblizard/kotlin as a source folder). The web's twin is lizard-web/tar.mjs.
 // ai:
 // ai: The writer: ustar headers (name, and the prefix field where a path is long), a pax extended header (typeflag x)
 // ai: carrying `path` where a path fits neither field or is not plain ASCII and `size` past ustar's 8 GiB, folders as

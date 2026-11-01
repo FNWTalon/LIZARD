@@ -246,7 +246,7 @@ const Cycle& cycle(uint32_t w, uint32_t h, bool strip) {
   return made.back().second;
 }
 
-// ai: PROPSETID_VIDCAP_CAMERACONTROL (as camera/mf.cpp declares it) and the priority's id there
+// ai: PROPSETID_VIDCAP_CAMERACONTROL (as cam/mf.cpp declares it) and the priority's id there
 const GUID kCameraControlSet = {0xc6e13370, 0x30ac, 0x11d0, {0xa1, 0x8c, 0x00, 0xa0, 0xc9, 0x11, 0x89, 0x56}};
 constexpr ULONG kAutoExposurePriority = 19;
 

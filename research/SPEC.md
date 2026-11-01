@@ -33,8 +33,8 @@ frame is one symbol: a square grey picture of n x n samples whose 2D spectrum ca
 of the upper half-plane, in order of rising spatial frequency, inside a black and white border 15 modules deep. The
 border is one of three rings, whose band holds 64, 128 or 256 cells a side; any ring may carry any picture. The ring
 registers the symbol and carries the format word, one Reed-Solomon codeword that states the sub-channel count (so the
-picture size and the blocks) and the display rate. The payload travels in blocks of 473 bytes (a 32-bit block id and
-469 payload bytes) with a CRC-32, each coded by a QC-LDPC code onto consecutive sub-channels of 320 coefficients at a
+picture size and the blocks) and the display rate. The payload travels in blocks of 476 bytes (a 32-bit block id and
+472 payload bytes) with a CRC-32, each coded by a QC-LDPC code onto consecutive sub-channels of 320 coefficients at a
 rate that follows the frequency: 7/8, 3/4, 2/3 and 1/2 from the inside out (the rate profile, 3.1). Every symbol also
 carries pilots in its blocks' tails (7.3) and 49 anchors painted over its picture (6.13). Blocks from any frame feed a
 Wirehair fountain per chunk of the file, described by header and manifest blocks and verified against the file's
@@ -70,9 +70,10 @@ dead at one resolution.
 | slot | one transmitted bit: the sign of a coefficient's real or imaginary part |
 | sub-channel | 320 consecutive coefficients of the frequency order (6.3) |
 | subch | the number of sub-channels in a frame; LIZARD-512 has subch = 512 |
-| version | V = subch / 8, the word's second byte. A frame of it carries B(V) blocks (3.1) |
-| block | 473 bytes, one LDPC codeword on 7, 8, 9 or 12 sub-channels by its rate (3.1) |
+| version | V = subch / 16, 2 to 64, the word's second byte. A frame of it carries B(V) blocks (3.1) |
+| block | 476 bytes, one LDPC codeword and its pilots on 4496, 5152, 5760 or 7680 consecutive slots by its rate (3.1) |
 | rate profile | the blocks' code rates by frequency, inner first, a function of subch alone (3.1) |
+| padding | the frame's slots past its last block, which carry the whitening alone (6.5) |
 | block id | bytes 0 to 3 of a block: 14 bits of chunk over 18 of fountain symbol (7.5) |
 | chunk | 2^k bytes of the file (the last may be shorter), its own Wirehair fountain (7.6) |
 | fountain symbol | the low 18 bits of a block id, its Wirehair block id in its chunk (`xfer.h` calls it the symbol) |
@@ -128,47 +129,58 @@ figure states its conditions (a still camera, exact registration or a white scre
 
 ### 3.1 Names, versions and the ladder (normative)
 
-- A **sub-channel** is 320 consecutive coefficients of the coefficient order (`focus.h:FOCUS_SUB`, 6.3).
-- A **block** is 473 bytes coded as one codeword on consecutive sub-channels, as many as its rate needs: 7 at 7/8, 8
-  at 3/4 (`FOCUS_GROUP`), 9 at 2/3, 12 at 1/2. Blocks are laid from sub-channel 0 outwards, each beginning where the
-  one before ended (`focus.c:init`, `block_sub`).
-- A **format** is named after its sub-channel count: LIZARD-k has subch = k. Its **version** is V = subch / 8, which
-  the word's version byte carries (`focus.c:fmt_paint`).
-- The **ladder** is every version from 2 to 128: LIZARD-16, -24, ..., -1024, 127 formats
+- A **sub-channel** is 320 consecutive coefficients of the coefficient order (`focus.h:FOCUS_SUB`, 6.3), 640 slots. A
+  format counts its sub-channels; the receiver's soft values are estimated a sub-channel at a time (8.5).
+- A **block** is 476 bytes coded as one codeword, followed by its pilots, on consecutive slots, as many as its rate
+  needs (`focus.c:focus_block_slots`): 4496 at 7/8, 5152 at 3/4, 5760 at 2/3, 7680 at 1/2 (3.4). Blocks are laid from
+  slot 0 outwards, each beginning on the slot after the one before ended, whatever the sub-channels (`focus.c:init`,
+  `block_slot`); the slots past the last block are the padding (6.5).
+- A **format** is named after its sub-channel count: LIZARD-k has subch = k, a multiple of 16. Its **version** is
+  V = subch / 16 (`focus.h:FOCUS_STEP`), which the word's version byte carries (`focus.c:fmt_paint`).
+- The **ladder** is every version from 4 to 64: LIZARD-64, -80, ..., -1024, 61 formats
   (`liblizard/sim/lizard_pick.mjs:VERSIONS`). A sender MAY paint any of them. A receiver reads any version the word
-  names, with no flag (`fmt.c:ob_fmt_decode`, `OB_FMT_VERSION_MIN` = 2, `OB_FMT_VERSION_MAX` = 128).
-- Version 1 (LIZARD-8) is not a format: its version byte is invalid (5.1), and `focus_tiers_for` has no profile for 8
-  sub-channels.
-- A version past 128 cannot be stated by the word: `focus.c:init` refuses more than 1024 sub-channels.
+  names, with no flag (`fmt.c:ob_fmt_decode`, `OB_FMT_VERSION_MIN` = 4, `OB_FMT_VERSION_MAX` = 64).
+- The smallest format, LIZARD-64, carries seven blocks, its first four 7/8 blocks, so every format carries two pilot
+  blocks of each parity (7.3). Versions 1 to 3 are no formats: LIZARD-16's 10,240 slots hold one 7/8 and one 3/4
+  block, and the odd blocks' pilots of LIZARD-32 and -48 are one 7/8 block's 8 coefficients, which read past the
+  pilots' model on captures mixed with a neighbouring picture and under 0.9 on clean ones (7.3, 9.1). A sub-channel
+  count that is not a multiple of 16 is no format: its version would not be whole, and `focus_tiers_for` has no
+  profile for it.
+- A version past 64 cannot be stated by the word: `focus.c:init` refuses more than 1024 sub-channels.
 
-**The rate profile.** Inner first, a frame of subch sub-channels carries a blocks at 7/8 (7 sub-channels each), m at
-3/4 (8 each), t at 2/3 (9 each) and c at 1/2 (12 each), with 7a + 8m + 9t + 12c = subch and m >= 1. Of the (a, t, c)
-that fit, the profile is the one with the least
+**The rate profile.** A frame of subch sub-channels has S = 640 subch slots. Inner first, it carries a blocks at 7/8
+(s7 = 4496 slots each), m at 3/4 (s3 = 5152), t at 2/3 (s2 = 5760) and c at 1/2 (s1 = 7680), with
+a s7 + t s2 + c s1 + s3 <= S and m = floor((S - a s7 - t s2 - c s1) / s3) >= 1: the 3/4 tier fills, and the
+S - (a s7 + m s3 + t s2 + c s1) slots it leaves are the padding. Of the (a, t, c) that fit, the profile is the one with
+the least
 
 ```
-(700 a - 39 subch)^2 + (900 t - 15 subch)^2 + (1200 c - 20 subch)^2
+(1000 a s7 - 390 S)^2 + (1000 t s2 - 150 S)^2 + (1000 c s1 - 200 S)^2
 ```
 
-in integers, the first of equals in rising a, then rising t, then rising c; 3/4 fills the rest
-(`focus.c:focus_tiers_for`, `FOCUS_TIER_IN` = 39, `FOCUS_TIER_23` = 15, `FOCUS_TIER_OUT` = 20;
-`liblizard/sim/lizard_pick.mjs:tiersFor`). A tier of no blocks is absent: LIZARD-16 is one tier of 3/4, LIZARD-24 to
--40 have no 1/2 tier, LIZARD-48 and -56 no 2/3 tier, and every larger format has all four. B(V) = a + m + t + c
-(`focus_blocks_for`) never exceeds V: it equals V for V = 2 to 15 and 20 to 22 and is at most 4 under it elsewhere,
-and it never falls as V rises. Nothing about the profile is signalled: it follows from the version.
+in integers, the first of equals in rising a, then rising t, then rising c (`focus.c:focus_tiers_for`, `FOCUS_TIER_IN`
+= 390, `FOCUS_TIER_23` = 150, `FOCUS_TIER_OUT` = 200, thousandths of the slots; `liblizard/sim/lizard_pick.mjs:tiersFor`,
+which counts in units of 16 slots, every block's slots being a multiple of 16, so that each cost is an exact integer
+under 2^53). The targets are the profile's split over the sub-channels before the blocks were packed by slots (39, 15 and 20%
+at 7/8, 2/3 and 1/2), now shares of the slots (12, 13). Every format has all four tiers. B(V) = a + m + t + c
+(`focus_blocks_for`) is under 2V at every version and never falls as V rises. The padding runs from none (LIZARD-320 and -1008) to 4976 slots
+(LIZARD-768), at most 10.7% of a frame (LIZARD-64's 4384), under 5% from LIZARD-96 up and under 2% from LIZARD-320 up
+(0.46% at LIZARD-656). Nothing about the profile is signalled: it
+follows from the version.
 
-| format | tiers, inner first | blocks B(V) |
-|---|---|---|
-| LIZARD-16 | 3/4 x 2 | 2 |
-| LIZARD-24 | 7/8 x 1, 3/4 x 1, 2/3 x 1 | 3 |
-| LIZARD-48 | 7/8 x 4, 3/4 x 1, 1/2 x 1 | 6 |
-| LIZARD-64 | 7/8 x 5, 3/4 x 1, 2/3 x 1, 1/2 x 1 | 8 |
-| LIZARD-128 | 7/8 x 7, 3/4 x 2, 2/3 x 3, 1/2 x 3 | 15 |
-| LIZARD-256 | 7/8 x 13, 3/4 x 9, 2/3 x 5, 1/2 x 4 | 31 |
-| LIZARD-432 | 7/8 x 24, 3/4 x 12, 2/3 x 8, 1/2 x 8 | 52 |
-| LIZARD-512 | 7/8 x 29, 3/4 x 15, 2/3 x 9, 1/2 x 9 | 62 |
-| LIZARD-568 | 7/8 x 33, 3/4 x 17, 2/3 x 9, 1/2 x 10 | 69 |
-| LIZARD-592 | 7/8 x 34, 3/4 x 18, 2/3 x 10, 1/2 x 10 | 72 |
-| LIZARD-1024 | 7/8 x 57, 3/4 x 32, 2/3 x 17, 1/2 x 18 | 124 |
+| format | tiers, inner first | blocks B(V) | slots padded |
+|---|---|---|---|
+| format | tiers, inner first | blocks B(V) | slots padded |
+| LIZARD-64 | 7/8 x 4, 3/4 x 1, 2/3 x 1, 1/2 x 1 | 7 | 4384 |
+| LIZARD-80 | 7/8 x 4, 3/4 x 3, 2/3 x 1, 1/2 x 1 | 9 | 4320 |
+| LIZARD-128 | 7/8 x 7, 3/4 x 4, 2/3 x 2, 1/2 x 2 | 15 | 2960 |
+| LIZARD-256 | 7/8 x 14, 3/4 x 9, 2/3 x 4, 1/2 x 4 | 31 | 768 |
+| LIZARD-432 | 7/8 x 24, 3/4 x 14, 2/3 x 7, 1/2 x 7 | 52 | 2368 |
+| LIZARD-512 | 7/8 x 28, 3/4 x 15, 2/3 x 9, 1/2 x 9 | 61 | 3552 |
+| LIZARD-560 | 7/8 x 31, 3/4 x 19, 2/3 x 9, 1/2 x 9 | 68 | 176 |
+| LIZARD-592 | 7/8 x 33, 3/4 x 18, 2/3 x 10, 1/2 x 10 | 71 | 3376 |
+| LIZARD-656 | 7/8 x 36, 3/4 x 21, 2/3 x 11, 1/2 x 11 | 79 | 1952 |
+| LIZARD-1024 | 7/8 x 57, 3/4 x 33, 2/3 x 17, 1/2 x 17 | 124 | 592 |
 
 A version names what is inside the symbol and nothing about its size: the symbol's size is its ring's (3.3).
 
@@ -177,23 +189,27 @@ A version names what is inside the symbol and nothing about its size: the symbol
 The top ring radius, in cycles across the picture, is the radius of the half-disc that holds 320 subch coefficients:
 
 ```
-R = sqrt(2 * 320 * subch / pi) = sqrt(5120 * V / pi)
+R = sqrt(2 * 320 * subch / pi) = sqrt(10240 * V / pi)
 ```
 
-n MUST be the first of 256, 384, 512, 768, 1024 and 1536 with n >= 3R, computed in double precision, or 1536 where
+n MUST be the first of 256, 384, 512, 768, 1024, 1152, 1280 and 1536 with n >= 3R, computed in double precision, or 1536 where
 none holds (`focus.c:focus_n_for` over `FOCUS_PICTURES`; `liblizard/sim/lizard_pick.mjs:N_FOR`). The fallback never
-binds on the ladder (LIZARD-1024 has 3R = 1370.2). Since n >= 3R is V <= pi n^2 / 46080:
+binds on the ladder (LIZARD-1024 has 3R = 1370.2). Since n >= 3R is V <= pi n^2 / 92160 (the 256 picture holds
+versions 1 and 2, which are no formats, 3.1; no format's picture is 256):
 
 | n | versions | formats | count | blocks a frame | useful bytes a frame (3.4) |
 |---|---|---|---|---|---|
-| 256 | 2 to 4 | LIZARD-16 to -32 | 3 | 2 to 4 | 938 to 1876 |
-| 384 | 5 to 10 | LIZARD-40 to -80 | 6 | 5 to 10 | 2345 to 4690 |
-| 512 | 11 to 17 | LIZARD-88 to -136 | 7 | 11 to 16 | 5159 to 7504 |
-| 768 | 18 to 40 | LIZARD-144 to -320 | 23 | 17 to 39 | 7973 to 18291 |
-| 1024 | 41 to 71 | LIZARD-328 to -568 | 31 | 40 to 69 | 18760 to 32361 |
-| 1536 | 72 to 128 | LIZARD-576 to -1024 | 57 | 70 to 124 | 32830 to 58156 |
+| n | versions | formats | count | blocks a frame | useful bytes a frame (3.4) |
+| 256 | none | | 0 | | |
+| 384 | 4 to 5 | LIZARD-64 to -80 | 2 | 7 to 9 | 3304 to 4248 |
+| 512 | 6 to 8 | LIZARD-96 to -128 | 3 | 11 to 15 | 5192 to 7080 |
+| 768 | 9 to 20 | LIZARD-144 to -320 | 12 | 17 to 39 | 8024 to 18408 |
+| 1024 | 21 to 35 | LIZARD-336 to -560 | 15 | 40 to 68 | 18880 to 32096 |
+| 1152 | 36 to 45 | LIZARD-576 to -720 | 10 | 69 to 87 | 32568 to 41064 |
+| 1280 | 46 to 55 | LIZARD-736 to -880 | 10 | 89 to 106 | 42008 to 50032 |
+| 1536 | 56 to 64 | LIZARD-896 to -1024 | 9 | 108 to 124 | 50976 to 58528 |
 
-n / 2R runs from 1.50 to 2.24 on the ladder. Only the word states n: a receiver takes n = `focus_n_for(8 * version)`
+n / 2R runs from 1.50 to 2.24 on the ladder. Only the word states n: a receiver takes n = `focus_n_for(16 * version)`
 and nothing checks the version against the ring.
 
 **n sets only how finely the same coefficients are sampled.** Every coefficient a format uses lies within R + 0.07,
@@ -202,7 +218,7 @@ are the same at every n that can hold it, and within one n each format's coeffic
 top format's: block b of any version sits on the same coefficients, with the same bit map and whitening, as block b of
 the top version of that n wherever their tiers agree (`wasm.c:focus_any_setup`, `pic_for`).
 
-`focus.c:init` checks only that n is one of the six sizes (each a multiple of 64, for the transform's 64-column strips)
+`focus.c:init` checks only that n is one of the eight sizes (each with n / 2 a whole number of the transform's 64-column strips)
 and that the half-plane holds 320 subch coefficients ((n / 2)(n - 2) at most).
 
 ### 3.3 The rings (normative)
@@ -230,7 +246,8 @@ scale = n / span                                              samples a module
 pxm is the painted pixels a module, a whole number, so no module is split across pixels. The second term is the
 anchors' floor (6.13): a square of span / 64 modules is then at least 6 pixels. The picture keeps its n samples and is
 resampled to fill its span modules, upscaled by pxm / scale, never shrunk (6.8); where pxm = scale the resampling is an
-exact copy. Six pairs resample: n = 256 in the 64 ring; 256 and 384 in the 128 ring; 256, 384 and 768 in the 256 ring.
+exact copy. Nine pairs resample: n = 256 in the 64 ring; 256, 384 and 1152 in the 128 ring; 256, 384, 768, 1152 and
+1280 in the 256 ring.
 The resampled square is (span + 6) pxm pixels a side from pixel 12 pxm on both axes (the picture and its guard, 6.8).
 
 | ring B | span | S | n | scale | pxm | upscale | symbol, px | painted, px | resampled square, from |
@@ -240,18 +257,24 @@ The resampled square is (span + 6) pxm pixels a side from pixel 12 pxm on both a
 | 64 | 128 | 158 | 512 | 4 | 4 | copy | 632 | 648 | 536, 48 |
 | 64 | 128 | 158 | 768 | 6 | 6 | copy | 948 | 972 | 804, 72 |
 | 64 | 128 | 158 | 1024 | 8 | 8 | copy | 1264 | 1296 | 1072, 96 |
+| 64 | 128 | 158 | 1152 | 9 | 9 | copy | 1422 | 1458 | 1206, 108 |
+| 64 | 128 | 158 | 1280 | 10 | 10 | copy | 1580 | 1620 | 1340, 120 |
 | 64 | 128 | 158 | 1536 | 12 | 12 | copy | 1896 | 1944 | 1608, 144 |
 | 128 | 256 | 286 | 256 | 1 | 2 | 2 | 572 | 580 | 524, 24 |
 | 128 | 256 | 286 | 384 | 3/2 | 2 | 4/3 | 572 | 580 | 524, 24 |
 | 128 | 256 | 286 | 512 | 2 | 2 | copy | 572 | 580 | 524, 24 |
 | 128 | 256 | 286 | 768 | 3 | 3 | copy | 858 | 870 | 786, 36 |
 | 128 | 256 | 286 | 1024 | 4 | 4 | copy | 1144 | 1160 | 1048, 48 |
+| 128 | 256 | 286 | 1152 | 9/2 | 5 | 10/9 | 1430 | 1450 | 1310, 60 |
+| 128 | 256 | 286 | 1280 | 5 | 5 | copy | 1430 | 1450 | 1310, 60 |
 | 128 | 256 | 286 | 1536 | 6 | 6 | copy | 1716 | 1740 | 1572, 72 |
 | 256 | 512 | 542 | 256 | 1/2 | 1 | 2 | 542 | 546 | 518, 12 |
 | 256 | 512 | 542 | 384 | 3/4 | 1 | 4/3 | 542 | 546 | 518, 12 |
 | 256 | 512 | 542 | 512 | 1 | 1 | copy | 542 | 546 | 518, 12 |
 | 256 | 512 | 542 | 768 | 3/2 | 2 | 4/3 | 1084 | 1092 | 1036, 24 |
 | 256 | 512 | 542 | 1024 | 2 | 2 | copy | 1084 | 1092 | 1036, 24 |
+| 256 | 512 | 542 | 1152 | 9/4 | 3 | 4/3 | 1626 | 1638 | 1554, 36 |
+| 256 | 512 | 542 | 1280 | 5/2 | 3 | 6/5 | 1626 | 1638 | 1554, 36 |
 | 256 | 512 | 542 | 1536 | 3 | 3 | copy | 1626 | 1638 | 1554, 36 |
 
 The pixel columns are the painted image's own size (`_focus_side()`, `_focus_cell()`); a sender then scales it to the
@@ -259,23 +282,26 @@ room (3.5, 9.5).
 
 ### 3.4 Capacity (normative)
 
-| rate | sub-channels | slots | codeword n (sent) | z | tail slots | information k | zero bits past the CRC |
-|---|---|---|---|---|---|---|---|
-| 7/8 | 7 | 4480 | 4557 (4464) | 93 | 16 | 3906 | 90 |
-| 3/4 | 8 | 5120 | 5088 | 106 | 32 | 3816 | 0 |
-| 2/3 | 9 | 5760 | 5760 | 120 | 0 | 3840 | 24 |
-| 1/2 | 12 | 7680 | 7680 | 160 | 0 | 3840 | 24 |
+| rate | slots a block | codeword n (sent nt) | z | tail slots (pilots) | information k | zero bits past the CRC |
+|---|---|---|---|---|---|---|
+| rate | slots a block | codeword n (sent nt) | z | tail slots (pilots) | information k | zero bits past the CRC |
+| 7/8 | 4496 | 4608 (4480) | 128 | 16 | 3968 | 128 |
+| 3/4 | 5152 | 5120 (5120) | 128 | 32 | 3840 | 0 |
+| 2/3 | 5760 | 5760 (5760) | 128 | 0 | 3840 | 0 |
+| 1/2 | 7680 | 7680 (7680) | 128 | 0 | 3840 | 0 |
 
-- Slots: sub-channels x 320 coefficients x 2 bits. The codeword is 48 base columns lifted by z = floor(slots / 48)
-  (`ldpc.c:ldpc_init`); the 7/8 code has a 49th column whose z bits are never sent (8.6). The slots past the sent bits
-  are the tail, which carries the pilots (7.3).
-- The information word is the 473 block bytes, their CRC-32 (3816 bits in all) and the zero bits (7.1). The block size
-  is k / 8 - 4 = 473 for the 3/4 code, the smallest k, which every format has (`focus.c:init`, `block_bytes`).
-- The first 4 of the 473 bytes are the block id (7.5), which leaves 469 useful bytes (3752 bits).
+- A block's slots are its code's nt sent bits and then its tail, the slots that carry the pilots (7.3): 16 at 7/8 and
+  32 at 3/4; a 2/3 or 1/2 block has none. Every code is lifted by z = 128 (section 8); the 7/8 code's first data
+  column, its first 128 bits, is never sent (np = 128, 8.6).
+- The information word is the 476 block bytes and their CRC-32, 3840 bits, the k of the 3/4, 2/3 and 1/2 codes; the
+  7/8 code's k holds 128 zero bits past them (7.1). A block is 476 bytes whatever its rate (`focus.h:FOCUS_BLOCK`, `focus.c:init`, `block_bytes`).
+- The first 4 of the 476 bytes are the block id (7.5), which leaves 472 useful bytes (3776 bits).
 
-A frame of version V has 2560 V coefficients, 5120 V slots, B(V) blocks and 469 B(V) useful bytes in any ring (3.2's
-table by n, 3.6 by format). Its ceiling in bytes a second is 469 B(V) times the display rate. To reproduce a row: `M._focus_setup(n, subch, 2, 2B, 0)` (n, subch, clip, span, tilt) returns 473, then
-`M._focus_blocks()`, `M._focus_side()`, `M._focus_cell()` and `M._focus_quiet()` give B(V), S pxm, pxm and 2.
+A frame of version V has 5120 V coefficients, 10240 V slots, B(V) blocks, the padding past them (3.1) and 472 B(V)
+useful bytes in any ring (3.2's table by n, 3.6 by format). Its ceiling in bytes a second is 472 B(V) times the display
+rate. To reproduce a row: `M._focus_setup(n, subch, 2, 2B, 0)` (n, subch, clip, span, tilt) returns 476, then
+`M._focus_blocks()`, `M._focus_side()`, `M._focus_cell()` and `M._focus_quiet()` give B(V), S pxm, pxm and 2;
+`M._focus_tiers_for(subch, p)` writes the tiers as (rate index, blocks, slots a block) triplets.
 
 ### 3.5 Choosing a version (non-normative)
 
@@ -286,84 +312,82 @@ take (the room), and makes no camera assumption.
   `ROOM_FOR(subch, ring) = (MODULES + 2 M) / SPAN * 2.7 * R(subch)` with SPAN = 2B, MODULES = 2B + 30, M = 2
   (`PAINTED_MARGIN()`, the codec's `FOCUS_QUIET`), and 2.7 device px a cycle at the top ring (`T_DISPLAY_CYCLE`). In one
   ring the room is a constant times R, so it rises with the version.
-- **The pick** is the largest ladder format whose room fits, or LIZARD-16 where none does (flagged `tight`); the ring
+- **The pick** is the largest ladder format whose room fits, or LIZARD-64 where none does (flagged `tight`); the ring
   is the default unless named. The library does not cap; an app is advised to stop at LIZARD-560 unless it is a fixed
   rig (13, item 21).
 - **What a format asks of the camera**, not an input: `CAMERA_PX_FOR(subch, ring) = MODULES / SPAN * 2.12 * R(subch)`,
   camera px across the symbol, margin excluded.
-- A sender MAY change format mid-transfer (on a resize, say): every block carries the same 469 useful bytes (9.1).
+- A sender MAY change format mid-transfer (on a resize, say): every block carries the same 472 useful bytes (9.1).
 
 ### 3.6 Every format
 
-Derived from 3.1 to 3.4 (normative) for every second version; the room and camera columns are 3.5's guidance in the
-default 128 ring.
+Derived from 3.1 to 3.4 (normative) for every version; the room and camera columns are 3.5's guidance in the default
+128 ring.
 
 | format | V | n | blocks B(V) | useful B a frame | R | n / 2R | room, device px | camera px |
 |---|---|---|---|---|---|---|---|---|
-| LIZARD-16 | 2 | 256 | 2 | 938 | 57.09 | 2.24 | 174.6 | 135.2 |
-| LIZARD-32 | 4 | 256 | 4 | 1876 | 80.74 | 1.59 | 247.0 | 191.2 |
-| LIZARD-48 | 6 | 384 | 6 | 2814 | 98.89 | 1.94 | 302.5 | 234.2 |
-| LIZARD-64 | 8 | 384 | 8 | 3752 | 114.18 | 1.68 | 349.2 | 270.4 |
-| LIZARD-80 | 10 | 384 | 10 | 4690 | 127.66 | 1.50 | 390.5 | 302.4 |
-| LIZARD-96 | 12 | 512 | 12 | 5628 | 139.85 | 1.83 | 427.7 | 331.2 |
-| LIZARD-112 | 14 | 512 | 14 | 6566 | 151.05 | 1.69 | 462.0 | 357.8 |
-| LIZARD-128 | 16 | 512 | 15 | 7035 | 161.48 | 1.59 | 493.9 | 382.5 |
-| LIZARD-144 | 18 | 768 | 17 | 7973 | 171.28 | 2.24 | 523.9 | 405.7 |
-| LIZARD-160 | 20 | 768 | 20 | 9380 | 180.54 | 2.13 | 552.2 | 427.6 |
-| LIZARD-176 | 22 | 768 | 22 | 10318 | 189.35 | 2.03 | 579.2 | 448.5 |
-| LIZARD-192 | 24 | 768 | 23 | 10787 | 197.77 | 1.94 | 604.9 | 468.4 |
-| LIZARD-208 | 26 | 768 | 25 | 11725 | 205.85 | 1.87 | 629.6 | 487.5 |
-| LIZARD-224 | 28 | 768 | 27 | 12663 | 213.62 | 1.80 | 653.4 | 505.9 |
-| LIZARD-240 | 30 | 768 | 29 | 13601 | 221.12 | 1.74 | 676.3 | 523.7 |
-| LIZARD-256 | 32 | 768 | 31 | 14539 | 228.37 | 1.68 | 698.5 | 540.9 |
-| LIZARD-272 | 34 | 768 | 33 | 15477 | 235.40 | 1.63 | 720.0 | 557.5 |
-| LIZARD-288 | 36 | 768 | 35 | 16415 | 242.22 | 1.59 | 740.9 | 573.7 |
-| LIZARD-304 | 38 | 768 | 37 | 17353 | 248.86 | 1.54 | 761.2 | 589.4 |
-| LIZARD-320 | 40 | 768 | 39 | 18291 | 255.32 | 1.50 | 780.9 | 604.7 |
-| LIZARD-336 | 42 | 1024 | 41 | 19229 | 261.63 | 1.96 | 800.2 | 619.7 |
-| LIZARD-352 | 44 | 1024 | 43 | 20167 | 267.79 | 1.91 | 819.0 | 634.2 |
-| LIZARD-368 | 46 | 1024 | 45 | 21105 | 273.80 | 1.87 | 837.5 | 648.5 |
-| LIZARD-384 | 48 | 1024 | 47 | 22043 | 279.69 | 1.83 | 855.5 | 662.4 |
-| LIZARD-400 | 50 | 1024 | 49 | 22981 | 285.46 | 1.79 | 873.1 | 676.1 |
-| LIZARD-416 | 52 | 1024 | 51 | 23919 | 291.11 | 1.76 | 890.4 | 689.5 |
-| LIZARD-432 | 54 | 1024 | 52 | 24388 | 296.66 | 1.73 | 907.4 | 702.6 |
-| LIZARD-448 | 56 | 1024 | 54 | 25326 | 302.10 | 1.69 | 924.0 | 715.5 |
-| LIZARD-464 | 58 | 1024 | 56 | 26264 | 307.45 | 1.67 | 940.4 | 728.2 |
-| LIZARD-480 | 60 | 1024 | 59 | 27671 | 312.71 | 1.64 | 956.4 | 740.6 |
-| LIZARD-496 | 62 | 1024 | 60 | 28140 | 317.87 | 1.61 | 972.2 | 752.9 |
-| LIZARD-512 | 64 | 1024 | 62 | 29078 | 322.96 | 1.59 | 987.8 | 764.9 |
-| LIZARD-528 | 66 | 1024 | 64 | 30016 | 327.97 | 1.56 | 1003.1 | 776.8 |
-| LIZARD-544 | 68 | 1024 | 66 | 30954 | 332.90 | 1.54 | 1018.2 | 788.5 |
-| LIZARD-560 | 70 | 1024 | 68 | 31892 | 337.76 | 1.52 | 1033.1 | 800.0 |
-| LIZARD-576 | 72 | 1536 | 70 | 32830 | 342.55 | 2.24 | 1047.7 | 811.3 |
-| LIZARD-592 | 74 | 1536 | 72 | 33768 | 347.28 | 2.21 | 1062.2 | 822.5 |
-| LIZARD-608 | 76 | 1536 | 74 | 34706 | 351.94 | 2.18 | 1076.4 | 833.5 |
-| LIZARD-624 | 78 | 1536 | 76 | 35644 | 356.54 | 2.15 | 1090.5 | 844.4 |
-| LIZARD-640 | 80 | 1536 | 78 | 36582 | 361.08 | 2.13 | 1104.4 | 855.2 |
-| LIZARD-656 | 82 | 1536 | 80 | 37520 | 365.57 | 2.10 | 1118.1 | 865.8 |
-| LIZARD-672 | 84 | 1536 | 82 | 38458 | 370.00 | 2.08 | 1131.7 | 876.3 |
-| LIZARD-688 | 86 | 1536 | 84 | 39396 | 374.38 | 2.05 | 1145.1 | 886.7 |
-| LIZARD-704 | 88 | 1536 | 86 | 40334 | 378.71 | 2.03 | 1158.3 | 896.9 |
-| LIZARD-720 | 90 | 1536 | 88 | 41272 | 382.98 | 2.01 | 1171.4 | 907.1 |
-| LIZARD-736 | 92 | 1536 | 89 | 41741 | 387.22 | 1.98 | 1184.3 | 917.1 |
-| LIZARD-752 | 94 | 1536 | 91 | 42679 | 391.40 | 1.96 | 1197.1 | 927.0 |
-| LIZARD-768 | 96 | 1536 | 93 | 43617 | 395.54 | 1.94 | 1209.8 | 936.8 |
-| LIZARD-784 | 98 | 1536 | 95 | 44555 | 399.64 | 1.92 | 1222.3 | 946.5 |
-| LIZARD-800 | 100 | 1536 | 97 | 45493 | 403.70 | 1.90 | 1234.8 | 956.1 |
-| LIZARD-816 | 102 | 1536 | 99 | 46431 | 407.72 | 1.88 | 1247.0 | 965.7 |
-| LIZARD-832 | 104 | 1536 | 101 | 47369 | 411.70 | 1.87 | 1259.2 | 975.1 |
-| LIZARD-848 | 106 | 1536 | 103 | 48307 | 415.64 | 1.85 | 1271.3 | 984.4 |
-| LIZARD-864 | 108 | 1536 | 105 | 49245 | 419.54 | 1.83 | 1283.2 | 993.7 |
-| LIZARD-880 | 110 | 1536 | 107 | 50183 | 423.41 | 1.81 | 1295.0 | 1002.8 |
-| LIZARD-896 | 112 | 1536 | 109 | 51121 | 427.24 | 1.80 | 1306.7 | 1011.9 |
-| LIZARD-912 | 114 | 1536 | 111 | 52059 | 431.03 | 1.78 | 1318.4 | 1020.9 |
-| LIZARD-928 | 116 | 1536 | 113 | 52997 | 434.80 | 1.77 | 1329.9 | 1029.8 |
-| LIZARD-944 | 118 | 1536 | 115 | 53935 | 438.53 | 1.75 | 1341.3 | 1038.6 |
-| LIZARD-960 | 120 | 1536 | 117 | 54873 | 442.23 | 1.74 | 1352.6 | 1047.4 |
-| LIZARD-976 | 122 | 1536 | 119 | 55811 | 445.90 | 1.72 | 1363.8 | 1056.1 |
-| LIZARD-992 | 124 | 1536 | 121 | 56749 | 449.54 | 1.71 | 1375.0 | 1064.7 |
-| LIZARD-1008 | 126 | 1536 | 123 | 57687 | 453.15 | 1.69 | 1386.0 | 1073.3 |
-| LIZARD-1024 | 128 | 1536 | 124 | 58156 | 456.74 | 1.68 | 1397.0 | 1081.8 |
+| format | V | n | blocks B(V) | useful B a frame | R | n / 2R | room, device px | camera px |
+| LIZARD-64 | 4 | 384 | 7 | 3304 | 114.18 | 1.68 | 349.2 | 270.4 |
+| LIZARD-80 | 5 | 384 | 9 | 4248 | 127.66 | 1.50 | 390.5 | 302.4 |
+| LIZARD-96 | 6 | 512 | 11 | 5192 | 139.85 | 1.83 | 427.7 | 331.2 |
+| LIZARD-112 | 7 | 512 | 13 | 6136 | 151.05 | 1.69 | 462.0 | 357.8 |
+| LIZARD-128 | 8 | 512 | 15 | 7080 | 161.48 | 1.59 | 493.9 | 382.5 |
+| LIZARD-144 | 9 | 768 | 17 | 8024 | 171.28 | 2.24 | 523.9 | 405.7 |
+| LIZARD-160 | 10 | 768 | 19 | 8968 | 180.54 | 2.13 | 552.2 | 427.6 |
+| LIZARD-176 | 11 | 768 | 21 | 9912 | 189.35 | 2.03 | 579.2 | 448.5 |
+| LIZARD-192 | 12 | 768 | 23 | 10856 | 197.77 | 1.94 | 604.9 | 468.4 |
+| LIZARD-208 | 13 | 768 | 25 | 11800 | 205.85 | 1.87 | 629.6 | 487.5 |
+| LIZARD-224 | 14 | 768 | 26 | 12272 | 213.62 | 1.80 | 653.4 | 505.9 |
+| LIZARD-240 | 15 | 768 | 29 | 13688 | 221.12 | 1.74 | 676.3 | 523.7 |
+| LIZARD-256 | 16 | 768 | 31 | 14632 | 228.37 | 1.68 | 698.5 | 540.9 |
+| LIZARD-272 | 17 | 768 | 32 | 15104 | 235.40 | 1.63 | 720.0 | 557.5 |
+| LIZARD-288 | 18 | 768 | 34 | 16048 | 242.22 | 1.59 | 740.9 | 573.7 |
+| LIZARD-304 | 19 | 768 | 36 | 16992 | 248.86 | 1.54 | 761.2 | 589.4 |
+| LIZARD-320 | 20 | 768 | 39 | 18408 | 255.32 | 1.50 | 780.9 | 604.7 |
+| LIZARD-336 | 21 | 1024 | 40 | 18880 | 261.63 | 1.96 | 800.2 | 619.7 |
+| LIZARD-352 | 22 | 1024 | 42 | 19824 | 267.79 | 1.91 | 819.0 | 634.2 |
+| LIZARD-368 | 23 | 1024 | 44 | 20768 | 273.80 | 1.87 | 837.5 | 648.5 |
+| LIZARD-384 | 24 | 1024 | 46 | 21712 | 279.69 | 1.83 | 855.5 | 662.4 |
+| LIZARD-400 | 25 | 1024 | 48 | 22656 | 285.46 | 1.79 | 873.1 | 676.1 |
+| LIZARD-416 | 26 | 1024 | 50 | 23600 | 291.11 | 1.76 | 890.4 | 689.5 |
+| LIZARD-432 | 27 | 1024 | 52 | 24544 | 296.66 | 1.73 | 907.4 | 702.6 |
+| LIZARD-448 | 28 | 1024 | 54 | 25488 | 302.10 | 1.69 | 924.0 | 715.5 |
+| LIZARD-464 | 29 | 1024 | 56 | 26432 | 307.45 | 1.67 | 940.4 | 728.2 |
+| LIZARD-480 | 30 | 1024 | 58 | 27376 | 312.71 | 1.64 | 956.4 | 740.6 |
+| LIZARD-496 | 31 | 1024 | 60 | 28320 | 317.87 | 1.61 | 972.2 | 752.9 |
+| LIZARD-512 | 32 | 1024 | 61 | 28792 | 322.96 | 1.59 | 987.8 | 764.9 |
+| LIZARD-528 | 33 | 1024 | 63 | 29736 | 327.97 | 1.56 | 1003.1 | 776.8 |
+| LIZARD-544 | 34 | 1024 | 65 | 30680 | 332.90 | 1.54 | 1018.2 | 788.5 |
+| LIZARD-560 | 35 | 1024 | 68 | 32096 | 337.76 | 1.52 | 1033.1 | 800.0 |
+| LIZARD-576 | 36 | 1152 | 69 | 32568 | 342.55 | 1.68 | 1047.7 | 811.3 |
+| LIZARD-592 | 37 | 1152 | 71 | 33512 | 347.28 | 1.66 | 1062.2 | 822.5 |
+| LIZARD-608 | 38 | 1152 | 73 | 34456 | 351.94 | 1.64 | 1076.4 | 833.5 |
+| LIZARD-624 | 39 | 1152 | 75 | 35400 | 356.54 | 1.62 | 1090.5 | 844.4 |
+| LIZARD-640 | 40 | 1152 | 77 | 36344 | 361.08 | 1.60 | 1104.4 | 855.2 |
+| LIZARD-656 | 41 | 1152 | 79 | 37288 | 365.57 | 1.58 | 1118.1 | 865.8 |
+| LIZARD-672 | 42 | 1152 | 81 | 38232 | 370.00 | 1.56 | 1131.7 | 876.3 |
+| LIZARD-688 | 43 | 1152 | 83 | 39176 | 374.38 | 1.54 | 1145.1 | 886.7 |
+| LIZARD-704 | 44 | 1152 | 85 | 40120 | 378.71 | 1.52 | 1158.3 | 896.9 |
+| LIZARD-720 | 45 | 1152 | 87 | 41064 | 382.98 | 1.50 | 1171.4 | 907.1 |
+| LIZARD-736 | 46 | 1280 | 89 | 42008 | 387.22 | 1.65 | 1184.3 | 917.1 |
+| LIZARD-752 | 47 | 1280 | 90 | 42480 | 391.40 | 1.64 | 1197.1 | 927.0 |
+| LIZARD-768 | 48 | 1280 | 92 | 43424 | 395.54 | 1.62 | 1209.8 | 936.8 |
+| LIZARD-784 | 49 | 1280 | 95 | 44840 | 399.64 | 1.60 | 1222.3 | 946.5 |
+| LIZARD-800 | 50 | 1280 | 97 | 45784 | 403.70 | 1.59 | 1234.8 | 956.1 |
+| LIZARD-816 | 51 | 1280 | 98 | 46256 | 407.72 | 1.57 | 1247.0 | 965.7 |
+| LIZARD-832 | 52 | 1280 | 100 | 47200 | 411.70 | 1.55 | 1259.2 | 975.1 |
+| LIZARD-848 | 53 | 1280 | 102 | 48144 | 415.64 | 1.54 | 1271.3 | 984.4 |
+| LIZARD-864 | 54 | 1280 | 104 | 49088 | 419.54 | 1.53 | 1283.2 | 993.7 |
+| LIZARD-880 | 55 | 1280 | 106 | 50032 | 423.41 | 1.51 | 1295.0 | 1002.8 |
+| LIZARD-896 | 56 | 1536 | 108 | 50976 | 427.24 | 1.80 | 1306.7 | 1011.9 |
+| LIZARD-912 | 57 | 1536 | 110 | 51920 | 431.03 | 1.78 | 1318.4 | 1020.9 |
+| LIZARD-928 | 58 | 1536 | 112 | 52864 | 434.80 | 1.77 | 1329.9 | 1029.8 |
+| LIZARD-944 | 59 | 1536 | 114 | 53808 | 438.53 | 1.75 | 1341.3 | 1038.6 |
+| LIZARD-960 | 60 | 1536 | 116 | 54752 | 442.23 | 1.74 | 1352.6 | 1047.4 |
+| LIZARD-976 | 61 | 1536 | 118 | 55696 | 445.90 | 1.72 | 1363.8 | 1056.1 |
+| LIZARD-992 | 62 | 1536 | 119 | 56168 | 449.54 | 1.71 | 1375.0 | 1064.7 |
+| LIZARD-1008 | 63 | 1536 | 122 | 57584 | 453.15 | 1.69 | 1386.0 | 1073.3 |
+| LIZARD-1024 | 64 | 1536 | 124 | 58528 | 456.74 | 1.68 | 1397.0 | 1081.8 |
 
 ## 4. The border
 
@@ -486,7 +510,7 @@ with R = G = B and alpha 255; the wasm exports it as `focus_tx_rgba` and the mar
 
 ### 4.9 One corner
 
-LIZARD-16 in the 64 ring (S = 158) at fps 0, top-left corner, modules x 0 to 37 and y 0 to 17, from the layout's cells
+LIZARD-64 in the 64 ring (S = 158) at fps 0, top-left corner, modules x 0 to 37 and y 0 to 17, from the layout's cells
 (`ob_test_mesh_tables_out`). `#` dark, `.` light, `T` / `t` track cell dark / light, `W` / `w` word cell dark / light,
 `g` guard, `P` picture. The other corners are this one reflected, except for the band's cells (4.6, 4.7). Word cells
 aside, this corner is the same in every ring and for every picture.
@@ -517,10 +541,10 @@ aside, this corner is the same in every ring and for every picture.
 The same symbol's band at depth 5 (depth 6 is identical), along 0 to 157 of each side:
 
 ```
-top    .##..######....TTttTTttwwWWwwwwTTttTTttWWWWwwwwTTttttTTWWwwwwwwTTttTTttWWwwWWwwTTttttTTWWWWwwWWTTttttTTWWwwwwWWttTTttTTWWwwwwWWttTTTTttwwwwWWww....######..##.
-right  .##..######....TTttTTttwwwwwwwwttTTTTttwwwwWWwwTTttTTttwwwwWWwwttTTTTttwwWWWWWWTTttttTTWWWWWWWWttTTttTTWWWWWWWWttTTTTttwwWWWWWWTTttttTTWWwwwwWW....######..##.
-bottom .##..######....ttTTttTTwwwwwwwwttTTTTttwwwwwwwwTTttTTttwwwwWWwwttTTttTTwwWWWWwwTTttTTttwwWWwwWWttTTTTttWWWWWWWWttTTttTTwwWWwwwwttTTttTTwwWWWWWW....######..##.
-left   .##..######....ttTTTTttWWwwWWWWTTttttTTWWWWWWWWttTTttTTwwWWwwWWttTTTTttwwwwWWWWttTTTTttwwwwwwWWTTttTTttwwwwwwWWttTTTTttWWWWWWwwttTTTTttWWWWwwWW....######..##.
+top    .##..######....TTttTTttwwWWwwwwTTttTTttWWWWwwwwTTttttTTwwWWwwWWTTttTTttwwWWWWWWTTttttTTwwWWWWWWTTttttTTWWWWwwWWttTTttTTWWWWwwwwttTTTTttwwWWwwww....######..##.
+right  .##..######....TTttTTttwwwwwwwwttTTTTttwwWWwwwwTTttTTttwwwwWWWWttTTTTttwwWWwwwwTTttttTTWWwwwwwwttTTttTTwwwwWWwwttTTTTttwwWWwwwwTTttttTTWWWWwwww....######..##.
+bottom .##..######....ttTTttTTwwwwwwwwttTTTTttwwwwwwwwTTttTTttWWwwWWWWttTTttTTWWwwWWWWTTttTTttwwWWWWwwttTTTTttwwWWWWwwttTTttTTwwWWWWwwttTTttTTwwWWWWww....######..##.
+left   .##..######....ttTTTTttWWWWWWwwTTttttTTwwWWwwWWttTTttTTwwWWwwWWttTTTTttWWwwWWWWttTTTTttwwwwwwWWTTttTTttWWWWWWWWttTTTTttwwWWwwwwttTTTTttwwWWWWww....######..##.
 ```
 
 ### 4.10 Mesh node sites (non-normative)
@@ -563,12 +587,12 @@ side and bytes = W / 2 (16, 32, 64). A receiver has B from the ring it registere
 | byte | field | value |
 |---|---|---|
 | `cw[0]` | magic | `0x4C` (ASCII `L`) |
-| `cw[1]` | version | sub-channels / 8, 2 to 128; 0, 1 and 129 to 255 are no version. The picture is n = `focus_n_for(8 * version)` (3.2), the blocks and their rates the profile's (3.1) |
+| `cw[1]` | version | sub-channels / 16, 2 to 64; 0, 1 and 65 to 255 are no version. The picture is n = `focus_n_for(16 * version)` (3.2), the blocks and their rates the profile's (3.1) |
 | `cw[2]` | fps | whole frames a second the sender means to paint at, 1 to 255; 0 means not stated |
 | `cw[3]` to `cw[bytes - 1]` | parity | Reed-Solomon, 5.2 |
 
-- An encoder MUST write version = subch / 8 and MUST NOT write version 1.
-- A decoder MUST accept every version from 2 to 128 in every ring, and MUST NOT reject a word for the ring it was read
+- An encoder MUST write version = subch / 16.
+- A decoder MUST accept every version from 2 to 64 in every ring, and MUST NOT reject a word for the ring it was read
   in.
 - fps is the rate the sender intends, not the rate it achieves; no decode decision depends on it. A sender MAY change
   it between frames, which repaints only the word's cells (`focus.c:focus_fmt_fps`).
@@ -605,23 +629,23 @@ side and bytes = W / 2 (16, 32, 64). A receiver has B from the ring it registere
 - Each code is RS(255, 255 - nroots) shortened to `bytes`, distance nroots + 1.
 - **Acceptance.** A decoder MUST NOT take a correction past `2e + f <= nroots` for e errors and f erasures (`rs.c`
   `solve` refuses one, and a locator whose degree is not its length), and MUST reject a corrected word whose `cw[0]` is
-  not `0x4C` or whose version is outside 2 to 128.
+  not `0x4C` or whose version is outside 2 to 64.
 
 **Test vectors**, `cw[0]` to `cw[bytes - 1]` in hex, read back out of the painted cells by `liblizard/test/vectors.mjs`
 (`_focus_setup(n, subch, 2, 2B, 0)`, `_focus_fmt_fps_set(fps)`) and held by `liblizard/test/fmt_test.c`; the word does
 not depend on n:
 
 ```
-LIZARD-512   n 1024  ring  64  version  64  fps  24  RS(16, 3)  4c 40 18 43 c2 36 ee 95 dc 07 2a 1c 61 cb 63 fc
-LIZARD-1024  n 1536  ring  64  version 128  fps 240  RS(16, 3)  4c 80 f0 1a 03 b0 6a 27 2b f1 25 d4 09 be 9d d9
-LIZARD-576   n 1536  ring  64  version  72  fps  30  RS(16, 3)  4c 48 1e 8a 58 89 b2 ff dc 13 58 1b 53 70 20 83
-LIZARD-16    n  256  ring  64  version   2  fps   0  RS(16, 3)  4c 02 00 bf 8a 27 26 53 d9 ff 5f 11 92 79 47 ed
-LIZARD-64    n  384  ring 128  version   8  fps  60  RS(32, 3)  4c 08 3c 78 7c 7c 41 6d 2b 6b 3f c1 80 75 00 4a
-                                                                d5 cd 92 b1 94 5a b6 16 5f 18 ed 02 1c 05 3f f6
-LIZARD-256   n  768  ring 256  version  32  fps 120  RS(64, 3)  4c 20 78 c9 d4 c6 57 2e 79 e0 41 b1 f5 9c f0 bf
-                                                                61 b4 d5 1a 39 1c 45 64 26 ff 19 3c 56 16 df 3b
-                                                                fa 87 2f ad df 95 6c da 9f fb 13 71 b5 bf ca 14
-                                                                60 e8 6e 4f 27 8c 5a 2c 1e 79 b9 82 38 7e f7 f7
+LIZARD-512   n 1024  ring  64  version 32  fps  24  RS(16, 3)  4c 20 18 8a 93 1b cb 15 4e 84 9d fc 68 bc 49 9e
+LIZARD-1024  n 1536  ring  64  version 64  fps 240  RS(16, 3)  4c 40 f0 95 a1 ea 20 3a 12 ea 56 09 1b 50 c9 1d
+LIZARD-576   n 1152  ring  64  version 36  fps  30  RS(16, 3)  4c 24 1e f7 ae 82 b0 6f 1b 6a 9d e7 f6 6d 48 aa
+LIZARD-64    n  384  ring  64  version  4  fps   0  RS(16, 3)  4c 04 00 e5 57 34 bb 5b 7d 82 66 1f c4 4c 66 46
+LIZARD-64    n  384  ring 128  version  4  fps  60  RS(32, 3)  4c 04 3c 76 18 ef 93 52 e5 25 c5 10 45 b7 22 df
+                                                               9e 80 64 f9 f0 dd ad 60 a7 61 d0 30 c9 96 32 06
+LIZARD-256   n  768  ring 256  version 16  fps 120  RS(64, 3)  4c 10 78 3d 45 04 e4 34 1b 70 33 13 d3 86 14 a0
+                                                               a2 d8 94 f9 ca 7e 94 d8 81 95 95 61 fe c1 87 68
+                                                               9d 90 17 a5 7e 59 ff eb 67 5e 0b 2d 07 4a 08 0b
+                                                               48 ab 41 f8 c3 a9 c9 cd c8 8d ea 6b d9 8c 99 1c
 ```
 
 ### 5.3 Placement
@@ -644,23 +668,23 @@ LIZARD-256   n  768  ring 256  version  32  fps 120  RS(64, 3)  4c 20 78 c9 d4 c
   no copies and no spare cells. An encoder MUST paint every word cell from the codeword. The layout flags each one
   `CELL_WORD` (`layout.h`).
 
-LIZARD-16 in the 64 ring at fps 0, the 32 word cells of each side in order:
+LIZARD-64 in the 64 ring at fps 0, the 32 word cells of each side in order:
 
 | side | word cells 0 to 31 |
 |---|---|
-| 0 | `0100 1100 1000 1010 1101 1001 1001 0010` |
-| 1 | `0000 0010 0010 0111 1111 1111 0111 1001` |
-| 2 | `0000 0000 0010 0110 0101 1111 0100 0111` |
-| 3 | `1011 1111 0101 0011 0001 0001 1110 1101` |
+| 0 | `0100 1100 0101 0111 0111 1101 1100 0100` |
+| 1 | `0000 0100 0011 0100 1000 0010 0100 1100` |
+| 2 | `0000 0000 1011 1011 0110 0110 0110 0110` |
+| 3 | `1110 0101 0101 1011 0001 1111 0100 0110` |
 
 LIZARD-64 in the 128 ring at fps 60, the 64 word cells of each side in order:
 
 | side | word cells 0 to 63 |
 |---|---|
-| 0 | `0100 1100 0111 1100 0010 1011 1000 0000 1101 0101 1001 0100 0101 1111 0001 1100` |
-| 1 | `0000 1000 0111 1100 0110 1011 0111 0101 1100 1101 0101 1010 0001 1000 0000 0101` |
-| 2 | `0011 1100 0100 0001 0011 1111 0000 0000 1001 0010 1011 0110 1110 1101 0011 1111` |
-| 3 | `0111 1000 0110 1101 1100 0001 0100 1010 1011 0001 0001 0110 0000 0010 1111 0110` |
+| 0 | `0100 1100 0001 1000 1110 0101 0100 0101 1001 1110 1111 0000 1010 0111 1100 1001` |
+| 1 | `0000 0100 1110 1111 0010 0101 1011 0111 1000 0000 1101 1101 0110 0001 1001 0110` |
+| 2 | `0011 1100 1001 0011 1100 0101 0010 0010 0110 0100 1010 1101 1101 0000 0011 0010` |
+| 3 | `0111 0110 0101 0010 0001 0000 1101 1111 1111 1001 0110 0000 0011 0000 0000 0110` |
 
 ### 5.4 Reading the word (non-normative)
 
@@ -688,9 +712,9 @@ decoding errors and erasures within `2e + f <= nroots` at each step. Each result
 acceptance; the first that passes is the word.
 
 A read of garbage (soft values uniform in -0.5 to 0.5) is accepted at 9.3e-5 (the steps) x 1/256 (the magic) x
-127/256 (the version) = 1.8e-7 a read in every ring (`liblizard/test/fmt_test.c` `p_pass`, exact; 0 of 2,000,000
-measured). The word reads with any two sides faded in every ring and with three in the 128 and 256 rings. In the 64
-ring a read whose side 0 is clean and the other three garbage keeps the real magic, and is accepted wrongly at 4.6e-5.
+64/256 (the version) = 9.1e-8 a read in every ring (`liblizard/test/fmt_test.c` `p_pass`, exact; 0 of 20,000 measured
+a ring). The word reads with any two sides faded in every ring and with three in the 128 and 256 rings. In the 64 ring
+a read whose side 0 is clean and the other three garbage keeps the real magic, and is accepted wrongly at 2.3e-5.
 
 ### 5.5 What the ring bootstraps (non-normative)
 
@@ -747,7 +771,7 @@ The last coefficient of some sub-channel counts:
 |---|---|---|---|
 | 1 | (9, 11) | 202 | 14.2 |
 | 2 | (9, 18) | 405 | 20.1 |
-| 8 (block 0) | (20, 35) | 1625 | 40.3 |
+| 8 | (20, 35) | 1625 | 40.3 |
 | 16 | (57, 3) | 3258 | 57.1 |
 | 64 | (6, 114) | 13032 | 114.2 |
 | 128 | (145, 71) | 26066 | 161.4 |
@@ -755,21 +779,24 @@ The last coefficient of some sub-channel counts:
 | 512 | (25, 322) | 104309 | 323.0 |
 | 1024 | (26, 456) | 208612 | 456.7 |
 
-A frame's top coefficient lies within 0.07 of R on every format; n / r_top runs from 3.01 to 4.49. Block 0 runs out
-to radius 37.8 (7 sub-channels at 7/8) in every format but LIZARD-16, whose block 0 is 8 sub-channels at 3/4, to
-40.3.
+A frame's top coefficient lies within 0.07 of R on every format; n / r_top runs from 3.01 to 4.49. Block 0, a 7/8
+block in every format, runs to C_2247, (37, 8), radius 37.9.
 
 ### 6.4 Blocks
 
-Block b's rate and place come from the rate profile (3.1): it takes g_b sub-channels, 7, 8, 9 or 12 by its rate,
-from sub-channel s_b, the sum of the sub-channels of the blocks before it: coefficients C_(320 s_b) to
-C_(320 (s_b + g_b) - 1), 640 g_b slots. Its sent codeword bits fill 4464, 5088, 5760 or 7680 of them, and the last 16,
-32, 0 or 0 are its tail (7.3).
+Block b's rate and place come from the rate profile (3.1): it takes L_b slots, 4496, 5152, 5760 or 7680 by its rate
+(3.4), from frame slot S_b, the sum of the slots of the blocks before it (S_0 = 0): coefficients C_(S_b / 2) to
+C_((S_b + L_b) / 2 - 1), every S_b and L_b being even (a multiple of 16), so no coefficient is shared by two blocks. A
+block runs across sub-channels as its slots fall: its first and last sub-channels may hold the end of the block before
+or the start of the block after. Its sent codeword bits fill the first 4480, 5120, 5760 or 7680 of its slots, and the
+last 16, 32, 0 or 0 are its tail (7.3). The slots from S_B(V) (the end of the last block) to 640 subch - 1 are the
+padding.
 
 ### 6.5 Symbols
 
 Frame slot 2s lies on the real axis of coefficient C_s and slot 2s + 1 on its imaginary axis, 0 <= s < 320 subch;
-block b's slot k is frame slot 640 s_b + k. With x the frame's slot bits (7.3), coefficient s carries
+block b's slot k is frame slot S_b + k. With x the frame's slot bits (7.3: a block's slots, and on the padding
+x_i = w[i], the whitening alone), coefficient s carries
 
 ```
 H(C_s) = (a_j / sqrt 2) * ( (1 - 2 x_(2s)) + i (1 - 2 x_(2s+1)) ),      j = floor(s / 320),  i = sqrt(-1)
@@ -796,8 +823,9 @@ Equivalently: set H(-u, -v) = conj(H(u, v)) (indices mod n), zero everywhere els
 DFT with kernel exp(+2 pi i (u x + v y) / n); no 1 / n^2 factor (`fft.h`). The reference evaluates it in float32 over
 the half-plane (`focus_encode`, `turn_pack`, `fft.c:fft_cols`) from one twiddle table W^j = exp(-2 pi i j / n),
 j < n / 2, computed in double and stored as float32 (conjugated for the inverse). For n a power of two the FFT is radix
-2; for n = 3 x 2^k it is one radix-3 stage, then k radix-2 stages, on the input in digit-reversed order in those radices
-(`fft.c` `stage_list`, `plan_for`, `rows3`, `fft_cols_mixed`). With b and c already multiplied by their twiddles, the
+2; otherwise its radix-3 stages come first (one for n = 3 x 2^k, two for 1152 = 9 x 2^7), then its radix-5 stage (one
+for 1280 = 5 x 2^8), then the radix-2 stages, on the input in digit-reversed order in those radices (`fft.c`
+`stage_list`, `plan_for`, `rows3`, `rows5`, `fft_cols_mixed`). With b and c already multiplied by their twiddles, the
 radix-3 butterfly is
 
 ```
@@ -806,14 +834,26 @@ a' = a + t1,  b' = h - i s k t2,  c' = h + i s k t2
 k = 0.8660254 (sqrt 3 / 2 in float32),  s = +1 forward, -1 inverse
 ```
 
-**Normalisation.** P = sum over s of |H(C_s)|^2 = 320 sum over j of a_j^2. By Parseval the mean of p^2 is 2P, so the
+and with b, c, d and e multiplied by theirs, the radix-5 butterfly, every product and sum in float32 in this order:
+
+```
+t1 = b + e,   t2 = c + d,   t3 = b - e,   t4 = c - d
+m1 = (a + c1 t1) + c2 t2,   m2 = (a + c2 t1) + c1 t2
+n1 = s1 t3 + s2 t4,          n2 = s2 t3 - s1 t4
+a' = (a + t1) + t2,  b' = m1 - i n1,  e' = m1 + i n1,  c' = m2 - i n2,  d' = m2 + i n2
+c1 = cos(2 pi / 5), c2 = cos(4 pi / 5), s1 = s sin(2 pi / 5), s2 = s sin(4 pi / 5), each in float32
+(0.30901699, -0.80901699, 0.95105652, 0.58778525),  s = +1 forward, -1 inverse
+```
+
+**Normalisation.** P = sum over s of |H(C_s)|^2 = 320 sum over j of a_j^2: every coefficient of the frame is sent, the
+padding's too (6.5). By Parseval the mean of p^2 is 2P, so the
 picture's rms is
 
 ```
 sigma = sqrt(2 P)          at t = 0:  sigma = sqrt(640 subch)
 ```
 
-The reference uses this value and never measures the rms. At LIZARD-16, sigma = sqrt(10240) = 101.19.
+The reference uses this value and never measures the rms. At LIZARD-64, sigma = sqrt(40960) = 202.39.
 
 ### 6.7 Clipping and grey
 
@@ -843,9 +883,9 @@ w(t) = (t + 0.5) * sc / pxm - 3 * sc - 0.5,        sc = n / span,   evaluated in
 ```
 
 that is w = ((X + 0.5) / pxm - 15) sc - 0.5, which places **sample x at module coordinate 15 + (x + 0.5) / sc** on
-both axes. Where pxm = sc every pixel lands on a sample and the resampler copies. In the six pairs where pxm > sc
-(3.3: n = 256 in the 64 ring, 256 and 384 in the 128 ring, 256, 384 and 768 in the 256 ring) the picture is enlarged
-through the taps below.
+both axes. Where pxm = sc every pixel lands on a sample and the resampler copies. In the nine pairs where pxm > sc
+(3.3: n = 256 in the 64 ring, 256, 384 and 1152 in the 128 ring, 256, 384, 768, 1152 and 1280 in the 256 ring) the
+picture is enlarged through the taps below.
 
 **The kernel.** Lanczos-3:
 
@@ -944,7 +984,7 @@ DC carries nothing and X1(0) = X2(0) = 0, so DC is untouched.
 ### 6.12 Test vectors
 
 Computed with the codec's wasm through `liblizard/sim/ob.mjs`: `_focus_setup(n, subch, 2, 128, 0)` (clip 2, span 128:
-the 64 ring; no tilt), `_focus_dbg(1)`, `_focus_tx` on a payload of blocks x 473 zero bytes, then the drive (float32,
+the 64 ring; no tilt), `_focus_dbg(1)`, `_focus_tx` on a payload of blocks x 476 zero bytes, then the drive (float32,
 S pxm pixels square, row-major), the slot bits from `_focus_dbg_sym` (int8 a slot, +1 for bit 0, -1 for bit 1, frame
 slot order) and the coefficient positions from `_focus_pos_ptr`. Grey bytes are G of 6.8. The word states fps 0 and
 the count is 0 (`_focus_parity_set` not called). The slot bits do not depend on the ring or on n.
@@ -957,45 +997,46 @@ p = floor(v / bw) * n * bw + ((u + n) mod n) * bw + (v mod bw)
 ```
 
 decoded as `v = floor(p / (n bw)) bw + (p mod bw)`, `u' = floor(p / bw) mod n`, u = u' when u' < n / 2, else u' - n.
-Decoded, the entries equal 6.3's sort at every coefficient of LIZARD-16, -48, -64, -144, -256 and -576, each at its n.
+Decoded, the entries equal 6.3's sort at every coefficient of LIZARD-64, -144, -256 and -576, each at its n.
 
-**P2, LIZARD-16 (n = 256, 2 blocks) in the 64 ring, every payload byte zero.** pxm = 3 (the anchors' floor), scale 2,
-so the picture is enlarged by 3/2 through the taps of 6.8.
+**P2, LIZARD-64 (n = 384, 7 blocks) in the 128 ring, every payload byte zero.** pxm = 2, scale 1.5, so the picture is
+enlarged by 4/3 through the taps of 6.8.
 
-- slot bits, one byte (0 or 1) a slot, 10,240 bytes: SHA-256
-  `6a1cebe89d813d0cbc345cc590f031e2c0ee48bf09dd15d384bfb12882a69e09`
+- slot bits, one byte (0 or 1) a slot, 40,960 bytes: P3's (the slots do not depend on the ring), SHA-256
+  `aa838dca9d956b1a005ef5577514aafd5e5e955c44d0dd00fdbd7901668a8915`
 - the same packed 8 to a byte, first slot in the most significant bit, first 16 bytes:
-  `00203e000ff403e0b8fffdcc001c1c03`
-- sigma = 101.192885, L = 202.385770
-- drive 474 x 474 (S = 158, pxm = 3; scale = 2, so the picture is upscaled by 3/2 through the taps of 6.8). Drive values
-  at row 45, columns 45 to 48 (the picture's first pixel row and column): 0.6579847, 0.8233471, 0.9710589, 1.0000000
-- grey bytes at row 45, columns 45 to 60: `168 210 248 255 253 255 255 241 193 140 110 107 117 132 142 145`
-- grey bytes at row 345, columns 345 to 360: `255 255 255 255 255 255 77 67 56 47 45 52 68 85 102 120`
-- the anchors (6.13): a = 2 modules, 6 pixels, from modules 23, 41, 60, 78, 96, 115, 133 on either axis. Grey bytes at
-  row 71 (anchor (0, 0)'s third pixel row), columns 66 to 77, the square at columns 69 to 74:
-  `0 24 72 255 0 255 255 0 255 75 72 68`
-- grey bytes of the resampled square, pixels [36, 438) on both axes (modules [12, 146)), row by row, 161,604 bytes:
-  SHA-256 `a499a1ebe9e95c7abe6e67caa56e9ba267acb9e457a17e869e3cc2f1f18b9820`; 2984 of them are 0 and 3746 are 255
-- grey bytes of the whole drive, border included, 224,676 bytes: SHA-256
-  `425bb0ab8e16a12a56951a272784c8623f3a318c6e2a90bec1393fc92faba235`
+  `00043e000efd03e0f0ffffcc000c0c03`
+- sigma = 202.385773, L = 404.771545
+- drive 572 x 572 (S = 286, pxm = 2; scale = 1.5, so the picture is upscaled by 4/3 through the taps of 6.8). Drive
+  values at row 30, columns 30 to 33 (the picture's first pixel row and column): 0.5042297, 0.4902562, 0.7274472, 1.0000000
+- grey bytes at row 30, columns 30 to 45: `129 125 185 255 255 206 133 124 184 244 237 166 92 58 75 113`
+- grey bytes at row 345, columns 345 to 360: `119 104 105 107 114 138 176 206 195 142 71 21 13 46 127 216`
+- the anchors (6.13): a = 4 modules, 8 pixels, from modules 31, 68, 104, 141, 178, 214, 251 on either axis. Grey bytes at
+  row 64 (anchor (0, 0)'s third pixel row), columns 60 to 71, the square at columns 62 to 69:
+  `53 107 255 255 0 0 0 0 255 255 117 129`
+- grey bytes of the resampled square, pixels [24, 548) on both axes (modules [12, 274)), row by row, 274,576 bytes:
+  SHA-256 `c1d3c53aef9a077764fa93f1b81d3b3f8e5528d60966da5ae988aa1a8b02618c`; 4888 of them are 0 and 6929 are 255
+- grey bytes of the whole drive, border included, 327,184 bytes: SHA-256
+  `84526dc2734030b98a2892f90fec31144ad0ef7e0fe5418e8bc130d46e7dbdbe`
 
-**P3, LIZARD-64 (n = 384, 8 blocks) in the 64 ring, every payload byte zero.** pxm = 3, scale 3: a copy. Its first 16
-packed slot bytes are those of P2.
+**P3, LIZARD-64 (n = 384, 7 blocks) in the 64 ring, every payload byte zero.** pxm = 3, scale 3: a copy. Its slot bits
+are P2's.
 
-- slot bits, one byte a slot, 40,960 bytes: SHA-256 `f93ce4c7107e054bda67f4b2d7d91b024da17dc8af24670c2ed26efc82de4f28`
+- slot bits, one byte a slot, 40,960 bytes: SHA-256 `aa838dca9d956b1a005ef5577514aafd5e5e955c44d0dd00fdbd7901668a8915`
 - drive 474 x 474 (S = 158, pxm = 3; scale = 3, so the picture is copied one pixel a sample); the picture starts at
   pixel 45
-- grey bytes at row 45, columns 45 to 60: `151 201 220 197 182 222 255 255 191 114 83 101 128 134 136 145`
-- the anchors as in P2. Grey bytes at row 71, columns 66 to 77: `84 88 92 255 0 255 255 0 255 145 170 119`
+- grey bytes at row 45, columns 45 to 60: `137 159 255 255 160 119 202 253 183 91 70 104 139 143 123 139`
+- the anchors (6.13): a = 2 modules, 6 pixels, from modules 23, 41, 60, 78, 96, 115, 133 on either axis. Grey bytes at
+  row 71 (anchor (0, 0)'s third pixel row), columns 66 to 77, the square at columns 69 to 74: `57 88 121 255 0 255 255 0 255 93 105 98`
 - grey bytes of the resampled square, pixels [36, 438) (modules [12, 146)), 161,604 bytes: SHA-256
-  `20ba70f08ceea71e87cd48cecb3f6caa2f33031395febecb8e637967075fc695`
+  `458729a5285a7c68be00958695118db08f011773a852fa4d65f82146e1028a0f`
 - grey bytes of the whole drive, 474 x 474, 224,676 bytes: SHA-256
-  `fa03868e050a6fce0fd2c556363500d155cc5481e7c2f7208976fa4b0c2bb4e6`. The border holds the RS(16, 3) word (5.2)
+  `e5d430387739564fea4a55dc88ce34422a2199e0c7cb729b22b0f861b2a69a6d`. The border holds the RS(16, 3) word (5.2)
 
 **Digests over the ladder.** `node test/vectors.mjs [ob.mjs]`, run from `liblizard/`, checks 5.2, P2, P3, 7.4 and 9.3
-against a build and prints three digests to diff two builds, each over LIZARD-16 to -1024 in steps of 16 in the 64
+against a build and prints three digests to diff two builds, each over LIZARD-64 to -1024 in steps of 16 in the 64
 ring: every format's cell map at five rates (with its layout dimensions), its drive on a fixed payload, and the P1
-offsets: cells `9ffe76a7804c3d95`, drives `461e6cc4a2927c3b`, order `60842c81479e470a`.
+offsets: cells `7e4f838d46272fd7`, drives `6d6a18a74b53b038`, order `830c1e79ca55f85b`.
 
 ### 6.13 Anchors (normative)
 
@@ -1040,68 +1081,77 @@ picture size.
 | bytes | content |
 |---|---|
 | 0 to 3 | block id, uint32, little-endian (7.5) |
-| 4 to 472 | 469 payload bytes: one Wirehair block, the header block or a manifest block |
+| 4 to 475 | 472 payload bytes: one Wirehair block, the header block or a manifest block |
 
-The picture codec treats the 473 bytes as opaque. A frame's payload is 469 B(V) bytes.
+The picture codec treats the 476 bytes as opaque. A frame's payload is 472 B(V) bytes.
 
-**Information word**, k bits (`focus.c:focus_encode`): 3906 at 7/8, 3816 at 3/4, 3840 at 2/3 and 1/2.
+**Information word**, k bits (`focus.c:focus_encode`): 3968 at 7/8, 3840 at 3/4, 2/3 and 1/2.
 
 | bits | content |
 |---|---|
-| 0 to 3783 | block bytes 0 to 472, bit i the bit 7 - (i mod 8) of byte floor(i / 8): most significant bit first |
-| 3784 to 3815 | CRC-32 of bytes 0 to 472, bit 3784 + i the bit 31 - i of the CRC: most significant bit first |
-| 3816 to k - 1 | zeros: 90 bits at 7/8, 24 at 2/3 and at 1/2, none at 3/4. A decoder knows them (the reference feeds them as certain zeros) |
+| 0 to 3807 | block bytes 0 to 475, bit i the bit 7 - (i mod 8) of byte floor(i / 8): most significant bit first |
+| 3808 to 3839 | CRC-32 of bytes 0 to 475, bit 3808 + i the bit 31 - i of the CRC: most significant bit first |
+| 3840 to k - 1 | at 7/8 alone, 128 zeros. A decoder knows them (the reference feeds them as certain zeros); the 3/4, 2/3 and 1/2 codes' k is 3840 |
 
 **CRC-32** (`layout.c:ob_crc32`) is that of IEEE 802.3 and zlib: polynomial 0x04C11DB7 reflected (0xEDB88320),
 register initialised to 0xFFFFFFFF, result complemented; the CRC-32 of ASCII `123456789` is 0xCBF43926. It covers the
-id and the payload. The id is little-endian; the CRC, read as bytes 473 to 476 of the 477-byte word, is big-endian.
+id and the payload. The id is little-endian; the CRC, read as bytes 476 to 479 of the 480-byte word, is big-endian.
 
-**Acceptance.** A receiver MUST hand a block on only when the CRC-32 it computes over the 473 decoded bytes equals the
+**Acceptance.** A receiver MUST hand a block on only when the CRC-32 it computes over the 476 decoded bytes equals the
 32 decoded CRC bits; LDPC convergence alone is not acceptance. The reference requires a zero syndrome and then the CRC.
 
 ### 7.2 Where a block lies in the frame
 
-Block b (0 to B(V) - 1), of g_b sub-channels from sub-channel s_b (6.4), owns sub-channels s_b to s_b + g_b - 1,
-coefficients 320 s_b to 320 (s_b + g_b) - 1, and 640 g_b slots: block slot i is the real part of coefficient
-320 s_b + floor(i / 2) when i is even and its imaginary part when i is odd, frame slot 640 s_b + i. A slot bit 0 is
-sent as a positive component (6.5).
+Block b (0 to B(V) - 1), of L_b slots from frame slot S_b (6.4), owns frame slots S_b to S_b + L_b - 1 and coefficients
+S_b / 2 to (S_b + L_b) / 2 - 1: block slot i is the real part of coefficient (S_b + i) / 2 when i is even and the
+imaginary part of coefficient (S_b + i - 1) / 2 when i is odd, frame slot S_b + i. A slot bit 0 is sent as a positive
+component (6.5). In LIZARD-656 the blocks start at frame slots 0, 4496, ..., 157,360 (the 7/8 tier's 36), 161,856 to
+264,896 by 5152 (the 3/4 tier's 21), 270,048 to 327,648 by 5760 (the 2/3 tier's 11) and 333,408 to 410,208 by 7680 (the
+1/2 tier's 11); slots 417,888 to 419,839 are the padding.
 
 ### 7.3 The bit map
 
-A codeword has n bits, of which the first np are never sent (np = 93 at 7/8, 0 otherwise, 8.6); the nt = n - np sent
-bits fill the first nt of the block's 640 g_b slots, and the rest is the tail. The format's one map is LINEAR
+A codeword has n bits, of which the first np are never sent (np = 128 at 7/8, 0 otherwise, 8.6); the nt = n - np sent
+bits fill the first nt of the block's L_b slots, and the rest is the tail. The format's one map is LINEAR
 (`focus.h:FOCUS_BITMAP` = 3). For block b, its codeword c (section 8), the whitening w and the pilot bit q:
 
 ```
-slot[i] = (i < nt ? c[np + ((st * i) mod nt)] : q) XOR w[640 s_b + i],    i = 0 .. 640 g_b - 1
+slot[i] = (i < nt ? c[np + ((st * i) mod nt)] : q) XOR w[S_b + i],    i = 0 .. L_b - 1
 ```
+
+Frame slot i of the padding (S_B(V) <= i < 640 subch) is w[i]: a coefficient there carries the whitening alone.
 
 **The permutation** (`focus.c:perm_fill`). The stride st is floor(0.3819660113 nt + 0.5) (1/phi^2), then raised by 1
 until gcd(st, nt) = 1. Sent bit t (codeword bit np + t) lies on slot st^-1 t mod nt.
 
 | rate | nt | np | st | st^-1 mod nt | tail slots T | tail coefficients of the block |
 |---|---|---|---|---|---|---|
-| 7/8 | 4464 | 93 | 1709 | 3077 | 16 | 2232 to 2239 |
-| 3/4 | 5088 | 0 | 1943 | 1799 | 32 | 2544 to 2559 |
+| 7/8 | 4480 | 128 | 1711 | 2511 | 16 | 2240 to 2247 |
+| 3/4 | 5120 | 0 | 1957 | 2093 | 32 | 2560 to 2575 |
 | 2/3 | 5760 | 0 | 2201 | 3881 | 0 | none |
 | 1/2 | 7680 | 0 | 2933 | 1757 | 0 | none |
 
-At 3/4, perm(0) to perm(5) are 0, 1943, 3886, 741, 2684, 4627.
+At 3/4, perm(0) to perm(5) are 0, 1957, 3914, 751, 2708, 4665.
 
 **The pilots.** The tail slots carry no code bit: q is a bit of the count c of the picture painted (9.1), bit 0 of c
 on an even block (b even, b the block's place in the frame) and bit 1 on an odd one. Where q is 1 the tail's
 coefficients are painted inverted. The LDPC ignores them. Only 7/8 and 3/4 blocks have tails; every format has a block
-with a tail of each parity.
+with a tail of each parity (its block 0 is a 7/8 block and its block 1 a 7/8 or 3/4 block). A tail lies at the end of
+its block and runs across two sub-channels where its block's last slots do (a 3/4 tail can: 5152 is not a multiple of
+640).
 
-A receiver reads, per block b with a tail, the T axis values y_i of the tail (slot nt + 2k the real part of block
-coefficient nt / 2 + k, nt + 2k + 1 its imaginary), after the transform and detrend, against the known signs, in units
-of the rms axis value of the tail's sub-channel (m2 its mean |y|^2 over the 320 coefficients):
+A receiver reads, per block b with a tail, the T axis values y_i of the tail (frame slot S_b + nt + i: the real part of
+coefficient (S_b + nt + i) / 2 when i is even, the imaginary part when odd), after the transform and detrend, against
+the known signs, each in units of the rms axis value of its own sub-channel j (m2_j the mean |y|^2 over that
+sub-channel's 320 coefficients):
 
 ```
-r_b = (1 / T) sum_i (1 - 2 w[640 s_b + nt + i]) y_i / sqrt(m2 / 2)
+r_b = (1 / T) sum_i (1 - 2 w[S_b + nt + i]) y_i / sqrt(m2_j / 2),    j = floor((S_b + nt + i) / 640)
 ```
 
-A frame has two readings: r, the mean of r_b over the even blocks, and r2, over the odd ones. A capture of one picture
+A frame has two readings: r, the mean of r_b over the even blocks, and r2, over the odd ones. A reading over one 7/8
+block averages 8 coefficients, one over a 3/4 block 16: LIZARD-64's r2 is two 7/8 blocks' 16, its r two 7/8
+blocks' and the 3/4 block's 32. A capture of one picture
 reads r = +1 where bit 0 of its count is 0 and -1 where it is 1, and r2 the same by bit 1 (scaled by sqrt(A2 / m2) at a
 signal-to-noise ratio A2 / N). A capture of picture c that also holds a share a of the picture before and b of the one
 after reads, in size, r = 1 - 2a - 2b, and r2 = 1 - 2a where c is even and 1 - 2b where c is odd (where samples come
@@ -1119,58 +1169,80 @@ w[i] = w[i - 23] XOR w[i - 18],    w[j] = 1 for j < 0
 As a 23-bit register: s = 0x7FFFFF, and for each i, w[i] = ((s >> 22) XOR (s >> 17)) AND 1, then
 s = ((s << 1) OR w[i]) AND 0x7FFFFF. The sequence starts with 18 zeros and then 5 ones; its first 128 bits are
 `00003e000ffc03e0f8ffffce000c1c03` (hex, the first bit of each digit most significant). w is indexed by frame slot,
-640 s_b + i, and restarts at slot 0 in every frame; it depends on nothing else (not the payload, frame, format or n).
+S_b + i, and restarts at slot 0 in every frame; it depends on nothing else (not the payload, frame, format or n).
 Its period, 2^23 - 1, exceeds the largest frame (655,360 slots).
 
 ### 7.4 Test vector
 
-LIZARD-16 (n = 256, 2 blocks, one tier of 3/4). Block b is the id b as uint32 little-endian, then 469 payload bytes,
-byte j = j mod 256:
+LIZARD-64 (n = 384, 7 blocks: four 7/8 blocks on frame slots 0 to 17,983, a 3/4 block on 17,984 to 23,135, a 2/3 block
+on 23,136 to 28,895, a 1/2 block on 28,896 to 36,575, the padding on 36,576 to 40,959). Block b is the id b as uint32
+little-endian, then 472 payload bytes, byte j = j mod 256:
 
 ```
-block 0: 00 00 00 00 | 00 01 02 ... fe ff 00 01 ... d4
-block 1: 01 00 00 00 | 00 01 02 ... fe ff 00 01 ... d4
+block 0: 00 00 00 00 | 00 01 02 ... fe ff 00 01 ... d7
+block 1: 01 00 00 00 | 00 01 02 ... fe ff 00 01 ... d7
+...
+block 6: 06 00 00 00 | 00 01 02 ... fe ff 00 01 ... d7
 ```
 
-Bit strings are hex, four bits a digit, the first bit the most significant.
+Bit strings are hex, four bits a digit, the first bit the most significant. The 7/8 blocks:
 
-| | block 0 | block 1 |
-|---|---|---|
-| CRC-32 of bytes 0 to 472 | 0x9F59BCE3 | 0x90C7A3FE |
-| codeword bits 3776 to 3815 (last payload byte, CRC) | `d49f59bce3` | `d490c7a3fe` |
-| codeword bits 3816 to 3943 (parity p_0 to p_127) | `f12964f535a53be44d911dc9fec63e46` | `f12964f535a53be44d911dc9fec63e46` |
-| whitening under slots 0 to 127 (frame slots 5120b to 5120b + 127) | `00003e000ffc03e0f8ffffce000c1c03` | `79923e97abd8c5a180e323390e8831bf` |
-| slots 0 to 127 | `0e4d0c60972aa716b5f2c5ae81ddb6fb` | `73db2dd63b0e6957c5ac1b598d499bc7` |
-| slots 5088 to 5119 (the pilots), c = 0 | `a909ab10` | `8afe77aa` |
-| slots 5088 to 5119 (the pilots), c = 1 | `56f654ef` | `8afe77aa` |
-| slots 5088 to 5119 (the pilots), c = 2 | `a909ab10` | `75018855` |
-| slots 5088 to 5119 (the pilots), c = 3 | `56f654ef` | `75018855` |
+| | block 0 (7/8) | block 1 (7/8) | block 2 (7/8) | block 3 (7/8) |
+|---|---|---|---|---|
+| first frame slot | 0 | 4,496 | 8,992 | 13,488 |
+| CRC-32 of bytes 0 to 475 | 0x4AB56DA5 | 0x84A6ED54 | 0x0DE36A06 | 0xC3F0EAF7 |
+| codeword bits 3800 to 3839 (last payload byte, CRC) | `d74ab56da5` | `d784a6ed54` | `d70de36a06` | `d7c3f0eaf7` |
+| codeword bits 3840 to k - 1 | 128 zeros | 128 zeros | 128 zeros | 128 zeros |
+| codeword bits k to k + 127 (parity p_0 to p_127) | `e9266e19f9d8d7cc96857e9f8fc572c9` | `e6d991e606272833697a8160703a8d36` | `e9266e19f9d8d7cc96857e9f8fc57236` | `e6d991e606272833697a8160703a8dc9` |
+| whitening under its slots 0 to 127 (frame slots S_b to S_b + 127) | `00003e000ffc03e0f8ffffce000c1c03` | `602e8acbffa7681694d5881cc9170bd7` | `ab494584c3ea397d5a2dac3f3057b275` | `4531d3c6175609fb2e6d3dc7950a6a68` |
+| slots 0 to 127 | `76307924e151d57c8782f7c4e1adde13` | `161aedcf100bb682a3e8c01628a6c9c7` | `dd7d02a02c46efe92550a435d1f66065` | `3301b4c2f9fbd767195075cd74bbb878` |
+| the tail (the pilots), c = 0 | slots 4480 to 4495 `5a69` | slots 4480 to 4495 `6e57` | slots 4480 to 4495 `80c1` | slots 4480 to 4495 `bc79` |
+| the tail, c = 1 | `a596` | `6e57` | `7f3e` | `bc79` |
+| the tail, c = 2 | `5a69` | `91a8` | `80c1` | `4386` |
+| the tail, c = 3 | `a596` | `91a8` | `7f3e` | `4386` |
 
-So block 0's coefficients 0 and 1 are sent as (+, +), coefficient 2 as (-, -) and coefficient 3 as (-, +).
+The 3/4, 2/3 and 1/2 blocks:
 
-SHA-256 of block 0's whole codeword, 5088 bits packed most significant bit first (636 bytes):
-`87b5e63c8acf0fe177ea387a1025a751870eb920ae5b3386189af6d04c439b24` (block 1's
-`2062d9b51cdb95cb65ad91967073905b730a6e45029e6f323be8a7f0094b1fa4`). SHA-256 of the frame's 10,240 slots packed the
-same way (1280 bytes), c = 0: `ce4bbd787faaed53466ecabc2b53a065d5eb0fc9c89daa66627d8f442dd1f5d0`. At c = 1, 2 and 3
-(`f.setParity(c)` before the encode below; only the pilot slots of the blocks whose bit is 1 differ):
-`0553582180f06091f3eb3d13e4c2d28bcb8a9448082eded7cab060962c629d22`,
-`c59837299f58766bcfa9f91741738ed6406a0526e1eb8c96536194d70b1fd484`,
-`5b84bf5505e5252280d574772694bcf7d60787d4ccf96617077ee481cc5b3d10`.
+| | block 4 (3/4) | block 5 (2/3) | block 6 (1/2) |
+|---|---|---|---|
+| first frame slot | 17,984 | 23,136 | 28,896 |
+| CRC-32 of bytes 0 to 475 | 0xC41962E3 | 0x0A0AE212 | 0x834F6540 |
+| codeword bits 3800 to 3839 (last payload byte, CRC) | `d7c41962e3` | `d70a0ae212` | `d7834f6540` |
+| codeword bits 3840 to k - 1 | none | none | none |
+| codeword bits k to k + 127 (parity p_0 to p_127) | `8e1fee07a8f1080cfcaec24e3654b527` | `f19ae6dd86677815a1b9c7f83863c1ef` | `f284e220c7972b3c6a97444d895fdcc7` |
+| whitening under its slots 0 to 127 (frame slots S_b to S_b + 127) | `3866bc6962628a5c6783a12fef09a41c` | `a60df6cf665e475b2d587d0cafb932b1` | `3d4ee329250c1b091ef45580fdcb3e89` |
+| slots 0 to 127 | `0603a4229de65af270a8f2db1111d193` | `a90b8ae3e08dd639660698828a536799` | `060e92c7b025451292c7ec2e384e367b` |
+| the tail (the pilots), c = 0 | slots 5120 to 5151 `c22fe70f` | none | none |
+| the tail, c = 1 | `3dd018f0` | none | none |
+| the tail, c = 2 | `c22fe70f` | none | none |
+| the tail, c = 3 | `3dd018f0` | none | none |
+
+The padding's first 128 slots, frame slots 36,576 to 36,703, are the whitening there:
+`332c1ead5f960d5aaf4c1e8d9f9e7cd8`.
+
+SHA-256 of each whole codeword, packed most significant bit first (a 7/8 codeword's 4608 bits include the 128 never
+sent): block 0 (4608 bits) `a62fac54602b23b03e30eb47aaa7f8e983f7d19bc8c7e13713eba2640a23c088`, block 1 (4608 bits) `152ae7463835c31782ca4980d5c592c817b1b66a3a7b976c47fd0f5f436a6700`, block 2 (4608 bits) `602e5bbe31440df25be5562e371c15eb771046800dd05375348c84bf7b182e07`, block 3 (4608 bits) `3fda58ac7bd787b16da65e3da29ea12528f98a3a8bf41020f8fffd30517d95d4`, block 4 (5120 bits) `3be83a78fef345f13645e840469519501a7b01da4576f78d8a5b5713d7fd7035`, block 5 (5760 bits) `958111ce99624a166d811a1f75c056f3a09127a58238d7d84c3b4abe28886671`, block 6 (7680 bits) `2925aaea9a62cbe2c1b4b6c546071eaf2e96a5cd70b9edcb5e4de979155609b8`. SHA-256 of the frame's 40,960 slots
+packed the same way (5120 bytes), c = 0: `f0c188c164a38767e4ef8538f96bafb9ef6bda900ff3969571cb17839418c7ed`. At c = 1, 2 and 3 (`f.setParity(c)` before the encode below;
+only the pilot slots of the blocks whose bit is 1 differ):
+`e5bbfe8c31afa6ba38bfa27dbd3c621f1d51f8982f6be2db08dda65231b117b5`,
+`26d07dc9a5636e452679c3429d31b7ea3b7f0a11064dc5831dd5571552232ebe`,
+`1e08c661206a2133065b6637cd8a6df727c4d32256f35172274bd722f3a96712`.
 
 From `liblizard/`:
 
 ```js
 import { init, Focus } from "./sim/ob.mjs";
 await init();
-const f = new Focus(256, 16, 1);                         // LIZARD-16, rate 3/4, LINEAR
-const B = f.blockBytes, blocks = new Uint8Array(2 * B);  // B = 473
-for (let b = 0; b < 2; b++) { blocks[b * B] = b; for (let j = 0; j < 469; j++) blocks[b * B + 4 + j] = j & 255; }
+const f = new Focus(384, 64, 1);                         // LIZARD-64, LINEAR
+const B = f.blockBytes, blocks = new Uint8Array(7 * B);  // B = 476
+for (let b = 0; b < 7; b++) { blocks[b * B] = b; for (let j = 0; j < 472; j++) blocks[b * B + 4 + j] = j & 255; }
 f.measure(true); f.encode(blocks);
-const slot = Array.from(f.sent(), (s) => (s < 0 ? 1 : 0));   // 10240 slot bits, frame order
+const slot = Array.from(f.sent(), (s) => (s < 0 ? 1 : 0));   // 40960 slot bits, frame order
 ```
 
-The CRC is the wasm's `ob_test_crc_hash` and agrees with node's `zlib.crc32`; the codeword, parity and whitening rows
-were matched by a separate JavaScript implementation of this section and section 8.
+The CRC is the wasm's `ob_test_crc_hash` and agrees with node's `zlib.crc32`; the codewords, parity and whitening rows
+were made by a separate JavaScript implementation of this section and section 8 (`liblizard/gpu/back/bitmap.mjs`
+`encodeCodeword`, `perm`, `whiten`), whose slots equal the wasm's on every slot of the seven blocks.
 
 ### 7.5 The block id
 
@@ -1201,22 +1273,22 @@ little-endian (`xfer.h:xfer_id_get`):
   send any chunk as it is and MUST send a frame only where it is shorter; under codec 0 every chunk is sent as it is. A
   receiver MUST accept a stored chunk under either codec and MUST refuse a frame under codec 0. The length, root and
   chaining values are of the file's own bytes.
-- Chunk c has K = ceil(sent / 469) source blocks (`xfer_blocks`). With K >= 2 it is its own Wirehair fountain over its
-  sent bytes, the last block zero padded to 469. A chunk with K = 1 is not fountained: its sent bytes, zero padded to
-  469, go as symbol 0, repeated, and a receiver takes the first sent of them.
+- Chunk c has K = ceil(sent / 472) source blocks (`xfer_blocks`). With K >= 2 it is its own Wirehair fountain over its
+  sent bytes, the last block zero padded to 472. A chunk with K = 1 is not fountained: its sent bytes, zero padded to
+  472, go as symbol 0, repeated, and a receiver takes the first sent of them.
 - Wirehair's seed attempt (0 to 255) is chosen by the encoder; a decoder is built from the message length, the block
   size and that attempt. Every chunk's attempt travels in the manifest (7.8), a one-chunk file's in the header (7.7).
-- Header version 2 fixes the fountain (Wirehair V2, profile `WIREHAIR_V2_PROFILE_CERTIFIED_2026_07`, 469-byte blocks)
+- Header version 3 fixes the fountain (Wirehair V2, profile `WIREHAIR_V2_PROFILE_CERTIFIED_2026_07`, 472-byte blocks)
   and the codec (zstd frames). A change to any of them is a new version.
 
 ### 7.7 The header block
 
-Id 0xFFFC0000. Its 469 payload bytes, integers little-endian (`xfer.c` `xfer_header_write`, `xfer_header_parse`),
-version 2:
+Id 0xFFFC0000. Its 472 payload bytes, integers little-endian (`xfer.c` `xfer_header_write`, `xfer_header_parse`),
+version 3:
 
 | offset | bytes | field | value |
 |---|---|---|---|
-| 0 | 1 | version | 2 (`XFER_VERSION`) |
+| 0 | 1 | version | 3 (`XFER_VERSION`) |
 | 1 | 1 | hash | 1, BLAKE3 (`XFER_HASH_BLAKE3`); 0 and 2 to 255 are refused, the room for another hash |
 | 2 | 1 | chunk_log2 | k, 10 to 24 |
 | 3 | 1 | codec | 0, none (`XFER_CODEC_NONE`): every chunk sent as its bytes; 1, zstd (`XFER_CODEC_ZSTD`): a chunk sent shorter than its bytes is one zstd frame of them (7.6); 2 to 255 refused |
@@ -1230,26 +1302,27 @@ version 2:
 | 52 | 255 | name | the file name, UTF-8, zero padded; empty for none |
 | 307 | 158 | type | the media type, ASCII, zero padded; empty for none |
 | 465 | 4 | sent | the one chunk's bytes as sent (its frame, or its own), u32, 1 to its length; 0 when the file is not one chunk |
+| 469 | 3 | reserved | 0 |
 
-The fields fill the 469 bytes, and every byte a field does not use is zero. A receiver MUST refuse a header block that
-breaks this table. `xfer_header_parse` returns -2 (`XFER_ERR_VERSION`) for a version other than 2, -3
+The fields fill the 472 bytes, and every byte a field does not use is zero. A receiver MUST refuse a header block that
+breaks this table. `xfer_header_parse` returns -2 (`XFER_ERR_VERSION`) for a version other than 3, -3
 (`XFER_ERR_HASH`) for a hash other than 1, -4 (`XFER_ERR_CODEC`) for a codec other than 0 or 1, and -1 for: chunk_log2
 outside 10 to 24; chunks other than ceil(length / 2^k), past 16,383, or 0 for a file that is not empty; type_len over
-158; a nonzero byte 7, or a nonzero byte past name_len in the name or past type_len in the type; with one chunk, a
-sent of 0 or past the chunk's length, a sent under it with codec 0, or a nonzero seed with a sent of 469 bytes or less
+158; a nonzero byte 7 or 469 to 471, or a nonzero byte past name_len in the name or past type_len in the type; with one chunk, a
+sent of 0 or past the chunk's length, a sent under it with codec 0, or a nonzero seed with a sent of 472 bytes or less
 (`xfer_sent_ok`); with any other number of chunks, a nonzero sent or seed. The parse does not check that the name is
 UTF-8 or the type ASCII.
 
 ### 7.8 The manifest blocks
 
 A file of 2 chunks or more has ceil(chunks / 12) manifest blocks (`xfer_manifest_blocks`, 1 to 1,366); a file of one
-chunk or none has none. Manifest block m, id 0xFFFC0001 + m, 469 bytes:
+chunk or none has none. Manifest block m, id 0xFFFC0001 + m, 472 bytes:
 
 | offset | bytes | field |
 |---|---|---|
 | 0 | 8 | tag: the root's first 8 bytes |
 | 8 | 444 | the entries of chunks 12 m to 12 m + 11, 37 bytes each, in order; zero past the last chunk |
-| 452 | 17 | reserved, 0 |
+| 452 | 20 | reserved, 0 |
 
 An entry is the chunk's chaining value (32 bytes, 7.9), its bytes as sent (u32, little-endian) and its Wirehair seed
 attempt (1 byte, 0 where it is one block). A receiver MUST refuse a manifest block whose tag is not the first 8 bytes
@@ -1295,17 +1368,17 @@ chunk is verified, and an empty file until the root is BLAKE3 of the empty input
 **Files.** Each is BLAKE3's official test input, byte i = i mod 251, so each root is the official vector for its length
 (`liblizard/vendor/blake3/test_vectors/test_vectors.json`). Under codec 1 every 1 KiB chunk of that input compresses to
 a 271-byte frame, one block, unfountained; the two rows under codec 0 send the same files as they are, three blocks a
-chunk with seed attempt 2. Header version 2. Per chunk: its bytes, its bytes as sent, K and its seed attempt.
+chunk with seed attempt 1. Header version 3. Per chunk: its bytes, its bytes as sent, K and its seed attempt.
 
 | length | k | codec | chunks | first chunk | last chunk | manifest blocks | header bytes 0 to 19 |
 |---|---|---|---|---|---|---|---|
-| 0 | 22 | 1 | 0 | | | 0 | `02011601 00000000 00000000 00000000 00000000` |
-| 1025 | 11 | 1 | 1 | 1025, 271, 1, 0 | | 0 | `02010b01 00000000 01040000 00000000 01000000` |
-| 8193 | 10 | 1 | 9 | 1024, 271, 1, 0 | 1, 1, 1, 0 | 1 | `02010a01 00000000 01200000 00000000 09000000` |
-| 31744 | 10 | 1 | 31 | 1024, 271, 1, 0 | 1024, 271, 1, 0 | 3 | `02010a01 000a1800 007c0000 00000000 1f000000` |
-| 102400 | 10 | 1 | 100 | 1024, 271, 1, 0 | 1024, 271, 1, 0 | 9 | `02010a01 00000000 00900100 00000000 64000000` |
-| 1025 | 11 | 0 | 1 | 1025, 1025, 3, 2 | | 0 | `02010b00 02000000 01040000 00000000 01000000` |
-| 31744 | 10 | 0 | 31 | 1024, 1024, 3, 2 | 1024, 1024, 3, 2 | 3 | `02010a00 000a1800 007c0000 00000000 1f000000` |
+| 0 | 22 | 1 | 0 |  |  | 0 | `03011601 00000000 00000000 00000000 00000000` |
+| 1025 | 11 | 1 | 1 | 1025, 271, 1, 0 |  | 0 | `03010b01 00000000 01040000 00000000 01000000` |
+| 8193 | 10 | 1 | 9 | 1024, 271, 1, 0 | 1, 1, 1, 0 | 1 | `03010a01 00000000 01200000 00000000 09000000` |
+| 31744 | 10 | 1 | 31 | 1024, 271, 1, 0 | 1024, 271, 1, 0 | 3 | `03010a01 000a1800 007c0000 00000000 1f000000` |
+| 102400 | 10 | 1 | 100 | 1024, 271, 1, 0 | 1024, 271, 1, 0 | 9 | `03010a01 00000000 00900100 00000000 64000000` |
+| 1025 | 11 | 0 | 1 | 1025, 1025, 3, 1 |  | 0 | `03010b00 01000000 01040000 00000000 01000000` |
+| 31744 | 10 | 0 | 31 | 1024, 1024, 3, 1 | 1024, 1024, 3, 1 | 3 | `03010a00 000a1800 007c0000 00000000 1f000000` |
 
 Roots, bytes 20 to 51 of each header:
 
@@ -1320,16 +1393,16 @@ Roots, bytes 20 to 51 of each header:
 The 31,744-byte file is named `vector.bin` (10 bytes at 52, `766563746f722e62696e`, then 245 zero bytes) with type
 `application/octet-stream` (24 bytes at 307, then 134 zero bytes); the others have neither. Bytes 465 to 468, the one
 chunk's sent: `0f010000` (271) for 1,025 bytes under codec 1, `01040000` (1,025) under codec 0, zero in every other
-row. SHA-256 of each whole 469-byte header:
+row. SHA-256 of each whole 472-byte header:
 
 ```
-0               3cf38facead9e13b3b9818eee2069c3c14cfd0a55a2a82344133ae4fb9a81db4
-1025            8a57f03e55fd710bd493d5a6f1fa9d3458a911d8194f340be1e12452b190a941
-8193            81e4e71bc4e6034e59be3896e6ead03d2202e5aef6b9ffc385deb25c2df69ff0
-31744           546b119153a74764939a22ab5b0e35d2a77cae3426c90e9d25e2c075606e4dd5
-102400          ca763d22a3ebf289b461062e28a1d4593dabe6e05e842a4da9e4996f3f80ee09
-1025, codec 0   e7bd57580853ea8b6207d33468e526ffc635fb8dc6014e5bb6f631305d291e27
-31744, codec 0  eefee20ecfafc72f8c154ecd12e2c0a1505d64f05cb122de11ee19a6c5018a97
+0               7d037bf8c824ec661b7ab3eed17980fc7959e1ac6ea58d1301a4b254b966c643
+1025            6f50037377d51026bd7c9c9f0c18126da5a5960804d7dfabfce8366533521fc1
+8193            3d476678686d0801bb8c824bc7f119df020d991a58adc500b9f48382bd49740c
+31744           b3277c33e376caab1d7139234054c75202f4d5629a40a939882790e7cf7f1b03
+102400          770386a9351c12a9ee84a828a278cf309373de47c08b725473ce46576ebf998d
+1025, codec 0   1790552b5cf24bcec969613c8bc09e108474b8afc04eeee1a2a33d433084a34f
+31744, codec 0  8d57984a4009b87eefcff9e17452984448a1996ff70a4287cc14cde38ddb2b35
 ```
 
 Chaining values of 1 KiB chunks of this input:
@@ -1340,24 +1413,24 @@ chunk 30 of the 31,744-byte file                          a6b76fabdd73c356e0a57c
 chunk 8 of the 8,193-byte file, its one byte a0           0c89b23aaf0f396fe25995d42f7d6f3c7b1e18b59d9c778b06688325f44016de
 ```
 
-Manifest blocks, SHA-256 of each 469 bytes. Block 0 of the 31,744-byte file begins with the tag `62b6960e1a44bcc1`,
-then chunk 0's entry: its chaining value, sent `0f010000` and seed 0 under codec 1, sent `00040000` and seed 2 under
+Manifest blocks, SHA-256 of each 472 bytes. Block 0 of the 31,744-byte file begins with the tag `62b6960e1a44bcc1`,
+then chunk 0's entry: its chaining value, sent `0f010000` and seed 0 under codec 1, sent `00040000` and seed 1 under
 codec 0; its three blocks hold 12, 12 and 7 entries, the 102,400-byte file's nine 12 each but the last's 4.
 
 ```
-31744 m 0            62ce9f91d4b9cb6763c9540c37c0e2bcd33bb09a6427731acf80d20b391c0da6
-31744 m 1            68d121c3b60340ece781152965535bd1d557feb1a93fd22cac243128691dc616
-31744 m 2            1228754ba7562b9cd46d3d06374554bf300f4526dcd93b894e092f2c173be0de
-8193  m 0            d89af098949dbe13d1b6e7b16834100adf3fe4fe4e9ad565ad1ed56314230826
-102400 m 0           b269362930980a83cfe4148c36fc4acb625d17f603954a6fb269018288480e8e
-102400 m 8           523ae573a05805e8aa7ebe518e605f5a1cbb819e4367576cfbd8e64e665c8a21
-31744 m 0, codec 0   622b1095da8f8059b146706ebc17d6cc74bdd3742c5c8c24072145594d69989d
-31744 m 1, codec 0   db34b752b781674f1639b2279853127614420f4287dc62961d3a5e8ee2352c7e
-31744 m 2, codec 0   48fb5759408c0276086d0893b2a6a61c3fac33d8af542b9a8d66ebac9fcbb20a
+31744 m 0            c4ba4a2096a40df0468508c48f1e49a1e95990ff384389d2a2e86dccf2fda607
+31744 m 1            87ddd478798fe50c02d66396d0aff226af1d5b0d7002903bf9b07c03d486b131
+31744 m 2            bf0907c0dfeaeaa622f68550bdbc4e1ffd49ba8b41c36e9a2a2bc3573d02a3ec
+8193  m 0            f0d7b12dd3ca55ed55756b0242f47ef082f8f9bff1c94714922aeaf1bb28fb25
+102400 m 0           4b6a3983dc6b82a31debccc70f6eddec4119f456d8a0d0652bb0e4d8639b36c9
+102400 m 8           48f2fc154e3d7f893dacc1bc17d11e131cdd0e3fb999960c3759dc936dc5251f
+31744 m 0, codec 0   0f9591921d928d444453b54c9bb78e1bb6122881c583520a30f31fbd8d6a5943
+31744 m 1, codec 0   8e6cdc007900173aa3b6f78a98c0e075fdd9fce09f9db482f14d315c86798cb7
+31744 m 2, codec 0   2e652489193f3a4c1bd51e54406bf8b04d3c91bc9dfce02b6adcf7cb82c7b8cd
 ```
 
-**Refusals.** The 31,744-byte header with one field changed: version 1 gives -2; hash 0 or 2 gives -3; codec 2 gives
--4; chunk_log2 9 or 25, byte 7 set, a byte of the name's or the type's padding set, chunks one more, type_len 159, or
+**Refusals.** The 31,744-byte header with one field changed: version 2 gives -2; hash 0 or 2 gives -3; codec 2 gives
+-4; chunk_log2 9 or 25, byte 7 or a byte of 469 to 471 set, a byte of the name's or the type's padding set, chunks one more, type_len 159, or
 a nonzero sent gives -1. The 1,025-byte header under codec 0 with sent 300, or with sent 0, gives -1. Its last manifest
 block with a padding byte set, with its tag changed, with an entry's sent past its chunk's bytes, or with a seed on a
 chunk of one block, is refused.
@@ -1370,83 +1443,82 @@ vectors, whole and split into chunks of 2^10 to 2^17 bytes.
 Normative except 8.3 and 8.5. Sources: `ldpc_base.h`, `ldpc.h`, `ldpc.c` (`ldpc_init`, `ldpc_encode`), `focus.c:init`.
 
 A block's code is one of four quasi-cyclic irregular repeat-accumulate codes, H = [Hd | Hp], by its tier (3.1): rate
-7/8 (z = 93), 3/4 (z = 106), 2/3 (z = 120) and 1/2 (z = 160). Hd is built from z x z circulant permutation matrices; Hp
-is a bit-level accumulator (a staircase). 8.1 and 8.2 give the 3/4 code; 8.6 the other three, built and encoded the
-same way at their own sizes.
+7/8, 3/4, 2/3 and 1/2, every one lifted by z = 128, each over its own base graph. Hd is built from z x z circulant
+permutation matrices; Hp is a bit-level accumulator (a staircase). 8.1 and 8.2 give the 3/4 code; 8.6 the other three,
+built and encoded the same way at their own base graphs.
 
 ### 8.1 Parameters
 
 | | |
 |---|---|
-| codeword n | 5088 = 48 z |
-| information k | 3816 = 36 z |
-| parity bits and checks m | 1272 = 12 z |
-| lifting z | 106 = floor(5120 / 48) |
-| base graph | 12 block rows by 48 block columns: 36 data columns of circulants (Hd), then the 1272 parity bits as a staircase (Hp) |
-| data column degree | 12 for columns 0 to 6, 3 for columns 7 to 35 |
-| data circulants | 171, 14 in rows 0, 1, 3, 4, 5, 7, 9, 10, 11 and 15 in rows 2, 6, 8 |
-| check degree | 16 or 17: 14 or 15 data bits and 2 parity bits; check 0 has one fewer |
+| codeword n | 5120 = 40 z |
+| information k | 3840 = 30 z: the 3840 bits of 7.1 |
+| parity bits and checks m | 1280 = 10 z |
+| lifting z | 128 |
+| base graph | 10 block rows by 40 block columns: 30 data columns of circulants (Hd), then the 1280 parity bits as a staircase (Hp) |
+| data column degree | 10 for columns 0 to 5, 3 for columns 6 to 29 |
+| data circulants | 132, 14 in rows 0 and 2 and 13 in the other eight |
+| check degree | 15 or 16: 13 or 14 data bits and 2 parity bits; check 0 has one fewer |
 | parity bit degree | 2; the last parity bit has 1 |
-| edges | 20,669 |
+| edges | 19,455 |
 | cycles | none of length 4 |
-| H, FNV-1a over row pointers and column indices (`liblizard/test/ldpc_table.c`) | 5660f26d |
+| H, FNV-1a over row pointers and column indices (`liblizard/test/ldpc_table.c`) | 3f726d8e |
 
 ### 8.2 The parity-check matrix
 
-Codeword bit 106 j + t (j = 0 to 35, t = 0 to 105) is bit t of data column j; codeword bit 3816 + c is parity bit c
-(c = 0 to 1271). Every "mod" is the non-negative remainder. Checks are numbered c = 12 i + r, r (0 to 11) the block
-row and i (0 to 105) the position in it. Check c contains:
+Codeword bit 128 j + t (j = 0 to 29, t = 0 to 127) is bit t of data column j; codeword bit 3840 + c is parity bit c
+(c = 0 to 1279). Every "mod" is the non-negative remainder. Checks are numbered c = 10 i + r, r (0 to 9) the block
+row and i (0 to 127) the position in it. Check c contains:
 
-- for each data column j with a shift sh[r][j] in block row r: data bit 106 j + ((i - sh[r][j]) mod 106);
+- for each data column j with a shift sh[r][j] in block row r: data bit 128 j + ((i - sh[r][j]) mod 128);
 - parity bit c - 1, when c > 0;
 - parity bit c.
 
-So data bit t of column j is in check 12 ((t + sh[r][j]) mod 106) + r of every block row r where sh[r][j] exists, and
-Hp is the 1272 x 1272 matrix with ones on its diagonal and just below it. The interleaved check numbering is part of
-the code (numbered 106 r + i, a degree-3 column would form codewords of weight 5).
+So data bit t of column j is in check 10 ((t + sh[r][j]) mod 128) + r of every block row r where sh[r][j] exists, and
+Hp is the 1280 x 1280 matrix with ones on its diagonal and just below it. The interleaved check numbering is part of
+the code (numbered 128 r + i, a degree-3 column would form codewords of weight 5).
 
-**The shift table sh** (a dash: no circulant). This table is H: the reference ships it as `ldpc_base.h:LDPC_BASE`, 12
-rows of 36 shifts with -1 for a dash, and `ldpc_init` builds the code from it (`LDPC_BASE_Z`, `LDPC_BASE_RATE`,
-`LDPC_BASE_SEED`: z = 106, rate index 4, seed 1, as `focus.c:init` asks).
+**The shift table sh** (a dash: no circulant). This table is H: the reference ships it as `ldpc_base.h:LDPC_BASE34`, 10
+rows of 30 shifts with -1 for a dash (`LDPC_BASE34_RATE` = 4, the rate index; `LDPC_BASE_Z` = 128), and `ldpc_init`
+builds the code from it by its rate.
 
 ```
 r \ j   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17
-0      70  42  46 102  10  74  17   -   -   -   7  67   -   -   -   -  45   -
-1      31  79  45  79  37  85 104   -   -   -  24   -   -   3   -   -   -   -
-2      59   6  49  97  94  80 103   -   -  46   -   -   - 102   -   -  95   -
-3      63  96   3 104   7  49  37   -   -  20   -   -  51   -   -  55   -   -
-4      29  23 102  68   2  73  49  93   -   -   -   -   -  63   -   -   -   1
-5      86  71  81  59  10   7  42   -  15   -   -   -   -   -  84  89   -   -
-6       9  64  20  20  54  58  65   -   -   -  32  10   -   -   -   -  26   -
-7      28  36  52  55  46  18  16  53   -   -   -   -   -   -  93   -   - 105
-8       5 100  27  23  76  86  66   -   5   -   - 104   -   -   -   -   -   -
-9      77  98  97  76  13  83  77   -   -   6   -   -   1   -   -   6   -   -
-10     27  73  82  62  47  47   4   -  63   -   -   -   -   -  53   -   -   -
-11     19  94  32   3  11  44  50  77   -   -   -   -  66   -   -   -   -  95
+0      38  44  23 124  14  68   -  99   -   -   2   -   -   -  41   -   5   -
+1      24  97  74  61  42  65   -   -   5  38   -   -   -   -   -  88   -  46
+2      34  43  82  90 106  37   -   -  25   -   -   -  35   -   -  64   -   -
+3      76  29  45  64  61  98  74   -   -   -   -  57   -   -  70   -   -   -
+4     104  87  99 124  37  59   -   -   -  23 102   -   - 124   -   -  57   -
+5      11  34 109  53  60   1   -  12   -   -   - 123   -  43   -   -   -   -
+6       6  39  65  93  20  91   -  75   -   -   -  91   -   7   -   -   -  31
+7      24 120 116  62  15  56   -   -  35   -  96   -   -   -   -  52   -   -
+8      33 121  49  49  31  59  56   -   -  35   -   - 107   -   -   -  78   -
+9      93 105  97  64  41 101  87   -   -   -   -   -  64   - 110   -   -  32
 
-r \ j  18  19  20  21  22  23  24  25  26  27  28  29  30  31  32  33  34  35
-0       -   -   7   -   -   -  48   -   -   6   -   -   -   -   -  47   -   -
-1      94 101   -   -   -   -  66   -   -   -   -   -  80   -   -   -  49   -
-2       -   -   -   -  72   -   -   -   5  48   -   -   -   -   - 105   -  52
-3       -  82   -   -   -   -   -  25   -   -   -   -  86   -  79   -   -   -
-4       -   -  87   -   -   -   -   -  55   -   7   -   -  62   -   -   -   -
-5       -   -   -  71   -   -   -   -  72   -  13   -   -  28   -   -   -   -
-6       -  92   -   -   -   -   -  15   -   -   - 101   -   -   -   -  59  72
-7       -   -   -   -  96  14   -   -   - 101   -   -   -  83   -   -   -   -
-8      66   -   -   -  76   -   -  91   -   -  21   -   -   -  27   -   -  66
-9       -   -  32   -   -  23   -   -   -   -   -  47   -   -   -   -  54   -
-10     57   -   -  55   -   -  80   -   -   -   -   -  87   - 103   -   -   -
-11      -   -   -  77   -  81   -   -   -   -   -  14   -   -   -  85   -   -
+r \ j  18  19  20  21  22  23  24  25  26  27  28  29
+0       -  79   -   -   -   -   -  78   -   - 110  55
+1       -   -  65   -   - 104   -   -   -   -   -  23
+2      37   -   -  97   -   -  98   -  42   -   - 113
+3       - 105   -  17   -   -   -   0   - 111   -   -
+4       -   -   4   -   -   -  96   - 104   -   -   -
+5      50  77   -   -   -   0   -   -   -   -  50   -
+6       -   -   -  32  95   -   -   - 116   -   -   -
+7      89   -   -   - 127   -   -  13   -  26   -   -
+8       -   -   -   -  53  41   -   -   -   -  88   -
+9       -   -  34   -   -   -  35   -   -  17   -   -
 ```
 
 ### 8.3 How the tables were made (non-normative)
 
-The 3/4, 7/8 and 2/3 tables come from a search within the structure of `ldpc.c:ldpc_generate` (`scripts/exp/ldpc_opt.py`):
-every shift scored by the exact count of 4- and 6-cycles through the whole base matrix, the staircase included, and the
-degree profile chosen on the decoding threshold on BI-AWGN. The 1/2 table is `ldpc_generate`'s own output for z = 160,
-rate index 2, seed 1. The generator builds codes outside the format only; the printed tables are the format, and
-`liblizard/test/ldpc_table.c` holds each to its hash (8.1, 8.6) and `ldpc_init`'s block-row view to the table entry by
-entry.
+All four come from `scripts/exp/ldpc_opt.py` `generate(z, mb, kb, degrees(kb, heavy), seed, np)` at z = 128, which
+regenerates them exactly: 7/8 (5 block rows, 31 data columns, 5 of degree 5, seed 1, the first column never sent), 3/4
+(10, 30, 6 of degree 10, seed 2), 2/3 (15, 30, 7 of degree 11, seed 1), 1/2 (30, 30, 12 of degree 8, seed 1); the other
+data columns of degree 3. The columns are placed in order, each edge in the lightest block row, and every shift of 0 to
+z - 1 is scored by the exact count of 4- and 6-cycles through the whole base matrix, the staircase included. The heavy
+columns are the profiles of the codes before them (2026-10-08) scaled to these widths. Their 10% codeword-loss
+thresholds on BI-AWGN (QPSK Es/N0, the exact int8 decoder of 8.5 with no stop, 30 iterations): 6.023, 4.038, 3.005 and
+1.087 dB. The printed tables are the format, and `liblizard/test/ldpc_table.c` holds each to its hash (8.1, 8.6) and
+`ldpc_init`'s block-row view to the table entry by entry.
 
 ### 8.4 Encoding
 
@@ -1463,13 +1535,15 @@ as it likes. The reference (`focus.c` `focus_finish_ext`, `axis_info`, `map_in`;
 
 - **Per sub-channel**, over its 320 received coefficients y after the transform, detrend and pilot alignment: m2 and m4
   the means of |y|^2 and |y|^4; A2 = sqrt(max(0, 2 m2^2 - m4)), the signal power; N = max(m2 - A2, 0.02 m2); each
-  axis LLR = 0.7 x 2 sqrt(2 A2) / N x y_axis, clipped to [-10, 10] and stored as int8 = round(8 x LLR), ties to even.
+  axis LLR = 0.7 x 2 sqrt(2 A2) / N x y_axis, clipped to [-10, 10] and stored as int8 = round(8 x LLR), ties to even,
+  for every slot of the frame. A block reads its slots' values whatever sub-channels they fall in.
 - **Per block**, slot order to codeword order: L_code[np + (st i mod nt)] = L_slot[i] for i < nt, negated where
-  w[640 s_b + i] = 1; the tail dropped; the zero information bits past the CRC fed as certain zeros (+127), and at 7/8
-  the 93 bits never sent as 0 (nothing known).
+  w[S_b + i] = 1; the tail dropped; at 7/8 the 128 zero information bits past the CRC fed as certain zeros (+127) and
+  the 128 bits never sent as 0 (nothing known).
 - **Decline gate.** Each sub-channel's information per coded bit is J(2 sqrt(A2 / N)), with
-  J(sigma) = (1 - 2^(-0.3073 sigma^1.787))^1.1064; a block whose mean over its sub-channels is under 0.2 k / nt
-  (`FOCUS_DECLINE`: 0.175 at 7/8, 0.15 at 3/4, 0.133 at 2/3, 0.10 at 1/2) is not decoded.
+  J(sigma) = (1 - 2^(-0.3073 sigma^1.787))^1.1064; a block's estimate is the mean over its slots of their sub-channels'
+  information (each sub-channel weighted by the block's slots in it), and a block whose estimate is under 0.2 k / nt
+  (`FOCUS_DECLINE`: 0.177 at 7/8, 0.15 at 3/4, 0.133 at 2/3, 0.10 at 1/2) is not decoded.
 - **LDPC**, layered normalised min-sum: a layer is one block row (its z checks share no bit); int8 check-to-bit
   messages, int16 posteriors clamped to [-8191, 8191]; min1 and min2 scaled by 13/16 as (x x 13) >> 4; the sweep's
   direction alternates every iteration; check 0's missing parity bit fed as a certain 0; at most 30 iterations, stopping
@@ -1478,132 +1552,153 @@ as it likes. The reference (`focus.c` `focus_finish_ext`, `axis_info`, `map_in`;
 
 ### 8.6 The 7/8, 2/3 and 1/2 codes
 
-Each is H = [Hd | Hp] as in 8.2 at its own z: codeword bit z j + t (t = 0 to z - 1) is bit t of data column j,
-codeword bit k + c is parity bit c, and check c = mb i + r (r the block row, 0 to mb - 1, i the position, 0 to z - 1)
-holds data bit z j + ((i - sh[r][j]) mod z) for each shift of block row r, parity bit c - 1 when c > 0, and parity bit
-c. Encoding is 8.4's accumulator over the m checks.
+Each is H = [Hd | Hp] as in 8.2 over its own base graph at z = 128: codeword bit 128 j + t (t = 0 to 127) is bit t of
+data column j, codeword bit k + c is parity bit c, and check c = mb i + r (r the block row, 0 to mb - 1, i the position,
+0 to 127) holds data bit 128 j + ((i - sh[r][j]) mod 128) for each shift of block row r, parity bit c - 1 when c > 0,
+and parity bit c. Encoding is 8.4's accumulator over the m checks.
 
-The 7/8 code has a 49-column base graph whose data column 0 (codeword bits 0 to 92, the first 93 information bits:
-block bytes 0 to 10 and the five most significant bits of byte 11) is never sent. A block's 4464 slots carry codeword
-bits 93 to 4556 (7.3); a receiver feeds bits 0 to 92 as nothing known, and the code recovers them.
+The 7/8 code's data column 0 (codeword bits 0 to 127, the first 128 information bits: block bytes 0 to 15) is never
+sent. A block's 4480 code slots carry codeword bits 128 to 4607 (7.3); a receiver feeds bits 0 to 127 as nothing known,
+and the code recovers them.
 
 | | 7/8 | 2/3 | 1/2 |
 |---|---|---|---|
-| sub-channels a block, slots | 7, 4480 | 9, 5760 | 12, 7680 |
-| codeword n | 4557 = 49 z, of which 4464 = 48 z sent | 5760 = 48 z | 7680 = 48 z |
-| information k | 3906 = 42 z | 3840 = 32 z | 3840 = 24 z |
-| parity bits and checks m | 651 = 7 z | 1920 = 16 z | 3840 = 24 z |
-| lifting z | 93 | 120 | 160 |
-| base graph | 7 block rows, 42 data columns, column 0 never sent | 16 block rows, 32 data columns | 24 block rows, 24 data columns |
-| data column degree | 7 for column 0, 6 for columns 1 to 6, 3 for 7 to 41 | 11 for columns 0 to 6, 3 for 7 to 31 | 8 for columns 0 to 9, 3 for 10 to 23 |
-| data circulants | 148, 21 in rows 0, 1, 2, 3, 4, 6 and 22 in rows 5 | 152, 9 in rows 0, 2, 4, 6, 7, 11, 12, 13 and 10 in rows 1, 3, 5, 8, 9, 10, 14, 15 | 122, 5 in each block row but rows 4 and 20, which have 6 |
-| check degree | 23 or 24: 21 or 22 data bits and 2 parity bits (check 0 one fewer) | 11 or 12 (check 0 one fewer) | 7, 8 in block rows 4 and 20 (check 0 one fewer) |
-| edges | 15,065 | 22,079 | 27,199 |
-| cycles of length 4 | none | none | none |
-| H, FNV-1a over row pointers and column indices (`liblizard/test/ldpc_table.c`) | 25a3ab92 | 12dad7a2 | 83296c5e |
+| slots a block (sent bits, tail) | 4496 (4480, 16) | 5760 (5760, 0) | 7680 (7680, 0) |
+| codeword n | 4608 = 36 z, of which 4480 = 35 z sent | 5760 = 45 z | 7680 = 60 z |
+| information k | 3968 = 31 z | 3840 = 30 z | 3840 = 30 z |
+| parity bits and checks m | 640 = 5 z | 1920 = 15 z | 3840 = 30 z |
+| base graph | 5 block rows, 31 data columns, column 0 never sent | 15 block rows, 30 data columns | 30 block rows, 30 data columns |
+| data column degree | 5 for columns 0 to 4, 3 for 5 to 30 | 11 for columns 0 to 6, 3 for 7 to 29 | 8 for columns 0 to 11, 3 for 12 to 29 |
+| data circulants | 103, 21 in rows 0, 1, 3 and 20 in rows 2, 4 | 146, 10 in rows 0, 3, 4, 6 to 12, 14 and 9 in rows 1, 2, 5, 13 | 150, 5 in every block row |
+| check degree | 22 or 23: 20 or 21 data bits and 2 parity bits (check 0 one fewer) | 11 or 12 (check 0 one fewer) | 7 (check 0 one fewer) |
+| edges | 14,463 | 22,527 | 26,879 |
+| H, FNV-1a over row pointers and column indices (`liblizard/test/ldpc_table.c`) | 6f67223a | 27d3a72e | 721499de |
 
 The reference ships them as `ldpc_base.h:LDPC_BASE78` (`LDPC_BASE78_NP` = 1, the columns never sent), `LDPC_BASE23` and
-`LDPC_BASE12`, from which `ldpc_init` builds the codes.
+`LDPC_BASE12`, from which `ldpc_init` builds the codes by their rates.
 
 **The 7/8 shift table** (a dash: no circulant):
 
 ```
 r \ j   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17
-0      13  79  28  48   -   4  46   -   0   -  13  59   -   -   -  60   -  84
-1      29   -  30  45  63  90  57   -  73   -   -  76   -   7  13   -   -  43
-2      25  60  50   0  61   -   4   5   -  78   -   -  32   -   -  25   -   -
-3      47   7  76  16   3  64   -  62   -   -   2   -  65   -   -   4   -  90
-4      38  74  31   -  10  53  56   -  19  50   -   -   -   3  80   -  23   -
-5      88  23   -  18  69  33  87  63   -  65   -  47   -   -  63   -  40   -
-6      87  80   8   5  22  81  67   -   -   -  70   -  17  38   -   -  50   -
+0      18  83   3  51  98   -  59 124  43   -   -   7  91   -  15   -  65 108
+1      31 111  59  16  25   -  37  56   - 108   -  42 110   -  63   -  24  24
+2      65  35  43 126  34  14   -  20  59   -   5   -   - 107  96  82   -  25
+3     120  69  63  15  53   3   -   -  37 105  70 118   -  88   -  57   -   -
+4     121  29  94  39  26  99  39   -   -  46  54   -  27  73   -   8  56   -
 
-r \ j  18  19  20  21  22  23  24  25  26  27  28  29  30  31  32  33  34  35
-0       -   3   -   -  84   -  63  39   -   -   -  78   -   -  60  80   -  15
-1       -   -  53  10   -  84   -   -   4   -  52   -   -   2  55   -   -   -
-2      74  27   -  65   -   -  16   -   -  23  61   -  43   -   -  73   -   -
-3       -   -  68   -  78   7   -   -  49   -   -  24   -  81   -   -  31  81
-4       -  82  64   -   -   -   -  81   -  29  37   -   9   -  10   -   -   -
-5      74   -   -   -  88   -  76  11   -  51   -   -  90   -   -   -  82  63
-6      88   -   -   2   -   6   -   -  42   -   -  57   -  45   -  80   8   -
-
-r \ j  36  37  38  39  40  41
-0       -  84   -  34   -   -
-1      12  28   -   -  39   -
-2       3   -  91  89   -   -
-3       -  34   -   -   -  54
-4       7   -   -  11  37   -
-5       -   -  69   -  74  62
-6       -   -  70   -   -  25
+r \ j  18  19  20  21  22  23  24  25  26  27  28  29  30
+0       -  60 102  29   - 102   -  83   - 121   -  57  72
+1       -  45   - 106  88   -  97   - 111 113   -  66  92
+2      25   -   - 120   - 123 114 114  47   -  60   -   -
+3      85  14  67   -  95   -  65   - 121   -  31 106 105
+4      95   -   0   - 107   3   - 110   -   9  18   -   -
 ```
 
 **The 2/3 shift table**:
 
 ```
 r \ j   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17
-0      17   -  45   -  84  30 114   -  58   -   -   -   -   -   -   -  87   -
-1       3  45   -  74   -  55   -  96   -   -   -  89   -   -   -   -  57   -
-2       -  36  89  18  63   -  57   -   -   - 106   -   -   -   -   -   - 106
-3      37  59  16   -  53  42   -   -   -   -  81   -   -   -   -  71   -   -
-4      99   2   -   -  97  26  49   -   -   -   -   -  17   -   -   -   -  70
-5      48 116   -  69   -  67  93   -   -   -   -   -  15   -   -   -  78   -
-6       -  94  59   6   -   9  94   -   -   -   -   -  89   -  33   -   -   -
-7      61 108   -  74   -  27   -  72   -   -   -   -   -  82   0   -   -   -
-8       -  14 113  91 116   -   -  50   -  27   -   -   -  43   -   -   -   -
-9       -  39  62  81 100   - 116   -   -   - 103   -   -   -   -  12   -   -
-10     65   -  13   -  59 102   6   -   -   -   -  37   -   -  34   -   -   -
-11      -  64  35 115  98   -  49   -  59   -   -   -   -   -   -   -   -   -
-12    114   -  54  61   0  79   -   -   -  55   -   -   -  21   -   -   -   -
-13    112   -  11 104  20   - 118   -   -   2   -   -   -   -   -  15   -   -
-14     50   8   -  43   -  42   2   -  90   -   -   -   -   -   -   -   -   -
-15     90   -  86   -  31  93  93   -   -   -   -  65   -   -   -   -   - 104
+0      18   -  87  73  47  77  10   -   -   -   -   -   -  80   -   -  53   -
+1       3  45   -   4  93 105   -   -  44   -   -   -  26   -   -   -   -   -
+2       - 100 119  69   -  62 108   -   -   -  81   -   -   -  40   -   -  77
+3      39  65  19   -  46   6   -   -   -   -   -  27   -   -  71   -   -   -
+4     106  14 120   -   -  21  59   -   -   -  34   -   -   -   -  35   -   -
+5      52   3  60   -   -  88  94  39   -   -   -   8   -   -   -   -   -   -
+6       -  15  63  70 125   -  34   -   -   -  85   -  16   -   -   -   -   -
+7      65 124   -   6  79  50   -  44   -   -   -   -   -   -  60   -   -  83
+8       -  41  37  79  74   -  75   - 114   -   -   -   -   -   -  70   -   -
+9      70 116   -  99 106   -  32   -   -  43   -   -   -  48   -   -   -   -
+10      -  68  16   - 102  63  45   -  75   -   -   -   -  40   -   -  65   -
+11    121   -  19 105  14   - 125   -   -  24   -   - 105   -   -   -   -   -
+12    120   -  10 116  73 127   -  95   -   -   -   -   -   -   -  84   -   -
+13     53   9   -  60  22   1 107   -   -   -   - 113   -   -   -   -   - 118
+14     96   -  93  50   -  45  77   -   - 121   -   -   -   -   -   -  81   -
 
-r \ j  18  19  20  21  22  23  24  25  26  27  28  29  30  31
-0       -   -  89   -   -   -   -  13   -   -   -   -   -   -
-1       -   -   -   2   -   -   -  24   -   -   -   -  38   -
-2       -  90   -   -   -   -   -   -   - 107   -   -   -   -
-3       -   -   -   -   - 101  84   -   -   -   -   -   -  10
-4       -  51   -   -   -   -   -   -  28   -   -   -   -   -
-5       -   -  37   -   -   -   -   -   -   -  94   -  60   -
-6       -   -  92   -   -   -   -   -   -   -   -  40   -   -
-7     110   -   -   -   -   -   -   -  34   -   -   -   -   -
-8       -   -   -   -   -  26  56   -   -   -   -   -   5   -
-9       -   -   -   -   8   -   -  44   -   -   -   -   -  25
-10      -   -   -   -  75   -   -   -   -   -  93   4   -   -
-11     41   -   -  97   -   -  87   -   -   -   -   -   -   -
-12      -   -   -  20   -   -   -   -   -   -  95   -   -   -
-13      -   -   -   - 100   -   -   -  27   -   -   -   -   -
-14    106   -   -   -   -  66   -   -   - 109   - 114   -   -
-15      -   7   -   -   -   -   -   -   -  69   -   -   -  36
+r \ j  18  19  20  21  22  23  24  25  26  27  28  29
+0       -   -   -   -   -   -   -  78  33   -   -   -
+1     103   -   -   -  21   -   -   -   -   -   -   -
+2       -   -   -   -   -   -   -   -  47   -   -   -
+3       -   -  31 119   -   -   -   -  19   -   -   -
+4       -   -  21   -   -   -   -  46   -  30   -   -
+5      80   -   -   -   -  66   -   -   -   -   -   -
+6      28   -   -   -   3   -   -   -   -   - 117   -
+7       -   -   -   -   -  61   -   -   -  36   -   -
+8       -   -   4   -   -   -  66   -   -   -   -  91
+9       - 121   -   -   -  69   -   -   -   -   -  42
+10      -   -   -  86   -   -   -   -   -   -  19   -
+11      -   -   - 114  99   -   -   -   -  14   -   -
+12      -  13   -   -   -   -  58   -   -   -   -  20
+13      -   -   -   -   -   -   -  50   -   -   -   -
+14      -  69   -   -   -   -  81   -   -   - 108   -
 ```
 
 **The 1/2 shift table**:
 
 ```
-r \ j   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17  18  19  20  21  22  23
-0       -   - 126   -  13   -   -   -  99  31   -   -   -   -   -   -   - 148   -   -   -   -   -   -
-1       - 125   -   -   -  26 155   -   -  57   -   -   -   -   -   -   -   -  58   -   -   -   -   -
-2       -   -  31   -   -  10   -  26   -   -   -   -   -  27   -   -   -   -   -   -   -  67   -   -
-3       -   - 125   -   - 108   - 102   -   -  33   -   -   -   -  17   -   -   -   -   -   -   -   -
-4     138   -   - 142   -   - 108   -   -   -   - 144   -   -   -   -   -   -  70   -   -   -   - 133
-5      70   -   - 136   -   -   -   -  48   -   -   -  14   -   -   -   -   -  15   -   -   -   -   -
-6       -   -  83   - 124   -   -  97   - 136   -   -   -   -   -   -   -   -   -   -   -  52   -   -
-7     128   -   -  23   -   -  50   -   -   -   -  37   -   -   -   -   -   -   -   -   -   -  44   -
-8       - 131   -  71   -   -  93   -   -  62   -   -   -   -   -   -   -  64   -   -   -   -   -   -
-9     110   -   -   -  20   -   -   - 140   -   -   - 115   -   -   -  93   -   -   -   -   -   -   -
-10      -   -  15   -   -  93 112   -   -   -   -  12   -   -   -   -  42   -   -   -   -   -   -   -
-11      - 106   -  80   -   -   -  47   -   -  65   -   -   -   -   -   -  35   -   -   -   -   -   -
-12      -   - 150   -   - 122   -   -  15  96   -   -   -   -   -   -   -   -   -  67   -   -   -   -
-13     55   -   -   - 110   -   -   -  63   -   -   -   - 142   -   -   -   -   -   -   -   -  21   -
-14     85   -   -   -  69   -   -   - 157  15   -   -   -   -   -   -   -   -   -   - 121   -   -   -
-15      -   -   8   -   -  74  44   -   -   -   -   -   -   -   -  43 140   -   -   -   -   -   -   -
-16      - 124   -   - 127   -   - 120   -   -   -   -   -   -  90 142   -   -   -   -   -   -   -   -
-17      -  19   -   -   - 129   -   -   2 123   -   -   -   -   -   -   -   -   -   -   -  88   -   -
-18      -  89   -   -  27   - 107   -   -  23   -   -   -   -   -   -   -   -   -   -   -   -   -  19
-19      - 136   -   2   -   -   - 123   -   -   -   -   -   - 107   -   -   -   -   -   -   -  82   -
-20     10   -   -  93   -   - 134   -   -   -   -   -   -  69   -   -   -   -   -   - 120   -   - 104
-21    159   -   -  99   -   -   - 109   -   -   -   - 131   -   -   -   -   -   -  36   -   -   -   -
-22      - 108   -   -   - 135   - 145   -   -  41   -   -   -   -   -   -   -   -   -  48   -   -   -
-23      -   -   7   - 105   -   -   -  72   -   -   -   -   - 158   -   -   -   - 107   -   -   -   -
+r \ j   0   1   2   3   4   5   6   7   8   9  10  11  12  13  14  15  16  17
+0      18   -   -   -  93   -   -   -   -  61   -  87   -   -   -   -   -   -
+1       -   -  96   -   -   -  62   -   -   -  84   -   -   -   -   -   - 113
+2       -   3   -   -   -  58   -   -   -   -   -  21   -   -   -   -   -   -
+3       -  39   -   -  54   -   -   -   -   -   6   -  45   -   -   -   -   -
+4       -  59   -   -   -   -  69   -   -   -  32   -   -   -   -   -  96   -
+5       -   -  35   -   -   -  72   -   -   - 113  74   -   -   -   -   -   -
+6      52   -   -   -   -   -   -  28  92   -   -   -   -   -   -   -   -  18
+7      39   -   -   -   -  44   -   -   - 114   -   -   -   -   - 124   -   -
+8     106   -   -   -   -   -   - 112   - 118   -   -  70   -   -   -   -   -
+9       -   - 125   -   -   -   - 107   -  84   -   4   -   -   -   -   -   -
+10      -   -   -  92   - 124   -   -   -   -   -  18   -   -   -   -   -  36
+11      -   -  51   -  43   -   -  60   -   -   -   -   -   -   -   -   -   -
+12      - 100   -  36   -   -   -   - 105   -   -  98   -   -   -   -   -   -
+13      -   -   -  41   -  88   -   -  28   -   -   -   -   2   -   -   -   -
+14     65   -   -   - 111   -   -   -   -  72   -  64   -   -   -   -   -   -
+15      -   -  33   -   -   -  45   -   -   - 101   -  77   -   -   -   -   -
+16      -   -  62   -   - 103   -   -   -   -  98   -   -   - 113   -   -   -
+17      -   -   -  69  97   -   -   -   -   - 102   -   -   -   -   - 111   -
+18      -   -   -  20  57   -   -   -   -  53   -   -   -   -   -   -   -   -
+19      -  70   -   -   -   -  96  32   -   -   -   -   -   -   -  10   -   -
+20      -   -   - 123   -  97   -   -  81   -   -   -   -   -  20   -   -   -
+21      -  41   -   -   -   - 112   -   -   -  24  96   -   -   -   -   -   -
+22    121   -   -   -   -   -   6   -   -   4   -   -   -  98   -   -   -   -
+23      -  68   -   -  45   -   -   -  98   -   -   -   -   -   -   -   -   -
+24      -   -  26   -   -  73   -  82   -   -   -   -   -  63   -   -   -   -
+25    121   -   -   -   -  27   -   -  20   -   -   -   -   -   -   -   -   -
+26     53   -   -   -   -   -   9   -   - 109   -   -   -   -   -  34   -   -
+27      -  96   -   -  51   -   -   1   -   -   -   -   -   -  36   -   -   -
+28      -   -   -  35   -   -   -  85 118   -   -   -   -   -   -   -   -   -
+29      -   -  17  54   -   -   -   -  34   -   -   -   -   -   -   -   8   -
+
+r \ j  18  19  20  21  22  23  24  25  26  27  28  29
+0       -   -   -   -   -  26   -   -   -   -   -   -
+1       -   -   -   -   -   -   -   -   -  58   -   -
+2       -  16   -   -   -   -   -   -   -   -   - 100
+3       -   -   -   -  12   -   -   -   -   -   -   -
+4       -   -   -   -   -   - 125   -   -   -   -   -
+5       -   -   -   -   -  34   -   -   -   -   -   -
+6       -   -  69   -   -   -   -   -   -   -   -   -
+7       -   -   -   -  57   -   -   -   -   -   -   -
+8       -   -   -   -   -   -   -  99   -   -   -   -
+9       -   -   -   -   -   -   -   -   -   -  14   -
+10      -   -   -   -   -   -   -   - 117   -   -   -
+11    117   -   -   -   -   -   -   -   -  64   -   -
+12      -   -   -   -   -  36   -   -   -   -   -   -
+13      -   -   - 107   -   -   -   -   -   -   -   -
+14      -   -  85   -   -   -   -   -   -   -   -   -
+15      -   -   -   -   -   -   -   -   -   -   - 110
+16      -   -   -   -   -   -   -   -   -   8   -   -
+17      -   -  55   -   -   -   -   -   -   -   -   -
+18      -   8   -  44   -   -   -   -   -   -   -   -
+19      -   -   -   -  48   -   -   -   -   -   -   -
+20      -   -   -   -   -   -   -   -   -   -  27   -
+21      -   -   -   -   -   -   -   -  76   -   -   -
+22      -   -   -  92   -   -   -   -   -   -   -   -
+23     99   -   -   -   -   -   -  97   -   -   -   -
+24      -   -   -   -   -   -  40   -   -   -   -   -
+25     23   -   -   -   -   -   -   -   -   -   -  35
+26      -   -   -   -   -   -   -   -   -   -  67   -
+27      -   -   -   -   -   -   -  99   -   -   -   -
+28      -  55   -   -   -   -  74   -   -   -   -   -
+29      -   -   -   -   -   -   -   -  86   -   -   -
 ```
 
 ## 9. Animation and transport (non-normative)
@@ -1630,7 +1725,7 @@ transfer's layout in the blocks (7.5 to 7.9).
   - Chunks of 4 MiB (k = 22) unless set otherwise.
 - **The test stream.** Block b of a frame carries id base + b, base a counter that starts at a random id under 2^30 at
   each start and advances by the frame's blocks after each frame; no id repeats.
-- **A change of format** keeps the 469-byte payload, so the fountain is unaffected; the test stream's counter keeps
+- **A change of format** keeps the 472-byte payload, so the fountain is unaffected; the test stream's counter keeps
   counting.
 - A receiver counts a data block as new once per id; control blocks are handed on every time (7.5).
 
@@ -1638,11 +1733,11 @@ transfer's layout in the blocks (7.5 to 7.9).
 
 The sender paints at a period of 1000 / fps ms and states fps in the word (5.1). fps may change between any two frames
 (only the word's cells change). A receiver uses it to judge its capture rate against the display. The ceiling is
-469 B(V) fps bytes a second: LIZARD-512 at 24 fps, 62 x 469 x 24 = 697,872 B/s.
+472 B(V) fps bytes a second: LIZARD-512 at 24 fps, 61 x 472 x 24 = 691,008 B/s.
 
 ### 9.3 The test stream
 
-In a test transfer, block id i carries the first 469 bytes of SHAKE256 (FIPS 202) of i as four little-endian bytes
+In a test transfer, block id i carries the first 472 bytes of SHAKE256 (FIPS 202) of i as four little-endian bytes
 (`shake.c:stream_fill`). The first 16 bytes of output:
 
 | id | SHAKE256(LE32(id)), first 16 bytes |
@@ -1652,11 +1747,11 @@ In a test transfer, block id i carries the first 469 bytes of SHAKE256 (FIPS 202
 | 12345 | `08781f021b171adcc9fd8886013dffc2` |
 | 4294967295 | `8c82cb0926f0275dc7650c348eae46b2` |
 
-Id 0's 469 bytes end in `2149dd1e8e99a4fc`.
+Id 0's 472 bytes end in `1e8e99a4fc614f4e`.
 
 A receiver told nothing judges a test frame from the light: a sender paints the test stream or a file, never both in
 one frame, so a frame is the test stream's when one of its CRC-verified data blocks carries its id's SHAKE256 (a
-file's block does so with probability 2^-3752). Every other verified data block of that frame that does not is
+file's block does so with probability 2^-3776). Every other verified data block of that frame that does not is
 counted bad and dropped; a test frame's blocks go to no transfer (`liblizard/sim/phy.mjs:blockJudge`).
 
 ### 9.4 The fountain: Wirehair as the project uses it
@@ -1664,7 +1759,7 @@ counted bad and dropped; a test frame's blocks go to no transfer (`liblizard/sim
 - Wirehair V2 (`liblizard/vendor/wirehair`, through `liblizard/wirehair/shim.cpp`), the profile pinned to
   `WIREHAIR_V2_PROFILE_CERTIFIED_2026_07`; the shim refuses any other, since two profiles disagree about the equations
   silently.
-- Block size 469 bytes; a message spans 2 to 64,000 blocks. A chunk is at most 16 MiB (35,773 blocks), and a chunk of
+- Block size 472 bytes; a message spans 2 to 64,000 blocks. A chunk is at most 16 MiB (35,545 blocks), and a chunk of
   one block is not fountained (7.6).
 - In a chunk of K blocks, symbols 0 to K - 1 are its blocks verbatim, the last zero padded on the wire and trimmed
   before the decoder takes it; symbols from K up are repair blocks; a duplicate is idempotent. Enough distinct symbols
@@ -1718,12 +1813,12 @@ frame (`focus.c:focus_decode`, `focus_acquire` then `focus_finish`):
 3. **Find** (`acquire.c:find_frame`): corner marks scanned in the image in their gapped and merged forms (4.5), quads
    from their agreement, each scored by reading the timing track against its local levels in every ring's layout under
    the rotations and mirror images; a rotation holds at 0.15. Failing that, the border's lines are fitted and scored the
-   same way, then crops round each mark seen.
-4. **Register** (`acquire.c:acquire_core`): a homography from the quad with its corner nodes refined; the anchors
-   (6.13) found by the pattern's normalised correlation, accepted at 0.6, held to a robust rule, and used where 12 or
-   more remain; the border nodes refined against the painted border (4.10) and smoothed along each side; the interior
-   from the border (and the anchors) as a homography's first-order change plus radial terms about the camera's axis,
-   their count chosen by AICc, then a Coons patch and, with the anchors, a cubic mesh.
+   same way.
+4. **Register** (`acquire.c:acquire_core`): a homography from the quad with its corner nodes refined; the anchors (6.13)
+   found by the pattern's normalised correlation, accepted at 0.6, held to a robust rule, and used where 12 or more
+   remain; the border nodes refined against the painted border (4.10); the interior from the border (and the anchors) as
+   a homography's first-order change plus radial terms about the camera's axis, their count chosen by AICc, then a Coons
+   patch and, with the anchors, a cubic mesh.
 5. **Format word** (5.4) in the ring that registered; the blind receiver hands the registration over to the picture
    the word names, or the held one (5.5).
 6. **Sample** the n x n picture at 6.9's points through the registration (`acquire.c:ob_sample_grid`).
@@ -1738,13 +1833,13 @@ so another front or back half is held to the C's acceptance rules.
 
 ### 10.2 The GPU decoder (`liblizard/gpu/`)
 
-A second decoder designed for a GPU: WGSL with a JavaScript host for its setup, compiled through naga to SPIR-V and run
-natively on Vulkan by `liblizard/core/` in the Android and desktop apps. A batch of frames is one submission: learned
+A second decoder designed for a GPU: GLSL generated by a JavaScript host for its setup, compiled through glslang to
+SPIR-V and run natively on Vulkan by `liblizard/core/` in the Android and desktop apps. A batch of frames is one submission: learned
 nets find the corner marks, the timing track scores every quad, orientation and ring, the border nodes are refitted,
 the anchors are found and steer the map, the word is read (F8, by ordered statistics over the ring's code with a
 side-aware gate held to the C's false-word rate), and a back half does the sampling, transform, detrend, pilot
-alignment, soft values, decline gate, LDPC (its stop a small learned net a code) and CRC-32 for every tier of the
-profile. It is judged on CRC-verified blocks, throughput and a negative control, never on parity with the C.
+alignment, soft values, decline gate, LDPC (its stop a small learned net a code, a z = 128 code a 128-lane workgroup)
+and CRC-32 for every tier of the profile. It is judged on CRC-verified blocks, throughput and a negative control, never on parity with the C.
 `liblizard/gpu/README.md` has its stages.
 
 ## 11. Measured facts (non-normative)
@@ -1762,16 +1857,19 @@ one phone, 2:1, the 256 ring).
 | QPSK on every tier; no 16-QAM or other constellation | the capture's distortion floor; denser constellations cost more decoding than they carry |
 | Soft LDPC for the payload, Reed-Solomon only for the word | LDPC uses the grey values; RS suits a small fixed field read with erasures |
 | The rate profile, not one rate | a capture's signal-to-noise ratio falls with the frequency |
+| The profile's targets 39 / 15 / 20% of the slots at 7/8, 2/3 and 1/2 | the split the profile had over the sub-channels, as shares of the slots. Live, on one phone's 2:1 captures of LIZARD-656 in the 256 ring, it read above 4.3 MB/s, where the split searched for these codes on re-modulated recorded captures (27.8 / 16.5 / 32.9%) read at most 4.03 MB/s and 89.8% of its blocks (the codes before at their split: 4.26 MB/s, 95.1%) |
+| Every code at z = 128, each its own base graph; the block 476 bytes | a z that fills 64-lane waves and 128-lane workgroups: on recorded captures re-modulated under the codes (the integrated GPU, the learned stops on) 6 to 7% more blocks per GPU millisecond than the codes before (z 93, 106, 120, 160) at the same split, 9 to 10% on the same captures 1 dB worse; block lengths from half to twice 473 bytes moved that by a few percent at most. 476 bytes and the CRC-32 fill the 3/4, 2/3 and 1/2 codes' k: no information bit there is a known zero |
+| Blocks packed by slots, the remainder padded | whole sub-channels a block would fix each code's length to a multiple of 640 slots; the padding is under 2% of a frame from LIZARD-320 up |
 | H a printed table, not a construction | a construction would let a change of seed or score move the format silently |
 | No 5G NR tables, no polar codes | patents; the 7/8 code borrows only the idea of a column never sent |
 | Three rings, any ring for any picture, version decoupled from size | the ring is the sync layer chosen for the room, the word says what is inside |
 | No retry at the other rings when a word fails | a frame whose word fails has failed throughout |
-| Picture sizes 2^k and 3 x 2^k | no step more than 1.5 times the samples; radix 2 plus one radix-3 stage |
+| Picture sizes 256, 384, 512, 768, 1024, 1152, 1280, 1536 | no step more than 1.5 times the samples; 1152 and 1280 cut the samples a sender paints and the C reads by 0.56 and 0.69 for the formats between 1024 and 1536; radix 2 with radix-3 and radix-5 stages |
 | Whole pixels a module, the picture resampled to fill its span | no dead light between border and picture; a copy where pxm = scale |
 | Four corner marks, gapped; no QR finders, centre or edge marks, filled marks | four measured corners carry perspective; the others lost on the finder or cut into the picture |
 | 2 x 2 band cells | a coarser band did not help the mesh |
 | The margin is the codec's; no guard ring | the finder needs light outside the ring; a further ring bought nothing |
-| One block a frame is not a format | no diversity, and one pilot parity alone |
+| Versions of 16 sub-channels, 4 to 64; LIZARD-64 the smallest format | a format at the ladder's foot that fails the pilots' checks leaves it: LIZARD-16 (one 7/8 and one 3/4 block), then LIZARD-32 and -48, whose odd blocks' pilots are one 7/8 block's 8 coefficients (on captures mixed with a neighbour up to 0.13 past the pilots' model, 0.82 and 0.84 on clean ones); a frame of one block has no diversity and one pilot parity alone; 61 of the version byte's 256 values a format (5.4) |
 | LINEAR the only bit map, whitened | whitening breaks up payload runs; LINEAR spreads every run of the code over the block |
 | Pilots in every format; no more of them | the tails are free; more pilots would come out of the code and not remove a mix |
 | Anchors in every symbol, unsignalled | the border cannot see a lens's bend inside the picture |
@@ -1803,7 +1901,12 @@ Numbers are kept so references hold; closed items are gone.
 - **Item 23.** The GPU decoder on other phones' GPUs.
 - **Item 24.** A recording with a noisy surround.
 - **Item 26.** The transfer on a phone: OPFS in other browsers, and the sender's memory (about 1.75 times the file).
-- **Item 27.** The rate profile beyond one phone at 1080, at 720p and at range.
+- **Item 27.** The rate profile beyond one phone at 1080, at 720p and at range; its targets are the sub-channel split
+  carried to the slots, read live at LIZARD-656 in the 256 ring on one phone and one monitor, and need paired live runs.
+- **Item 28.** The pilots' readings: LIZARD-64's r2 rests on two 7/8 blocks' 16 coefficients and passes the
+  reference's check (`scripts/exp/pilot_check.mjs`, `liblizard/test/pilot_wasm.mjs`); LIZARD-288's r2 read by the GPU
+  decoder on clean captures of one paint, 0.83 to 0.86, is under the check's 0.9 where the C's is not. Whether the
+  256 picture, which no format has since LIZARD-32 left, stays in the ladder of picture sizes (3.2).
 
 ## 14. Changes
 

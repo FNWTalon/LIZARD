@@ -19,8 +19,7 @@
 // ai: All pages: no horizontal scroll, Settings (#dev) closed on a fresh profile and remembered over a reload, a menu's
 // ai: setting kept over a reload with a URL preset winning its own load (the sender's ring, the receiver's frame rate),
 // ai: no console error but the ones the start errors put there on purpose. The sender's blocks label before the first
-// ai: paint (send.html's inline script) the rate profile's, as send.mjs draws it; a kept 32 ring and a kept one block a
-// ai: frame (LIZARD-8), neither a format since 2026-10-25, read as the 128 ring and auto.
+// ai: paint (send.html's inline script) the rate profile's, as send.mjs draws it.
 // ai: node lizard-web/check_ui.mjs, from anywhere (about 70 s, a few of them making the clips). APP=1 runs the same
 // ai: against the built app (lizard-web/app/, node lizard-web/pwa/build.mjs first), its worker serving the pages. Exit 1 on a failure.
 import { spawn } from "node:child_process";
@@ -33,7 +32,7 @@ import { makePhy } from "../liblizard/sim/phy.mjs";
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { init as initWh, Encoder } from "../liblizard/sim/fountain.mjs";
 import { init as initZstd, Z } from "../liblizard/sim/zstd.mjs";
-import { XferSender, DEFAULT_LOG2 } from "../liblizard/sim/xfer.mjs";
+import { XferSender, DEFAULT_LOG2, PAYLOAD } from "../liblizard/sim/xfer.mjs";
 import { N_FOR } from "../liblizard/sim/lizard_pick.mjs";
 
 const at = (p) => fileURLToPath(new URL(p, import.meta.url));
@@ -181,19 +180,12 @@ const SIZES = [
       const defaults = await evaluate(s, `[document.getElementById("subch").value, document.getElementById("fps").value].join()`);
       check(defaults === "480,60", `send ${z.name}: the defaults LIZARD-480 at 60 (${defaults})`);
       // ai: the blocks label at the first paint, before send.mjs has its codec (DOMContentLoaded, the module still
-      // ai: awaiting the wasm), and after: LIZARD-480's 59 blocks under the rate profile both times
+      // ai: awaiting the wasm), and after: LIZARD-480's 58 blocks under the rate profile both times
       await s.send("Page.addScriptToEvaluateOnNewDocument", { source: `document.addEventListener("DOMContentLoaded", () => { window.__firstBlocks = document.getElementById("blocksOut")?.textContent ?? null; });` });
       await navigate(s, SEND);
-      await until(s, `typeof window.__firstBlocks === "string" && document.getElementById("blocksOut").textContent === "59, 27.7 KB"`, 10000, "the blocks label").catch(() => {});
+      await until(s, `typeof window.__firstBlocks === "string" && document.getElementById("blocksOut").textContent === "58, 27.4 KB"`, 10000, "the blocks label").catch(() => {});
       const label = await evaluate(s, `[window.__firstBlocks, document.getElementById("blocksOut").textContent].join(" / ")`);
-      check(label === "59, 27.7 KB / 59, 27.7 KB", `send ${z.name}: the blocks label before the first paint and after the codec, LIZARD-480 (${label})`);
-      // ai: settings kept from before 2026-10-25: the 32 ring and LIZARD-8 are no format's
-      await evaluate(s, `localStorage.setItem("send:ring", "32"); localStorage.setItem("send:subch", "8")`);
-      await navigate(s, SEND);
-      await until(s, `document.getElementById("subch").value === "auto"`, 10000, "a kept LIZARD-8 refused").catch(() => {});
-      const kept = await evaluate(s, `[document.getElementById("ring").value, document.getElementById("subch").value, document.getElementById("blocksOut").textContent, localStorage.getItem("send:subch")].join()`);
-      check(kept === "128,auto,Auto,auto", `send ${z.name}: a kept 32 ring and LIZARD-8 read as the 128 ring and auto, auto kept (${kept})`);
-      await evaluate(s, `localStorage.removeItem("send:ring"); localStorage.removeItem("send:subch")`);
+      check(label === "58, 27.4 KB / 58, 27.4 KB", `send ${z.name}: the blocks label before the first paint and after the codec, LIZARD-480 (${label})`);
       await evaluate(s, `document.getElementById("dev").open = false`);
       await navigate(s, `${SEND}?subch=auto&fps=24&payload=test&auto`);
       await until(s, `/^LIZARD-\\d+/.test(document.getElementById("tx").textContent)`, 20000, "the test stream painted");
@@ -596,7 +588,7 @@ const SIZES = [
   // ai: leaves one (its header and meta.json), listed under Unfinished with its share and size, Continue and Delete;
   // ai: Delete asks on itself, then removes the folder.
   await evaluate(s, `(async () => { const d = await (await (await navigator.storage.getDirectory()).getDirectoryHandle("lizard-xfer", { create: true })).getDirectoryHandle("00112233aabbccdd", { create: true });
-    for (const [n, b] of [["header", new Uint8Array(469)], ["meta.json", new TextEncoder().encode(JSON.stringify({ name: "half.bin", type: "", length: 3133383, chunks: 3, verified: 1, root: "00112233aabbccdd", fraction: 0.37, sent: 3133383, sentIn: 1159352 }))]]) {
+    for (const [n, b] of [["header", new Uint8Array(${PAYLOAD})], ["meta.json", new TextEncoder().encode(JSON.stringify({ name: "half.bin", type: "", length: 3133383, chunks: 3, verified: 1, root: "00112233aabbccdd", fraction: 0.37, sent: 3133383, sentIn: 1159352 }))]]) {
       const w = await (await d.getFileHandle(n, { create: true })).createWritable(); await w.write(b); await w.close(); } return true; })()`);
   await navigate(s, HOME);
   await until(s, `!document.getElementById("partial").hidden && document.querySelectorAll("#partialList li").length === 1`, 5000, "the unfinished transfer listed on Home");

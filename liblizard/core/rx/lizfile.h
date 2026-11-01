@@ -2,7 +2,7 @@
 // ai: Download is it, the PC's Upload camera plays it, the lab's tools read it; research/SPEC.md 15). A ZIP archive of
 // ai: stored entries (method 0, no ZIP64, so under 4 GB and 65,535 entries), its comment "LIZARD replay 1": each frame
 // ai: as NNNN.zst, in the run's order; then stats.jsonl where the run has rows; then meta.json, which ends it (frames,
-// ai: sizes, ms, axes, lens, layout, ...: replay.h finish). A reader finds the entries by the central directory. A frame's
+// ai: sizes, ms, axes, layout, ...: replay.h finish). A reader finds the entries by the central directory. A frame's
 // ai: entry is its w x h luma (meta.json's sizes[i], else w and h) as the residuals of JPEG-LS's median predictor
 // ai: (LOCO-I's MED: of a, b, c, the neighbours left, above and above-left, min(a, b) where c >= max(a, b), max(a, b)
 // ai: where c <= min(a, b), else a + b - c; a neighbour outside the frame 0), each the pixel less its prediction mod 256,

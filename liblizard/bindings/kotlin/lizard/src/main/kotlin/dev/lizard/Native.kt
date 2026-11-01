@@ -14,10 +14,10 @@ internal object Native {
   private fun load() {
     System.getProperty("lizard.library")?.let { System.load(it); return }
     try { System.loadLibrary("lizard"); return } catch (_: UnsatisfiedLinkError) {}
-    val os = System.getProperty("os.name").lowercase().let {
+    val os = System.getProperty("os.name").orEmpty().lowercase().let {
       when { it.contains("win") -> "windows"; it.contains("mac") -> "macos"; else -> "linux" }
     }
-    val arch = System.getProperty("os.arch").lowercase().let { if (it == "amd64" || it == "x86_64") "x86_64" else if (it == "aarch64" || it == "arm64") "aarch64" else it }
+    val arch = System.getProperty("os.arch").orEmpty().lowercase().let { if (it == "amd64" || it == "x86_64") "x86_64" else if (it == "aarch64" || it == "arm64") "aarch64" else it }
     val name = when (os) { "windows" -> "lizard.dll"; "macos" -> "liblizard.dylib"; else -> "liblizard.so" }
     val res = "/lizard/native/$os-$arch/$name"
     val bytes = Native::class.java.getResourceAsStream(res)?.use { it.readBytes() }

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- ai: The launcher icon's mark (2026-10-01): mark.xml's drawing scaled about the 108 dp canvas's centre; the white is
+<!-- ai: The launcher icon's mark (2026-10-01): the mark's drawing (the shared Icons.mark, ../lizard-ui) scaled about the 108 dp canvas's centre; the white is
      the background layer's. Also the monochrome layer, which a themed launcher tints. The standard (2026-10-10,
      lizard-web/icon.svg): the ink spans 70% of the square the launcher shows, 50.4 of its 72 dp (52 dp, Android's
      rounded-square keyline, from 2026-10-06; 45 dp before). Its corner marks reach 25.2 dp from the centre on each

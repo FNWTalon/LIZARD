@@ -1,8 +1,8 @@
-// ai: cam_check session (2026-10-25, checks.h): the session over the core's receiver (rx_session.h) on the simulated
-// ai: camera (camera/sim.cpp), LIZ_CAMERA_SIM set here before each case opens sim:0 by its id (nothing lists the
-// ai: cameras, so no other backend is asked), the CPU decoder with LIZ_VK_DEVICE=llvmpipe so the GPUs stay idle. The
+// ai: cam_check session (2026-10-25, checks.h): the engine's receive session (liblizard/core/rx/session.h) on the
+// ai: simulated camera (cam/sim.cpp), LIZ_CAMERA_SIM set here before each case opens sim:0 by its id (it opens, so
+// ai: nothing lists the cameras and no other backend is asked), the CPU decoder with LIZ_VK_DEVICE=llvmpipe so the GPUs stay idle. The
 // ai: scenes are sized for the machines the checks run on (Cam, 2026-10-25: CI's runners have 3 and 4 vCPUs): every
-// ai: case but halves and 1080 films a 960 x 540 camera free at 60 a second and a code of size 16 in the 128 ring (the
+// ai: case but halves and 1080 films a 960 x 540 camera free at 60 a second and a code of size 8 in the 128 ring (the
 // ai: default), painted 30 a second on a 60 Hz display. A case that judges the camera's rate first measures what this
 // ai: machine renders of its scene (Room): with every render in half the camera's period it expects the camera's own
 // ai: rate, else the rate the camera gives (its drops its own: this machine's), and in both every frame the camera
@@ -14,23 +14,33 @@
 // ai:                camera's frames had by its own count; about 60 where the machine has the room
 // ai:   preview      on test's session: a picture of the crop's shape (the centre square), at most the side asked,
 // ai:                never enlarged, seq rising
-// ai:   1080         test on the full-HD camera (1920 x 1080 at 60, the sender page's code of size 60), the camera's
+// ai:   1080         test on the full-HD camera (1920 x 1080 at 60, the sender page's code of size 30), the camera's
 // ai:                rate what this machine renders of it (simulated on a Ryzen 9950X: 60 a second on its 32
 // ai:                threads, 30 to 37 on 3 and 4 of them)
-// ai:   file         a 300 KB random file painted at 30: received within 60 s, byte-equal at file()'s path
-// ai:   halves       2:1 with the screen's two codes (size 8 each, which a 480 x 480 half resolves): captures whose
+// ai:   file         a 300 KB random file painted at 30: received within 60 s, taken into the data folder's kept/
+// ai:                byte-equal, and the camera stopped once it is in (the phase idle)
+// ai:   halves       2:1 with the screen's two codes (size 4 each, which a 480 x 480 half resolves): captures whose
 // ai:                two halves both read, and the preview 2:1
 // ai:   gpu          1080 on the GPU decoder: run only with LIZ_CHECK_GPU=1, under scripts/tools/gpulock.sh share
+// ai:   takes        (POSIX, not as root) a take refused (kept/ not writable): the stats' kept.error, the file kept in the
+// ai:                store, taken at the next start once kept/ can be written; one left untaken by a session's end
+// ai:                kept through the next session's store open and taken by that session's first moments; one whose
+// ai:                move out of the store is refused (done/ not writable: the copy whole, the source staying) taken
+// ai:                once and not again; a take folder with no file in kept/ let go at a start
+// ai:   partial      an unfinished transfer deleted with no session (session.h deletePartial): refused at once while a
+// ai:                session of this process receives on the folder, done once that session is let go on a thread of
+// ai:                its own and closing (its close waited for, not refused)
 // ai:   reconfigure  a 1 MB file part in on 1:1, the receiver made again for 2:1 and back: the transfer goes on (one
-// ai:                header read, no resume) and finishes, byte-equal; with the file in, 2:1 and back keep it (file(),
-// ai:                the stats) and nothing is taken again
-// ai:   kept         the user's settings set again after each start (rx_session.h set): the simulated camera's
+// ai:                header read, no resume) and finishes, byte-equal in kept/; with the file in and the camera started
+// ai:                again, 2:1 and back keep it (the stats' file verified) and nothing is taken again (one take)
+// ai:   kept         the user's settings set again after each start (session.h set): the simulated camera's
 // ai:                exposure set while streaming, another while stopped (kept), each in force after a start, a
-// ai:                restart in another mode and a reconfigure, a refusal kept out, forgotten at a close; then on Linux
+// ai:                restart in another mode and a reconfigure, a refusal kept out, kept for the camera across a close
+// ai:                and an open (cameras.json); then on Linux
 // ai:                sim/fake_v4l2's c930e, whose backend puts back at stop what set changed: its zoom and exposure
 // ai:                back at their own after each stop and the user's again after each start, a zoom asked while
 // ai:                stopped leaving the device alone until the start
-// ai:   live         the stats' window figures (rx_session.h stats "live", receiver.h cameraClosed): this stream's
+// ai:   live         the stats' window figures (session.h stats "live", receiver.h cameraClosed): this stream's
 // ai:                while it runs, 0 once stopped (the transfer's line and the totals kept); after a start, and after
 // ai:                a restart while streaming, live at once, 0 until the new stream's first window closes, then that
 // ai:                window a second of this stream alone at the rate the camera gives; "live gpu" the same on the GPU
@@ -39,7 +49,7 @@
 // ai:                gpuWhy naming the device; with LIZ_CHECK_GPU=1 alone (a Vulkan device is made), under
 // ai:                scripts/tools/gpulock.sh share
 // ai: Arguments: the cases to run, all by default. LIZ_CHECK_VERBOSE=1 echoes the receiver's log on stderr. Every
-// ai: figure is the simulated camera's (sim/scene.h: a model) or the fake device's, never a real camera's. About 40 s
+// ai: figure is the simulated camera's (cam/scene.h: a model) or the fake device's, never a real camera's. About 40 s
 // ai: here (a Ryzen 9950X), the gpu, live gpu and soft cases 10 s more.
 #include <algorithm>
 #include <chrono>
@@ -60,16 +70,19 @@
 #include <thread>
 #include <vector>
 
-#include "camera/clock.h"
+#include "cam/clock.h"
 #include "checks.h"
 #include "json.hpp"
-#include "rx_session.h"
-#include "sim/scene.h"
+#include "session.h"
+#include "cam/scene.h"
 
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 #if defined(__linux__)
 #include <linux/videodev2.h>
 
-#include "camera/v4l2_sys.h"
+#include "cam/v4l2_sys.h"
 #include "sim/fake_v4l2.h"
 #endif
 
@@ -95,16 +108,17 @@ struct Cam {
 // ai: The scenes, sized for the machines the checks run on (2026-10-25: CI's runners have 4 vCPUs, macOS's 3, where a
 // ai: 1920 x 1080 camera at 60 cannot be rendered while the CPU decoder runs; simulated on a Ryzen 9950X: 37 a second
 // ai: on 4 of its threads, 30 on 3). SMALL, every case's but halves' and 1080's: a 960 x 540 camera free at 60
-// ai: filming a code of size 16 in the 128 ring (the default), painted 30 a second on a 60 Hz display; the frame
-// ai: resolves it (10 of its 16 blocks a capture, the clean captures' share at 30 painted) and 3 threads of that
+// ai: filming a code of size 8 (LIZARD-128) in the 128 ring (the default), painted 30 a second on a 60 Hz display; the
+// ai: frame resolves it (10 of its 16 blocks a capture, the clean captures' share at 30 painted) and 3 threads of that
 // ai: machine render and decode it at the camera's rate (a render in 6 ms, 1.2 CPUs in all). PAIR: two codes of size
-// ai: 8 side by side, which each 480 x 480 half of the 2:1 crop resolves (16 a code read 6 of 16 a half). HD: the
-// ai: full-HD camera and the sender page's code of size 60, whose rate there is what the machine renders (Room).
-const Cam SMALL{"blocks=16 fps=30 hz=60 w=960 h=540"};
-const Cam PAIR{"blocks=8 codes=2 fps=30 hz=60 w=960 h=540"};
-const Cam HD{"blocks=60 fps=30 hz=60 w=1920 h=1080"};
+// ai: 4 (LIZARD-64) side by side, which each 480 x 480 half of the 2:1 crop resolves (LIZARD-128 a code read 6 of 16 a
+// ai: half). HD: the full-HD camera and the sender page's code of size 30 (LIZARD-480), whose rate there is what the
+// ai: machine renders (Room).
+const Cam SMALL{"blocks=8 fps=30 hz=60 w=960 h=540"};
+const Cam PAIR{"blocks=4 codes=2 fps=30 hz=60 w=960 h=540"};
+const Cam HD{"blocks=30 fps=30 hz=60 w=1920 h=1080"};
 const std::string SCENE = SMALL.spec();   // ai: the LIZ_CAMERA_SIM value of the cases that film SMALL as it is
-const char* const CASES[] = {"test", "preview", "1080", "file", "halves", "gpu", "reconfigure", "kept", "live", "soft"};
+const char* const CASES[] = {"test", "preview", "1080", "file", "halves", "gpu", "takes", "partial", "reconfigure", "kept", "live", "soft"};
 
 double since(Clock::time_point t) { return std::chrono::duration<double>(Clock::now() - t).count(); }
 void sleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
@@ -131,10 +145,10 @@ std::string fmt(const char* f, double v) {
 }
 
 // ai: What this machine renders of a scene, measured before a case films it (2026-10-25): the simulated camera's own
-// ai: work a capture (sim/scene.h render, its 3 painters painting meanwhile, as camera/sim.cpp makes the scene), for
+// ai: work a capture (cam/scene.h render, its 3 painters painting meanwhile, as cam/sim.cpp makes the scene), for
 // ai: 0.6 s a capture on the camera's grid of periods, past those a slow render overran, the mean and the worst wall
 // ai: ms. The camera hands a capture over once it is rendered and drops those whose time a render overran
-// ai: (camera/sim.cpp), so it keeps its own rate while the render and the session's hand-over fit in its period. roomy:
+// ai: (cam/sim.cpp), so it keeps its own rate while the render and the session's hand-over fit in its period. roomy:
 // ai: every render within half the period, the other half left to the decoder's share of the machine, and a case
 // ai: expects the camera's own rate; else the camera gives what this machine renders under the decoder's load (60 /
 // ai: ceil(render / period) a second at most), and a case judges the frames at the rate it gives them.
@@ -226,11 +240,12 @@ struct Run {
     failed++;
     return false;
   }
-  // ai: a fresh folder for a case's store
+  // ai: a fresh folder for a case's session (its data folder), the last one made kept in `last`
+  std::string last;
   std::string store(const char* c) {
     const fs::path p = dir / (std::string(c) + "-" + std::to_string(++n));
     fs::create_directories(p);
-    return p.u8string();
+    return last = p.u8string();
   }
 };
 
@@ -245,7 +260,7 @@ std::string text(const json& j, const char* k) {
   return it != j.end() && it->is_string() ? it->get<std::string>() : "";
 }
 json sub(const json& j, const char* k) { return j.is_object() && j.contains(k) ? j[k] : json(); }
-json statsOf(RxSession& s) {
+json statsOf(Session& s) {
   try {
     return json::parse(s.stats());
   } catch (const std::exception&) {
@@ -253,20 +268,30 @@ json statsOf(RxSession& s) {
   }
 }
 
-std::unique_ptr<RxSession> made(const std::string& store, const std::string& decoder, const std::string& layout, Log& log, std::string& why) {
-  RxSession::Config c;
+std::unique_ptr<Session> made(const std::string& store, const std::string& decoder, const std::string& layout, Log& log, std::string& why) {
+  Session::Config c;
   c.assets = LIZ_ASSETS;
-  c.storeDir = store;
+  c.dataDir = store;
   c.decoder = decoder;
   c.layout = layout;
   c.log = [&log](const std::string& m) { log.add(m); };
-  return RxSession::create(c, why);
+  return Session::create(c, why);
+}
+
+// ai: the newest file the session took into the data folder's kept/ (session.h kept): its path, "" none
+std::string keptPath(const std::string& data) {
+  const json k = json::parse(Session::kept(data), nullptr, false);
+  return k.is_array() && !k.empty() ? text(k.back(), "path") : std::string();
+}
+size_t keptCount(const std::string& data) {
+  const json k = json::parse(Session::kept(data), nullptr, false);
+  return k.is_array() ? k.size() : 0;
 }
 
 // ai: sim:0 showing `spec`, opened and started in its pick; the frame's size into w, h
-bool begin(RxSession& s, const std::string& spec, uint32_t& w, uint32_t& h, std::string& why) {
+bool begin(Session& s, const std::string& spec, uint32_t& w, uint32_t& h, std::string& why) {
   setEnv("LIZ_CAMERA_SIM", spec);
-  if (!s.open("sim:0", why)) return false;
+  if (!done(s.open("sim:0"), why)) return false;
   json cam;
   try {
     cam = json::parse(s.camera());
@@ -283,10 +308,10 @@ bool begin(RxSession& s, const std::string& spec, uint32_t& w, uint32_t& h, std:
   if (mode < 0 || size_t(mode) >= modes.size()) mode = 0;
   w = uint32_t(num(modes[size_t(mode)], "w"));
   h = uint32_t(num(modes[size_t(mode)], "h"));
-  return s.start(mode, why);
+  return done(s.start(std::to_string(mode)), why);
 }
 
-std::unique_ptr<RxSession> simulated(Run& r, const char* c, const std::string& spec, const std::string& decoder, const std::string& layout, Log& log,
+std::unique_ptr<Session> simulated(Run& r, const char* c, const std::string& spec, const std::string& decoder, const std::string& layout, Log& log,
                                      uint32_t& w, uint32_t& h, std::string& why) {
   auto s = made(r.store(c), decoder, layout, log, why);
   if (s && !begin(*s, spec, w, h, why)) s.reset();
@@ -316,7 +341,7 @@ void cropOf(uint32_t w, uint32_t h, bool two, uint32_t& cw, uint32_t& ch) {
 
 // ai: the preview of a running session: the crop's shape at most `side`, never enlarged, a picture (not flat), seq
 // ai: rising; "" or why
-std::string previewHolds(RxSession& s, uint32_t fw, uint32_t fh, bool two, std::string& said) {
+std::string previewHolds(Session& s, uint32_t fw, uint32_t fh, bool two, std::string& said) {
   uint32_t cw = 0, ch = 0;
   cropOf(fw, fh, two, cw, ch);
   std::vector<uint8_t> px;
@@ -459,15 +484,22 @@ bool fileCase(Run& r) {
   uint32_t fw = 0, fh = 0;
   auto s = simulated(r, c, SCENE + " file=" + src.u8string(), "cpu", "1:1", log, fw, fh, why);
   if (!s) return r.fail(c, why, &log);
+  const std::string data = r.last;
   const auto t0 = Clock::now();
   std::string got;
-  while (since(t0) < 60 && (got = s->file()).empty()) sleepMs(100);
-  const json j = statsOf(*s);
+  while (since(t0) < 60 && (got = keptPath(data)).empty()) sleepMs(100);
+  json j = statsOf(*s);
   if (got.empty()) return r.fail(c, "no file in 60 s: " + sub(j, "file").dump(), &log);
   const double secs = since(t0);
   if (slurp(fs::u8path(got)) != slurp(src)) return r.fail(c, got + " differs from the file sent", &log);
+  // ai: the camera stopped once the file is in (the same tick as the take)
+  for (const auto t1 = Clock::now(); since(t1) < 1 && (s->streaming() || text(j, "phase") != "idle");) {
+    sleepMs(50);
+    j = statsOf(*s);
+  }
+  if (s->streaming() || text(j, "phase") != "idle") return r.fail(c, "the file in, the camera still " + std::string(s->streaming() ? "streaming" : "not idle") + ", phase " + text(j, "phase"), &log);
   return r.ok(c, "300,000 B received " + fmt("%.1f", secs) + " s after the start (the transfer's own clock " + fmt("%.1f", num(sub(j, "file"), "secs")) +
-                     " s), byte-equal at " + got + " (simulated: " + SCENE + ")");
+                     " s), byte-equal in kept/ at " + got + ", the camera stopped, phase idle (simulated: " + SCENE + ")");
 }
 
 bool halvesCase(Run& r) {
@@ -513,13 +545,189 @@ bool halvesCase(Run& r) {
   return true;
 }
 
-// ai: The transfer across reconfigures (rx_session.h reconfigure, receiver.h create's from): a 1 MB file part in on
-// ai: 1:1, the receiver made again for 2:1 (where the one centred code is in neither half: nothing read) and back: the
-// ai: new receivers go on with the transfer in hand, its part kept through 2:1 in the stats (one header read, no
-// ai: resume), and the file comes whole once, byte-equal. Then, the file in, made again for 2:1 and back: file() the
-// ai: same path and byte-equal after each, the stats' file verified, and 2 s on 1:1 with the code in view nothing taken
-// ai: again (still one header and one "verified" line; 2026-10-25: a new receiver's store let the finished folder go,
-// ai: and the file was received again from the start).
+#if !defined(_WIN32)
+// ai: a folder's write permission taken away or given back (the owner's alone), which makes a take fail
+void writable(const fs::path& p, bool on) {
+  std::error_code e;
+  fs::permissions(p, on ? fs::perms::owner_all : fs::perms::owner_read | fs::perms::owner_exec, fs::perm_options::replace, e);
+}
+// ai: the store's folders holding a finished file not yet taken out (store.h fileStore: done/<file> beside meta.json,
+// ai: no header)
+std::vector<fs::path> finishedIn(const std::string& data) {
+  std::vector<fs::path> out;
+  std::error_code e;
+  for (const auto& d : fs::directory_iterator(fs::u8path(data) / "store" / "lizard-xfer", e)) {
+    if (!d.is_directory(e) || fs::exists(d.path() / "header", e) || !fs::is_regular_file(d.path() / "meta.json", e)) continue;
+    for (const auto& f : fs::directory_iterator(d.path() / "done", e))
+      if (f.is_regular_file(e)) {
+        out.push_back(d.path());
+        break;
+      }
+  }
+  return out;
+}
+// ai: the stats' kept {taken, root, error} once error is set (60 s at most: the file received and its take refused)
+json refusedTake(Session& s) {
+  json k;
+  for (const auto t = Clock::now(); since(t) < 60; sleepMs(100)) {
+    k = sub(statsOf(s), "kept");
+    if (!text(k, "error").empty()) break;
+  }
+  return k;
+}
+bool waitKept(const std::string& data, size_t n, double secs) {
+  for (const auto t = Clock::now(); since(t) < secs; sleepMs(50))
+    if (keptCount(data) == n) return true;
+  return keptCount(data) == n;
+}
+
+// ai: The takes (session.h's header): a verified file that kept/ cannot take stays in the store and is taken at the
+// ai: next start; one a session's end left untaken survives the next session's store open (its receiver made on a
+// ai: scene with no file) and is taken by that session once kept/ can be written; one whose move out of the store is
+// ai: refused (done/ not writable: the rename fails, the copy is whole, the source cannot go) is a take, once.
+bool takesCase(Run& r) {
+  const char* c = "takes";
+  if (geteuid() == 0) {
+    std::printf("skip takes: run as root, which no folder's permissions hold off\n");
+    return true;
+  }
+  const fs::path src = randomFile(r.dir, "payload-40k.bin", 40'000, 3);
+  const std::string spec = SCENE + " file=" + src.u8string();
+  std::vector<fs::path> locked;
+  struct Back {
+    std::vector<fs::path>& ps;
+    ~Back() {
+      for (const auto& p : ps) writable(p, true);
+    }
+  } back{locked};
+  const auto shut = [&](const fs::path& p) {
+    locked.push_back(p);
+    writable(p, false);
+  };
+  Log log;
+  std::string why;
+  uint32_t fw = 0, fh = 0;
+  // ai: 1. refused into kept/, taken at the next start
+  const std::string d1 = r.store(c);
+  const fs::path k1 = fs::u8path(d1) / "kept";
+  fs::create_directories(k1);
+  shut(k1);
+  auto s = made(d1, "cpu", "1:1", log, why);
+  if (!s || !begin(*s, spec, fw, fh, why)) return r.fail(c, "1: " + why, &log);
+  json k = refusedTake(*s);
+  const std::string refused = text(k, "error");
+  if (refused.empty()) return r.fail(c, "1: no take refused in 60 s: kept " + k.dump() + ", file " + sub(statsOf(*s), "file").dump(), &log);
+  if (keptCount(d1) != 0 || finishedIn(d1).size() != 1)
+    return r.fail(c, "1: the take refused, " + std::to_string(keptCount(d1)) + " takes and " + std::to_string(finishedIn(d1).size()) + " finished files in the store", &log);
+  done(s->stop(), why);
+  writable(k1, true);
+  if (!begin(*s, SCENE, fw, fh, why)) return r.fail(c, "1: the start again: " + why, &log);
+  if (!waitKept(d1, 1, 5)) return r.fail(c, "1: kept/ writable again, a start: " + std::to_string(keptCount(d1)) + " takes", &log);
+  k = sub(statsOf(*s), "kept");
+  if (slurp(fs::u8path(keptPath(d1))) != slurp(src) || !text(k, "error").empty() || num(k, "taken") != 1 || !finishedIn(d1).empty())
+    return r.fail(c, "1: taken at the start, but kept " + k.dump() + ", " + std::to_string(finishedIn(d1).size()) + " finished in the store", &log);
+  // ai: a take folder with no file (an app cut short between moving its file out and letting it go): let go at a start
+  fs::create_directories(k1 / "0000000000000000-1" / "file");
+  std::ofstream(k1 / "0000000000000000-1" / "filing.json") << R"({"name":"gone.bin","type":"","root":""})";
+  done(s->stop(), why);
+  if (!begin(*s, SCENE, fw, fh, why)) return r.fail(c, "1: a start for the empty take folder: " + why, &log);
+  if (fs::exists(k1 / "0000000000000000-1") || keptCount(d1) != 1) return r.fail(c, "1: a take folder with no file not let go at a start", &log);
+  s.reset();
+
+  // ai: 2. left untaken by a session's end: kept through the next session's store open, taken by the one after
+  const std::string d2 = r.store(c);
+  const fs::path k2 = fs::u8path(d2) / "kept";
+  fs::create_directories(k2);
+  shut(k2);
+  s = made(d2, "cpu", "1:1", log, why);
+  if (!s || !begin(*s, spec, fw, fh, why)) return r.fail(c, "2: " + why, &log);
+  if (text(refusedTake(*s), "error").empty()) return r.fail(c, "2: no take refused in 60 s", &log);
+  s.reset();
+  if (finishedIn(d2).size() != 1) return r.fail(c, "2: the session ended: " + std::to_string(finishedIn(d2).size()) + " finished files in the store", &log);
+  s = made(d2, "cpu", "1:1", log, why);
+  if (!s || !begin(*s, SCENE, fw, fh, why)) return r.fail(c, "2: the next session: " + why, &log);
+  sleepMs(500);
+  if (finishedIn(d2).size() != 1 || keptCount(d2) != 0)
+    return r.fail(c, "2: the next session's receiver made: " + std::to_string(finishedIn(d2).size()) + " finished files in the store, " + std::to_string(keptCount(d2)) + " takes", &log);
+  s.reset();
+  writable(k2, true);
+  s = made(d2, "cpu", "1:1", log, why);
+  if (!s) return r.fail(c, "2: the third session: " + why, &log);
+  if (!waitKept(d2, 1, 5) || slurp(fs::u8path(keptPath(d2))) != slurp(src))
+    return r.fail(c, "2: kept/ writable, a session made: " + std::to_string(keptCount(d2)) + " takes, byte-equal " + (keptCount(d2) ? (slurp(fs::u8path(keptPath(d2))) == slurp(src) ? "yes" : "no") : "-"), &log);
+  s.reset();
+
+  // ai: 3. the move out refused (done/ not writable): copied whole, the source staying; a take, once
+  const std::string d3 = r.store(c);
+  const fs::path k3 = fs::u8path(d3) / "kept";
+  fs::create_directories(k3);
+  shut(k3);
+  s = made(d3, "cpu", "1:1", log, why);
+  if (!s || !begin(*s, spec, fw, fh, why)) return r.fail(c, "3: " + why, &log);
+  if (text(refusedTake(*s), "error").empty()) return r.fail(c, "3: no take refused in 60 s", &log);
+  done(s->stop(), why);
+  const auto fin = finishedIn(d3);
+  if (fin.size() != 1) return r.fail(c, "3: " + std::to_string(fin.size()) + " finished files in the store", &log);
+  shut(fin[0] / "done");
+  writable(k3, true);
+  if (!begin(*s, SCENE, fw, fh, why)) return r.fail(c, "3: the start again: " + why, &log);
+  if (!waitKept(d3, 1, 5)) return r.fail(c, "3: the source unmovable, a start: " + std::to_string(keptCount(d3)) + " takes", &log);
+  k = sub(statsOf(*s), "kept");
+  const bool stays = fs::exists(fin[0] / "done");
+  if (slurp(fs::u8path(keptPath(d3))) != slurp(src) || !text(k, "error").empty() || num(k, "taken") != 1)
+    return r.fail(c, "3: copied, but kept " + k.dump(), &log);
+  done(s->stop(), why);
+  if (!begin(*s, SCENE, fw, fh, why)) return r.fail(c, "3: another start: " + why, &log);
+  sleepMs(300);
+  if (keptCount(d3) != 1 || !finishedIn(d3).empty()) return r.fail(c, "3: another start: " + std::to_string(keptCount(d3)) + " takes (one: not taken again)", &log);
+  s.reset();
+  return r.ok(c, "refused into kept/ (\"" + refused + "\"), the file kept in the store and taken byte-equal at the next start; an empty take folder let go "
+                 "at a start; left untaken by a session's end, kept through the next session's store open, taken by the session after; its move out "
+                 "refused, copied whole " + std::string(stays ? "(the store's copy staying)" : "") + " and taken once (simulated: " + SCENE + ", a 40,000 B file)");
+}
+#endif
+
+// ai: An unfinished transfer's folder deleted with no session (session.h deletePartial), as an app's Home does after
+// ai: leaving Receive: while a session of this process receives on the folder, refused at once; that session let go on
+// ai: a thread of its own (its destructor marks the folder closing, then stops the camera and lets the receiver go), the
+// ai: delete asked a moment later waits for the close and is done.
+bool partialCase(Run& r) {
+  const char* c = "partial";
+  Log log;
+  std::string why;
+  const std::string d = r.store(c);
+  const fs::path f = fs::u8path(d) / "store" / "lizard-xfer" / "0123456789abcdef";
+  fs::create_directories(f);
+  std::ofstream(f / "header") << "x";
+  uint32_t fw = 0, fh = 0;
+  auto s = made(d, "cpu", "1:1", log, why);
+  if (!s || !begin(*s, SCENE, fw, fh, why)) return r.fail(c, why, &log);
+  auto t = Clock::now();
+  std::string live;
+  const bool gone = Session::deletePartial(d, "0123456789abcdef", live);
+  const double liveMs = since(t) * 1000;
+  if (gone || liveMs > 500 || !fs::exists(f))
+    return r.fail(c, std::string("while the session receives: ") + (gone ? "deleted" : "refused") + " in " + fmt("%.0f", liveMs) + " ms", &log);
+  Session* closing = s.release();
+  std::thread end([closing] { delete closing; });
+  sleepMs(20);
+  t = Clock::now();
+  std::string after;
+  const bool done = Session::deletePartial(d, "0123456789abcdef", after);
+  const double waitMs = since(t) * 1000;
+  end.join();
+  if (!done || fs::exists(f)) return r.fail(c, "the session let go, the delete 20 ms after: " + (done ? std::string("done, the folder still there") : "refused: " + after), &log);
+  return r.ok(c, "refused in " + fmt("%.0f", liveMs) + " ms while the session receives (\"" + live + "\"); the session let go on a thread of its own, "
+                 "the delete asked 20 ms later done in " + fmt("%.0f", waitMs) + " ms, its close waited for (simulated: " + SCENE + ")");
+}
+
+// ai: The transfer across reconfigures (session.h reconfigure, receiver.h create's from): a 1 MB file part in on 1:1,
+// ai: the receiver made again for 2:1 (where the one centred code is in neither half: nothing read) and back: the new
+// ai: receivers go on with the transfer in hand, its part kept through 2:1 in the stats (one header read, no resume),
+// ai: and the file comes whole once, byte-equal in kept/. Then, the file in (the camera stopped for it) and the camera
+// ai: started again, made again for 2:1 and back: the stats' file verified after each, one take in kept/, and 2 s on
+// ai: 1:1 with the code in view nothing taken again (still one header and one "verified" line, the camera reading on;
+// ai: 2026-10-25: a new receiver's store let the finished folder go, and the file was received again from the start).
 bool reconfigureCase(Run& r) {
   const char* c = "reconfigure";
   const fs::path src = randomFile(r.dir, "payload-1m.bin", 1'000'000, 2);
@@ -529,24 +737,25 @@ bool reconfigureCase(Run& r) {
   const std::string spec = SCENE + " file=" + src.u8string();
   auto s = simulated(r, c, spec, "cpu", "1:1", log, fw, fh, why);
   if (!s) return r.fail(c, why, &log);
+  const std::string data = r.last;
   double part = 0;
   for (const auto t = Clock::now(); since(t) < 30;) {
     sleepMs(50);
-    if (!s->file().empty()) return r.fail(c, "the file came whole before a part of it could be seen (too fast to test)", &log);
+    if (!keptPath(data).empty()) return r.fail(c, "the file came whole before a part of it could be seen (too fast to test)", &log);
     part = num(sub(statsOf(*s), "file"), "fraction");
     if (part >= 0.15) break;
   }
   if (part < 0.15) return r.fail(c, "the file only " + fmt("%.0f", part * 100) + "% in after 30 s on 1:1", &log);
-  if (!s->reconfigure("cpu", "2:1", why)) return r.fail(c, "to 2:1: " + why, &log);
+  if (!done(s->reconfigure("cpu", "2:1"), why)) return r.fail(c, "to 2:1: " + why, &log);
   const json mid = statsOf(*s);
   if (text(mid, "layout") != "2:1" || !s->streaming()) return r.fail(c, "after the reconfigure to 2:1: layout " + text(mid, "layout") + (s->streaming() ? ", streaming" : ", not streaming"), &log);
   const double kept = num(sub(mid, "file"), "fraction");
   if (kept < part) return r.fail(c, "the transfer's part " + fmt("%.3f", kept) + " in the stats after the reconfigure to 2:1, " + fmt("%.3f", part) + " before it", &log);
   sleepMs(1500);
-  if (!s->reconfigure("cpu", "1:1", why)) return r.fail(c, "back to 1:1: " + why, &log);
+  if (!done(s->reconfigure("cpu", "1:1"), why)) return r.fail(c, "back to 1:1: " + why, &log);
   const auto t1 = Clock::now();
   std::string got;
-  while (since(t1) < 60 && (got = s->file()).empty()) sleepMs(100);
+  while (since(t1) < 60 && (got = keptPath(data)).empty()) sleepMs(100);
   if (got.empty()) return r.fail(c, "no file 60 s after the way back: " + sub(statsOf(*s), "file").dump(), &log);
   const double secs = since(t1);
   if (slurp(fs::u8path(got)) != slurp(src)) return r.fail(c, got + " differs from the file sent", &log);
@@ -555,26 +764,26 @@ bool reconfigureCase(Run& r) {
   if (log.count(HEADER) != 1 || !log.find("xfer: resumed").empty())
     return r.fail(c, "the file came, but its transfer began again: " + std::to_string(log.count(HEADER)) + " header lines, " +
                          (log.find("xfer: resumed").empty() ? std::string("no resume") : "\"" + log.find("xfer: resumed") + "\""), &log);
-  // ai: the file in: made again for 2:1 and back, the file kept and not taken again
+  // ai: the file in (the camera stopped for it): started again, made again for 2:1 and back, the transfer verified in
+  // ai: the stats, one take, and not taken again (the camera not stopped again for it: the receiver holds it)
+  if (!begin(*s, spec, fw, fh, why)) return r.fail(c, "the file in, a start again: " + why, &log);
   for (const char* lay : {"2:1", "1:1"}) {
-    if (!s->reconfigure("cpu", lay, why)) return r.fail(c, std::string("the file in, to ") + lay + ": " + why, &log);
-    const std::string now = s->file();
+    if (!done(s->reconfigure("cpu", lay), why)) return r.fail(c, std::string("the file in, to ") + lay + ": " + why, &log);
     const json f = sub(statsOf(*s), "file");
-    if (now != got || !f.value("verified", false))
-      return r.fail(c, std::string("the file in, after the reconfigure to ") + lay + ": file() \"" + now + "\" (\"" + got + "\" before), the stats' file " + f.dump(), &log);
-    if (slurp(fs::u8path(now)) != slurp(src)) return r.fail(c, std::string("the file in, after the reconfigure to ") + lay + ": " + now + " differs from the file sent", &log);
+    if (!f.value("verified", false) || keptCount(data) != 1)
+      return r.fail(c, std::string("the file in, after the reconfigure to ") + lay + ": " + std::to_string(keptCount(data)) + " takes in kept/, the stats' file " + f.dump(), &log);
   }
   sleepMs(2000);
-  if (s->file() != got || log.count(HEADER) != 1 || log.count(VERIFIED) != 1)
-    return r.fail(c, "2 s on 1:1 after the reconfigures with the file in: file() \"" + s->file() + "\", " + std::to_string(log.count(HEADER)) + " header lines, " +
-                         std::to_string(log.count(VERIFIED)) + " \"verified\" lines (one each: the file taken again)", &log);
+  if (keptCount(data) != 1 || log.count(HEADER) != 1 || log.count(VERIFIED) != 1 || !s->streaming())
+    return r.fail(c, "2 s on 1:1 after the reconfigures with the file in: " + std::to_string(keptCount(data)) + " takes, " + std::to_string(log.count(HEADER)) + " header lines, " +
+                         std::to_string(log.count(VERIFIED)) + " \"verified\" lines (one each: the file taken again), " + (s->streaming() ? "streaming" : "not streaming"), &log);
   return r.ok(c, fmt("%.0f", part * 100) + "% in on 1:1, then 2:1 for 1.5 s (the part kept, " + fmt("%.0f", kept * 100) + "%) and back: the transfer went on (one header, no resume), the file whole " +
-                     fmt("%.1f", secs) + " s later, byte-equal; with the file in, 2:1 and back: file() the same path, byte-equal, verified, and 2 s on 1:1 not taken again "
-                     "(simulated: " + spec.substr(0, spec.find(" file=")) + ", a 1,000,000 B file)");
+                     fmt("%.1f", secs) + " s later, byte-equal in kept/; with the file in, started again, 2:1 and back: verified, one take, and 2 s on 1:1 not taken again, "
+                     "the camera reading on (simulated: " + spec.substr(0, spec.find(" file=")) + ", a 1,000,000 B file)");
 }
 
 // ai: a control's value as camera() last read it (NaN where the camera lists none)
-double controlOf(RxSession& s, const char* id) {
+double controlOf(Session& s, const char* id) {
   try {
     const json cam = json::parse(s.camera());
     for (const auto& k : sub(cam, "controls"))
@@ -585,7 +794,7 @@ double controlOf(RxSession& s, const char* id) {
 }
 
 // ai: the index of a mode camera() lists (format "" any), -1 none
-int modeIndex(RxSession& s, const std::string& format, uint32_t w, uint32_t h, double fps) {
+int modeIndex(Session& s, const std::string& format, uint32_t w, uint32_t h, double fps) {
   try {
     const json ms = sub(json::parse(s.camera()), "modes");
     for (size_t i = 0; i < ms.size(); i++)
@@ -613,30 +822,35 @@ bool keptSim(Run& r) {
     if (v != us) bad.push_back(std::string(when) + ": exposure " + fmt("%.0f", v) + " us, not " + fmt("%.0f", us));
     if (log.count(AGAIN) != agains) bad.push_back(std::string(when) + ": " + std::to_string(log.count(AGAIN)) + " \"set again\" lines, not " + std::to_string(agains));
   };
+  const std::string data = r.last;
   const double own = controlOf(*s, "exposure");
-  if (!s->set("exposure", 4000, false, why)) return r.fail(c, "exposure 4000 us while streaming: " + why, &log);
+  if (!done(s->set("exposure", 4000, false), why)) return r.fail(c, "exposure 4000 us while streaming: " + why, &log);
   expect("set while streaming", 4000, 0);
-  s->stop();
-  if (!s->set("exposure", 6000, false, why)) return r.fail(c, "exposure 6000 us while stopped: " + why, &log);
+  done(s->stop(), why);
+  if (!done(s->set("exposure", 6000, false), why)) return r.fail(c, "exposure 6000 us while stopped: " + why, &log);
   expect("6000 asked while stopped (kept for the start)", 4000, 0);
-  if (s->set("focus", 1, false, why)) bad.push_back("a focus the camera does not list was taken");
+  if (done(s->set("focus", 1, false), why)) bad.push_back("a focus the camera does not list was taken");
   const std::string noFocus = why;
-  if (s->set("exposure", 0, true, why)) bad.push_back("an automatic exposure the camera has not was taken");
+  if (done(s->set("exposure", 0, true), why)) bad.push_back("an automatic exposure the camera has not was taken");
   const int pick = modeIndex(*s, "", fw, fh, 0), other = modeIndex(*s, "", fw / 2, fh / 2, 0);
   if (pick < 0 || other < 0) return r.fail(c, "the simulated camera lists no " + std::to_string(fw) + " x " + std::to_string(fh) + " and half mode", &log);
-  if (!s->start(pick, why)) return r.fail(c, "start: " + why, &log);
+  if (!done(s->start(std::to_string(pick)), why)) return r.fail(c, "start: " + why, &log);
   expect("after the start", 6000, 1);
   const std::string said = log.last(AGAIN);
-  if (!s->start(other, why)) return r.fail(c, "a restart in the half mode: " + why, &log);
+  if (!done(s->start(std::to_string(other)), why)) return r.fail(c, "a restart in the half mode: " + why, &log);
   expect("after a restart in another mode", 6000, 2);
-  if (s->set("exposure", 99999, false, why)) bad.push_back("an exposure past the camera's range was taken");
+  if (done(s->set("exposure", 99999, false), why)) bad.push_back("an exposure past the camera's range was taken");
   const std::string tooLong = why;
-  if (!s->reconfigure("cpu", "2:1", why)) return r.fail(c, "reconfigure to 2:1: " + why, &log);
+  if (!done(s->reconfigure("cpu", "2:1"), why)) return r.fail(c, "reconfigure to 2:1: " + why, &log);
   expect("after a reconfigure (the refused value not kept)", 6000, 3);
-  s->close();
+  done(s->close(), why);
+  // ai: kept for the camera (cameras.json): the 6000 taken up again at the open and set after the start
+  const json kept = json::parse(slurp(fs::u8path(data) / "cameras.json"), nullptr, false);
+  if (!kept.is_object() || num(sub(sub(kept, "cameras"), "sim:0"), "exposure") != 6000)
+    bad.push_back("cameras.json does not keep sim:0's exposure 6000: " + (kept.is_object() ? kept.dump() : std::string("not JSON")));
   uint32_t w2 = 0, h2 = 0;
   if (!begin(*s, SCENE, w2, h2, why)) return r.fail(c, "open and start again: " + why, &log);
-  expect("opened again (forgotten at the close)", own, 3);
+  expect("opened again (the kept 6000 taken up)", 6000, 4);
   if (!bad.empty()) {
     std::string all;
     for (const auto& b : bad) all += (all.empty() ? "" : "; ") + b;
@@ -644,8 +858,8 @@ bool keptSim(Run& r) {
   }
   return r.ok(c, "the simulated camera's exposure: 4000 us set streaming, 6000 asked stopped (kept), 6000 after the start, a restart in the "
                  "half mode and a reconfigure to 2:1, each with its log line (\"" + said +
-                 "\"); refused and not kept: focus (\"" + noFocus + "\"), 99999 us (\"" + tooLong + "\"); after a close and open the "
-                 "camera's own " + fmt("%.0f", own) + " us, nothing set again (simulated: " + SCENE + ")");
+                 "\"); refused and not kept: focus (\"" + noFocus + "\"), 99999 us (\"" + tooLong + "\"); kept in cameras.json, and after a "
+                 "close and open set again (the camera's own " + fmt("%.0f", own) + " us before any) (simulated: " + SCENE + ")");
 }
 
 #if defined(__linux__)
@@ -666,7 +880,7 @@ bool keptV4l2(Run& r) {
   auto s = made(r.store("kept-v4l2"), "cpu", "1:1", log, why);
   if (!s) return r.fail(c, why, &log);
   const std::string id = "v4l2:" + f.byId(0);
-  if (!s->open(id, why)) return r.fail(c, "open " + id + ": " + why, &log);
+  if (!done(s->open(id), why)) return r.fail(c, "open " + id + ": " + why, &log);
   const auto ctl = [&](uint32_t cid) {
     int64_t v = INT64_MIN;
     f.control(0, cid, v);
@@ -682,25 +896,25 @@ bool keptV4l2(Run& r) {
       bad.push_back(when + ": zoom " + std::to_string(z) + ", exposure_auto " + std::to_string(e) + ", exposure_absolute " + std::to_string(x) +
                     " (not " + std::to_string(zoom) + ", " + std::to_string(ea) + ", " + std::to_string(eabs) + ")");
   };
-  if (!s->start(a, why)) return r.fail(c, "start: " + why, &log);
-  if (!s->set("zoom", 300, false, why)) return r.fail(c, "zoom 300: " + why, &log);
-  if (!s->set("exposure", 20000, false, why)) return r.fail(c, "exposure 20000 us: " + why, &log);
+  if (!done(s->start(std::to_string(a)), why)) return r.fail(c, "start: " + why, &log);
+  if (!done(s->set("zoom", 300, false), why)) return r.fail(c, "zoom 300: " + why, &log);
+  if (!done(s->set("exposure", 20000, false), why)) return r.fail(c, "exposure 20000 us: " + why, &log);
   // ai: 20000 us is 200 of exposure_absolute's 100 us, under its manual master (V4L2_EXPOSURE_MANUAL)
   expect("set while streaming", 300, V4L2_EXPOSURE_MANUAL, 200);
-  s->stop();
+  done(s->stop(), why);
   expect("after the stop", zoom0, auto0, abs0);
-  if (!s->start(a, why)) return r.fail(c, "start again: " + why, &log);
+  if (!done(s->start(std::to_string(a)), why)) return r.fail(c, "start again: " + why, &log);
   expect("after the start", 300, V4L2_EXPOSURE_MANUAL, 200);
-  s->stop();
-  if (!s->set("zoom", 400, false, why)) return r.fail(c, "zoom 400 while stopped: " + why, &log);
+  done(s->stop(), why);
+  if (!done(s->set("zoom", 400, false), why)) return r.fail(c, "zoom 400 while stopped: " + why, &log);
   expect("zoom 400 asked while stopped", zoom0, auto0, abs0);
-  if (!s->start(a, why)) return r.fail(c, "start after the stopped set: " + why, &log);
+  if (!done(s->start(std::to_string(a)), why)) return r.fail(c, "start after the stopped set: " + why, &log);
   expect("after the next start", 400, V4L2_EXPOSURE_MANUAL, 200);
-  if (!s->start(b, why)) return r.fail(c, "a restart in YUYV 1280x720@10: " + why, &log);
+  if (!done(s->start(std::to_string(b)), why)) return r.fail(c, "a restart in YUYV 1280x720@10: " + why, &log);
   expect("after a restart in another mode", 400, V4L2_EXPOSURE_MANUAL, 200);
-  if (!s->reconfigure("cpu", "2:1", why)) return r.fail(c, "reconfigure to 2:1: " + why, &log);
+  if (!done(s->reconfigure("cpu", "2:1"), why)) return r.fail(c, "reconfigure to 2:1: " + why, &log);
   expect("after a reconfigure", 400, V4L2_EXPOSURE_MANUAL, 200);
-  s->close();
+  done(s->close(), why);
   expect("after the close", zoom0, auto0, abs0);
   if (!bad.empty()) {
     std::string all;
@@ -728,7 +942,7 @@ bool windowZero(const json& j) {
 // ai: session's count, 60 a second where the machine renders the scene in time; a window over the time off reads
 // ai: half that or less), no more frames decoded than captured, and blocks read; what the decoder kept up with is the
 // ai: machine's (an instrumented build decodes 26 a second). How it went into said, or why not into bad.
-void firstWindow(RxSession& s, Clock::time_point t0, const std::string& when, std::vector<std::string>& bad, std::string& said) {
+void firstWindow(Session& s, Clock::time_point t0, const std::string& when, std::vector<std::string>& bad, std::string& said) {
   json first;
   double at = -1;
   int zero = 0;
@@ -796,7 +1010,7 @@ bool liveCase(Run& r, const std::string& decoder) {
   }
   if (num(j, "blocks") <= 0) return r.fail(c, "the test stream read no block in 10 s: " + text(j, "state"), &log);
   const double total = num(sub(j, "totals"), "blocks");
-  s->stop();
+  done(s->stop(), why);
   std::vector<std::string> bad;
   for (int k = 0; k < 2; k++) {
     if (k) sleepMs(1200);
@@ -810,13 +1024,13 @@ bool liveCase(Run& r, const std::string& decoder) {
   const int pick = std::max(0, modeIndex(*s, "", fw, fh, 0));
   std::string again, restart;
   auto t0 = Clock::now();
-  if (!s->start(pick, why)) return r.fail(c, "start again: " + why, &log);
+  if (!done(s->start(std::to_string(pick)), why)) return r.fail(c, "start again: " + why, &log);
   firstWindow(*s, t0, "after the start", bad, again);
-  // ai: a restart while streaming (rx_session.h start: the stream stopped and started again at once), with frames
+  // ai: a restart while streaming (session.h start: the stream stopped and started again at once), with frames
   // ai: of the stream before still in the decoder at its close
   sleepMs(1000);
   t0 = Clock::now();
-  if (!s->start(pick, why)) return r.fail(c, "a restart while streaming: " + why, &log);
+  if (!done(s->start(std::to_string(pick)), why)) return r.fail(c, "a restart while streaming: " + why, &log);
   firstWindow(*s, t0, "after a restart while streaming", bad, restart);
   if (!bad.empty()) {
     std::string all;
@@ -834,6 +1048,7 @@ bool softCase(Run& r) {
   std::string why;
   auto s = made(r.store(c), "auto", "1:1", log, why);
   if (!s) return r.fail(c, why, &log);
+  if (!done(s->prepare(), why)) return r.fail(c, why, &log);   // ai: the receiver made (a start would make it)
   const json j = statsOf(*s);
   const std::string dec = text(j, "decoder"), gw = text(j, "gpuWhy");
   if (gw.find("no Vulkan") != std::string::npos) {
@@ -852,7 +1067,7 @@ int session(const Args& a) {
     bool known = false;
     for (const char* k : CASES) known |= w == k;
     if (!known) {
-      std::fprintf(stderr, "cam_check session: no case %s (test, preview, 1080, file, halves, gpu, reconfigure, kept, live, soft)\n", w.c_str());
+      std::fprintf(stderr, "cam_check session: no case %s (test, preview, 1080, file, halves, gpu, takes, partial, reconfigure, kept, live, soft)\n", w.c_str());
       return 2;
     }
   }
@@ -888,6 +1103,14 @@ int session(const Args& a) {
       setEnv("LIZ_VK_DEVICE", "llvmpipe");
     }
   }
+  if (on("takes")) {
+#if !defined(_WIN32)
+    takesCase(r);
+#else
+    std::printf("skip takes: POSIX permissions (a folder made unwritable)\n");
+#endif
+  }
+  if (on("partial")) partialCase(r);
   if (on("reconfigure")) reconfigureCase(r);
   if (on("kept")) {
     keptSim(r);

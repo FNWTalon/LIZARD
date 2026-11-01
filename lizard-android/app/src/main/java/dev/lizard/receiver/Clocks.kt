@@ -28,3 +28,16 @@ object Clocks {
     // ai: the warning's words: "Thermal throttling." first, then the ceiling against its top
     fun text(r: Read) = "Thermal throttling. GPU at ${r.mhz} of ${r.top} MHz."
 }
+
+// ai: The heat warning (2026-10-01): a red triangle and the line "Thermal throttling. Speeds may slow down." Since
+// ai: 2026-10-03 it shows when the phone has lowered the GPU's clock ceiling (Clocks.kt, under its top; the CPU's not)
+// ai: and says so, "Thermal throttling. GPU at 646 of 1300 MHz."; where the GPU's clock cannot be read, from
+// ai: Android's moderate thermal status (2) up with the words before. Since 2026-10-07, first of all, when the
+// ai: camera's rate has fallen from its peak (ReceiveState.cameraSlow): "Thermal throttling. Camera at 53 of 60 frames a
+// ai: second.", the loss that costs the rate most. heatText is its line, null while nothing throttles.
+fun heatText(status: Int, clocks: Clocks.Read?, camera: ReceiveState.CameraSlow? = null): String? = when {
+    camera != null -> "Thermal throttling. Camera at ${camera.now} of ${camera.max} frames a second."
+    clocks != null -> if (clocks.throttled) Clocks.text(clocks) else null
+    status >= android.os.PowerManager.THERMAL_STATUS_MODERATE -> "Thermal throttling. Speeds may slow down."
+    else -> null
+}

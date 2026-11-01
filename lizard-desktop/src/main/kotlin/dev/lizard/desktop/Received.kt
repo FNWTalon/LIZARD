@@ -1,5 +1,6 @@
 package dev.lizard.desktop
 
+import dev.lizard.Session
 import dev.lizard.readout.Readout
 import dev.lizard.tar.TAR_TYPE
 import dev.lizard.tar.untar
@@ -23,17 +24,24 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.util.Locale
 import kotlin.concurrent.thread
+import dev.lizard.ui.*
 
 // ai: The received files (2026-10-25, the PC receiver; the Android app's Library.kt, the web's library.mjs): a verified
-// ai: file is taken out of the receiver's store into a folder of the app's own beside it (take: Native.data/kept, which
-// ai: no store's open empties), then filed into the Downloads folder (file: LIZ_DOWNLOADS, else Linux's XDG_DOWNLOAD_DIR
-// ai: from user-dirs.dirs, else ~/Downloads) under a name free there ("name (1).ext"), each file marked as downloaded
+// ai: file is taken out of the receiver's store by the receive session into the data folder's kept/ (liblizard/core/rx/
+// ai: session.h: kept/<id>/ with filing.json and file/<name>, which no store's open empties; Session.kept lists them),
+// ai: then filed from there into the Downloads folder and its take let go (Session.placed): file, into LIZ_DOWNLOADS,
+// ai: else Linux's XDG_DOWNLOAD_DIR from user-dirs.dirs, else ~/Downloads, under a name free there ("name (1).ext"),
+// ai: each file marked as downloaded
 // ai: (mark); a tar (several files or a folder sent as one, Tar.kt) is unpacked there whole into a folder (one folder
 // ai: alone at its top is the bundle's, else the tar's name less .tar), one that does not unpack whole filed as the file.
 // ai: What Downloads does not take stays in the app's folder, listed from there, and is filed again later (retry), as is
-// ai: a filing the app's close cut short: a file is never only in a store that lets it go. The list the app keeps is
-// ai: Native.data/received.json (entries name, path, type, size, root, at, bundle, files), newest first; an entry whose
-// ai: path is gone is dropped from it, and the same root filed again replaces its entry. Every read and write of the list
+// ai: a filing the app's close cut short: a file is never only in a store that lets it go. A take is filed when its file
+// ai: is in Downloads, durable, and listed: its row is written under the list's lock just before the move into place
+// ai: (taken out again where the move fails), and its take let go after, so a filing cut short leaves either the take
+// ai: (filed again) or its row (the take let go at the next pass). The list the app keeps is Native.data/received.json
+// ai: (entries name, path, type, size, root, at, bundle, files), newest first, written durably whole; an entry whose path
+// ai: is gone is dropped from it, a list that does not read is never written over (one that does not parse is set aside
+// ai: whole as received.json.bad), and the same root filed again replaces its entry. Every read and write of the list
 // ai: is under one lock, from any thread. Open, Show in folder and Delete hand the file to the desktop: Delete to its
 // ai: trash where java.awt.Desktop has one (Windows, macOS), else the file is deleted.
 object Received {
@@ -46,10 +54,8 @@ object Received {
     private val json = Json { ignoreUnknownKeys = true }
     private val listFile get() = File(Native.data, "received.json")
     private val home get() = System.getProperty("user.home")
-    // ai: a take's folder each: filing.json (name, type, root) and file/<the file> (a folder of its own, so no name the
-    // ai: sender gives can meet filing.json)
+    // ai: the session's takes (session.h): a folder each, filing.json (name, type, root) and file/<the file>
     private val keptDir get() = File(Native.data, "kept")
-    private const val FILING = "filing.json"
 
     // ai: where received files go: LIZ_DOWNLOADS (the tests'), else the desktop's own Downloads
     val downloads: File get() = System.getenv("LIZ_DOWNLOADS")?.takeIf { it.isNotEmpty() }?.let { File(it) } ?: xdgDownloads() ?: File(home, "Downloads")
@@ -65,28 +71,41 @@ object Received {
         return if (v.startsWith("/") && v.trimEnd('/') != home) File(v) else null
     }
 
+    // ai: the entries whose files are there, newest first; a list that does not read gives none and is left as it is
     fun list(): List<Entry> = synchronized(mu) {
-        val all = read()
+        val all = runCatching { read() }.getOrElse { System.err.println("received: ${listFile.path}: ${it.message}"); return emptyList() }
         val here = all.filter { File(it.path).exists() }
-        if (here.size != all.size) write(here)
+        if (here.size != all.size) runCatching { write(here) }.onFailure { System.err.println("received: ${listFile.path}: ${it.message}") }
         here.sortedByDescending { it.at }
     }
-    fun has(root: String): Boolean = root.isNotEmpty() && list().any { it.root == root }
 
-    private fun read(): List<Entry> = runCatching {
-        json.parseToJsonElement(listFile.readText()).jsonArray.mapNotNull { e ->
-            val o = e.jsonObject
+    // ai: the list as written: none where there is no list yet; a read that fails throws (nothing is written over the list
+    // ai: then); one that does not parse is set aside whole beside it as received.json.bad, said in the log, and a new
+    // ai: list begun
+    private fun read(): List<Entry> {
+        val f = listFile
+        if (!f.exists()) return emptyList()
+        val text = f.readText()
+        val a = try { json.parseToJsonElement(text).jsonArray } catch (x: Exception) {
+            val bad = File(f.parentFile, "received.json.bad")
+            Files.move(f.toPath(), bad.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            System.err.println("received: ${f.path} did not parse (${text.length} B): set aside as ${bad.path}")
+            return emptyList()
+        }
+        return a.mapNotNull { e ->
+            val o = e as? JsonObject ?: return@mapNotNull null
             Entry(o.str("name"), o.str("path"), o.str("type"), o.num("size").toLong(), o.str("root"), o.num("at").toLong(), o.flag("bundle"), o.num("files").toInt())
                 .takeIf { it.path.isNotEmpty() }
         }
-    }.getOrDefault(emptyList())
+    }
 
-    // ai: written whole to a file beside it, then renamed over it, so a crash mid-write leaves the list as it was
+    // ai: written whole to a file beside it, made durable, then renamed over it, so a crash or a power loss leaves the
+    // ai: list as it was
     private fun write(es: List<Entry>) {
         val f = listFile
         f.parentFile?.mkdirs()
         val tmp = File(f.parentFile, f.name + ".tmp")
-        tmp.writeText(JsonArray(es.map { asJson(it) }).toString())
+        FileOutputStream(tmp).use { o -> o.write(JsonArray(es.map { asJson(it) }).toString().toByteArray()); o.fd.sync() }
         Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
     }
 
@@ -97,6 +116,15 @@ object Received {
     private fun add(e: Entry): Entry = synchronized(mu) {
         write(read().filter { it.root != e.root || e.root.isEmpty() } + e)
         e
+    }
+    // ai: from into Downloads at dest, listed (e, whose path is dest) in one step under the list's lock: the row first,
+    // ai: then the move (no list() between them drops the row of a file not yet there), the row taken out again where the
+    // ai: move fails; whether it moved
+    private fun moveListed(from: File, dest: File, e: Entry): Boolean = synchronized(mu) {
+        add(e)
+        if (from.renameTo(dest)) return true
+        write(read().filter { it.path != e.path })
+        false
     }
 
     // ai: a name not taken in dir: name, else "stem (1).ext", "stem (2).ext", ... (a folder's: "name (1)")
@@ -109,50 +137,42 @@ object Received {
         while (true) { val g = File(dir, "$stem ($k)$ext"); if (!g.exists()) return g; k++ }
     }
 
-    // ai: The verified file out of the receiver's store (the caller's thread: the session's, which no reconfigure or
-    // ai: clear of the store can then come between) into a take's folder of the app's own beside the store: a rename
-    // ai: (else a copy, the store's then deleted), its name, type and root written first. No store's open lets it go
-    // ai: there (a store opening removes its finished folders), and a filing cut short is done again from it (retry).
-    // ai: The take's folder, for file(); a throw leaves the file in the store and no folder.
-    fun take(src: File, type: String, root: String): File {
-        val dir = Files.createTempDirectory(keptDir.apply { mkdirs() }.toPath(), root.take(16) + "-").toFile()
-        try {
-            File(dir, FILING).writeText(JsonObject(mapOf("name" to JsonPrimitive(src.name), "type" to JsonPrimitive(type),
-                "root" to JsonPrimitive(root))).toString())
-            val f = File(File(dir, "file").apply { mkdirs() }, src.name)
-            if (!src.renameTo(f)) { Files.copy(src.toPath(), f.toPath()); src.delete() }
-        } catch (e: Exception) { dir.deleteRecursively(); throw e }
-        return dir
-    }
-
-    // ai: a take's folder read back: null where it holds no file (filed already, or a take not yet whole)
-    private class Kept(val dir: File, val name: String, val type: String, val root: String) {
-        val file get() = File(File(dir, "file"), name)
-    }
-    private fun keptOf(dir: File): Kept? {
-        val m = runCatching { parse(File(dir, FILING).readText()) }.getOrNull() ?: return null
-        return Kept(dir, m.str("name"), m.str("type"), m.str("root")).takeIf { it.name.isNotEmpty() && it.file.isFile }
+    // ai: a take as the session lists it (Session.kept): its folder's id, the file's name, type and root, and the file
+    private class Kept(val id: String, val name: String, val type: String, val root: String, val file: File)
+    private fun kept(): List<Kept> = runCatching {
+        json.parseToJsonElement(Session.kept(Native.data.path)).jsonArray.mapNotNull { e ->
+            val o = e.jsonObject
+            Kept(o.str("id"), o.str("name"), o.str("type"), o.str("root"), File(o.str("path"))).takeIf { it.id.isNotEmpty() && it.name.isNotEmpty() }
+        }
+    }.getOrDefault(emptyList())
+    // ai: the take let go once its file is placed (or deleted with its entry)
+    private fun placed(id: String) {
+        val why = Session.placed(Native.data.path, id)
+        if (why.isNotEmpty()) System.err.println("received: kept/$id: $why")
     }
 
     // ai: What a filing came to: the take's root and name, and "" where the file is in Downloads, else why Downloads did
     // ai: not take it (the file is in the app's folder then, listed from there)
     class Filed(val root: String, val name: String, val why: String)
 
-    // ai: A take filed (the caller's thread, one filing at a time: ReceiveState's files' thread): marked as downloaded,
-    // ai: then into Downloads under a free name (place), a tar unpacked there whole (unpack; one that does not is filed as
-    // ai: the file), the entry listed and the take's folder deleted. Where Downloads does not take it (it cannot be
-    // ai: written, it is full, the system keeps the app out of it), the file stays in the take's folder, listed from
-    // ai: there (it opens, marked, and nothing of it is lost), and retry tries again. Null where the folder holds no file.
-    fun file(dir: File): Filed? {
-        own()
-        val k = keptOf(dir) ?: return null
+    // ai: A take filed (the caller's thread, one filing at a time: ReceiveState's files' thread): a root a list entry
+    // ai: holds with its file there is not filed again (the same file received again, or a filing cut short after its
+    // ai: row: its take let go); else marked as downloaded, then into Downloads under a free name and listed (place), a
+    // ai: tar unpacked there whole (unpack; one that does not is filed as the file), then the take let go
+    // ai: (Session.placed). Where Downloads does not take it (it cannot be written, it is full, the system keeps the
+    // ai: app out of it), the file stays in the take's folder, listed from there (it opens, marked, and nothing of it
+    // ai: is lost), and retry tries again.
+    private fun file(k: Kept): Filed {
+        if (k.root.isNotEmpty() && list().any { it.root == k.root && it.path != k.file.path }) {
+            placed(k.id)
+            return Filed(k.root, k.name, "")
+        }
         mark(k.file)
         val now = System.currentTimeMillis()
         return try {
-            val e = (if (k.type == TAR_TYPE) unpack(k) else null)?.let { (folder, files, bytes) -> Entry(folder.name, folder.path, k.type, bytes, k.root, now, true, files) }
-                ?: place(k.file, k.root).let { Entry(it.name, it.path, k.type, it.length(), k.root, now, false, 0) }
-            add(e)
-            dir.deleteRecursively()
+            (if (k.type == TAR_TYPE) unpack(k) { folder, files, bytes -> Entry(folder.name, folder.path, k.type, bytes, k.root, now, true, files) } else null)
+                ?: place(k.file, k.root) { Entry(it.name, it.path, k.type, k.file.length(), k.root, now, false, 0) }
+            placed(k.id)
             Filed(k.root, k.name, "")
         } catch (e: Exception) {
             val why = whyOf(e)
@@ -164,18 +184,18 @@ object Received {
         }
     }
 
-    // ai: Every take not in Downloads filed again (the caller's thread: the files' one), oldest first: those Downloads
-    // ai: did not take (listed from the app's folder) and any a close cut short (never listed: the next launch's first
-    // ai: look does them; the staging it left is made afresh); what each came to. A take not yet whole (its file not in
-    // ai: yet) is left as it is. Staging in Downloads that no take names any more (one deleted since) goes: only this
-    // ai: thread makes staging, so none is under way meanwhile.
+    // ai: Every take in kept/ filed (the caller's thread: the files' one), oldest first: those the session took since,
+    // ai: those Downloads did not take (listed from the app's folder) and any a close cut short (the staging it left is
+    // ai: made afresh); what each came to. A take not yet whole (its file not in yet) is not listed by the session.
+    // ai: Staging in Downloads that no take names any more (one deleted since) goes: only this thread makes staging, so
+    // ai: none is under way meanwhile.
     fun retry(): List<Filed> {
         own()
-        val takes = keptDir.listFiles()?.filter { it.isDirectory }?.sortedBy { it.lastModified() }.orEmpty()
-        val roots = takes.map { it.name.substringBefore('-') }.toSet()
+        val takes = kept()
+        val roots = takes.map { it.id.substringBefore('-') }.toSet()
         downloads.listFiles()?.filter { f -> STAGING.any { f.name.startsWith(it) } && f.name.substringAfterLast('-') !in roots }
             ?.forEach { runCatching { it.deleteRecursively() } }
-        return takes.mapNotNull { d -> runCatching { file(d) }.getOrElse { System.err.println("received: ${d.name} not filed: ${it.message}"); null } }
+        return takes.mapNotNull { k -> runCatching { file(k) }.getOrElse { System.err.println("received: ${k.id} not filed: ${it.message}"); null } }
     }
     // ai: the staging names in Downloads (place, unpack), each followed by its take's 16 hex
     private val STAGING = listOf(".lizard-copying-", ".lizard-unpacking-")
@@ -192,13 +212,14 @@ object Received {
         }.getOrElse { System.err.println("received: ${keptDir.path}/.lock: ${it.message}; filing without it"); null }
     }
 
-    // ai: Into Downloads whole or not at all: a rename where the two are one filesystem, else a copy into a hidden file
-    // ai: there (the one a copy cut short left, replaced), marked, then renamed to its free name (a name never holds part of
-    // ai: a file), the source deleted. The file's new place; a throw where Downloads does not take it (the source stays).
-    private fun place(src: File, root: String): File {
+    // ai: Into Downloads whole or not at all, listed (entryOf its new place; moveListed): a rename where the two are one
+    // ai: filesystem, else a copy into a hidden file there (the one a copy cut short left, replaced), made durable,
+    // ai: marked, then renamed to its free name (a name never holds part of a file) and the folder made durable; the
+    // ai: source is the take's, let go after. The entry; a throw where Downloads does not take it (the source stays).
+    private fun place(src: File, root: String, entryOf: (File) -> Entry): Entry {
         val dir = writable()
         val dest = free(dir, src.name)
-        if (src.renameTo(dest)) return dest
+        if (moveListed(src, dest, entryOf(dest))) return entryOf(dest)
         // ai: no copy begun that cannot end (0: the room not known)
         val room = dir.usableSpace
         if (room in 1 until src.length()) throw IOException("${dir.path} has ${Readout.bytes(room)} free, the file is ${Readout.bytes(src.length())}")
@@ -206,13 +227,21 @@ object Received {
         try {
             part.delete()   // ai: a copy cut short (Windows refuses to copy over a hidden file)
             Files.copy(src.toPath(), part.toPath())
+            durable(part)
             hide(part, true)
             mark(part)
-            Files.move(part.toPath(), dest.toPath())
+            if (!moveListed(part, dest, entryOf(dest))) throw IOException("${part.path} could not be renamed to ${dest.name}")
             hide(dest, false)
+            durable(dir)
         } catch (e: Exception) { part.delete(); throw e }
-        src.delete()
-        return dest
+        return entryOf(dest)
+    }
+
+    // ai: a file's bytes, or a folder's entries (its renames), on the disk before the only other copy goes; a folder's
+    // ai: where the system syncs folders (Windows refuses: its renames are the file system's own)
+    private fun durable(f: File) {
+        if (f.isDirectory) { runCatching { FileChannel.open(f.toPath(), StandardOpenOption.READ).use { it.force(true) } }; return }
+        FileChannel.open(f.toPath(), StandardOpenOption.WRITE).use { it.force(true) }
     }
 
     // ai: Downloads, made where missing; a throw where its permissions refuse a write (File.canWrite: access(W_OK); on
@@ -227,9 +256,10 @@ object Received {
     // ai: A take's tar unpacked into Downloads whole or not at all: into a hidden folder of its own there (Tar.kt untar,
     // ai: which refuses links, paths out of it and damaged headers; the one an unpack cut short left, removed first), each
     // ai: file marked, then that folder, or the one folder alone at its top, renamed to a free name in the same folder
-    // ai: (one rename: the bundle is there whole, or nothing is). Null where it does not unpack whole (nothing of it left;
-    // ai: the tar is then filed as the file); a throw where Downloads cannot hold the folder.
-    private fun unpack(k: Kept): Triple<File, Int, Long>? {
+    // ai: (one rename: the bundle is there whole, or nothing is), its files made durable first and the bundle listed with
+    // ai: the rename (entryOf its place, its files and bytes; moveListed). Null where it does not unpack whole (nothing of
+    // ai: it left; the tar is then filed as the file); a throw where Downloads cannot hold the folder.
+    private fun unpack(k: Kept, entryOf: (File, Int, Long) -> Entry): Entry? {
         val dir = writable()
         val part = File(dir, STAGING[1] + k.root.take(16))
         part.deleteRecursively()
@@ -238,13 +268,16 @@ object Received {
         val made = try { k.file.inputStream().buffered(1 shl 20).use { untar(it, part) } }
             catch (e: Exception) { System.err.println("received: ${k.name} does not unpack: ${e.message}"); part.deleteRecursively(); return null }
         val bytes = made.sumOf { it.length() }   // ai: before the renames, which leave these paths behind
+        try { made.forEach { durable(it) } } catch (e: Exception) { part.deleteRecursively(); throw e }
         mark(part)
         val one = part.listFiles().orEmpty().singleOrNull()?.takeIf { it.isDirectory }
         val place = free(dir, one?.name ?: k.name.removeSuffix(".tar").ifEmpty { "files" })
-        val ok = if (one != null) one.renameTo(place) else part.renameTo(place).also { if (it) hide(place, false) }
+        val e = entryOf(place, made.size, bytes)
+        val ok = moveListed(one ?: part, place, e).also { if (it && one == null) hide(place, false) }
         part.deleteRecursively()
         if (!ok) { System.err.println("received: ${k.name} unpacked, but not renamed to ${place.path}"); return null }
-        return Triple(place, made.size, bytes)
+        durable(dir)
+        return e
     }
 
     // ai: Windows: a staging file or folder hidden while it is made (a dot alone hides it elsewhere), shown once in place
@@ -311,7 +344,7 @@ object Received {
             .getOrDefault(false)
         if (!trashed) f.deleteRecursively()
         val take = f.absoluteFile.parentFile?.parentFile
-        if (take?.parentFile?.absolutePath == keptDir.absolutePath) take.deleteRecursively()
+        if (take?.parentFile?.absolutePath == keptDir.absolutePath) placed(take.name)
     }
 
     // ai: The desktop's own app for a file (java.awt.Desktop, else xdg-open, open or explorer), on a thread of its own:

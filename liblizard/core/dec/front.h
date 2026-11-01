@@ -1,7 +1,8 @@
-// ai: The GPU decoder's host, ported from the web's (liblizard/gpu/decoder.mjs FrontHalf and Batcher; the back half's
-// ai: lanes and dispatches from liblizard/gpu/back/{back,transform,soft,ldpc}.mjs; the proposer's from
-// ai: liblizard/gpu/bank_fcn2.mjs). What create() builds comes from the setup (setup.h); what a lane holds and what a
-// ai: batch records are ported here, name for name, so the two can be read side by side.
+// ai: The GPU decoder's host, ported from the WebGPU host (liblizard/gpu/decoder.mjs FrontHalf and Batcher; the back
+// ai: half's lanes and dispatches from liblizard/gpu/back/{back,transform,soft,ldpc}.mjs; the proposer's from
+// ai: liblizard/gpu/bank_fcn2.mjs). What create() builds comes from the setup (setup.h), which those JS modules still
+// ai: make (gen.mjs); their run-time half, which this file ports name for name (lanes, ensure, batch, the Batcher,
+// ai: measureTwins), left the library with the WGSL decoder on 2026-10-31, and the names here are its.
 // ai: Not ported: the probe, F9 and the grid (the fused pass 1 samples the frame), told frames (maps: the receiver is
 // ai: blind), the wasm back half.
 //
@@ -9,6 +10,9 @@
 // ai: finish() once its ticket is done, so two lanes can be in flight as on the web.
 #pragma once
 #include "setup.h"
+extern "C" {
+#include "xfer.h"
+}
 #include "develop.h"
 
 #include <cmath>
@@ -23,12 +27,12 @@ namespace lizard {
 
 // ai: The constants the web host states (gen.mjs exports them with the setup).
 struct Consts {
-  uint32_t VOTE_READS, LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, RING_SLACK, K, CELL, HYP, RING_COUNT, NODES_MAX, RESID, REFIT_DBG, HIST_BINS, PYRAMID_BLOCK;
+  uint32_t VOTE_READS, PEAK_LIST, R2_N, LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, RING_SLACK, K, CELL, HYP, RING_COUNT, NODES_MAX, RESID, REFIT_DBG, PYRAMID_BLOCK;
   float TAU, EPS;
   uint32_t TILE, B_CEIL;
   double CAP_MS;
   uint32_t TWIN_FRAMES, TWIN_ROUNDS, VERSION_MIN, VERSION_MAX, SLOTS, ARGS_WORDS, argsWords, COUNTS, REC_BYTES, PAYLOAD;
-  // ai: the anchors' (gpu/wgsl/anchors.mjs): anchors a frame, and vec4f a frame of its record
+  // ai: the anchors' (gpu/glsl/anchors.mjs): anchors a frame, and vec4f a frame of its record
   uint32_t ANCH_K = 0, ANCH_REC = 0;
   std::map<std::string, uint32_t> ARGS_SLOT;
   static Consts of(const json& c);
@@ -56,16 +60,19 @@ struct Lane {
   BufP dumpBuf;   // ai: LIZ_DUMP_S's copy of the back half's spectrum, made on the first batch that dumps
   bool busy = false, watched = false;
   uint32_t W = 0, H = 0;
-  BufP peaksBuf, selUni, framesBuf, mapsBuf, countsBuf, readingsBuf, candBuf, quadsBuf, scoreBuf, selBuf, resultBuf, heldUni, p5Uni, ldUni, measBuf, residBuf, refitDbg, histBuf;
+  BufP peaksBuf, selUni, selUni2, framesBuf, mapsBuf, countsBuf, readingsBuf, candBuf, quadsBuf, scoreBuf, selBuf, resultBuf, heldUni, p5Uni, ldUni, measBuf, residBuf, refitDbg;
   GroupP refitGroup, refitPostGroup, pickGroup;   // ai: refitPostGroup: the tree's front.refitPost
   // ai: the anchors (SPEC 6.13): ANCH_FIND's records (a vec4f an anchor) and ANCH_FIT's (ANCH_REC vec4f a frame,
   // ai: which pass 1 reads), no clear (every one a batch reads is written in it); their groups bind the texture
   // ai: (ensure's); ANCH_REFIT's does not (made with the lane)
   BufP anchBuf, arecBuf;
   GroupP anchFindGroup, anchFitGroup, anchRefitGroup, anchNodesGroup;
-  // ai: the finder's second round (decoder.mjs, gpu/wgsl/finder.mjs REDO): its frame records and its groups over them
+  // ai: the finder's second round (decoder.mjs, gpu/glsl/finder.mjs REDO): its frame records and its groups over them
   BufP frames2Buf;
-  GroupP pickGroup2, redoGroup, selGroup2, classifyGroup2, scoreGroup2, voteGroup2, gatherGroup2, completeGroup2;
+  GroupP pickGroup2, redoGroup, selGroup2, classifyGroup2, scoreGroup2, voteGroup2, peaksGroup2, gatherGroup2, completeGroup2;
+  // ai: PEAKS's list (PEAK_LIST vec4f a frame) and its counts (decoder.mjs vlistBuf, vcountBuf); the second round's
+  // ai: grids, REDO's args and their one-frame template (decoder.mjs args2Buf, r2Uni; gpu/glsl/finder.mjs R2)
+  BufP vlistBuf, vcountBuf, args2Buf, r2Uni;
   std::shared_ptr<wg::QuerySet> qs, qsProfile;
   BufP qsBuf, qsProfileBuf;
   // ai: ensure()'s, at the lane's W x H
@@ -74,7 +81,7 @@ struct Lane {
   std::vector<Level> level;
   uint32_t slots = 0, gx = 0, gy = 0;
   BufP rawBuf, accBuf;
-  GroupP selGroup, classifyGroup, scoreGroup, voteGroup, gatherGroup, wordGroup, pyrGroup;
+  GroupP selGroup, classifyGroup, scoreGroup, voteGroup, peaksGroup, gatherGroup, wordGroup, pyrGroup;
   GroupP nodesGroup;
   struct Fcn2Level { uint32_t l, w, h; GroupP group, xgroup, group2, xgroup2; BufP plane, uni; };   // ai: group2, xgroup2: a level below coarseFrom's
   std::vector<Fcn2Level> fcn2Levels;
@@ -101,14 +108,14 @@ struct Slot {
   uint32_t axis = 0;
 };
 
-// ai: The axis word (gpu/wgsl/common.mjs axisWord): x and y in half pixels, each + 32768 in 16 bits, x low; 0 the
+// ai: The axis word (gpu/plan/common.mjs axisWord): x and y in half pixels, each + 32768 in 16 bits, x low; 0 the
 // ai: frame's centre.
 inline uint32_t axisWord(double x, double y) {
   auto h = [](double v) { const double t = std::floor(2 * v + 0.5) + 32768; return (uint32_t)(t < 0 ? 0 : t > 65535 ? 65535 : t); };
   return h(x) | (h(y) << 16);
 }
 
-struct Record { int frame, block, its; uint32_t id; std::array<uint8_t, 473> payload; };
+struct Record { int frame, block, its; uint32_t id; std::array<uint8_t, XFER_BLOCK> payload; };
 
 struct FrameOut {
   bool empty = false;
@@ -201,15 +208,38 @@ class FrontHalf {
   uint32_t coarseFrom = 0;   // ai: the tree's front.coarseFrom: the bank's first round from this level
   std::array<float, 4> modules{};
 
-  // ai: the nets now in use (measureTwins may swap a classifier for its int8 twin)
-  Pipe classify;
-  BufP weightsBuf;
+  // ai: the nets now in use (measureTwins may swap a classifier for its int8 twin), and the float form's, which the
+  // ai: trial goes back to (useTwin)
+  Pipe classify, floatClassify;
+  BufP weightsBuf, floatWeights;
   json twinForms;   // ai: the twins still to measure (null once measured)
   // ai: the LDPC kernel's form in use (gpu/back/tiers.mjs exportFor: 0 the rule's "ldpc" steps, k its "ldpcAlts"[k - 1]),
   // ai: and whether the forms are still to be timed on the first batch
   int ldpcForm = 0;
   bool ldpcPending = false;
-  // ai: The anchors (SPEC 6.13; gpu/wgsl/anchors.mjs, the tree's `anch`): ANCH_FIND, ANCH_PREDICT (on ANCH_REFIT's
+  std::vector<bool> ldpcBuilt;   // ai: a form a device holds, every kernel of it built (Setup's unbuilt)
+  // ai: The forms' trial (dec/trial.h, 2026-10-31) sets the form a batch runs by hand and leaves out a form that was
+  // ai: wrong or hung on the known frames, for good: the first batch's timing then picks among the rest. trialling:
+  // ai: a batch measures nothing and tells the batcher nothing.
+  std::vector<std::string> ldpcFormNames() const;
+  void useLdpc(int k) { ldpcForm = k; }
+  void refuseLdpc(int k);
+  bool hasTwin() const { return !twinForms.is_null() && !twinForms["large"].is_null(); }
+  void useTwin(bool int8);
+  void refuseTwin();
+  bool trialling = false;
+  // ai: the LDPC form the trial took first (the others are the first batch's to time)
+  int ldpcBase = 0;
+  // ai: the lanes and the ring let go and the plan forgotten, so the next plan is at its own size (after a trial)
+  void unplan();
+  // ai: The forms a hang or a lost device in use is laid on (the receiver's recover), as FormRecord names them: those
+  // ai: being timed (measureLdpc, measureTwins) when it came, else the LDPC form past ldpcBase and the int8 classifier
+  // ai: where in use, else the variant itself (""). One step down a time: a hang that comes again takes the next.
+  std::vector<std::string> inUse() const;
+  std::vector<std::string> timing;   // ai: the forms being timed, while their submit runs
+  // ai: when the decoder was made: now()'s zero (the receiver keeps one across the decoders it makes)
+  std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
+  // ai: The anchors (SPEC 6.13; gpu/glsl/anchors.mjs, the tree's `anch`): ANCH_FIND, ANCH_PREDICT (on ANCH_REFIT's
   // ai: layout and group), the border's second search (anchNodes: F7's NODES centred, on its layout, its own round's
   // ai: group, anchNodesGroup), ANCH_REFIT and ANCH_FIT after F7's REFIT_POST in its refit's pass, the C's order; a
   // ai: batch with no F7 runs ANCH_FIND and ANCH_FIT alone. Pass 1 reads their records.
@@ -263,10 +293,17 @@ class FrontHalf {
   BatchOut finish(std::unique_ptr<InFlight> f);
   // ai: the readback buffers of kept frames let go on every lane no batch is using (decoder thread)
   void dropKeep();
+  // ai: The LDPC forms' decision cross-check (lizard_gpu_check xcheck): with xcheck on, finish runs every form the
+  // ai: device built again on each batch's own soft values (crossCheckLdpc) and holds each to its reference, the first
+  // ai: form of the same name past its last ':' (else form 0): codeword by codeword its verdict (V) and its iterations or
+  // ai: the stop's give-up (ITS), frame by frame the iterations run (BCOUNTS 7, which counts a give-up's too). Totals
+  // ai: over the run, a form each.
+  struct LdpcCheck { std::string form, ref; long codewords = 0, apart = 0, verdicts = 0, frames = 0, framesApart = 0, verified = 0, refVerified = 0, ran = 0, refRan = 0; };
+  bool xcheck = false;
+  std::vector<LdpcCheck> xchecks;
 
  private:
   explicit FrontHalf(wg::Device& d) : dev(d) {}
-  std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
   Pipe P(const char* k) { return S->pair(S->tree["front"][k]); }
   wg::Buffer& FB(const char* k) { return S->buf(S->tree["front"]["buffers"][k]); }
   BufP FBP(const char* k) { return S->bufPtr(S->tree["front"]["buffers"][k]); }
@@ -284,6 +321,7 @@ class FrontHalf {
   void buildBack(int B);
   void measureTwins(Lane& ln, int nb);
   void measureLdpc(Lane& ln, int nb);
+  void crossCheckLdpc(Lane& ln, int nb);
   BatchOut finishBatch(std::unique_ptr<InFlight> f);
   uint64_t argsOffset(int s, const char* slot) const { return 4ull * (C.ARGS_WORDS * s + C.ARGS_SLOT.at(slot)); }
 };

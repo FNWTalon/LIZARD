@@ -26,8 +26,9 @@ namespace lizard {
 class XferRx {
  public:
   // ai: storeDir: a directory the receiver may write; it works in storeDir/lizard-xfer, a folder a transfer (store.h
-  // ai: fileStore): the transfers a receiver before this one parked stay there to resume, anything else is let go (one
-  // ai: receiver a directory). A finished file is storeDir/lizard-xfer/<id>/done/<its name>.
+  // ai: fileStore): the transfers a receiver before this one parked stay there to resume, and finished files not yet
+  // ai: taken out stay for their taker; anything else is let go (one receiver a directory). A finished file is
+  // ai: storeDir/lizard-xfer/<id>/done/<its name>, beside <id>/meta.json.
   XferRx(const std::string& storeDir, std::function<void(const std::string&)> log = nullptr);
   ~XferRx();
   XferRx(const XferRx&) = delete;
@@ -35,7 +36,7 @@ class XferRx {
 
   // ai: One CRC-verified block, past the judge: true when its id is new data. A control block is always passed on
   // ai: (its id is every transfer's; only its bytes say which) and is never new.
-  bool take(const uint8_t* block473);
+  bool take(const uint8_t* blk);
   FrameVerdict frame(const std::vector<Block>& verified);
   XferProgress progress();
   // ai: XferRxCore::taken, read from any thread: the blocks the transfer took, ever (a receiver's file rate)
@@ -51,7 +52,7 @@ class XferRx {
   void drain();
 
  private:
-  struct Item { uint8_t kind; std::array<uint8_t, XFER_BLOCK_BYTES> b; };   // ai: kind 0 a block, 1 a clear, 2 a forget (b the root, NUL-ended)
+  struct Item { uint8_t kind; std::array<uint8_t, XFER_BLOCK> b; };   // ai: kind 0 a block, 1 a clear, 2 a forget (b the root, NUL-ended)
   void push(uint8_t kind, const uint8_t* b);
   void ask(uint8_t kind, const uint8_t* b);
   void run();

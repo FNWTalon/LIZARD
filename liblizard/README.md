@@ -1,7 +1,7 @@
 # liblizard
 
 The LIZARD code as a library: a luminance-only animated barcode that carries a file from a screen to a camera. A
-frame is a grey picture whose FFT coefficients carry blocks of 473 bytes (a 4-byte id and 469 of payload, CRC-checked),
+frame is a grey picture whose FFT coefficients carry blocks of 476 bytes (a 4-byte id and 472 of payload, CRC-checked),
 each LDPC-coded at a rate that follows the frequency (7/8 inside, then 3/4 and 2/3, 1/2 outside), inside a border
 that says what is inside; a file goes as a fountain-coded transfer verified by its BLAKE3 root.
 
@@ -15,16 +15,20 @@ One C API (`include/lizard.h`), three bindings over it:
 
 macOS has no preset.
 
-Beside them, `kotlin/` holds plain-JVM code the apps compile into themselves. Both the Android app and the desktop app
-compile `Tar.kt`, how several files or a folder become one transfer (a tar, `research/SPEC.md` 9.6) and how a receiver
-unpacks one; `Readout.kt`, the receive screen's words and figures; and `Pick.kt` (`dev.lizard.pick`), the sender's
-ladder, rings, rates and the room a format needs. The Android app alone compiles `PhaseLock.kt`, the camera's phase
-lock against the display.
+The Kotlin binding's sources are also compiled into the desktop app, whose own JNI library carries the receive
+session's natives (`api/jni_session.cpp`, registered at its load), so `dev.lizard.Session` is one JNI surface for every
+app.
+
+Beside them, `kotlin/` holds plain-JVM code the apps use, compiled into both the Android app and the desktop app with
+their shared UI (`../lizard-ui`): `Tar.kt`, how several files or a folder become one transfer (a tar,
+`research/SPEC.md` 9.6) and how a receiver unpacks one; `Readout.kt`, the receive screen's words and figures; and
+`Pick.kt` (`dev.lizard.pick`), the sender's ladder, rings, rates and the room a format needs. `PhaseLock.kt`, the camera's phase lock against the display, is the
+reference the engine's C++ lock (`core/rx/phase_lock`) is held to; neither app compiles it.
 
 ## Layers
 
-1. **Format arithmetic.** A format is its size (2 to 128: LIZARD-16 to -1024; a symbol of it carries `liz_blocks_for`
-   blocks, the rate profile's count), a ring (the border: 64, 128 or 256 cells, the 128 by default), the display
+1. **Format arithmetic.** A format is its size (4 to 64: LIZARD-64 to -1024, 16 x the size; a symbol of it carries
+   `liz_blocks_for` blocks, the rate profile's count), a ring (the border: 64, 128 or 256 cells, the 128 by default), the display
    rate its word states, and one code or two side by side.
    `liz_geometry_of` gives what it paints; `liz_room_for` and `liz_pick` the room a symbol needs on a display and the
    most blocks that fit a room.
@@ -40,6 +44,20 @@ lock against the display.
    Vulkan in batches, else the C on a pool) into a transfer; `liz_sender` paints frames ahead on its own threads (the
    GPU's encoder, else the C). The GPU paths read their kernels and nets from an assets directory (`share/lizard` as
    installed); with none, or no Vulkan device that runs them, the CPU does the work. Vulkan is loaded at run time.
+5. **The receive session** (desktop systems and Android; `core/rx/session.h`, the cameras in `core/cam/`):
+   `liz_session` drives a camera of the system's (UVC through V4L2, Media Foundation or AVFoundation; Android's back
+   cameras through Camera2's NDK, the camera's own buffer sampled in place by the GPU decoder; a phone streaming to the
+   machine; a `.lizard` replay played as a camera; the simulated camera of `LIZ_CAMERA_SIM`) into a receiver, and does
+   around it what every receiving app does: the phase a screen shows, the camera's settings kept per camera, a verified
+   file taken out of the store into the data folder's `kept/` for the app to place (`liz_kept`, `liz_kept_placed`), the
+   camera stopped once a file is in, one session a data folder, Save replays, the stats and the preview; on a camera
+   that can delay a capture (Android's) the phase lock (`core/rx/phase_lock`, fed from the camera's capture results).
+   Android's hooks: the app's preview surface as the camera's second stream (`liz_session_preview_window`), the PC
+   link's decoder "pc" and, process-wide with no session, its link (`liz_link`, `liz_link_pack`, `liz_link_state`) and
+   a USB accessory (`liz_usb_accessory`), refused elsewhere. A take that fails leaves the file in the store, which
+   keeps it, and is tried again at each start, a camera's close and a session's start and end. Its calls return at
+   once (the work runs in order on the session's own thread; the outcome is in its stats), the preview surface's
+   hand-over aside, which waits for the camera. Elsewhere (wasm) layer 5 says `LIZ_E_UNSUPPORTED`.
 
 Errors are codes (`LIZ_E_*`) with `liz_last_error()` and `liz_last_error_code()` for the calling thread; the bindings
 throw (`LizardException` and the JVM's own, `LizardError` in JS). A handle is used from one thread at a time.
@@ -75,6 +93,13 @@ files) and `LIZ_GPU_VARIANTS` (the decoder variants installed: all six by defaul
 those its assets hold; where they hold none it runs, `auto` decodes on the CPU (the log says why) and `gpu` fails. On a
 software Vulkan device (Vulkan's CPU type: lavapipe, SwiftShader) `auto` decodes on the CPU too, its stats' `gpuWhy`
 naming the device, and `gpu` still runs there.
+Of the variants a device runs, the receiver keeps only those that read known frames right on it: at its first start on
+a device and driver, frames painted by the codec with blocks of known bytes are decoded in each variant, each LDPC
+form and the int8 classifier, and a form that misses or corrupts a block, hangs or loses the device is left out (the
+next form, the next variant, the CPU where none passes). The outcomes are kept in the cache folder
+(`gpu-forms.json`), so later starts run nothing; without a cache folder the trial runs at every start. Every wait on
+the device is bounded: a submit not done in 4 s is a hang, and one mid-stream drops the forms in use and makes the
+device and the decoder again.
 Build trees go in `build-native/<preset>`.
 
 The bindings:
@@ -105,13 +130,11 @@ some of the decoder variants, chosen among as an install's are.
 ## Tests
 
 - `api/tests/roundtrip.c` (ctest): every format's encoder, the picker against the web sender's (`api/tests/pick_ref.mjs`),
-  the test stream in every ring, a file through two codes into memory and through one into a directory.
+  the test stream in every ring, a file through two codes into memory and through one into a directory, and a receive
+  session with no camera (its stats, `kept/`, the unfinished list, its data folder's lock).
   `lizard_roundtrip --dump <dir>` writes reference frames for the wasm test.
-- `api/tests/engine.c` (by hand, on a machine with the GPU files): `lizard_engine receive <assets> <run> <gpu|cpu|auto>
-  [device]` pushes a run through the receiver until its file is whole; `lizard_engine send <assets> <gpu|cpu|auto>
-  [device]` paints a file and reads it back. `<assets>` is `out/` or an install's `share/lizard`. A run is a folder of
-  `meta.json` (`{"w": ..., "h": ..., "frames": ...}`) and the frames `0000.gray` on, `w` x `h` grey bytes each. The
-  project's camera recordings (`.lizard` files, `../research/SPEC.md` 15, which this C API does not read yet) are not published; `lizard_engine paint <assets> <run dir> [frames] [blocks]` makes a run
-  with the library alone (a file painted on the CPU through the GPU's frame ring, so the assets too; each frame on
-  white).
-- `bindings/wasm/test/`, `bindings/kotlin/lizard/src/test/`: the same round trips through each binding.
+- `api/tests/engine.c` (by hand, on a machine with the GPU files): `lizard_engine send <assets> <gpu|cpu|auto>
+  [device]` paints a file with the sender (through the GPU's frame ring, so the assets, whichever painter) and reads
+  every frame back into memory. `<assets>` is `out/` or an install's `share/lizard`.
+- `bindings/wasm/test/`, `bindings/kotlin/lizard/src/test/`: the same round trips through each binding (the Kotlin one's
+  `Session` too). The session with cameras is checked by `lizard-desktop`'s `cam_check` and `lizard_receive`.

@@ -40,7 +40,7 @@
 
 // src/xfer.h, held against the codec's xfer_layout whenever a wasm is handed in. The receiver page has no codec and
 // needs the id test anyway.
-export const PAYLOAD = 469, ID_BYTES = 4, SYMBOL_BITS = 18, CONTROL = 0x3fff, PER_BLOCK = 12, MAX_CHUNKS = 0x3fff;
+export const PAYLOAD = 472, ID_BYTES = 4, SYMBOL_BITS = 18, CONTROL = 0x3fff, PER_BLOCK = 12, MAX_CHUNKS = 0x3fff;
 export const ID_HEADER = 0xfffc0000, SYMBOL_MASK = (1 << SYMBOL_BITS) - 1, MAX_MANIFEST = Math.ceil(MAX_CHUNKS / PER_BLOCK);
 export const CODEC_NONE = 0, CODEC_ZSTD = 1;
 const blocksOf = (sent) => Math.ceil(sent / PAYLOAD);
@@ -67,7 +67,7 @@ function wasm(M) {
   M._xfer_layout(p);
   const L = new Int32Array(M.HEAPU8.buffer, p, 14).slice();
   M._free(p);
-  if (L[0] !== ID_BYTES || L[1] !== PAYLOAD || L[2] !== SYMBOL_BITS || L[3] !== 14 || L[4] >>> 0 !== ID_HEADER || L[6] !== PER_BLOCK || L[11] !== MAX_CHUNKS || L[12] !== 2)
+  if (L[0] !== ID_BYTES || L[1] !== PAYLOAD || L[2] !== SYMBOL_BITS || L[3] !== 14 || L[4] >>> 0 !== ID_HEADER || L[6] !== PER_BLOCK || L[11] !== MAX_CHUNKS || L[12] !== 3)
     throw new Error(`src/xfer.h moved (layout ${L.join(",")}): sim/xfer.mjs is out of date`);
   const b3 = (bytes) => { const a = put(bytes), o = M._malloc(32); M._xfer_b3_hash(a, bytes.length, o); const h = take(o, 32); M._free(a); M._free(o); return h; };
   return { put, take, b3, logMin: L[9], logMax: L[10] };
@@ -197,7 +197,7 @@ export class XferSender {
     return out;
   }
 
-  // What block `id` carries: 469 bytes into out.
+  // What block `id` carries: 472 bytes into out.
   block(id, out) {
     const c = id >>> SYMBOL_BITS, s = id & SYMBOL_MASK;
     if (c === CONTROL) { out.set(s === 0 ? this.header : this.manifest[s - 1]); return out; }

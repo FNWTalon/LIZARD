@@ -81,9 +81,10 @@ class FileStore final : public Store {
     std::error_code e;
     fs::create_directories(pathOf(dir), e);
     if (e) { fail("store: " + dir + ": " + e.message()); return; }
-    // ai: a parked transfer (a folder with its header) stays for its header to come again; anything else is nobody's
+    // ai: a parked transfer (a folder with its header) stays for its header to come again, and a finished file not yet
+    // ai: taken out of it (finished) for its taker; anything else is nobody's
     for (auto& p : fs::directory_iterator(pathOf(dir), e))
-      if (!p.is_directory() || !fs::exists(p.path() / "header")) { std::error_code r; fs::remove_all(p.path(), r); }
+      if (!p.is_directory() || !(fs::exists(p.path() / "header") || finished(p.path()))) { std::error_code r; fs::remove_all(p.path(), r); }
   }
   ~FileStore() override { closeAll(); }
   bool keeps() const override { return true; }
@@ -94,14 +95,14 @@ class FileStore final : public Store {
     closeAll();
     if (!was.empty()) { std::error_code e; fs::remove_all(pathOf(was), e); }
   }
-  // ai: the receiver's Clear: the transfer in hand and every finished file (the folders with no header); parked
-  // ai: transfers stay, an app's list's to delete
+  // ai: the receiver's Clear: the transfer in hand (its finished file too) and what is nobody's; parked transfers stay,
+  // ai: an app's list's to delete, and so does a finished file of another transfer not yet taken out
   void removeAll() override {
     clear();
     error.clear();
     std::error_code e;
     for (auto& p : fs::directory_iterator(pathOf(dir), e))
-      if (!fs::exists(p.path() / "header")) { std::error_code r; fs::remove_all(p.path(), r); }
+      if (!fs::exists(p.path() / "header") && !finished(p.path())) { std::error_code r; fs::remove_all(p.path(), r); }
   }
   void park() override { closeAll(); }
   void truncate(uint32_t c, uint32_t n) override {
@@ -210,7 +211,7 @@ class FileStore final : public Store {
     if (writeAll(tmp, json.data(), json.size())) fs::rename(pathOf(tmp), pathOf(cur + "/meta.json"), e);
   }
   // ai: OpfsStore.finish, and the file given its own name in a folder of its own, so the app shares it as sent; the
-  // ai: transfer whole, nothing of it is kept to resume
+  // ai: transfer whole, nothing of it is kept to resume but meta.json, which names it until it is taken out (store.h)
   std::string finish(const std::string& name) override {
     if (!out) return "";
     const bool synced = syncFile(out);
@@ -223,7 +224,7 @@ class FileStore final : public Store {
     fs::create_directories(pathOf(d), e);
     fs::rename(pathOf(from), pathOf(path), e);
     if (e) { fail("store: " + path + ": " + e.message()); return from; }
-    for (const char* f : {"header", "manifest", "verified", "meta.json"}) fs::remove(pathOf(cur + "/" + f), e);
+    for (const char* f : {"header", "manifest", "verified"}) fs::remove(pathOf(cur + "/" + f), e);
     return path;
   }
 
@@ -236,6 +237,14 @@ class FileStore final : public Store {
   std::unordered_map<uint32_t, Open> opened;
   static constexpr size_t OPEN_CAP = 32;
   std::string chunkPath(uint32_t c) const { return cur + "/c" + std::to_string(c); }
+  // ai: a transfer's folder holding its finished file not yet taken out (store.h): no header, meta.json, a file in done/
+  static bool finished(const fs::path& d) {
+    std::error_code e;
+    if (fs::exists(d / "header", e) || !fs::is_regular_file(d / "meta.json", e)) return false;
+    for (auto& f : fs::directory_iterator(d / "done", e))
+      if (f.is_regular_file(e)) return true;
+    return false;
+  }
   void closeAll() {
     for (auto& [c, o] : opened) fclose(o.f);
     opened.clear();

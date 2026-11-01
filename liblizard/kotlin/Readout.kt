@@ -1,5 +1,6 @@
 package dev.lizard.readout
 
+import dev.lizard.pick.Pick
 import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -10,7 +11,7 @@ import kotlin.math.roundToInt
 // ai: left; the format's name and the registered
 // ai: share are the lab line's, in Developer Tools. 1 KB = 1000 B, a figure kept on its line (a no-break space), digits as the
 // ai: web prints them whatever the phone's locale. Pure: no Android in here. The Android app and the desktop app both
-// ai: compile this file (liblizard/kotlin, 2026-10-25).
+// ai: use this file, compiled with their shared UI (lizard-ui; each app compiled liblizard/kotlin itself from 2026-10-25).
 object Readout {
     // ai: A name's stem and the ending kept whole when the line cuts it (2026-10-23, Parts.kt NameLine): a bundle's
     // ai: " and N more.tar" (Tar.kt Bundle), else an extension of at most 10 characters, else nothing; the web's
@@ -127,7 +128,7 @@ object Readout {
     fun lab(on: Boolean, rx: Rx): String {
         if (!on) return ""
         if (rx.foundShare <= 0 && rx.goodputKBs <= 0) return "no code yet"
-        val named = if (rx.bandVersion > 0 && rx.state != "looking") ", LIZARD-${8 * rx.bandVersion}${if (rx.fps > 0) " at ${rx.fps}${NB}fps" else ""}" else ""
+        val named = if (rx.bandVersion > 0 && rx.state != "looking") ", LIZARD-${Pick.STEP * rx.bandVersion}${if (rx.fps > 0) " at ${rx.fps}${NB}fps" else ""}" else ""
         return "${rx.goodputKBs.roundToInt()}${NB}KB/s, ${(100 * rx.foundShare).roundToInt()}% registered$named"
     }
 }

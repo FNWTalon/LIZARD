@@ -26,7 +26,7 @@ import { init, Encoder } from "../liblizard/sim/fountain.mjs";
 import { init as initZstd, Z } from "../liblizard/sim/zstd.mjs";
 const zstd = async () => { await initZstd(); return Z; };   // ai: the sender compresses each chunk (sim/xfer.mjs, 2026-10-05)
 import { XferSender, blake3, hex, DEFAULT_LOG2, PAYLOAD } from "../liblizard/sim/xfer.mjs";
-import { N_FOR } from "../liblizard/sim/lizard_pick.mjs";
+import { N_FOR, versionOf } from "../liblizard/sim/lizard_pick.mjs";
 
 const at = (p) => fileURLToPath(new URL(p, import.meta.url));
 const dir = process.argv[2] ?? at("../research/build/check"), CW = +(process.env.CW ?? 1920), CH = +(process.env.CH ?? 1080), FD = 24, FC = 30, ONLY_TEST = process.env.ONLY === "test", FRAMES = ONLY_TEST ? 330 : 420;
@@ -209,12 +209,12 @@ if (process.env.ONLY !== "files") {
   // The rate the sender stated IN THE BAND, come back through the clip, the fake camera and a worker: the only
   // number here that did not travel over the network (src/fmt.h).
   {
-    const v = (phy2 ? REPICK : SUBCH) / 8, ok = s.bandFps === FD && s.bandVersion === v;
+    const v = versionOf(phy2 ? REPICK : SUBCH), ok = s.bandFps === FD && s.bandVersion === v;
     console.log(`band read through the lens: version ${s.bandVersion}, ${s.bandFps} fps stated  ${ok ? "as painted" : `WRONG, the clip was painted at version ${v}, ${FD} fps`}`);
     if (!ok) process.exitCode = 1;
   }
   // ai: A re-pick: each half's version read and decoded at the display's rate in some window of its own (a window is 5 s).
-  if (phy2) for (const [v, lab] of [[SUBCH / 8, phy.label], [REPICK / 8, phy2.label]]) {
+  if (phy2) for (const [v, lab] of [[versionOf(SUBCH), phy.label], [versionOf(REPICK), phy2.label]]) {
     const mine = s.rows.filter(([, r]) => r.bandVersion === v), best = Math.max(0, ...mine.map(([, r]) => r.decodedFps ?? 0)), ok = best >= 0.9 * FD;
     console.log(`re-pick, ${lab} (version ${v}): ${mine.length} rows read its word, at best ${best.toFixed(1)} of ${FD} fps decoded with new data  ${ok ? "ok" : "FAILED"}`);
     if (!ok) process.exitCode = 1;

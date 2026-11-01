@@ -17,11 +17,15 @@ await liz.init(undefined, { build: BUILD });
 
 test("version and vector paths", () => {
   assert.match(liz.version(), /^\d+\.\d+\.\d+$/);
-  // ai: one block a frame is no format (LIZARD-16 the smallest), and a ring past the three is none
-  assert.throws(() => liz.geometry({ blocks: 1 }));
-  assert.throws(() => new liz.Encoder({ blocks: 1 }));
-  assert.throws(() => liz.geometry({ blocks: 2, ring: liz.RINGS }));
-  assert.equal(liz.blocksFor(1), 0);
+  // ai: sizes 0 to 3 and past LIZARD-1024 are no format (LIZARD-64, size 4, the smallest), and a ring past the three is none
+  assert.throws(() => liz.geometry({ blocks: 0 }));
+  assert.throws(() => liz.geometry({ blocks: 3 }));
+  assert.throws(() => new liz.Encoder({ blocks: liz.MAX_BLOCKS + 1 }));
+  assert.throws(() => liz.geometry({ blocks: 4, ring: liz.RINGS }));
+  assert.equal(liz.blocksFor(0), 0);
+  assert.equal(liz.blocksFor(liz.MAX_BLOCKS + 1), 0);
+  assert.equal(liz.blocksFor(3), 0);
+  assert.equal(liz.blocksFor(4), 7);
   assert.equal(liz.simd(), BUILD !== "mvp", BUILD === "mvp" ? "the MVP build's scalar paths" : "the codec's vector paths in the wasm build");
 });
 
@@ -37,8 +41,8 @@ test("the format arithmetic is the web sender's", { skip: noSim }, async () => {
   let rows = 0;
   for (let r = 0; r < liz.RINGS; r++)
     for (let b = liz.MIN_BLOCKS; b <= liz.MAX_BLOCKS; b++) {
-      assert.equal(liz.roomFor(b, r), ROOM_FOR(8 * b, r), `room for ${b} blocks, ring ${r}`);
-      assert.equal(liz.geometry({ blocks: b, ring: r }).n, N_FOR(8 * b));
+      assert.equal(liz.roomFor(b, r), ROOM_FOR(16 * b, r), `room for ${b} blocks, ring ${r}`);
+      assert.equal(liz.geometry({ blocks: b, ring: r }).n, N_FOR(16 * b));
       rows++;
     }
   for (const codes of [1, 2])
@@ -47,7 +51,7 @@ test("the format arithmetic is the web sender's", { skip: noSim }, async () => {
         for (let h = 200; h <= 2200; h += 211) {
           const gf = codes > 1 ? ((codes - 1) * 12) / (MODULES(256, r) + 2 * OB_QUIET) : 0;
           const room = Math.max(64, Math.min(w / (codes + gf), h));
-          assert.equal(liz.pick(w, h, { codes, ring: r }), pickVersion(room, 1024, r).subch / 8, `pick ${w} x ${h}`);
+          assert.equal(liz.pick(w, h, { codes, ring: r }), pickVersion(room, 1024, r).subch / 16, `pick ${w} x ${h}`);
           rows++;
         }
   // ai: every size in every ring, then 22 widths by 10 heights, one code and two, in every ring
@@ -67,7 +71,7 @@ test("the test stream in every ring, one code and two", () => {
   for (const codes of [1, 2])
     for (let ring = 0; ring < liz.RINGS; ring++) {
       // ai: a fixed first id: the C's own misses of a clean frame (about 1 in 200) are measured elsewhere
-      const s = new liz.Sender({ test: true, firstId: 1 + 1000 * ring + 100 * codes }, { blocks: 26, ring, codes });
+      const s = new liz.Sender({ test: true, firstId: 1 + 1000 * ring + 100 * codes }, { blocks: 13, ring, codes });
       const r = new liz.Receiver({ layout: codes });
       for (let i = 0; i < 3; i++) {
         const { data } = s.frame("grey");
@@ -76,7 +80,7 @@ test("the test stream in every ring, one code and two", () => {
         const blocks = got.decoded.reduce((n, d) => n + d.count, 0);
         assert.equal(blocks, g.frameBlocks, `ring ${ring}, ${codes} codes, frame ${i}: every block`);
         assert.ok(got.verdict.test && got.verdict.bad === 0, "judged the test stream's");
-        assert.equal(r.decoder.held, 26, "the held word");
+        assert.equal(r.decoder.held, 13, "the held word");
       }
       s.free(); r.free();
     }
@@ -95,7 +99,7 @@ function cBytes(n) {
 
 test("a 5 MB file through two codes, the native library's root", () => {
   const bytes = cBytes(5000000);
-  const s = new liz.Sender({ bytes, name: "roundtrip.bin", type: "application/octet-stream" }, { blocks: 60, codes: 2 });
+  const s = new liz.Sender({ bytes, name: "roundtrip.bin", type: "application/octet-stream" }, { blocks: 30, codes: 2 });
   const r = new liz.Receiver({ layout: 2 });
   assert.equal(s.info.root, "30859af3062484f3ecb237460cf24e8a44a88a8cd4b1431d02d9d0d9934a202f", "the sender's root, the native's");
   let frames = 0;
@@ -112,7 +116,7 @@ test("a 5 MB file through two codes, the native library's root", () => {
   assert.ok(s.info.sent > 0 && s.info.sent <= s.info.length + 64, `the bytes as they go, ${s.info.sent}`);
   assert.equal(p.sent, s.info.sent, "the receiver's bytes as they go, the sender's");
   assert.equal(p.sentIn, p.sent, "all of them in");
-  assert.equal(liz.blocksFor(60), s.geometry.frameBlocks / 2, "the profile's blocks a symbol");
+  assert.equal(liz.blocksFor(30), s.geometry.frameBlocks / 2, "the profile's blocks a symbol");
   assert.equal(f.name, "roundtrip.bin");
   assert.deepEqual(Buffer.from(f.bytes), Buffer.from(bytes));
   s.free(); r.free();
@@ -122,8 +126,8 @@ test("this build's paint against the native build's", { skip: !process.env.LIZ_N
   const dir = process.env.LIZ_NATIVE_DUMP;
   for (const codes of [1, 2])
     for (let ring = 0; ring < liz.RINGS; ring++) {
-      const native = new Uint8Array(readFileSync(`${dir}/paint-26-${ring}-${codes}.grey`));
-      const s = new liz.Sender({ test: true, firstId: 1 }, { blocks: 26, ring, codes }), g = s.geometry;
+      const native = new Uint8Array(readFileSync(`${dir}/paint-13-${ring}-${codes}.grey`));
+      const s = new liz.Sender({ test: true, firstId: 1 }, { blocks: 13, ring, codes }), g = s.geometry;
       const mine = s.frame("grey").data;
       assert.equal(mine.length, native.length);
       // ai: the picture square of each code: its first sample (QUIET + 15 modules) to span modules on

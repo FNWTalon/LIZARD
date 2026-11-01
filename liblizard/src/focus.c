@@ -13,7 +13,11 @@ struct focus_ws {
   double sx2, sq2;                  // their squared norms
   float *amp;                       // per sub-channel, the magnitude its coefficients are sent at (focus.h, tilt)
   double power;                     // the sum of their squares over every coefficient
-  int8_t *llr; uint8_t *bits, *data;
+  uint8_t *bits, *data;
+  // ai: The last decode's soft values for every slot of the frame (subch x 640, pos order), each sub-channel's
+  // ai: information estimate, and its rms axis value sqrt(m2 / 2) (0 where it read nothing): a block reads its
+  // ai: slots, its estimate and its pilots from these whatever sub-channels its slots fall in.
+  int8_t *llrf; double *sub_est; float *sub_rms;
   // The bit map (focus.h FOCUS_BITMAP): the whitening bit of every slot of the frame, one a byte in pos order, two
   // slots a coefficient; each tier's slot to codeword bit permutation; and the slot-order and codeword-order
   // buffers the map is applied between.
@@ -59,9 +63,9 @@ static double axis_info(double g) { return g > 0 ? pow(1 - pow(2, -0.3073 * pow(
 
 typedef struct { int r2, u, v; } coef_t;
 
-// Bits block b is sent on (two a coefficient), and the most any block of the frame is.
-static int block_bits(const focus_t *f, int b) { return f->tier[f->block_tier[b]].subs * FOCUS_SUB * 2; }
-static int max_bits(const focus_t *f) { int m = 0; for (int t = 0; t < f->tiers; t++) if (f->tier[t].subs * FOCUS_SUB * 2 > m) m = f->tier[t].subs * FOCUS_SUB * 2; return m; }
+// Slots block b is sent on (two a coefficient), and the most any block of the frame is.
+static int block_bits(const focus_t *f, int b) { return f->tier[f->block_tier[b]].slots; }
+static int max_bits(const focus_t *f) { int m = 0; for (int t = 0; t < f->tiers; t++) if (f->tier[t].slots > m) m = f->tier[t].slots; return m; }
 static int max_k(const focus_t *f) { int m = 0; for (int t = 0; t < f->tiers; t++) if (f->code[t].k > m) m = f->code[t].k; return m; }
 // ai: the longest codeword among the tiers: more than its block's slots where a code has bits never sent (ldpc.h np)
 static int max_n(const focus_t *f) { int m = 0; for (int t = 0; t < f->tiers; t++) if (f->code[t].n > m) m = f->code[t].n; return m; }
@@ -77,8 +81,8 @@ static void whiten_fill(uint8_t *out, int n) {
 }
 static int gcd(int a, int b) { while (b) { const int t = a % b; a = b; b = t; } return a; }
 // Slot i of a block carries sent bit perm[i], which is codeword bit np + perm[i] (np the bits the code never sends,
-// 93 at 7/8, 0 elsewhere): n here is the sent length. Slot i takes bit i P mod n, P near n over the golden ratio and
-// prime to n: every run of the codeword, a circulant's z bits (106 at 3/4) or the parity chain, lands spread over the
+// 128 at 7/8, 0 elsewhere): n here is the sent length. Slot i takes bit i P mod n, P near n over the golden ratio and
+// prime to n: every run of the codeword, a circulant's z bits (128) or the parity chain, lands spread over the
 // whole ring (focus.h FOCUS_BITMAP).
 static void perm_fill(int *perm, int n) {
   int P = (int)(0.3819660113 * n + 0.5);
@@ -88,7 +92,7 @@ static void perm_fill(int *perm, int n) {
 // A block's codeword onto its slots: slot i = codeword bit perm[i], whitened; the slots past the codeword carry a
 // ai: bit of the painted picture's count (the pilots, focus_parity: bit 0 on an even block b, bit 1 on an odd one;
 // ai: the count 0 before 2026-09-30, one bit for every block until 2026-10-01), whitened too. first is the block's
-// first coefficient.
+// first coefficient (its first slot over 2: every block's slots are even).
 static void map_out(const focus_t *f, const struct focus_ws *w, int t, int b, int first, int nb, const uint8_t *cw, uint8_t *slot) {
   const int nt = f->code[t].nt, np = f->code[t].np, *perm = w->perm[t];
   const uint8_t q = (uint8_t)((f->parity >> (b & 1)) & 1);
@@ -107,9 +111,9 @@ static void map_in(const focus_t *f, const struct focus_ws *w, int t, int first,
 // ai: The grid's shift from the pilots (2026-10-01; the format paints them whatever the phone, so a decoder may steer
 // ai: by them). A grid that sits (dx, dy) samples off turns coefficient (u, v) by
 // ai: 2 pi (u dx + v dy) / n, which costs the outer sub-channels their soft values (0.2 of a sample is 0.3 rad at
-// ai: a radius of n / 4). Every block's tail holds 16 coefficients whose symbols are known up to one sign, the
-// ai: block's bit of the painted count (SPEC 7.3), at the top of its last sub-channel, so over a frame's blocks
-// ai: they sit at every radius the data does. For each, z is what was read times the conjugate of what was sent,
+// ai: a radius of n / 4). A 3/4 block's tail holds 16 coefficients (a 7/8 block's 8) whose symbols are known up to
+// ai: one sign, the block's bit of the painted count (SPEC 7.3), its last slots, so over a frame's inner tiers they
+// ai: sit at every radius the 7/8 and 3/4 blocks do. For each, z is what was read times the conjugate of what was sent,
 // ai: with the block's sign taken from its own pilots' sum: its imaginary part over its real one is the turn. The
 // ai: shift is the least squares fit of zi = k zr (u dx + v dy), k = 2 pi / n (each coefficient weighted by its own
 // ai: zr, so one that noise turned far counts little), fitted twice, the second time about the first's answer.
@@ -135,7 +139,7 @@ static int pilot_align(const focus_t *f, struct focus_ws *w, float d[2]) {
     a = b = c = p = q = yy = 0; used = 0;
     for (int blk = 0; blk < f->blocks; blk++) {
       const ldpc_t *code = &f->code[f->block_tier[blk]];
-      const int nb = block_bits(f, blk), first = f->block_sub[blk] * FOCUS_SUB;
+      const int nb = block_bits(f, blk), first = f->block_slot[blk] / 2;
       const uint8_t *wh = w->white + 2 * (size_t)first;
       if (code->nt >= nb) continue;
       // ai: the block's sign: its pilots' own sum, read at the shift so far
@@ -181,8 +185,9 @@ static int ws_init(focus_t *f) {
   w->wre = malloc(sn * sizeof(float)); w->wim = malloc(sn * sizeof(float));
   float *tab = malloc((size_t)6 * n * sizeof(float));
   const size_t nc = (size_t)max_n(f) > nb ? (size_t)max_n(f) : nb;   // ai: a codeword's bits, or a block's slots, whichever is more
-  w->llr = malloc(nc); w->bits = malloc(nc); w->data = malloc((size_t)max_k(f) + 8);
+  w->bits = malloc(nc); w->data = malloc((size_t)max_k(f) + 8);
   w->slot = malloc(nc); w->llr2 = malloc(nc); w->white = malloc((size_t)f->subch * FOCUS_SUB * 2);
+  w->llrf = malloc((size_t)f->subch * FOCUS_SUB * 2); w->sub_est = malloc((size_t)f->subch * sizeof(double)); w->sub_rms = malloc((size_t)f->subch * sizeof(float));
   w->amp = malloc((size_t)f->subch * sizeof(float));
   w->blk_its = calloc((size_t)f->blocks, 1); w->blk_est = calloc((size_t)f->blocks, sizeof(float)); w->blk_pilot = calloc((size_t)f->blocks, sizeof(float));
   w->rot = malloc((size_t)2 * ALIGN_TURNS * sizeof(float));
@@ -192,7 +197,7 @@ static int ws_init(focus_t *f) {
   w->fmt_bytes = ob_fmt_bytes(side_mod, f->frame.reserve);
   w->fmt_q = w->fmt_cells ? malloc((size_t)4 * w->fmt_cells * sizeof(float)) : 0;
   double *e = malloc((size_t)2 * n * sizeof(double));
-  if (!w->tre || !w->tim || !w->wre || !w->wim || !tab || !w->llr || !w->bits || !w->data || !e || !w->amp || !w->blk_its || !w->blk_est || !w->blk_pilot || (w->fmt_cells && !w->fmt_q) || !w->slot || !w->llr2 || !w->white) { free(tab); free(e); return -1; }
+  if (!w->tre || !w->tim || !w->wre || !w->wim || !tab || !w->bits || !w->data || !e || !w->amp || !w->blk_its || !w->blk_est || !w->blk_pilot || (w->fmt_cells && !w->fmt_q) || !w->slot || !w->llr2 || !w->white || !w->llrf || !w->sub_est || !w->sub_rms) { free(tab); free(e); return -1; }
   whiten_fill(w->white, f->subch * FOCUS_SUB * 2);
   for (int j = 0; j < f->subch; j++) { w->amp[j] = f->tilt > 0 && f->subch > 1 ? (float)pow(10.0, -f->tilt * j / (20.0 * (f->subch - 1))) : 1.0f; w->power += (double)FOCUS_SUB * w->amp[j] * w->amp[j]; }
   w->cx = tab; w->qx = tab + n; w->x1r = tab + 2 * n; w->x1i = tab + 3 * n; w->x2r = tab + 4 * n; w->x2i = tab + 5 * n;
@@ -214,13 +219,13 @@ static int ws_init(focus_t *f) {
 // The word restates this focus_t rather than being handed to us, so it cannot come to disagree with what is
 // painted. The display rate is the exception, being a property of the sequence and not of this frame:
 // focus_fmt_fps sets it and it survives a repaint. Everything else follows from the format, and the fountain's
-// header is payload. A configuration the word cannot express (a sub-channel count that is not a multiple of 8, or one
-// under 16, which only focus_init_tiers makes) blanks the band instead: a receiver that finds nothing there knows it
+// header is payload. A configuration the word cannot express (a sub-channel count that is not a multiple of 16,
+// FOCUS_STEP, which only focus_init_tiers makes) blanks the band instead: a receiver that finds nothing there knows it
 // was told nothing, where one that finds a lie does not.
 static void fmt_paint(focus_t *f) {
-  f->fmt.version = f->subch / FOCUS_GROUP;
+  f->fmt.version = f->subch / FOCUS_STEP;
   const int fb = ob_fmt_bytes(f->frame.w < f->frame.h ? f->frame.w : f->frame.h, f->frame.reserve);
-  if (f->subch % FOCUS_GROUP || !fb || ob_fmt_encode(&f->fmt, f->fmt_cw, fb)) memset(f->fmt_cw, 0, sizeof f->fmt_cw);
+  if (f->subch % FOCUS_STEP || !fb || ob_fmt_encode(&f->fmt, f->fmt_cw, fb)) memset(f->fmt_cw, 0, sizeof f->fmt_cw);
   ob_layout_set_fmt(&f->frame, f->fmt_cw);
 }
 
@@ -268,15 +273,16 @@ int focus_fmt_fps(focus_t *f, int fps) {
 
 static int init(focus_t *f, int n, int subch, const focus_tier_t *tier, int tiers, float clip, int span, float tilt) {
   memset(f, 0, sizeof *f);
-  // ai: n is a picture size of the ladder (FOCUS_PICTURES): 2^k or 3 x 2^k, the transform's sizes (fft.h), a 3 x 2^k at
-  // ai: 384 and up so n / 2 is whole 64-column strips (turn_pack writes rows v and n - v for v below vblocks * bw).
+  // ai: n is a picture size of the ladder (FOCUS_PICTURES): 2^k, 3 x 2^k, 9 x 2^7 (1152) or 5 x 2^8 (1280), the
+  // ai: transform's sizes (fft.h), each with n / 2 whole 64-column strips (turn_pack writes rows v and n - v for v below
+  // ai: vblocks * bw).
   int picture = 0;
   for (int i = 0; i < FOCUS_NPICTURES; i++) picture |= n == FOCUS_PICTURES[i];
   if (!picture || subch < 1) return -1;
   // Past the ladder's top the version is past what the word may state (fmt.h OB_FMT_VERSION_MAX), so fmt_paint would
-  // blank the band and the symbol could not describe itself. Refused. Below the ladder's foot, 16 sub-channels, the
+  // blank the band and the symbol could not describe itself. Refused. Below the ladder's foot, 64 sub-channels, the
   // format has no profile (focus_tiers_for) and focus_init refuses it; an experiment's tiers there paint the band blank.
-  if (subch > FOCUS_GROUP * OB_FMT_VERSION_MAX) return -1;
+  if (subch > FOCUS_STEP * OB_FMT_VERSION_MAX) return -1;
   // span: frame modules across the image, which names the ring (focus.h FOCUS_RING: span = 2 B), 0 the sender's
   // ai: default ring (FOCUS_RING_DEFAULT, the same for every picture); a ring's span puts this picture in that ring at
   // ai: any n (the 256 ring's span, 512, is wider than a 256 or 384 picture, which is then resampled up into it at one
@@ -334,21 +340,22 @@ static int init(focus_t *f, int n, int subch, const focus_tier_t *tier, int tier
   f->px = side * f->pxm;
   if (ob_layout_init(&f->frame, side)) { focus_free(f); return -1; }
   fmt_paint(f);
-  // One payload for every block: the smallest k among the tiers, whole bytes of it. A code with more room than
-  // that carries zeros there, which its decoder is told.
-  int k = 1 << 30;
+  // One payload for every block, FOCUS_BLOCK bytes and its CRC-32: 3840 bits, every code's k at 3/4, 2/3 and 1/2
+  // exactly; the 7/8 code's k of 3968 carries zeros past it, which its decoder is told.
   f->tiers = tiers;
   for (int t = 0; t < tiers; t++) {
     f->tier[t] = tier[t];
-    if (ldpc_init(&f->code[t], tier[t].subs * FOCUS_SUB * 2, tier[t].rate, 1)) { focus_free(f); return -1; }
+    f->tier[t].slots = focus_block_slots(tier[t].rate);
+    if (ldpc_init(&f->code[t], tier[t].rate) || f->code[t].k < 8 * (FOCUS_BLOCK + 4)) { focus_free(f); return -1; }
     f->blocks += tier[t].blocks;
-    if (f->code[t].k < k) k = f->code[t].k;
   }
-  f->block_bytes = k / 8 - 4;
-  f->block_tier = malloc((size_t)f->blocks * 3 * sizeof(int));
+  f->block_bytes = FOCUS_BLOCK;
+  f->block_tier = malloc((size_t)f->blocks * 2 * sizeof(int));
   if (!f->block_tier) { focus_free(f); return -1; }
-  f->block_sub = f->block_tier + f->blocks; f->block_bit = f->block_sub + f->blocks;
-  for (int t = 0, b = 0, sub = 0; t < tiers; t++) for (int q = 0; q < tier[t].blocks; q++, b++, sub += tier[t].subs) { f->block_tier[b] = t; f->block_sub[b] = sub; f->block_bit[b] = sub * FOCUS_SUB * 2; }
+  // ai: the blocks one after another from the frame's first slot, inner first, each its rate's slots; the rest padded
+  f->block_slot = f->block_tier + f->blocks;
+  for (int t = 0, b = 0, at = 0; t < tiers; t++) for (int q = 0; q < tier[t].blocks; q++, b++, at += f->tier[t].slots) { f->block_tier[b] = t; f->block_slot[b] = at; f->used = at + f->tier[t].slots; }
+  if (f->used > subch * FOCUS_SUB * 2) { focus_free(f); return -1; }
   if (ws_init(f)) { focus_free(f); return -1; }
   // ai: the bit map (focus.h FOCUS_BITMAP): each tier's slot to codeword bit permutation
   for (int t = 0; t < f->tiers; t++) {
@@ -361,33 +368,40 @@ static int init(focus_t *f, int n, int subch, const focus_tier_t *tier, int tier
 
 const int FOCUS_RING[FOCUS_RINGS] = { 64, 128, 256 };
 
-// ai: the profile's search: the blocks of every tier but the second (which fills), in tier order, each count's
-// ai: squared distance from its target percent summed, the least kept, the first of equals
-static void tier_search(int k, int n, const int *subs, const int *pct, int subch, int used, long long cost, int *cnt, long long *best, int *keep) {
+// ai: focus.h: a block's slots, its code's sent bits and its pilots (16 at 7/8, 32 at 3/4, none at 2/3 and 1/2)
+int focus_block_slots(int rate) {
+  const int nt = ldpc_sent_bits(rate);
+  return nt ? nt + (rate == 6 ? 16 : rate == 4 ? 32 : 0) : 0;
+}
+
+// ai: the profile's search: the blocks of every tier but the second (which fills, its remainder padded), in tier
+// ai: order, each count's squared distance from its target thousandths of the frame's slots summed, the least kept,
+// ai: the first of equals
+static void tier_search(int k, int n, const int *slots, const int *tgt, long long all, long long used, long long cost, int *cnt, long long *best, int *keep) {
   if (k == n) {
-    const int rest = subch - used;
-    if (rest < subs[1] || rest % subs[1]) return;
-    if (*best < 0 || cost < *best) { *best = cost; for (int t = 0; t < n; t++) keep[t] = cnt[t]; keep[1] = rest / subs[1]; }
+    const long long rest = all - used;
+    if (rest < slots[1]) return;
+    if (*best < 0 || cost < *best) { *best = cost; for (int t = 0; t < n; t++) keep[t] = cnt[t]; keep[1] = (int)(rest / slots[1]); }
     return;
   }
-  if (k == 1) { tier_search(2, n, subs, pct, subch, used, cost, cnt, best, keep); return; }
-  for (int a = 0; used + subs[k] * a <= subch - subs[1]; a++) {
-    const long long d = 100LL * subs[k] * a - (long long)pct[k] * subch;
+  if (k == 1) { tier_search(2, n, slots, tgt, all, used, cost, cnt, best, keep); return; }
+  for (int a = 0; used + (long long)slots[k] * a <= all - slots[1]; a++) {
+    const long long d = 1000LL * slots[k] * a - (long long)tgt[k] * all;
     cnt[k] = a;
-    tier_search(k + 1, n, subs, pct, subch, used + subs[k] * a, cost + d * d, cnt, best, keep);
+    tier_search(k + 1, n, slots, tgt, all, used + (long long)slots[k] * a, cost + d * d, cnt, best, keep);
   }
 }
 
 int focus_tiers_for(int subch, focus_tier_t tier[FOCUS_TIERS]) {
-  if (subch < FOCUS_GROUP * OB_FMT_VERSION_MIN || subch % FOCUS_GROUP || subch > FOCUS_GROUP * OB_FMT_VERSION_MAX) return 0;
+  if (subch < FOCUS_STEP * OB_FMT_VERSION_MIN || subch % FOCUS_STEP || subch > FOCUS_STEP * OB_FMT_VERSION_MAX) return 0;
   // ai: the tiers in order 7/8, 3/4 (filling), 2/3, 1/2, their counts least squares from the targets, the first of equals
-  static const int RATE[FOCUS_TIERS] = { 6, FOCUS_RATE, 3, 2 }, SUBS[FOCUS_TIERS] = { 7, FOCUS_GROUP, 9, 12 },
-                   PCT[FOCUS_TIERS] = { FOCUS_TIER_IN, 0, FOCUS_TIER_23, FOCUS_TIER_OUT };
-  int cnt[FOCUS_TIERS] = { 0 }, keep[FOCUS_TIERS] = { 0 };
+  static const int RATE[FOCUS_TIERS] = { 6, FOCUS_RATE, 3, 2 }, TGT[FOCUS_TIERS] = { FOCUS_TIER_IN, 0, FOCUS_TIER_23, FOCUS_TIER_OUT };
+  int slots[FOCUS_TIERS], cnt[FOCUS_TIERS] = { 0 }, keep[FOCUS_TIERS] = { 0 };
+  for (int q = 0; q < FOCUS_TIERS; q++) slots[q] = focus_block_slots(RATE[q]);
   long long best = -1;
-  tier_search(0, FOCUS_TIERS, SUBS, PCT, subch, 0, 0, cnt, &best, keep);
+  tier_search(0, FOCUS_TIERS, slots, TGT, (long long)subch * FOCUS_SUB * 2, 0, 0, cnt, &best, keep);
   int t = 0;
-  for (int q = 0; q < FOCUS_TIERS; q++) if (keep[q]) tier[t++] = (focus_tier_t){ RATE[q], keep[q], SUBS[q] };
+  for (int q = 0; q < FOCUS_TIERS; q++) if (keep[q]) tier[t++] = (focus_tier_t){ RATE[q], keep[q], slots[q] };
   return t;
 }
 int focus_blocks_for(int subch) {
@@ -402,20 +416,23 @@ int focus_init(focus_t *f, int n, int subch, float clip, int span, float tilt) {
   focus_tier_t tier[FOCUS_TIERS];
   const int tiers = focus_tiers_for(subch, tier);
   if (!tiers) { memset(f, 0, sizeof *f); return -1; }
-  // ai: a block is the transfer's 473 B (xfer.h XFER_BLOCK) at every rate: the profile always holds a 3/4 tier, the
-  // ai: code with the least room, and the roomier codes carry the zeros past it, known to the decoder
+  // ai: a block is the transfer's 476 B (xfer.h XFER_BLOCK) at every rate: with its CRC-32 the k of the 3/4, 2/3 and
+  // ai: 1/2 codes, and the 7/8 code carries zeros past it, known to the decoder
   return init(f, n, subch, tier, tiers, clip, span, tilt);
 }
 
 int focus_init_tiers(focus_t *f, int n, const focus_tier_t *tier, int tiers, float clip, int span, float tilt) {
-  int subch = 0;
+  long long used = 0;
   if (tiers < 1 || tiers > FOCUS_TIERS) { memset(f, 0, sizeof *f); return -1; }
-  for (int t = 0; t < tiers; t++) { if (tier[t].blocks < 1 || tier[t].subs < 1) { memset(f, 0, sizeof *f); return -1; } subch += tier[t].blocks * tier[t].subs; }
-  const int r = init(f, n, subch, tier, tiers, clip, span, tilt);
-  // ai: 473 B whatever the tiers, as focus_init (an experiment's frame is the transfer's block too); a tier list of
-  // ai: roomier codes alone (7/8 only, 484 B) is no longer one size larger
-  if (!r && f->block_bytes > 473) f->block_bytes = 473;
-  return r;
+  for (int t = 0; t < tiers; t++) {
+    const int sl = focus_block_slots(tier[t].rate);
+    if (tier[t].blocks < 1 || !sl) { memset(f, 0, sizeof *f); return -1; }
+    used += (long long)tier[t].blocks * sl;
+  }
+  // ai: the fewest sub-channels that hold the blocks (the last one's remainder padded)
+  const long long per = FOCUS_SUB * 2, subch = (used + per - 1) / per;
+  if (subch > FOCUS_STEP * OB_FMT_VERSION_MAX) { memset(f, 0, sizeof *f); return -1; }
+  return init(f, n, (int)subch, tier, tiers, clip, span, tilt);
 }
 
 void focus_block_stats(const focus_t *f, const int8_t **its, const float **est) { *its = f->ws ? f->ws->blk_its : 0; *est = f->ws ? f->ws->blk_est : 0; }
@@ -492,7 +509,7 @@ int focus_anchor_geom(const focus_t *f, int out[8]) {
 
 void focus_free(focus_t *f) {
   struct focus_ws *w = f->ws;
-  if (w) { free(w->tre); free(w->tim); free(w->wre); free(w->wim); free(w->cx); free(w->llr); free(w->bits); free(w->data); free(w->amp); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < FOCUS_TIERS; t++) free(w->perm[t]); free(w); }
+  if (w) { free(w->tre); free(w->tim); free(w->wre); free(w->wim); free(w->cx); free(w->bits); free(w->data); free(w->amp); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->llrf); free(w->sub_est); free(w->sub_rms); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < FOCUS_TIERS; t++) free(w->perm[t]); free(w); }
   for (int t = 0; t < FOCUS_TIERS; t++) ldpc_free(&f->code[t]);
   free(f->pos); free(f->block_tier); ob_layout_free(&f->frame); memset(f, 0, sizeof *f);
 }
@@ -712,8 +729,8 @@ void focus_encode(const focus_t *f, const uint8_t *blocks, float *drive) {
   memset(w->tre, 0, tn * sizeof(float)); memset(w->tim, 0, tn * sizeof(float));
   for (int b = 0; b < f->blocks; b++) {
     const uint8_t *src = blocks + (size_t)b * f->block_bytes;
-    // nb: the bits the block is sent on. first: its first coefficient, in pos order.
-    const int nb = block_bits(f, b), first = f->block_sub[b] * FOCUS_SUB;
+    // nb: the slots the block is sent on. first: its first coefficient, in pos order.
+    const int nb = block_bits(f, b), first = f->block_slot[b] / 2;
     memset(bits, 0, (size_t)nb);
     const ldpc_t *code = &f->code[f->block_tier[b]];
     int B = f->block_bytes;
@@ -732,6 +749,14 @@ void focus_encode(const focus_t *f, const uint8_t *blocks, float *drive) {
       w->tre[p] = bits[2 * s] ? -a : a; w->tim[p] = bits[2 * s + 1] ? -a : a;
     }
     if (w->dbg_sym) for (int i = 0; i < nb; i++) w->dbg_sym[2 * (size_t)first + i] = bits[i] ? -1 : 1;
+  }
+  // ai: the padding past the last block (focus.h): the whitening alone, so every coefficient the frame holds is sent
+  // ai: at its magnitude, as the clipping level below assumes
+  for (int s = f->used / 2; s < f->subch * FOCUS_SUB; s++) {
+    const int p = f->pos[s];
+    const float a = 0.70710678f * w->amp[s / FOCUS_SUB];
+    w->tre[p] = w->white[2 * s] ? -a : a; w->tim[p] = w->white[2 * s + 1] ? -a : a;
+    if (w->dbg_sym) { w->dbg_sym[2 * (size_t)s] = w->white[2 * s] ? -1 : 1; w->dbg_sym[2 * (size_t)s + 1] = w->white[2 * s + 1] ? -1 : 1; }
   }
   // The frame, a module's run of pixels at a time, outside the modules the picture and its guard interval are
   // resampled over below: the ring is 15% of a LIZARD-1024 drive, and painting the whole of it was 7 of 25 ms.
@@ -869,8 +894,10 @@ int focus_acquire_quad(const focus_t *f, const uint8_t *img, int iw, int ih, flo
 // ai: The picture size a format takes, sim/lizard_pick.mjs N_FOR: the first of FOCUS_PICTURES that oversamples its top
 // ai: ring by half again (n >= 3R), the last where none does. The sizes are 2^k and 3 x 2^k (since 2026-09-27), so no
 // ai: step is more than 1.5 times the last and n / 2R stays between 1.5 and 2.24; the powers of two alone put
-// ai: LIZARD-144 at 1024 (2.99). A receiver reads n off the word's version through this.
-const int FOCUS_PICTURES[FOCUS_NPICTURES] = { 256, 384, 512, 768, 1024, 1536 };
+// ai: LIZARD-144 at 1024 (2.99). 1152 and 1280 (since 2026-10-29) split the step from 1024 to 1536: LIZARD-576 to -720
+// ai: and -736 to -880 paint and read 0.56 and 0.69 of 1536's samples, the CPU painter and the C's sampler and transform
+// ai: the cheaper by that. A receiver reads n off the word's version through this.
+const int FOCUS_PICTURES[FOCUS_NPICTURES] = { 256, 384, 512, 768, 1024, 1152, 1280, 1536 };
 int focus_n_for(int subch) {
   const double r = sqrt(2.0 * FOCUS_SUB * subch / 3.14159265358979323846);
   for (int i = 0; i < FOCUS_NPICTURES; i++) if (FOCUS_PICTURES[i] >= 3 * r) return FOCUS_PICTURES[i];
@@ -1051,7 +1078,6 @@ have_llr:
   t0 = ob_now_ms();
 
   const float *re = w->tre, *imag = w->tim;
-  int8_t *llr = w->llr;
   uint8_t *bits = w->bits;
   int good = 0;
   // ai: each block's pilots (focus_pilot), NaN until they are read
@@ -1063,63 +1089,73 @@ have_llr:
     const int all = f->subch * FOCUS_SUB;
     for (int i = 0; i < all; i++) { const int p = f->pos[i]; turned(f, w, p, w->align[0], w->align[1], &w->tre[p], &w->tim[p]); }
   }
+  // Blur scales each ring differently, so signal and noise are estimated per sub-channel from the second and fourth
+  // moments of |y| (QPSK in complex Gaussian noise), and every slot of the frame takes its sub-channel's soft value
+  // scale; a block reads its slots out of the frame's whatever sub-channels they fall in. Quantised elsewhere, the soft
+  // values arrive the same way, per global sub-channel, 2 * FOCUS_SUB to each: everything after this point is the same
+  // either way, which is what keeps the two paths from drifting.
+  {
+    const double tl = ob_now_ms();
+    if (ext_llr) {
+      memcpy(w->llrf, ext_llr, (size_t)f->subch * 2 * FOCUS_SUB);
+      for (int j = 0; j < f->subch; j++) { w->sub_est[j] = ext_est[j]; w->sub_rms[j] = 0; }
+    } else for (int j = 0; j < f->subch; j++) {
+      const int *pp = f->pos + j * FOCUS_SUB;
+      float gr[FOCUS_SUB], gi[FOCUS_SUB];
+      double m2 = 0, m4 = 0;
+      for (int s = 0; s < FOCUS_SUB; s++) { gr[s] = re[pp[s]]; gi[s] = imag[pp[s]]; }
+      for (int s = 0; s < FOCUS_SUB; s++) { double e = (double)gr[s] * gr[s] + (double)gi[s] * gi[s]; m2 += e; m4 += e * e; }
+      m2 /= FOCUS_SUB; m4 /= FOCUS_SUB;
+      w->sub_rms[j] = m2 > 0 ? (float)sqrt(m2 / 2) : 0;
+      double a2 = 2 * m2 * m2 - m4;
+      a2 = a2 > 0 ? sqrt(a2) : 0;
+      double nv = m2 - a2;
+      if (nv < 0.02 * m2) nv = 0.02 * m2;
+      w->sub_est[j] = axis_info(a2 / nv);
+      // Per axis: amplitude sqrt(a2 / 2), noise variance nv / 2, so LLR = 2 sqrt(2 a2) y / nv.
+      const float k = (float)(0.7 * 2 * sqrt(2 * a2) / nv);
+      int8_t *out = w->llrf + 2 * j * FOCUS_SUB;
+      for (int s = 0; s < FOCUS_SUB; s++) {
+        float lr = k * gr[s], li = k * gi[s];
+        lr = lr > 10 ? 10 : lr < -10 ? -10 : lr; li = li > 10 ? 10 : li < -10 ? -10 : li;
+        out[2 * s] = (int8_t)nearbyintf(lr * 8); out[2 * s + 1] = (int8_t)nearbyintf(li * 8);
+      }
+    }
+    ob_prof_ms[PROF_F_LLR] += ob_now_ms() - tl;
+  }
   for (int b = 0; b < f->blocks; b++) {
-    const int nb = block_bits(f, b), first = f->block_sub[b] * FOCUS_SUB;
-    const int *pos = f->pos + first;
+    const int nb = block_bits(f, b), s0 = f->block_slot[b], first = s0 / 2;
     double tb = ob_now_ms();
     {
-      // Blur scales each ring differently, so signal and noise are estimated per sub-channel
-      // from the second and fourth moments of |y| (QPSK in complex Gaussian noise).
       const ldpc_t *code = &f->code[f->block_tier[b]];
+      const int8_t *llr = w->llrf + s0;
+      // ai: the block's estimate: its sub-channels' information, each by the share of the block's slots it holds
       double info = 0;
-      // Quantised elsewhere: the soft values arrive per GLOBAL sub-channel, 2 * FOCUS_SUB
-      // to each, so this block's run is contiguous from its first one. Everything after this point is the same
-      // either way, which is what keeps the two paths from drifting.
-      if (ext_llr) {
-        const int subs = f->tier[f->block_tier[b]].subs, s0 = f->block_sub[b];
-        memcpy(llr, ext_llr + (size_t)s0 * 2 * FOCUS_SUB, (size_t)(nb < subs * 2 * FOCUS_SUB ? nb : subs * 2 * FOCUS_SUB));
-        for (int g = 0; g < subs; g++) info += ext_est[s0 + g];
-        w->blk_est[b] = (float)(info / subs); w->blk_its[b] = 0;
-        if (armed) hsh = fnv(hsh, llr, (size_t)nb);
-        ob_prof_ms[PROF_F_LLR] += ob_now_ms() - tb; tb = ob_now_ms();
-      } else {
-      for (int g = 0; g < f->tier[f->block_tier[b]].subs; g++) {
-        const int *pp = pos + g * FOCUS_SUB;
-        float gr[FOCUS_SUB], gi[FOCUS_SUB];
-        double m2 = 0, m4 = 0;
-        for (int s = 0; s < FOCUS_SUB; s++) { gr[s] = re[pp[s]]; gi[s] = imag[pp[s]]; }
-        for (int s = 0; s < FOCUS_SUB; s++) { double e = (double)gr[s] * gr[s] + (double)gi[s] * gi[s]; m2 += e; m4 += e * e; }
-        m2 /= FOCUS_SUB; m4 /= FOCUS_SUB;
-        // ai: The pilots (SPEC 7.3): this block's slots past the codeword, where they fall in this sub-channel (the top
-        // ai: 16 coefficients of its last), carry the whitening XOR a bit of the painted picture's count. Their axis
-        // ai: values against the whitening's signs, in units of the sub-channel's rms axis value sqrt(m2 / 2), which a
-        // ai: straddle leaves as it is: +1 where the block's bit is 0, -1 where it is 1, 1 - 2 f on a mix (f from a
-        // ai: picture whose bit is the other).
-        if (code->nt < nb && m2 > 0 && code->nt / 2 >= g * FOCUS_SUB && code->nt / 2 < (g + 1) * FOCUS_SUB) {
-          const uint8_t *wh = w->white + 2 * (size_t)first;
-          double cs = 0;
-          int t = 0;
-          for (int i = code->nt; i < nb && i / 2 < (g + 1) * FOCUS_SUB; i++, t++) cs += (wh[i] ? -1.0 : 1.0) * ((i & 1) ? gi[i / 2 - g * FOCUS_SUB] : gr[i / 2 - g * FOCUS_SUB]);
-          w->blk_pilot[b] = (float)(cs / t / sqrt(m2 / 2));
-        }
-        double a2 = 2 * m2 * m2 - m4;
-        a2 = a2 > 0 ? sqrt(a2) : 0;
-        double nv = m2 - a2;
-        if (nv < 0.02 * m2) nv = 0.02 * m2;
-        info += axis_info(a2 / nv);
-        // Per axis: amplitude sqrt(a2 / 2), noise variance nv / 2, so LLR = 2 sqrt(2 a2) y / nv.
-        const float k = (float)(0.7 * 2 * sqrt(2 * a2) / nv);
-        int8_t *out = llr + 2 * g * FOCUS_SUB;
-        for (int s = 0; s < FOCUS_SUB; s++) {
-          float lr = k * gr[s], li = k * gi[s];
-          lr = lr > 10 ? 10 : lr < -10 ? -10 : lr; li = li > 10 ? 10 : li < -10 ? -10 : li;
-          out[2 * s] = (int8_t)nearbyintf(lr * 8); out[2 * s + 1] = (int8_t)nearbyintf(li * 8);
-        }
+      for (int j = s0 / (2 * FOCUS_SUB); j * 2 * FOCUS_SUB < s0 + nb; j++) {
+        const int lo = s0 > 2 * FOCUS_SUB * j ? s0 : 2 * FOCUS_SUB * j, hi = s0 + nb < 2 * FOCUS_SUB * (j + 1) ? s0 + nb : 2 * FOCUS_SUB * (j + 1);
+        info += w->sub_est[j] * (hi - lo);
       }
-      w->blk_est[b] = (float)(info / f->tier[f->block_tier[b]].subs); w->blk_its[b] = 0;
+      w->blk_est[b] = (float)(info / nb); w->blk_its[b] = 0;
+      // ai: The pilots (SPEC 7.3): the block's slots past its codeword carry the whitening XOR a bit of the painted
+      // ai: picture's count. Their axis values against the whitening's signs, each in units of its own sub-channel's
+      // ai: rms axis value sqrt(m2 / 2) (a tail may run across two), averaged over the tail: +1 where the block's bit
+      // ai: is 0, -1 where it is 1, 1 - 2 f on a mix (f from a picture whose bit is the other). None where the soft
+      // ai: values were made elsewhere, or no sub-channel of the tail read anything.
+      if (!ext_llr && code->nt < nb) {
+        const uint8_t *wh = w->white + s0;
+        double cs = 0;
+        int got = 0;
+        for (int i = code->nt; i < nb; i++) {
+          const int gs = s0 + i, p = f->pos[gs / 2];
+          const float rms = w->sub_rms[gs / (2 * FOCUS_SUB)];
+          if (!(rms > 0)) continue;
+          cs += (wh[i] ? -1.0 : 1.0) * ((i & 1) ? imag[p] : re[p]) / rms;
+          got++;
+        }
+        if (got) w->blk_pilot[b] = (float)(cs / (nb - code->nt));
+      }
       if (armed) hsh = fnv(hsh, llr, (size_t)nb);
       ob_prof_ms[PROF_F_LLR] += ob_now_ms() - tb; tb = ob_now_ms();
-      }
       // A failed block used to burn all 30 iterations, up to 44% of a hard frame's decode. Two ways out, both set on
       // 78 000 blocks over 17 conditions and 5 configurations, so that not one block that
       // decodes is lost: a block whose sub-channels hold next to nothing is not tried (the estimate runs low on
@@ -1131,7 +1167,7 @@ have_llr:
       // here on the soft values are the code's (the bits never sent at 0).
       int8_t *cl = w->llr2;
       map_in(f, w, f->block_tier[b], first, llr, cl);
-      for (int i = (f->block_bytes + 4) * 8; i < code->k; i++) cl[i] = 127;   // the zeros a roomier code carries: known, and said so
+      for (int i = (f->block_bytes + 4) * 8; i < code->k; i++) cl[i] = 127;   // the zeros past the block in its code's k: known, and said so
       const int its = ldpc_decode_stall(code, cl, bits, 30, FOCUS_STALL_IT, FOCUS_STALL_RATIO);
       w->blk_its[b] = (int8_t)its;
       ob_prof_ms[PROF_F_LDPC] += ob_now_ms() - tb;
@@ -1198,15 +1234,19 @@ void focus_tables(const focus_t *f, float *out) {
 uint32_t ob_test_crc_hash(const uint8_t *p, int n) { return ob_crc32(p, n); }
 
 // The decline gate's arithmetic on the external path: est is one estimate a sub-channel (what the GPU's a2 and
-// nv give), and a block's is the mean over the sub-channels it owns, held to FOCUS_DECLINE of its code rate.
-// The sum is a double here because it is a double there, and the bar is near enough to the values to care.
+// nv give), and a block's is the mean over its slots of their sub-channels' (focus_finish_ext), held to FOCUS_DECLINE
+// of its code rate. The sum is a double here because it is a double there, and the bar is near enough to the values
+// to care.
 int ob_test_crc_gate(const focus_t *f, const float *est, float *blk_est, float *bar, uint8_t *declined) {
   for (int b = 0; b < f->blocks; b++) {
     const ldpc_t *code = &f->code[f->block_tier[b]];
-    const int subs = f->tier[f->block_tier[b]].subs, s0 = f->block_sub[b];
+    const int nb = block_bits(f, b), s0 = f->block_slot[b];
     double info = 0;
-    for (int g = 0; g < subs; g++) info += est[s0 + g];
-    blk_est[b] = (float)(info / subs);
+    for (int j = s0 / (2 * FOCUS_SUB); j * 2 * FOCUS_SUB < s0 + nb; j++) {
+      const int lo = s0 > 2 * FOCUS_SUB * j ? s0 : 2 * FOCUS_SUB * j, hi = s0 + nb < 2 * FOCUS_SUB * (j + 1) ? s0 + nb : 2 * FOCUS_SUB * (j + 1);
+      info += (double)est[j] * (hi - lo);
+    }
+    blk_est[b] = (float)(info / nb);
     bar[b] = FOCUS_DECLINE * (float)code->k / (float)code->nt;
     declined[b] = blk_est[b] < bar[b];
   }

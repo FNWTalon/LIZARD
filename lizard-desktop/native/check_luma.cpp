@@ -8,7 +8,7 @@
 // ai: refused, each after a whole frame decoded on the same handle, and the frames after them still decoding) and in
 // ai: the scan (each taken with a warning); bytes that are no JPEG, an empty frame, and the library named by
 // ai: LIZ_TURBOJPEG absent. Where no TurboJPEG loads, the cases after that one fail on Linux and skip with why on
-// ai: Windows and macOS, whose receivers do without it (checks.h jpegOptional). The clock (camera/clock.h): sleepUntil
+// ai: Windows and macOS, whose receivers do without it (checks.h jpegOptional). The clock (cam/clock.h): sleepUntil
 // ai: over 200 targets 0.5 to 20 ms ahead, never early and no later than the system's own precise sleep measured beside
 // ai: it, which is judged against what this machine measured in the same run, never a fixed figure. No arguments.
 #include <algorithm>
@@ -37,10 +37,10 @@
 #include <mach/mach_time.h>
 #endif
 
-#include "camera/camera.h"
-#include "camera/jpeg.h"
-#include "camera/luma.h"
-#include "camera/clock.h"
+#include "cam/camera.h"
+#include "cam/jpeg.h"
+#include "cam/luma.h"
+#include "cam/clock.h"
 #include "checks.h"
 
 namespace lizard::check {

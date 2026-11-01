@@ -1,6 +1,6 @@
 // ai: The app's sender off the phone (2026-10-01):
 // ai:   tx_check ids <file> <frames> <blocks a frame> <out>   the sending end's ids and blocks, frame after frame (the
-// ai:       ids little-endian, then each block's 469 bytes), for gen/xfer_tx_ref.mjs to hold against the JS sender's
+// ai:       ids little-endian, then each block's 472 bytes), for gen/xfer_tx_ref.mjs to hold against the JS sender's
 // ai:   tx_check paint <file | -> <subch> [frames] [threads] [store dir]   frames painted by the Sender (core/tx), each
 // ai:       decoded blind by the C (cpu/codec.h) from its luma: the word, every block verified; the test stream's ("-")
 // ai:       blocks held to SHAKE256 of their ids, a file's through the receiving end (rx/xfer_rx.h) until it is whole and
@@ -79,13 +79,13 @@ std::vector<uint8_t> slurp(const std::string& path) {
   fclose(f);
   return b;
 }
-// ai: count frames of the test stream's blocks from id 0, blocks x 473 B each (id then SHAKE256 of it)
+// ai: count frames of the test stream's blocks from id 0, blocks x 476 B each (id then SHAKE256 of it)
 std::vector<uint8_t> testBlocks(int count, int blocks) {
-  std::vector<uint8_t> b(static_cast<size_t>(count) * blocks * 473);
+  std::vector<uint8_t> b(static_cast<size_t>(count) * blocks * XFER_BLOCK);
   for (int t = 0; t < count * blocks; t++) {
-    uint8_t* o = b.data() + static_cast<size_t>(t) * 473;
+    uint8_t* o = b.data() + static_cast<size_t>(t) * XFER_BLOCK;
     for (int i = 0; i < 4; i++) o[i] = static_cast<uint8_t>(t >> 8 * i);
-    stream_fill(static_cast<uint32_t>(t), o + 4, 469);
+    stream_fill(static_cast<uint32_t>(t), o + 4, XFER_PAYLOAD);
   }
   return b;
 }
@@ -99,11 +99,11 @@ int main(int argc, char** argv) {
     const int frames = atoi(argv[3]), T = atoi(argv[4]);
     FILE* out = fopen(argv[5], "wb");
     std::vector<uint32_t> ids(T);
-    uint8_t b[469];
+    uint8_t b[XFER_PAYLOAD];
     for (int f = 0; f < frames; f++) {
       x.frameIds(ids.data(), T);
       fwrite(ids.data(), 4, T, out);
-      for (uint32_t id : ids) { x.block(id, b); fwrite(b, 1, 469, out); }
+      for (uint32_t id : ids) { x.block(id, b); fwrite(b, 1, XFER_PAYLOAD, out); }
     }
     fclose(out);
     printf("ids: %d frames of %d, chunks %u, lap %u, root %s\n", frames, T, x.chunks(), x.lap(), x.rootHex().c_str());
@@ -163,7 +163,7 @@ int main(int argc, char** argv) {
     if (!test) rx = std::make_unique<XferRx>(store);
     cpu_dec_t* d = cpu_dec_new(1536);
     const int top = cpu_dec_top(d), BB = cpu_dec_block_bytes(d);
-    std::vector<uint8_t> rgba(static_cast<size_t>(FW) * W * 4), luma(static_cast<size_t>(W) * W), blocks(static_cast<size_t>(top) * BB), ok(top), want(469);
+    std::vector<uint8_t> rgba(static_cast<size_t>(FW) * W * 4), luma(static_cast<size_t>(W) * W), blocks(static_cast<size_t>(top) * BB), ok(top), want(XFER_PAYLOAD);
     int held = 0, words = 0, faults = 0;
     long verified = 0, total = 0;
     std::unique_ptr<lizard::lizfile::Writer> runOut;
@@ -182,12 +182,12 @@ int main(int argc, char** argv) {
       const int got = cpu_dec_frame(d, luma.data(), W, W, held, blocks.data(), ok.data(), &fr);
       if (fr.word) { words++; held = fr.version; }
       verified += got; total += fr.total;
-      if (fr.version != wantSubch / 8 || got != wantBlocks) { faults++; if (faults < 5) printf("frame %d: word %d version %d, %d of %d blocks\n", k, fr.word, fr.version, got, fr.total); }
+      if (fr.version != wantSubch / FOCUS_STEP || got != wantBlocks) { faults++; if (faults < 5) printf("frame %d: word %d version %d, %d of %d blocks\n", k, fr.word, fr.version, got, fr.total); }
       for (int b = 0; b < fr.total; b++) {
         if (!ok[b]) continue;
         const uint8_t* blk = blocks.data() + static_cast<size_t>(b) * BB;
         const uint32_t id = blk[0] | blk[1] << 8 | blk[2] << 16 | static_cast<uint32_t>(blk[3]) << 24;
-        if (test) { stream_fill(id, want.data(), 469); if (memcmp(want.data(), blk + 4, 469)) { faults++; if (faults < 5) printf("frame %d block %d: id %u not its stream\n", k, b, id); } }
+        if (test) { stream_fill(id, want.data(), XFER_PAYLOAD); if (memcmp(want.data(), blk + 4, XFER_PAYLOAD)) { faults++; if (faults < 5) printf("frame %d block %d: id %u not its stream\n", k, b, id); } }
         else rx->take(blk);
       }
     }
@@ -288,7 +288,7 @@ int main(int argc, char** argv) {
     fclose(in);
     cpu_dec_t* d = cpu_dec_new(1536);
     const int top = cpu_dec_top(d), BB = cpu_dec_block_bytes(d);
-    std::vector<uint8_t> blocks(static_cast<size_t>(top) * BB), ok(top), want(469);
+    std::vector<uint8_t> blocks(static_cast<size_t>(top) * BB), ok(top), want(XFER_PAYLOAD);
     cpu_frame_t fr{};
     const int got = cpu_dec_frame(d, img.data(), iw, ih, held0, blocks.data(), ok.data(), &fr);
     int stream = 0;
@@ -296,11 +296,11 @@ int main(int argc, char** argv) {
       if (!ok[b]) continue;
       const uint8_t* blk = blocks.data() + static_cast<size_t>(b) * BB;
       const uint32_t id = blk[0] | blk[1] << 8 | blk[2] << 16 | static_cast<uint32_t>(blk[3]) << 24;
-      stream_fill(id, want.data(), 469);
-      if (!memcmp(want.data(), blk + 4, 469)) stream++;
+      stream_fill(id, want.data(), XFER_PAYLOAD);
+      if (!memcmp(want.data(), blk + 4, XFER_PAYLOAD)) stream++;
     }
     printf("decode: found %d, ring %d, n %d, word %d (version %d = LIZARD-%d, %d a second), %d blocks verified, %d of them the test stream's, pilots %d blocks r %.2f %.2f\n",
-           fr.found, fr.ring, fr.n, fr.word, fr.version, 8 * fr.version, fr.fps, got, stream, fr.pilot_blocks, fr.pilot_r[0], fr.pilot_r[1]);
+           fr.found, fr.ring, fr.n, fr.word, fr.version, FOCUS_STEP * fr.version, fr.fps, got, stream, fr.pilot_blocks, fr.pilot_r[0], fr.pilot_r[1]);
     cpu_dec_free(d);
     return got > 0 ? 0 : 1;
   }

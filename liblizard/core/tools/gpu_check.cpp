@@ -11,6 +11,28 @@
 //                                                 decoder as the web's replay runs it (batches of the batcher's size,
 //                                                 two in flight, the held word carried in capture order): frames
 //                                                 found, words, verified blocks, GPU ms a frame
+//   lizard_gpu_check xcheck <run> [frames] [variant]   the replay with every LDPC form of the tree run again on each
+//                                                 batch's own soft values and held to its reference form (the first
+//                                                 of the same name past its last ':', else form 0): a line a form,
+//                                                 codewords apart (verdict or iterations), verdicts apart, frames
+//                                                 whose iterations run (a stop's give-ups too) differ; exit 1 on any
+//   lizard_gpu_check probe <variant> <job.json> <dir>   frames through the decoder a batch at a time, every lane
+//                                                 buffer a stage left written out after each (the self-test's
+//                                                 reference remake: scripts/gpu/native/selftest_ref.mjs)
+//   lizard_gpu_check kernel <variant> <dir>       pipelines of the tree run alone on given buffers, the buffers named
+//                                                 written back (the nets' kernel checks: scripts/gpu/native/)
+//   lizard_gpu_check trial [dir] [variant]        the forms' trial as a receiver runs it at its start (dec/trial.h):
+//                                                 the device's variants from its best (or the one named), each form
+//                                                 trialled on the known frames or taken from the record
+//                                                 (<dir>/gpu-forms.json; "-" or none: no record), a hang or a lost
+//                                                 device refusing what ran and the device made again; the decoder it
+//                                                 keeps and every refusal; exit 1 when no variant passes
+//   lizard_gpu_check noise <variant> <sigma>...   the known frames at each noise (grey levels), decoded in each LDPC
+//                                                 form the device builds and with the int8 classifier: blocks,
+//                                                 wrong, LDPC iterations a block (trial.h TRIAL_NOISE's search)
+//
+// ai: probe and kernel read the tree (its pipelines, layouts and buffers by id), never a kernel's source, so they hold
+// ai: a stage the same whichever language gen compiled it from.
 //
 // ai: info needs only a Vulkan device, build and compile gen's tree too (LIZ_OUT); bench out/spv/bench_dot.spv, which no
 // ai: build step makes: from the root, liblizard/.tools/glslang/bin/glslang -V --target-env vulkan1.3
@@ -24,15 +46,24 @@
 // ai: Khronos validation layer), LIZ_CACHE=<path> (the pipeline cache file), LIZ_BUDGET=<MB> (the decoder's memory
 // ai: budget; 2048 by default, the web's on the S26). The anchors each frame read (SPEC 6.13): selftest prints them a
 // ai: frame and replay's totals line ends with them; LIZ_PERFRAME=1 (replay): a
-// ai: line a frame as it comes back, "frame <index> found <0|1> ring <r> version <v> held <0|1> blocks <n> anchors <k>".
+// ai: line a frame as it comes back, "frame <index> found <0|1> ring <r> version <v> held <0|1> blocks <n> anchors <k>
+// ai: word <v> fps <f> bad <n> r <r> sd <sd> r2 <r2> sd2 <sd2> pblocks <n>" (word: the version F8 read, 0 none; bad:
+// ai: verified blocks of a test-stream frame that are not the stream's, the receiver's judge, XferJudge; their sum the
+// ai: "judge:" line; r to pblocks the pilots, FrameOut's, nan where none), then "finder <index> score <s> orient <o>
+// ai: corners <x0 y0 .. x3 y3> depths <d0 .. d3>", the finder's result words 1, 3 and 17 to 28 off the lane.
+// ai: LIZ_PEAKS=<file> (replay): each frame's kept peaks.
+// ai: LIZ_HOLD=0 (replay): no word held from frame to frame. LIZ_HELD=<version> (replay): the version held from the first
+// ai: frame (0 by default: nothing held until a word reads).
 // ai: LIZ_YIELD_GPU=0|1: receive's ReceiverConfig::yieldGpu (the decoder's queues at the global priority LOW where offered;
 // ai: a receiver's default, 1); the other modes' own device at LOW only with 1, for an A/B against a screen's load.
 #include "front.h"
+#include "trial.h"
 #include "receiver.h"
 #include "recording.h"
 #include "stream.h"
 #include "replay.h"
 #include "axes.h"
+#include "xfer_rx_core.h"
 extern "C" {
 #include "focus.h"
 }
@@ -45,6 +76,7 @@ extern "C" {
 #include <cstring>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -122,6 +154,224 @@ static int dump(Ctx& c, std::string v, const std::string& dir) {
   int blocks = 0;
   for (auto& fo : out.frames) blocks += (int)fo.records.size();
   printf("%s: dumped %zu buffers to %s, %d blocks\n", v.c_str(), bufs.size(), dir.c_str(), blocks);
+  return 0;
+}
+
+static void writeFile(const std::string& path, const void* p, size_t n) {
+  std::ofstream f(path, std::ios::binary);
+  if (!f) throw wg::Error("cannot write " + path);
+  f.write((const char*)p, (std::streamsize)n);
+  if (!f) throw wg::Error("cannot write " + path);
+}
+
+// ai: probe <variant> <job.json> <dir> (2026-10-31, the self-test's reference remake: scripts/gpu/native/
+// ai: selftest_ref.mjs writes the job and reads what this writes into the reference's summaries, as the page's probe
+// ai: did). job.json:
+// ai: { "dir": the frames' folder, "frames": [{ name, w, h }] as a reference lists them }. The frames go through the
+// ai: decoder as the self-test page ran them (scripts/pages/gpu_selftest.mjs runOnce): batches of the batcher's size,
+// ai: one at a time, the last word read held into the next batch. After each batch, before another runs on its lane,
+// ai: the lane buffers its stages left (liblizard/gpu/probe.mjs's parts, less SCORE's rerun: levels, counts, peaks,
+// ai: readings, acc, cand, quads, score, result, maps, meas, resid, refit, anch, arec; and the back half's V, ITS and
+// ai: BCOUNTS) are written whole, B frame strides each, to <dir>/batch<k>/<name>.bin, each frame as the ring held it to
+// ai: input-<i>.gray, and <dir>/probe.json: the device, the variant and its nets, each batch's lane shape (B, W, H, gx,
+// ai: gy, the levels, cap; the back half's B and blocksMax; RESULT, COUNTERS, COUNTS) and frames (index, tag, w, h,
+// ai: verified ids).
+static int probe(Ctx& c, const std::string& v, const std::string& jobPath, const std::string& dir) {
+  auto jb = readAll(jobPath);
+  const json job = json::parse(jb.begin(), jb.end());
+  const std::string src = job.at("dir");
+  std::vector<std::vector<uint8_t>> px;
+  std::vector<std::pair<uint32_t, uint32_t>> wh;
+  uint32_t W = 1, H = 1;
+  for (auto& f : job.at("frames")) {
+    const std::string name = f.at("name");
+    px.push_back(readAll(src + "/" + name));
+    const uint32_t w = f.at("w"), h = f.at("h");
+    if (px.back().size() != (size_t)w * h) throw wg::Error(name + ": " + std::to_string(px.back().size()) + " bytes for " + std::to_string(w) + " x " + std::to_string(h));
+    wh.push_back({w, h});
+    W = std::max(W, w); H = std::max(H, h);
+  }
+  if (px.empty()) throw wg::Error(jobPath + ": no frames");
+  auto fh = open(c, v);
+  fh->plan(W, H);
+  const json& bk = fh->S->back();
+  json out = {{"variant", v}, {"device", c.dev->name}, {"driver", c.dev->driver}, {"precision", fh->S->tree["precision"]},
+              {"floatPrecision", fh->S->tree["floatPrecision"]}, {"nets", fh->nets}, {"batches", json::array()}};
+  int held = 0;
+  for (size_t k = 0; k < px.size();) {
+    const int nb = std::min<int>(std::max(1, fh->size()), (int)(px.size() - k));
+    std::vector<Slot*> slots;
+    for (int i = 0; i < nb; i++) slots.push_back(fh->enqueueLuma(px[k + i].data(), wh[k + i].first, wh[k + i].second, wh[k + i].first, k + i));
+    auto f = fh->run(slots, held, false, nb);
+    Lane& ln = *f->lane;
+    auto bo = fh->finish(std::move(f));
+    const std::string bd = dir + "/batch" + std::to_string(out["batches"].size());
+    std::filesystem::create_directories(bd);
+    std::vector<std::pair<std::string, BufP>> bufs = {{"counts", ln.countsBuf}, {"peaks", ln.peaksBuf}, {"readings", ln.readingsBuf}, {"acc", ln.accBuf},
+      {"cand", ln.candBuf}, {"quads", ln.quadsBuf}, {"score", ln.scoreBuf}, {"result", ln.resultBuf}, {"maps", ln.mapsBuf}, {"meas", ln.measBuf},
+      {"resid", ln.residBuf}, {"refit", ln.refitDbg}, {"anch", ln.anchBuf}, {"arec", ln.arecBuf}, {"V", ln.back->V}, {"ITS", ln.back->ITS}, {"BCOUNTS", ln.back->counts}};
+    json levels = json::array();
+    for (size_t i = 0; i < ln.level.size(); i++) { bufs.push_back({"level" + std::to_string(i + 1), ln.level[i].buf}); levels.push_back({{"w", ln.level[i].w}, {"h", ln.level[i].h}}); }
+    json written = json::array();
+    for (auto& [name, bp] : bufs) {
+      if (!bp) continue;
+      auto data = readBack(*c.dev, *bp);
+      writeFile(bd + "/" + name + ".bin", data.data(), data.size());
+      written.push_back(name);
+    }
+    json fr = json::array();
+    for (int i = 0; i < nb; i++) {
+      const auto& fo = bo.frames[i];
+      std::vector<uint32_t> ids;
+      for (auto& r : fo.records) ids.push_back(r.id);
+      std::sort(ids.begin(), ids.end());
+      if (!fo.luma.empty()) writeFile(bd + "/input-" + std::to_string(i) + ".gray", fo.luma.data(), fo.luma.size());
+      fr.push_back({{"index", k + i}, {"tag", fo.tag}, {"w", wh[k + i].first}, {"h", wh[k + i].second}, {"empty", fo.empty}, {"kept", !fo.luma.empty()}, {"ids", ids}});
+      if (fo.hasWord) held = fo.word.version;
+    }
+    out["batches"].push_back({{"dir", "batch" + std::to_string(out["batches"].size())}, {"nb", nb},
+      {"shape", {{"B", ln.B}, {"W", ln.W}, {"H", ln.H}, {"gx", ln.gx}, {"gy", ln.gy}, {"cap", fh->cap}, {"levels", levels}}},
+      {"back", {{"B", bk["B"]}, {"blocksMax", bk["dims"]["blocksMax"]}}}, {"buffers", written}, {"frames", fr}});
+    k += nb;
+  }
+  out["consts"] = {{"RESULT", fh->C.RESULT}, {"COUNTERS", fh->C.COUNTERS}, {"COUNTS", fh->C.COUNTS}};
+  const std::string js = out.dump(1);
+  writeFile(dir + "/probe.json", js.data(), js.size());
+  printf("%s: %zu frames in %zu batches probed into %s\n", v.c_str(), px.size(), out["batches"].size(), dir.c_str());
+  return 0;
+}
+
+// ai: kernel <variant> <dir> (2026-10-31, the nets' kernel-alone checks: scripts/gpu/native/kernel.mjs writes the job
+// ai: and reads what comes back): pipelines of the tree run alone on given buffers, one after another, and the buffers
+// ai: named written back. <dir>/job.json:
+// ai:   "buffers": { <name>: one of
+// ai:       { "file": <a file under dir> } its bytes ("size": more bytes, zeros past the file's),
+// ai:       { "zero": <bytes> },
+// ai:       { "tree": <a path in the tree, front.buffers.weightsBuf, or a buffer id, b12> } as the setup built it,
+// ai:       { "texture": <a file under dir>, "w", "h", "layers" } an r8 2D array, layer after layer of h rows of w
+// ai:       bytes },
+// ai:   "steps": [{ "pipe": <a path in the tree to a { p, bgl } pair, front.classify, or a pipeline id, p15>,
+// ai:       "bind": [<name> a binding, in the layout's order], "dispatch": [x, y, z] }], each in its own pass behind
+// ai:       the one before (the host's barrier between commands),
+// ai:   "dump": [<name>...]: written to <dir>/<name>.bin after the last step.
+// ai: Each binding's kind is checked against the layout (a texture where it says tex); a buffer bound as a uniform
+// ai: anywhere is made a uniform buffer too. Prints each step's pipeline (id, module, label) and its device ms.
+static const json* treeAt(const json& tree, const std::string& path) {
+  const json* at = &tree;
+  size_t from = 0;
+  while (from <= path.size()) {
+    const size_t dot = path.find('.', from);
+    const std::string key = path.substr(from, dot == std::string::npos ? std::string::npos : dot - from);
+    if (!at->is_object() || !at->contains(key)) return nullptr;
+    at = &(*at)[key];
+    if (dot == std::string::npos) break;
+    from = dot + 1;
+  }
+  return at;
+}
+
+static int kernel(Ctx& c, const std::string& v, const std::string& dir) {
+  auto jb = readAll(dir + "/job.json");
+  const json job = json::parse(jb.begin(), jb.end());
+  auto& d = *c.dev;
+  auto s = Setup::load(d, readDir(c.out), v);
+  auto isId = [](const std::string& x, char k) { return x.size() > 1 && x[0] == k && std::all_of(x.begin() + 1, x.end(), ::isdigit); };
+  // ai: each step's pipeline and layout, by a tree path's { p, bgl } or a pipeline's id
+  struct Step { std::string p, bgl; std::vector<std::string> bind; std::array<uint32_t, 3> dispatch; };
+  std::vector<Step> steps;
+  std::set<std::string> uniform;
+  for (auto& st : job.at("steps")) {
+    Step x;
+    const std::string pipe = st.at("pipe");
+    if (isId(pipe, 'p')) {
+      const auto& o = s->objects["pipelines"].at(pipe);
+      x.p = pipe; x.bgl = o["groups"][0];
+    } else {
+      const json* pb = treeAt(s->tree, pipe);
+      if (!pb || !pb->is_object() || !pb->contains("p")) throw wg::Error("no pipeline at " + pipe + " in the " + v + " tree");
+      x.p = (*pb)["p"]; x.bgl = (*pb)["bgl"];
+    }
+    s->makeOne(x.bgl);
+    s->makeOne(x.p);
+    if (!s->built(x.p)) throw wg::Error(pipe + " (" + x.p + "): left out on this device (its workgroup past the device's invocations)");
+    for (auto& b : st.at("bind")) x.bind.push_back(b);
+    const auto& kinds = s->objects["bgls"].at(x.bgl);
+    if (kinds.size() != x.bind.size()) throw wg::Error(pipe + ": " + std::to_string(x.bind.size()) + " bindings for a layout of " + std::to_string(kinds.size()));
+    for (size_t i = 0; i < kinds.size(); i++) if (kinds[i] == "uniform") uniform.insert(x.bind[i]);
+    for (int k = 0; k < 3; k++) x.dispatch[k] = st.at("dispatch").size() > (size_t)k ? st["dispatch"][k].get<uint32_t>() : 1;
+    steps.push_back(x);
+    const auto& o = s->objects["pipelines"].at(x.p);
+    printf("step %zu: %s pipeline %s, module %s, layout %s, dispatch %u x %u x %u\n", steps.size() - 1, pipe.c_str(), x.p.c_str(), o["module"].get<std::string>().c_str(), x.bgl.c_str(), x.dispatch[0], x.dispatch[1], x.dispatch[2]);
+  }
+  // ai: the buffers and textures, by name
+  std::map<std::string, BufP> bufs;
+  std::map<std::string, std::shared_ptr<wg::Texture>> texs;
+  std::vector<BufP> staging;
+  auto e = d.encoder();
+  for (auto& [name, b] : job.at("buffers").items()) {
+    if (b.contains("tree")) {
+      const std::string at = b["tree"];
+      const json* id = isId(at, 'b') ? nullptr : treeAt(s->tree, at);
+      const std::string bid = id ? (id->is_string() ? id->get<std::string>() : "") : at;
+      if (!isId(bid, 'b')) throw wg::Error("buffer " + name + ": no buffer at " + at + " in the " + v + " tree");
+      s->makeOne(bid);
+      bufs[name] = s->bufPtr(bid);
+    } else if (b.contains("texture")) {
+      const uint32_t w = b.at("w"), h = b.at("h"), layers = b.at("layers");
+      auto data = readAll(dir + "/" + b["texture"].get<std::string>());
+      if (data.size() != (size_t)w * h * layers) throw wg::Error("texture " + name + ": " + std::to_string(data.size()) + " bytes for " + std::to_string(layers) + " layers of " + std::to_string(w) + " x " + std::to_string(h));
+      auto t = d.createTexture(w, h, layers, name);
+      auto st = d.createBuffer(data.size(), wg::COPY_SRC | wg::COPY_DST, name + " staging", false);
+      d.upload(*st, 0, data.data(), data.size());
+      for (uint32_t l = 0; l < layers; l++) e.copyBufferToTexture(*st, (uint64_t)l * w * h, w, *t, l, w, h);
+      staging.push_back(st);
+      texs[name] = t;
+    } else {
+      std::vector<uint8_t> data;
+      if (b.contains("file")) data = readAll(dir + "/" + b["file"].get<std::string>());
+      const uint64_t size = std::max<uint64_t>(b.contains("zero") ? b["zero"].get<uint64_t>() : 0, std::max<uint64_t>(data.size(), b.value("size", 0ull)));
+      const uint64_t sz = std::max<uint64_t>(16, (size + 15) & ~15ull);
+      auto buf = d.createBuffer(sz, wg::STORAGE | wg::COPY_SRC | wg::COPY_DST | (uniform.count(name) ? wg::UNIFORM : 0u), name, true);
+      if (!data.empty()) d.upload(*buf, 0, data.data(), data.size());
+      bufs[name] = buf;
+    }
+  }
+  auto qs = d.features.timestamps ? d.createQuerySet(2 * (uint32_t)steps.size()) : nullptr;
+  auto qsBuf = qs ? d.createBuffer(16ull * steps.size(), wg::QUERY_RESOLVE | wg::COPY_SRC) : nullptr;
+  auto qsRead = qs ? d.createBuffer(16ull * steps.size(), wg::MAP_READ | wg::COPY_DST) : nullptr;
+  std::vector<std::shared_ptr<wg::BindGroup>> groups;
+  for (size_t k = 0; k < steps.size(); k++) {
+    const auto& st = steps[k];
+    const auto& kinds = s->objects["bgls"].at(st.bgl);
+    std::vector<wg::Resource> res;
+    for (size_t i = 0; i < st.bind.size(); i++) {
+      const std::string& name = st.bind[i];
+      const bool tex = kinds[i] == "tex";
+      if (tex != (texs.count(name) > 0)) throw wg::Error("step " + std::to_string(k) + " binding " + std::to_string(i) + ": " + name + (tex ? " is not a texture, the layout's is" : " is a texture, the layout's is " + kinds[i].get<std::string>()));
+      if (tex) res.emplace_back(texs[name]);
+      else if (bufs.count(name)) res.emplace_back(bufs[name]);
+      else throw wg::Error("step " + std::to_string(k) + ": no buffer " + name);
+    }
+    groups.push_back(d.createBindGroup(s->bgl(st.bgl), res));
+    e.beginComputePass(qs.get(), qs ? 2 * (int)k : -1, qs ? 2 * (int)k + 1 : -1);
+    e.setPipeline(*s->pipe(st.p));
+    e.setBindGroup(*groups.back());
+    e.dispatch(st.dispatch[0], st.dispatch[1], st.dispatch[2]);
+    e.endPass();
+  }
+  if (qs) { e.resolveQuerySet(*qs, 0, 2 * (uint32_t)steps.size(), *qsBuf, 0); e.copyBufferToBuffer(*qsBuf, 0, *qsRead, 0, qsBuf->size); }
+  d.submit(e)->wait();
+  if (qs) {
+    const uint64_t* t = (const uint64_t*)d.read(*qsRead, 0, qsRead->size);
+    for (size_t k = 0; k < steps.size(); k++) printf("step %zu: %.4f ms of GPU\n", k, (double)((t[2 * k + 1] - t[2 * k]) & d.timestampMask) * d.timestampPeriod / 1e6);
+  }
+  for (auto& n : job.value("dump", json::array())) {
+    const std::string name = n;
+    if (!bufs.count(name)) throw wg::Error("dump: no buffer " + name);
+    auto data = readBack(d, *bufs[name]);
+    writeFile(dir + "/" + name + ".bin", data.data(), data.size());
+    printf("dumped %s: %zu bytes\n", name.c_str(), data.size());
+  }
   return 0;
 }
 
@@ -512,10 +762,17 @@ static int selftest(Ctx& c, std::string v) {
 // ai: LIZ_LAUNCH=<n>: at most n frames a launch on the same plan (the app's receiver launches 1 or 2 halves), so
 // ai: PROFILE=1 times each stage at the app's launch size. LIZ_PERFRAME=1: a line a frame (the header's form); the
 // ai: totals line ends with the anchors found and a found frame's median.
-static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
+static int replay(Ctx& c, const std::string& run, int limit, std::string v, bool xcheck = false) {
   const int launch = getenv("LIZ_LAUNCH") ? std::max(1, atoi(getenv("LIZ_LAUNCH"))) : 1 << 30;
   const bool perFrame = env("LIZ_PERFRAME") == "1";
+  // ai: LIZ_HOLD=0: nothing held, every frame on its own word (the find arm of the finder's judges, frames of many
+  // ai: formats in one run: scripts/gpu/native/judge.mjs)
+  const bool hold = env("LIZ_HOLD") != "0";
+  // ai: LIZ_HELD=<version>: the held word a run starts from, as a receiver that read it before (the held cases of the
+  // ai: native judges: scripts/exp/gpu_rings.mjs, pilot_check.mjs)
+  const int held0 = getenv("LIZ_HELD") ? atoi(getenv("LIZ_HELD")) : 0;
   auto fh = open(c, v);
+  fh->xcheck = xcheck;
   std::string why;
   auto rec = openRecording(c.barcode, run, why);
   if (!rec) throw wg::Error(why);
@@ -538,17 +795,48 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
   int rawMaxDiff = 0;
   if (rawFmt) printf("frames as %s at bin %u, %s\n", rawName.c_str(), rawFmt == RAW_FMT_P010 ? 1 : rawBin, rawCpu ? "the CPU's develop pushed as luma" : "developed on the GPU, held to the CPU's develop");
   std::deque<std::unique_ptr<InFlight>> flight;
-  int held = 0, found = 0, words = 0, heldFrames = 0, next = 0;
+  int held = held0, found = 0, words = 0, heldFrames = 0, next = 0;
   long blocks = 0, codewords = 0, iterations = 0;   // ai: the LDPC's codewords run and iterations summed (the back half's COUNTS 3 and 7)
   std::vector<float> pilots, pilots2;   // ai: each frame's pilot readings where read (SPEC 7.3): the even blocks', the odd blocks'
   std::vector<int> anchors;   // ai: the anchors each found frame read
   double gpuMs = 0, gpuFrames = 0;
   std::vector<std::pair<std::string, double>> stageSum;
   const double t0 = fh->now();
+  // ai: LIZ_PEAKS=<file> (2026-10-31, the finder's judges and the classifier's export: scripts/gpu/native/peaks.mjs):
+  // ai: each frame's kept peaks as the classifier read them, SELECT's list at the batch's end (the second round's on a
+  // ai: frame the first missed), read off the lane once its batch is in and before another runs on it, appended a frame
+  // ai: at a time: u32 tag, raw count (COUNT 1), kept count (COUNT 2), n = min(kept, cap), then n peaks of 4 f32 (x, y,
+  // ai: sigma, response) in the list's order.
+  const std::string peaksPath = env("LIZ_PEAKS");
+  std::ofstream peaksOut;
+  if (!peaksPath.empty()) { peaksOut.open(peaksPath, std::ios::binary | std::ios::trunc); if (!peaksOut) throw wg::Error("cannot write " + peaksPath); }
+  // ai: the per-frame line's bad: the receiver's judge of the test stream (a frame of another stream judges none)
+  std::atomic<uint64_t> judgeGen{0};
+  XferJudge judge(judgeGen);
+  long bad = 0, testFrames = 0;
   auto drain = [&]() {
+    Lane* lane = flight.front()->lane;
     auto out = fh->finish(std::move(flight.front()));
     flight.pop_front();
-    for (auto& fo : out.frames) {
+    if (peaksOut.is_open()) {
+      const auto pk = readBack(*c.dev, *lane->peaksBuf);
+      const uint64_t stride = pk.size() / lane->B;
+      for (size_t i = 0; i < out.frames.size(); i++) {
+        const auto& fo = out.frames[i];
+        if (fo.empty) continue;
+        const uint32_t kept = fo.counts.size() > 2 ? fo.counts[2] : 0, n = std::min<uint32_t>(kept, (uint32_t)fh->cap);
+        const uint32_t head[4] = {(uint32_t)fo.tag, fo.counts.size() > 1 ? fo.counts[1] : 0, kept, n};
+        peaksOut.write((const char*)head, sizeof head);
+        peaksOut.write((const char*)pk.data() + stride * i, (std::streamsize)(16ull * n));
+      }
+    }
+    // ai: the finder's result words off the lane, for the per-frame line (as LIZ_PEAKS reads the peaks: before another
+    // ai: batch runs on it)
+    std::vector<uint8_t> res;
+    if (perFrame) res = readBack(*c.dev, *lane->resultBuf);
+    const uint64_t resStride = res.size() / std::max<uint32_t>(1, lane->B);
+    for (size_t i = 0; i < out.frames.size(); i++) {
+      auto& fo = out.frames[i];
       if (fo.empty) continue;
       auto rf = rawRef.find(fo.tag);
       if (rf != rawRef.end() && fo.luma.empty()) rawRef.erase(rf);   // ai: a keep the device refused (front.cpp run)
@@ -559,12 +847,25 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
         rawFrames++; rawBytes += (long)fo.luma.size(); rawDiffer += d;
         rawRef.erase(rf);
       }
-      if (perFrame) printf("frame %llu found %d ring %d version %d held %d blocks %zu anchors %d\n", (unsigned long long)fo.tag, fo.finder.found == 1 ? 1 : 0, fo.ring, fo.version, fo.held ? 1 : 0, fo.records.size(), fo.anchors);
+      std::vector<uint8_t> packed;
+      for (auto& r : fo.records) packed.insert(packed.end(), r.payload.begin(), r.payload.end());
+      const FrameVerdict jv = judge.frame(packed.data(), fo.records.size(), [](const uint8_t*) {});
+      bad += jv.bad; testFrames += jv.test;
+      if (perFrame) {
+        printf("frame %llu found %d ring %d version %d held %d blocks %zu anchors %d word %d fps %d bad %d r %g sd %g r2 %g sd2 %g pblocks %d\n", (unsigned long long)fo.tag, fo.finder.found == 1 ? 1 : 0, fo.ring, fo.version, fo.held ? 1 : 0,
+               fo.records.size(), fo.anchors, fo.hasWord ? fo.word.version : 0, fo.hasWord ? fo.word.fps : 0, jv.bad,
+               fo.pilotBlocks ? fo.pilotR : NAN, fo.pilotBlocks ? fo.pilotSd : NAN, fo.pilotBlocks ? fo.pilotR2 : NAN, fo.pilotBlocks ? fo.pilotSd2 : NAN, fo.pilotBlocks);
+        if (resStride >= 29 * 4) {
+          float r[29];
+          memcpy(r, res.data() + resStride * i, sizeof r);
+          printf("finder %llu score %g orient %g corners %g %g %g %g %g %g %g %g depths %g %g %g %g\n", (unsigned long long)fo.tag, r[1], r[3], r[17], r[18], r[19], r[20], r[21], r[22], r[23], r[24], r[25], r[26], r[27], r[28]);
+        }
+      }
       if (fo.finder.found == 1) anchors.push_back(fo.anchors);
       found += fo.finder.found == 1;
       blocks += (long)fo.records.size();
       if (fo.backCounts.size() > 7) { codewords += fo.backCounts[3]; iterations += fo.backCounts[7]; }
-      if (fo.hasWord) { words++; held = fo.word.version; }
+      if (fo.hasWord) { words++; if (hold) held = fo.word.version; }
       heldFrames += fo.held;
       if (fo.pilotBlocks) { pilots.push_back(fo.pilotR); pilots2.push_back(fo.pilotR2); }
     }
@@ -621,12 +922,79 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v) {
   printf("%s: %d frames, %d found, %d words, %d held, %ld verified blocks; %.2f ms of GPU a frame, %.0f frames a second end to end (%s, batches of %d)%s\n", run.c_str(), frames, found, words, heldFrames, blocks,
          gpuFrames ? gpuMs / gpuFrames : -1, frames / (ms / 1000), v.c_str(), fh->B, anch.c_str());
   printf("ldpc: %ld codewords, %ld iterations (%.2f a codeword)\n", codewords, iterations, codewords ? (double)iterations / codewords : 0.0);
+  printf("judge: %ld verified blocks not the test stream's on %ld frames of it (the receiver's judge)\n", bad, testFrames);
   if (rawFmt && !rawCpu) printf("develop: %ld frames, %ld bytes, %ld differ from the CPU's (most by %d)%s\n", rawFrames, rawBytes, rawDiffer, rawMaxDiff, rawFrames < frames ? " (some frames not kept)" : "");
   for (auto* pv : {&pilots, &pilots2}) if (!pv->empty()) {
     std::vector<float> v = *pv;
     std::sort(v.begin(), v.end());
     const int neg = (int)std::count_if(v.begin(), v.end(), [](float x) { return x < 0; });
     printf("pilots: read on %zu of %d frames; %s from %.3f to %.3f, median %.3f, %d negative\n", v.size(), frames, pv == &pilots ? "r (the even blocks)" : "r2 (the odd blocks)", v.front(), v.back(), v[v.size() / 2], neg);
+  }
+  if (!xcheck) return 0;
+  // ai: the cross-check's totals (front.h LdpcCheck); a reference form's line its own counts
+  int rc = 0;
+  for (const auto& x : fh->xchecks) {
+    if (!x.frames) { printf("xcheck %s: not built on this device\n", x.form.c_str()); continue; }
+    if (x.form == x.ref) { printf("xcheck %s: a reference, %ld codewords on %ld frames, verified %ld, iterations %ld\n", x.form.c_str(), x.codewords, x.frames, x.verified, x.ran); continue; }
+    printf("xcheck %s against %s: %ld codewords on %ld frames, %ld apart (%ld verdicts), %ld frames' iterations apart; verified %ld / %ld, iterations %ld / %ld\n", x.form.c_str(), x.ref.c_str(),
+           x.codewords, x.frames, x.apart, x.verdicts, x.framesApart, x.verified, x.refVerified, x.ran, x.refRan);
+    if (x.apart || x.framesApart) rc = 1;
+  }
+  return rc;
+}
+
+// ai: trial: buildTrialled on the device's variants (a receiver's start), the device made again as main made it
+static int trial(Ctx& c, const std::string& dir, const std::string& which) {
+  const double budget = std::stod(env("LIZ_BUDGET", "2048")) * (1 << 20);
+  auto log = [](const std::string& m) { std::cout << "  " << m << std::endl; };
+  const std::vector<std::string> vs = which.empty() ? c.variants : std::vector<std::string>{which};
+  FormRecord rec(dir == "-" ? "" : dir, *c.dev, log);
+  GpuDecoder d{std::move(c.dev), nullptr};
+  DeviceMaker make = [&] {
+    wg::DeviceExtras ex;
+    ex.lowPriority = env("LIZ_YIELD_GPU") == "1";
+    auto dv = wg::Device::create(env("LIZ_VK_DEVICE"), env("LIZ_VALIDATE") == "1", log, ex);
+    if (!env("LIZ_CACHE").empty()) dv->loadCache(env("LIZ_CACHE"));
+    return dv;
+  };
+  std::string why;
+  const auto t0 = std::chrono::steady_clock::now();
+  const bool ok = buildTrialled(d, make, readDir(c.out), vs, budget, rec, log, why);
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  if (ok) {
+    const auto names = d.fh->ldpcFormNames();
+    std::string forms;
+    for (size_t k = 0; k < names.size(); k++) if (d.fh->ldpcBuilt[k]) forms += (forms.empty() ? "" : " ") + names[k];
+    printf("decoder: %s, LDPC forms %s (in use %s), int8 classifier %s; %.0f ms\n", d.fh->variant.c_str(), forms.c_str(), names[d.fh->ldpcForm].c_str(),
+           d.fh->hasTwin() ? "to be timed" : "left out", ms);
+  } else printf("no decoder: %s; %.0f ms\n", why.c_str(), ms);
+  for (const auto& r : rec.refusals()) printf("refused %s\n", r.c_str());
+  d.fh.reset();
+  c.dev = std::move(d.dev);
+  return ok ? 0 : 1;
+}
+
+// ai: noise: the known frames at each sigma through every LDPC form the device builds (the float classifier), then the
+// ai: int8 twin with the first form
+static int noise(Ctx& c, const std::string& v, const std::vector<double>& sigmas) {
+  auto fh = open(c, v);
+  const auto names = fh->ldpcFormNames();
+  for (double s : sigmas) {
+    const TrialFrames t = paintTrial(fh->S->tree["pictures"], s);
+    fh->plan(t.side, t.side);
+    auto line = [&](const std::string& form) {
+      const TrialRun r = trialRun(*fh, t);
+      printf("noise %.2f %s %s: %d of %d blocks, %d wrong, %.3f LDPC iterations a block%s%s\n", s, v.c_str(), form.c_str(), r.verified, r.painted, r.wrong, r.its, r.why.empty() ? "" : "; first: ", r.why.c_str());
+    };
+    int first = -1;
+    for (int k = 0; k < (int)names.size(); k++) {
+      if (!fh->ldpcBuilt[k]) continue;
+      if (first < 0) first = k;
+      fh->useLdpc(k);
+      line("ldpc:" + names[k]);
+    }
+    if (fh->hasTwin()) { fh->useLdpc(first); fh->useTwin(true); line("classifier:int8"); fh->useTwin(false); }
+    fh->unplan();
   }
   return 0;
 }
@@ -677,11 +1045,25 @@ int main(int argc, char** argv) {
       if (argc < 4) throw wg::Error("dump <variant> <dir>");
       rc = dump(c, argv[2], argv[3]);
     }
-    else if (cmd == "replay") {
-      if (argc < 3) throw wg::Error("replay <run> [frames] [variant]");
-      rc = replay(c, argv[2], argc > 3 ? atoi(argv[3]) : 0, pick(4));
+    else if (cmd == "probe") {
+      if (argc < 5) throw wg::Error("probe <variant> <job.json> <dir>");
+      rc = probe(c, argv[2], argv[3], argv[4]);
+    } else if (cmd == "kernel") {
+      if (argc < 4) throw wg::Error("kernel <variant> <dir>");
+      rc = kernel(c, argv[2], argv[3]);
+    }
+    else if (cmd == "trial") rc = trial(c, argc > 2 ? argv[2] : "-", argc > 3 ? argv[3] : "");
+    else if (cmd == "noise") {
+      if (argc < 4) throw wg::Error("noise <variant> <sigma>...");
+      std::vector<double> s;
+      for (int i = 3; i < argc; i++) s.push_back(atof(argv[i]));
+      rc = noise(c, argv[2], s);
+    }
+    else if (cmd == "replay" || cmd == "xcheck") {
+      if (argc < 3) throw wg::Error(cmd + " <run> [frames] [variant]");
+      rc = replay(c, argv[2], argc > 3 ? atoi(argv[3]) : 0, pick(4), cmd == "xcheck");
     } else { std::cerr << "unknown command " << cmd << std::endl; return 2; }
-    c.dev->saveCache();
+    if (c.dev) c.dev->saveCache();
     return rc;
   } catch (const std::exception& e) {
     std::cerr << "error: " << e.what() << std::endl;
