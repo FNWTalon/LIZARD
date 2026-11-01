@@ -1,0 +1,3 @@
+- The format's 7/8 code sends its first data column and leaves only its known zeros unsent: more margin at the same rate. 0.7's codes do not read here.
+- The CPU decoder is faster: vector code on x86-64 (SSE4.1, and AVX2 or AVX-512 for the LDPC), and a quicker finder and sampler on phones.
+- Replaces 0.7.
