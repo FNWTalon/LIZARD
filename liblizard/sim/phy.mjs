@@ -27,20 +27,11 @@ const RATE = { 2: "1/2", 3: "2/3", 4: "3/4", 6: "7/8" };
 // Block contents are a function of the block id, so a receiver can check any block it decodes
 // without being told which frame it came from.
 //
-// The xorshift32 walk below is the stream a spec that names none gets: the simulator's harnesses paint
-// and check their own frames with it. Every recording kept is SHAKE256's (below), which a live sender
-// paints. Streams say which generator they used; no field means this one.
-export function blockBytesLegacy(id, len, out = new Uint8Array(len)) {
-  let s = (Math.imul(id + 1, 0x9e3779b1) ^ 0x85ebca6b) >>> 0;
-  for (let i = 0; i < len; i++) { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; out[i] = s & 255; }
-  return out;
-}
-
-// SHAKE256 of the id (sim/ob.mjs, src/shake.c). xorshift32 has a single orbit of 2^32 - 1, so
-// two ids whose seeds land within a block of each other on it emit byte strings that are shifts
-// of one another: 119 such pairs in 40k ids, which is the birthday rate for a 316-byte block and
-// so nothing the seeding could fix. One id seeds the absorbing zero state and emits an all-zero
-// block. Neither happens under a hash, which is what makes the measured tables defensible.
+// SHAKE256 of the id (sim/ob.mjs, src/shake.c; SPEC 9.3), the one test stream: what a live sender paints and what the
+// simulator's harnesses paint and check. The xorshift32 walk it replaced had a single orbit of 2^32 - 1, so two ids
+// whose seeds landed within a block of each other on it emitted byte strings that were shifts of one another (119 such
+// pairs in 40k ids), and one id seeded the absorbing zero state; neither happens under a hash. The walk went on
+// 2026-10-29 with the last thing that read it.
 export function blockBytesShake(id, len, out = new Uint8Array(len)) {
   out.set(streamBlock(id, len));
   return out;
@@ -51,7 +42,7 @@ export function blockBytesShake(id, len, out = new Uint8Array(len)) {
 // spans were written down, went with those recordings).
 export const recordedSpec = (spec) => spec;
 
-// ai: The largest picture a receiver builds: the ladder's top (1536, LIZARD-576 to -1024), so it reads any version the
+// ai: The largest picture a receiver builds: the ladder's top (1536, LIZARD-896 to -1024), so it reads any version the
 // ai: word names, with no flag (2026-09-24; 1024 until 2026-09-29, the receiver's #sizes menu choosing 1536, the menu
 // ai: deleted that day since the ring's word names the size). A blind C worker builds a picture's
 // ai: codec only when a word names it (src/wasm.c pic_for, a few ms since the same day's counting sort).
@@ -63,12 +54,11 @@ export const blindSpec = (nmax = BLIND_NMAX) => ({ phy: "focus", blind: 1, nmax 
 // ai: (2026-09-27), and scripts/exp/recordings.mjs lists the current version's runs alone.
 export const recordedBlind = (spec) => ({ ...blindSpec(Math.max(BLIND_NMAX, spec.n ?? 0)), stream: spec.stream });
 
-// ai: name -> generator. A spec names its stream so a harness and any later replay agree (a recording carries its
-// ai: sender's spec); the live test stream is SHAKE256 (SPEC 9.3), which a blind receiver judges from the light alone
-// ai: (blockJudge).
-export const STREAMS = { legacy: blockBytesLegacy, shake256: blockBytesShake };
+// ai: name -> generator: SHAKE256 alone (SPEC 9.3), which a blind receiver judges from the light alone (blockJudge); a
+// ai: spec that names no stream gets it.
+export const STREAMS = { shake256: blockBytesShake };
 export const sourceFor = (stream) => {
-  const gen = STREAMS[stream ?? "legacy"];
+  const gen = STREAMS[stream ?? "shake256"];
   if (!gen) throw new Error(`unknown test stream ${stream}`);
   return (id, out) => gen(id, out.length, out);
 };
@@ -153,12 +143,12 @@ async function makeFocus(spec) {
     // baseId may instead be the frame's T ids, for a sender whose ids are not a run (sim/xfer.mjs: chunk and symbol).
     frame(seq, baseId = seq * T) {
       for (let t = 0; t < T; t++) { const id = typeof baseId === "number" ? baseId + t : baseId[t], o = t * B; buf[o] = id & 255; buf[o + 1] = (id >>> 8) & 255; buf[o + 2] = (id >>> 16) & 255; buf[o + 3] = id >>> 24; source(id, buf.subarray(o + 4, o + B)); }
-      fc.setParity(0);
+      fc.setParity(seq & 3);
       return { w: fc.side, h: fc.side, quiet, drive: fc.encode(buf), truth: null };
     },
     // The same frame as the pixels a page paints, margin included (lizard-web/send-worker.mjs): { w, rgba }, the rgba a view
     // into the wasm heap that the next call overwrites. ai: seq is the painted count, so seq mod 4 is the pilots'
-    // (SPEC 7.3): a page's frames flash (frame() above, the simulator's, paints count 0, as before the pilots).
+    // (SPEC 7.3), as frame() above paints them and the senders do (gpu/encoder.mjs, core/tx/sender.cpp).
     frameRGBA(seq, baseId = seq * T) {
       if (noRGBA) throw new Error(noRGBA);
       fc.setParity(seq & 3);

@@ -33,16 +33,21 @@
 #include "volk.h"
 
 #include "sender.h"
+#include "vk_present_timing.h"
 #include "wg.h"
 
 #if defined(_WIN32)
 #include <windows.h>
 #include <vulkan/vulkan_win32.h>
 #elif LIZ_X11
+#include <fcntl.h>
+#include <spawn.h>
+#include <unistd.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/extensions/Xrandr.h>
 #include <vulkan/vulkan_xlib.h>
+#include <vulkan/vulkan_xlib_xrandr.h>
 #elif defined(__APPLE__)
 #include <vulkan/vulkan_metal.h>
 
@@ -98,7 +103,8 @@ std::string fmt(const char* f, double v) {
   X(vkCreateDescriptorSetLayout) X(vkDestroyDescriptorSetLayout) X(vkCreatePipelineLayout) X(vkDestroyPipelineLayout) \
   X(vkCreateComputePipelines) X(vkDestroyPipeline) X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool)               \
   X(vkResetDescriptorPool) X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) X(vkCmdBindPipeline)                  \
-  X(vkCmdBindDescriptorSets) X(vkCmdPushConstants) X(vkCmdDispatch)
+  X(vkCmdBindDescriptorSets) X(vkCmdPushConstants) X(vkCmdDispatch) X(vkCreateBuffer) X(vkDestroyBuffer)          \
+  X(vkGetBufferMemoryRequirements) X(vkBindBufferMemory) X(vkMapMemory) X(vkCmdCopyBufferToImage)
 #define LIZ_DECL(f) PFN_##f f = nullptr;
 struct InstFns {
   LIZ_INST_FNS(LIZ_DECL)
@@ -140,6 +146,10 @@ struct Shown {
   double acquiredMs = 0, submittedMs = 0, shownMs = -1;
   uint32_t epoch = 0;
   int queued = -1;   // ai: presents from the last one on screen to this one at its submit (the chain's slack); -1 unknown
+  // ai: on present timing (2026-10-31): the refresh this present was for (ms, -1 none) and its shown time the display's
+  // ai: first pixel; a present then stands for its picture's whole hold, so no refresh between two is a miss
+  double targetMs = -1;
+  bool timed = false;
 };
 
 // ai: The second thread that waits for each present to reach the screen (vkWaitForPresentKHR), in id order. Without
@@ -226,6 +236,10 @@ struct Waiter {
 struct Tally {
   std::map<long, uint64_t> held;
   uint64_t presents = 0, pictures = 0, missed = 0, unknown = 0, behind = 0;
+  // ai: present timing's (2026-10-31): pictures on screen a refresh or more past their target, the schedule moved to
+  // ai: the display's times, the largest first-pixel time off its target (ms)
+  uint64_t late = 0, slips = 0;
+  double errMaxMs = 0;
   double lastShown = -1, lastFresh = -1;
   uint32_t epoch = 0;
   std::vector<double> gaps;
@@ -241,11 +255,16 @@ struct Tally {
     }
     if (s.epoch != epoch) { epoch = s.epoch; lastShown = lastFresh = -1; }
     if (s.shownMs < 0) { unknown++; lastShown = lastFresh = -1; return; }
+    if (s.timed && s.targetMs >= 0) {
+      const double err = s.shownMs - s.targetMs;
+      errMaxMs = std::max(errMaxMs, std::fabs(err));
+      if (s.fresh && err >= 0.5 * refreshMs) late++;
+    }
     if (lastShown >= 0) {
       const double gap = s.shownMs - lastShown;
       gaps.push_back(gap);
       const long k = std::lround(gap / refreshMs);
-      if (k >= 2) missed += static_cast<uint64_t>(k - 1);
+      if (k >= 2 && !s.timed) missed += static_cast<uint64_t>(k - 1);
     }
     lastShown = s.shownMs;
     if (s.fresh) {
@@ -396,6 +415,36 @@ unsigned long x11TopLevel(unsigned long window) {
   return top;
 #else
   return window;
+#endif
+}
+
+std::string x11OutputAt(unsigned long window) {
+#if LIZ_X11 && !defined(_WIN32)
+  Display* d = XOpenDisplay(nullptr);
+  if (!d) return "";
+  std::string name;
+  int ev = 0, er = 0;
+  XWindowAttributes wa{};
+  if (XRRQueryExtension(d, &ev, &er) && XGetWindowAttributes(d, static_cast<Window>(window), &wa)) {
+    int cx = 0, cy = 0;
+    Window child = 0;
+    XTranslateCoordinates(d, static_cast<Window>(window), wa.root, wa.width / 2, wa.height / 2, &cx, &cy, &child);
+    if (XRRScreenResources* res = XRRGetScreenResourcesCurrent(d, wa.root)) {
+      if (const RRCrtc crtc = crtcAt(d, res, cx, cy)) {
+        if (XRRCrtcInfo* ci = XRRGetCrtcInfo(d, res, crtc)) {
+          if (ci->noutput > 0)
+            if (XRROutputInfo* oi = XRRGetOutputInfo(d, res, ci->outputs[0])) { name = oi->name; XRRFreeOutputInfo(oi); }
+          XRRFreeCrtcInfo(ci);
+        }
+      }
+      XRRFreeScreenResources(res);
+    }
+  }
+  XCloseDisplay(d);
+  return name;
+#else
+  (void)window;
+  return "";
 #endif
 }
 
@@ -572,6 +621,82 @@ struct Presenter::Impl {
   Waiter waiter;
   Tally win;
   FILE* csv = nullptr;
+  // ai: Present timing (VK_EXT_present_timing, 2026-10-31): each present carries the refresh it is for, an absolute
+  // ai: time on the display's own refresh grid, and the display reports when its first pixel left for the screen.
+  // ai: timingDev: the device took the extensions (wg); timing: this swapchain presents on them (its surface takes
+  // ai: absolute targets and reports the first-pixel stage); refreshNs the display's refresh as it reports it; the
+  // ai: grid: refresh slot k at anchorNs + (k - anchorSlot) refreshNs in the swapchain's time domain, set from a
+  // ai: first-pixel time. Without them the presents count refreshes and present_wait times them, as before.
+  struct TimingFns {
+    PFN_vkSetSwapchainPresentTimingQueueSizeEXT setQueueSize = nullptr;
+    PFN_vkGetSwapchainTimingPropertiesEXT props = nullptr;
+    PFN_vkGetSwapchainTimeDomainPropertiesEXT domains = nullptr;
+    PFN_vkGetPastPresentationTimingEXT past = nullptr;
+    PFN_vkGetCalibratedTimestampsKHR calibrate = nullptr;
+    PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR caps2 = nullptr;
+  } T;
+  bool timingDev = false, timing = false, anchored = false;
+  VkPresentStageFlagsEXT stages = 0;
+  VkTimeDomainKHR domain = VK_TIME_DOMAIN_DEVICE_KHR;
+  uint64_t domainId = 0, refreshNs = 0, propsCounter = 0, domainsCounter = 0, anchorNs = 0;
+  double anchorSlot = 0;
+  // ai: a present's record until its timing comes back: what it showed, the slot it was for (refreshes on the grid,
+  // ai: or the present's count before the grid is set), its target (0 none)
+  struct Sent { Shown s; double slot = 0; uint64_t targetNs = 0; };
+  std::map<uint64_t, Sent> sent;
+  std::vector<Shown> timedDone;   // ai: presents whose timing came back, for drain
+  uint64_t lastDone = 0;   // ai: the last present whose first pixel was reported
+  int lateRun = 0;         // ai: fresh pictures late in a row (three move the grid: the display's times win)
+  // ai: the domain against the host's steady clock (vkGetCalibratedTimestampsKHR, once a second): ms from t0 of a
+  // ai: domain time; calOk false where it cannot be read
+  double calHostMs = 0, calAt = -1e9;
+  uint64_t calNs = 0;
+  bool calOk = false;
+  std::vector<VkPastPresentationTimingEXT> past;
+  std::vector<VkPresentStageTimeEXT> pastStages;
+  // ai: the display taken (PresentOptions::direct): its handle, the mode's size and refresh
+  VkDisplayKHR display = VK_NULL_HANDLE;
+  bool displayTaken = false;
+  VkExtent2D displayExtent{};
+  double displayHz = 0;
+  PFN_vkReleaseDisplayEXT releaseDisplay = nullptr;
+#if LIZ_X11 && !defined(_WIN32)
+  // ai: the desktop's layout before the display was taken (every CRTC's mode, place, rotation and outputs, the primary
+  // ai: output, the screen's size), put back once it is given back: taking an output turns it off first, and the
+  // ai: window manager may lay the other monitors out again meanwhile
+  struct CrtcWas { RRCrtc crtc = 0; RRMode mode = 0; int x = 0, y = 0; Rotation rot = RR_Rotate_0; std::vector<RROutput> outs; };
+  std::vector<CrtcWas> layoutWas;
+  RROutput primaryWas = 0;
+  int fbW = 0, fbH = 0, fbMmW = 0, fbMmH = 0;
+  void saveLayout();
+  void restoreLayout();
+  // ai: the guard for a crash (armGuard): a shell waiting on a pipe this process holds the other end of; its end
+  // ai: closed without the word "given-back" (the process gone while the display was taken), it puts the saved
+  // ai: layout back with xrandr (the lease itself ends with the process; the output would stay off without this)
+  int guardFd = -1;
+  void armGuard();
+  void disarmGuard();
+  // ai: while the only monitor is taken the keyboard and the pointer are this presenter's (XGrabKeyboard, XGrabPointer
+  // ai: on the app's window, else the root where it is not viewable): nothing else takes the input no screen shows, and
+  // ai: a key press or a click, any, gives the display back (leaveDisplay). Where another monitor stays on the desktop
+  // ai: nothing is grabbed: the app's window there is the control (its Stop, Pause and Fullscreen, and its keys)
+  bool grabbed = false;
+  double grabTried = -1e9;
+  void grabInput();
+  void ungrabInput();
+  bool inputArrived();
+#endif
+  // ai: (outside the X11 block: the start line and the stats read them on every system; set where a display is taken)
+  bool grabToLeave = true;
+  std::string directName;   // ai: the taken monitor's own name (its EDID's), else the output's; the stats' directName
+  bool leaseEnded = false;   // ai: the display given back by a key or a click (the stats' leaseEnded), the window since
+  void leaveDisplay(const std::string& why);
+  // ai: the mark (PresentOptions::mark): a host-visible strip an image in flight, copied into the image's corner
+  static constexpr int MARK_BITS = 12, MARK_PX = 8, MARK_W = 2 * MARK_BITS * MARK_PX;
+  VkBuffer markBuf = VK_NULL_HANDLE;
+  VkDeviceMemory markMem = VK_NULL_HANDLE;
+  uint8_t* markPtr = nullptr;
+  size_t markSlots = 0;
 
   // ai: the loop's state (the present thread's alone)
   double t0 = 0, lastWin = 0, due = 0, modeHz = 0, measured = 0, early = 0, lastRemake = -1e9;
@@ -628,6 +753,7 @@ struct Presenter::Impl {
   void remake(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D ext);
   void makeSlot(Slot& s, int w, int h);
   void freeSlot(Slot& s);
+  void freeMark();
   VkExtent2D windowSize();
   void queryMode();
   void holdMode();
@@ -635,6 +761,15 @@ struct Presenter::Impl {
   void rateMoved();
   void drain();
   void window(double secs, bool last = false);
+  // ai: present timing (2026-10-31)
+  void timingSetup(VkSwapchainKHR sc);
+  void readTimingProps();
+  bool calibrate();
+  double hostMs(uint64_t ns) const { return calHostMs + (static_cast<double>(ns) - static_cast<double>(calNs)) / 1e6; }
+  uint64_t gridNs(double slot) const;
+  double nowSlot();
+  void pollTiming();
+  std::string takeDisplay();
 };
 
 VkResult Presenter::Impl::qSubmit(const VkSubmitInfo& si, VkFence f) {
@@ -682,7 +817,22 @@ void Presenter::Impl::setup() {
   presentWait = W->has(VK_KHR_PRESENT_ID_EXTENSION_NAME) && W->has(VK_KHR_PRESENT_WAIT_EXTENSION_NAME);
   if (presentWait) D.vkWaitForPresentKHR = reinterpret_cast<PFN_vkWaitForPresentKHR>(I.vkGetDeviceProcAddr(dev, "vkWaitForPresentKHR"));
   if (!D.vkWaitForPresentKHR) presentWait = false;
+  // ai: present timing where wg took it (its extensions and features): its calls from the device, the surface query
+  // ai: from the instance (VK_KHR_get_surface_capabilities2); any missing, none of it
+  timingDev = W->has(VK_EXT_PRESENT_TIMING_EXTENSION_NAME) && W->has(VK_KHR_PRESENT_ID_2_EXTENSION_NAME);
+  if (timingDev) {
+    T.setQueueSize = reinterpret_cast<PFN_vkSetSwapchainPresentTimingQueueSizeEXT>(I.vkGetDeviceProcAddr(dev, "vkSetSwapchainPresentTimingQueueSizeEXT"));
+    T.props = reinterpret_cast<PFN_vkGetSwapchainTimingPropertiesEXT>(I.vkGetDeviceProcAddr(dev, "vkGetSwapchainTimingPropertiesEXT"));
+    T.domains = reinterpret_cast<PFN_vkGetSwapchainTimeDomainPropertiesEXT>(I.vkGetDeviceProcAddr(dev, "vkGetSwapchainTimeDomainPropertiesEXT"));
+    T.past = reinterpret_cast<PFN_vkGetPastPresentationTimingEXT>(I.vkGetDeviceProcAddr(dev, "vkGetPastPresentationTimingEXT"));
+    T.calibrate = reinterpret_cast<PFN_vkGetCalibratedTimestampsKHR>(I.vkGetDeviceProcAddr(dev, "vkGetCalibratedTimestampsKHR"));
+    T.caps2 = reinterpret_cast<PFN_vkGetPhysicalDeviceSurfaceCapabilities2KHR>(vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceSurfaceCapabilities2KHR"));
+    timingDev = T.setQueueSize && T.props && T.domains && T.past && T.calibrate && T.caps2;
+  }
 
+#if !(LIZ_X11 && !defined(_WIN32))
+  if (!opt.direct.empty()) say("presenter: the display " + opt.direct + " not taken (no direct display on this system): the window instead");
+#endif
 #if defined(_WIN32)
   if (!target.hwnd) throw std::runtime_error("no window to present to");
   auto createSurface = reinterpret_cast<PFN_vkCreateWin32SurfaceKHR>(vkGetInstanceProcAddr(inst, "vkCreateWin32SurfaceKHR"));
@@ -697,12 +847,16 @@ void Presenter::Impl::setup() {
   xq = dpy ? XOpenDisplay(nullptr) : nullptr;
   if (!dpy || !xq) throw std::runtime_error("no X display");
   xwin = static_cast<Window>(target.x11Window);
+  if (!opt.direct.empty()) {
+    const std::string why = takeDisplay();
+    if (!why.empty()) say("presenter: the display " + opt.direct + " not taken (" + why + "): the window instead");
+  }
   auto createSurface = reinterpret_cast<PFN_vkCreateXlibSurfaceKHR>(vkGetInstanceProcAddr(inst, "vkCreateXlibSurfaceKHR"));
   if (!createSurface) throw std::runtime_error("the sender's Vulkan instance has no VK_KHR_xlib_surface");
   VkXlibSurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
   si.dpy = dpy;
   si.window = xwin;
-  vkCheck(createSurface(inst, &si, nullptr, &surf), "vkCreateXlibSurfaceKHR");
+  if (!surf) vkCheck(createSurface(inst, &si, nullptr, &surf), "vkCreateXlibSurfaceKHR");
 #elif defined(__APPLE__)
   if (!target.metalLayer) throw std::runtime_error("no layer to present to");
   auto createSurface = reinterpret_cast<PFN_vkCreateMetalSurfaceEXT>(vkGetInstanceProcAddr(inst, "vkCreateMetalSurfaceEXT"));
@@ -768,12 +922,18 @@ void Presenter::Impl::setup() {
     csv = std::fopen(opt.csv.c_str(), "w");
 #endif
     if (!csv) throw std::runtime_error(opt.csv + " could not be written");
-    std::fprintf(csv, "id,picture,fresh,acquired_ms,submitted_ms,shown_ms,queued\n");
+    std::fprintf(csv, "id,picture,fresh,acquired_ms,submitted_ms,shown_ms,queued,target_ms\n");
   }
   queryMode();
   t0 = lastWin = nowMs();
+  // ai: the CSV's origin on the steady clock (CLOCK_MONOTONIC on Linux), so tools on other clocks' readings line up
+  if (csv) std::fprintf(csv, "# t0_steady_ms=%s\n", fmt("%.3f", t0).c_str());
   window(0);
   say("presenter: " + name + (shareQueue ? ", the painter's queue shared" : ", the family's second queue") +
+      (displayTaken ? ", the display " + opt.direct + " taken (" + std::to_string(displayExtent.width) + " x " +
+                          std::to_string(displayExtent.height) + " at " + fmt("%.3f", displayHz) + " Hz; " +
+                          (grabToLeave ? "the only monitor: any key or click gives it back" : "the window on another monitor the control") + ")" : "") +
+      (timingDev ? ", present timing on the device" : "") +
       (presentWait ? ", times from present_wait" : ", times from acquire (no present_wait)") +
       (modeHz > 0 ? ", the mode's refresh " + fmt("%.3f", modeHz) + " Hz" : ""));
 }
@@ -796,6 +956,8 @@ VkExtent2D Presenter::Impl::windowSize() {
 // ai: X11: the mode's refresh of the monitor (a CRTC) holding the window's centre; Windows: the display settings of the
 // ai: monitor nearest the window (whole Hz: 59 for 59.94, the measurement corrects it); macOS: the main display's mode
 void Presenter::Impl::queryMode() {
+  // ai: the display taken: its mode is the presenter's own choice (takeDisplay)
+  if (displayTaken) { modeHz = displayHz; return; }
 #if defined(_WIN32)
   HMONITOR mon = MonitorFromWindow(static_cast<HWND>(target.hwnd), MONITOR_DEFAULTTONEAREST);
   MONITORINFOEXW mi{};
@@ -838,6 +1000,8 @@ void Presenter::Impl::queryMode() {
 // ai: centre and the refresh of its mode before ours; where fps divides that, its own mode (ours put back), else the
 // ai: mode at the same size pickRate takes, set. Each monitor and fps is looked at once (held.decided).
 void Presenter::Impl::holdMode() {
+  // ai: the display taken shows a mode chosen for the asked rate already (takeDisplay); the desktop's modes are not ours
+  if (displayTaken) return;
   if (!vsync) { releaseMode(); held.decided = false; return; }
   const int f = std::max(1, fps.load());
   auto fpsText = [&] { return std::to_string(f) + " pictures a second"; };
@@ -1020,6 +1184,487 @@ void Presenter::Impl::rateMoved() {
   win.gaps.clear();
   epoch++;
   due = static_cast<double>(presents);
+  anchored = false;
+}
+
+// ai: Present timing on a new swapchain (2026-10-31): a results queue of four chain-lengths (a present asking for its
+// ai: times takes a slot until they are read), the display's refresh, the time domain (the host's steady clock where
+// ai: the swapchain offers it, else the device's, else the swapchain's own: each converted to the host's by
+// ai: calibration), and the grid unset until a first-pixel time comes back
+void Presenter::Impl::timingSetup(VkSwapchainKHR sc) {
+  const uint32_t q = static_cast<uint32_t>(std::max<size_t>(64, 4 * c.images.size()));
+  if (T.setQueueSize(dev, sc, q) != VK_SUCCESS) { timing = false; say("presenter: present timing refused its results queue"); return; }
+  past.assign(q, VkPastPresentationTimingEXT{});
+  pastStages.assign(q, VkPresentStageTimeEXT{});
+  refreshNs = 0;
+  readTimingProps();
+  domainId = 0;
+  domain = VK_TIME_DOMAIN_DEVICE_KHR;
+  uint32_t n = 0;
+  VkSwapchainTimeDomainPropertiesEXT dp{VK_STRUCTURE_TYPE_SWAPCHAIN_TIME_DOMAIN_PROPERTIES_EXT};
+  if (T.domains(dev, sc, &dp, nullptr) == VK_SUCCESS && (n = dp.timeDomainCount) > 0) {
+    std::vector<VkTimeDomainKHR> doms(n);
+    std::vector<uint64_t> ids(n);
+    dp.pTimeDomains = doms.data();
+    dp.pTimeDomainIds = ids.data();
+    T.domains(dev, sc, &dp, &domainsCounter);
+#if defined(_WIN32)
+    const VkTimeDomainKHR host = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR;
+#else
+    const VkTimeDomainKHR host = VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR;
+#endif
+    int pick = -1;
+    for (const VkTimeDomainKHR want : {host, VK_TIME_DOMAIN_DEVICE_KHR, VK_TIME_DOMAIN_SWAPCHAIN_LOCAL_EXT})
+      for (uint32_t k = 0; k < dp.timeDomainCount && pick < 0; k++)
+        if (doms[k] == want) pick = static_cast<int>(k);
+    if (pick < 0) pick = 0;
+    domain = doms[static_cast<size_t>(pick)];
+    domainId = ids[static_cast<size_t>(pick)];
+  }
+  // ai: a grid dropped: the schedule counts presents again (the grid's slots ran ahead of the count at one present a
+  // ai: picture), from the next present on
+  if (anchored) due = static_cast<double>(presents);
+  anchored = false;
+  sent.clear();
+  lastDone = 0;
+  lateRun = 0;
+  calAt = -1e9;
+  calOk = false;
+}
+
+// ai: the display's refresh (VK_NOT_READY until a present has gone out on some platforms: asked again then); a
+// ai: refresh that moved drops the grid
+void Presenter::Impl::readTimingProps() {
+  VkSwapchainTimingPropertiesEXT tp{VK_STRUCTURE_TYPE_SWAPCHAIN_TIMING_PROPERTIES_EXT};
+  if (T.props(dev, c.sc, &tp, &propsCounter) != VK_SUCCESS || !tp.refreshDuration) return;
+  // ai: a variable refresh (refreshInterval UINT64_MAX) has no grid to hold pictures on: the present count instead
+  if (tp.refreshInterval == UINT64_MAX) {
+    if (anchored) due = static_cast<double>(presents);
+    timing = anchored = false;
+    say("presenter: a variable refresh: presents count refreshes");
+    return;
+  }
+  if (refreshNs && tp.refreshDuration != refreshNs && anchored) { anchored = false; due = static_cast<double>(presents); }
+  refreshNs = tp.refreshDuration;
+}
+
+// ai: the domain's time and the host's steady clock read together (vkGetCalibratedTimestampsKHR), once a second
+bool Presenter::Impl::calibrate() {
+  if (nowMs() - calAt < 1000 && calOk) return true;
+  calAt = nowMs();
+  VkSwapchainCalibratedTimestampInfoEXT sci{VK_STRUCTURE_TYPE_SWAPCHAIN_CALIBRATED_TIMESTAMP_INFO_EXT};
+  sci.swapchain = c.sc;
+  sci.timeDomainId = domainId;
+  VkCalibratedTimestampInfoKHR ti[2]{{VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR}, {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR}};
+  ti[0].timeDomain = domain;
+  if (domain == VK_TIME_DOMAIN_SWAPCHAIN_LOCAL_EXT) ti[0].pNext = &sci;
+#if defined(_WIN32)
+  ti[1].timeDomain = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR;
+#else
+  ti[1].timeDomain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR;
+#endif
+  uint64_t ts[2] = {0, 0}, dev2 = 0;
+  const bool hostDomain = domain == ti[1].timeDomain;
+  if (T.calibrate(dev, hostDomain ? 1 : 2, hostDomain ? &ti[1] : ti, ts, &dev2) != VK_SUCCESS) { calOk = false; return false; }
+  if (hostDomain) ts[1] = ts[0];
+  double hostNs = static_cast<double>(ts[1]);
+#if defined(_WIN32)
+  LARGE_INTEGER f;
+  QueryPerformanceFrequency(&f);
+  hostNs = hostNs * 1e9 / static_cast<double>(f.QuadPart);
+#endif
+  // ai: the steady clock's ms (nowMs: CLOCK_MONOTONIC on Linux, QPC on Windows) from t0
+  calNs = ts[0];
+  calHostMs = hostNs / 1e6 - t0;
+  calOk = true;
+  return true;
+}
+
+uint64_t Presenter::Impl::gridNs(double slot) const {
+  const double k = std::round(slot) - anchorSlot;
+  return static_cast<uint64_t>(static_cast<double>(anchorNs) + k * static_cast<double>(refreshNs));
+}
+
+// ai: the grid's slot now (fractional), from the calibration
+double Presenter::Impl::nowSlot() {
+  if (!calibrate()) return -1e18;
+  const double nowNs = static_cast<double>(calNs) + (nowMs() - t0 - calHostMs) * 1e6;
+  return anchorSlot + (nowNs - static_cast<double>(anchorNs)) / static_cast<double>(refreshNs);
+}
+
+// ai: The timings back so far: each present's first-pixel time against its target, into the tally as a Shown with the
+// ai: display's own time (ms on the host's clock); the first one sets the grid (its time is its slot's); three fresh
+// ai: pictures late in a row move the grid to where the display put them (the schedule slips once, counted, rather
+// ai: than every picture after it counting late)
+void Presenter::Impl::pollTiming() {
+  if (!timing || past.empty()) return;
+  if (!refreshNs) readTimingProps();
+  for (size_t k = 0; k < past.size(); k++) {
+    past[k] = VkPastPresentationTimingEXT{VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_EXT};
+    past[k].presentStageCount = 1;
+    past[k].pPresentStages = &pastStages[k];
+  }
+  VkPastPresentationTimingInfoEXT info{VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_INFO_EXT};
+  info.swapchain = c.sc;
+  VkPastPresentationTimingPropertiesEXT pp{VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_PROPERTIES_EXT};
+  pp.presentationTimingCount = static_cast<uint32_t>(past.size());
+  pp.pPresentationTimings = past.data();
+  const VkResult r = T.past(dev, &info, &pp);
+  if (r != VK_SUCCESS && r != VK_INCOMPLETE) return;
+  if (pp.timingPropertiesCounter != propsCounter) readTimingProps();
+  if (pp.timeDomainsCounter != domainsCounter) { timingSetup(c.sc); return; }
+  if (!calibrate()) return;
+  for (uint32_t k = 0; k < pp.presentationTimingCount; k++) {
+    const VkPastPresentationTimingEXT& t = past[k];
+    auto it = sent.find(t.presentId);
+    if (it == sent.end()) continue;
+    Sent x = it->second;
+    sent.erase(it);
+    uint64_t out = 0;
+    for (uint32_t j = 0; j < t.presentStageCount; j++)
+      if (t.pPresentStages[j].stage == VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT) out = t.pPresentStages[j].time;
+    lastDone = std::max(lastDone, t.presentId);
+    x.s.timed = true;
+    x.s.shownMs = out ? hostMs(out) : -1;
+    x.s.targetMs = x.targetNs ? hostMs(x.targetNs) : -1;
+    if (out && refreshNs && !anchored) {
+      anchored = true;
+      anchorNs = out;
+      anchorSlot = std::round(x.slot);
+    } else if (out && x.targetNs && x.s.fresh) {
+      const double lateBy = (static_cast<double>(out) - static_cast<double>(x.targetNs)) / static_cast<double>(refreshNs);
+      if (lateBy >= 0.5) {
+        if (++lateRun >= 3) {
+          anchorNs += static_cast<uint64_t>(std::llround(lateBy)) * refreshNs;
+          win.slips++;
+          lateRun = 0;
+        }
+      } else lateRun = 0;
+    }
+    timedDone.push_back(x.s);
+  }
+}
+
+#if LIZ_X11 && !defined(_WIN32)
+// ai: The display taken from the X server (PresentOptions::direct): the RandR output by name, its Vulkan display
+// ai: (vkGetRandROutputDisplayEXT), taken (vkAcquireXlibDisplayEXT: the server leases it away from the desktop), a mode
+// ai: of the output's present size at a refresh the asked rate divides (pickRate), else the nearest 60 Hz there, a
+// ai: plane that shows this display, and the display's own surface on them (vkCreateDisplayPlaneSurfaceKHR). "" or why
+// ai: not; given back (vkReleaseDisplayEXT) at teardown, or here where a later step fails.
+// ai: a monitor's own name from its EDID (the display descriptor tagged 0xFC, up to 13 characters ended by a line
+// ai: feed), as a settings dialog shows it; empty where the output has no EDID or none names it
+static std::string monitorName(Display* xq, RROutput out) {
+  std::string name;
+  const Atom edid = XInternAtom(xq, "EDID", True);
+  if (edid == None) return name;
+  Atom type = None;
+  int format = 0;
+  unsigned long n = 0, after = 0;
+  unsigned char* data = nullptr;
+  if (XRRGetOutputProperty(xq, out, edid, 0, 64, False, False, AnyPropertyType, &type, &format, &n, &after, &data) == Success && data) {
+    for (int d = 54; d + 18 <= 126 && static_cast<unsigned long>(d + 18) <= n; d += 18)
+      if (!data[d] && !data[d + 1] && !data[d + 2] && data[d + 3] == 0xFC) {
+        for (int k = 5; k < 18 && data[d + k] != '\n' && data[d + k]; k++) name += static_cast<char>(data[d + k]);
+        while (!name.empty() && name.back() == ' ') name.pop_back();
+        break;
+      }
+    XFree(data);
+  }
+  return name;
+}
+
+std::string Presenter::Impl::takeDisplay() {
+  auto getOutput = reinterpret_cast<PFN_vkGetRandROutputDisplayEXT>(vkGetInstanceProcAddr(inst, "vkGetRandROutputDisplayEXT"));
+  auto acquire = reinterpret_cast<PFN_vkAcquireXlibDisplayEXT>(vkGetInstanceProcAddr(inst, "vkAcquireXlibDisplayEXT"));
+  releaseDisplay = reinterpret_cast<PFN_vkReleaseDisplayEXT>(vkGetInstanceProcAddr(inst, "vkReleaseDisplayEXT"));
+  auto modesOf = reinterpret_cast<PFN_vkGetDisplayModePropertiesKHR>(vkGetInstanceProcAddr(inst, "vkGetDisplayModePropertiesKHR"));
+  auto planesOf = reinterpret_cast<PFN_vkGetPhysicalDeviceDisplayPlanePropertiesKHR>(vkGetInstanceProcAddr(inst, "vkGetPhysicalDeviceDisplayPlanePropertiesKHR"));
+  auto planeDisplays = reinterpret_cast<PFN_vkGetDisplayPlaneSupportedDisplaysKHR>(vkGetInstanceProcAddr(inst, "vkGetDisplayPlaneSupportedDisplaysKHR"));
+  auto createSurface = reinterpret_cast<PFN_vkCreateDisplayPlaneSurfaceKHR>(vkGetInstanceProcAddr(inst, "vkCreateDisplayPlaneSurfaceKHR"));
+  if (!getOutput || !acquire || !releaseDisplay || !modesOf || !planesOf || !planeDisplays || !createSurface)
+    return "the Vulkan instance has no VK_KHR_display with VK_EXT_acquire_xlib_display";
+  int ev = 0, er = 0;
+  if (!XRRQueryExtension(xq, &ev, &er)) return "no XRandR";
+  XRRScreenResources* res = XRRGetScreenResourcesCurrent(xq, DefaultRootWindow(xq));
+  if (!res) return "no XRandR resources";
+  RROutput out = 0;
+  uint32_t w = 0, h = 0;
+  for (int i = 0; i < res->noutput && !out; i++) {
+    XRROutputInfo* oi = XRRGetOutputInfo(xq, res, res->outputs[i]);
+    if (!oi) continue;
+    if (opt.direct == oi->name && oi->connection == RR_Connected) {
+      out = res->outputs[i];
+      if (XRRCrtcInfo* ci = oi->crtc ? XRRGetCrtcInfo(xq, res, oi->crtc) : nullptr) {
+        w = ci->width;
+        h = ci->height;
+        XRRFreeCrtcInfo(ci);
+      }
+    }
+    XRRFreeOutputInfo(oi);
+  }
+  XRRFreeScreenResources(res);
+  if (!out) return "no connected output of that name";
+  VkDisplayKHR d = VK_NULL_HANDLE;
+  if (getOutput(pd, dpy, out, &d) != VK_SUCCESS || !d) return name + " shows no Vulkan display on that output";
+  // ai: an output the desktop shows is not leased (NVIDIA: VK_ERROR_UNKNOWN): its CRTC turned off first, the screen's
+  // ai: size kept, the layout kept to put back
+  saveLayout();
+  if (XRRScreenResources* r2 = XRRGetScreenResourcesCurrent(xq, DefaultRootWindow(xq))) {
+    if (XRROutputInfo* oi = XRRGetOutputInfo(xq, r2, out)) {
+      if (oi->crtc) XRRSetCrtcConfig(xq, r2, oi->crtc, CurrentTime, 0, 0, None, RR_Rotate_0, nullptr, 0);
+      XRRFreeOutputInfo(oi);
+    }
+    XRRFreeScreenResources(r2);
+  }
+  XSync(xq, False);
+  const VkResult ar = acquire(pd, dpy, d);
+  if (ar != VK_SUCCESS) {
+    restoreLayout();
+    return "the X server kept it (VkResult " + std::to_string(static_cast<int>(ar)) + ")";
+  }
+  display = d;
+  displayTaken = true;
+  grabToLeave = layoutWas.size() <= 1;
+  directName = monitorName(xq, out);
+  if (directName.empty()) directName = opt.direct;
+  armGuard();
+  auto giveBack = [&](const std::string& why) {
+    releaseDisplay(pd, display);
+    displayTaken = false;
+    display = VK_NULL_HANDLE;
+    restoreLayout();
+    disarmGuard();
+    return why;
+  };
+  uint32_t nm = 0;
+  modesOf(pd, display, &nm, nullptr);
+  std::vector<VkDisplayModePropertiesKHR> modes(nm);
+  modesOf(pd, display, &nm, modes.data());
+  if (!w || !h) {
+    for (const auto& m : modes) if (m.parameters.visibleRegion.width * m.parameters.visibleRegion.height > w * h) { w = m.parameters.visibleRegion.width; h = m.parameters.visibleRegion.height; }
+  }
+  std::vector<double> hz;
+  std::vector<size_t> at;
+  for (size_t k = 0; k < modes.size(); k++)
+    if (modes[k].parameters.visibleRegion.width == w && modes[k].parameters.visibleRegion.height == h && modes[k].parameters.refreshRate) {
+      hz.push_back(modes[k].parameters.refreshRate / 1000.0);
+      at.push_back(k);
+    }
+  if (hz.empty()) return giveBack("no mode at " + std::to_string(w) + " x " + std::to_string(h));
+  int b = pickRate(hz, std::max(1, fps.load()));
+  if (b < 0) {
+    b = 0;
+    for (size_t k = 1; k < hz.size(); k++) if (std::fabs(hz[k] - 60) < std::fabs(hz[static_cast<size_t>(b)] - 60)) b = static_cast<int>(k);
+  }
+  const VkDisplayModePropertiesKHR& mode = modes[at[static_cast<size_t>(b)]];
+  uint32_t np = 0;
+  planesOf(pd, &np, nullptr);
+  std::vector<VkDisplayPlanePropertiesKHR> planes(np);
+  planesOf(pd, &np, planes.data());
+  uint32_t plane = UINT32_MAX;
+  for (uint32_t p = 0; p < np && plane == UINT32_MAX; p++) {
+    if (planes[p].currentDisplay && planes[p].currentDisplay != display) continue;
+    uint32_t nd = 0;
+    planeDisplays(pd, p, &nd, nullptr);
+    std::vector<VkDisplayKHR> ds(nd);
+    planeDisplays(pd, p, &nd, ds.data());
+    for (VkDisplayKHR x : ds) if (x == display) plane = p;
+  }
+  if (plane == UINT32_MAX) return giveBack("no plane shows it");
+  VkDisplaySurfaceCreateInfoKHR dsi{VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR};
+  dsi.displayMode = mode.displayMode;
+  dsi.planeIndex = plane;
+  dsi.planeStackIndex = planes[plane].currentStackIndex;
+  dsi.transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+  dsi.alphaMode = VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR;
+  dsi.imageExtent = mode.parameters.visibleRegion;
+  const VkResult sr = createSurface(inst, &dsi, nullptr, &surf);
+  if (sr != VK_SUCCESS) { surf = VK_NULL_HANDLE; return giveBack("its surface refused (VkResult " + std::to_string(static_cast<int>(sr)) + ")"); }
+  displayExtent = mode.parameters.visibleRegion;
+  displayHz = mode.parameters.refreshRate / 1000.0;
+  modeHz = displayHz;
+  return "";
+}
+
+void Presenter::Impl::saveLayout() {
+  layoutWas.clear();
+  const Window root = DefaultRootWindow(xq);
+  fbW = DisplayWidth(xq, DefaultScreen(xq));
+  fbH = DisplayHeight(xq, DefaultScreen(xq));
+  fbMmW = DisplayWidthMM(xq, DefaultScreen(xq));
+  fbMmH = DisplayHeightMM(xq, DefaultScreen(xq));
+  primaryWas = XRRGetOutputPrimary(xq, root);
+  XRRScreenResources* res = XRRGetScreenResourcesCurrent(xq, root);
+  if (!res) return;
+  for (int i = 0; i < res->ncrtc; i++) {
+    XRRCrtcInfo* ci = XRRGetCrtcInfo(xq, res, res->crtcs[i]);
+    if (!ci) continue;
+    if (ci->mode) {
+      CrtcWas w;
+      w.crtc = res->crtcs[i];
+      w.mode = ci->mode;
+      w.x = ci->x;
+      w.y = ci->y;
+      w.rot = ci->rotation;
+      w.outs.assign(ci->outputs, ci->outputs + ci->noutput);
+      layoutWas.push_back(w);
+    }
+    XRRFreeCrtcInfo(ci);
+  }
+  XRRFreeScreenResources(res);
+}
+
+// ai: the layout as saveLayout found it: the screen's size, then each CRTC that differs, then the primary output
+void Presenter::Impl::restoreLayout() {
+  if (layoutWas.empty()) return;
+  const Window root = DefaultRootWindow(xq);
+  XSync(xq, False);
+  if (DisplayWidth(xq, DefaultScreen(xq)) != fbW || DisplayHeight(xq, DefaultScreen(xq)) != fbH) XRRSetScreenSize(xq, root, fbW, fbH, fbMmW, fbMmH);
+  // ai: just after the display is released the server may refuse its CRTC (NVIDIA 615, a DisplayPort monitor:
+  // ai: RRSetConfigFailed on the first try, where an HDMI one took it), and a monitor left without a signal sleeps in
+  // ai: seconds and drops off the link until it is switched off and on: each CRTC asked again every 100 ms for 3 s
+  for (CrtcWas& w : layoutWas) {
+    for (int tries = 0;; tries++) {
+      XRRScreenResources* res = XRRGetScreenResourcesCurrent(xq, root);
+      if (!res) break;
+      XRRCrtcInfo* ci = XRRGetCrtcInfo(xq, res, w.crtc);
+      const bool same = ci && ci->mode == w.mode && ci->x == w.x && ci->y == w.y && ci->rotation == w.rot &&
+                        ci->noutput == static_cast<int>(w.outs.size()) && std::equal(w.outs.begin(), w.outs.end(), ci->outputs);
+      if (ci) XRRFreeCrtcInfo(ci);
+      const bool done = same || XRRSetCrtcConfig(xq, res, w.crtc, CurrentTime, w.x, w.y, w.mode, w.rot, w.outs.data(), static_cast<int>(w.outs.size())) == RRSetConfigSuccess;
+      XRRFreeScreenResources(res);
+      if (done) break;
+      if (tries == 30) { say("presenter: the desktop's layout not put back for a monitor"); break; }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
+  if (primaryWas && XRRGetOutputPrimary(xq, root) != primaryWas) XRRSetOutputPrimary(xq, root, primaryWas);
+  XSync(xq, False);
+  layoutWas.clear();
+}
+
+void Presenter::Impl::grabInput() {
+  if (grabbed || nowMs() - grabTried < 250) return;
+  grabTried = nowMs();
+  Window top = topLevel(xq, xwin);
+  XWindowAttributes wa{};
+  if (!XGetWindowAttributes(xq, top, &wa) || wa.map_state != IsViewable) top = DefaultRootWindow(xq);
+  const int k = XGrabKeyboard(xq, top, False, GrabModeAsync, GrabModeAsync, CurrentTime);
+  const int m = XGrabPointer(xq, top, False, ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+  XFlush(xq);
+  if (k == GrabSuccess && m == GrabSuccess) { grabbed = true; return; }
+  // ai: another client holds one (a menu, the manager's switcher): both let go and asked again in a quarter second
+  if (k == GrabSuccess) XUngrabKeyboard(xq, CurrentTime);
+  if (m == GrabSuccess) XUngrabPointer(xq, CurrentTime);
+  XFlush(xq);
+}
+
+void Presenter::Impl::ungrabInput() {
+  if (!grabbed) return;
+  XUngrabKeyboard(xq, CurrentTime);
+  XUngrabPointer(xq, CurrentTime);
+  XFlush(xq);
+  grabbed = false;
+}
+
+bool Presenter::Impl::inputArrived() {
+  bool hit = false;
+  while (XPending(xq)) {
+    XEvent e;
+    XNextEvent(xq, &e);
+    hit = hit || e.type == KeyPress || e.type == ButtonPress;
+  }
+  return hit;
+}
+
+void Presenter::Impl::armGuard() {
+  // ai: xrandr's words for the saved layout: the screen's size, then each output's mode (by id), place and rotation,
+  // ai: the primary marked
+  std::string cmd = "xrandr --fb " + std::to_string(fbW) + "x" + std::to_string(fbH);
+  XRRScreenResources* res = XRRGetScreenResourcesCurrent(xq, DefaultRootWindow(xq));
+  if (!res) return;
+  for (const CrtcWas& w : layoutWas)
+    for (RROutput o : w.outs)
+      if (XRROutputInfo* oi = XRRGetOutputInfo(xq, res, o)) {
+        char mode[32];
+        std::snprintf(mode, sizeof mode, "0x%lx", static_cast<unsigned long>(w.mode));
+        const Rotation r = w.rot & 0xf;
+        const char* rot = r == RR_Rotate_90 ? "left" : r == RR_Rotate_180 ? "inverted" : r == RR_Rotate_270 ? "right" : "normal";
+        cmd += std::string(" --output '") + oi->name + "' --mode " + mode + " --pos " + std::to_string(w.x) + "x" + std::to_string(w.y) +
+               " --rotate " + rot + (o == primaryWas ? " --primary" : "");
+        XRRFreeOutputInfo(oi);
+      }
+  XRRFreeScreenResources(res);
+  int fds[2];
+  if (pipe2(fds, O_CLOEXEC) != 0) return;
+  // ai: asked again every 100 ms for 3 s, as restoreLayout does: the server may refuse a CRTC just after the release
+  const std::string script = "read x; [ \"$x\" = given-back ] || { command -v xrandr >/dev/null || exit 0; i=0; until " + cmd +
+                             "; do i=$((i+1)); [ $i -ge 30 ] && exit 1; sleep 0.1; done; }";
+  posix_spawn_file_actions_t fa;
+  posix_spawn_file_actions_init(&fa);
+  posix_spawn_file_actions_adddup2(&fa, fds[0], 0);
+  // ai: none of this process's other files in the guard: an X connection held open there would keep the lease alive
+  // ai: past a crash
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
+  posix_spawn_file_actions_addclosefrom_np(&fa, 3);
+#endif
+  const char* argv[] = {"sh", "-c", script.c_str(), nullptr};
+  pid_t pid = 0;
+  const int rc = posix_spawn(&pid, "/bin/sh", &fa, nullptr, const_cast<char* const*>(argv), environ);
+  posix_spawn_file_actions_destroy(&fa);
+  close(fds[0]);
+  if (rc != 0) { close(fds[1]); say("presenter: no guard for the display (the layout stays off if this process dies)"); return; }
+  guardFd = fds[1];
+}
+
+// ai: the display given back by this process: the guard told so and let go (it exits without a word to xrandr)
+void Presenter::Impl::disarmGuard() {
+  if (guardFd < 0) return;
+  const char word[] = "given-back\n";
+  if (write(guardFd, word, sizeof word - 1) < 0) {}
+  close(guardFd);
+  guardFd = -1;
+}
+#else
+std::string Presenter::Impl::takeDisplay() { return "no direct display on this system"; }
+#endif
+
+// ai: The display given back while presenting (a key or a click): the chain and the display's surface let go, the
+// ai: display released, the desktop's layout put back, the input let go, and the window's surface made, on which the
+// ai: next present makes a chain; the app follows the stats' leaseEnded and puts its window back.
+void Presenter::Impl::leaveDisplay(const std::string& why) {
+  if (!displayTaken) return;
+  waiter.finish();
+  drain();
+  qIdle();
+  for (VkSemaphore a : c.done) D.vkDestroySemaphore(dev, a, nullptr);
+  if (c.sc) D.vkDestroySwapchainKHR(dev, c.sc, nullptr);
+  c = Chain{};
+  if (surf) I.vkDestroySurfaceKHR(inst, surf, nullptr);
+  surf = VK_NULL_HANDLE;
+  if (releaseDisplay) releaseDisplay(pd, display);
+  displayTaken = false;
+  display = VK_NULL_HANDLE;
+  leaseEnded = true;
+#if LIZ_X11 && !defined(_WIN32)
+  restoreLayout();
+  disarmGuard();
+  ungrabInput();
+  auto createSurface = reinterpret_cast<PFN_vkCreateXlibSurfaceKHR>(vkGetInstanceProcAddr(inst, "vkCreateXlibSurfaceKHR"));
+  VkXlibSurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
+  si.dpy = dpy;
+  si.window = xwin;
+  vkCheck(createSurface(inst, &si, nullptr, &surf), "vkCreateXlibSurfaceKHR");
+#endif
+  VkBool32 ok = VK_FALSE;
+  I.vkGetPhysicalDeviceSurfaceSupportKHR(pd, qf, surf, &ok);
+  if (!ok) throw std::runtime_error(name + " cannot present to this window");
+  capsAt = -1e9;
+  rateMoved();
+  say("presenter: the display " + opt.direct + " given back (" + why + "): the window");
+  // ai: the stats made now, so the app sees leaseEnded at its next read rather than a second on
+  window((nowMs() - lastWin) / 1000);
+  lastWin = nowMs();
 }
 
 void Presenter::Impl::makeChain(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D ext) {
@@ -1045,7 +1690,25 @@ void Presenter::Impl::makeChain(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D
   if (!(caps.supportedCompositeAlpha & alpha))
     for (uint32_t b = 1; b; b <<= 1)
       if (caps.supportedCompositeAlpha & b) { alpha = static_cast<VkCompositeAlphaFlagBitsKHR>(b); break; }
+  // ai: present timing on this surface: absolute targets and the first-pixel stage reported (VK_EXT_present_timing's
+  // ai: surface query), present_id2 for the ids its reports carry; else the present count and present_wait
+  timing = false;
+  if (timingDev) {
+    VkPresentTimingSurfaceCapabilitiesEXT ptc{VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT};
+    VkSurfaceCapabilitiesPresentId2KHR idc{VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR};
+    idc.pNext = &ptc;
+    VkSurfaceCapabilities2KHR c2{VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR};
+    c2.pNext = &idc;
+    VkPhysicalDeviceSurfaceInfo2KHR si2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR};
+    si2.surface = surf;
+    if (T.caps2(pd, &si2, &c2) == VK_SUCCESS && ptc.presentTimingSupported && ptc.presentAtAbsoluteTimeSupported && idc.presentId2Supported &&
+        (ptc.presentStageQueries & VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT)) {
+      timing = true;
+      stages = VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT;
+    }
+  }
   VkSwapchainCreateInfoKHR ci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
+  if (timing) ci.flags = VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT | VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR;
   ci.surface = surf;
   ci.minImageCount = count;
   ci.imageFormat = pick.format;
@@ -1103,6 +1766,35 @@ void Presenter::Impl::makeChain(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D
   dsets.assign(n, VK_NULL_HANDLE);
   vkCheck(D.vkAllocateDescriptorSets(dev, &dai, dsets.data()), "vkAllocateDescriptorSets");
   ringHeld.assign(n, nullptr);
+  if (timing) timingSetup(sc);
+  if (opt.mark) {
+    freeMark();
+    const VkDeviceSize slot = static_cast<VkDeviceSize>(MARK_W) * MARK_PX * 4;
+    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bci.size = slot * n;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    vkCheck(D.vkCreateBuffer(dev, &bci, nullptr, &markBuf), "vkCreateBuffer");
+    VkMemoryRequirements r;
+    D.vkGetBufferMemoryRequirements(dev, markBuf, &r);
+    VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ai.allocationSize = r.size;
+    ai.memoryTypeIndex = memType(r.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    vkCheck(D.vkAllocateMemory(dev, &ai, nullptr, &markMem), "vkAllocateMemory");
+    vkCheck(D.vkBindBufferMemory(dev, markBuf, markMem, 0), "vkBindBufferMemory");
+    void* p = nullptr;
+    vkCheck(D.vkMapMemory(dev, markMem, 0, VK_WHOLE_SIZE, 0, &p), "vkMapMemory");
+    markPtr = static_cast<uint8_t*>(p);
+    markSlots = n;
+  }
+}
+
+void Presenter::Impl::freeMark() {
+  if (markBuf) D.vkDestroyBuffer(dev, markBuf, nullptr);
+  if (markMem) D.vkFreeMemory(dev, markMem, nullptr);
+  markBuf = VK_NULL_HANDLE;
+  markMem = VK_NULL_HANDLE;
+  markPtr = nullptr;
+  markSlots = 0;
 }
 
 // ai: The swapchain made again (a new size, out of date, suboptimal): the waits stopped first (a wait on a swapchain
@@ -1113,11 +1805,12 @@ void Presenter::Impl::remake(const VkSurfaceCapabilitiesKHR& caps, VkExtent2D ex
   qIdle();
   makeChain(caps, ext);
   epoch++;
-  waiter.start(D, dev, presentWait, c.sc, t0);
+  waiter.start(D, dev, presentWait && !timing, c.sc, t0);
   resized = false;
   lastRemake = nowMs();
   say("presenter: the swapchain at " + std::to_string(ext.width) + " x " + std::to_string(ext.height) + ", " +
-      (c.format == VK_FORMAT_B8G8R8A8_UNORM ? "BGRA8" : "RGBA8") + " UNORM, " + std::to_string(c.images.size()) + " images, FIFO");
+      (c.format == VK_FORMAT_B8G8R8A8_UNORM ? "BGRA8" : "RGBA8") + " UNORM, " + std::to_string(c.images.size()) + " images, FIFO" +
+      (timing ? ", present timing (refresh " + fmt("%.4f", refreshNs / 1e6) + " ms, time domain " + std::to_string(static_cast<int>(domain)) + ")" : ""));
 }
 
 void Presenter::Impl::freeSlot(Slot& s) {
@@ -1160,11 +1853,15 @@ void Presenter::Impl::makeSlot(Slot& s, int w, int h) {
 
 void Presenter::Impl::drain() {
   const double refreshMs = 1000.0 / refreshHz();
-  for (const Shown& s : waiter.take()) {
+  std::vector<Shown> all = waiter.take();
+  all.insert(all.end(), timedDone.begin(), timedDone.end());
+  timedDone.clear();
+  for (const Shown& s : all) {
     win.add(s, refreshMs);
     if (csv)
-      std::fprintf(csv, "%llu,%llu,%d,%s,%s,%s,%d\n", static_cast<unsigned long long>(s.id), static_cast<unsigned long long>(s.picture),
-                   s.fresh ? 1 : 0, fmt("%.3f", s.acquiredMs).c_str(), fmt("%.3f", s.submittedMs).c_str(), fmt("%.3f", s.shownMs).c_str(), s.queued);
+      std::fprintf(csv, "%llu,%llu,%d,%s,%s,%s,%d,%s\n", static_cast<unsigned long long>(s.id), static_cast<unsigned long long>(s.picture),
+                   s.fresh ? 1 : 0, fmt("%.3f", s.acquiredMs).c_str(), fmt("%.3f", s.submittedMs).c_str(), fmt("%.3f", s.shownMs).c_str(), s.queued,
+                   fmt("%.3f", s.targetMs).c_str());
   }
 }
 
@@ -1173,7 +1870,8 @@ void Presenter::Impl::drain() {
 // ai: the counts zeroed.
 void Presenter::Impl::window(double secs, bool last) {
   drain();
-  const double m = win.measuredHz(modeHz);
+  // ai: on present timing the display's own refresh; else measured from the presents' gaps
+  const double m = timing && refreshNs ? 1e9 / static_cast<double>(refreshNs) : win.measuredHz(modeHz);
   if (m > 0) measured = m;
   queryMode();
   if (!last) holdMode();
@@ -1188,6 +1886,9 @@ void Presenter::Impl::window(double secs, bool last) {
                    std::to_string(c.extent.width) + "x" + std::to_string(c.extent.height) + "\",\"frame\":\"" +
                    std::to_string(s ? s->w : 0) + "x" + std::to_string(s ? s->h : 0) + "\",\"presentWait\":" + (presentWait ? "true" : "false") +
                    ",\"vsync\":" + (vsync ? "true" : "false") + ",\"modeFrom\":" + fmt("%.3f", held.on ? held.origHz : 0.0) +
+                   ",\"timing\":" + (timing ? "true" : "false") + ",\"late\":" + std::to_string(win.late) + ",\"slips\":" + std::to_string(win.slips) +
+                   ",\"errMs\":" + fmt("%.3f", win.errMaxMs) + ",\"direct\":\"" + (displayTaken ? esc(opt.direct) : std::string()) + "\",\"directName\":\"" + (displayTaken ? esc(directName) : std::string()) + "\",\"directPx\":\"" +
+                   (displayTaken ? std::to_string(displayExtent.width) + "x" + std::to_string(displayExtent.height) : std::string()) + "\",\"leaseEnded\":" + (leaseEnded ? "true" : "false") +
                    ",\"device\":\"" + esc(name) + "\",\"error\":\"";
   {
     std::lock_guard<std::mutex> l(statsMu);
@@ -1262,7 +1963,25 @@ void Presenter::Impl::presentOnce(bool live) {
   std::shared_ptr<wg::Buffer> ring;
   uint32_t ringFS = 0, ringRW = 0;
   const double i = static_cast<double>(presents);
-  if (live && i + 0.5 >= due) {
+  // ai: on the display's grid (present timing, its first time back): one present a picture, for its slot's refresh,
+  // ai: which the display holds until the next one's; a slot already near or past (the loop stalled) gives way to
+  // ai: the first one a refresh and a half on, those between counted missed. Before the grid (or without timing):
+  // ai: a present a refresh, a picture where one is due, as before.
+  pollTiming();
+  const bool onGrid = live && timing && anchored && refreshNs;
+  double slot = i;
+  uint64_t targetNs = 0;
+  if (onGrid) {
+    const double ns = nowSlot();
+    if (due < ns + 1.5) {
+      const double to = std::ceil(ns + 1.5);
+      if (cur >= 0 && ns > -1e17) win.missed += static_cast<uint64_t>(std::max(0.0, std::round(to - due)));
+      due = to;
+    }
+    slot = std::round(due);
+    targetNs = gridNs(slot);
+  }
+  if (live && (onGrid || i + 0.5 >= due)) {
     const int p = (cur + 1) % static_cast<int>(slots.size());
     if (slots[p].usedBy >= 0 && slots[p].usedBy > frame - N) D.vkWaitForFences(dev, 1, &fences[slots[p].usedBy % N], VK_TRUE, UINT64_MAX);
     if (lockFor(*senderLock, 2.0)) {
@@ -1280,10 +1999,12 @@ void Presenter::Impl::presentOnce(bool live) {
         // ai: the schedule: present i shows this picture, and the next is due a period on, from now where this
         // ai: one came late (a late picture holds its whole period; the same as before at one refresh a picture)
         const double per = period();
-        due = std::max(due + per, i + per);
+        due = onGrid ? due + per : std::max(due + per, i + per);
       }
     }
     if (!fresh && cur >= 0) win.behind++;
+    // ai: on the grid a slot with nothing painted keeps the picture on screen for it and the next is a period on
+    if (onGrid && !fresh) due += period();
   }
 
   VkCommandBuffer cb = cbs[fl];
@@ -1347,6 +2068,28 @@ void Presenter::Impl::presentOnce(bool live) {
     }
     slots[cur].usedBy = frame;
   }
+  if (markPtr && static_cast<size_t>(fl) < markSlots && c.extent.width >= static_cast<uint32_t>(MARK_W) && c.extent.height >= static_cast<uint32_t>(MARK_PX)) {
+    const size_t slot = static_cast<size_t>(MARK_W) * MARK_PX * 4;
+    uint8_t* m = markPtr + static_cast<size_t>(fl) * slot;
+    const uint32_t v = static_cast<uint32_t>(picture) & ((1u << MARK_BITS) - 1);
+    for (int b = 0; b < 2 * MARK_BITS; b++) {
+      const uint32_t bit = b < MARK_BITS ? (v >> (MARK_BITS - 1 - b)) & 1u : ((v >> (2 * MARK_BITS - 1 - b)) & 1u) ^ 1u;
+      const uint8_t g = bit ? 0 : 255;
+      for (int yy = 0; yy < MARK_PX; yy++)
+        for (int xx = 0; xx < MARK_PX; xx++) {
+          uint8_t* q = m + (static_cast<size_t>(yy) * MARK_W + static_cast<size_t>(b) * MARK_PX + xx) * 4;
+          q[0] = q[1] = q[2] = g;
+          q[3] = 255;
+        }
+    }
+    barrier(D, cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy rg{};
+    rg.bufferOffset = static_cast<VkDeviceSize>(fl) * slot;
+    rg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    rg.imageExtent = {static_cast<uint32_t>(MARK_W), static_cast<uint32_t>(MARK_PX), 1};
+    D.vkCmdCopyBufferToImage(cb, markBuf, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &rg);
+  }
   barrier(D, cb, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_ACCESS_TRANSFER_WRITE_BIT, 0,
           VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
   D.vkEndCommandBuffer(cb);
@@ -1373,8 +2116,29 @@ void Presenter::Impl::presentOnce(bool live) {
   VkPresentIdKHR pidInfo{VK_STRUCTURE_TYPE_PRESENT_ID_KHR};
   pidInfo.swapchainCount = 1;
   pidInfo.pPresentIds = &id;
-  if (presentWait) pi.pNext = &pidInfo;
+  // ai: present timing: the id its report carries (present_id2), the target refresh (absolute, the nearest refresh
+  // ai: to it) and the first-pixel stage asked for; a full results queue presents once more without asking
+  VkPresentTimingInfoEXT pti{VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT};
+  pti.flags = targetNs ? static_cast<VkPresentTimingInfoFlagsEXT>(VK_PRESENT_TIMING_INFO_PRESENT_AT_NEAREST_REFRESH_CYCLE_BIT_EXT) : 0u;
+  pti.targetTime = targetNs;
+  pti.timeDomainId = domainId;
+  pti.presentStageQueries = stages;
+  pti.targetTimeDomainPresentStage =
+      domain == VK_TIME_DOMAIN_PRESENT_STAGE_LOCAL_EXT ? static_cast<VkPresentStageFlagsEXT>(VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_OUT_BIT_EXT) : 0u;
+  VkPresentTimingsInfoEXT ptis{VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT};
+  ptis.swapchainCount = 1;
+  ptis.pTimingInfos = &pti;
+  VkPresentId2KHR pid2{VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR};
+  pid2.swapchainCount = 1;
+  pid2.pPresentIds = &id;
+  pid2.pNext = &ptis;
+  if (timing) pi.pNext = &pid2;
+  else if (presentWait) pi.pNext = &pidInfo;
   r = qPresent(pi);
+  if (timing && r == VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT) {
+    pid2.pNext = nullptr;
+    r = qPresent(pi);
+  }
   if (r == VK_ERROR_OUT_OF_DATE_KHR) resized = true;
   else if (r == VK_SUBOPTIMAL_KHR) { if (!ignoreSuboptimal) suboptimal = true; }
   else vkCheck(r, "vkQueuePresentKHR");
@@ -1386,8 +2150,13 @@ void Presenter::Impl::presentOnce(bool live) {
     s.acquiredMs = acq;
     s.submittedMs = sub;
     s.epoch = epoch;
-    s.queued = presentWait ? static_cast<int>(id - waiter.shownId.load()) : -1;
-    waiter.push(s);
+    if (timing) {
+      s.queued = static_cast<int>(id - lastDone);
+      sent[id] = Sent{s, slot, targetNs};
+    } else {
+      s.queued = presentWait ? static_cast<int>(id - waiter.shownId.load()) : -1;
+      waiter.push(s);
+    }
   }
   if (live) presents++;
   winPresents++;
@@ -1398,6 +2167,12 @@ void Presenter::Impl::run() {
   try {
     while (!quit) {
       if (vsyncDirty.exchange(false)) holdMode();
+#if LIZ_X11 && !defined(_WIN32)
+      if (displayTaken && grabToLeave) {
+        grabInput();
+        if (inputArrived()) leaveDisplay("a key or a click");
+      }
+#endif
       const double now = nowMs();
       if (now - lastWin >= 1000) {
         window((now - lastWin) / 1000);
@@ -1412,8 +2187,9 @@ void Presenter::Impl::run() {
         if (quit) break;
         if (!paused) continue;
       } else if (wasPaused) {
-        // ai: resumed: a new picture due now, no gap counted across the pause
-        due = static_cast<double>(presents);
+        // ai: resumed: a new picture due now (on the grid, the first slot a refresh and a half on), no gap counted
+        // ai: across the pause
+        due = timing && anchored ? std::ceil(nowSlot() + 1.5) : static_cast<double>(presents);
         epoch++;
         wasPaused = false;
       }
@@ -1442,6 +2218,7 @@ void Presenter::Impl::teardown() {
     if (pool) D.vkDestroyCommandPool(dev, pool, nullptr);
     pool = VK_NULL_HANDLE;
     for (auto& sl : slots) freeSlot(sl);
+    freeMark();
     for (VkSemaphore a : c.done) D.vkDestroySemaphore(dev, a, nullptr);
     if (c.sc) D.vkDestroySwapchainKHR(dev, c.sc, nullptr);
     c = Chain{};
@@ -1456,6 +2233,18 @@ void Presenter::Impl::teardown() {
   }
   if (surf && I.vkDestroySurfaceKHR) I.vkDestroySurfaceKHR(inst, surf, nullptr);
   surf = VK_NULL_HANDLE;
+  // ai: the display given back to the desktop (the X server's lease ends; it also ends with this process)
+  if (displayTaken && releaseDisplay) {
+    const VkResult rr = releaseDisplay(pd, display);
+    say("presenter: the display " + opt.direct + (rr == VK_SUCCESS ? " given back" : " not given back (VkResult " + std::to_string(static_cast<int>(rr)) + ")"));
+  }
+  displayTaken = false;
+  display = VK_NULL_HANDLE;
+#if LIZ_X11 && !defined(_WIN32)
+  if (xq) restoreLayout();
+  disarmGuard();
+  if (xq) ungrabInput();
+#endif
   dev = VK_NULL_HANDLE;
   inst = VK_NULL_HANDLE;
   releaseMode();
@@ -1480,7 +2269,19 @@ const wg::DeviceExtras& Presenter::deviceExtras() {
                       VK_EXT_METAL_SURFACE_EXTENSION_NAME
 #endif
     };
-    x.deviceExts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PRESENT_ID_EXTENSION_NAME, VK_KHR_PRESENT_WAIT_EXTENSION_NAME};
+    // ai: the display's own surface where a host asks for it (PresentOptions::direct): VK_KHR_display, and on X11 an
+    // ai: output taken from the X server (VK_EXT_acquire_xlib_display, given back by VK_EXT_direct_mode_display);
+    // ai: present_timing's surface query (VK_KHR_get_surface_capabilities2). Each enabled where offered.
+    x.instanceExts.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+    x.instanceExts.push_back(VK_KHR_DISPLAY_EXTENSION_NAME);
+    x.instanceExts.push_back(VK_EXT_DIRECT_MODE_DISPLAY_EXTENSION_NAME);
+#if LIZ_X11 && !defined(_WIN32)
+    x.instanceExts.push_back(VK_EXT_ACQUIRE_XLIB_DISPLAY_EXTENSION_NAME);
+#endif
+    // ai: present_id2, present_timing and calibrated timestamps (2026-10-31): each present's target refresh and the
+    // ai: time its first pixel left for the display (wg enables them with their features, or none of them)
+    x.deviceExts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_PRESENT_ID_EXTENSION_NAME, VK_KHR_PRESENT_WAIT_EXTENSION_NAME,
+                    VK_KHR_PRESENT_ID_2_EXTENSION_NAME, VK_EXT_PRESENT_TIMING_EXTENSION_NAME, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME};
     x.graphics = true;
     return x;
   }();

@@ -1,5 +1,5 @@
-// ai: lizard_receive (2026-10-25): the PC receiver headless: a camera (camera/
-// ai: camera.h) into a receiver (rx_session.h), a line a second, a received file moved out; on every system.
+// ai: lizard_receive (2026-10-25): the PC receiver headless: a camera (liblizard/core/cam/camera.h) into the engine's
+// ai: receive session (liblizard/core/rx/session.h), a line a second, a received file moved out; on every system.
 // ai:   lizard_receive list
 // ai:     every camera every backend lists, a JSON line each ({info, modes, pick, controls}, the camera opened
 // ai:     to read them; {info, error} where it would not open), then {"notes": [...]}: why a backend saw none
@@ -7,27 +7,30 @@
 // ai:     a replay's folder (Save replays: meta.json, stats.jsonl, NNNN.gray) as one .lizard, and back
 // ai:     (liblizard/core/rx/lizfile.h; 2026-10-28): "packed N frames, B B" or "unpacked N frames", exit 0; FAIL, exit 1
 // ai:   lizard_receive [--camera ID] [--mode INDEX|WxH[@FPS]] [--layout 1:1|2:1] [--decoder auto|gpu|cpu]
-// ai:                  [--assets DIR] [--store DIR] [--out DIR] [--secs S] [--set CONTROL=VALUE|auto]... [--json]
-// ai: --camera upload:<a .lizard or a run's folder> plays a replay (camera/upload.cpp), --layout its crop; its end ends
-// ai: the run as --secs does.
+// ai:                  [--assets DIR] [--data DIR] [--out DIR] [--secs S] [--set CONTROL=VALUE|auto]... [--json]
+// ai: --camera upload:<a .lizard or a run's folder> plays a replay (cam/upload.cpp), --layout its crop; its end ends the
+// ai: run as --secs does.
 // ai: The camera: the one named, else the simulated one (sim:0) where LIZ_CAMERA_SIM is set (nothing listed), else the
 // ai: first listed (list and this probe every /dev/video* unless LIZ_V4L2_NODES names the nodes: set and empty, none).
 // ai: Its mode: by index, or the first of that size and rate (a rate within half a frame a second; none given, any),
 // ai: else the nearest (camera.h pick for that size and rate); no --mode, pick's for 1920 x 1080 at 60. --set after the
-// ai: start (the camera rules are applied at start, so a value asked here wins; the session keeps it, rx_session.h
-// ai: set). The store: a fresh folder in the system's temp folder, removed at the end (kept where a verified
-// ai: file could not be moved out: the FAIL line says where the file is), unless --store names one (kept: a transfer
-// ai: cut short resumes there). --out is made before the camera starts (a path that cannot be a folder fails then).
+// ai: start (the camera rules are applied at start, so a value asked here wins; the session keeps it, session.h set).
+// ai: The session's data folder (its store, kept/, the camera settings): a fresh folder in the system's temp folder,
+// ai: removed at the end (kept where a verified file could not be moved out: the FAIL line says where the file is),
+// ai: unless --data names one (kept: a transfer cut short resumes there). --out is made before the camera starts (a
+// ai: path that cannot be a folder fails then).
 // ai: The GPU tree: --assets, else the build's liblizard/out. A line a
 // ai: second on stdout, "rx: <state>, camera F fps, processed P fps, found S%, B blocks, G KB/s[, file X% <name>]" (the
 // ai: receiver's last second of this stream, 0 until its first has closed), or with --json the whole stats JSON
-// ai: (rx_session.h stats); the receiver's log on stderr.
-// ai: The end: a file verified is moved into --out (the working folder by default) under its own name ("name (1).ext"
-// ai: where that is taken), the last stats (a line, or the JSON with --json), "summary: T s, the file N B in S s (R
+// ai: (session.h stats); the session's log on stderr.
+// ai: The end: a file verified (taken by the session out of the store into the data folder's kept/, the camera stopped)
+// ai: is moved into --out (the working folder by default) under its own name ("name (1).ext" where that is taken) and
+// ai: its take let go (session.h placed), the last stats (a line, or the JSON with --json), "summary: T s, the file N B in S s (R
 // ai: KB/s), found F% of K frames, B blocks verified, D frames decoded" (T since the camera started, S and R on the
 // ai: transfer's own clock, F the share of the run's frames a symbol was found in, a 2:1 half a frame) and "file
 // ai: <path>" printed, exit 0. --secs passed, SIGINT or SIGTERM with no file: the summary without the file, exit 0
-// ai: where any block was verified, else 1. A refusal anywhere: "FAIL <why>" on stdout, exit 1. A usage error: exit 2.
+// ai: where any block was verified, else 1. A refusal anywhere (the session's phase "error" with its why, a camera
+// ai: named that is not the one opened): "FAIL <why>" on stdout, exit 1. A usage error: exit 2.
 // ai: Every argument is taken as UTF-8 (paths through fs::u8path); on Windows they come in as UTF-16 (wmain) and are
 // ai: made UTF-8 first, since main's would be in the ANSI code page, which a path outside it does not survive. What it
 // ai: prints is UTF-8 too.
@@ -50,7 +53,7 @@
 #include "camera.h"
 #include "json.hpp"
 #include "lizfile.h"
-#include "rx_session.h"
+#include "session.h"
 
 #ifndef LIZ_ASSETS
 #define LIZ_ASSETS "liblizard/out"
@@ -66,7 +69,7 @@ std::atomic<bool> gQuit{false};
 struct Args {
   bool list = false, json = false;
   std::string tool, from, to;   // ai: pack or unpack, its two paths
-  std::string camera, mode, layout = "1:1", decoder = "auto", assets = LIZ_ASSETS, store, out = ".";
+  std::string camera, mode, layout = "1:1", decoder = "auto", assets = LIZ_ASSETS, data, out = ".";
   double secs = 0;
   std::vector<std::string> sets;
 };
@@ -76,7 +79,7 @@ struct Args {
                "%s%susage: lizard_receive list\n"
                "       lizard_receive pack RUN FILE.lizard | unpack FILE.lizard RUN\n"
                "       lizard_receive [--camera ID] [--mode INDEX|WxH[@FPS]] [--layout 1:1|2:1] [--decoder auto|gpu|cpu]\n"
-               "                      [--assets DIR] [--store DIR] [--out DIR] [--secs S] [--set CONTROL=VALUE|auto]... [--json]\n",
+               "                      [--assets DIR] [--data DIR] [--out DIR] [--secs S] [--set CONTROL=VALUE|auto]... [--json]\n",
                why.c_str(), why.empty() ? "" : "\n");
   std::exit(2);
 }
@@ -110,7 +113,7 @@ Args parse(int argc, char** argv) {
       else if (k == "--layout") a.layout = v;
       else if (k == "--decoder") a.decoder = v;
       else if (k == "--assets") a.assets = v;
-      else if (k == "--store") a.store = v;
+      else if (k == "--data") a.data = v;
       else if (k == "--out") a.out = v;
       else if (k == "--secs") a.secs = std::stod(v);
       else if (k == "--set") a.sets.push_back(v);
@@ -149,7 +152,7 @@ json parsed(const std::string& s) {
 
 std::string dump(const json& j) { return j.dump(-1, ' ', false, json::error_handler_t::replace); }
 
-// ai: the mode --mode names (rx_session.h camera's "modes"): an index, or WxH[@FPS]; -1 with why
+// ai: the mode --mode names (session.h camera's "modes"): an index, or WxH[@FPS]; -1 with why
 int modeOf(const json& modes, const std::string& want, int pickIndex, std::string& why) {
   const int n = modes.is_array() ? int(modes.size()) : 0;
   if (!n) {
@@ -200,7 +203,7 @@ fs::path freeName(const fs::path& dir, const fs::path& name) {
   return p;
 }
 
-// ai: moved, or copied then the store's removed where a rename cannot cross file systems; "" or why, the store's copy
+// ai: moved, or copied then the source removed where a rename cannot cross file systems; "" or why, the source
 // ai: then left as it was and no part of a copy left at to (to was a free name)
 std::string moveOut(const fs::path& from, const fs::path& to) {
   std::error_code e;
@@ -238,7 +241,7 @@ void lineOf(const json& j) {
 struct Found {
   std::map<double, std::pair<int, int>> rows;   // ai: ms: (frames, frames found)
   double newest = 0;
-  void poll(lizard::RxSession& s) {
+  void poll(lizard::Session& s) {
     const std::vector<double> v = s.series(newest - 2000);
     std::map<double, std::pair<int, int>> snap;
     for (size_t i = 1; i + 8 <= v.size(); i += 8) {
@@ -341,14 +344,14 @@ static int run(int argc, char** argv) {
   std::signal(SIGINT, [](int) { gQuit = true; });
   std::signal(SIGTERM, [](int) { gQuit = true; });
 #if defined(SIGPIPE)
-  // ai: stdout closed under it (a reader that stopped reading) ends no transfer, and the temp store is still removed
+  // ai: stdout closed under it (a reader that stopped reading) ends no transfer, and the temp data folder is still removed
   std::signal(SIGPIPE, SIG_IGN);
 #endif
-  fs::path ours;   // ai: the temp store we made, removed at the end unless it holds the only copy of a file (keep)
+  fs::path ours;   // ai: the temp data folder we made, removed at the end unless it holds the only copy of a file (keep)
   bool keep = false;
   int status = 1;
   {
-    std::unique_ptr<lizard::RxSession> s;
+    std::unique_ptr<lizard::Session> s;
     try {
       std::string why;
       const auto fail = [&](const std::string& w) { throw std::runtime_error(w.empty() ? std::string("refused") : w); };
@@ -360,22 +363,22 @@ static int run(int argc, char** argv) {
         fs::create_directories(out, e);
         if (!fs::is_directory(out)) fail("--out " + a.out + " is not a folder that can be made" + (e ? ": " + e.message() : std::string()));
       }
-      fs::path store = fs::u8path(a.store);
-      if (a.store.empty()) store = ours = tempStore();
-      lizard::RxSession::Config c;
+      fs::path data = fs::u8path(a.data);
+      if (a.data.empty()) data = ours = tempStore();
+      lizard::Session::Config c;
       c.assets = a.assets;
-      c.storeDir = store.u8string();
+      c.dataDir = data.u8string();
       c.decoder = a.decoder;
       c.layout = a.layout;
       c.log = [](const std::string& m) { std::fprintf(stderr, "lizard: %s\n", m.c_str()); };
-      s = lizard::RxSession::create(c, why);
+      s = lizard::Session::create(c, why);
       if (!s) fail(why);
       std::string id = a.camera;
       // ai: the simulated camera where one is set up (LIZ_CAMERA_SIM), with nothing listed: a test's run never reaches a
       // ai: real camera by default (2026-10-25, as V4L2 came to probe /dev/video* unless LIZ_V4L2_NODES says otherwise)
       if (id.empty() && std::getenv("LIZ_CAMERA_SIM")) id = "sim:0";
       if (id.empty()) {
-        const json l = parsed(lizard::RxSession::cameras());
+        const json l = parsed(lizard::Session::cameras());
         if (!l.contains("cameras") || !l["cameras"].is_array() || l["cameras"].empty()) {
           std::string notes;
           if (l.contains("notes") && l["notes"].is_array())
@@ -384,11 +387,13 @@ static int run(int argc, char** argv) {
         }
         id = text(l["cameras"][0], "id");
       }
-      if (!s->open(id, why)) fail(why);
+      if (!lizard::done(s->open(id), why)) fail(why);
       const json cam = parsed(s->camera());
+      // ai: the session opens the first listed in place of an id it does not list: here the one named or none
+      if (text(cam.value("info", json::object()), "id") != id) fail(id + " is not listed");
       const int mode = modeOf(cam.value("modes", json::array()), a.mode, int(num(cam, "pick")), why);
       if (mode < 0) fail(why);
-      if (!s->start(mode, why)) fail(why);
+      if (!lizard::done(s->start(std::to_string(mode)), why)) fail(why);
       for (const auto& kv : a.sets) {
         const std::string k = kv.substr(0, kv.find('=')), v = kv.substr(kv.find('=') + 1);
         double value = 0;
@@ -398,34 +403,43 @@ static int run(int argc, char** argv) {
             value = std::stod(v);
           } catch (const std::logic_error&) { fail("--set " + kv + ": not a number"); }
         }
-        if (!s->set(k, value, automatic, why)) fail("--set " + kv + ": " + why);
+        if (!lizard::done(s->set(k, value, automatic), why)) fail("--set " + kv + ": " + why);
       }
       const json m = cam["modes"][size_t(mode)];
       const json st = parsed(s->stats());
-      std::printf("camera: %s (%s), mode %d: %.0f x %.0f %s at %.2f fps; decoder %s, %s; store %s\n", text(cam["info"], "name").c_str(), id.c_str(), mode,
+      std::printf("camera: %s (%s), mode %d: %.0f x %.0f %s at %.2f fps; decoder %s, %s; data %s\n", text(cam["info"], "name").c_str(), id.c_str(), mode,
                   num(m, "w"), num(m, "h"), text(m, "format").c_str(), num(m, "fps"), text(st, "decoder").c_str(), a.layout.c_str(),
-                  store.u8string().c_str());
+                  data.u8string().c_str());
       std::fflush(stdout);
 
       const auto t0 = std::chrono::steady_clock::now();
       double next = 1;
       Found found;
+      int idle = 0;   // ai: polls with the camera stopped and nothing taken (the take shows a poll later than the stop)
+      const bool upload = a.camera.rfind("upload:", 0) == 0;
       for (;;) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         found.poll(*s);
-        const std::string f = s->file();
-        if (!f.empty()) {
-          const fs::path from = fs::u8path(f);
+        const json j = parsed(s->stats());
+        const json k = j.value("kept", json::object());
+        if (num(k, "taken") > 0) {
+          // ai: the session's take (session.h kept): the newest of the root it names, moved into --out, then let go
+          json take;
+          for (const auto& t : parsed(lizard::Session::kept(data.u8string())))
+            if (text(t, "root") == text(k, "root")) take = t;
+          if (!take.is_object()) fail("the session took " + text(k, "root") + ", and kept/ holds no file of it");
+          const fs::path from = fs::u8path(text(take, "path"));
           std::error_code e;
           const fs::path to = freeName(fs::u8path(a.out), from.filename());
           const std::string w = moveOut(from, to);
-          // ai: the store holds the only copy of the file then: kept, and where it is said (2026-10-25: the temp store
-          // ai: was removed with it)
+          // ai: the data folder holds the only copy of the file then: kept, and where it is said (2026-10-25: the temp
+          // ai: store was removed with it)
           if (!w.empty()) {
             keep = true;
             fail(w + "; the file is kept at " + from.u8string());
           }
-          const json j = parsed(s->stats());
+          std::string pw;
+          if (!lizard::Session::placed(data.u8string(), text(take, "id"), pw)) std::fprintf(stderr, "lizard_receive: kept/%s: %s\n", text(take, "id").c_str(), pw.c_str());
           if (a.json) std::printf("%s\n", dump(j).c_str());
           else lineOf(j);
           found.poll(*s);
@@ -434,23 +448,20 @@ static int run(int argc, char** argv) {
           status = 0;
           break;
         }
+        if (!text(k, "error").empty()) fail("the received file was not taken out of the store: " + text(k, "error"));
+        if (text(j, "phase") == "error") fail(text(j, "why"));
         const double t = secsSince(t0);
         if (t >= next) {
-          const json j = parsed(s->stats());
           if (a.json) std::printf("%s\n", dump(j).c_str());
           else lineOf(j);
           std::fflush(stdout);
           next += 1;
         }
-        // ai: an upload's end is its file's (camera/upload.cpp), the run as --secs ends it; any other stream's a failure
-        const bool played = !s->streaming() && a.camera.rfind("upload:", 0) == 0;
-        if (!s->streaming() && !played) {
-          const json j = parsed(s->stats());
-          const std::string ended = j.contains("camera") ? text(j["camera"], "ended") : "";
-          fail("the camera stopped: " + (ended.empty() ? std::string("the stream ended") : ended));
-        }
+        // ai: an upload's end is its file's (cam/upload.cpp), the run as --secs ends it; any other stop a failure
+        const bool played = upload && !s->streaming();
+        idle = s->streaming() || played ? 0 : idle + 1;
+        if (idle > 10) fail("the camera stopped" + (text(j, "why").empty() ? std::string() : ": " + text(j, "why")));
         if (gQuit || played || (a.secs > 0 && t >= a.secs)) {
-          const json j = parsed(s->stats());
           found.poll(*s);
           summary(j, found, t, false);
           status = j.contains("totals") && num(j["totals"], "blocks") > 0 ? 0 : 1;
@@ -473,7 +484,7 @@ static int run(int argc, char** argv) {
 
 #if defined(_WIN32)
 // ai: Windows (2026-10-25): the arguments in UTF-16 (wmain, MinGW's -municode in CMakeLists.txt), each made UTF-8 for
-// ai: run; main's came in the ANSI code page, so a --out, --store or --assets path with a character outside it did not
+// ai: run; main's came in the ANSI code page, so a --out, --data or --assets path with a character outside it did not
 // ai: round-trip. windows.h here alone, after everything else, so its macros reach nothing above.
 #ifndef NOMINMAX
 #define NOMINMAX

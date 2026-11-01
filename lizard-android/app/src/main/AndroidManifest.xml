@@ -2,8 +2,9 @@
 <!-- ai: The receiver app. configChanges: a rotation keeps the activity, the camera session
      and the receiver; Compose relays out. singleTop: the launcher
      shortcut (dynamic, MainActivity.publishShortcut: a static one is started with FLAG_ACTIVITY_CLEAR_TASK) and am
-     start with the extra screen=receive reach the running activity (onNewIntent). The FileProvider hands the received
-     files (filesDir/library, Library.kt) to the app that opens or shares one. -->
+     start with the extra screen=receive reach the running activity (onNewIntent). Received files land in Downloads
+     through MediaStore (Received.kt; no permission from Android 10); the FileProvider hands one Downloads did not take
+     (in the receive session's data folder) to the app that opens or shares it. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- ai: the PC decoder's stream (2026-10-27; liblizard/core/rx/stream.h): a TCP server and a UDP beacon on the
@@ -12,7 +13,7 @@
     <uses-feature android:name="android.hardware.camera" android:required="true" />
     <uses-feature android:name="android.hardware.usb.accessory" android:required="false" />
     <application
-        android:label="LIZARD"
+        android:label="${appLabel}"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:allowBackup="false"
@@ -35,7 +36,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="*/*" />
             </intent-filter>
-            <!-- ai: the PC's USB accessory (2026-10-27, PcLink; lizard-desktop/native/camera/aoa.cpp): Android starts
+            <!-- ai: the PC's USB accessory (2026-10-27, PcLink; liblizard/core/cam/aoa.cpp): Android starts
                  Receive for it with the accessory's permission given -->
             <intent-filter>
                 <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />

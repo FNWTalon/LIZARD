@@ -23,7 +23,6 @@ void lizard_wh_free(void* codec);
 
 namespace lizard {
 
-static_assert(XFER_BLOCK_BYTES == XFER_BLOCK, "src/xfer.h moved");
 static constexpr uint32_t PAYLOAD = XFER_PAYLOAD, REC = XFER_BLOCK;
 // ai: lizard-web/fountain-worker.mjs LIVE_BLOCKS, HOLD_BLOCKS; lizard-web/recv.mjs SEEN_KEEP
 static constexpr int64_t LIVE_BLOCKS = 4096, NEVER = INT64_MAX / 2;
@@ -408,6 +407,7 @@ struct XferRxCore::Rx {
     say("xfer: chunk " + std::to_string(c) + " rejected");
   }
   void finish() {
+    saveMeta();   // ai: the finished file's name, type and root beside it until it is taken out (store.h fileStore)
     path = store->finish(hdr->name);
     if (!store->error.empty()) { path.clear(); return stop(); }
     done = true;
@@ -482,7 +482,7 @@ FrameVerdict XferJudge::frame(const uint8_t* blocks, size_t count, const Pass& p
   uint8_t want[XFER_PAYLOAD];
   int data = 0;
   for (size_t k = 0; k < count; k++) {
-    const uint8_t* b = blocks + k * XFER_BLOCK_BYTES;
+    const uint8_t* b = blocks + k * XFER_BLOCK;
     const uint32_t id = xfer_id_get(b);
     if (xfer_id_chunk(id) == XFER_CONTROL) continue;
     data++;
@@ -494,7 +494,7 @@ FrameVerdict XferJudge::frame(const uint8_t* blocks, size_t count, const Pass& p
   // ai: blockJudge's got holds the frame's control blocks first, then its data blocks: the order the worker takes them in
   for (int pass2 = 0; pass2 < 2; pass2++)
     for (size_t k = 0; k < count; k++) {
-      const uint8_t* b = blocks + k * XFER_BLOCK_BYTES;
+      const uint8_t* b = blocks + k * XFER_BLOCK;
       const uint32_t id = xfer_id_get(b);
       const bool control = xfer_id_chunk(id) == XFER_CONTROL;
       if (control != (pass2 == 0)) continue;

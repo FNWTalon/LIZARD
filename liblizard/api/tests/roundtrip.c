@@ -1,6 +1,6 @@
 /* ai: The C API end to end, through lizard.h alone (2026-10-03):
- * ai:   1. every format (127 block counts, LIZ_MIN_BLOCKS to LIZ_MAX_BLOCKS, x LIZ_RINGS rings x 1 or 2 codes): an
- * ai:      encoder made, its geometry the arithmetic's; one block a frame refused;
+ * ai:   1. every format (61 sizes, LIZ_MIN_BLOCKS to LIZ_MAX_BLOCKS, x LIZ_RINGS rings x 1 or 2 codes): an encoder
+ * ai:      made, its geometry the arithmetic's; a size of 0 or past LIZ_MAX_BLOCKS refused;
  * ai:   2. the picker and the room against the web's (a table tests/pick_ref.mjs printed from sim/lizard_pick.mjs), when
  * ai:      its path is given;
  * ai:   3. the test stream in every ring, one code and two, painted and read back: every block verified, every frame the
@@ -9,12 +9,13 @@
  * ai:      liz_layout_rects) into a memory store, and through one code into a directory store: whole, its root the
  * ai:      sender's, its bytes the file's.
  * ai: Usage: lizard_roundtrip [pick table] [store dir]. Exit 1 on any failure.
- * ai: lizard_roundtrip --dump <dir>: the test stream's first frame (first id 1, picture 0) at the size 26 (LIZARD-208,
- * ai: 25 blocks a symbol) in every ring, one code and two, painted grey into <dir>/paint-26-<ring>-<codes>.grey (dir
+ * ai: lizard_roundtrip --dump <dir>: the test stream's first frame (first id 1, picture 0) at the size 13 (LIZARD-208,
+ * ai: 25 blocks a symbol) in every ring, one code and two, painted grey into <dir>/paint-13-<ring>-<codes>.grey (dir
  * ai: made where missing), for the wasm binding's test to hold its own paint to (bindings/wasm/test). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifdef _WIN32
 #include <direct.h>
 #define make_dir(p) _mkdir(p)
@@ -43,19 +44,20 @@ static void formats(void) {
         liz_format f = {b, ring, 60, codes};
         liz_geometry g, e;
         liz_encoder *enc = liz_encoder_new(&f);
-        CHECK(enc, "LIZARD-%d in ring %d, %d codes: no encoder", 8 * b, ring, codes);
+        CHECK(enc, "LIZARD-%d in ring %d, %d codes: no encoder", 16 * b, ring, codes);
         if (!enc) continue;
         CHECK(liz_geometry_of(&f, &g) == LIZ_OK && liz_encoder_geometry(enc, &e) == LIZ_OK && !memcmp(&g, &e, sizeof g),
-              "LIZARD-%d ring %d: geometry", 8 * b, ring);
-        CHECK(g.width == codes * g.side + (codes - 1) * g.gap && g.frame_blocks == codes * liz_blocks_for(b) && liz_blocks_for(b) >= 2 && liz_blocks_for(b) <= b, "LIZARD-%d: frame size", 8 * b);
+              "LIZARD-%d ring %d: geometry", 16 * b, ring);
+        CHECK(g.width == codes * g.side + (codes - 1) * g.gap && g.frame_blocks == codes * liz_blocks_for(b) && liz_blocks_for(b) >= 2 && liz_blocks_for(b) <= 2 * b, "LIZARD-%d: frame size", 16 * b);
         liz_encoder_free(enc);
         made++;
       }
   liz_format bad = {0, 0, 60, 1};
   CHECK(!liz_encoder_new(&bad) && liz_last_error()[0], "a format of 0 blocks refused, with a message");
-  liz_format one = {1, 0, 60, 1};
-  CHECK(!liz_encoder_new(&one) && liz_last_error()[0], "a format of 1 block (LIZARD-8) refused, with a message");
-  CHECK(liz_blocks_for(1) == 0 && liz_room_for(1, 0) < 0 && liz_pick(4000, 4000, 1, 0, 1) < 0, "one block is no format");
+  liz_format past = {LIZ_MAX_BLOCKS + 1, 0, 60, 1};
+  CHECK(!liz_encoder_new(&past) && liz_last_error()[0], "a format past LIZARD-1024 refused, with a message");
+  CHECK(liz_blocks_for(0) == 0 && liz_blocks_for(LIZ_MIN_BLOCKS - 1) == 0 && liz_blocks_for(LIZ_MAX_BLOCKS + 1) == 0 && liz_room_for(LIZ_MIN_BLOCKS - 1, 0) < 0 && liz_pick(4000, 4000, 1, 0, LIZ_MIN_BLOCKS - 1) < 0,
+        "sizes 0 to LIZ_MIN_BLOCKS - 1 and past LIZ_MAX_BLOCKS are no format");
   printf("formats: %d encoders made, their geometry the arithmetic's\n", made);
 }
 
@@ -110,7 +112,7 @@ static void test_stream(liz_decoder *d) {
   int frames = 0, blocks = 0, missed = 0, judged_bad = 0;
   for (int codes = 1; codes <= 2; codes++)
     for (int ring = 0; ring < LIZ_RINGS; ring++) {
-      liz_format f = {26, ring, 60, codes};
+      liz_format f = {13, ring, 60, codes};
       liz_geometry g;
       liz_geometry_of(&f, &g);
       liz_encoder *enc = liz_encoder_new(&f);
@@ -131,7 +133,7 @@ static void test_stream(liz_decoder *d) {
         frames++; blocks += got; missed += g.frame_blocks - got; judged_bad += v.bad;
         CHECK(got == g.frame_blocks, "ring %d, %d codes, frame %d: %d of %d blocks", ring, codes, i, got, g.frame_blocks);
         CHECK(v.test && !v.bad && v.judged == got, "ring %d, %d codes, frame %d: judged the test stream's", ring, codes, i);
-        CHECK(held == 26, "ring %d: the held word %d", ring, held);
+        CHECK(held == 13, "ring %d: the held word %d", ring, held);
         if (i == 3 && got) {   /* ai: one payload byte wrong: that block is bad */
           verified[LIZ_ID_BYTES + 100] ^= 1;
           liz_rx_frame(rx, verified, got, &v);
@@ -152,7 +154,7 @@ static void file(liz_decoder *d, int codes, const char *dir, size_t bytes) {
   if (!tx) { free(data); return; }
   liz_tx_info info;
   liz_tx_info_get(tx, &info);
-  liz_format f = {60, LIZ_RING_DEFAULT, 60, codes};
+  liz_format f = {30, LIZ_RING_DEFAULT, 60, codes};   /* ai: LIZARD-480 */
   liz_geometry g;
   liz_geometry_of(&f, &g);
   liz_encoder *enc = liz_encoder_new(&f);
@@ -203,6 +205,39 @@ static void file(liz_decoder *d, int codes, const char *dir, size_t bytes) {
 }
 
 /* ai: dir and the folders above it, made where missing (mkdir -p; a failure shows as the frames' writes failing) */
+/* ai: Layer 5 where it is built (else LIZ_E_UNSUPPORTED, said and skipped): a session on a folder of its own, no camera
+ * ai: opened: its stats say idle, nothing kept, nothing unfinished; while it holds the folder an unfinished transfer
+ * ai: is not deleted from outside it, and is once it is freed; a decoder it does not know refused. */
+static void session(const char *dir) {
+  char data[1024];
+  snprintf(data, sizeof data, "%s/session", dir);
+  liz_session_config bad = {0};
+  bad.data_dir = data;
+  bad.decoder = "pc";
+  CHECK(!liz_session_new(&bad), "a session with decoder pc refused");
+  if (liz_last_error_code() == LIZ_E_UNSUPPORTED) { printf("skip session: %s\n", liz_last_error()); return; }
+  liz_session_config c = {0};
+  c.data_dir = data;
+  c.decoder = "cpu";
+  c.forget_settings = 1;
+  liz_session *s = liz_session_new(&c);
+  CHECK(s, "a session on %s", data);
+  if (!s) return;
+  char json[16384];
+  const size_t n = liz_session_stats(s, json, sizeof json);
+  CHECK(n > 0 && n < sizeof json && strstr(json, "\"phase\":\"idle\"") && strstr(json, "\"camera\":null"), "a fresh session's stats: %s", json);
+  CHECK(liz_kept(data, json, sizeof json) == 2 && !strcmp(json, "[]"), "nothing kept: %s", json);
+  CHECK(liz_partials(data, json, sizeof json) == 2 && !strcmp(json, "[]"), "nothing unfinished: %s", json);
+  /* ai: the lock is the session's thread's to take: asked again until it is held (a CPU second at most) */
+  int rc = LIZ_OK;
+  for (clock_t t0 = clock(); rc != LIZ_E_STATE && clock() - t0 < CLOCKS_PER_SEC;) rc = liz_partial_delete(data, "0123456789abcdef");
+  CHECK(rc == LIZ_E_STATE, "an unfinished transfer not deleted while the session holds the folder (%d)", rc);
+  liz_session_free(s);
+  CHECK(liz_partial_delete(data, "0123456789abcdef") == LIZ_OK, "deleted once the session is freed");
+  CHECK(liz_kept_placed(data, "../x") < 0, "a take outside kept/ refused");
+  printf("session: stats, kept, partials and the folder's lock as lizard.h says\n");
+}
+
 static void make_dirs(const char *dir) {
   char p[1024];
   snprintf(p, sizeof p, "%s", dir);
@@ -215,7 +250,7 @@ static int dump(const char *dir) {
   make_dirs(dir);
   for (int codes = 1; codes <= 2; codes++)
     for (int ring = 0; ring < LIZ_RINGS; ring++) {
-      liz_format f = {26, ring, 60, codes};
+      liz_format f = {13, ring, 60, codes};
       liz_geometry g;
       liz_geometry_of(&f, &g);
       liz_encoder *enc = liz_encoder_new(&f);
@@ -224,7 +259,7 @@ static int dump(const char *dir) {
       liz_tx_next(tx, g.frame_blocks, in);
       liz_encoder_paint(enc, in, 0, frame, g.width, LIZ_GREY8);
       char path[1024];
-      snprintf(path, sizeof path, "%s/paint-26-%d-%d.grey", dir, ring, codes);
+      snprintf(path, sizeof path, "%s/paint-13-%d-%d.grey", dir, ring, codes);
       FILE *fp = fopen(path, "wb");
       CHECK(fp && fwrite(frame, 1, (size_t)g.width * g.height, fp) == (size_t)g.width * g.height, "%s written", path);
       if (fp) fclose(fp);
@@ -249,6 +284,7 @@ int main(int argc, char **argv) {
   const size_t bytes = (size_t)((mb ? atof(mb) : 9.0) * 1000000);
   file(d, 2, NULL, bytes);
   if (argc > 2) file(d, 1, argv[2], bytes / 3);
+  if (argc > 2) session(argv[2]);
   liz_decoder_free(d);
   printf(faults ? "%d FAILED\n" : "all passed\n", faults);
   return faults ? 1 : 0;

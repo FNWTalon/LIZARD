@@ -85,10 +85,10 @@
       </div>
       <fieldset id="f-focus"><legend>Code</legend>
         <div class="grid">
-          <!-- ai: blocks a frame, a slider of whole blocks, its first step (1) auto (the largest that fits the room) and 2 to 128
-               by hand (8 sub-channels a step; one block a frame is no format since 2026-10-25); #subch the value the page reads
-               ("auto" or the sub-channels), the slider a view over it (send.mjs); its label the rate profile's blocks -->
-          <div class="blocks"><span class="row"><span>Blocks</span><span id="blocksOut">59, 27.7 KB</span></span><input id="blocks" type="range" min="1" max="128" step="1" value="60" data-view aria-label="blocks"><input id="subch" type="hidden" value="480"></div>
+          <!-- ai: the format's size, a slider of versions, its first step (1) auto (the largest that fits the room) and 2 to 64
+               by hand (16 sub-channels a step); #subch the value the page reads ("auto" or the sub-channels), the slider a
+               view over it (send.mjs); its label the rate profile's blocks -->
+          <div class="blocks"><span class="row"><span>Blocks</span><span id="blocksOut">58, 27.4 KB</span></span><input id="blocks" type="range" min="1" max="64" step="1" value="30" data-view aria-label="blocks"><input id="subch" type="hidden" value="480"></div>
           <!-- ai: the display rate, 1 to 60, which the word states -->
           <div class="blocks"><span class="row"><span>FPS</span><span id="fpsOut">60</span></span><input id="fps" type="range" min="1" max="60" step="1" value="60" aria-label="FPS"></div>
           <!-- ai: the code's size, a share of <main>'s room, 25 to 100% (send.mjs sizeOf), so the code can be kept off a monitor's edges -->
@@ -119,34 +119,31 @@
     // ai: after the page showed, the chevrons turning as they did. ui.mjs remember and persist's rules, the same keys; the
     // ai: blocks slider and the labels drawn from the values as send.mjs showBlocks and showFps draw
     // ai: them. The modules run them again later and change nothing. The blocks a frame are the rate profile's
-    // ai: (sim/lizard_pick.mjs tiersFor, src/focus.c focus_tiers_for): 7a + 8m + 9t + 12c sub-channels with (a, t, c)
-    // ai: nearest 39, 15 and 20% of them in least squares, a + m + t + c blocks; a value that is no format (LIZARD-16 to
-    // ai: -1024 in steps of 8) is auto, as send.mjs makes it. A gap between two codes kept from before the margin
-    // ai: (2026-10-23) is kept as the margin it was, (gap + 4) / 2, and the spacing, gap + 4; a margin from the morning
-    // ai: of one margin with no spacing kept, the spacing it gave, two margins.
+    // ai: (sim/lizard_pick.mjs tiersFor, src/focus.c focus_tiers_for): over the frame's 640 s slots, a 7/8 blocks of 4496,
+    // ai: t 2/3 of 5760 and c 1/2 of 7680 nearest 39, 15 and 20% of them in least squares (in units of 16 slots),
+    // ai: the 3/4 blocks of 5152 filling, a + m + t + c blocks; a value that is no format (LIZARD-64 to -1024 in steps of
+    // ai: 16) is auto, as send.mjs makes it.
     (() => { try {
       const ls = localStorage, $ = (id) => document.getElementById(id);
       for (const id of ["dev", "logs"]) { const v = ls.getItem("send:" + id); if (v !== null) $(id).open = v === "1"; }
-      { const g = ls.getItem("send:gap"); if (g !== null) { if (ls.getItem("send:margin") === null) ls.setItem("send:margin", String(Math.round((+g + 4) / 2))); if (ls.getItem("send:spacing") === null) ls.setItem("send:spacing", String(+g + 4)); ls.removeItem("send:gap"); } }
-      { const m = ls.getItem("send:margin"); if (m !== null && ls.getItem("send:spacing") === null) ls.setItem("send:spacing", String(2 * +m)); }
       if (ls.getItem("send:collapsed") === "1") document.body.classList.add("collapsed"); { const w = +ls.getItem("send:side"); if (w > 0) document.documentElement.style.setProperty("--side", Math.max(180, Math.min(w, innerWidth * 0.6)) + "px"); }
       for (const el of document.querySelectorAll("#dev select, #dev input, #logs select")) {
         if (el.type === "file" || "view" in el.dataset) continue;
         const v = ls.getItem("send:" + el.id);
         if (v !== null && (el.tagName !== "SELECT" || [...el.options].some((o) => o.value === v))) el.value = v;
       }
-      const s = +$("subch").value, v = s >= 16 && s <= 1024 && s % 8 === 0 ? s / 8 : 0;
+      const s = +$("subch").value, v = s >= 64 && s <= 1024 && s % 16 === 0 ? s / 16 : 0;
       let k = 0;
       if (v) {
+        const all = 40 * s;
         let best = -1;
-        for (let a = 0; 7 * a <= s - 8; a++) for (let t = 0; 7 * a + 9 * t <= s - 8; t++) for (let c = 0; 7 * a + 9 * t + 12 * c <= s - 8; c++) {
-          if ((s - 7 * a - 9 * t - 12 * c) % 8) continue;
-          const d7 = 700 * a - 39 * s, d3 = 900 * t - 15 * s, d2 = 1200 * c - 20 * s, cost = d7 * d7 + d3 * d3 + d2 * d2;
-          if (best < 0 || cost < best) { best = cost; k = a + t + c + (s - 7 * a - 9 * t - 12 * c) / 8; }
+        for (let a = 0; 281 * a <= all - 322; a++) for (let t = 0; 281 * a + 360 * t <= all - 322; t++) for (let c = 0; 281 * a + 360 * t + 480 * c <= all - 322; c++) {
+          const d7 = 281000 * a - 390 * all, d3 = 360000 * t - 150 * all, d2 = 480000 * c - 200 * all, cost = d7 * d7 + d3 * d3 + d2 * d2;
+          if (best < 0 || cost < best) { best = cost; k = a + t + c + Math.floor((all - 281 * a - 360 * t - 480 * c) / 322); }
         }
       }
       $("blocks").value = String(v || 1);
-      $("blocksOut").textContent = v ? `${k}, ${(k * 469 / 1000).toFixed(1)} KB` : "Auto";
+      $("blocksOut").textContent = v ? `${k}, ${(k * 472 / 1000).toFixed(1)} KB` : "Auto";   // ai: 472 B a block (sim/xfer.mjs PAYLOAD), before the modules load
       $("fpsOut").textContent = `${+$("fps").value}`;
       $("sizeOut").textContent = `${+$("size").value}%`;
       $("spacingOut").textContent = `${+$("spacing").value} modules`;

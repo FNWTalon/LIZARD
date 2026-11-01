@@ -84,7 +84,7 @@ static void boundaries(void) {
   for (int li = 0; li < 4; li++) {
     const uint64_t c = 1ull << logs[li];
     for (uint64_t k = 1; k <= 20; k += (k < 5 ? 1 : 5)) {
-      const uint64_t lens[] = { k * c - 1, k * c, k * c + 1, k * c + 469, k * c + c / 2 };
+      const uint64_t lens[] = { k * c - 1, k * c, k * c + 1, k * c + XFER_PAYLOAD, k * c + c / 2 };
       for (int j = 0; j < 5; j++) {
         const uint64_t len = lens[j];
         uint8_t *file = malloc((size_t)len), want[XFER_CV], got[XFER_CV];
@@ -117,10 +117,10 @@ static void ids(void) {
   CHECK(xfer_header_init(&h, (16383ull << 24) + 1, 24) && !xfer_header_init(&h, 0, 10) && h.chunks == 0, "init limits");
   CHECK(xfer_manifest_blocks(0) == 0 && xfer_manifest_blocks(1) == 0 && xfer_manifest_blocks(2) == 1 && xfer_manifest_blocks(12) == 1 &&
         xfer_manifest_blocks(13) == 2 && xfer_manifest_blocks(16383) == 1366, "manifest block counts");
-  CHECK(xfer_blocks(0) == 0 && xfer_blocks(1) == 1 && xfer_blocks(469) == 1 && xfer_blocks(470) == 2, "blocks of the bytes sent");
+  CHECK(xfer_blocks(0) == 0 && xfer_blocks(1) == 1 && xfer_blocks(XFER_PAYLOAD) == 1 && xfer_blocks(XFER_PAYLOAD + 1) == 2, "blocks of the bytes sent");
 }
 
-// A file through the whole C side: chaining values, root, header and manifest blocks written as 473-byte blocks and
+// A file through the whole C side: chaining values, root, header and manifest blocks written as 476-byte blocks and
 // read back into a receiver's state, every chunk verified, then corruption. codec: XFER_CODEC_ZSTD makes up each chunk's
 // bytes as sent (three quarters of its own past 1,000 bytes, as a frame would be) and a seed attempt (its index mod 3
 // where it is fountained); XFER_CODEC_NONE sends every chunk as it is. Returns the file's manifest block count.
@@ -233,7 +233,8 @@ static int transfer(const char *label, uint64_t len, int log2, int codec, const 
   // A header that is not one.
   uint8_t *hp = hblock + XFER_ID_BYTES, save[XFER_PAYLOAD];
   memcpy(save, hp, XFER_PAYLOAD);
-  hp[XFER_H_VERSION] = 1; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR_VERSION, "%s: version 1", label); memcpy(hp, save, XFER_PAYLOAD);
+  hp[XFER_H_VERSION] = 2; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR_VERSION, "%s: version 2", label); memcpy(hp, save, XFER_PAYLOAD);
+  hp[XFER_PAYLOAD - 1] = 1; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR, "%s: a reserved byte set", label); memcpy(hp, save, XFER_PAYLOAD);
   hp[XFER_H_HASH] = 2; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR_HASH, "%s: hash 2", label); memcpy(hp, save, XFER_PAYLOAD);
   hp[XFER_H_CODEC] = 2; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR_CODEC, "%s: codec 2", label); memcpy(hp, save, XFER_PAYLOAD);
   if (chunks != 1) { hp[XFER_H_SENT] = 1; CHECK(xfer_header_parse(hp, &rx) == XFER_ERR, "%s: sent for a file of %u chunks", label, chunks); memcpy(hp, save, XFER_PAYLOAD); }
@@ -262,13 +263,13 @@ int main(int argc, char **argv) {
   // power of two of chunks with the last one full, compressed; a file of one block; an empty file.
   CHECK(transfer("41 chunks", 40 * 1024 + 100, 10, XFER_CODEC_NONE, "", "") == 4, "41 chunks: four manifest blocks");
   CHECK(transfer("16 chunks", 16u << 16, 16, XFER_CODEC_ZSTD, "a", "application/octet-stream") == 2, "16 chunks: two manifest blocks");
-  CHECK(transfer("1 block", 469, 10, XFER_CODEC_ZSTD, "tiny", "") == 0, "one block");
+  CHECK(transfer("1 block", XFER_PAYLOAD, 10, XFER_CODEC_ZSTD, "tiny", "") == 0, "one block");
   CHECK(transfer("empty", 0, 10, XFER_CODEC_NONE, "empty", "") == 0, "empty");
   xfer_header_t h;
   uint8_t p[XFER_PAYLOAD];
-  xfer_header_init(&h, 469, 10); h.sent = 469; h.seed = 1;
+  xfer_header_init(&h, XFER_PAYLOAD, 10); h.sent = XFER_PAYLOAD; h.seed = 1;
   CHECK(xfer_header_write(&h, p) == XFER_ERR, "a seed for an unfountained chunk was written");
-  xfer_header_init(&h, 470, 10); h.sent = 470; h.seed = 1;
+  xfer_header_init(&h, XFER_PAYLOAD + 1, 10); h.sent = XFER_PAYLOAD + 1; h.seed = 1;
   CHECK(!xfer_header_write(&h, p), "a seed for a chunk of two blocks refused");
   h.sent = 300; CHECK(xfer_header_write(&h, p) == XFER_ERR, "a one-chunk file sent shorter under codec none was written");
   h.codec = XFER_CODEC_ZSTD; h.seed = 0; CHECK(!xfer_header_write(&h, p), "a one-chunk file sent shorter under zstd refused");

@@ -24,23 +24,14 @@ export let QUIET;
 export async function init() {
   if (!M) {
     M = ALT ? await (await import(`../${ALT}`)).default() : await baseModule();
-    // ai: the camera's report's lab switch (LIZ_LENS=axis, src/focus.h focus_lens_set: the lens model without the
-    // ai: report), which the wasm has no environment to read: handed in at load, as the native hosts read it from theirs
-    const lens = typeof process !== "undefined" && process.env ? process.env.LIZ_LENS : null;
-    if (lens && M._focus_lens_set) setLens(lens);
   }
   QUIET ??= M._focus_quiet?.();
   return M;
 }
-// ai: The camera's report's A/B switch (src/focus.h focus_lens_set): "axis" the lens model without the report, anything
-// ai: else with it.
-export function setLens(arm) { M._focus_lens_set(arm === "axis" ? 1 : 0); }
 // ai: Where the camera's axis falls in the next image decoded (src/focus.h focus_set_axis): [x, y] image px, or null
 // ai: for the image's centre. Every decode sets it, so one frame's axis never stays for the next.
-const setAxis = (axis, lens) => {
+const setAxis = (axis) => {
   M._focus_set_axis?.(axis ? axis[0] : NaN, axis ? axis[1] : NaN);
-  // ai: the camera's report of its lens for the same image (src/focus.h focus_set_lens): { k: [k1, k2, k3], f } px, or none
-  M._focus_set_lens?.(lens ? lens.k[0] : 0, lens ? lens.k[1] : 0, lens ? lens.k[2] : 0, lens ? lens.f : 0);
 };
 
 // Stage times since the last call, ms, summed over the decodes in between (slots: PROF_* in src/internal.h).
@@ -105,14 +96,14 @@ export class FocusAny {
     this.pBlocks = M._malloc(this.maxBlocks * this.blockBytes); this.pOk = M._malloc(this.maxBlocks);
     this.pImg = 0; this.imgCap = 0;
   }
-  // ai: held: the version field (sub-channels / 8) of the last word the caller read, 0 for none; a frame whose own word
+  // ai: held: the version field (sub-channels / 16) of the last word the caller read, 0 for none; a frame whose own word
   // ai: does not read is decoded at it. Returns n (blocks decoded), ring (the ring that registered, 0 to 2, or -1),
   // ai: pictureN (the picture finished, 0 for none), held (whether the held configuration stood in), fmt (the word this
   // ai: frame read, or null), builds (pictures built since the setup), ok and blocks (as many as the finished version's own codec carries,
   // ai: its rate profile's blocks), pilot (what the pilots read: { r, sd, r2, sd2, blocks }, or null). rgba: img is a
   // ai: canvas's RGBA, made luma in wasm as Focus.decode does.
-  decode(img, iw, ih, { gamma = 1, mesh = 2, held = 0, rgba = false, axis = null, lens = null } = {}) {
-    setAxis(axis, lens);
+  decode(img, iw, ih, { gamma = 1, mesh = 2, held = 0, rgba = false, axis = null } = {}) {
+    setAxis(axis);
     let pLuma;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
@@ -129,11 +120,10 @@ export class FocusAny {
 
 // The picture's codec (src/focus.c). mode: 1 (src/focus.h FOCUS_LDPC), the only code there is.
 export class Focus {
-  // Sub-channels to a block by LDPC rate index (1/2, 2/3, 3/4, 7/8), chosen so every rate carries about the same payload: 640 bits a sub-channel.
-  static SUBS = { 2: 12, 3: 9, 4: 8, 6: 7 };
   // tilt: dB by which the last sub-channel is sent below the first (src/focus.h). A sender's choice: a receiver need not be told.
   // tiers: [[rate, blocks], ...] from the lowest frequencies outwards, in place of subch and rate: runs of blocks at
-  // different code rates, every block with the same payload, so one at a lower rate takes more sub-channels (SUBS).
+  // different code rates, every block with the same payload, so one at a lower rate takes more slots (src/focus.h
+  // focus_block_slots), in the fewest sub-channels that hold them.
   // span: modules across the picture, 0 for the default ring (src/focus.h FOCUS_RING_DEFAULT), 2 B for ring B (any other
   // span is refused).
   // bitmap: how a block's bits lie on its coefficients, src/focus.h FOCUS_BITMAP (the only map): left out, or that
@@ -141,9 +131,9 @@ export class Focus {
   constructor(n, subch, mode, { clip = 2, span = 0, tilt = 0, tiers = null, bitmap } = {}) {
     if (mode !== 1) throw new Error(`focus: mode ${mode}: 1 (soft LDPC) is the only code`);
     if (tiers) {
-      // ai: four tiers a setup (src/focus.h FOCUS_TIERS), three numbers each, after n, clip, span and tilt
+      // ai: four tiers a setup (src/focus.h FOCUS_TIERS), two numbers each (rate, blocks), after n, clip, span and tilt
       if (tiers.length > 4) throw new Error(`focus: ${tiers.length} tiers, a setup takes 4`);
-      const a = [...tiers, ...Array(4).fill([0, 0])].slice(0, 4).flatMap(([r, b]) => [r, b, b ? Focus.SUBS[r] : 0]);
+      const a = [...tiers, ...Array(4).fill([0, 0])].slice(0, 4).flatMap(([r, b]) => [r, b]);
       this.blockBytes = M._focus_setup_tiers(n, clip, span, tilt, ...a);
     }
     else this.blockBytes = M._focus_setup(n, subch, clip, span, tilt);
@@ -237,8 +227,8 @@ export class Focus {
   read() { const p = M._focus_dbg_coef() >> 2; return M.HEAPF32.slice(p, p + 2 * 320 * this.subch); }
   // mesh: 0 the homography alone, any other the border mesh (the lens model and a Coons patch from the border's nodes,
   // research/06).
-  decode(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null, lens = null } = {}) {
-    setAxis(axis, lens);
+  decode(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null } = {}) {
+    setAxis(axis);
     let pLuma = 0;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
@@ -259,8 +249,8 @@ export class Focus {
   //
   // The image buffer must stay put until rxFinish: src/focus.c holds a pointer to it, not a copy. Since it is
   // this object's own pImg, the only way to break that is to call rxAcquire twice.
-  rxAcquire(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null, lens = null } = {}) {
-    setAxis(axis, lens);
+  rxAcquire(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null } = {}) {
+    setAxis(axis);
     let pLuma = 0;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
@@ -296,8 +286,8 @@ export class Focus {
   // The same registration from a quad found somewhere else.
   // The image is still needed: ob_acquire_quad reads the border for the track score, refines the corner nodes
   // and fills the mesh, so a GPU finder removes the SEARCH from the CPU and not the pixels.
-  rxAcquireQuad(img, iw, ih, quad, orient = 0, score = 1, { gamma = 1, mesh = 2, rgba = false, axis = null, lens = null } = {}) {
-    setAxis(axis, lens);
+  rxAcquireQuad(img, iw, ih, quad, orient = 0, score = 1, { gamma = 1, mesh = 2, rgba = false, axis = null } = {}) {
+    setAxis(axis);
     let pLuma = 0;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
@@ -359,7 +349,8 @@ export class Focus {
       mark: markOf(r), ...msOf(r) };
   }
   // The code's own shape and its layered schedule, which gpu/back/ldpc.mjs allocates against, plus which
-  // sub-channels each block owns. Read once a configuration, not once a frame.
+  // slots each block owns (first, count: its first slot of the frame and its slots). Read once a configuration, not
+  // once a frame.
   ldpcCode() {
     const pD = M._malloc(4 * 16);
     // lay = 0 asks for the dimensions only: ldpc_tables returns early on a null lay and writes nothing through
@@ -375,7 +366,7 @@ export class Focus {
     M._focus_ldpc_tables(0, pD, pLay);
     code.lay = M.HEAP32.slice(pLay >> 2, (pLay >> 2) + code.mb + 1 + 2 * code.slots);
     const pFirst = M._malloc(4 * this.blocks), pCount = M._malloc(4 * this.blocks);
-    M._focus_block_subs(pFirst, pCount);
+    M._focus_block_runs(pFirst, pCount);
     const first = M.HEAP32.slice(pFirst >> 2, (pFirst >> 2) + this.blocks);
     const count = M.HEAP32.slice(pCount >> 2, (pCount >> 2) + this.blocks);
     for (const q of [pD, pLay, pFirst, pCount]) M._free(q);

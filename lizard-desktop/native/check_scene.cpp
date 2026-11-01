@@ -1,9 +1,9 @@
-// ai: cam_check scene (2026-10-25): the simulated screen and camera (sim/scene.h) held to what they model, through the
+// ai: cam_check scene (2026-10-25): the simulated screen and camera (cam/scene.h) held to what they model, through the
 // ai: C decoder (lizard.h liz_decode, the reference): a clean capture reads every block, each the test stream's, and
 // ai: the pilots read the picture's count; a capture across a change mixes the two pictures as the pilots' readings
 // ai: say; the default optics read most blocks at a good phase across a sweep of phases over a picture; a 2:1 pair
 // ai: reads both symbols; a render's wall time at 1920 x 1080; the display's clock and its pictures exact; a file's
-// ai: pictures received whole; the simulated camera (camera/sim.cpp) in each of its formats (MJPEG skipped saying why
+// ai: pictures received whole; the simulated camera (cam/sim.cpp) in each of its formats (MJPEG skipped saying why
 // ai: where no TurboJPEG loads and the receiver does without it: checks.h jpegOptional).
 // ai: Every figure is the simulator's. `cam_check scene [case ...]` runs the cases named (parse, clean, straddle,
 // ai: sweep, pair, speed, clock, file, camera), all by default. The camera case sets LIZ_CAMERA_SIM itself and opens sim:0
@@ -26,7 +26,7 @@
 #include "backends.h"
 #include "checks.h"
 #include "lizard.h"
-#include "sim/scene.h"
+#include "cam/scene.h"
 
 namespace lizard::check {
 namespace {
@@ -241,7 +241,7 @@ void casePair(liz_decoder* dec) {
   const char* c = "pair";
   sim::Sender s;
   s.codes = 2;
-  s.blocks = 30;
+  s.blocks = 15;   // ai: LIZARD-240
   const sim::Display d;
   const sim::Optics o;
   auto sc = make(c, s, d, o);
@@ -408,10 +408,10 @@ void caseParse() {
   const char* c = "parse";
   struct Try { const char* spec; bool good; };
   const Try tries[] = {
-      {"blocks=128 ring=256 fps=255 codes=2 id=4294967295 hz=59.94 ppm=-50 phase=0 scan=1 response=0 sw=2560 sh=1440 share=0.5 "
+      {"blocks=64 ring=256 fps=255 codes=2 id=4294967295 hz=59.94 ppm=-50 phase=0 scan=1 response=0 sw=2560 sh=1440 share=0.5 "
        "surround=0 repeat=0.1 w=1280 h=720 fill=1.2 yaw=-30 tilt=20 roll=90 blur=0 exposure=0.1 shutter=global readout=0 "
        "gain=2 black=0 noise=0 shot=0 gamma=1 seed=9 file=/x", true},
-      {"", true}, {"ring=auto", true}, {"ring=64", true}, {"blocks=0", false}, {"blocks=1", false}, {"blocks=129", false},
+      {"", true}, {"ring=auto", true}, {"ring=64", true}, {"blocks=0", false}, {"blocks=3", false}, {"blocks=4", true}, {"blocks=65", false},
       {"blocks=1.5", false}, {"ring=32", false}, {"ring=3", false}, {"ring=-1", false}, {"fps=0", false},
       {"codes=3", false}, {"hz=0", false}, {"share=0", false}, {"shutter=sideways", false}, {"blur=-1", false},
       {"exposure=0", false}, {"exposure=1,5", false}, {"file=", false}, {"yaw=95", false}, {"gain", false}, {"wobble=1", false},
@@ -493,9 +493,9 @@ void caseCamera(liz_decoder* dec) {
   // ai: each format for 2 s at the half size: frames counted, their times a whole number of the camera's periods
   // ai: apart, their luma against the same capture rendered by a scene of the same spec: one picture a second, no
   // ai: noise, a global shutter, so a capture away from a picture's edges is the same in both (each scene numbers its
-  // ai: pictures from its own start, a few ms apart). MJPEG's frames go through TurboJPEG both ways (camera/sim.cpp):
+  // ai: pictures from its own start, a few ms apart). MJPEG's frames go through TurboJPEG both ways (cam/sim.cpp):
   // ai: where none loads on a system whose receiver does without it, that format skips saying why (checks.h)
-  const std::string still = "blocks=8 fps=1 hz=60 phase=0 scan=0 response=0 shutter=global exposure=2 noise=0 shot=0 id=777";
+  const std::string still = "blocks=4 fps=1 hz=60 phase=0 scan=0 response=0 shutter=global exposure=2 noise=0 shot=0 id=777";
   for (const char* form : {"grey", "yuyv", "nv12", "mjpeg"}) {
     if (!std::strcmp(form, "mjpeg")) {
       const std::string optional = jpegOptional();

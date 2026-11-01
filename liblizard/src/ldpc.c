@@ -3,29 +3,25 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Per rate: parity block rows out of 48, and the data-column degree profile as
-// (count of heavy columns, heavy degree); the remaining data columns have degree 3.
-// Heavy/light mixes follow the published IRA profiles (a minority of high-degree columns
-// carries convergence, degree 3 carries the rate), with the heavy degree capped at mb.
-// norm is the min-sum scale in sixteenths. All of it is measured (2026-09-19, the ablation now in
-// archive/ldpc-lab-rates/): against all-degree-3 columns the heavy minority is worth 8% of the channel at rate 1/2
-// and 1 to 3% above 2/3, and low rates want a gentler normalization.
 // ai: The rate indices are the format's four, 2, 3, 4 and 6 (1/2, 2/3, 3/4, 7/8); 0, 1 and 5 (1/4, 1/3, 5/6) were lab
-// ai: rates and have no profile since 2026-10-25 (archive/ldpc-lab-rates/), so no code is built at them.
-typedef struct { int mb, heavy, dh, norm; const char *name; double r; } profile_t;
+// ai: rates (archive/ldpc-lab-rates/) and have no code. norm is the min-sum scale in sixteenths, 13 at every rate.
+typedef struct { int norm; const char *name; double r; } profile_t;
 static const profile_t PROFILE[LDPC_RATES] = {
-  [2] = { 24, 10, 8, 13, "1/2", 0.5 },
-  [3] = { 16, 8, 12, 13, "2/3", 2.0 / 3 },
-  [4] = { 12, 8, 12, 13, "3/4", 0.75 },
-  [6] = {  6, 6,  4, 13, "7/8", 0.875 },
+  [2] = { 13, "1/2", 0.5 },
+  [3] = { 13, "2/3", 2.0 / 3 },
+  [4] = { 13, "3/4", 0.75 },
+  [6] = { 13, "7/8", 0.875 },
 };
 const char *const ldpc_rate_name[LDPC_RATES] = { [2] = "1/2", [3] = "2/3", [4] = "3/4", [6] = "7/8" };
 double ldpc_rate_value(int rate) { return rate >= 0 && rate < LDPC_RATES ? PROFILE[rate].r : 0; }
-// ai: a rate index with a profile: one of the format's four
-static int rate_ok(int rate) { return rate >= 0 && rate < LDPC_RATES && PROFILE[rate].mb > 0; }
 
-static uint32_t rnd(uint32_t *s) { *s ^= *s << 13; *s ^= *s >> 17; *s ^= *s << 5; return *s; }
 static int mod(int a, int z) { a %= z; return a < 0 ? a + z : a; }
+// ai: the format's table at a rate index (ldpc_base.h), or none
+static const ldpc_base_t *base_of(int rate) {
+  for (int t = 0; t < LDPC_BASES_N; t++) if (LDPC_BASES[t].rate == rate) return &LDPC_BASES[t];
+  return 0;
+}
+int ldpc_sent_bits(int rate) { const ldpc_base_t *b = base_of(rate); return b ? (b->kb - b->np + b->mb) * b->z : 0; }
 
 // shift[r][j] is the circulant offset, -1 where the base graph has no edge: data bit t of
 // block column j sits in position i = (t + shift) % z of block row r, which is check
@@ -33,90 +29,17 @@ static int mod(int a, int z) { a %= z; return a < 0 ? a + z : a; }
 // minimum distance: with checks numbered r * z + i instead, data bits t and t + 1 of a
 // degree-3 column land on adjacent staircase checks in every block row, and flipping both
 // plus the three parity bits between them is a weight-5 codeword.
-static int count_cycles(int mb, int z, int shift[][LDPC_NB], int r, int j, int s, int *four) {
-  int six = 0;
-  *four = 0;
-  for (int r2 = 0; r2 < mb; r2++) {
-    if (r2 == r || shift[r2][j] < 0) continue;
-    int d = s - shift[r2][j];
-    // The staircase joins check c to c + 1: the same position in the next block row, or the
-    // next position of row 0 after the last row. A data bit in both closes a 4-cycle.
-    if ((r2 == r + 1 || r2 == r - 1) && shift[r2][j] == s) (*four)++;
-    if (r == mb - 1 && r2 == 0 && mod(shift[r2][j] - s, z) == 1) (*four)++;
-    if (r == 0 && r2 == mb - 1 && mod(s - shift[r2][j], z) == 1) (*four)++;
-    for (int j2 = 0; j2 < LDPC_NB; j2++) {
-      if (j2 == j || shift[r2][j2] < 0) continue;
-      if (shift[r][j2] >= 0 && mod(d - (shift[r][j2] - shift[r2][j2]), z) == 0) (*four)++;
-      for (int r3 = 0; r3 < mb; r3++) {
-        if (r3 == r || r3 == r2 || shift[r3][j2] < 0) continue;
-        int d2 = d + shift[r2][j2] - shift[r3][j2];
-        for (int j3 = 0; j3 < LDPC_NB; j3++) {
-          if (j3 == j || j3 == j2 || shift[r3][j3] < 0 || shift[r][j3] < 0) continue;
-          if (mod(d2 + shift[r3][j3] - shift[r][j3], z) == 0) six++;
-        }
-      }
-    }
-  }
-  return six;
-}
-
-int ldpc_generate(int z, int rate, uint32_t seed, int shift[][LDPC_NB]) {
-  if (!rate_ok(rate) || z < 8) return -1;
-  const profile_t *p = &PROFILE[rate];
-  int mb = p->mb, kb = LDPC_NB - mb;
-  int rowdeg[LDPC_NB] = { 0 };
-  for (int r = 0; r < mb; r++) for (int j = 0; j < LDPC_NB; j++) shift[r][j] = -1;
-  uint32_t s = seed * 2654435761u + (uint32_t)(rate * 97 + 1);
-  if (!s) s = 1;
-  for (int j = 0; j < kb; j++) {
-    int deg = j < p->heavy ? p->dh : 3;
-    if (deg > mb) deg = mb;
-    for (int e = 0; e < deg; e++) {
-      // Lightest row first keeps check degrees concentrated; ties go to the PRNG.
-      int best = -1, bd = 1 << 30;
-      uint32_t tie = 0;
-      for (int r = 0; r < mb; r++) {
-        if (shift[r][j] >= 0) continue;
-        uint32_t t = rnd(&s);
-        if (rowdeg[r] < bd || (rowdeg[r] == bd && t > tie)) { best = r; bd = rowdeg[r]; tie = t; }
-      }
-      int pick = 0, pick6 = 1 << 30, pick4 = 1 << 30;
-      for (int t = 0; t < 12; t++) {
-        int cand = (int)(rnd(&s) % (uint32_t)z), four, six = count_cycles(mb, z, shift, best, j, cand, &four);
-        if (four < pick4 || (four == pick4 && six < pick6)) { pick = cand; pick4 = four; pick6 = six; }
-        if (!four && !six) break;
-      }
-      shift[best][j] = pick;
-      rowdeg[best]++;
-    }
-  }
-  return mb;
-}
-
-int ldpc_init(ldpc_t *c, int n_max, int rate, uint32_t seed) {
+int ldpc_init(ldpc_t *c, int rate) {
   memset(c, 0, sizeof *c);
-  if (!rate_ok(rate)) return -1;
-  const profile_t *p = &PROFILE[rate];
-  int z = n_max / LDPC_NB;
-  if (z < 8) return -1;
-  // The format's codes are the tables (ldpc_base.h, one a rate of the rate profile, each with its own block rows, data
-  // columns and columns never sent); every other code is generated over 48 columns.
-  static _Thread_local int shift[LDPC_NB][LDPC_NB];   // ai: scratch, a thread's own
-  const ldpc_base_t *base = 0;
-  for (int t = 0; t < LDPC_BASES_N; t++)
-    if (z == LDPC_BASES[t].z && rate == LDPC_BASES[t].rate && seed == LDPC_BASE_SEED) base = &LDPC_BASES[t];
-  int mb = base ? base->mb : p->mb, kb = base ? base->kb : LDPC_NB - mb, np = base ? base->np * z : 0;
-  if (mb > LDPC_NB || kb > LDPC_NB) return -1;
-  c->z = z; c->mb = mb; c->kb = kb; c->rate = rate; c->norm = p->norm;
-  c->n = (kb + mb) * z; c->k = kb * z; c->m = mb * z; c->np = np; c->nt = c->n - np;
-  if (base) {
-    for (int r = 0; r < mb; r++) for (int j = 0; j < LDPC_NB; j++) shift[r][j] = j < base->kb ? base->shift[r * base->kb + j] : -1;
-  } else if (ldpc_generate(z, rate, seed, shift) < 0) return -1;
-  int rowdeg[LDPC_NB] = { 0 };
-  for (int r = 0; r < mb; r++) for (int j = 0; j < kb; j++) rowdeg[r] += shift[r][j] >= 0;
+  const ldpc_base_t *base = base_of(rate);
+  if (!base) return -1;
+  const int z = base->z, mb = base->mb, kb = base->kb;
+  const short *shift = base->shift;   // ai: [mb][kb]
+  c->z = z; c->mb = mb; c->kb = kb; c->rate = rate; c->norm = PROFILE[rate].norm;
+  c->n = (kb + mb) * z; c->k = kb * z; c->m = mb * z; c->np = base->np * z; c->nt = c->n - c->np;
 
   int edges = 0;
-  for (int r = 0; r < mb; r++) edges += (rowdeg[r] + 2) * z;
+  for (int r = 0; r < mb; r++) { int d = 0; for (int j = 0; j < kb; j++) d += shift[r * kb + j] >= 0; edges += (d + 2) * z; }
   c->row_ptr = malloc((size_t)(c->m + 1) * sizeof(int));
   c->col_idx = malloc((size_t)edges * sizeof(int));
   if (!c->row_ptr || !c->col_idx) { ldpc_free(c); return -1; }
@@ -124,7 +47,7 @@ int ldpc_init(ldpc_t *c, int n_max, int rate, uint32_t seed) {
   for (int chk = 0; chk < c->m; chk++) {
     int i = chk / mb, r = chk % mb;
     c->row_ptr[chk] = e;
-    for (int j = 0; j < kb; j++) if (shift[r][j] >= 0) c->col_idx[e++] = j * z + mod(i - shift[r][j], z);
+    for (int j = 0; j < kb; j++) if (shift[r * kb + j] >= 0) c->col_idx[e++] = j * z + mod(i - shift[r * kb + j], z);
     if (chk > 0) c->col_idx[e++] = c->k + chk - 1;
     c->col_idx[e++] = c->k + chk;
   }
@@ -133,13 +56,13 @@ int ldpc_init(ldpc_t *c, int n_max, int rate, uint32_t seed) {
 
   c->zp = (z + 7) & ~7;
   c->lay_ptr = malloc((size_t)(mb + 1) * sizeof(int));
-  c->lay_col = malloc((size_t)mb * LDPC_NB * sizeof(int));
-  c->lay_shift = malloc((size_t)mb * LDPC_NB * sizeof(int));
+  c->lay_col = malloc((size_t)mb * kb * sizeof(int));
+  c->lay_shift = malloc((size_t)mb * kb * sizeof(int));
   if (!c->lay_ptr || !c->lay_col || !c->lay_shift) { ldpc_free(c); return -1; }
   int s2 = 0;
   for (int r = 0; r < mb; r++) {
     c->lay_ptr[r] = s2;
-    for (int j = 0; j < kb; j++) if (shift[r][j] >= 0) { c->lay_col[s2] = j; c->lay_shift[s2++] = shift[r][j]; }
+    for (int j = 0; j < kb; j++) if (shift[r * kb + j] >= 0) { c->lay_col[s2] = j; c->lay_shift[s2++] = shift[r * kb + j]; }
     int ns = s2 - c->lay_ptr[r] + 2;
     if (ns > c->slots_max) c->slots_max = ns;
     c->slots_total += ns;

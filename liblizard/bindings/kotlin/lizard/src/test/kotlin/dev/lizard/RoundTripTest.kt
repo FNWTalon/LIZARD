@@ -28,17 +28,17 @@ class RoundTripTest {
   @Test fun arithmetic() {
     assertTrue(Lizard.version.matches(Regex("""\d+\.\d+\.\d+""")))
     assertEquals(128, Lizard.ringCells())
-    val g = Lizard.geometry(Format(60, codes = 2))
-    // ai: LIZARD-480 carries the rate profile's 59 blocks a symbol
-    assertEquals(Geometry(1024, 256, 4, 1160, 2368, 1160, 48, 118), g)
-    assertEquals(58, Lizard.pick(1920.0, 1080.0, codes = 2))
+    val g = Lizard.geometry(Format(30, codes = 2))
+    // ai: LIZARD-480 carries the rate profile's 58 blocks a symbol
+    assertEquals(Geometry(1024, 256, 4, 1160, 2368, 1160, 48, 116), g)
+    assertEquals(29, Lizard.pick(1920.0, 1080.0, codes = 2))
     assertEquals(2, Lizard.layoutRects(1920, 1080, 2).size)
   }
 
   @Test fun testStream() {
     for (codes in 1..2) for (ring in 0 until Lizard.RINGS) {
       // ai: a fixed first id: the C's own misses of a clean frame (about 1 in 200) are measured elsewhere
-      FrameSender(Tx.test(1 + 1000 * ring + 100 * codes), Format(26, ring, codes = codes)).use { s ->
+      FrameSender(Tx.test(1 + 1000 * ring + 100 * codes), Format(13, ring, codes = codes)).use { s ->
         FrameReceiver(layout = codes).use { r ->
           repeat(3) {
             val f = s.frame()
@@ -46,7 +46,7 @@ class RoundTripTest {
             val p = r.push(c, cw, ch)
             assertEquals(s.geometry.frameBlocks, p.decoded.sumOf { it.count }, "ring $ring, $codes codes")
             assertTrue(p.verdict.test && p.verdict.bad == 0)
-            assertEquals(26, r.decoder.held.value)
+            assertEquals(13, r.decoder.held.value)
           }
         }
       }
@@ -55,7 +55,7 @@ class RoundTripTest {
 
   @Test fun fileInMemory() {
     val bytes = Random(7).nextBytes(5_000_000)
-    FrameSender(Tx.file(bytes, "k.bin", "application/octet-stream"), Format(60, codes = 2)).use { s ->
+    FrameSender(Tx.file(bytes, "k.bin", "application/octet-stream"), Format(30, codes = 2)).use { s ->
       FrameReceiver(layout = 2).use { r ->
         var frames = 0
         while (r.file == null && frames++ < 400) {
@@ -74,7 +74,7 @@ class RoundTripTest {
     val dir = File(System.getProperty("java.io.tmpdir"), "lizard-kotlin-test-${ProcessHandle.current().pid()}")
     val bytes = Random(8).nextBytes(1_500_000)
     Tx.file(bytes, "d.bin").use { tx ->
-      Encoder(Format(40)).use { enc ->
+      Encoder(Format(20)).use { enc ->
         Decoder().use { dec ->
           Rx(dir.path).use { rx ->
             var i = 0
@@ -96,16 +96,16 @@ class RoundTripTest {
 
   @Test fun failures() {
     assertFailsWith<IllegalArgumentException> { Encoder(Format(0)) }
-    // ai: one block a frame (LIZARD-8) is no format
-    assertFailsWith<IllegalArgumentException> { Encoder(Format(1)) }
-    assertFailsWith<IllegalArgumentException> { Lizard.geometry(Format(1)) }
+    // ai: past LIZARD-1024 is no format
+    assertFailsWith<IllegalArgumentException> { Encoder(Format(Lizard.MAX_BLOCKS + 1)) }
+    assertFailsWith<IllegalArgumentException> { Lizard.geometry(Format(Lizard.MAX_BLOCKS + 1)) }
     assertFailsWith<IllegalArgumentException> { Lizard.geometry(Format(10, ring = 7)) }
-    val e = Encoder(Format(8))
+    val e = Encoder(Format(4))
     e.close()
     assertFailsWith<IllegalStateException> { e.paint(ByteArray(Lizard.BLOCK), 0) }
     // ai: arrays too short for what a call writes or reads throw, and nothing is written past their end
     // ai: (2026-10-03: a 16-byte out was written 336,400 bytes and the JVM died later)
-    Encoder(Format(8)).use { enc ->
+    Encoder(Format(4)).use { enc ->
       assertFailsWith<IllegalArgumentException> { enc.paint(ByteArray(8 * Lizard.BLOCK), 0, ByteArray(16)) }
       assertFailsWith<IllegalArgumentException> { enc.paint(ByteArray(10), 0) }
     }
@@ -116,7 +116,7 @@ class RoundTripTest {
 
   @Test fun engines() {
     val bytes = Random(9).nextBytes(1_000_000)
-    val f = Format(40)
+    val f = Format(20)
     val g = Lizard.geometry(f)
     val store = File(System.getProperty("java.io.tmpdir"), "lizard-kotlin-engine-${ProcessHandle.current().pid()}")
     var released = 0
@@ -144,5 +144,25 @@ class RoundTripTest {
     }
     store.deleteRecursively()
   }
-}
 
+  // ai: The receive session (lizard.h layer 5) through its own natives, registered by the library's JNI_OnLoad: a
+  // ai: session on a folder of its own with no camera opened says idle; nothing kept, nothing unfinished; an unfinished
+  // ai: transfer is not deleted from outside while it holds the folder, and is once it is closed; a decoder it does not
+  // ai: know refused. No camera is listed (a listing would probe this machine's).
+  @Test fun session() {
+    val data = File(System.getProperty("java.io.tmpdir"), "lizard-kotlin-session-${ProcessHandle.current().pid()}")
+    assertFailsWith<IllegalArgumentException> { Session(data.path, decoder = "pc") }
+    Session(data.path, decoder = "cpu", forgetSettings = true).use { s ->
+      assertTrue(s.stats.contains("\"phase\":\"idle\""), s.stats.take(200))
+      assertEquals("{}", s.camera)
+      assertEquals("[]", Session.kept(data.path))
+      assertEquals("[]", Session.partials(data.path))
+      // ai: the lock is taken on the session's thread: asked again until it is held
+      var why = ""
+      for (i in 0 until 100) { why = Session.deletePartial(data.path, "0123456789abcdef"); if (why.isNotEmpty()) break; Thread.sleep(10) }
+      assertTrue(why.contains("receiving"), "refused while the session holds the folder: \"$why\"")
+    }
+    assertEquals("", Session.deletePartial(data.path, "0123456789abcdef"))
+    data.deleteRecursively()
+  }
+}

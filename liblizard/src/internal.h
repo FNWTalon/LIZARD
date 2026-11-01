@@ -105,8 +105,8 @@ void ob_map_point(const ob_layout_t *L, const ob_reg_t *reg, float mx, float my,
 // ai: along either axis; OB_ANCH_TS template points across one. OB_ANCH_PX_MIN: the drive pixels a square needs a side
 // ai: for its light middle (a quarter of the half-side) to land on a pixel, which sets a floor under pxm (focus.c init):
 // ai: at 4 (the 256 picture in the 64 and 128 rings at ceil(n / span)) a square paints as a dark dot.
-// ai: OB_ANCH_MIN: the anchors found that the geometry takes, the lens model's most terms (acquire.c LENS_P): their 2n
-// ai: readings then leave as many as the model takes, so its robust rule can judge one. Fewer, a false reading (a
+// ai: OB_ANCH_MIN: the anchors found that the geometry takes, at least the lens model's most terms (acquire.c LENS_P,
+// ai: 11): their 2n readings then leave as many as the model takes, so its robust rule can judge one. Fewer, a false reading (a
 // ai: blurred square's neighbourhood at 0.6) is fitted exactly and bends the map (the bench's 64 ring at 2.7 camera px
 // ai: a module, 8 found, one 2.3 modules off: 0 blocks of 23, 16 without the anchors).
 enum { OB_ANCH_K = 7, OB_ANCH_TS = 16, OB_ANCH_PX_MIN = 6, OB_ANCH_MIN = 12 };

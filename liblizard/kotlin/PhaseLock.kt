@@ -2,8 +2,10 @@ package dev.lizard.phase
 
 // ai: The camera's phase lock: D6 of the pilots-only, self-healing rework, the app's lock since 2026-10-28 (an
 // ai: Experimental setting the day before; the lock before it, with its scan, holds and blocks method, is in git
-// ai: history). Engine feeds it the receiver's frames at every capture, tells it what became of each delay request
-// ai: (delayFate) and gives it no readout skew and no code row.
+// ai: history). Its host (the Android app's Engine until 2026-10-31) feeds it the receiver's frames at every capture,
+// ai: tells it what became of each delay request (delayFate) and gives it no readout skew and no code row. No app
+// ai: compiles it since: the apps run its C++ port (core/rx/phase_lock.h), which is held to it call for call on the
+// ai: same traces of a host's calls (core/tools/phase_lock_check.cpp's format), and this is that reference.
 
 import kotlin.math.abs
 
@@ -65,8 +67,8 @@ import kotlin.math.abs
 // ai: time the camera is known to have reached, so a backlog after a stall of the engine's thread gives up nothing on
 // ai: its way) gives it up: Camera2 promises one or the other for every request, so only a host that breaks that
 // ai: leaves one there.
-// ai: Every call is on the engine's thread. Plain JVM (liblizard/kotlin); its one host is the Android app's Engine
-// ai: (a Camera2 lens with per-frame control: Engine.lockBarOf).
+// ai: Every call is on its host's thread. Plain JVM (liblizard/kotlin), its host's camera a Camera2 lens with per-frame
+// ai: control (the C++ port's host: core/rx/phase_host.h, a camera that offers delayOnce).
 class PhaseLock(private val say: (String) -> Unit) {
     enum class Mode { Off, Track }
     // ai: r, rSd: the pilots' reading over the even blocks and its standard error; r2, r2Sd: over the odd; row: the

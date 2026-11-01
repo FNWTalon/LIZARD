@@ -1,22 +1,22 @@
 // ai: The GPU sender's tables as the web builds them (liblizard/gpu/encoder.mjs configureNow, shape, allocate), for
 // ai: `tx_check gputables` to hold core/tx/send_tables.cpp to (2026-10-02). A format a file set in <out>:
 // ai: <subch>_<ring>.<section>.bin, the sections rows, uv, tw, su, g, taps, border, pu, and index.json listing the
-// ai: formats with their n, W, q, sq, Vr and copy. The formats: every whole number of blocks from 2 (LIZARD-16) in the
-// ai: default ring (sim/lizard_pick.mjs RING_DEFAULT, the 128) and a spread in the others (b % 9 === 2, which keeps
-// ai: LIZARD-16 and -1024: 15 a ring), at 60 a second, encodes of 4 frames.
-//   node gen/send_tables_ref.mjs <out> [all]      (all: every block count in every ring, 127 a ring)
+// ai: formats with their n, W, q, sq, Vr and copy. The formats: every version (LIZARD-64 to -1024) in the default ring
+// ai: (sim/lizard_pick.mjs RING_DEFAULT, the 128) and a spread in the others (b % 9 === 2 of the 8-sub-channel counts b,
+// ai: the versions among them and -1024: 8 a ring), at 60 a second, encodes of 4 frames.
+//   node gen/send_tables_ref.mjs <out> [all]      (all: every version in every ring, 64 a ring)
 // ai:   CODES=2: two codes a frame side by side (gpu/encoder.mjs shape: FW, the gap, the paint's symbols FRAMES x codes)
 import { mkdirSync, writeFileSync } from "node:fs";
 
 const LIB = new URL("../", import.meta.url);
 const imp = (p) => import(new URL(p, LIB).href);
 const { init, Focus } = await imp("sim/ob.mjs");
-const { transformTables } = await imp("gpu/back/transform.mjs");
+const { transformTables } = await imp("gpu/back/disc.mjs");
 const { PARAMS_AT } = await imp("gpu/wgsl/back_ldpc.mjs");
-const { CODES } = await imp("gpu/wgsl/back_tiers.mjs");
+const { CODES } = await imp("gpu/plan/back_tiers.mjs");
 const { crcPowers, PAYLOAD } = await imp("gpu/back/ref_ldpc.mjs");
 const { clipLimit } = await imp("gpu/back/paint.mjs");
-const { N_FOR, RINGS, RING_DEFAULT, tiersFor } = await imp("sim/lizard_pick.mjs");
+const { N_FOR, RINGS, RING_DEFAULT, tiersFor, STEP, VERSIONS } = await imp("sim/lizard_pick.mjs");
 const { GAP_MODULES } = await imp("gpu/encoder.mjs");
 await init();
 
@@ -24,7 +24,8 @@ const out = process.argv[2], all = process.argv[3] === "all";
 if (!out) { console.error("usage: node gen/send_tables_ref.mjs <out> [all]"); process.exit(2); }
 mkdirSync(out, { recursive: true });
 const FRAMES = 4, FPS = 60, CODES_N = +(process.env.CODES ?? 1), formats = [];
-for (let ring = 0; ring < RINGS.length; ring++) for (let b = 2; b <= 128; b++) if (all || ring === RING_DEFAULT || b % 9 === 2 || b === 128) formats.push({ subch: 8 * b, ring });
+// ai: a format is a version of the ladder (sim/lizard_pick.mjs VERSIONS: 16 sub-channels a step, LIZARD-64 to -1024)
+for (let ring = 0; ring < RINGS.length; ring++) for (const subch of VERSIONS) { const b = subch / 8; if (all || ring === RING_DEFAULT || b % 9 === 2 || b === 128) formats.push({ subch, ring }); }
 const index = [];
 for (const { subch, ring } of formats) {
   const n = N_FOR(subch), span = 2 * RINGS[ring];
@@ -41,16 +42,17 @@ for (const { subch, ring } of formats) {
   new Float32Array(taps, 24 * q, 6 * q).set(g.w);
   const copy = g.w.every((w, i) => w === (i % 6 === 2 ? 1 : 0));
   const G = new Uint32Array([n, q, sq, W, CODES_N, FW, RW, FS, 1, 0, gap, 0]);
-  // ai: the paint's uniform as gpu/encoder.mjs allocate packs it: the blocks, each tier at 1 + its code's place in
-  // ai: CODES (first block, first sub-channel, blocks), dims, the CRC's powers (2026-10-07, the format's rate profile)
+  // ai: the paint's uniform as gpu/encoder.mjs allocate packs it: the blocks, the slots they take and the coefficients
+  // ai: the frame holds, each tier at 1 + its code's place in CODES (first block, first slot, blocks), dims, the CRC's
+  // ai: powers (the format's rate profile, packed by slots)
   const pu = new Uint32Array(PARAMS_AT.words);
-  pu.set([fc.blocks, 0, 0, 0], PARAMS_AT.sizes);
   let b0 = 0, s0 = 0;
-  for (const [rate, count, subs] of tiersFor(subch)) {
-    const c = CODES.findIndex((x) => x.rate === rate && x.subs === subs);
+  for (const [rate, count, slots] of tiersFor(subch)) {
+    const c = CODES.findIndex((x) => x.rate === rate && x.slots === slots);
     pu.set([b0, s0, count, 0], PARAMS_AT.sizes + 4 * (1 + c));
-    b0 += count; s0 += count * subs;
+    b0 += count; s0 += count * slots;
   }
+  pu.set([fc.blocks, 0, s0, 320 * subch], PARAMS_AT.sizes);
   if (b0 !== fc.blocks) throw new Error(`LIZARD-${subch}: the profile's ${b0} blocks against the codec's ${fc.blocks}`);
   pu.set([fc.blocks, tb.npos, FRAMES * CODES_N, 0], PARAMS_AT.dims);
   pu.set(crcPowers(PAYLOAD), PARAMS_AT.pw);

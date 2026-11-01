@@ -3,6 +3,7 @@ package dev.lizard.desktop
 import androidx.compose.ui.window.application
 import java.awt.EventQueue
 import kotlin.system.exitProcess
+import dev.lizard.ui.Screen
 
 // ai: LIZARD on a PC (2026-10-04 the sender, the web sender's page as a window; since 2026-10-25 the app, App.kt: Home,
 // ai: Send and Receive). The sender's column on the left and the code area on the right, the code drawn there by the

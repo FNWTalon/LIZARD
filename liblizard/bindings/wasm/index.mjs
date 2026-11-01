@@ -55,7 +55,7 @@ const made = (ptr) => {
   return ptr;
 };
 
-export const BLOCK = 473, ID_BYTES = 4, PAYLOAD = 469, MIN_BLOCKS = 2, MAX_BLOCKS = 128, RINGS = 3, RING_DEFAULT = -1, GAP_MODULES = 12;
+export const BLOCK = 476, ID_BYTES = 4, PAYLOAD = 472, MIN_BLOCKS = 4, MAX_BLOCKS = 64, RINGS = 3, RING_DEFAULT = -1, GAP_MODULES = 12;
 const PIXFMT = { grey: 1, rgbx: 2, rgba: 3, bgra: 4 };
 const bpp = (f) => (f === "grey" ? 1 : 4);
 const pixfmt = (f) => {
@@ -85,7 +85,7 @@ export const simd = () => mod()._liz_simd() === 1;
 
 // ---- 1. format arithmetic --------------------------------------------------------------------------------------------
 
-// ai: format: { blocks (2 to 128), ring (0 to 2: the 64, 128 or 256 ring; -1 the default, the 128), fps (1 to 255), codes (1 or 2) }
+// ai: format: { blocks (4 to 64: LIZARD-64 to -1024, 16 x blocks), ring (0 to 2: the 64, 128 or 256 ring; -1 the default, the 128), fps (1 to 255), codes (1 or 2) }
 function formatAt(p, { blocks, ring = RING_DEFAULT, fps = 60, codes = 1 }) {
   M.HEAP32.set([blocks, ring, fps, codes], p >> 2);
   return p;
@@ -121,7 +121,7 @@ export class Encoder {
     this.inHeap = new Heap();
     this.outHeap = new Heap();
   }
-  // ai: blocks: frameBlocks x 473 bytes; picture: the frame's count (mod 4, the pilots); out: width x height pixels
+  // ai: blocks: frameBlocks x 476 bytes; picture: the frame's count (mod 4, the pilots); out: width x height pixels
   // ai: of fmt (grey, or four bytes a pixel: an ImageData's data takes "rgba"); made if not given
   paint(blocks, picture, out, fmt = "rgba") {
     const g = this.geometry, size = g.width * g.height * bpp(fmt);
@@ -137,7 +137,7 @@ export class Encoder {
   free() { if (this.h) M._liz_encoder_free(this.h); this.h = 0; this.inHeap.free(); this.outHeap.free(); }
 }
 
-// ai: A decoded frame: its verified blocks (count x 473 bytes), and what the decode found.
+// ai: A decoded frame: its verified blocks (count x 476 bytes), and what the decode found.
 function decodedFrom(p, count, blocks) {
   const i = M.HEAP32.subarray(p >> 2, (p >> 2) + 9), f = M.HEAPF32;
   return {
@@ -220,7 +220,7 @@ export class Tx {
     t.blocks = new Heap();
     return t;
   }
-  // ai: the next frame's n blocks (n x 473 bytes)
+  // ai: the next frame's n blocks (n x 476 bytes)
   next(n) {
     const p = this.blocks.at(n * BLOCK);
     check(M._liz_tx_next(this.h, n, p));

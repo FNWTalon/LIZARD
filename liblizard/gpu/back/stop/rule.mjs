@@ -1,23 +1,25 @@
 // ai: The learned LDPC stop rule for the decoder (scripts/gpu/back/stop/README.md; the trainer is scripts/gpu/back/stop/fit.py): its weights file read and checked
 // ai: (readStop, loadStop), folded into the form the kernel runs exactly as scripts/gpu/back/stop/net.py fold() folds it (the same float64
 // ai: operations in the same order, then one rounding to float32), the words the kernel reads (netWords, laid out for
-// ai: gpu/wgsl/back_tiers.mjs tldpc), and that form's arithmetic in float32 (scoreF32, which
-// ai: scripts/gpu/back/stop/check_rule.mjs holds the folded form to). The rule: after iteration t (1 to 29), with x = (bad, low, first, prev, t, est) (the violated
-// ai: checks now, their running minimum, after iteration 1, after the iteration before, t, the block's estimate BLK.x),
+// ai: gpu/glsl/back_tiers.mjs tldpc), and that form's arithmetic in float32 (scoreF32, which
+// ai: scripts/gpu/back/stop/check_rule.mjs holds the folded form to). The rule: after iteration t (1 to 29), with x = (bad, low, first, prev, t, grow) (the violated
+// ai: checks now, their running minimum, after iteration 1, after the iteration before, t, and the posteriors' growth:
+// ai: the sum over the n posteriors of min(|L|, 1016) now over the same after iteration 1, in 256ths, an integer;
+// ai: decoder state alone, dimensionless, nothing of the channel's estimate),
 // ai: h1 = relu(W1 x + b1), h2 = relu(W2 h1 + b2), s = w3 . h2; give up when s < T. The order of operations (the
 // ai: kernel's): a hidden unit starts at its bias and adds weight times input in input order, s adds the products
 // ai: w3_j h2_j in unit order, every product and sum rounded to float32. No node import at the top, so a page or
 // ai: worker can import it.
 import { readSafetensors, readUrl } from "../../cnn/netfile.mjs";
 
-export const SPEC = "ldpc-stop-mlp-v1";
-export const FEATURES = ["bad", "low", "first", "fall", "it", "est"];   // ai: the training form's inputs (scripts/gpu/back/stop/net.py)
-export const INPUTS = ["bad", "low", "first", "prev", "t", "est"];       // ai: the kernel's raw inputs
+export const SPEC = "ldpc-stop-mlp-v2";
+export const FEATURES = ["bad", "low", "first", "fall", "it", "grow"];   // ai: the training form's inputs (scripts/gpu/back/stop/net.py; grow in units of 1, the kernel's in 256ths)
+export const INPUTS = ["bad", "low", "first", "prev", "t", "grow"];       // ai: the kernel's raw inputs
+export const GROW_ONE = 256;                                               // ai: the kernel's grow for a ratio of 1
 export const RULE_URL = new URL("./stop.safetensors", import.meta.url);
-// ai: Each code's file by its checks m (2026-10-07): the 3/4 code's (RULE_URL, the first, trained 2026-09-28) and the rate
-// ai: profile's 7/8 and 1/2 codes', trained on the same recipe and budget against their own codes; the 2/3 code's
-// ai: (1920 checks, 2026-10-08, the format's since its profile took four rates), trained the same way.
-export const RULE_URLS = Object.freeze({ 1272: RULE_URL, 651: new URL("./stop_78.safetensors", import.meta.url), 1920: new URL("./stop_23.safetensors", import.meta.url), 3840: new URL("./stop_12.safetensors", import.meta.url) });
+// ai: Each code's file by its checks m: the format's four codes at z = 128 (2026-10-31), 7/8 640, 3/4 1280 (RULE_URL),
+// ai: 2/3 1920 and 1/2 3840, each trained on the same recipe and budget against its own code.
+export const RULE_URLS = Object.freeze({ 1280: RULE_URL, 640: new URL("./stop_78.safetensors", import.meta.url), 1920: new URL("./stop_23.safetensors", import.meta.url), 3840: new URL("./stop_12.safetensors", import.meta.url) });
 export function ruleUrlFor(m) {
   const url = RULE_URLS[m];
   if (!url) throw new Error(`stop rule: no file for a code of ${m} checks`);
@@ -38,7 +40,7 @@ export function readStop(bytes) {
   const W1 = new Float32Array(6 * H), b1 = new Float32Array(H), f = FEATURES.reduce((o, n, i) => ((o[n] = i), o), {});
   for (let j = 0; j < H; j++) {
     const c = (k) => W[6 * j + k] / sd[k];
-    const row = [c(f.bad) / m - c(f.fall) / m, c(f.low) / m, c(f.first) / m, c(f.fall) / m, c(f.it), c(f.est)];
+    const row = [c(f.bad) / m - c(f.fall) / m, c(f.low) / m, c(f.first) / m, c(f.fall) / m, c(f.it), c(f.grow) / GROW_ONE];
     row.forEach((x, k) => { W1[6 * j + k] = x; });
     let shift = 0;
     for (let k = 0; k < 6; k++) shift = shift + c(k) * mu[k];
@@ -69,7 +71,7 @@ export function netWords(rule) {
   return new Uint32Array(f.buffer);
 }
 
-// ai: s for x = [bad, low, first, prev, t, est] in the kernel's float32 order.
+// ai: s for x = [bad, low, first, prev, t, grow] in the kernel's float32 order.
 export function scoreF32(rule, x) {
   const r = Math.fround, H = rule.hidden, { W1, b1, W2, b2, w3, h1, h2 } = rule;
   const x5 = r(x[5]);

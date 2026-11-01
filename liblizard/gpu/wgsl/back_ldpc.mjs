@@ -6,7 +6,11 @@
 // chunk from a zero state, multiplies by x^(8 * bytes after it) mod P from a table, and XORs into one word; lane 0
 // adds the initial state's term with the final inversion folded in. 119 lanes, 32 steps each, no table in
 // workgroup memory.
-import { SLOTS } from "./common.mjs";
+import { SLOTS } from "../plan/common.mjs";
+import { PAYLOAD } from "../back/ref_ldpc.mjs";
+// ai: the payload is whole words (476 B, 119), its CRC-32 the word after it
+if (PAYLOAD % 4) throw new Error(`the block's ${PAYLOAD} B are no whole words`);
+export const CRC_CHUNKS = PAYLOAD / 4;
 
 // ai: The sender's paint uniform P in u32 words (wgsl/send.mjs paintSource): sizes, a vec4u a picture slot; dims; pw,
 // ai: 30 vec4u (the CRC-32 powers, crcPowers(PAYLOAD)). PARAMS_STRUCT is its WGSL.
@@ -14,14 +18,14 @@ export const PARAMS_AT = { sizes: 0, dims: 4 * SLOTS, pw: 4 * SLOTS + 4, words: 
 export const PARAMS_STRUCT = `struct Params { sizes: array<vec4<u32>, ${SLOTS}>, dims: vec4<u32>, pw: array<vec4<u32>, 30> }`;
 
 // ai: The split CRC-32 as WGSL, shared with the sender's paint (wgsl/send.mjs): crcOf(i) is called by
-// ai: every lane of the workgroup with its lane index (it holds two barriers) once the 473 payload bytes sit in the
-// ai: workgroup array `packw` (120 u32, four bytes a word in memory order, byte 0 of word 118 the last) and returns
+// ai: every lane of the workgroup with its lane index (it holds two barriers) once the 476 payload bytes sit in the
+// ai: workgroup array `packw` (120 u32, four bytes a word in memory order, words 0 to 118; word 119 the CRC's) and returns
 // ai: the CRC to every lane. `crcw` names the workgroup atomic it folds into, `crcStep` the name the step function
 // ai: is declared under, `pw` the powers table expression (120 u32: crcPowers(PAYLOAD), as the LDPC's uniform holds
 // ai: it). The names are parameters so a shader with its own arrays binds them without a copy of the arithmetic.
 export function CRC_SPLIT({ packw = "packw", crcw = "crcw", crcStep = "crcStep", pw = "P.pw" } = {}) {
   return /* wgsl */ `
-const CRC_CHUNKS: u32 = 119u;
+const CRC_CHUNKS: u32 = ${CRC_CHUNKS}u;
 const CRC_POLY: u32 = 0xedb88320u;
 fn ${crcStep}(c: u32) -> u32 { return (c >> 1u) ^ (CRC_POLY & (0u - (c & 1u))); }
 fn crcOf(i: u32) -> u32 {
@@ -29,10 +33,8 @@ fn crcOf(i: u32) -> u32 {
   workgroupBarrier();
   if (i < CRC_CHUNKS) {
     let w = ${packw}[i];
-    var nb: u32 = 4u;
-    if (i == CRC_CHUNKS - 1u) { nb = 1u; }
     var c: u32 = 0u;
-    for (var t: u32 = 0u; t < nb; t = t + 1u) {
+    for (var t: u32 = 0u; t < 4u; t = t + 1u) {
       c = c ^ ((w >> (8u * t)) & 0xffu);
       for (var q: u32 = 0u; q < 8u; q = q + 1u) { c = ${crcStep}(c); }
     }

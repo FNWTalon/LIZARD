@@ -1,5 +1,5 @@
-// ai: cam_check mf (2026-10-25, checks.h): Media Foundation's backend (camera/mf.cpp) against sim/fake_mf.cpp's source,
-// ai: through the backend's own path (camera/mf_source.h): Media Foundation's source reader, its MJPEG decoder, the
+// ai: cam_check mf (2026-10-25, checks.h): Media Foundation's backend (cam/mf.cpp) against sim/fake_mf.cpp's source,
+// ai: through the backend's own path (cam/mf_source.h): Media Foundation's source reader, its MJPEG decoder, the
 // ai: capture thread. Cases: load (MF's DLLs and MFStartup); list (the system's cameras: none is no failure, the count
 // ai: printed); registry (a test source listed and opened by id through camera.h's registry); modes; controls (the
 // ai: fake has none: none listed, a set refused); stream-<type> for each of the fake's six types (frames at about the
@@ -43,14 +43,14 @@
 #include <thread>
 #include <vector>
 
-#include "camera/backends.h"
-#include "camera/camera.h"
-#include "camera/mf_source.h"
-#include "camera/clock.h"
+#include "cam/backends.h"
+#include "cam/camera.h"
+#include "cam/mf_source.h"
+#include "cam/clock.h"
 #include "json.hpp"
-#include "rx_session.h"
+#include "session.h"
 #include "sim/fake_mf.h"
-#include "sim/scene.h"
+#include "cam/scene.h"
 #endif
 
 namespace lizard::check {
@@ -318,16 +318,16 @@ cam::Info fakeInfo() {
   return i;
 }
 
-// ai: The simulated screen (sim/scene.h: the test stream, the sender at 15 pictures a second for a 30 fps camera)
+// ai: The simulated screen (cam/scene.h: the test stream, the sender at 15 pictures a second for a 30 fps camera)
 // ai: through the fake's MJPG at 1920 x 1080, WIC-encoded a frame at a time and decoded by Media Foundation, into
-// ai: the session (rx_session.h) on the CPU decoder by its id (mf:test:scene, camera.h's registry): blocks verified.
+// ai: the session (session.h) on the CPU decoder by its id (mf:test:scene, camera.h's registry): blocks verified.
 void session(Report& out, double secs) {
   const std::string name = "session";
   sim::Sender s;
   sim::Display d;
   sim::Optics o;
   std::string why;
-  if (!sim::parse("blocks=24 fps=15 w=1920 h=1080", s, d, o, why)) {
+  if (!sim::parse("blocks=12 fps=15 w=1920 h=1080", s, d, o, why)) {
     out.fail(name, "scene spec: " + why);
     return;
   }
@@ -347,18 +347,19 @@ void session(Report& out, double secs) {
   std::error_code ec;
   std::filesystem::remove_all(store, ec);
   std::filesystem::create_directories(store, ec);
-  RxSession::Config c;
+  Session::Config c;
   c.assets = LIZ_ASSETS;   // ai: the build's GPU tree; the CPU decoder reads none
-  c.storeDir = store.u8string();
+  c.dataDir = store.u8string();
   c.decoder = "cpu";
   c.layout = "1:1";
-  auto rx = RxSession::create(c, why);
+  c.forgetSettings = true;
+  auto rx = Session::create(c, why);
   if (!rx) {
     out.fail(name, "session: " + why);
     cam::mfTestSource("scene", "", nullptr);
     return;
   }
-  if (!rx->open("mf:test:scene", why)) {
+  if (!done(rx->open("mf:test:scene"), why)) {
     out.fail(name, "open mf:test:scene: " + why);
   } else {
     int idx = -1;
@@ -367,7 +368,7 @@ void session(Report& out, double secs) {
       for (size_t i = 0; i < cj["modes"].size(); i++)
         if (cj["modes"][i].value("format", "") == "MJPG") idx = int(i);
     if (idx < 0) out.fail(name, "no MJPG mode in " + rx->camera());
-    else if (!rx->start(idx, why)) out.fail(name, "start: " + why);
+    else if (!done(rx->start(std::to_string(idx)), why)) out.fail(name, "start: " + why);
     else {
       int64_t blocks = 0, frames = 0;
       double camFps = 0;
@@ -389,7 +390,7 @@ void session(Report& out, double secs) {
       const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       const std::string fake = mk.stats();   // ai: the streaming source's
       const int madeAt = mk.count();
-      rx->stop();   // ai: the session describes the camera after it (its controls): no source may be made for that
+      done(rx->stop(), why);   // ai: the session describes the camera after it (its controls): no source may be made for that
       const int woke = mk.count() - madeAt;
       // ai: the frames the fake's MJPG ones (its current type at Start), so Media Foundation's decoder made the luma
       const bool mjpg = fake.find("\"type\":\"MJPG 1920x1080@") != std::string::npos;

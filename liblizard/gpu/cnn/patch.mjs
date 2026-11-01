@@ -1,4 +1,4 @@
-// Patches for the classifier, cut in JS exactly as gpu/wgsl/finder.mjs reads the image: a pyramid of 2 x 2 means,
+// Patches for the classifier, cut in JS exactly as gpu/glsl/finder.mjs reads the image: a pyramid of 2 x 2 means,
 // bilinear with pixel centres at k + 0.5, coordinates in level-0 pixels (scripts/gpu/cnn/README.md, "The dataset").
 export const PATCH = 32, KAPPA = 1.8;
 

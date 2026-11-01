@@ -19,22 +19,11 @@ OB_TLS double ob_prof_ms[PROF_N];
 // reproduce and what it has to be compared against.
 // What the thin frame's finder settled on, for a finder elsewhere to be held to: the final
 // score and orient, then which form and which mark quad won, the source of the final quad (0 marks, 1 lines,
-// 2 mark_crop, -1 none), whether the marks alone settled it, the mark stage's best, and form 0's quad count.
+// -1 none), whether the marks alone settled it, the mark stage's best, and form 0's quad count.
 OB_TLS float ob_finder_info[8];
 // ai: The lens's axis in the next image this thread decodes (focus_set_axis), image px; NaN for the image's centre.
 static OB_TLS float ob_axis[2] = { NAN, NAN };
 void focus_set_axis(float x, float y) { ob_axis[0] = x; ob_axis[1] = y; }
-// ai: The camera's report of its lens for the next image (focus_set_lens): k1, k2, k3, f in image px; f 0 none.
-static OB_TLS float ob_lens[4] = { 0, 0, 0, 0 };
-void focus_set_lens(float k1, float k2, float k3, float f) { ob_lens[0] = k1; ob_lens[1] = k2; ob_lens[2] = k3; ob_lens[3] = f; }
-// ai: The camera's report's lab switch (focus_lens_set): 0 or 1 as set, or -1, LIZ_LENS read at each frame ("axis":
-// ai: the report left out, 1), since the Android app sets its env as each receiver is made.
-static int lens_no_report = -1;
-void focus_lens_set(int no_report) { lens_no_report = no_report < 0 ? -1 : no_report > 0; }
-static int ob_lens_no_report(void) {
-  if (lens_no_report < 0) { const char *e = getenv("LIZ_LENS"); return e && !strcmp(e, "axis"); }
-  return lens_no_report;
-}
 // ai: The anchors (2026-10-26; part of every symbol since 2026-10-27, as the pilots are; SPEC 6.13,
 // ai: research/build/anchors/PLAN.md): a 7 x 7 grid of squares inside the picture, B / 32 modules a side (2, 4, 8 in
 // ai: the 64, 128, 256 rings), square (i, j) on the modules from round(OB_MARGIN + span (i + 0.5) / 7 - a / 2) on, each
@@ -427,83 +416,6 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
   nd->dy = pdy + box * jxy + boy * jyy;
 }
 
-// ai: Each side's nodes moved ALONG their side onto a cubic fitted to their along-side displacement; the across-side
-// ai: part and the corners are left as measured. A display that scales the symbol by a fraction (part of the channel:
-// ai: a page's stretch, an OS scale, a monitor's scaler) moves the border's sharp cells along each side by a sub-pixel
-// ai: amount that repeats every 1 / frac(device px a module) modules, where the band-limited picture keeps its
-// ai: geometry. The nodes, 16 modules apart, alias that ripple, and border_fill_axis's Coons blend would carry it across
-// ai: the picture as stripes (STATUS "The grid misalignment's source": on 07-56-38 a +-0.3 to 0.4-sample ripple of 23
-// ai: modules). The cubic is in each node's projected position along the corner chord, not its module position: a
-// ai: lens bend is a cubic in the image, which under perspective is not a cubic in modules (at 30 degrees and k1
-// ai: 0.03 a module-coordinate cubic missed a 96-ring node by 0.47 px, this one by 0.02). Rolling-shutter jello moves
-// ai: the left and right sides across themselves and the top and bottom as a whole, which the fit leaves alone.
-// ai: Only trusted nodes enter (border_fill_axis's rule), and a side is left as measured unless it has six, two of them
-// ai: marks in each half (a cubic over one half would swing free over the other); a mark more than a fifth of a module
-// ai: and three times the median off the first fit (a wrong lock) is dropped and the side fitted once more.
-enum { ALONG_MIN = 6, ALONG_HALF = 2 };
-static int along_fit(const double *t, const double *a, const int *use, int cnt, double c[4]) {
-  double A[8][9];
-  memset(A, 0, sizeof A);
-  int used = 0;
-  for (int k = 0; k < cnt; k++) {
-    if (!use[k]) continue;
-    const double b[4] = { 1, t[k], t[k] * t[k], t[k] * t[k] * t[k] };
-    for (int p = 0; p < 4; p++) { for (int q = 0; q < 4; q++) A[p][q] += b[p] * b[q]; A[p][8] += b[p] * a[k]; }
-    used++;
-  }
-  int lo = 0, hi = 0;
-  for (int k = 1; k < cnt - 1; k++) if (use[k]) { if (t[k] < 0) lo++; else hi++; }
-  if (used < ALONG_MIN || lo < ALONG_HALF || hi < ALONG_HALF) return 0;
-  for (int p = 4; p < 8; p++) A[p][p] = 1;   // ai: four unknowns in the eight-row solver
-  if (!solve8(A)) return 0;
-  for (int p = 0; p < 4; p++) c[p] = A[p][8] / A[p][p];
-  return 1;
-}
-static void smooth_along(const ob_layout_t *L, const homo_t *H, node_t *nodes) {
-  const int nx = L->nx, ny = L->ny;
-  for (int side = 0; side < 4; side++) {
-    const int horiz = side == 0 || side == 2, cnt = horiz ? nx : ny;
-    double ux[OB_MAX_NODES], uy[OB_MAX_NODES], mod[OB_MAX_NODES], t[OB_MAX_NODES], a[OB_MAX_NODES];
-    float px[OB_MAX_NODES] = { 0 }, py[OB_MAX_NODES] = { 0 };   // ai: every side has two nodes or more; GCC cannot see it once inlined
-    int use[OB_MAX_NODES], idx[OB_MAX_NODES];
-    for (int k = 0; k < cnt; k++) {
-      const int i = horiz ? k : (side == 1 ? nx - 1 : 0), j = horiz ? (side == 0 ? 0 : ny - 1) : k;
-      idx[k] = j * nx + i;
-      project(H, L->node_x[i], L->node_y[j], &px[k], &py[k]);
-      // ai: the unit vector along the side at this node, in image px, and a module's length there
-      float u0, v0, u1, v1;
-      project(H, L->node_x[i] - (horiz ? 0.5f : 0), L->node_y[j] - (horiz ? 0 : 0.5f), &u0, &v0);
-      project(H, L->node_x[i] + (horiz ? 0.5f : 0), L->node_y[j] + (horiz ? 0 : 0.5f), &u1, &v1);
-      mod[k] = hypot((double)u1 - u0, (double)v1 - v0);
-      ux[k] = mod[k] > 0 ? (u1 - u0) / mod[k] : 0; uy[k] = mod[k] > 0 ? (v1 - v0) / mod[k] : 0;
-      const node_t *nd = &nodes[idx[k]];
-      a[k] = nd->dx * ux[k] + nd->dy * uy[k];
-      use[k] = nd->done && (k == 0 || k == cnt - 1 || (L->node_mark[idx[k]] && nd->score >= 0.35f));
-    }
-    // ai: t: the node's projected position along the chord between the side's two corners, -1 to 1
-    const double cx = (double)px[cnt - 1] - px[0], cy = (double)py[cnt - 1] - py[0], cc = cx * cx + cy * cy;
-    if (!(cc > 0)) continue;
-    for (int k = 0; k < cnt; k++) t[k] = 2 * (((double)px[k] - px[0]) * cx + ((double)py[k] - py[0]) * cy) / cc - 1;
-    double c[4];
-    if (!along_fit(t, a, use, cnt, c)) continue;
-    // ai: one refit without the marks the first fit calls wrong locks
-    double off[OB_MAX_NODES], sorted[OB_MAX_NODES];
-    int m = 0;
-    for (int k = 1; k < cnt - 1; k++) if (use[k]) { off[k] = fabs(a[k] - (c[0] + t[k] * (c[1] + t[k] * (c[2] + t[k] * c[3])))); sorted[m++] = off[k]; }
-    for (int p = 1; p < m; p++) { const double v = sorted[p]; int q = p - 1; while (q >= 0 && sorted[q] > v) { sorted[q + 1] = sorted[q]; q--; } sorted[q + 1] = v; }
-    const double med = m ? sorted[m / 2] : 0;
-    int dropped = 0;
-    for (int k = 1; k < cnt - 1; k++) if (use[k] && off[k] > 0.2 * mod[k] && off[k] > 3 * med) { use[k] = 0; dropped++; }
-    if (dropped && !along_fit(t, a, use, cnt, c)) continue;
-    for (int k = 1; k < cnt - 1; k++) {
-      node_t *nd = &nodes[idx[k]];
-      if (!L->node_mark[idx[k]]) continue;
-      const double d = c[0] + t[k] * (c[1] + t[k] * (c[2] + t[k] * c[3])) - a[k];
-      nd->dx += (float)(d * ux[k]); nd->dy += (float)(d * uy[k]);
-    }
-  }
-}
-
 // The mesh (any mesh but 0): the interior of a code that carries marks on its border only, computed from the border. Averaging
 // neighbours inward is wrong for the two errors that matter: a lens's radial distortion, once the corners are pinned,
 // is largest along the edges and zero in the middle, which no average of edge values reproduces, and rolling-shutter
@@ -528,19 +440,10 @@ static void smooth_along(const ob_layout_t *L, const homo_t *H, node_t *nodes) {
 // ai:   border sees, and higher terms fitted there extrapolate: on the three 1:1 recordings of 2026-09, K chosen by the
 // ai:   fit alone cost 20 to 43% of the blocks. So K is at most 1 there, a term the patch carries anyway.
 // ai: - Within that, the K the evidence pays for, by AICc (below).
-// ai: - Beside them, where the camera reports its lens (focus_set_lens, 2026-10-17): its radial shape about the axis as
-// ai:   one column, its strength fitted (one number the border can measure, where three terms it cannot), a candidate
-// ai:   of its own for AICc. Inside a 1:1 crop it is what carries the lens's higher terms to the middle; where the
-// ai:   report is wrong or the stream already corrected, AICc passes it by. On the simulator, a 1:1 crop through the
-// ai:   S26's main lens at 1.0x read 5.5 blocks a frame without it and 53.2 with it, and the same with the report 15%
-// ai:   strong; a report of a lens the stream does not have cost nothing. A report that is wrong in shape (k2 0.8 and k3
-// ai:   1.25 times) read 9.9. On the S26's own 2:1 replays AICc took it on no frame but the main camera's, and there
-// ai:   the report alone recovered under half of what the free terms do: its shape is the phone's, not exact.
-// ai:   A free k1 beside the report rescued a wrong shape and lost 6 to 14% on a stream with no lens: not taken.
 // ai: The axis is the image's centre unless the caller says where the camera's axis falls in this crop
 // ai: (focus_set_axis). What the fit leaves is carried inward by the same Coons patch.
-enum { LENS_TERMS = 3, LENS_P = 9 + LENS_TERMS };
-_Static_assert((int)OB_ANCH_MIN == (int)LENS_P, "the anchors the geometry takes are the lens model's terms (internal.h)");
+enum { LENS_TERMS = 3, LENS_P = 8 + LENS_TERMS };
+_Static_assert((int)OB_ANCH_MIN >= (int)LENS_P, "the anchors the geometry takes are at least the lens model's terms (internal.h)");
 static int solve_lens(double A[LENS_P][LENS_P + 1], int n) {
   for (int c = 0; c < n; c++) {
     int p = c;
@@ -555,28 +458,24 @@ static int solve_lens(double A[LENS_P][LENS_P + 1], int n) {
   }
   return 1;
 }
-// ai: a node's rows of the model at q = (x, y): x, y, the shift, the two perspective terms, then the camera's reported
-// ai: shape where `pr` gives it (q (c1 s + c2 s^2 + c3 s^3), s = |q|^2, c_j = k_j (R / f)^2j), then the K radial terms
-static void lens_rows(double x, double y, int K, const double *pr, double *rx, double *ry) {
+// ai: a node's rows of the model at q = (x, y): x, y, the shift, the two perspective terms, then the K radial terms
+static void lens_rows(double x, double y, int K, double *rx, double *ry) {
   const double ex[8] = { x, y, 0, 0, 1, 0, -x * x, -x * y }, ey[8] = { 0, 0, x, y, 0, 1, -x * y, -y * y };
   for (int a = 0; a < 8; a++) { rx[a] = ex[a]; ry[a] = ey[a]; }
   const double s = x * x + y * y;
-  int c = 8;
-  if (pr) { const double g = s * (pr[0] + s * (pr[1] + s * pr[2])); rx[c] = g * x; ry[c] = g * y; c++; }
   double sk = s;
-  for (int k = 0; k < K; k++, sk *= s) { rx[c + k] = sk * x; ry[c + k] = sk * y; }
+  for (int k = 0; k < K; k++, sk *= s) { rx[8 + k] = sk * x; ry[8 + k] = sk * y; }
 }
-// ai: the model with K radial terms (and the reported shape, pr) fitted by least squares on the used nodes; its
-// ai: coefficients in t
-static int lens_fit(int K, const double *pr, int nn, const int *use, const float *qx, const float *qy, const node_t *nodes, double *t) {
-  const int p = 8 + (pr ? 1 : 0) + K;
+// ai: the model with K radial terms fitted by least squares on the used nodes; its coefficients in t
+static int lens_fit(int K, int nn, const int *use, const float *qx, const float *qy, const node_t *nodes, double *t) {
+  const int p = 8 + K;
   double A[LENS_P][LENS_P + 1], rx[LENS_P], ry[LENS_P];
   memset(A, 0, sizeof A);
   int n = 0;
   for (int m = 0; m < nn; m++) {
     if (!use[m]) continue;
     n++;
-    lens_rows(qx[m], qy[m], K, pr, rx, ry);
+    lens_rows(qx[m], qy[m], K, rx, ry);
     for (int a = 0; a < p; a++) { for (int b = 0; b < p; b++) A[a][b] += rx[a] * rx[b] + ry[a] * ry[b]; A[a][LENS_P] += rx[a] * nodes[m].dx + ry[a] * nodes[m].dy; }
   }
   for (int a = 0; a < p; a++) A[a][a] += 1e-12;
@@ -613,47 +512,35 @@ static void border_fill_axis(const ob_layout_t *L, const homo_t *H, int iw, int 
     pos += cr > 0; neg += cr < 0;
   }
   const int kmax = (pos == 4 || neg == 4) ? 1 : LENS_TERMS;
-  // ai: the camera's reported shape in q's units, where it gave one and the arm takes it (LIZ_LENS=axis leaves it out)
-  double prior[3];
-  const int hasPrior = ob_lens[3] > 0 && (ob_lens[0] != 0 || ob_lens[1] != 0 || ob_lens[2] != 0) && !ob_lens_no_report();
-  if (hasPrior) {
-    const double rho2 = (R / ob_lens[3]) * (R / ob_lens[3]);
-    prior[0] = ob_lens[0] * rho2; prior[1] = ob_lens[1] * rho2 * rho2; prior[2] = ob_lens[2] * rho2 * rho2 * rho2;
-  }
-  // ai: The model by AICc over the used nodes' 2n residuals (a node's dx and dy each): K = 0 to kmax free radial
-  // ai: terms, or the reported shape alone (cand kmax + 1); H's fit kept as it is where none fits. Beside it a fit on
-  // ai: three sides scored on the fourth chose as often on the simulator and less well on every 2:1 replay (up to 2.5
-  // ai: blocks a half; STATUS "The lens about its axis").
+  // ai: The model by AICc over the used nodes' 2n residuals (a node's dx and dy each): K = 0 to kmax radial terms;
+  // ai: H's fit kept as it is where none fits. Beside it a fit on three sides scored on the fourth chose as often on
+  // ai: the simulator and less well on every 2:1 replay (up to 2.5 blocks a half; STATUS "The lens about its axis").
   double rx[LENS_P], ry[LENS_P];
-  int K = -1, P = 0;
+  int K = -1;
   double best = INFINITY;
-  for (int cand = 0; cand <= kmax + 1; cand++) {
-    const int pk = cand <= kmax ? 0 : 1, k = cand <= kmax ? cand : 0;
-    if (pk && !hasPrior) continue;
-    const double *pr = pk ? prior : 0;
-    const int p = 8 + pk + k;
+  for (int k = 0; k <= kmax; k++) {
+    const int p = 8 + k;
     double t[LENS_P] = { 0 }, rss = 0;
     int n = 0;
-    if (!lens_fit(k, pr, nn, use, qx, qy, nodes, t)) continue;
+    if (!lens_fit(k, nn, use, qx, qy, nodes, t)) continue;
     for (int m = 0; m < nn; m++) {
       if (!use[m]) continue;
       n += 2;
-      lens_rows(qx[m], qy[m], k, pr, rx, ry);
+      lens_rows(qx[m], qy[m], k, rx, ry);
       double fx = 0, fy = 0;
       for (int a = 0; a < p; a++) { fx += t[a] * rx[a]; fy += t[a] * ry[a]; }
       rss += (nodes[m].dx - fx) * (nodes[m].dx - fx) + (nodes[m].dy - fy) * (nodes[m].dy - fy);
     }
     if (n - p - 1 <= 0) continue;
     const double aicc = n * log(rss / n + 1e-30) + 2.0 * p + 2.0 * p * (p + 1) / (n - p - 1);
-    if (aicc < best) { best = aicc; K = k; P = pk; }
+    if (aicc < best) { best = aicc; K = k; }
   }
-  const double *pr = P ? prior : 0;
   double th[LENS_P] = { 0 };
-  if (K >= 0 && !lens_fit(K, pr, nn, use, qx, qy, nodes, th)) K = -1;
+  if (K >= 0 && !lens_fit(K, nn, use, qx, qy, nodes, th)) K = -1;
   float *mx = malloc((size_t)nn * sizeof(float)), *my = malloc((size_t)nn * sizeof(float));
   for (int k = 0; k < nn; k++) {
     double X = 0, Y = 0;
-    if (K >= 0) { lens_rows(qx[k], qy[k], K, pr, rx, ry); for (int a = 0; a < 8 + P + K; a++) { X += th[a] * rx[a]; Y += th[a] * ry[a]; } }
+    if (K >= 0) { lens_rows(qx[k], qy[k], K, rx, ry); for (int a = 0; a < 8 + K; a++) { X += th[a] * rx[a]; Y += th[a] * ry[a]; } }
     mx[k] = (float)X; my[k] = (float)Y;
   }
   #define EX(i, j) (nodes[(j) * nx + (i)].dx - mx[(j) * nx + (i)])
@@ -683,7 +570,7 @@ struct lensm { int K; double t[LENS_P], ax, ay, R; };
 typedef struct lensm lensm_t;
 static void lensm_at(const struct lensm *m, double u, double v, float *dx, float *dy) {
   double rx[LENS_P], ry[LENS_P], fx = 0, fy = 0;
-  lens_rows((u - m->ax) / m->R, (v - m->ay) / m->R, m->K, 0, rx, ry);
+  lens_rows((u - m->ax) / m->R, (v - m->ay) / m->R, m->K, rx, ry);
   for (int a = 0; a < 8 + m->K; a++) { fx += m->t[a] * rx[a]; fy += m->t[a] * ry[a]; }
   *dx = (float)fx; *dy = (float)fy;
 }
@@ -710,7 +597,7 @@ static int lensm_fit(int np, const double *qx, const double *qy, const double *d
       for (int i = 0; i < np; i++) {
         if (drop[i]) continue;
         n++;
-        lens_rows(qx[i], qy[i], k, 0, rx, ry);
+        lens_rows(qx[i], qy[i], k, rx, ry);
         for (int a = 0; a < p; a++) { for (int b = 0; b < p; b++) A[a][b] += rx[a] * rx[b] + ry[a] * ry[b]; A[a][LENS_P] += rx[a] * dx[i] + ry[a] * dy[i]; }
       }
       for (int a = 0; a < p; a++) A[a][a] += 1e-12;
@@ -719,7 +606,7 @@ static int lensm_fit(int np, const double *qx, const double *qy, const double *d
       for (int a = 0; a < p; a++) t[a] = A[a][LENS_P] / A[a][a];
       for (int i = 0; i < np; i++) {
         if (drop[i]) continue;
-        lens_rows(qx[i], qy[i], k, 0, rx, ry);
+        lens_rows(qx[i], qy[i], k, rx, ry);
         double fx = 0, fy = 0;
         for (int a = 0; a < p; a++) { fx += t[a] * rx[a]; fy += t[a] * ry[a]; }
         rss += (dx[i] - fx) * (dx[i] - fx) + (dy[i] - fy) * (dy[i] - fy);
@@ -757,14 +644,13 @@ static int lensm_fit(int np, const double *qx, const double *qy, const double *d
 // ai: where module point (X, Y) is in the image: through H and the node mesh when given (ob_map_point), else H and the
 // ai: lens model when given, else H alone
 typedef struct { float X, Y, dx, dy, peak, u, v; int ok; } anchor_t;
-static void anchor_map(const ob_layout_t *L, const homo_t *H, const node_t *nodes, const lensm_t *lm, float X, float Y, float *u, float *v) {
-  if (nodes) { const ob_reg_t r = { *H, (node_t *)nodes }; ob_map_point(L, &r, X, Y, u, v); return; }
+static void anchor_map(const homo_t *H, const lensm_t *lm, float X, float Y, float *u, float *v) {
   project(H, X, Y, u, v);
   if (lm) { float dx, dy; lensm_at(lm, *u, *v, &dx, &dy); *u += dx; *v += dy; }
 }
 
 // ai: Every anchor not yet ok found as anchor_map places it: a window resampled on a grid of a / OB_ANCH_TS modules
-// ai: about its place, the pattern's normalised correlation at every whole step within reach modules, a parabola each
+// ai: about its place, the pattern's normalised correlation at every whole step within ANCH_REACH modules, a parabola each
 // ai: way. An anchor's dx, dy is where its middle really is less where H puts it (px), peak its correlation, and it is
 // ai: ok where the peak reaches ANCH_PEAK inside the window (a peak on the window's edge may stand short of one beyond
 // ai: it). ANCH_PEAK from 771 captures of the published lenses searched three modules wide through H alone
@@ -775,13 +661,13 @@ static void anchor_map(const ob_layout_t *L, const homo_t *H, const node_t *node
 // ai: ANCH_CORNER: how far, in modules, the finder's corner may sit from where the anchors' map puts it before it is
 // ai: searched again (the corners the finder lost on the published lenses sat 4 to 63 modules off, the ones it held
 // ai: within 1.2; the anchors' map, extrapolated past the last anchor to a corner, is a module or two off on a strong lens)
-enum { ANCH_ROUNDS = 6, ANCH_CORNER = 3 };
+enum { ANCH_ROUNDS = 6, ANCH_CORNER = 3, ANCH_REACH = 3 };
 static const float ANCH_PEAK = 0.6f;
-static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H, const node_t *nodes, const lensm_t *lm, float reach, anchor_t *A) {
+static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H, const lensm_t *lm, anchor_t *A) {
   const int a = ob_anchor_side(L), TS = OB_ANCH_TS;
   if (a < 1) return 0;
   const float h = (float)a / TS;
-  const int r = (int)ceilf(reach / h), W = TS + 2 * r, O = 2 * r + 1;
+  const int r = (int)ceilf((float)ANCH_REACH / h), W = TS + 2 * r, O = 2 * r + 1;
   float *win = malloc((size_t)W * W * sizeof(float)), *C = malloc((size_t)O * O * sizeof(float)), T[OB_ANCH_TS * OB_ANCH_TS];
   double *I1 = malloc((size_t)(W + 1) * (W + 1) * sizeof(double)), *I2 = malloc((size_t)(W + 1) * (W + 1) * sizeof(double));
   float tm = 0, tn = 0;
@@ -814,7 +700,7 @@ static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H,
     an->X = x0 + a * 0.5f; an->Y = y0 + a * 0.5f; an->peak = -1; an->dx = an->dy = 0;
     for (int wy = 0; wy < W; wy++) for (int wx = 0; wx < W; wx++) {
       float u, v;
-      anchor_map(L, H, nodes, lm, x0 + (wx - r + 0.5f) * h, y0 + (wy - r + 0.5f) * h, &u, &v);
+      anchor_map(H, lm, x0 + (wx - r + 0.5f) * h, y0 + (wy - r + 0.5f) * h, &u, &v);
       win[wy * W + wx] = sample(im, u, v);
     }
     for (int x = 0; x < W1; x++) I1[x] = I2[x] = 0;
@@ -843,7 +729,7 @@ static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H,
     if (by > -r && by < r) { const float l = C[(by + r - 1) * O + bx + r], c = best, rr = C[(by + r + 1) * O + bx + r], d = l - 2 * c + rr; if (d < 0) sy = 0.5f * (l - rr) / d; }
     an->peak = best;
     float u, v, hu, hv;
-    anchor_map(L, H, nodes, lm, an->X + (bx + sx) * h, an->Y + (by + sy) * h, &u, &v);
+    anchor_map(H, lm, an->X + (bx + sx) * h, an->Y + (by + sy) * h, &u, &v);
     project(H, an->X, an->Y, &hu, &hv);
     an->dx = u - hu; an->dy = v - hv; an->u = u; an->v = v;
     an->ok = best >= ANCH_PEAK && bx > -r && bx < r && by > -r && by < r;
@@ -953,7 +839,7 @@ static int anchor_register(const ob_layout_t *L, const image_t *im, const image_
   int have = 0, nf = 0;
   for (int k = 0; k < NA; k++) A[k].ok = 0;
   for (int round = 0; round < ANCH_ROUNDS; round++) {
-    const int now = anchor_find(L, im, &Ha, 0, have ? &mf : 0, 3.0f, A);
+    const int now = anchor_find(L, im, &Ha, have ? &mf : 0, A);
     if (now == nf || now < 4) break;
     nf = now;
     homo_t Hn;
@@ -1915,14 +1801,9 @@ int ob_test_mesh_tables(const ob_layout_t *L, int32_t *dims, float *nodeX, float
 // Every mark of one form in a binarized image at 1 / scale of the capture, in the capture's own coordinates. The
 // candidates depend on the mark's design alone, never on how many modules the symbol has, so one scan serves every
 // layout a receiver is looking for.
-static int mark_scan(const ob_layout_t *L, const uint8_t *bin, int bw, int bh, int scale, int merged, float *best_mark, cand_t *c) {
+static int mark_scan(const ob_layout_t *L, const uint8_t *bin, int bw, int bh, int scale, int merged, cand_t *c) {
   const int n = mark_candidates(L, bin, bw, bh, merged, c);
   for (int k = 0; k < n; k++) { c[k].x *= scale; c[k].y *= scale; c[k].unit *= scale; }
-  // The best-supported mark: one is a centre and a module size, which says where the symbol is and how big, not how it
-  // is turned; four give a quad.
-  // A gapped mark is believed over any merged one: nothing else in a capture has its cross-section. A scan of a
-  // shrunk image counts fewer rows, so it only speaks when the full one found nothing.
-  if (scale == 1 ? !merged || best_mark[2] <= 0 : best_mark[2] <= 0) { int bh2 = 0; for (int k = 0; k < n; k++) if (c[k].hits > bh2) { bh2 = c[k].hits; best_mark[0] = c[k].x; best_mark[1] = c[k].y; best_mark[2] = c[k].unit; } }
   return n;
 }
 
@@ -2440,7 +2321,7 @@ static inline int rotation_holds(float best, int orient) { return best >= 0.15f 
 // Ls: the layouts the symbol may be, which differ only in how many modules a side (focus.h FOCUS_RING); *which
 // comes back as the one that registered. The mark path scores every one before a hold settles it; the line path tries
 // the first (the 64 ring) first and the others only when it does not register.
-static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, const uint8_t *bin, float *quad, int *orient, float *score_out, float *best_mark, int *which) {
+static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, const uint8_t *bin, float *quad, int *orient, float *score_out, int *which) {
   int w = im->w, h = im->h, big = w > h ? w : h, n[4], nl[4];
   fpt_t *pts[4] = { 0 };            // allocated only if the scan runs, which a settled mark quad skips
   fline_t line[4][SIDE_LINES];
@@ -2499,7 +2380,7 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
     // scan: the candidates are the merged form's, their module size rescaled.
     int nmark = 0;
     for (int form = 0; form < 3 && !rotation_holds(best, *orient); form++) {
-    if (form < 2) PROF(PROF_FF_MARKS, nmark = mark_scan(Ls[0], sbin, sw, sh, scale, form, best_mark, mcand));
+    if (form < 2) PROF(PROF_FF_MARKS, nmark = mark_scan(Ls[0], sbin, sw, sh, scale, form, mcand));
     else {
       const int core = mark_core(Ls[0]), sq = Ls[0]->corner - 2;
       for (int k = 0; k < nmark; k++) mcand[k].unit *= (float)sq / core;
@@ -2707,60 +2588,6 @@ static uint8_t *border_blur(const ob_layout_t *L, const homo_t *H, const uint8_t
 
 void ob_reg_free(ob_reg_t *reg) { free(reg->nodes); reg->nodes = NULL; }
 
-// Look again inside what one mark says the symbol is, for the case the first look found nothing.
-//
-// A scan starts at the frame's edge and stops after SIDE_K candidates, so whatever lies between the edge and the
-// symbol spends them: a noisy surround was measured taking the whole payload (2026-09-21), and
-// archive/build-scratch-2026-09/crop_ceiling.mjs measured a crop to within a few percent of the symbol giving all of it back. One mark
-// gives a centre and a module size, which is that crop to about a tenth of the symbol, and a tenth is enough
-// (archive/build-scratch-2026-09/mark_race.mjs: a 2% margin buys nothing, a 10% margin buys everything).
-//
-// A CORNER mark does not say which corner it is, so all four are tried. That is up to four more passes, and they
-// only ever run where the answer was otherwise going to be nothing. The grey is copied and binarized again
-// rather than the first binarization being cropped, because the threshold is local and the noise that is now
-// outside the crop was part of what set it.
-// With several layouts each is tried in turn, since the box a mark implies is its layout's size.
-// The best crop wins, and only a rotation at 0.15 ends the search (rotation_holds). The first crop to reach 0.06 won
-// until 2026-09-24, and once the line path read all eight ways round a wrong box's 0.07 came before the right box's
-// 0.25 (LIZARD-16, far 0.8 px a module, scripts/exp/fmt_word.mjs DAMAGE frame 1). Still at most 4 crops a layout.
-static int mark_crop(const ob_layout_t *const *Ls, int nL, const image_t *im, float *quad, int *orient, float *sc, const float *mark, int *which) {
-  uint8_t *cg = NULL, *cb = NULL;
-  int ok = 0;
-  float best = -1, info[8];
-  for (int li = 0; li < nL && !rotation_holds(best, *orient); li++) {
-  const ob_layout_t *L = Ls[li];
-  const float u = mark[2], side = L->w * u, in = side / 2 - mark_mid(L) * u, half = side * 0.55f;
-  static const int SX[4] = { -1, 1, 1, -1 }, SY[4] = { -1, -1, 1, 1 };
-  if (!(u > 0) || side < 64 || side > 4.0f * (im->w > im->h ? im->w : im->h)) continue;
-  for (int k = 0; k < 4 && !rotation_holds(best, *orient); k++) {
-    // A corner mark is one of four, so step to where each would put the middle.
-    const float cx = mark[0] + SX[k] * in, cy = mark[1] + SY[k] * in;
-    int x0 = (int)(cx - half), y0 = (int)(cy - half), x1 = (int)(cx + half), y1 = (int)(cy + half);
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > im->w) x1 = im->w;
-    if (y1 > im->h) y1 = im->h;
-    const int cw = x1 - x0, ch = y1 - y0;
-    if (cw < 64 || ch < 64 || (cw >= im->w && ch >= im->h)) continue;   // nothing was cropped: the same look again
-    if (!cg && (!(cg = malloc((size_t)im->w * im->h)) || !(cb = malloc((size_t)im->w * im->h)))) break;
-    for (int y = 0; y < ch; y++) memcpy(cg + (size_t)y * cw, im->px + (size_t)(y0 + y) * im->w + x0, (size_t)cw);
-    binarize(cg, cw, ch, cb);
-    image_t sub = *im;
-    sub.px = cg; sub.w = cw; sub.h = ch;
-    float ignored[3] = { 0, 0, 0 }, q[8], s;
-    int w1, o;
-    if (find_frame(&Ls[li], 1, &sub, cb, q, &o, &s, ignored, &w1) && s > best) {
-      for (int i = 0; i < 4; i++) { quad[2 * i] = q[2 * i] + x0; quad[2 * i + 1] = q[2 * i + 1] + y0; }
-      best = *sc = s; *orient = o; ok = 1; *which = li;
-      memcpy(info, ob_finder_info, sizeof info);
-    }
-  }
-  }
-  if (ok) memcpy(ob_finder_info, info, sizeof info);   // the record of the crop that won, not of the last one tried
-  free(cg); free(cb);
-  return ok;
-}
-
 // in_quad: a quad found somewhere else, in image pixels, with its orientation and track score. The scan, the
 // line fit and the track scoring are then all skipped and everything from the homography onwards is shared, so
 // a quad found on a GPU becomes a registration on exactly the terms one found here does.
@@ -2780,8 +2607,7 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
   if (in_quad) { memcpy(thin_quad, in_quad, sizeof thin_quad); thin_orient = in_orient; thin_sc = in_score; got = 1; }
   else {
     PROF(PROF_BINARIZE, binarize(img, iw, ih, bin));
-    PROF(PROF_FINDERS, got = find_frame(Ls, nL, &im, bin, thin_quad, &thin_orient, &thin_sc, res->mark, which));
-    if (!got && res->mark[2] > 0) { PROF(PROF_FINDERS, got = mark_crop(Ls, nL, &im, thin_quad, &thin_orient, &thin_sc, res->mark, which)); if (got) ob_finder_info[4] = 2; }
+    PROF(PROF_FINDERS, got = find_frame(Ls, nL, &im, bin, thin_quad, &thin_orient, &thin_sc, which));
     L = Ls[*which];
   }
   free(bin);
@@ -2843,22 +2669,8 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
   free(blurred);
   // the border is all there is to hang the mesh on
   if (mesh) {
-    smooth_along(L, &H, nodes);
-    if (have_alm) {
-      // ai: the fill from the border and the first anchors; then the anchors found again through that mesh (a module
-      // ai: wide; one not found there keeps its first reading) and the fill once more from the border as measured
-      node_t *meas = malloc((size_t)nn * sizeof(node_t));
-      memcpy(meas, nodes, (size_t)nn * sizeof(node_t));
-      border_fill_anchors(L, &H, iw, ih, nodes, anchors, mpx);
-      anchor_t again[OB_ANCH_K * OB_ANCH_K];
-      for (int k = 0; k < OB_ANCH_K * OB_ANCH_K; k++) again[k].ok = 0;
-      if (anchor_find(L, &im, &H, nodes, 0, 1.0f, again) >= 4) {
-        for (int k = 0; k < OB_ANCH_K * OB_ANCH_K; k++) if (!again[k].ok && anchors[k].ok) again[k] = anchors[k];
-        memcpy(nodes, meas, (size_t)nn * sizeof(node_t));
-        border_fill_anchors(L, &H, iw, ih, nodes, again, mpx);
-      }
-      free(meas);
-    } else border_fill_axis(L, &H, iw, ih, nodes);
+    if (have_alm) border_fill_anchors(L, &H, iw, ih, nodes, anchors, mpx);
+    else border_fill_axis(L, &H, iw, ih, nodes);
   }
   float msum = 0;
   int mcount = 0;

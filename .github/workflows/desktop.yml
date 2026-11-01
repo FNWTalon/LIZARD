@@ -1,13 +1,13 @@
 # The desktop app (Home, Send and Receive) built from a clean checkout for Linux (.deb), Windows (.msi) and macOS on
-# Apple Silicon (.dmg). On Linux once: the codec (Emscripten), wgsl2spv (naga), the GPU tree (the painter's and the decoder's),
-# and Windows' native library and the receiver's tools (cam_check, lizard_receive) cross-built with MinGW-w64. Then
-# each system builds its package with jpackage, a Java runtime inside (Linux and macOS their native library too, macOS
-# with MoltenVK beside it), keeps it as an artifact, and only then runs the receiver's checks, synthetic all
-# (cam_check: no camera is listed or opened; each camera backend against a fake device, the receiver on a simulated
-# camera and the CPU decoder): a check that fails fails its job, and so the release, while the package it built is
-# kept to look at. The macOS build is also run from its .dmg twice: sending into its own window, a screenshot of it
-# read back by the C decoder, and receiving the simulated camera's test stream. Each system's checks' output is kept
-# too (smoke-<system>); on a tag the packages are also attached to that tag's release, made as a draft pre-release
+# Apple Silicon (.dmg). On Linux once: the codec (Emscripten), wgsl2spv (naga) and glslang, the GPU tree (the painter's
+# and the decoder's), and Windows' native library and the receiver's tools (cam_check, lizard_receive) cross-built with
+# MinGW-w64. Then each system builds its package with jpackage, a Java runtime inside (Linux and macOS their native
+# library too, macOS with MoltenVK beside it), keeps it as an artifact, and only then runs the receiver's checks,
+# synthetic all (cam_check: no camera is listed or opened; each camera backend against a fake device, the receiver on a
+# simulated camera and the CPU decoder): a check that fails fails its job, and so the release, while the package it
+# built is kept to look at. The macOS build is also run from its .dmg twice: sending into its own window, a screenshot
+# of it read back by the C decoder, and receiving the simulated camera's test stream. Each system's checks' output is
+# kept too (smoke-<system>); on a tag the packages are also attached to that tag's release, made as a draft pre-release
 # where none exists.
 name: Desktop app
 
@@ -72,7 +72,8 @@ jobs:
           source ~/emsdk/emsdk_env.sh
           liblizard/build.sh
 
-      - name: wgsl2spv
+      # naga's wgsl2spv, and glslang 16.6.0 for the GPU tree's GLSL modules (the release build, checked by its sha256)
+      - name: wgsl2spv and glslang
         run: lizard-android/build.sh tools
 
       - name: The GPU tree
@@ -137,7 +138,7 @@ jobs:
         with:
           name: tree
 
-      # libturbojpeg: no header, its calls declared in camera/jpeg.cpp and opened at run time, for the checks' MJPEG
+      # libturbojpeg: no header, its calls declared in liblizard/core/cam/jpeg.cpp and opened at run time, for the checks' MJPEG
       # cases (the package's Depends carry it for the app: packaging/deb-deps.sh)
       - name: The native library and the receiver's tools
         id: native
@@ -231,7 +232,7 @@ jobs:
 
       # TurboJPEG for the checks' MJPEG cases (the simulated camera's frames, luma's decodes; the app's Media
       # Foundation backend decodes a camera's MJPEG itself): turbojpeg.dll from libjpeg-turbo's release (its Visual
-      # C++ build, the C runtime inside: KERNEL32 alone), beside cam_check.exe, where camera/jpeg.cpp's LoadLibraryW
+      # C++ build, the C runtime inside: KERNEL32 alone), beside cam_check.exe, where liblizard/core/cam/jpeg.cpp's LoadLibraryW
       # finds it first
       - name: TurboJPEG
         if: ${{ !cancelled() }}
@@ -322,7 +323,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      # TurboJPEG for the checks' MJPEG cases: Homebrew's jpeg-turbo, the first place camera/jpeg.cpp looks
+      # TurboJPEG for the checks' MJPEG cases: Homebrew's jpeg-turbo, the first place liblizard/core/cam/jpeg.cpp looks
       - name: TurboJPEG
         run: brew install jpeg-turbo
 
@@ -359,7 +360,7 @@ jobs:
           codesign --verify --deep --strict "$app" && echo "signature verified"
           ls "$app/Contents/app/resources/"
           mkdir -p smoke
-          LIZ_SENDER_TEST="secs=14 codes=1 enc=gpu blocks=12 fps=24" "$app/Contents/MacOS/LIZARD" > smoke/out.json 2> smoke/err.txt &
+          LIZ_SENDER_TEST="secs=14 codes=1 enc=gpu blocks=6 fps=24" "$app/Contents/MacOS/LIZARD" > smoke/out.json 2> smoke/err.txt &
           pid=$!
           sleep 10
           screencapture -x smoke/screen.png || true
@@ -379,7 +380,7 @@ jobs:
           hdiutil detach /tmp/lizard-dmg
           grep -E -q " [1-9][0-9]* blocks verified" smoke/decode.txt
 
-      # The receiver from the .dmg's app (ReceiverTest.kt, LIZ_RECEIVER_TEST): the simulated camera (camera/sim.cpp,
+      # The receiver from the .dmg's app (ReceiverTest.kt, LIZ_RECEIVER_TEST): the simulated camera (liblizard/core/cam/sim.cpp,
       # LIZ_CAMERA_SIM) filming the test stream, 12 blocks a frame painted 30 a second, read for 12 s by the CPU
       # decoder; the line it ends with must count verified blocks. The Info.plist's camera sentence read first.
       - name: Received from the simulated camera by the .dmg's app
@@ -393,7 +394,7 @@ jobs:
           mkdir -p smoke "$RUNNER_TEMP/lizard-data"
           code=0
           LIZ_DATA="$RUNNER_TEMP/lizard-data" LIZ_DOWNLOADS="$RUNNER_TEMP/lizard-data" \
-            LIZ_CAMERA_SIM="blocks=12 fps=30 camfps=60 w=1280 h=720" LIZ_RECEIVER_TEST="secs=12 camera=sim:0 decoder=cpu" \
+            LIZ_CAMERA_SIM="blocks=6 fps=30 camfps=60 w=1280 h=720" LIZ_RECEIVER_TEST="secs=12 camera=sim:0 decoder=cpu" \
             "$app/Contents/MacOS/LIZARD" > smoke/rx-out.json 2> smoke/rx-err.txt || code=$?
           hdiutil detach /tmp/lizard-dmg
           grep -v '^rx: {' smoke/rx-err.txt | tail -40; cat smoke/rx-out.json; echo "exit $code"

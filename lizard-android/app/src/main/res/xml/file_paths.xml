@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- ai: What the FileProvider hands out (AndroidManifest.xml): the received files alone (Library.kt, filesDir/library). -->
+<!-- ai: What the FileProvider hands out (AndroidManifest.xml): a received file Downloads did not take, in the receive
+     session's data folder (Received.kt: filesDir/session/kept, and the files received before 2026-10-31 in
+     filesDir/session/library until they are placed). A file in Downloads goes out by its MediaStore URI. -->
 <paths>
-    <files-path name="library" path="library/" />
+    <files-path name="kept" path="session/kept/" />
+    <files-path name="library" path="session/library/" />
 </paths>

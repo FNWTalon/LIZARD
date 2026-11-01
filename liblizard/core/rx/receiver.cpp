@@ -12,6 +12,7 @@
 #include "stream.h"
 #include "replay.h"
 #include "front.h"
+#include "trial.h"
 #include "camera.h"
 #include "codec.h"
 #include "pool.h"
@@ -120,11 +121,12 @@ class GpuReceiver : public Receiver {
   void forget(const std::string& root) override;
   // ai: the camera's buffer is read in place only through the zero-copy ingest; a device without it (camera.h) takes
   // ai: the frame's luma plane, uploaded (enqueueLuma)
-  bool wantsLuma() const override { return !ci; }
+  bool wantsLuma() const override { return !zeroCopy; }
   void record(std::shared_ptr<Replay> r) override { std::lock_guard<std::mutex> l(mu); rec = std::move(r); }
   void cameraClosed() override {
     std::unique_lock<std::shared_mutex> planHeld(planMu);   // ai: no push inside an enqueue meanwhile
-    const size_t n = ci ? ci->cameraClosed() : 0;
+    size_t n = 0;
+    try { n = ci ? ci->cameraClosed() : 0; } catch (const std::exception&) {}   // ai: a lost device: the decoder thread makes it again
     std::lock_guard<std::mutex> l(mu);
     if (cfg.log) cfg.log("camera closed: " + std::to_string(n) + " imported buffers let go" + (error.empty() ? "" : ", the error \"" + error + "\"" + (error.rfind("ingest: ", 0) == 0 ? " cleared" : " kept")));
     if (error.rfind("ingest: ", 0) == 0) error.clear();
@@ -135,11 +137,26 @@ class GpuReceiver : public Receiver {
   std::shared_ptr<XferRx> transfer() const override { return xfer; }
   ReceiverConfig cfg;
   std::function<void(uint64_t)> releaseFn;
+  // ai: the device, the decoder and the ingest: made in start by build (the forms' trial, dec/trial.h) and made again
+  // ai: by recover after a hang or a lost device, under planMu held exclusive; push, the releaser and cameraClosed use
+  // ai: them under planMu, and null fh is a receiver with no variant left (it decodes nothing; error says why)
   std::unique_ptr<wg::Device> dev;
   std::unique_ptr<FrontHalf> fh;
   std::unique_ptr<CameraIngest> ci;
   std::shared_ptr<XferRx> xfer;
   std::string variant, error;
+  // ai: what build makes from: the device asked for (its name and extras), the variants the assets hold that it runs,
+  // ai: the decoder's memory budget, and the forms' record (<cacheDir>/gpu-forms.json)
+  std::string devWant;
+  wg::DeviceExtras devExtras;
+  std::vector<std::string> variants;
+  double budget = 0;
+  std::unique_ptr<FormRecord> forms;
+  // ai: the receiver's clock, which every decoder it makes keeps (FrontHalf::epoch), so a window outlives a recover
+  std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
+  double now() const { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - epoch).count(); }
+  std::atomic<bool> zeroCopy{false}, recovering{false};
+  bool build(std::string& why);
   std::atomic<bool> stop{false};
   std::thread decoderThread, releaserThread;
   std::mutex mu;                          // ai: guards staging, the shape, the stats window, the held word
@@ -168,7 +185,6 @@ class GpuReceiver : public Receiver {
   std::deque<Rel> toRelease;
   // ai: the stats window (a second), and totals
   Stamps stamps;
-  float lensNow[4] = {0, 0, 0, 0};   // ai: the newest frame's lens report (CameraFrame::lens), for the replay's GPU-kept frames; under mu
   // ai: fresh: data ids new to the dedupe (the series' and the lock's); useful: what goodputKBs counts (rateFold)
   // ai: bx0..by1: the box of the codes found in the window, camera pixels from the frame's centre (the app's focus region)
   // ai: anchors: the anchors each frame the GPU's finder found read
@@ -197,6 +213,7 @@ class GpuReceiver : public Receiver {
   int lastFrames = 0;
   // ai: a batch launched with its leading n frames kept for `replay`
   struct Kept { std::shared_ptr<Replay> replay; int n = 0; };
+  void recover(const std::string& what, std::deque<std::unique_ptr<InFlight>>& flight, std::deque<Kept>& flightKept);
   void deliver(BatchOut& out, const Kept& k);
   void rollWindow(double now);
   void openWindow(double now);
@@ -209,7 +226,7 @@ GpuReceiver::~GpuReceiver() {
   relCv.notify_all();
   if (decoderThread.joinable()) decoderThread.join();
   if (releaserThread.joinable()) releaserThread.join();
-  if (dev) dev->waitIdle();
+  try { if (dev) dev->waitIdle(); } catch (const std::exception&) {}   // ai: a lost device: nothing left to wait for
   for (auto& r : toRelease) releaseFn(r.tag);
   for (auto& r : stagingReplay) if (r) r->release(1);
 }
@@ -219,9 +236,9 @@ bool GpuReceiver::start(std::string& why, bool software) {
   // ai: LIZ_VK_DEVICE (a substring of a device's name) picks the device on a machine with several, as the check
   // ai: tools take it; unset on a phone. Before 2026-09-30 the receiver took the first device whatever it named, so
   // ai: `receive` on the desktop ran on the 4090 under LIZ_VK_DEVICE=AMD.
-  wg::DeviceExtras ex;
-  ex.lowPriority = cfg.yieldGpu;
-  dev = wg::Device::create(!cfg.device.empty() ? cfg.device : getenv("LIZ_VK_DEVICE") ? getenv("LIZ_VK_DEVICE") : "", false, log, ex);
+  devExtras.lowPriority = cfg.yieldGpu;
+  devWant = !cfg.device.empty() ? cfg.device : getenv("LIZ_VK_DEVICE") ? getenv("LIZ_VK_DEVICE") : "";
+  dev = wg::Device::create(devWant, false, log, devExtras);
   // ai: A device of type CPU (lavapipe, SwiftShader) runs the kernels as threads on the cores the C decodes on, slower
   // ai: by far: auto takes the C there, before any pipeline is built (2026-10-25: the PC receiver's auto on a machine
   // ai: whose one Vulkan device is llvmpipe, the Windows test VM's, took 11.6 s for a batch of one frame and the screen
@@ -235,7 +252,7 @@ bool GpuReceiver::start(std::string& why, bool software) {
   // ai: (variantsIn). Before, the device's best was asked for whatever the assets held: an install of f32-sg alone
   // ai: asked for int8-sg's setup on the 4090 and lavapipe, which it lacks, so gpu failed and auto decoded on the C.
   const auto runs = variantsFor(*dev);
-  auto variants = variantsIn(cfg.assets, runs);
+  variants = variantsIn(cfg.assets, runs);
   // ai: the device's best where the assets lack it and auto settles for less (said in the log)
   const std::string lacking = cfg.precision == "auto" && !variants.empty() && variants[0] != runs[0] ? runs[0] : "";
   if (cfg.precision != "auto") {
@@ -250,25 +267,89 @@ bool GpuReceiver::start(std::string& why, bool software) {
                        : cfg.assets + " holds no " + (cfg.precision != "auto" ? cfg.precision + " " : "") + "variant " + dev->name + " runs (" + list + ")";
     return false;
   }
-  variant = variants[0];
   // ai: the web's budget on the S26 (Chrome's maxBufferSize, 2 GiB): the lanes, the ring and the tables within it
-  const double budget = std::min<double>(2.0 * (1ull << 30), (double)dev->limits.maxBufferSize);
-  fh = FrontHalf::create(*dev, readDir(cfg.assets), variant, budget, log);
-  ci = CameraIngest::create(*dev, readDir(cfg.assets));
-  fh->ingest = ci.get();
+  budget = std::min<double>(2.0 * (1ull << 30), (double)dev->limits.maxBufferSize);
+  // ai: the first variant whose forms' trial passes, its refused forms left out (dec/trial.h); none: the C
+  forms = std::make_unique<FormRecord>(cfg.cacheDir, *dev, log);
+  if (!build(why)) return false;
   if (!xfer) xfer = std::make_shared<XferRx>(cfg.storeDir, log);
-  dev->saveCache();
-  batchSize = std::max(1, fh->size());
   decoderThread = std::thread([this] { decoderLoop(); });
   releaserThread = std::thread([this] { releaserLoop(); });
-  log("receiver: the GPU decoder, " + variant + (lacking.empty() ? "" : " (" + lacking + " not in the assets)") + (ci ? ", zero-copy camera" : ", camera luma uploaded"));
+  log("receiver: the GPU decoder, " + variant + (lacking.empty() ? "" : " (" + lacking + " not in the assets)") + (zeroCopy ? ", zero-copy camera" : ", camera luma uploaded"));
   return true;
+}
+
+// ai: The decoder the device runs, on dev (made again where a recover dropped it): buildTrialled over the variants, its
+// ai: ingest, the receiver's clock; installed under mu (stats reads variant and zeroCopy there).
+bool GpuReceiver::build(std::string& why) {
+  auto log = cfg.log ? cfg.log : [](const std::string&) {};
+  GpuDecoder d{std::move(dev), nullptr};
+  DeviceMaker make = [this, log] {
+    auto dv = wg::Device::create(devWant, false, log, devExtras);
+    if (!cfg.cacheDir.empty()) dv->loadCache(cfg.cacheDir + "/pipeline.cache");
+    return dv;
+  };
+  const bool ok = buildTrialled(d, make, readDir(cfg.assets), variants, budget, *forms, log, why);
+  dev = std::move(d.dev);
+  if (!ok) return false;
+  auto c = CameraIngest::create(*dev, readDir(cfg.assets));
+  d.fh->ingest = c.get();
+  d.fh->epoch = epoch;
+  dev->saveCache();
+  std::lock_guard<std::mutex> l(mu);
+  fh = std::move(d.fh);
+  ci = std::move(c);
+  variant = fh->variant;
+  zeroCopy = !!ci;
+  batchSize = std::max(1, fh->size());
+  return true;
+}
+
+// ai: A hang or a lost device mid-stream (wg::Lost, 2026-10-31), on the decoder thread: the forms in use refused
+// ai: (FrontHalf::inUse), the batches in flight and the frames staged dropped, every camera buffer given back, and the
+// ai: device, the decoder and the ingest made again (build: the record holds the forms' outcomes, so no trial runs
+// ai: unless a variant is new to it); the next frame plans as the first did. Frames that come meanwhile are dropped.
+// ai: With no variant left nothing more is decoded, error says why, and the next start takes the C (the record
+// ai: refuses every variant).
+void GpuReceiver::recover(const std::string& what, std::deque<std::unique_ptr<InFlight>>& flight, std::deque<Kept>& flightKept) {
+  auto log = cfg.log ? cfg.log : [](const std::string&) {};
+  log("decoder: " + what + ": made again without the forms in use");
+  recovering = true;
+  std::unique_lock<std::shared_mutex> planHeld(planMu);
+  if (fh) for (const auto& form : fh->inUse()) forms->refuse(fh->variant, form, "hung or lost the device in use: " + what);
+  flight.clear();
+  for (auto& k : flightKept) if (k.replay) k.replay->release(k.n);
+  flightKept.clear();
+  std::deque<std::shared_ptr<Replay>> staged;
+  {
+    std::lock_guard<std::mutex> l(mu);
+    staging.clear();
+    staged.swap(stagingReplay);
+    planned = false;
+  }
+  for (auto& r : staged) if (r) r->release(1);
+  std::deque<Rel> held;
+  { std::lock_guard<std::mutex> l(relMu); held.swap(toRelease); }
+  for (auto& r : held) releaseFn(r.tag);
+  fh.reset();
+  ci.reset();
+  dev.reset();
+  std::string why;
+  bool ok = false;
+  try { ok = build(why); } catch (const std::exception& e) { why = e.what(); }
+  {
+    std::lock_guard<std::mutex> l(mu);
+    if (!ok) { fh.reset(); zeroCopy = false; error = "the GPU decoder: " + why; }
+    else error.clear();
+  }
+  log(ok ? "decoder: made again, " + variant : "decoder: not made again: " + why);
+  recovering = false;
 }
 
 // ai: A frame staged: the shape planned on the decoder thread, a frame dropped before it touches the device once
 // ai: STAGE_BATCHES batches' worth are staged, else onto the ring.
 void GpuReceiver::push(const CameraFrame& f) {
-  const double now = fh->now();
+  const double now = this->now();
   const Crops cr = cropsOf(f, cfg.layout);
   const uint32_t side = cr.side;
   const int crops = cr.n;
@@ -282,7 +363,6 @@ void GpuReceiver::push(const CameraFrame& f) {
     if (!opened) openWindow(now);
     win.arrived++;
     stamps.put(f.tag, f.timestampNs, stream);
-    for (int i = 0; i < 4; i++) lensNow[i] = f.lens[i];
     if (side == failedW) dropped = true;
     else {
       if (side > shapeW) { shapeW = side; planned = false; failedW = 0; }
@@ -294,10 +374,12 @@ void GpuReceiver::push(const CameraFrame& f) {
         dropped = true;
       } else if ((int)staging.size() + crops > STAGE_BATCHES * batchSize) dropped = true;
     }
+    if (recovering) dropped = true;   // ai: the decoder being made again (recover holds planMu for seconds)
     if (dropped) win.dropped++;
   }
   if (dropped) { drop(f.tag); return; }
   std::shared_lock<std::shared_mutex> planHeld(planMu);
+  if (!fh) { { std::lock_guard<std::mutex> l(mu); win.dropped++; } drop(f.tag); return; }
   Slot* got[2] = {nullptr, nullptr};
   uint64_t ready = 0;
   for (int k = 0; k < crops; k++) {
@@ -331,15 +413,22 @@ void GpuReceiver::releaserLoop() {
       if (toRelease.empty()) continue;
       next = toRelease.front();
     }
-    // ai: the oldest ingest's value: ingests complete in order on their queue
-    while (!stop && !ci->done(next.value)) std::this_thread::sleep_for(std::chrono::microseconds(300));
+    // ai: the oldest ingest's value: ingests complete in order on their queue. The ingest under planMu (a recover makes
+    // ai: it again), and an entry no longer at the front was given back by recover, with every other
+    auto same = [&] { return !toRelease.empty() && toRelease.front().tag == next.tag && toRelease.front().value == next.value; };
+    for (bool done = false; !stop && !done;) {
+      { std::lock_guard<std::mutex> l(relMu); if (!same()) break; }
+      { std::shared_lock<std::shared_mutex> planHeld(planMu); try { done = ci && ci->done(next.value); } catch (const std::exception&) {} }
+      if (!done) std::this_thread::sleep_for(std::chrono::microseconds(300));
+    }
     {
       std::lock_guard<std::mutex> l(relMu);
+      if (!same()) continue;
       toRelease.pop_front();
     }
     releaseFn(next.tag);
     // ai: how long the camera's buffer was held (the app's reader has 32: past 32 frames' time the camera drops)
-    const double heldMs = fh->now() - next.at;
+    const double heldMs = now() - next.at;
     std::lock_guard<std::mutex> l(mu);
     win.held += heldMs; win.heldN++; win.heldMax = std::max(win.heldMax, heldMs);
   }
@@ -366,6 +455,7 @@ void GpuReceiver::decoderLoop() {
   };
   while (!stop) {
     uint32_t want = 0;
+    if (!fh) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); continue; }   // ai: no variant left (recover)
     try {
       {
         std::lock_guard<std::mutex> l(mu);
@@ -440,6 +530,8 @@ void GpuReceiver::decoderLoop() {
         if (!flight.front()->ticket->done()) { std::this_thread::sleep_for(std::chrono::microseconds(500)); continue; }
         finishFront();
       }
+    } catch (const wg::Lost& e) {
+      recover(e.what(), flight, flightKept);
     } catch (const std::exception& e) {
       std::lock_guard<std::mutex> l(mu);
       error = (want ? "plan " + std::to_string(want) + " x " + std::to_string(want) + ": " : std::string()) + e.what();
@@ -448,7 +540,7 @@ void GpuReceiver::decoderLoop() {
       std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
   }
-  for (auto& f : flight) f->ticket->wait();
+  for (auto& f : flight) try { f->ticket->wait(); } catch (const std::exception&) {}   // ai: a lost device: nothing to wait for
   for (auto& k : flightKept) if (k.replay) k.replay->release(k.n);
 }
 
@@ -470,9 +562,7 @@ void GpuReceiver::deliver(BatchOut& out, const Kept& k) {
         }
         // ai: the axis word back to pixels for the replay's meta (0, the centre, as none)
         const float ax = fo.axis ? 0.5f * ((float)(fo.axis & 0xffffu) - 32768) : NAN, ay = fo.axis ? 0.5f * ((float)(fo.axis >> 16) - 32768) : NAN;
-        float ln[4];
-        { std::lock_guard<std::mutex> l(mu); for (int i = 0; i < 4; i++) ln[i] = lensNow[i]; }
-        k.replay->frame(fo.luma.data(), fo.w, fo.h, fo.w, ms, true, ax, ay, ln);
+        k.replay->frame(fo.luma.data(), fo.w, fo.h, fo.w, ms, true, ax, ay);
       }
     }
     if (fo.empty) continue;
@@ -518,7 +608,7 @@ void GpuReceiver::deliver(BatchOut& out, const Kept& k) {
   // ai: a batch delivered is the decoder working: an error from before (an ingest a plan has since covered, a batch
   // ai: that failed once) no longer describes it. One that keeps failing sets it again before the next delivery.
   error.clear();
-  rollWindow(fh->now());
+  rollWindow(now());
 }
 
 // ai: The window's rate (goodputKBs, 2026-10-10): the test stream's new blocks, and a file's blocks as the transfer took
@@ -561,11 +651,11 @@ std::string GpuReceiver::stats() {
     // ai: the test stream in the last window's frames comes first (2026-10-05): what the camera reads now is the state, over
     // ai: a file received or in progress, which comes back once the camera is on its frames again
     {"state", !error.empty() ? "error" : !planned ? "starting" : last.test ? "test" : p.done ? "received" : p.live ? "receiving" : lastWord.is_null() ? "looking" : "found"},
-    {"error", error}, {"decoder", "gpu " + variant}, {"zeroCopy", !!ci}, {"layout", cfg.layout},
+    {"error", error}, {"decoder", "gpu " + variant}, {"zeroCopy", zeroCopy.load()}, {"layout", cfg.layout},
     {"capturedFps", last.arrived}, {"processedFps", last.processed}, {"dropped", last.dropped},
     {"foundShare", last.found / n}, {"side", last.found ? last.side / last.found : 0},
     {"codeBox", last.bx1 > last.bx0 ? json::array({last.bx0, last.by0, last.bx1, last.by1}) : json()},
-    {"heldMs", last.heldN ? last.held / last.heldN : 0}, {"heldMaxMs", last.heldMax}, {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.useful * 469 / 1000.0 / lastSecs},
+    {"heldMs", last.heldN ? last.held / last.heldN : 0}, {"heldMaxMs", last.heldMax}, {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.useful * XFER_PAYLOAD / 1000.0 / lastSecs},
     {"gpuMs", last.gpuFrames ? last.gpuMs / last.gpuFrames : 0}, {"B", fh ? batchSize : 0}, {"cap", cap.load()},
     {"bandVersion", lastWord.is_null() ? json() : lastWord["version"]}, {"word", lastWord}, {"anchors", anchors},
     {"totals", {{"frames", totalFrames}, {"blocks", totalBlocks}}}, {"series", stamps.series},
@@ -689,9 +779,9 @@ void CpuReceiver::push(const CameraFrame& in) {
       { std::lock_guard<std::mutex> l(mu); flight.push_back(f.tag); }
       float a[2];
       axisOf(f, c, k, a);
-      if (pool->offer(f.luma, f.stride, c.x[k], c.y[k], c.side, c.side, f.tag, held.load(), t, a[0], a[1], f.lens)) {
+      if (pool->offer(f.luma, f.stride, c.x[k], c.y[k], c.side, c.side, f.tag, held.load(), t, a[0], a[1])) {
         // ai: Save replays: the crop a worker took, as it took it
-        if (r) r->frame(f.luma + (size_t)c.y[k] * f.stride + c.x[k], c.side, c.side, f.stride, f.timestampNs / 1e6, false, a[0], a[1], f.lens);
+        if (r) r->frame(f.luma + (size_t)c.y[k] * f.stride + c.x[k], c.side, c.side, f.stride, f.timestampNs / 1e6, false, a[0], a[1]);
         continue;
       }
       lost++;
@@ -763,7 +853,7 @@ std::string CpuReceiver::stats() {
     {"threads", pool->size()}, {"threadsMax", pool->ceiling()}, {"simd", cpu_simd() != 0}, {"gpuWhy", gpuWhy},
     {"capturedFps", last.arrived}, {"processedFps", last.processed}, {"dropped", last.dropped},
     {"foundShare", last.found / n}, {"side", last.found ? last.side / last.found : 0},
-    {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.useful * 469 / 1000.0 / lastSecs}, {"repeatShare", repeatShare},
+    {"blocks", last.blocks}, {"windowSecs", lastSecs}, {"goodputKBs", last.useful * XFER_PAYLOAD / 1000.0 / lastSecs}, {"repeatShare", repeatShare},
     {"cpuMs", lastMsFrames ? last.ms / lastMsFrames : 0}, {"gpuMs", 0}, {"B", 0},
     {"bandVersion", lastWord.is_null() ? json() : lastWord["version"]}, {"word", lastWord},
     {"totals", {{"frames", totalFrames}, {"blocks", totalBlocks}}}, {"series", stamps.series},

@@ -18,7 +18,7 @@ namespace lizard::check {
 constexpr int kHeld = 0, kFailed = 1, kUsage = 2, kNotHere = 77;
 
 // ai: Why the MJPEG cases cannot run here where the receiver does without TurboJPEG (2026-10-25, check_luma.cpp):
-// ai: on Windows and macOS Media Foundation and AVFoundation decode a camera's MJPEG themselves (camera/jpeg.h), so
+// ai: on Windows and macOS Media Foundation and AVFoundation decode a camera's MJPEG themselves (cam/jpeg.h), so
 // ai: where no TurboJPEG loads the checks' MJPEG cases skip with load's words and this; "" where it loads, on Linux
 // ai: (the receiver decodes V4L2's MJPEG with it: there its absence fails them) and wherever LIZ_TURBOJPEG names a
 // ai: library (one asked for must load).

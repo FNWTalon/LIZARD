@@ -7,23 +7,30 @@
 // by rows / len. Computed in double, which the old recurrence (one multiply per butterfly) was not.
 // st: the radix of each stage, the SHORTEST len first: 2 throughout, and a size with a factor of 3 (384, 768, 1536)
 // takes one radix-3 stage, the shortest, ahead of them.
+// ai: A size 2^a 3^b 5^c takes its b radix-3 stages, then its c radix-5 stages (rows5), ahead of the 2s: 1152 two
+// ai: radix-3 stages, 1280 one radix-5 stage; 3 x 2^k keeps its one radix-3 stage first, so its bytes do not move.
 // swp: the input permutation as a list of row swaps. The digit reversal stops being its own inverse as soon as the
 // radices differ, so it cannot be applied by walking i < rev[i] the way bit reversal can; the plan works the swaps
 // out once, by putting the right row in each place in turn, and the transform just performs them.
-typedef struct { int rows, nst, nswp; float *wr, *wi; int *swp; int st[16], len[16]; } plan_t;
+// ai: half: the twiddles the table holds, rows / 2 for an even size (past it W^j is -W^(j - rows / 2), tw_of), the whole
+// ai: circle for an odd one (3^b 5^c, which only fft_test asks for)
+typedef struct { int rows, nst, nswp, half; float *wr, *wi; int *swp; int st[24], len[24]; } plan_t;
 // ai: each thread's own (a native receiver transforms on several): a plan is built on first use and a ninth size
 // ai: replaces the eighth, neither of which two threads could share
 static _Thread_local plan_t plans[8];
 
-// ai: 2^k or 3 x 2^k: the sizes a stage list can be made of.
+// ai: 2^a 3^b 5^c: the sizes a stage list can be made of (at most 24 stages: rows below 2^24).
 static int size_ok(int rows) {
-  if (rows % 3 == 0) rows /= 3;
-  return rows >= 1 && !(rows & (rows - 1));
+  if (rows < 1 || rows >= 1 << 24) return 0;
+  while (rows % 3 == 0) rows /= 3;
+  while (rows % 5 == 0) rows /= 5;
+  return !(rows & (rows - 1));
 }
 
 static int stage_list(int rows, int *st) {
   int k = 0;
-  if (rows % 3 == 0) { st[k++] = 3; rows /= 3; }
+  while (rows % 3 == 0) { st[k++] = 3; rows /= 3; }
+  while (rows % 5 == 0) { st[k++] = 5; rows /= 5; }
   for (int t = rows; t > 1; t >>= 1) st[k++] = 2;
   return k;
 }
@@ -35,12 +42,12 @@ static const plan_t *plan_for(int rows) {
   if (slot == 8) slot = 7;   // more sizes than slots: the last one is rebuilt. FOCUS uses one size.
   plan_t *p = &plans[slot];
   free(p->wr); free(p->wi); free(p->swp);
-  p->rows = rows;
-  p->wr = malloc((size_t)(rows / 2 + 1) * sizeof(float)); p->wi = malloc((size_t)(rows / 2 + 1) * sizeof(float));
+  p->rows = rows; p->half = rows & 1 ? rows : rows / 2;
+  p->wr = malloc((size_t)(p->half + 1) * sizeof(float)); p->wi = malloc((size_t)(p->half + 1) * sizeof(float));
   p->swp = malloc((size_t)2 * rows * sizeof(int));
   int *rev = malloc((size_t)rows * sizeof(int)), *at = malloc((size_t)rows * sizeof(int)), *cur = malloc((size_t)rows * sizeof(int));
   if (!p->wr || !p->wi || !p->swp || !rev || !at || !cur) { free(rev); free(at); free(cur); p->rows = 0; return NULL; }
-  for (int j = 0; j < rows / 2; j++) { double a = -2 * 3.14159265358979323846 * j / rows; p->wr[j] = (float)cos(a); p->wi[j] = (float)sin(a); }
+  for (int j = 0; j < p->half; j++) { double a = -2 * 3.14159265358979323846 * j / rows; p->wr[j] = (float)cos(a); p->wi[j] = (float)sin(a); }
   p->nst = stage_list(rows, p->st);
   for (int s = 0, L = 1; s < p->nst; s++) { L *= p->st[s]; p->len[s] = L; }
   // The input goes to its digit-reversed place: the digits of i in the stages' own radices, read back to front.
@@ -63,9 +70,11 @@ static const plan_t *plan_for(int rows) {
 }
 
 // W_rows^j for any j < rows, from a table that holds only the first half circle: past it the sign flips.
+// ai: (an odd size's table holds the whole circle, half = rows, so j never passes it)
 static inline void tw_of(const plan_t *p, int rows, int j, int inverse, float *tr, float *ti) {
   float s = 1.0f;
-  if (j >= rows / 2) { j -= rows / 2; s = -1.0f; }
+  (void)rows;
+  if (j >= p->half) { j -= p->half; s = -1.0f; }
   *tr = s * p->wr[j];
   *ti = inverse ? -s * p->wi[j] : s * p->wi[j];
 }
@@ -170,26 +179,86 @@ static void rows3(float *const r[3], float *const m[3], int cols, const float *w
   }
 }
 
-// One stage of the mixed-radix schedule (2 or 3), over the rows [from, from + span). The short stages are run group by group
+// ai: One radix-5 butterfly across five rows, every column, for the sizes with a factor of 5 (1280).
+// ai: With b to e twiddled: t1 = b + e, t2 = c + d, t3 = b - e, t4 = c - d; out0 = a + t1 + t2; m1 = a + c1 t1 + c2 t2
+// ai: and m2 = a + c2 t1 + c1 t2 (c1 = cos 2 pi / 5, c2 = cos 4 pi / 5); n1 = s1 t3 + s2 t4 and n2 = s2 t3 - s1 t4
+// ai: (s1 = s sin 2 pi / 5, s2 = s sin 4 pi / 5); out1 = m1 - i n1, out4 = m1 + i n1, out2 = m2 - i n2, out3 = m2 + i n2.
+// ai: s is the sign of the rotation, +1 forward and -1 inverse, as rows3's. The vector and scalar loops do the same
+// ai: float ops in the same order.
+static void rows5(float *const r[5], float *const m[5], int cols, const float *w, float s, int unit) {
+  const float c1 = 0.30901699437494742410f, c2 = -0.80901699437494742410f, s1 = s * 0.95105651629515357212f, s2 = s * 0.58778525229247312917f;
+  int x = 0;
+#ifdef OB_SIMD
+  const v128_t vc1 = wasm_f32x4_splat(c1), vc2 = wasm_f32x4_splat(c2), vs1 = wasm_f32x4_splat(s1), vs2 = wasm_f32x4_splat(s2);
+  v128_t vwr[4], vwi[4];
+  for (int j = 0; j < 4; j++) { vwr[j] = wasm_f32x4_splat(w[2 * j]); vwi[j] = wasm_f32x4_splat(w[2 * j + 1]); }
+  for (; x + 4 <= cols; x += 4) {
+    v128_t qr[4], qi[4];
+    for (int j = 0; j < 4; j++) {
+      const v128_t pr = wasm_v128_load(r[j + 1] + x), pi = wasm_v128_load(m[j + 1] + x);
+      if (unit) { qr[j] = pr; qi[j] = pi; continue; }
+      qr[j] = wasm_f32x4_sub(wasm_f32x4_mul(pr, vwr[j]), wasm_f32x4_mul(pi, vwi[j]));
+      qi[j] = wasm_f32x4_add(wasm_f32x4_mul(pr, vwi[j]), wasm_f32x4_mul(pi, vwr[j]));
+    }
+    const v128_t ar = wasm_v128_load(r[0] + x), ai = wasm_v128_load(m[0] + x);
+    const v128_t t1r = wasm_f32x4_add(qr[0], qr[3]), t1i = wasm_f32x4_add(qi[0], qi[3]), t2r = wasm_f32x4_add(qr[1], qr[2]), t2i = wasm_f32x4_add(qi[1], qi[2]);
+    const v128_t t3r = wasm_f32x4_sub(qr[0], qr[3]), t3i = wasm_f32x4_sub(qi[0], qi[3]), t4r = wasm_f32x4_sub(qr[1], qr[2]), t4i = wasm_f32x4_sub(qi[1], qi[2]);
+    const v128_t m1r = wasm_f32x4_add(wasm_f32x4_add(ar, wasm_f32x4_mul(vc1, t1r)), wasm_f32x4_mul(vc2, t2r));
+    const v128_t m1i = wasm_f32x4_add(wasm_f32x4_add(ai, wasm_f32x4_mul(vc1, t1i)), wasm_f32x4_mul(vc2, t2i));
+    const v128_t m2r = wasm_f32x4_add(wasm_f32x4_add(ar, wasm_f32x4_mul(vc2, t1r)), wasm_f32x4_mul(vc1, t2r));
+    const v128_t m2i = wasm_f32x4_add(wasm_f32x4_add(ai, wasm_f32x4_mul(vc2, t1i)), wasm_f32x4_mul(vc1, t2i));
+    const v128_t n1r = wasm_f32x4_add(wasm_f32x4_mul(vs1, t3r), wasm_f32x4_mul(vs2, t4r)), n1i = wasm_f32x4_add(wasm_f32x4_mul(vs1, t3i), wasm_f32x4_mul(vs2, t4i));
+    const v128_t n2r = wasm_f32x4_sub(wasm_f32x4_mul(vs2, t3r), wasm_f32x4_mul(vs1, t4r)), n2i = wasm_f32x4_sub(wasm_f32x4_mul(vs2, t3i), wasm_f32x4_mul(vs1, t4i));
+    wasm_v128_store(r[0] + x, wasm_f32x4_add(wasm_f32x4_add(ar, t1r), t2r)); wasm_v128_store(m[0] + x, wasm_f32x4_add(wasm_f32x4_add(ai, t1i), t2i));
+    wasm_v128_store(r[1] + x, wasm_f32x4_add(m1r, n1i)); wasm_v128_store(m[1] + x, wasm_f32x4_sub(m1i, n1r));
+    wasm_v128_store(r[4] + x, wasm_f32x4_sub(m1r, n1i)); wasm_v128_store(m[4] + x, wasm_f32x4_add(m1i, n1r));
+    wasm_v128_store(r[2] + x, wasm_f32x4_add(m2r, n2i)); wasm_v128_store(m[2] + x, wasm_f32x4_sub(m2i, n2r));
+    wasm_v128_store(r[3] + x, wasm_f32x4_sub(m2r, n2i)); wasm_v128_store(m[3] + x, wasm_f32x4_add(m2i, n2r));
+  }
+#endif
+  for (; x < cols; x++) {
+    float qr[4], qi[4];
+    for (int j = 0; j < 4; j++) {
+      const float pr = r[j + 1][x], pi = m[j + 1][x];
+      qr[j] = unit ? pr : pr * w[2 * j] - pi * w[2 * j + 1];
+      qi[j] = unit ? pi : pr * w[2 * j + 1] + pi * w[2 * j];
+    }
+    const float ar = r[0][x], ai = m[0][x];
+    const float t1r = qr[0] + qr[3], t1i = qi[0] + qi[3], t2r = qr[1] + qr[2], t2i = qi[1] + qi[2];
+    const float t3r = qr[0] - qr[3], t3i = qi[0] - qi[3], t4r = qr[1] - qr[2], t4i = qi[1] - qi[2];
+    const float m1r = ar + c1 * t1r + c2 * t2r, m1i = ai + c1 * t1i + c2 * t2i;
+    const float m2r = ar + c2 * t1r + c1 * t2r, m2i = ai + c2 * t1i + c1 * t2i;
+    const float n1r = s1 * t3r + s2 * t4r, n1i = s1 * t3i + s2 * t4i;
+    const float n2r = s2 * t3r - s1 * t4r, n2i = s2 * t3i - s1 * t4i;
+    r[0][x] = ar + t1r + t2r; m[0][x] = ai + t1i + t2i;
+    r[1][x] = m1r + n1i; m[1][x] = m1i - n1r;
+    r[4][x] = m1r - n1i; m[4][x] = m1i + n1r;
+    r[2][x] = m2r + n2i; m[2][x] = m2i - n2r;
+    r[3][x] = m2r - n2i; m[3][x] = m2i + n2r;
+  }
+}
+
+// One stage of the mixed-radix schedule (2, 3 or 5), over the rows [from, from + span). The short stages are run group by group
 // while a group sits in the first-level cache, exactly as the radix-2 schedule does.
 static void do_stage(const plan_t *p, float *re, float *im, int rows, int cols, int pitch, int inverse, float sgn, int s, int from, int span) {
   const int len = p->len[s], r = p->st[s], h = len / r, step = rows / len;
   for (int i0 = from; i0 < from + span; i0 += len) for (int k = 0; k < h; k++) {
-    float w[6];
+    float w[8];
     if (r == 2) {
       tw_of(p, rows, k * step, inverse, &w[0], &w[1]);
       rows2(re + (size_t)(i0 + k) * pitch, im + (size_t)(i0 + k) * pitch, re + (size_t)(i0 + k + h) * pitch, im + (size_t)(i0 + k + h) * pitch, cols, w[0], w[1], k == 0);
       continue;
     }
-    float *r3[3], *m3[3];
-    for (int j = 0; j < 3; j++) { r3[j] = re + (size_t)(i0 + k + j * h) * pitch; m3[j] = im + (size_t)(i0 + k + j * h) * pitch; }
-    for (int j = 1; j < 3; j++) tw_of(p, rows, j * k * step, inverse, &w[2 * j - 2], &w[2 * j - 1]);
-    rows3(r3, m3, cols, w, sgn, k == 0);
+    // ai: r rows h apart, the butterfly's r - 1 twiddles W^(j k step), then rows3 or rows5
+    float *rr[5], *mm[5];
+    for (int j = 0; j < r; j++) { rr[j] = re + (size_t)(i0 + k + j * h) * pitch; mm[j] = im + (size_t)(i0 + k + j * h) * pitch; }
+    for (int j = 1; j < r; j++) tw_of(p, rows, j * k * step, inverse, &w[2 * j - 2], &w[2 * j - 1]);
+    if (r == 3) rows3(rr, mm, cols, w, sgn, k == 0); else rows5(rr, mm, cols, w, sgn, k == 0);
   }
 }
 
-// ai: The sizes with a factor of 3: their radix-3 stage has no place in the power-of-two schedule below. Same
-// ai: arithmetic as that schedule's butterflies, a stage a pass.
+// ai: The sizes with a factor of 3 or 5: their radix-3 and radix-5 stages have no place in the power-of-two schedule
+// ai: below. Same arithmetic as that schedule's butterflies, a stage a pass.
 static void fft_cols_mixed(const plan_t *p, float *re, float *im, int rows, int cols, int pitch, int inverse) {
   for (int s = 0; s < p->nswp; s++) {
     float *a = re + (size_t)p->swp[2 * s] * pitch, *b = re + (size_t)p->swp[2 * s + 1] * pitch;

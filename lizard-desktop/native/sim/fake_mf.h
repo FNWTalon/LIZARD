@@ -1,5 +1,5 @@
 // ai: A fake webcam behind Media Foundation's IMFMediaSource (2026-10-25, sim/fake_mf.cpp), so cam_check runs the MF
-// ai: backend's own path (camera/mf_source.h) through Media Foundation's source reader and its MJPEG decoder with no
+// ai: backend's own path (cam/mf_source.h) through Media Foundation's source reader and its MJPEG decoder with no
 // ai: camera. One live video stream offers a webcam's native types: MJPG 1920x1080 at 30 (a range of 5 to 30, as a
 // ai: UVC camera's types carry), YUY2 1280x720 at 30, NV12 640x480 at 60 (in a 2D buffer), L8 640x480 at 30 (no
 // ai: default stride named: the backend's own), and two bottom-up RGB ones, RGB24 320x240 at 30 (a plain buffer)

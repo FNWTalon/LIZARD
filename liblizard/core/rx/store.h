@@ -35,7 +35,7 @@ class Store {
     std::vector<std::pair<uint32_t, std::vector<uint8_t>>> manifest;
     std::vector<uint32_t> verified, chunks;
   };
-  // ai: The transfer whose header is header (469 B) and whose file is length bytes: its folder resumed where it holds
+  // ai: The transfer whose header is header (472 B) and whose file is length bytes: its folder resumed where it holds
   // ai: this header, else begun afresh, its output length bytes; false when the store cannot hold it (error says why).
   // ai: open, append and writeOut return false on a failure, which ends the transfer (xfer_rx_core.cpp): a file the
   // ai: store cannot keep whole is never reported received (before 2026-10-03 it was, with 0 bytes or a short file).
@@ -52,9 +52,9 @@ class Store {
   virtual void park() { clear(); }
   // ai: a parked transfer let go, by its id (the transfer in hand is the caller's to clear)
   virtual void forget(const std::string& id) { (void)id; }
-  // ai: one block of chunk c (its symbol, then the 469 B payload)
+  // ai: one block of chunk c (its symbol, then the 472 B payload)
   virtual bool append(uint32_t c, uint32_t sym, const uint8_t* payload) = 0;
-  // ai: chunk c's stored records (symbol then payload, 473 B each), in arrival order
+  // ai: chunk c's stored records (symbol then payload, 476 B each), in arrival order
   virtual std::vector<uint8_t> read(uint32_t c) = 0;
   virtual void drop(uint32_t c) = 0;
   virtual bool writeOut(uint64_t off, const uint8_t* p, size_t len) = 0;
@@ -73,8 +73,10 @@ class Store {
 
 // ai: Files under dir, a folder a transfer (keeps()): <id>/header, manifest (index and payload a block), c<k> (a chunk's
 // ai: stored blocks), out (the output), verified (a chunk index each), meta.json; once verified the output is
-// ai: <id>/done/<its name> and the rest goes. Opening it keeps the folders that hold a header (parked transfers) and
-// ai: lets everything else go (one receiver a directory: a finished file nobody moved, the layout before 2026-10-22).
+// ai: <id>/done/<its name> beside meta.json (the transfer's name, type and root) and the rest goes. A finished file is
+// ai: its taker's to move out (the receive session's, session.h: the file out of done/, then meta.json removed). Opening
+// ai: it keeps the folders that hold a header (parked transfers) and those holding a finished file not yet taken out,
+// ai: and lets everything else go (one receiver a directory: a folder taken out of, the layout before 2026-10-22).
 std::unique_ptr<Store> fileStore(const std::string& dir);
 // ai: Memory, at most maxBytes held at once (the stored blocks and the output together; 0, no cap; a chunk's fountain
 // ai: decoder, up to a chunk's size, is outside it). A transfer that would pass it ends and says so.

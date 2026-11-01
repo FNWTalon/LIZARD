@@ -80,6 +80,8 @@ int xfer_header_parse(const uint8_t *payload, xfer_header_t *h) {
   h->codec = payload[XFER_H_CODEC]; h->seed = payload[XFER_H_SEED];
   h->name_len = payload[XFER_H_NAME_LEN]; h->type_len = payload[XFER_H_TYPE_LEN];
   if (payload[7] || h->type_len > XFER_TYPE_MAX) return XFER_ERR;
+  // ai: the reserved bytes past sent (469 to 471) are zero, as every byte past a length
+  if (!zero(payload + XFER_H_SENT + 4, XFER_PAYLOAD - XFER_H_SENT - 4)) return XFER_ERR;
   h->length = get_le(payload + XFER_H_LENGTH, 8);
   h->chunks = (uint32_t)get_le(payload + XFER_H_CHUNKS, 4);
   memcpy(h->root, payload + XFER_H_ROOT, XFER_CV);

@@ -1,4 +1,5 @@
-// ai: The receiver app: Kotlin, Compose, Camera2, and libliz.so (src/main/cpp) over liblizard/core/.
+// ai: The receiver app: Kotlin, Compose, and libliz.so (src/main/cpp) over liblizard/core/: the sender, and the receive
+// ai: session with Camera2 through the NDK (liblizard/core/cam/android.cpp) behind the Kotlin binding's dev.lizard.Session.
 import javax.inject.Inject
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
@@ -18,6 +19,11 @@ android {
         targetSdk = 36
         versionCode = 6
         versionName = "0.6"
+        // ai: a build beside the installed app (`./gradlew assembleDebug -Plizard.idSuffix=.s3`): its own id, data and
+        // ai: launcher label, the installed one untouched; unset, the app itself
+        val suffix = providers.gradleProperty("lizard.idSuffix").orNull.orEmpty()
+        applicationIdSuffix = suffix
+        manifestPlaceholders["appLabel"] = if (suffix.isEmpty()) "LIZARD" else "LIZARD ${suffix.removePrefix(".")}"
         ndk { abiFilters += "arm64-v8a" }
         externalNativeBuild {
             cmake {
@@ -45,20 +51,22 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     buildFeatures { compose = true }
-    // ai: the plain-JVM code the desktop app shares (liblizard/kotlin: Tar.kt, the bundles' tar; Readout.kt, the receive
-    // ai: screen's words and figures; Pick.kt, the format a room holds), and PhaseLock.kt, the camera's phase lock, which
-    // ai: this app alone compiles
-    sourceSets.getByName("main").kotlin.srcDir(rootProject.layout.projectDirectory.dir("../liblizard/kotlin"))
+    // ai: the Kotlin binding's sources (dev.lizard.Session, the receive session; its natives are libliz.so's, registered
+    // ai: at its load, so the binding's own liblizard is never loaded here). liblizard/kotlin's plain-JVM code (Tar.kt,
+    // ai: Readout.kt, Pick.kt) comes compiled with the shared UI (:lizard-ui).
+    sourceSets.getByName("main").kotlin.srcDir(rootProject.layout.projectDirectory.dir("../liblizard/bindings/kotlin/lizard/src/main/kotlin"))
     // ai: the setup's tables, blobs and SPIR-V stored, not deflated: copied out once, and a stored entry streams
     androidResources { noCompress += listOf("spv", "bin", "json") }
     // ai: native libs uncompressed and 16 KB aligned in the APK
     packaging { jniLibs { useLegacyPackaging = false } }
 }
 
-kotlin { compilerOptions { jvmTarget.set(JvmTarget.JVM_17) } }
+kotlin {
+    compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+}
 
 // ai: liblizard/out's setup, blobs and device SPIR-V (not naga's .raw.spv, not wgsl/, naga/, spvx/) as assets/lizard/;
-// ai: MainActivity copies them to filesDir/lizard/ on the first run after an install (Assets.kt).
+// ai: copied to filesDir/lizard/ at the first start after an install (Assets.ensure, before the session is made).
 abstract class LizardAssets : DefaultTask() {
     @get:Internal abstract val out: DirectoryProperty
     @get:OutputDirectory abstract val output: DirectoryProperty
@@ -88,33 +96,16 @@ abstract class LizardAssets : DefaultTask() {
 val lizardAssets = tasks.register<LizardAssets>("lizardAssets") {
     out.set(rootProject.layout.projectDirectory.dir("../liblizard/out"))
 }
-// ai: The type (2026-10-10): the web's faces from liblizard/vendor/fonts, as res/font (Inter's variable file, every weight
-// ai: by its axis; JetBrains Mono Regular), named as resources must be. Parts.kt Inter and Mono.
-abstract class LizardFonts : DefaultTask() {
-    @get:InputDirectory @get:PathSensitive(PathSensitivity.RELATIVE) abstract val vendor: DirectoryProperty
-    @get:OutputDirectory abstract val output: DirectoryProperty
-    @get:Inject abstract val fs: FileSystemOperations
-
-    @TaskAction fun run() {
-        fs.sync {
-            from(vendor.file("inter/InterVariable.ttf")) { rename { "inter_variable.ttf" } }
-            from(vendor.file("jetbrains-mono/JetBrainsMono-Regular.ttf")) { rename { "jetbrains_mono_regular.ttf" } }
-            into(output.dir("font"))
-        }
-    }
-}
-
-val lizardFonts = tasks.register<LizardFonts>("lizardFonts") {
-    vendor.set(rootProject.layout.projectDirectory.dir("../liblizard/vendor/fonts"))
-}
 androidComponents {
     onVariants { v ->
         v.sources.assets?.addGeneratedSourceDirectory(lizardAssets, LizardAssets::output)
-        v.sources.res?.addGeneratedSourceDirectory(lizardFonts, LizardFonts::output)
     }
 }
 
 dependencies {
+    // ai: the look both apps share: the theme (Inter and JetBrains Mono as its font resources), the icons and the parts
+    // ai: drawn alike (../lizard-ui)
+    implementation(project(":lizard-ui"))
     val bom = platform("androidx.compose:compose-bom:2025.06.00")
     implementation(bom)
     implementation("androidx.core:core-ktx:1.16.0")

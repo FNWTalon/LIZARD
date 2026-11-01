@@ -31,7 +31,7 @@ void XferRx::push(uint8_t kind, const uint8_t* b) {
     std::lock_guard<std::mutex> lk(mu_);
     if (kind == 0 && queue_.size() >= QUEUE_MAX) { lost_++; return; }
     queue_.push_back(Item{kind, {}});
-    if (b) memcpy(queue_.back().b.data(), b, XFER_BLOCK_BYTES);
+    if (b) memcpy(queue_.back().b.data(), b, XFER_BLOCK);
   }
   cv_.notify_one();
 }
@@ -96,7 +96,7 @@ void XferRx::clear() {
 void XferRx::forget(const std::string& root) {
   std::lock_guard<std::mutex> lk(prod_);
   judge_->clear();
-  std::array<uint8_t, XFER_BLOCK_BYTES> b{};
+  std::array<uint8_t, XFER_BLOCK> b{};
   memcpy(b.data(), root.data(), std::min(root.size(), b.size() - 1));
   ask(2, b.data());
 }
@@ -105,7 +105,7 @@ void XferRx::forget(const std::string& root) {
 void XferRx::ask(uint8_t kind, const uint8_t* b) {
   std::unique_lock<std::mutex> lk(mu_);
   queue_.push_back(Item{kind, {}});
-  if (b) memcpy(queue_.back().b.data(), b, XFER_BLOCK_BYTES);
+  if (b) memcpy(queue_.back().b.data(), b, XFER_BLOCK);
   const uint64_t ticket = ++clearsAsked_;
   cv_.notify_one();
   idle_.wait(lk, [&] { return clearsDone_ >= ticket || stop_; });

@@ -50,12 +50,12 @@ LIZ_API liz_encoder* liz_encoder_new(const liz_format* format) {
     auto e = std::make_unique<liz_encoder>();
     e->fmt = *format;
     e->g = geometryOf(*format);
-    if (focus_init(&e->f, e->g.n, 8 * format->blocks, 2.0f, e->g.span, 0.f))
-      throw Error(LIZ_E_FORMAT, "the codec refused LIZARD-" + std::to_string(8 * format->blocks));
+    if (focus_init(&e->f, e->g.n, FOCUS_STEP * format->blocks, 2.0f, e->g.span, 0.f))
+      throw Error(LIZ_E_FORMAT, "the codec refused LIZARD-" + std::to_string(FOCUS_STEP * format->blocks));
     e->made = true;
     if (focus_fmt_fps(&e->f, format->fps)) throw Error(LIZ_E_FORMAT, "the codec refused " + std::to_string(format->fps) + " a second");
     // ai: the arithmetic of format.cpp held to the codec's own
-    if (e->f.pxm != e->g.pxm || e->f.px + 2 * FOCUS_QUIET * e->f.pxm != e->g.side || e->f.block_bytes != LIZ_BLOCK || e->f.blocks != focus_blocks_for(8 * format->blocks))
+    if (e->f.pxm != e->g.pxm || e->f.px + 2 * FOCUS_QUIET * e->f.pxm != e->g.side || e->f.block_bytes != LIZ_BLOCK || e->f.blocks != focus_blocks_for(FOCUS_STEP * format->blocks))
       throw Error(LIZ_E_INTERNAL, "the geometry differs from the codec's");
     e->drive.resize(size_t(e->f.px) * e->f.px);
     e->rgba.resize(size_t(e->g.side) * e->g.side * 4);

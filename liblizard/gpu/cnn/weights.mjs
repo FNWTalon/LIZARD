@@ -1,7 +1,7 @@
 // ai: The classifier's weights (scripts/gpu/cnn/README.md, "Weights" and "Architectures"): a classifier file's document (netfile.mjs)
 // ai: packed into one storage buffer, layer by layer, weights then biases, and the element offset of each part. The
 // ai: layer list comes from the file's "arch" block; the shader is generated from the same block and these offsets
-// ai: (gpu/wgsl/classify.mjs), so a file whose shapes disagree with its arch is refused. PyTorch order inside a layer:
+// ai: (gpu/glsl/classify.mjs), so a file whose shapes disagree with its arch is refused. PyTorch order inside a layer:
 // ai: conv [out, in, ky, kx], fc [out, in] with the input flattened as (c, y, x).
 import { PATCH } from "./patch.mjs";
 import { loadNet } from "./netfile.mjs";
@@ -44,7 +44,7 @@ const v1 = planArch(V1);
 export const OFFSETS = v1.offsets;
 
 // ai: A float packer: a q8 file (arch.quant, codes and no float w or b) is refused by name; its packer is
-// ai: gpu/wgsl/classify_gemm.mjs packWeightsInt8.
+// ai: gpu/plan/classify_gemm.mjs packWeightsInt8.
 function pack(json, data) {
   if (json.arch?.quant) throw new Error(`weights: ${json.arch.name} is an int8 file (arch.quant); classify_gemm.mjs packWeightsInt8 packs it`);
   const arch = json.arch, plan = planArch(arch);

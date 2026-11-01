@@ -18,7 +18,7 @@
 // ai: with the next, one format and one word for both.
 // ai: Under the page's GPU encoder (gpu/encoder.mjs, since 2026-09-29) frames are asked for a batch at a time
 // ai: ("frames": count frames from seq) and come back as their blocks alone, one buffer, frame after frame, each codes x
-// ai: blocksPerFrame x 473 bytes; the page encodes them.
+// ai: blocksPerFrame x 476 bytes; the page encodes them.
 import { makePhy } from "../liblizard/sim/phy.mjs";
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { init as initFountain, Encoder } from "../liblizard/sim/fountain.mjs";

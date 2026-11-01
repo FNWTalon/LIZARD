@@ -13,9 +13,6 @@ typedef struct {
   float mark_score;           // mean correlation peak over the mesh nodes
   int tiles_ok;
   float ms_detect, ms_sample, ms_decode;
-  // The best-supported corner mark the frame finder saw: x, y in image pixels and the module size it implies, or all
-  // zero. One mark cannot register a symbol, but it says where one is and how big, which is what a crop needs.
-  float mark[3];
 } ob_result_t;
 
 #endif

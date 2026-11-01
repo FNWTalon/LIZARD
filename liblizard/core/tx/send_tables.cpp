@@ -20,8 +20,9 @@ std::string SendConsts::load(const std::string& manifest, const std::vector<uint
   paramsSizes = p["sizes"]; paramsDims = p["dims"]; paramsPw = p["pw"]; paramsWords = p["words"];
   pw = j["pw"].get<std::vector<uint32_t>>();
   sizes = j["sizes"].get<std::vector<int>>();
-  codeRate.clear(); codeSubs.clear();
-  for (const auto& c : j["codes"]) { codeRate.push_back(c["rate"]); codeSubs.push_back(c["subs"]); }
+  codeRate.clear(); codeSlots.clear();
+  // ai: a manifest of codes by sub-channels (before the blocks were packed by slots) names no slots
+  for (const auto& c : j["codes"]) { if (!c.contains("slots")) return "the sender's manifest predates blocks packed by slots (codes without slots): regenerate liblizard/out"; codeRate.push_back(c["rate"]); codeSlots.push_back(c["slots"]); }
   const size_t words = j["tab"]["words"];
   if (tabBytes.size() != 4 * words) return "the sender's TAB is " + std::to_string(tabBytes.size()) + " B, not " + std::to_string(4 * words);
   tab.resize(words);
@@ -112,20 +113,23 @@ std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTa
   t.FS = 64 * ((t.RW * t.W + 63) / 64);
   t.g = {static_cast<uint32_t>(n), static_cast<uint32_t>(t.q), static_cast<uint32_t>(t.sq), static_cast<uint32_t>(t.W), static_cast<uint32_t>(codes),
          static_cast<uint32_t>(t.FW), static_cast<uint32_t>(t.RW), static_cast<uint32_t>(t.FS), 1, 0, static_cast<uint32_t>(t.gap), 0};
-  // ai: the paint's uniform: block count at slot 0; each tier at slot 1 + its code's place in TAB (first block, first
-  // ai: sub-channel, blocks; src/focus.c init lays the tiers out from the lowest frequencies in order); dims (blocks,
-  // ai: npos, symbols an encode, parity | codes << 2: set an encode)
+  // ai: the paint's uniform: block count, the slots the blocks take and the coefficients the frame holds at slot 0 (the
+  // ai: last block's workgroup paints the padding between); each tier at slot 1 + its code's place in TAB (first block,
+  // ai: first slot, blocks; src/focus.c init packs the tiers by slots from the lowest frequencies in order); dims
+  // ai: (blocks, npos, symbols an encode, parity | codes << 2: set an encode)
   t.pu.assign(k.paramsWords, 0);
-  t.pu[k.paramsSizes] = static_cast<uint32_t>(f.blocks);
-  for (int q = 0, b = 0, sub = 0; q < f.tiers; q++) {
+  int used = 0;
+  for (int q = 0, b = 0; q < f.tiers; q++) {
     int c = -1;
-    for (size_t i = 0; i < k.codeRate.size(); i++) if (k.codeRate[i] == f.tier[q].rate && k.codeSubs[i] == f.tier[q].subs) c = static_cast<int>(i);
-    if (c < 0) return "a tier at rate " + std::to_string(f.tier[q].rate) + " of " + std::to_string(f.tier[q].subs) + " sub-channels, which the paint has no code for";
+    for (size_t i = 0; i < k.codeRate.size(); i++) if (k.codeRate[i] == f.tier[q].rate && k.codeSlots[i] == f.tier[q].slots) c = static_cast<int>(i);
+    if (c < 0) return "a tier at rate " + std::to_string(f.tier[q].rate) + " of " + std::to_string(f.tier[q].slots) + " slots a block, which the paint has no code for";
     uint32_t* at = t.pu.data() + k.paramsSizes + 4 * (1 + c);
     if (at[2]) return "two tiers of one code";
-    at[0] = static_cast<uint32_t>(b); at[1] = static_cast<uint32_t>(sub); at[2] = static_cast<uint32_t>(f.tier[q].blocks);
-    b += f.tier[q].blocks; sub += f.tier[q].blocks * f.tier[q].subs;
+    at[0] = static_cast<uint32_t>(b); at[1] = static_cast<uint32_t>(used); at[2] = static_cast<uint32_t>(f.tier[q].blocks);
+    b += f.tier[q].blocks; used += f.tier[q].blocks * f.tier[q].slots;
   }
+  if (used != f.used) return "the tiers take " + std::to_string(used) + " slots, the codec's blocks " + std::to_string(f.used);
+  t.pu[k.paramsSizes] = static_cast<uint32_t>(f.blocks); t.pu[k.paramsSizes + 2] = static_cast<uint32_t>(used); t.pu[k.paramsSizes + 3] = static_cast<uint32_t>(t.npos);
   t.pu[k.paramsDims] = static_cast<uint32_t>(f.blocks); t.pu[k.paramsDims + 1] = static_cast<uint32_t>(t.npos); t.pu[k.paramsDims + 2] = static_cast<uint32_t>(frames * codes);
   std::copy(k.pw.begin(), k.pw.end(), t.pu.begin() + k.paramsPw);
   // ai: the border: the C's paint of the symbol with every block zero (only the square depends on them, and not the

@@ -5,18 +5,20 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlin.system.exitProcess
+import dev.lizard.ui.*
 
 // ai: The receiver's integration hook (2026-10-25, SenderTest.kt's twin): env LIZ_RECEIVER_TEST, space separated
 // ai: key=value, e.g. "secs=20 decoder=cpu". Every setting starts at its default (the kept ones neither read nor
 // ai: written: Prefs.forget; the run's own held in memory), the ones named applied; the app opens on Receive and starts
 // ai: the camera, and after secs (10 unless named) counted from the receiver's first answer (the phase On) one JSON
 // ai: line {"rx": <the newest stats>, "received": <the received files' list, Received.kt>, "camera": <the camera open
-// ai: as the session describes it (rx_session.h camera: its controls' values), {} none>} goes to stdout and the app
+// ai: as the session describes it (liblizard/core/rx/session.h camera: its controls' values), {} none>} goes to stdout and the app
 // ai: exits 0; any failure prints "FAIL <why>" and exits 1, the camera stopped and the session destroyed first. Keys:
-// ai: secs; camera (an id, rxCameras': it must be listed, but upload:<a .lizard>, the Upload camera, whose file's end
+// ai: secs; camera (an id, Session.cameras': the one opened must be it, the Upload camera's upload:<a .lizard> too, whose file's end
 // ai: ends the run as secs does; unless named the simulated camera sim:0 where LIZ_CAMERA_SIM
 // ai: is set, else the first listed); mode (an index into the camera's modes, or WxH@fps); layout 1:1 or 2:1; decoder
-// ai: auto, gpu or cpu; steps, comma separated <seconds>:<action> from the first answer, each as its control does it:
+// ai: auto, gpu or cpu; replays 0|1 (Save replays on from the start); steps, comma separated
+// ai: <seconds>:<action> from the first answer, each as its control does it:
 // ai: start, stop (Start and Stop camera), swap (the bar's swap: to Send, or back to Receive), home (Home), receive
 // ai: (Home's Receive), layout=1:1|2:1, decoder=auto|gpu|cpu, res=<W>x<H>, format=<name> and fps=<rate> (Settings' menus), zoom=<v>,
 // ai: exposure=<us>|auto and gain=<v>|auto (Settings' bars, a value the camera's own units); logged on stderr as "step
@@ -24,7 +26,7 @@ import kotlin.system.exitProcess
 // ai: Receive, or by itself once a file is in, is no failure; one stopped by an error is.
 class ReceiverTest private constructor(private val secs: Double, private val kv: Map<String, String>) {
     companion object {
-        private val KEYS = setOf("secs", "camera", "mode", "layout", "decoder", "steps")
+        private val KEYS = setOf("secs", "camera", "mode", "layout", "decoder", "replays", "steps")
         // ai: how long the camera and the receiver may take to answer (a cold pipeline build on a slow device)
         private const val START_SECS = 60.0
 
@@ -39,6 +41,7 @@ class ReceiverTest private constructor(private val secs: Double, private val kv:
             val secs = kv["secs"]?.let { it.toDoubleOrNull()?.takeIf { s -> s > 0 } ?: fail("LIZ_RECEIVER_TEST: secs=$it") } ?: 10.0
             kv["layout"]?.let { if (it != "1:1" && it != "2:1") fail("LIZ_RECEIVER_TEST: layout=$it") }
             kv["decoder"]?.let { if (it !in setOf("auto", "gpu", "cpu")) fail("LIZ_RECEIVER_TEST: decoder=$it") }
+            kv["replays"]?.let { if (it != "0" && it != "1") fail("LIZ_RECEIVER_TEST: replays=$it") }
             return ReceiverTest(secs, kv)
         }
 
@@ -61,6 +64,7 @@ class ReceiverTest private constructor(private val secs: Double, private val kv:
         val r = app.recv
         kv["layout"]?.let { r.layout = it }
         kv["decoder"]?.let { r.decoder = it }
+        kv["replays"]?.let { r.replays = it == "1" }   // ai: Save replays (Developer Tools), into LIZ_DATA's replays/
         (kv["camera"] ?: if (System.getenv("LIZ_CAMERA_SIM") != null) "sim:0" else null)?.let { r.testCamera = it }
         kv["mode"]?.let { r.testMode = it }
     }
@@ -72,22 +76,27 @@ class ReceiverTest private constructor(private val secs: Double, private val kv:
         if (app.loadError.isNotEmpty()) fail(app.loadError)
         r.enter()
         val t0 = System.nanoTime()
-        while (r.phase != ReceiveState.Phase.On) {
-            (r.phase as? ReceiveState.Phase.Error)?.let { fail(it.why) }
+        while (r.phase != RxPhase.On) {
+            (r.phase as? RxPhase.Error)?.let { fail(it.why) }
             // ai: a file whole in the receiver's first answer stops the camera in the poll that saw it (On, then Idle
             // ai: in one tick: a 255 KB bundle on the simulated camera, 2026-10-25), which is no failure
-            if (r.phase == ReceiveState.Phase.Idle) { if (r.rx.verified) break; fail("the camera did not start") }
+            if (r.phase == RxPhase.Idle) { if (r.rx.verified) break; fail("the camera did not start") }
             if (System.nanoTime() - t0 > START_SECS * 1e9) fail("no answer from the receiver after ${START_SECS.toInt()} s (${r.phase}, ${r.raw.ifEmpty { "no stats" }})")
             delay(50)
         }
         System.err.println("rx: camera ${r.camera}, mode ${r.mode?.let { "${it.w}x${it.h} ${it.format} at ${ReceiveState.fpsText(it.fps)}" } ?: "?"}")
+        // ai: the session opens the first listed in place of an id it lists not: the one named or a failure
+        r.testCamera?.let { want ->
+            val got = (dev.lizard.ui.parse(r.cameraNow())?.get("info") as? JsonObject)?.str("id")
+            if (got != null && got != want) fail("$want is not listed (the session opened $got)")
+        }
         val begun = System.nanoTime()
         val end = begun + (secs * 1e9).toLong()
         val todo = steps().toMutableList()
         var away = false        // ai: the camera stopped by a step, or Receive left
         var nextLine = begun
         while (System.nanoTime() < end) {
-            (r.phase as? ReceiveState.Phase.Error)?.let { fail(it.why) }
+            (r.phase as? RxPhase.Error)?.let { fail(it.why) }
             val at = (System.nanoTime() - begun) / 1e9
             while (todo.isNotEmpty() && todo.first().first <= at) {
                 val (t, act) = todo.removeAt(0)
@@ -100,9 +109,9 @@ class ReceiverTest private constructor(private val secs: Double, private val kv:
             if (now >= nextLine) { nextLine = now + 1_000_000_000L; if (r.raw.isNotEmpty()) System.err.println("rx: ${r.raw}") }
             delay(100)
         }
-        (r.phase as? ReceiveState.Phase.Error)?.let { fail(it.why) }
-        val stats: JsonElement = dev.lizard.desktop.parse(r.raw.ifEmpty { "{}" }) ?: JsonObject(emptyMap())   // ai: the JSON helper, not this class's parse
-        val cam: JsonElement = dev.lizard.desktop.parse(r.cameraNow()) ?: JsonObject(emptyMap())
+        (r.phase as? RxPhase.Error)?.let { fail(it.why) }
+        val stats: JsonElement = dev.lizard.ui.parse(r.raw.ifEmpty { "{}" }) ?: JsonObject(emptyMap())   // ai: the JSON helper, not this class's parse
+        val cam: JsonElement = dev.lizard.ui.parse(r.cameraNow()) ?: JsonObject(emptyMap())
         // ai: the list read once the close has waited for the filings (a tar's unpack may still run when the time is up)
         app.close()
         val line = JsonObject(mapOf("rx" to stats, "received" to JsonArray(Received.list().map { Received.asJson(it) }),

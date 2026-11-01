@@ -69,6 +69,7 @@ static wg::Bind bindOf(const std::string& t) {
   if (t == "ro") return wg::Bind::RO;
   if (t == "rw") return wg::Bind::RW;
   if (t == "uniform") return wg::Bind::Uniform;
+  if (t == "sampler") return wg::Bind::Sampler;
   throw wg::Error("bind group layout entry " + t);
 }
 
@@ -81,12 +82,31 @@ void Setup::make(const std::vector<std::string>& ids) {
       std::vector<wg::Bind> e;
       for (auto& t : objects["bgls"].at(id)) e.push_back(bindOf(t.get<std::string>()));
       bgls[id] = dev->createBindGroupLayout(e, id);
-    } else if (k == 'p' && !pipelines.count(id)) {
+    } else if (k == 'p' && !pipelines.count(id) && !unbuilt.count(id)) {
       const auto& o = objects["pipelines"].at(id);
       if (o["groups"].size() != 1) throw wg::Error(id + ": " + std::to_string(o["groups"].size()) + " bind groups; the decoder uses one");
       const std::string g = o["groups"][0];
       make({g});
       const std::string label = o.value("label", json()).is_string() ? o["label"].get<std::string>() : "";
+      // ai: a pipeline whose workgroup passes the device's invocations (gen/gen.mjs lanesOf) is left out: only a form
+      // ai: the host may do without names one (the LDPC's, front.cpp ldpcBuilt)
+      const uint32_t lanes = o.value("lanes", 0u);
+      if (lanes > dev->limits.maxComputeWorkGroupInvocations) {
+        dev->log("pipeline " + id + " (" + label + ") left out: " + std::to_string(lanes) + " lanes a workgroup, the device " + std::to_string(dev->limits.maxComputeWorkGroupInvocations));
+        unbuilt.insert(id);
+        continue;
+      }
+      // ai: so is one whose module needs a device feature the device lacks (gen/gen.mjs needsOf: "int16", shaderInt16)
+      std::string lacks;
+      for (const auto& n : o.value("needs", json::array())) {
+        const std::string k = n.get<std::string>();
+        if (!(k == "int16" && dev->features.int16)) lacks += (lacks.empty() ? "" : ", ") + k;
+      }
+      if (!lacks.empty()) {
+        dev->log("pipeline " + id + " (" + label + ") left out: it needs " + lacks + ", which the device does not offer");
+        unbuilt.insert(id);
+        continue;
+      }
       auto t0 = std::chrono::steady_clock::now();
       pipelines[id] = dev->createPipeline(spirv(o["module"]), bgls.at(g), id, label);
       const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();

@@ -38,12 +38,21 @@ namespace wg {
 
 // ai: WebGPU's usage bits (GPUBufferUsage), as the setup and the host's code state them.
 enum : uint32_t { MAP_READ = 1, MAP_WRITE = 2, COPY_SRC = 4, COPY_DST = 8, UNIFORM = 64, STORAGE = 128, INDIRECT = 256, QUERY_RESOLVE = 512 };
-// ai: A bind group layout entry: what the shader binds there.
-enum class Bind : uint8_t { Tex, RO, RW, Uniform };
+// ai: A bind group layout entry: what the shader binds there. Sampler: the device's one filtering sampler, immutable in
+// ai: the layout (Device::linearSampler), so a bind group takes no resource for it.
+enum class Bind : uint8_t { Tex, RO, RW, Uniform, Sampler };
 
 struct Error : std::runtime_error { using std::runtime_error::runtime_error; VkResult code = VK_SUCCESS; };
 // ai: An allocation the device refused: the host halves its batch on this, as the web does on an out-of-memory scope.
 struct OutOfMemory : Error { using Error::Error; };
+// ai: The device lost (VK_ERROR_DEVICE_LOST) or taken as hung (a submit not done within Device::hangMs; 2026-10-31).
+// ai: Nothing on it can be trusted after it: its user drops every object on it and the device, and makes another.
+struct Lost : Error { using Error::Error; };
+
+// ai: A hang's bounds (2026-10-31): a submit not done HANG_MS after it went is taken as hung (Ticket::wait, done);
+// ai: the driver then has SETTLE_MS more to finish it or lose the device (its own watchdog), past which the device is
+// ai: abandoned (Device::abandoned). A batch over the decoder's 400 ms cap is halved long before HANG_MS.
+constexpr uint32_t HANG_MS = 4000, SETTLE_MS = 10000;
 
 struct Limits {
   uint64_t maxBufferSize = 0, maxStorageBufferRange = 0, deviceLocalBytes = 0;
@@ -54,6 +63,7 @@ struct Limits {
 struct Features {
   bool f16 = false, storage16 = false, int8 = false, dot = false, subgroupShuffle = false, timestamps = false;
   bool zeroInit = false;   // ai: shaderZeroInitializeWorkgroupMemory: the SPIR-V zeroes workgroup memory by initializer
+  bool int16 = false;      // ai: shaderInt16: 16-bit integers in workgroup memory and registers (a pipeline's "int16" need)
   // ai: the camera's zero-copy ingest (core/ingest/): YCbCr sampling, an r8 storage image, timeline semaphores, and
   // ai: on Android the AHardwareBuffer import; all four or the ingest copies luma instead
   bool ycbcr = false, storageR8 = false, timeline = false, ahb = false, foreign = false;
@@ -169,9 +179,14 @@ struct Ticket {
   VkFence fence = VK_NULL_HANDLE;
   VkCommandBuffer cbs[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
   std::vector<std::shared_ptr<Buffer>> keep;   // ai: staging the head copied from
+  double t0 = 0;   // ai: when it was submitted (steady ms), for the hang's bound
+  // ai: done() and wait() throw Lost on a lost device or past the hang's bound (Device::hangMs)
   bool done();
   void wait();
   ~Ticket();
+
+ private:
+  [[noreturn]] void hung();
 };
 
 // ai: A host's extras for Device::create: instance and device extensions (a window surface, the swapchain, present_id
@@ -187,6 +202,12 @@ struct DeviceExtras {
 };
 
 struct Device {
+  // ai: The hang's bound in ms (HANG_MS; 0 none: a software device's, whose batches take seconds; LIZ_HANG_MS sets it).
+  // ai: lost: the device lost or a submit past the bound (every Ticket then throws Lost). abandoned: a hung submit the
+  // ai: driver neither finished nor lost in SETTLE_MS: nothing on the device is waited for or destroyed after it (its
+  // ai: memory stays until the process ends), so a hung kernel cannot block its user's teardown.
+  uint32_t hangMs = 0;
+  std::atomic<bool> lost{false}, abandoned{false};
   VkInstance instance = VK_NULL_HANDLE;
   VkPhysicalDevice phys = VK_NULL_HANDLE;
   VkDevice dev = VK_NULL_HANDLE;
@@ -200,9 +221,13 @@ struct Device {
   uint32_t family = 0;
   VkCommandPool pool = VK_NULL_HANDLE;
   VkPipelineCache cache = VK_NULL_HANDLE;
+  // ai: the layouts' immutable sampler (Bind::Sampler): bilinear, clamped to the edge, normalised coordinates, one
+  // ai: level; made at the first layout that names it, destroyed with the device
+  VkSampler linear = VK_NULL_HANDLE;
+  VkSampler linearSampler();
   VkPhysicalDeviceMemoryProperties mem{};
   std::string name, driver;
-  uint32_t apiVersion = 0, vendorId = 0, deviceId = 0;
+  uint32_t apiVersion = 0, vendorId = 0, deviceId = 0, driverVersion = 0;
   // ai: what the device is (2026-10-25): VK_PHYSICAL_DEVICE_TYPE_CPU a software rasterizer on the host's cores
   // ai: (lavapipe, SwiftShader), which the receiver's auto passes over for the C (core/rx/receiver.cpp)
   VkPhysicalDeviceType type = VK_PHYSICAL_DEVICE_TYPE_OTHER;
@@ -243,6 +268,7 @@ struct Device {
   std::shared_ptr<BindGroupLayout> createBindGroupLayout(const std::vector<Bind>& entries, const std::string& id = "");
   // ai: spec: values for specialisation constants 0, 1, ... (u32 each), the bench kernels' sizes (lizard_gpu_check bench)
   std::shared_ptr<Pipeline> createPipeline(const std::vector<uint32_t>& spirv, std::shared_ptr<BindGroupLayout> bgl, const std::string& id = "", const std::string& label = "", const std::vector<uint32_t>& spec = {});
+  // ai: entries: a resource a binding in order, none for a Sampler binding (the layout holds it)
   std::shared_ptr<BindGroup> createBindGroup(std::shared_ptr<BindGroupLayout> bgl, const std::vector<Resource>& entries, const std::string& id = "");
   std::shared_ptr<QuerySet> createQuerySet(uint32_t count, const std::string& id = "");
 

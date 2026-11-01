@@ -14,6 +14,10 @@
 #include <string>
 #include <vector>
 
+extern "C" {
+#include "xfer.h"
+}
+
 namespace lizard {
 
 class XferTx {
@@ -28,7 +32,7 @@ class XferTx {
 
   // ai: The ids of the next frame of n blocks (advances the schedule: a frame asked for twice is two frames).
   void frameIds(uint32_t* out, int n);
-  // ai: What block `id` carries: 469 bytes into out.
+  // ai: What block `id` carries: 472 bytes into out.
   void block(uint32_t id, uint8_t* out) const;
 
   uint32_t chunks() const { return chunks_; }
@@ -49,7 +53,7 @@ class XferTx {
   std::vector<uint32_t> K_;      // ai: Wirehair source blocks a chunk, of the sent bytes (1: sent unfountained)
   std::vector<void*> enc_;       // ai: a chunk's encoder, null where K is 1
   std::map<uint32_t, std::vector<uint8_t>> one_;   // ai: the sent bytes of a chunk of one block
-  uint8_t root_[32]{}, header_[469]{};
+  uint8_t root_[32]{}, header_[XFER_PAYLOAD]{};
   std::vector<std::vector<uint8_t>> manifest_;
   // ai: the schedule (Schedule): symbols a chunk sent, the round's place, each chunk's weight a round and accumulator
   std::vector<uint32_t> sym_, w_, acc_;

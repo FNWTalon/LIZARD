@@ -62,7 +62,7 @@ else()
   target_link_libraries(wg PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
-add_library(dec STATIC dec/setup.cpp dec/front.cpp ingest/camera.cpp ingest/develop.cpp)
+add_library(dec STATIC dec/setup.cpp dec/front.cpp dec/trial.cpp ingest/camera.cpp ingest/develop.cpp)
 target_include_directories(dec PUBLIC dec ingest PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_include_directories(dec SYSTEM PUBLIC ${TP})
 # ai: the codec for its ring table: a setup is held to the rings the C reads (dec/front.cpp create)
@@ -99,6 +99,15 @@ target_link_libraries(lizard_xfer PUBLIC lizard_xfer_core Threads::Threads)
 add_executable(xfer_check tools/xfer_check.cpp)
 target_include_directories(xfer_check SYSTEM PRIVATE ${TP})
 target_link_libraries(xfer_check PRIVATE lizard_xfer)
+endif()
+
+# ai: The camera's phase lock (rx/phase_lock.h, 2026-10-31: liblizard/kotlin/PhaseLock.kt in C++), depending on
+# ai: nothing, for a receive session whose camera can delay one capture; phase_lock_check replays a trace of its calls
+add_library(lizard_phase STATIC rx/phase_lock.cpp)
+target_include_directories(lizard_phase PUBLIC rx)
+if(NOT EMSCRIPTEN)
+add_executable(phase_lock_check tools/phase_lock_check.cpp)
+target_link_libraries(phase_lock_check PRIVATE lizard_phase)
 endif()
 
 # ai: The C codec natively (src/, the format's reference): the CPU decoder's (cpu/codec.h). -O3 as the wasm is
@@ -155,4 +164,56 @@ add_library(lizard_rx STATIC rx/receiver.cpp rx/stream.cpp)
 target_include_directories(lizard_rx PUBLIC rx)
 target_include_directories(lizard_rx SYSTEM PRIVATE ${TP})
 target_link_libraries(lizard_rx PUBLIC dec lizard_xfer lizard_cpu lizard_replay)
+endif()
+
+# ai: The receive session (rx/session.h, 2026-10-31: the desktop's RxSession and cameras moved into the engine; Android's
+# ai: camera the same day, cam/android.cpp on Camera2's NDK): the cameras (cam/camera.h: each system's own backend, a
+# ai: phone (not on Android, the phone end), an upload, the simulated camera of LIZ_CAMERA_SIM) and the session over
+# ai: the receiver, which the C API's layer 5 (api/session.cpp), the apps, lizard_receive and cam_check share, the phase
+# ai: lock (lizard_phase, rx/phase_host.h) fed from a camera that can delay a capture. lizard_api_static: the C API's
+# ai: layers 1 to 3 (../api) as a static library for the simulated screen's painter (cam/scene.cpp: liz_tx_next,
+# ai: liz_encoder_paint), LIZ_STATIC leaving LIZ_API empty; a shared library that holds the API itself pulls none of it. TurboJPEG, libusb and Media Foundation's functions
+# ai: are loaded at run time; Media Foundation's GUIDs (Windows), AVFoundation's frameworks (macOS) and Camera2's and the
+# ai: image reader's NDK libraries (Android) linked.
+if(LIZ_GPU AND NOT EMSCRIPTEN)
+  add_library(lizard_api_static STATIC ${LZ}/api/api.cpp ${LZ}/api/format.cpp ${LZ}/api/codec.cpp ${LZ}/api/xfer.cpp)
+  target_include_directories(lizard_api_static PUBLIC ${LZ}/include)
+  target_compile_definitions(lizard_api_static PUBLIC LIZ_STATIC PRIVATE LIZ_VERSION_STRING="static")
+  target_link_libraries(lizard_api_static PUBLIC lizard_codec lizard_xfer_core)
+  set(LIZ_CAM_SOURCES cam/camera.cpp cam/luma.cpp cam/jpeg.cpp cam/clock.cpp cam/sim.cpp cam/scene.cpp cam/upload.cpp)
+  if(ANDROID)
+    list(APPEND LIZ_CAM_SOURCES cam/android.cpp)
+  else()
+    list(APPEND LIZ_CAM_SOURCES cam/phone.cpp cam/aoa.cpp)
+  endif()
+  if(WIN32)
+    list(APPEND LIZ_CAM_SOURCES cam/mf.cpp)
+  elseif(APPLE)
+    enable_language(OBJCXX)   # ai: AVFoundation's backend is Objective-C++, which this project does not enable itself
+    list(APPEND LIZ_CAM_SOURCES cam/avf.mm)
+    set_source_files_properties(cam/avf.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+  elseif(UNIX AND NOT ANDROID)
+    list(APPEND LIZ_CAM_SOURCES cam/v4l2.cpp)
+  endif()
+  add_library(lizard_cam STATIC ${LIZ_CAM_SOURCES})
+  target_include_directories(lizard_cam PUBLIC cam PRIVATE ingest)
+  target_include_directories(lizard_cam SYSTEM PRIVATE ${TP})
+  target_compile_options(lizard_cam PRIVATE ${LIZ_FAST})
+  find_package(Threads REQUIRED)
+  # ai: lizard_replay: the .lizard reader (upload.cpp); lizard_rx's headers: stream.h, the phone's wire (phone.cpp)
+  target_link_libraries(lizard_cam PUBLIC lizard_api_static lizard_replay lizard_rx Threads::Threads ${CMAKE_DL_LIBS})
+  if(WIN32)
+    # ai: Media Foundation's GUIDs and DirectShow's camera-control IIDs are static data (libmfuuid, libstrmiids); its
+    # ai: functions are looked up in mfplat, mf and mfreadwrite at run time, so a library with them loads where Media
+    # ai: Foundation is absent (Windows N without the Media Feature Pack, a Server without the feature)
+    target_link_libraries(lizard_cam PUBLIC mfuuid strmiids ole32 uuid ws2_32 iphlpapi)   # ai: ws2_32, iphlpapi: the phone's stream
+  elseif(APPLE)
+    target_link_libraries(lizard_cam PUBLIC "-framework AVFoundation" "-framework CoreMedia" "-framework CoreVideo" "-framework Foundation")
+  elseif(ANDROID)
+    target_link_libraries(lizard_cam PUBLIC camera2ndk mediandk nativewindow android log)
+  endif()
+  add_library(lizard_session STATIC rx/session.cpp)
+  target_include_directories(lizard_session PUBLIC rx)
+  target_include_directories(lizard_session SYSTEM PRIVATE ${TP})
+  target_link_libraries(lizard_session PUBLIC lizard_cam lizard_rx lizard_replay lizard_phase)
 endif()

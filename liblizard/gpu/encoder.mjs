@@ -13,8 +13,9 @@
 // ai:   tpose: the picture row-major again (wgsl/send.mjs);
 // ai:   rsv, rsh: the C's Lanczos-3 resample onto the ring's square with the C's own taps (sim/ob.mjs resampleGeom),
 // ai:     grey as focus_paint_rgba rounds it, and every pixel outside the square the border's byte (wgsl/send.mjs);
-// ai:     where every tap is the C's on-sample copy (the span divides n: every picture in the 64 ring, all but 384 in
-// ai:     the 128, 512, 1024 and 1536 in the 256, 14 of the 18 pairs) rsh alone, reading the picture (rsh's copy form);
+// ai:     where every tap is the C's on-sample copy (pxm = n / span: 384 to 1536 in the 64 ring, 512, 768, 1024, 1280
+// ai:     and 1536 in the 128, 512, 1024 and 1536 in the 256, 15 of the 24 pairs) rsh alone, reading the picture (rsh's
+// ai:     copy form);
 // ai:   present: a render pass onto the canvas, whole canvas pixels a frame pixel, a frame of a batch.
 // ai: The border (ring, marks, band, word, quiet margin) is the C's paint, taken once a configuration and again at each
 // ai: fps change from this module's own Focus on the importing thread's wasm, so it is the C's to the byte. The square
@@ -26,7 +27,7 @@
 // ai:   const cfg = await enc.configure({ spec, codes, fps, gap }); // spec { n, subch, span }; gap: modules between codes; again at a re-pick
 // ai:   const ctx = enc.attach(canvas);                        // a canvas with no 2D context
 // ai:   enc.encode(half, f0, blocks, count, cfg);              // frames f0 .. f0 + count - 1 of a half, count <= cfg.sub,
-// ai:                                                          // each codes x blocks x 473 B
+// ai:                                                          // each codes x blocks x 476 B
 // ai:   enc.present(half * cfg.batch + f, ctx, whole, cfg);    // frame f of that half, at its due time
 // ai:   enc.release(cfg);                                      // a configuration no frame still needs
 // ai:   await enc.setFps(fps); await enc.check(blocks, count, cfg); cfg.frameMs; enc.takeGpuMs(); enc.destroy();
@@ -43,10 +44,10 @@
 // ai: while the device cannot hold a configuration's buffers (cfg.batch, cfg.sub say what it got).
 import { irowsSource, ipicSource } from "./wgsl/inverse.mjs";
 import { paintSource, tposeSource, rsvSource, rshSource, presentSource, TPOSE_TILE, RSV_THREADS, RSH_THREADS, GA_BYTES } from "./wgsl/send.mjs";
-import { transformTables } from "./back/transform.mjs";
+import { transformTables } from "./back/disc.mjs";
 import { whiten, perm } from "./back/bitmap.mjs";
 import { ruleTables } from "./back/codes.mjs";
-import { CODES, WHITE_SLOTS } from "./wgsl/back_tiers.mjs";
+import { CODES, WHITE_SLOTS } from "./plan/back_tiers.mjs";
 import { PARAMS_AT } from "./wgsl/back_ldpc.mjs";
 // ai: the gap between two codes, in modules, unless configure names one (lizard-web/send-worker.mjs paints the same for the
 // ai: wasm path; the page's slider gives both)
@@ -55,13 +56,14 @@ import { crcPowers, PAYLOAD } from "./back/ref_ldpc.mjs";
 import { clipLimit } from "./back/paint.mjs";
 import { computePipeline } from "./pipeline.mjs";
 import { init as initOb, Focus } from "../sim/ob.mjs";
+import { STEP, versionOf } from "../sim/lizard_pick.mjs";
 
-// ai: A block's 473 bytes in BLOCKS, padded to 120 words (wgsl/send.mjs paintSource).
+// ai: A block's 476 bytes in BLOCKS, 119 words of the 120 a block (wgsl/send.mjs paintSource; the 120th the paint's CRC word).
 const BLOCK_BYTES = 480;
 
 // ai: The paint's TAB (wgsl/send.mjs paintSource) from the codec's codes (back/codes.mjs ruleTables: { codes }, the
 // ai: codes in CODES' order): word 0 the whitening's offset; 16 words a code at 16 + 16 c, (n, k, m, z, mb, rows,
-// ai: lay, perm, subs, nt); a code's block rows' first entries (mb + 1), its entries (col | shift << 16), its bit map
+// ai: lay, perm, slots, nt: slots a block's); a code's block rows' first entries (mb + 1), its entries (col | shift << 16), its bit map
 // ai: (slot i's codeword bit, np + perm[i], in the half i & 1 of word i >> 1, over the nt sent bits); the whitening, a
 // ai: bit a slot of the frame over 1024 sub-channels and a word past them. The same for every format: gen/sender.mjs
 // ai: bakes it for the native painter.
@@ -75,8 +77,8 @@ export function sendTab({ codes }) {
   tab[0] = WHITE;
   codes.forEach((c, q) => {
     const a = at[q];
-    if (c.nt % 2 || 640 * CODES[q].subs < c.nt || c.n / 32 > 240) throw new Error(`the ${CODES[q].name} code's n ${c.n} (${c.nt} sent) does not fit the paint`);
-    tab.set([c.n, c.k, c.m, c.z, c.mb, a.rows, a.lay, a.pm, CODES[q].subs, c.nt], 16 + 16 * q);
+    if (c.nt % 2 || CODES[q].slots < c.nt || c.n / 32 > 240) throw new Error(`the ${CODES[q].name} code's n ${c.n} (${c.nt} sent) does not fit the paint`);
+    tab.set([c.n, c.k, c.m, c.z, c.mb, a.rows, a.lay, a.pm, CODES[q].slots, c.nt], 16 + 16 * q);
     for (let r = 0; r <= c.mb; r++) tab[a.rows + r] = c.lay[r];
     for (let e = 0; e < c.slots; e++) tab[a.lay + e] = c.lay[c.mb + 1 + 2 * e] | (c.lay[c.mb + 2 + 2 * e] << 16);
     const p = perm(c.nt);
@@ -88,8 +90,9 @@ export function sendTab({ codes }) {
 }
 // ai: The codec's codes and profiles, read once a page on the codec's chain (ruleTables sets up a codec of its own).
 let codesOnce = null;
-// ai: Frames a half unless asked (16), and frames an encode at most.
-export const BATCH = 16, SUB = 4;
+// ai: Frames a half unless asked (32), and frames an encode at most: the sender paints ahead, so a deep batch adds no
+// ai: latency (the page's pump still holds each encode to its share of the animation frame).
+export const BATCH = 32, SUB = 32;
 // ai: Timestamp readbacks in flight at most; a batch that finds none free goes untimed.
 const TIMERS = 4;
 // ai: The compute stages a batch, in order (a profile's names).
@@ -191,7 +194,7 @@ export class GpuEncoder {
     codec.focus?.free();
     codec.focus = null;
     codesOnce ??= await ruleTables();
-    const rt = codesOnce, profile = rt.profiles[subch / 8];
+    const rt = codesOnce, profile = subch % STEP ? null : rt.profiles[versionOf(subch)];
     if (!profile) throw new Unavailable(`the GPU encoder paints the format's ladder (LIZARD-16 to -1024), not LIZARD-${subch}`);
     // ai: TAB, the encoder's for its life (the same for every format; release leaves it, destroy takes the device)
     if (!this.TAB) { const tab = sendTab(rt); this.TAB = this.device.createBuffer({ size: tab.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }); this.device.queue.writeBuffer(this.TAB, 0, tab); }
@@ -277,10 +280,11 @@ export class GpuEncoder {
       c.bufs.push(b);
       return b;
     };
-    // ai: the paint's uniform: the blocks, each code's tier (first block, first sub-channel, blocks), dims, the CRC's powers
+    // ai: the paint's uniform: the blocks (and the slots they take, the coefficients the frame holds: the padding
+    // ai: between), each code's tier (first block, first slot, blocks), dims, the CRC's powers
     const paintUni = new Uint32Array(PARAMS_AT.words);
-    paintUni.set([V, 0, 0, 0], PARAMS_AT.sizes);
-    for (const t of c.profile) paintUni.set([t.firstBlock, t.sub0, t.count, 0], PARAMS_AT.sizes + 4 * (1 + t.c));
+    paintUni.set([V, 0, c.profile.used, 320 * c.subch], PARAMS_AT.sizes);
+    for (const t of c.profile) paintUni.set([t.firstBlock, t.slot0, t.count, 0], PARAMS_AT.sizes + 4 * (1 + t.c));
     paintUni.set([V, sStride, R, 0], PARAMS_AT.dims);
     paintUni.set(crcPowers(PAYLOAD), PARAMS_AT.pw);
     const size = new ArrayBuffer(48), s32 = new Uint32Array(size), sf = new Float32Array(size), lim = clipLimit(c.subch);
@@ -340,7 +344,7 @@ export class GpuEncoder {
   }
 
   // ai: count frames (1 to c.sub) into frames f0 .. f0 + count - 1 of half h (0 or 1), one submission: each frame codes x
-  // ai: V blocks of 473 bytes, each block its id then its payload (sim/phy.mjs frameBlocks), frame after frame. The
+  // ai: V blocks of 476 bytes, each block its id then its payload (sim/phy.mjs frameBlocks), frame after frame. The
   // ai: frame offset goes in G before the submission, in queue order. parity: the first frame's count (the sender's
   // ai: count of painted pictures mod 4; each frame after it one more), which the pilots carry (SPEC 7.3).
   encode(h, f0, blocks, count, c = this.cfg, parity = 0) {

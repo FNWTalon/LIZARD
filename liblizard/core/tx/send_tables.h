@@ -24,7 +24,7 @@ struct SendConsts {
   int slots = 0, tposeTile = 16, rsvThreads = 64, rshThreads = 64, blockBytes = 480;
   int paramsSizes = 0, paramsDims = 0, paramsPw = 0, paramsWords = 0;
   std::vector<uint32_t> pw;
-  std::vector<int> codeRate, codeSubs;   // ai: the paint's codes in TAB's order (gpu/wgsl/back_tiers.mjs CODES): ldpc.h rate, sub-channels a block
+  std::vector<int> codeRate, codeSlots;   // ai: the paint's codes in TAB's order (gpu/plan/back_tiers.mjs CODES): ldpc.h rate, slots a block
   std::vector<uint32_t> tab;    // ai: the paint's TAB (gpu/encoder.mjs sendTab): the codes' shapes, rows, entries and bit maps, the whitening
   std::vector<int> sizes;       // ai: the picture sizes, which the kernels irows<n> and ipic<n> are built for
   // ai: from the manifest's JSON text and the TAB blob's bytes; "" or why not
@@ -43,7 +43,7 @@ struct SendTables {
   std::vector<uint32_t> g;      // ai: 12 words: n, q, sq, W, codes, FW, RW, FS, 1, the encode's first frame, gap, 0
   std::vector<uint32_t> taps;   // ai: 12 q words: 6 q sample indices (mod n), then 6 q weights as f32
   std::vector<uint8_t> border;  // ai: W x W grey, padded to a whole word
-  std::vector<uint32_t> pu;     // ai: PARAMS_AT.words: sizes[0] (blocks), sizes[1 + c] (code c's tier: first block, first sub-channel, blocks), dims (blocks, npos, symbols an encode, 0), pw
+  std::vector<uint32_t> pu;     // ai: PARAMS_AT.words: sizes[0] (blocks, 0, the slots they take, npos), sizes[1 + c] (code c's tier: first block, first slot, blocks), dims (blocks, npos, symbols an encode, 0), pw
   // ai: the anchors (SPEC 6.13): the 8 words that follow g in rsh's G (gpu/wgsl/send.mjs GA, the manifest's gWords
   // ai: 20): each anchor's first pixel along either axis of a symbol (margin included), then the square's side in pixels
   std::vector<uint32_t> anch;

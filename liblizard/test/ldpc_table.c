@@ -9,15 +9,14 @@
 #include <stdio.h>
 #include <string.h>
 
-// The 7/8 (25a3ab92), 3/4 (5660f26d) and 2/3 (12dad7a2) codes of 2026-10-08 (scripts/exp/ldpc_opt.py's tables) and the
-// 1/2 code of 2026-10-07 (83296c5e, the generator's).
+// The four codes at z = 128 of 2026-10-31 (scripts/exp/ldpc_opt.py's tables).
 static unsigned h_hash(const ldpc_t *c) {
   unsigned h = 2166136261u;
   for (int i = 0; i <= c->m; i++) h = (h ^ (unsigned)c->row_ptr[i]) * 16777619u;
   for (int e = 0; e < c->edges; e++) h = (h ^ (unsigned)c->col_idx[e]) * 16777619u;
   return h;
 }
-static const unsigned WANT_HASH[LDPC_BASES_N] = { 0x25a3ab92u, 0x5660f26du, 0x12dad7a2u, 0x83296c5eu };
+static const unsigned WANT_HASH[LDPC_BASES_N] = { 0x6f67223au, 0x3f726d8eu, 0x27d3a72eu, 0x721499deu };
 
 int main(int argc, char **argv) {
   const int print = argc > 1 && !strcmp(argv[1], "print");
@@ -32,10 +31,9 @@ int main(int argc, char **argv) {
     }
     printf("};\n");
     if (print) continue;
-    // The code ldpc_init builds for the rate at its block's n_max (48 z rounded up to whole slots: the block's
-    // sub-channels x 640) has to be the table's, read back from its block-row view.
+    // The code ldpc_init builds for the rate has to be the table's, read back from its block-row view.
     ldpc_t c;
-    if (ldpc_init(&c, 48 * b->z + 47, b->rate, LDPC_BASE_SEED) || c.z != b->z || c.mb != b->mb || c.kb != b->kb || c.np != b->np * b->z) { printf("FAIL: ldpc_init did not build the rate %s code\n", ldpc_rate_name[b->rate]); return 1; }
+    if (ldpc_init(&c, b->rate) || c.z != b->z || c.mb != b->mb || c.kb != b->kb || c.np != b->np * b->z) { printf("FAIL: ldpc_init did not build the rate %s code\n", ldpc_rate_name[b->rate]); return 1; }
     for (int r = 0; r < c.mb; r++) {
       int seen = 0;
       for (int s = c.lay_ptr[r]; s < c.lay_ptr[r + 1]; s++, seen++)

@@ -1,18 +1,20 @@
-// BI-AWGN waterfall for the LDPC family: for each rate and length, the channel mutual
-// information at which the frame error rate crosses 10%, which is the inner code's operating
-// point under a fountain. The gap between that and the rate is what the code wastes.
-// ai: When n gives the format's 3/4 code (5088 to 5135), a second table follows: the same crossing on that code
+// BI-AWGN waterfall for the format's four LDPC codes: for each, the channel mutual information at which the frame
+// error rate crosses 10%, which is the inner code's operating point under a fountain. The gap between that and the
+// rate (the code's k over the bits it sends, nt) is what the code wastes. The bits never sent (the 7/8 code's first
+// np) come in as 0.
+// ai: A second table follows: the same crossing on the format's 3/4 code
 // ai: for decoder arms (ldpc_ref.h), each on the same frames: today's decoder as focus.c runs it (the int8 soft values,
 // ai: 30 iterations, the stall rule), without the rule and at 100 iterations, at other scales, float min-sum, offset
 // ai: min-sum over a sweep of offsets, and sum-product (BP) on the float LLRs and on the int8 ones. Each arm's crossing
 // ai: comes from a grid in channel information, 0.004 bits a bit apart, walked with a quarter of the frames to the
 // ai: two points that bracket 10% and then run at the full count there, log FER interpolated between them.
 // ai:   gcc -O2 -fopenmp -Wall -Wextra -o build/ldpc_awgn test/ldpc_awgn.c test/ldpc_ref.c src/ldpc.c -lm
-// ai:   build/ldpc_awgn [n] [frames] [arm_frames] 2>>build/ldpc_progress.log
-// ai: n 4800, frames 200, arm_frames 2000 (0 skips a table; progress on stderr). Without -fopenmp it runs on one core.
+// ai:   build/ldpc_awgn [frames] [arm_frames] 2>>build/ldpc_progress.log
+// ai: frames 200, arm_frames 2000 (0 skips a table; progress on stderr). Without -fopenmp it runs on one core.
 // ai: Since 2026-09-26 the rate sweep draws each frame from its own seed and integrates the channel information
 // ai: exactly (it was a 200,000-sample Monte Carlo), so its numbers moved within their noise.
-// ai: Runtime (2026-09-26, OMP_NUM_THREADS=16): `5088 200 8000` 97.5 s wall, output in research/results/ldpc/awgn.txt.
+// ai: Runtime (2026-09-26, OMP_NUM_THREADS=16, the codes before 2026-10-31): `5088 200 8000` 97.5 s wall, output in
+// ai: research/results/ldpc/awgn.txt.
 #include "ldpc_ref.h"
 #include "../src/ldpc_base.h"
 #include <math.h>
@@ -36,11 +38,11 @@ typedef struct {
   float *fl, *buf;
 } ctx_t;
 
-static ctx_t *ctx_make(int count, int n, int rate) {
+static ctx_t *ctx_make(int count, int rate) {
   ctx_t *ctx = calloc((size_t)count, sizeof *ctx);
   for (int t = 0; t < count; t++) {
     ctx_t *x = &ctx[t];
-    if (ldpc_init(&x->code, n, rate, 1) || ref_init(&x->ref, &x->code)) { fprintf(stderr, "init failed\n"); exit(1); }
+    if (ldpc_init(&x->code, rate) || ref_init(&x->ref, &x->code)) { fprintf(stderr, "init failed\n"); exit(1); }
     int cn = x->code.n;
     x->data = malloc((size_t)x->code.k); x->cw = malloc((size_t)cn); x->out = malloc((size_t)cn);
     x->q8 = malloc((size_t)cn); x->fl = malloc((size_t)cn * sizeof(float)); x->buf = malloc((size_t)cn * sizeof(float));
@@ -67,6 +69,7 @@ static void make_frame(ctx_t *x, uint64_t stream, int f, double sigma, quant_t q
   for (int i = 0; i < x->code.k; i++) x->data[i] = ref_uni(&r) < 0.5;
   ldpc_encode(&x->code, x->data, x->cw);
   for (int i = 0; i < x->code.n; i++) {
+    if (i < x->code.np) { x->fl[i] = 0; x->q8[i] = 0; continue; }   // ai: never sent: nothing known
     double y = (x->cw[i] ? -1 : 1) + sigma * ref_gauss(&r);
     x->fl[i] = (float)(2 * y / (sigma * sigma));
     double v = nearbyint(q.scale * (double)x->fl[i]);
@@ -100,17 +103,17 @@ static void tally_to(ctx_t *ctx, const ref_arm_t *a, uint64_t stream, double sig
 // ai: The table this tool always printed: every rate with a code (the format's four; the lab's 1/4, 1/3 and 5/6 left
 // ai: on 2026-10-25, archive/ldpc-lab-rates/) at length n, today's decoder at 40 iterations, bisected in noise for 10%
 // ai: frame error with the given frames a step.
-static void rate_sweep(int n, int frames, int threads) {
-  printf("n=%d, %d frames per point, 40 iterations max\n", n, frames);
+static void rate_sweep(int frames, int threads) {
+  printf("the format's codes, %d frames per point, 40 iterations max\n", frames);
   printf("rate     n     k  edges  init_ms | MI@FER10%%   gap  gap%%  | iters@op  us/frame@op\n");
   for (int rate = 0; rate < LDPC_RATES; rate++) {
     if (!ldpc_rate_name[rate]) continue;
     clock_t t0 = clock();
-    ctx_t *ctx = ctx_make(threads, n, rate);
+    ctx_t *ctx = ctx_make(threads, rate);
     double init_ms = 1000.0 * (clock() - t0) / CLOCKS_PER_SEC / threads;
     const ldpc_t *c = &ctx[0].code;
     ref_arm_t a = { .name = "sweep", .today = 1, .norm = c->norm, .ref = { .max_iter = 40 } };
-    double R = ldpc_rate_value(rate), lo = 0.3, hi = 2.0, op_it = 0, op_us = 0;
+    double R = (double)c->k / c->nt, lo = 0.3, hi = 2.0, op_it = 0, op_us = 0;
     for (int step = 0; step < 9; step++) {
       double sigma = 0.5 * (lo + hi);
       tally_t t = { 0 };
@@ -204,10 +207,10 @@ static void report_all(ctx_t *ctx, const awgn_arm_t *a, size_t count, const doub
 // ai: Two arms change only the quantiser in front of today's decoder: the rate sweep's (clipped at +-127 instead of
 // ai: +-80, so LLRs up to 15.9) and half the scale (round(4 x LLR), clipped at +-80: LLRs up to 20, and every message
 // ai: cap doubled in LLR terms).
-static void arms(int n, int frames, int threads) {
+static void arms(int frames, int threads) {
   static const double BETAS[] = { 0.25, 0.375, 0.5, 0.625, 0.75, 1.0 };
   static char names[8][48];
-  ctx_t *ctx = ctx_make(threads, n, LDPC_BASE_RATE);
+  ctx_t *ctx = ctx_make(threads, LDPC_BASE34_RATE);
   double sigma[GRID];
   for (int j = 0; j < GRID; j++) sigma[j] = ref_sigma_for(GRID_MI0 + j * GRID_STEP);
   printf("\nthe format's code (n %d, k %d, z %d), BI-AWGN, %d frames at each bracketing point, %d threads\n",
@@ -246,12 +249,12 @@ static void arms(int n, int frames, int threads) {
 }
 
 int main(int argc, char **argv) {
-  int n = argc > 1 ? atoi(argv[1]) : 4800, frames = argc > 2 ? atoi(argv[2]) : 200, arm_frames = argc > 3 ? atoi(argv[3]) : 2000;
+  int frames = argc > 1 ? atoi(argv[1]) : 200, arm_frames = argc > 2 ? atoi(argv[2]) : 2000;
   int threads = omp_get_max_threads();
   struct timespec t0, t1;
   clock_gettime(CLOCK_MONOTONIC, &t0);
-  if (frames > 0) rate_sweep(n, frames, threads);
-  if (arm_frames > 0 && n / LDPC_NB == LDPC_BASE_Z) arms(n, arm_frames, threads);
+  if (frames > 0) rate_sweep(frames, threads);
+  if (arm_frames > 0) arms(arm_frames, threads);
   clock_gettime(CLOCK_MONOTONIC, &t1);
   printf("wall %.1f s\n", (double)(t1.tv_sec - t0.tv_sec) + 1e-9 * (double)(t1.tv_nsec - t0.tv_nsec));
   return 0;

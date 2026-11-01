@@ -29,12 +29,12 @@ static int any_version(void) { return OB_FMT_VERSION_MIN + (int)(rnd() % NV); }
 // SPEC.md 5.2's six words, a the ring's index (test/vectors.mjs holds the wasm build to the same words). A change
 // here is a change to the format.
 static const struct { int a, version, fps; const char *hex; } VEC[] = {
-  { 0, 64, 24, "4c401843c236ee95dc072a1c61cb63fc" },
-  { 0, 128, 240, "4c80f01a03b06a272bf125d409be9dd9" },
-  { 0, 72, 30, "4c481e8a5889b2ffdc13581b53702083" },
-  { 0, 2, 0, "4c0200bf8a272653d9ff5f11927947ed" },
-  { 1, 8, 60, "4c083c787c7c416d2b6b3fc18075004ad5cd92b1945ab6165f18ed021c053ff6" },
-  { 2, 32, 120, "4c2078c9d4c6572e79e041b1f59cf0bf61b4d51a391c456426ff193c5616df3bfa872faddf956cda9ffb1371b5bfca1460e86e4f278c5a2c1e79b982387ef7f7" },
+  { 0, 32, 24, "4c20188a931bcb154e849dfc68bc499e" },
+  { 0, 64, 240, "4c40f095a1ea203a12ea56091b50c91d" },
+  { 0, 36, 30, "4c241ef7ae82b06f1b6a9de7f66d48aa" },
+  { 0, 4, 0, "4c0400e55734bb5b7d82661fc44c6646" },
+  { 1, 4, 60, "4c043c7618ef9352e525c51045b722df9e8064f9f0ddad60a761d030c9963206" },
+  { 2, 16, 120, "4c10783d4504e4341b703313d38614a0a2d894f9ca7e94d881959561fec187689d9017a57e59ffeb675e0b2d074a080b48ab41f8c3a9c9cdc88dea6bd98c991c" },
 };
 
 // Soft values as the reader lays them out, q[side * cells + i]: +mag for a dark cell, -mag for a light one.
@@ -87,9 +87,10 @@ int main(int argc, char **argv) {
     for (int k = 0; k < BS[a]; k++) sprintf(hex + 2 * k, "%02x", cw[k]);
     CHECK(!strcmp(hex, VEC[v].hex), "vector ring %d version %d fps %d: %s", RB[a], f.version, f.fps, hex);
   }
-  { const ob_fmt_t f = { 2, 0 }, v0 = { 0, 0 }, v1 = { 1, 0 }, v129 = { 129, 0 }, fps = { 2, 256 };
+  { const ob_fmt_t f = { 4, 0 }, v0 = { 0, 0 }, v3 = { 3, 0 }, v4 = { 4, 0 }, v64 = { 64, 0 }, v65 = { 65, 0 }, fps = { 4, 256 };
     CHECK(ob_fmt_encode(&f, cw, 16) == 0 && ob_fmt_encode(&f, cw, 15) < 0 && ob_fmt_encode(&f, cw, OB_FMT_BYTES_MAX + 1) < 0, "encode lengths");
-    CHECK(ob_fmt_encode(&v0, cw, 16) < 0 && ob_fmt_encode(&v1, cw, 16) < 0 && ob_fmt_encode(&v129, cw, 16) < 0 && ob_fmt_encode(&fps, cw, 16) < 0, "encode fields"); }
+    CHECK(ob_fmt_encode(&v4, cw, 16) == 0 && ob_fmt_encode(&v64, cw, 16) == 0, "encode versions 4 and 64");
+    CHECK(ob_fmt_encode(&v0, cw, 16) < 0 && ob_fmt_encode(&v3, cw, 16) < 0 && ob_fmt_encode(&v65, cw, 16) < 0 && ob_fmt_encode(&fps, cw, 16) < 0, "encode fields"); }
 
   for (int a = 0; a < NR; a++) {
     const int W = WS[a], B = BS[a], nroots = B - 3, t = nroots / 2;
@@ -151,15 +152,16 @@ int main(int argc, char **argv) {
     { uint8_t c[OB_FMT_BYTES_MAX] = { 0x4d, 8, 60 };
       rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q);
       CHECK(read(q, W, B, 8, 60) == 0, "magic 0x4d");
-      static const int NOT_A_VERSION[] = { 0, 1, 129 };
-      for (int k = 0; k < 3; k++) { const int v = NOT_A_VERSION[k]; c[0] = 0x4c; c[1] = (uint8_t)v; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, v, 60) == 0, "version %d", v); }
-      c[1] = 128; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, 128, 60) == 1, "version 128");
-      c[1] = 3; c[2] = 255; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, 3, 255) == 1, "version 3, fps 255");
+      static const int NOT_A_VERSION[] = { 0, 1, 2, 3, 65, 255 };
+      for (int k = 0; k < 6; k++) { const int v = NOT_A_VERSION[k]; c[0] = 0x4c; c[1] = (uint8_t)v; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, v, 60) == 0, "version %d", v); }
+      c[1] = 64; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, 64, 60) == 1, "version 64");
+      c[1] = 4; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, 4, 60) == 1, "version 4");
+      c[1] = 5; c[2] = 255; rs_encode(c, 3, nroots); soften(c, B, W, 0.4f, q); CHECK(read(q, W, B, 5, 255) == 1, "version 5, fps 255");
     }
 
     // ai: Garbage: soft values uniform in -0.5 .. 0.5, what a wrong grid reads. Exact rates first: RS passing a step,
-    // ai: the steps together, then with the magic and a version of 2 .. 128 (a false codeword's data bytes are
-    // ai: uniform: 1/256 for the magic, 127/256 for the version). Then measured through ob_fmt_decode, with the rate the
+    // ai: the steps together, then with the magic and a version of 2 .. 64 (a false codeword's data bytes are
+    // ai: uniform: 1/256 for the magic, 63/256 for the version). Then measured through ob_fmt_decode, with the rate the
     // ai: steps to nroots - 1 would have beside it.
     const int other = nroots - 1;
     double steps = p_pass(B, 0), alt = p_pass(B, 0);

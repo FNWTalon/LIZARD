@@ -1,7 +1,7 @@
 // ai: Does the sender page stand alone (2026-09-26)?
 // ai: A plain static file server (no /api: every such request is answered 404 and logged) serves lizard/ to headless
 // ai: Chrome, driven over the DevTools protocol (phone.mjs on a local port), its window 1920 x 1080. Six cases: the
-// ai: test stream at LIZARD-96 and at LIZARD-16, LIZARD-96 carrying a 50,000-byte file chosen through the file input
+// ai: test stream at LIZARD-96 and at LIZARD-64, LIZARD-96 carrying a 50,000-byte file chosen through the file input
 // ai: (DOM.setFileInputFiles), and the test stream at the page's own pick (?payload=test&auto), which must be the
 // ai: library's pick for the room the page measured (sim/lizard_pick.mjs pickVersion over the whole ladder since 2026-09-29,
 // ai: capped at LIZARD-560 before; a 1080 px room picks LIZARD-608 in the default 128 ring), then that pick with two codes (&codes=2): the canvas 2:1, each half read on its own,
@@ -67,7 +67,7 @@ import { makePhy, blindSpec } from "../liblizard/sim/phy.mjs";
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { init as initWh, Decoder } from "../liblizard/sim/fountain.mjs";
 import { XferReceiver, MemoryStore, ID_HEADER, blake3, hex } from "../liblizard/sim/xfer.mjs";
-import { N_FOR, NAME, SPAN, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor } from "../liblizard/sim/lizard_pick.mjs";
+import { N_FOR, NAME, SPAN, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor, subchOf, versionOf } from "../liblizard/sim/lizard_pick.mjs";
 import { tabs, open, evaluate, navigate } from "./phone.mjs";
 import { bundle } from "./tar.mjs";
 
@@ -176,9 +176,9 @@ const pageLine = (g) => `  page: ${g.state} | ${g.nums} | ${g.tx.split("\n").sli
 
 const faults = [];
 let tipSeen = false;
-// ai: 488 (version 61, 58 blocks under the rate profile; 2026-10-01): a version the 16-step ladder never offered, set as
-// ai: the slider sets it
-for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file: true }, { subch: 96, file: true, bundle: "files" }, { subch: 96, file: true, bundle: "folder" }, { subch: "auto" }, { subch: "auto", margin: 20 }, { subch: "auto", codes: 2 }, { subch: "auto", codes: 2, spacing: 4 }, { subch: "auto", codes: 2, spacing: 44, respacing: 8 }, { subch: "auto", midStream: true }]) {
+// ai: 496 (version 31, an odd version, 60 blocks under the rate profile): set as the slider sets it (488, version 61 of
+// ai: the 8-sub-channel ladder, from 2026-10-01 to 2026-10-29)
+for (const c of [{ subch: 96 }, { subch: 64 }, { subch: 496 }, { subch: 96, file: true }, { subch: 96, file: true, bundle: "files" }, { subch: 96, file: true, bundle: "folder" }, { subch: "auto" }, { subch: "auto", margin: 20 }, { subch: "auto", codes: 2 }, { subch: "auto", codes: 2, spacing: 4 }, { subch: "auto", codes: 2, spacing: 44, respacing: 8 }, { subch: "auto", midStream: true }]) {
   const codes = c.codes ?? 1;
   const bun = c.bundle ? BUNDLES[c.bundle] : null;
   let name = `LIZARD-${c.subch}${bun ? `, ${bun.made.name} (${bun.made.files} files, ${bun.bytes.length} B)` : c.file ? `, a ${FILE_BYTES} B file` : ", test stream"}${c.margin !== undefined ? `, margin ${c.margin}` : ""}${c.spacing !== undefined ? `, spacing ${c.spacing}` : ""}`;
@@ -229,7 +229,7 @@ for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file
     const h = out.r.got.find((b) => b.id === ID_HEADER);
     if (h) { const rx = new XferReceiver({ M, Decoder, store: new MemoryStore() }); await rx.add(ID_HEADER, h.bytes); header = rx.progress().header; break; }
   }
-  const { g, r } = out, v = subch / 8, wordOk = r.fmt?.version === v && r.fmt?.fps === FPS, blocksOk = r.seen > 0 && r.bad === 0;
+  const { g, r } = out, v = versionOf(subch), wordOk = r.fmt?.version === v && r.fmt?.fps === FPS, blocksOk = r.seen > 0 && r.bad === 0;
   // ai: a file's line carries its size, and what it was compressed to where zstd shrank it (2026-10-05): random bytes do not shrink
   // ai: its figures kept whole by no-break spaces (send.mjs sizeText, 2026-10-23), read as spaces here
   const state = g.state.replace(/\u00a0/g, " "), stateOk = bun ? state.startsWith(`Sending ${bun.made.name}, `) : state === (c.file ? "Sending check-send.bin, 50 KB (50 KB raw)" : "Sending the test stream");
@@ -281,7 +281,7 @@ for (const c of [{ subch: 96 }, { subch: 16 }, { subch: 488 }, { subch: 96, file
     if (Math.abs(mods - regap) > 0.5) faults.push(`${n2}: the gap is ${mods.toFixed(2)} modules after 5 s`);
     // ai: every block of the half: the format's rate profile's count for the version its word names (2026-10-07;
     // ai: the version itself before, one 8-sub-channel block a version)
-    for (const [k, h] of o.halves.entries()) if (!(h.fmt && h.seen > 0 && h.bad === 0 && h.seen === blocksFor(8 * h.fmt.version))) faults.push(`${n2}: half ${k} read ${h.seen} blocks of ${h.fmt ? blocksFor(8 * h.fmt.version) : "?"}, ${h.bad} bad, word ${h.fmt ? h.fmt.version : "none"}`);
+    for (const [k, h] of o.halves.entries()) if (!(h.fmt && h.seen > 0 && h.bad === 0 && h.seen === blocksFor(subchOf(h.fmt.version)))) faults.push(`${n2}: half ${k} read ${h.seen} blocks of ${h.fmt ? blocksFor(8 * h.fmt.version) : "?"}, ${h.bad} bad, word ${h.fmt ? h.fmt.version : "none"}`);
     if (o.g.w !== 2 * o.g.h + o.g.gap) faults.push(`${n2}: the canvas is ${o.g.w} x ${o.g.h}, not two squares ${o.g.gap} px apart`);
   }
 }
@@ -324,13 +324,13 @@ async function grabUntil(want, ok, subs, ms) {
 // ai: blocksPerFrame: a re-pick changes the blocks a frame), so each change's first frame must carry only ids above every
 // ai: id read before it, or a receiver would count the new frames' blocks as repeats.
 async function midStream(subch0, r0) {
-  const v0 = subch0 / 8;
+  const v0 = versionOf(subch0);
   let maxId = Math.max(-1, ...r0.got.map((b) => b.id));
   await s.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
   const t0 = Date.now();
   let m = await measure();
   for (let t = 0; t < 50 && (m.w !== 1280 || m.h !== 720); t++) { await sleep(100); m = await measure(); }
-  const subch = pickVersion(m.room).subch, v = subch / 8;
+  const subch = pickVersion(m.room).subch, v = versionOf(subch);
   let name = `re-pick in a ${m.w} x ${m.h} window (a ${m.room} px room): LIZARD-${subch0} to LIZARD-${subch}, test stream`;
   if (m.w !== 1280 || m.h !== 720) { faults.push(`${name}: the window is not 1280 x 720`); return; }
   if (subch === subch0) { faults.push(`${name}: the smaller room picks the same version, so nothing re-picks`); return; }

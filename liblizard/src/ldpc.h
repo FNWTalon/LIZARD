@@ -1,14 +1,13 @@
-// Quasi-cyclic IRA LDPC: H = [Hd | Hp], Hd built from Z x Z circulants over a base graph of 48 columns
-// (49 for the format's 7/8 code, whose first data column is never sent: np below), Hp the bit-level
-// accumulator staircase. The format's codes ship as their base matrices (ldpc_base.h, one a rate of the
-// rate profile, each with its own kb, mb and np); any other is derived from (n, rate, seed) by
-// ldpc_generate. The construction is pre-2005 literature throughout (Gallager codes, IRA staircase
-// encoding, circulant lifting with girth conditioning).
+// Quasi-cyclic IRA LDPC: H = [Hd | Hp], Hd built from Z x Z circulants over a base graph of kb data columns and mb
+// block rows (each of the format's four codes its own: ldpc_base.h, z = 128 for every one), Hp the bit-level
+// accumulator staircase. The format's codes ship as their base matrices, one a rate of the rate profile; the 7/8
+// code's first data column is never sent (np below). The construction is pre-2005 literature throughout (Gallager
+// codes, IRA staircase encoding, circulant lifting with girth conditioning).
 #ifndef OB_LDPC_H
 #define OB_LDPC_H
 #include <stdint.h>
 
-enum { LDPC_NB = 48, LDPC_RATES = 7 };
+enum { LDPC_RATES = 7 };
 
 typedef struct {
   int n, k, m, z, kb, mb, rate, norm;
@@ -28,14 +27,11 @@ typedef struct {
 extern const char *const ldpc_rate_name[LDPC_RATES];
 double ldpc_rate_value(int rate);
 
-// The code at z = n_max / 48 and the given rate index: the format's table where one matches (z, rate, seed 1),
-// else generated (48 columns, no puncturing). Returns 0 on success, -1 for a rate index with no code.
-int ldpc_init(ldpc_t *c, int n_max, int rate, uint32_t seed);
-// The generator: shift[r][j] for the mb block rows of the code at circulant size z (the profile row, the seed's
-// xorshift draws, the cycle score), -1 where there is no edge. Returns mb, or -1. It builds every code but the
-// format's four, which are printed tables (ldpc_base.h: the 1/2 code its own output, the 7/8, 3/4 and 2/3 searched
-// past it); test/ldpc_table.c holds each table to the hash of its H.
-int ldpc_generate(int z, int rate, uint32_t seed, int shift[][LDPC_NB]);
+// The format's code at a rate index (ldpc_base.h, the rate profile's four). Returns 0 on success, -1 for a rate index
+// with no code. test/ldpc_table.c holds each table to the hash of its H.
+int ldpc_init(ldpc_t *c, int rate);
+// The bits a block's slots carry under the format's code at a rate index (n - np), without building it; 0 for none.
+int ldpc_sent_bits(int rate);
 void ldpc_free(ldpc_t *c);
 
 // bits: one bit per byte. data k in, codeword n out (systematic, data first).

@@ -25,7 +25,7 @@ import { frameTap, cornerProbe } from "./vframes.mjs";
 import { verdict } from "./verdict.mjs";
 import { PoolPolicy } from "./pool.mjs";
 import { logPost } from "./devlog.mjs";
-import { R_RING, SPAN, MODULES, N_FOR, NAME, PICTURE_SIZES } from "../liblizard/sim/lizard_pick.mjs";
+import { R_RING, SPAN, MODULES, N_FOR, NAME, PICTURE_SIZES, subchOf } from "../liblizard/sim/lizard_pick.mjs";
 import { isControlId, PAYLOAD, fractionDone } from "../liblizard/sim/xfer.mjs";
 import { remember, persist, restoreSaved, say, meter, bytes, rate, left, about, registerApp, collapser, sideResizer, sayName } from "./ui.mjs";
 import { open as openKept, list as listKept, watch as watchLibrary } from "./library.mjs";
@@ -89,7 +89,7 @@ let photoCaps = {}, levels = null;   // what the camera says it can be told, and
 let band = null, bandSeen = null;
 // ai: What the light says: LIZARD's word.
 function showCfg() {
-  const light = !band ? "no format word read yet" : `${NAME(8 * band.version)}, ${band.fps ? `${band.fps} fps` : "no rate"} from the band`;
+  const light = !band ? "no format word read yet" : `${NAME(subchOf(band.version))}, ${band.fps ? `${band.fps} fps` : "no rate"} from the band`;
   $("cfg").textContent = `light: ${light}`;
 }
 // ai: What the side column says (showState). err: why a start, or the transfer, failed, a plain sentence kept until the
@@ -568,7 +568,7 @@ function take(m) {
   if (m.quad) {
     const q = m.quad, side = Math.hypot(q[2] - q[0], q[3] - q[1]);
     // ai: The format is the last word read (none read yet: no ring to size).
-    const subch = band ? 8 * band.version : 0, n = subch ? N_FOR(subch) : 0;
+    const subch = band ? subchOf(band.version) : 0, n = subch ? N_FOR(subch) : 0;
     if (side > 0) {
       symPx = symPx ? 0.7 * symPx + 0.3 * side : side;
       ringPx = subch ? (symPx * SPAN(n, band.ring) / MODULES(n, band.ring)) / R_RING(subch) : 0;   // the picture's px over its top ring's cycles
@@ -697,7 +697,7 @@ function second() {
   // every frame whatever else is right, and that is worth saying while the phone is still in hand.
   const slow = band?.fps && stats.capturedFps < band.fps - 1 ? `CAMERA BELOW THE DISPLAY RATE at ${stats.capturedFps.toFixed(0)} fps: some frames are never seen` : "";
   const bandLine = band
-    ? `band: ${NAME(8 * band.version)}${band.fps ? `, ${band.fps} fps stated` : ", no rate stated"}${slow ? `  ${slow}` : ""}`
+    ? `band: ${NAME(subchOf(band.version))}${band.fps ? `, ${band.fps} fps stated` : ", no rate stated"}${slow ? `  ${slow}` : ""}`
     : "band: no format word read yet";
   const num = (v) => (typeof v === "number" ? v.toFixed(1) : "?");
   const decLine = `workers ${stats.workersReady} ready of ${stats.workers}, at most ${stats.workersMax}, ${stats.vfSent ? `frames as VideoFrames (from the ${stats.vfSource}${stats.vfFormat ? `, ${stats.vfFormat}` : ""}, copied to luma in the worker)${stats.lumaSent ? `, ${stats.lumaSent} by the grab` : ""}` : `frames by the grab${stats.vfNote ? ` (${stats.vfNote})` : ""}`}`;
@@ -728,7 +728,7 @@ function second() {
   ].filter(Boolean).join("\n");
   // ai: The lab line (#lab, in Developer Tools; the numbers line until 2026-10-01): the last second's rate, the registered
   // ai: share and the format's name while its word is live. The Android app's Developer Tools shows the same line.
-  const live = band && recent(ui.bandAt), named = live ? `, ${NAME(8 * band.version)}${band.fps ? ` at ${nb(`${band.fps} fps`)}` : ""}` : "";
+  const live = band && recent(ui.bandAt), named = live ? `, ${NAME(subchOf(band.version))}${band.fps ? ` at ${nb(`${band.fps} fps`)}` : ""}` : "";
   ui.lab = live || w.found ? `${nb(`${Math.round(stats.goodputKBs)} KB/s`)}, ${Math.round(100 * stats.foundShare)}% registered${named}` : "no code yet";
   // ai: The hints (#why) in plain words, one a line (2026-10-01): the verdict's and the flags' lab wording stays in #out
   // ai: and the stats row. With no code seen, "not registered" only repeats "Looking for a code", so the verdict waits for

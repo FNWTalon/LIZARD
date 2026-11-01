@@ -25,6 +25,9 @@ class Sender;
 struct PresentTarget { unsigned long x11Window = 0; void* hwnd = nullptr; void* metalLayer = nullptr; };
 // ai: the window manager's window around an X11 window (the ancestor with WM_STATE), else the window itself
 unsigned long x11TopLevel(unsigned long window);
+// ai: the RandR output showing the centre of an X11 window ("DP-0"), "" where none does or off X11: the monitor a
+// ai: Fullscreen press takes (PresentOptions::direct)
+std::string x11OutputAt(unsigned long window);
 // ai: the window manager's own full screen for its window (x11TopLevel's), asked (true where the request went) and read
 bool x11Fullscreen(unsigned long top, bool on);
 bool x11IsFullscreen(unsigned long top);
@@ -43,6 +46,14 @@ struct PresentOptions {
   bool vsync = false;      // ai: the monitor held at a refresh fps divides while presenting (setVsync)
   std::function<void(const std::string&)> log;
   std::string csv;         // ai: a CSV line a present into this file, a UTF-8 path (LIZ_PRESENT_CSV, tx_jni.cpp), "" none
+  // ai: The display itself (2026-10-31): the named output ("DP-0"; "" none) taken from the desktop for as long as the
+  // ai: presenter runs, the code alone on it, presented FIFO on the display's own surface (VK_KHR_display) at a mode of
+  // ai: its size the asked rate divides; X11 through VK_EXT_acquire_xlib_display. Where it cannot be taken (no such
+  // ai: output, the extension missing, the server refusing, another system) the window as before, and the log says why.
+  std::string direct;
+  bool mark = false;       // ai: present_check's: each present's picture count drawn in the image's top-left corner,
+                           // ai: 24 squares of 8 px in a row (12 bits, the count mod 4096, then their complement; dark
+                           // ai: a one), for a tool reading the screen back to say which picture each refresh showed
 };
 
 class Presenter {
@@ -66,7 +77,11 @@ class Presenter {
   void setSize(double size, double edge);
   // ai: Paused: the last picture stays (no new pictures taken; presents go on a few times a second, uncounted).
   void setPaused(bool on);
-  // ai: The last second's window, JSON: shownFps (fresh pictures on screen a second), presentsPerSec, hz (the refresh
+  // ai: The last second's window, JSON (2026-10-31 beside the fields below: timing, true where the presents carry their
+  // ai: target refreshes (VK_EXT_present_timing) and held, late and errMs are the display's own first-pixel times;
+  // ai: late, pictures on screen a refresh or more after their target; slips, the schedule moved to the display's
+  // ai: times after late pictures in a row; errMs, the largest first-pixel time off its target, ms; direct, the
+  // ai: output taken, "" none): shownFps (fresh pictures on screen a second), presentsPerSec, hz (the refresh
   // ai: measured, else the mode's, else 60), modeHz (XRandR's for the monitor holding the window, 0 unknown), held
   // ai: ({"refreshes": pictures}), missed (refreshes the loop missed), behind (pictures due and not yet painted),
   // ai: queued and queuedMin (presents between one submitted and the last on screen, the mean and the least: the

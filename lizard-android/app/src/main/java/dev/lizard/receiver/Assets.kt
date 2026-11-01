@@ -7,8 +7,9 @@ import java.io.File
 // ai: copied to filesDir/lizard once an install, since the native side reads it by path (ReceiverConfig.assets). The
 // ai: stamp is the package's lastUpdateTime: every install copies afresh, so a new gen never meets an old tree.
 object Assets {
+    fun dir(ctx: Context) = File(ctx.filesDir, "lizard")
     fun ensure(ctx: Context): File {
-        val dir = File(ctx.filesDir, "lizard")
+        val dir = dir(ctx)
         val stamp = File(dir, ".stamp")
         val want = ctx.packageManager.getPackageInfo(ctx.packageName, 0).lastUpdateTime.toString()
         if (stamp.isFile && stamp.readText() == want) return dir

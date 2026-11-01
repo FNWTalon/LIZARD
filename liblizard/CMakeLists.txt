@@ -87,8 +87,8 @@ if(EMSCRIPTEN)
       _ob_last _ob_prof _ob_prof_reset _ob_luma_strip _ob_test_binarize _ob_test_sample _ob_test_marks
       _ob_test_mesh_tables_out _ob_test_fmt_plan _ob_test_fmt_cells _ob_test_thin_plan _ob_test_thin_score_out
       _ob_test_finder_out _focus_rx_acquire _focus_rx_acquire_quad _focus_rx_finish _focus_shape _focus_pos_ptr
-      _focus_tables_out _focus_rx_ldpc _focus_block_subs _focus_ldpc_tables _focus_tiers_for _focus_set_axis _focus_set_lens
-      _focus_lens_set _focus_anchors_found _focus_anchor_geom_get _focus_fmt_check_out _focus_fmt_soft_out _focus_grid_out _ob_test_crc_hash
+      _focus_tables_out _focus_rx_ldpc _focus_block_runs _focus_ldpc_tables _focus_tiers_for _focus_set_axis
+      _focus_anchors_found _focus_anchor_geom_get _focus_fmt_check_out _focus_fmt_soft_out _focus_grid_out _ob_test_crc_hash
       _ob_test_crc_gate_out _ob_dbg_hash _stream_fill _xfer_layout _xfer_id_of _xfer_kind_of _xfer_hdr_write _xfer_hdr_parse
       _xfer_mf_parse _xfer_chunk_ok _xfer_manifest_blocks _xfer_manifest_write _xfer_manifest_check _xfer_root
       _xfer_chunk_cv _xfer_b3_hash _xfer_b3_sub
@@ -120,7 +120,7 @@ else()
       find_package(JNI REQUIRED)
       target_include_directories(lizard PRIVATE ${JNI_INCLUDE_DIRS})
     endif()
-    target_sources(lizard PRIVATE api/jni.cpp)
+    target_sources(lizard PRIVATE api/jni.cpp api/jni_session.cpp api/jni_text.cpp)
   endif()
 endif()
 target_include_directories(lizard PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -156,6 +156,15 @@ if(LIZ_GPU AND NOT EMSCRIPTEN)
   target_link_libraries(lizard PRIVATE lizard_rx lizard_tx)
 else()
   target_sources(lizard PRIVATE api/engine_none.cpp)
+endif()
+# ai: layer 5, the receive session (api/session.cpp over core/rx/session.h and the cameras, core/cam): where the core
+# ai: builds them (desktop systems with the GPU targets); else stubs saying LIZ_E_UNSUPPORTED (wasm, Android until its
+# ai: camera is in the engine)
+if(TARGET lizard_session)
+  target_sources(lizard PRIVATE api/session.cpp)
+  target_link_libraries(lizard PRIVATE lizard_session)
+else()
+  target_sources(lizard PRIVATE api/session_none.cpp)
 endif()
 install(TARGETS lizard LIBRARY DESTINATION lib ARCHIVE DESTINATION lib RUNTIME DESTINATION bin)
 install(FILES include/lizard.h DESTINATION include)

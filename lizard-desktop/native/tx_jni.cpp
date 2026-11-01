@@ -2,7 +2,7 @@
 // ai: window code: a sender made on a mapped file or the test stream, configured, and its frames put on the screen by the
 // ai: native presenter (presenter.h, 2026-10-04) in the app's code area, an AWT canvas whose native window JAWT hands over.
 // ai: The Kotlin side loads jawt before this library (it links libjawt). Strings and the error channel (txError) are
-// ai: jni_util.h's, shared with the receiver's face (rx_jni.cpp, 2026-10-25).
+// ai: jni_util.h's (the receive session's JNI is liblizard's since 2026-10-31: api/jni_session.cpp).
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -244,7 +244,9 @@ static bool canvasTarget(JNIEnv* e, jobject canvas, lizard::PresentTarget& targe
 // ai: place: macOS's layer over the canvas (x, y, w, h in points from the top left of the window's content, the
 // ai: backing scale; presentPlace when it moves), ignored elsewhere.
 // ai: vsync: the monitor held at a refresh fps divides while presenting (presenter.h setVsync; presentVsync after).
-FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jfloat size, jfloat edge, jboolean vsync, jfloatArray place) {
+// ai: direct: the monitor itself, where it is lent (above; presentStats' direct names it, "" for the window).
+FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jfloat size, jfloat edge, jboolean vsync, jboolean direct,
+                        jfloatArray place) {
   if (!h) { setError("no sender"); return 0; }
   auto out = std::make_unique<Pres>();
   lizard::PresentTarget target;
@@ -262,6 +264,13 @@ FN(jlong, presentStart)(JNIEnv* e, jclass, jobject canvas, jlong h, jint fps, jf
   o.size = size;
   o.edge = edge;
   o.vsync = vsync == JNI_TRUE;
+  // ai: direct (2026-10-31, the Fullscreen press while sending): the monitor under the window's centre taken for the
+  // ai: code alone (presenter.h PresentOptions::direct; X11); elsewhere none, and the window as before
+#if defined(__linux__)
+  if (direct == JNI_TRUE) o.direct = lizard::x11OutputAt(lizard::x11TopLevel(target.x11Window));
+#else
+  (void)direct;
+#endif
   // ai: LIZ_PRESENT_CSV=<path>: a line a present, for reading a run's cadence around a resize;
   // ai: the path in UTF-8, as the presenter opens it (Windows: read wide, since getenv gives the ANSI code page)
 #if defined(_WIN32)

@@ -1,7 +1,8 @@
-// ai: The JNI glue between the app (Native.kt) and core's receiver (liblizard/core/rx/receiver.h), and nothing else: a handle is
-// ai: a Receiver; a frame's HardwareBuffer goes in as its AHardwareBuffer (no copy); the receiver's release(tag), called
-// ai: from its own threads, comes back to Native.release, which closes the camera's Image.
-#include <android/hardware_buffer_jni.h>
+// ai: The JNI glue between the app (Native.kt) and the core's sender (liblizard/core/tx/sender.h): a handle is a Tx.
+// ai: The receiver is the receive session's (liblizard/core/rx/session.h, the C API's layer 5): its natives
+// ai: (liblizard/api/jni_session.cpp, dev.lizard.SessionNative, the Kotlin binding's dev.lizard.Session) are compiled
+// ai: into this library and registered at its load, so the app and the desktop share one JNI surface for receiving.
+#include <android/hardware_buffer.h>
 #include <android/log.h>
 #include <jni.h>
 #include <pthread.h>
@@ -14,11 +15,9 @@
 #include <string>
 #include <vector>
 
-#include "receiver.h"
-#include "develop.h"
-#include "replay.h"
+#include "android_env.h"
+#include "jni_session.h"
 #include "sender.h"
-#include "stream.h"
 
 #include <android/native_window_jni.h>
 #include <android/surface_control.h>
@@ -48,42 +47,12 @@ extern "C" {
 
 namespace {
 
-JavaVM* gVm = nullptr;
-jclass gNative = nullptr;     // ai: dev.lizard.receiver.Native, a global ref
-jmethodID gRelease = nullptr; // ai: Native.release(long), static
-pthread_key_t gDetach;        // ai: set on the threads attached here, so they detach when they end
-
-// ai: The calling thread's JNIEnv: a receiver thread is attached on its first release and stays attached (an attach per
-// ai: frame costs more than the release), detached by gDetach's destructor when the thread exits.
-JNIEnv* envHere() {
-  JNIEnv* e = nullptr;
-  if (gVm->GetEnv(reinterpret_cast<void**>(&e), JNI_VERSION_1_6) == JNI_OK) return e;
-  JavaVMAttachArgs a{JNI_VERSION_1_6, "lizard-rx", nullptr};
-  if (gVm->AttachCurrentThread(&e, &a) != JNI_OK) return nullptr;
-  pthread_setspecific(gDetach, e);
-  return e;
-}
-
-void release(uint64_t tag) {
-  JNIEnv* e = envHere();
-  if (!e) { LOGE("release %llu: no JNIEnv", static_cast<unsigned long long>(tag)); return; }
-  e->CallStaticVoidMethod(gNative, gRelease, static_cast<jlong>(tag));
-  if (e->ExceptionCheck()) { e->ExceptionDescribe(); e->ExceptionClear(); }
-}
-
 std::string str(JNIEnv* e, jstring s) {
   if (!s) return {};
   const char* c = e->GetStringUTFChars(s, nullptr);
   std::string r(c ? c : "");
   if (c) e->ReleaseStringUTFChars(s, c);
   return r;
-}
-
-lizard::Receiver* rx(jlong h) { return reinterpret_cast<lizard::Receiver*>(h); }
-
-void throwJava(JNIEnv* e, const char* cls, const std::string& msg) {
-  jclass c = e->FindClass(cls);
-  if (c) e->ThrowNew(c, msg.c_str());
 }
 
 // ai: a message as a JSON string's contents: quotes and backslashes escaped, control characters as spaces
@@ -97,234 +66,27 @@ std::string jsonText(const std::string& s) {
   return q;
 }
 
+using lizard::applyDebugEnv;   // ai: android_env.h: debug.lizard.env's LIZ_* switches, as each sender is made
+
 }  // namespace
 
+// ai: the receive session's natives registered on dev.lizard.SessionNative (the binding's Session), so the app's
+// ai: Session calls land here; the sender's are found by their Java_ names
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
-  gVm = vm;
   JNIEnv* e = nullptr;
   if (vm->GetEnv(reinterpret_cast<void**>(&e), JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
-  jclass c = e->FindClass("dev/lizard/receiver/Native");
-  if (!c) return JNI_ERR;
-  gNative = static_cast<jclass>(e->NewGlobalRef(c));
-  gRelease = e->GetStaticMethodID(gNative, "release", "(J)V");
-  if (!gRelease) return JNI_ERR;
-  pthread_key_create(&gDetach, [](void*) { gVm->DetachCurrentThread(); });
+  if (!lizard::jni::registerSession(e)) return JNI_ERR;
   return JNI_VERSION_1_6;
 }
 
-// ai: The core's LIZ_* switches for a run driven over adb: `adb shell setprop debug.lizard.env "LIZ_LDPC_FORM=0 ..."`, read
-// ai: as each receiver and each sender is made; the names set the last time are unset first, so a property cleared
-// ai: takes effect at the next one (2026-10-07; they stayed set before).
-static void applyDebugEnv() {
-  static std::vector<std::string> set;
-  for (const auto& k : set) unsetenv(k.c_str());
-  set.clear();
-  char v[PROP_VALUE_MAX] = "";
-  __system_property_get("debug.lizard.env", v);
-  std::string all(v);
-  for (size_t a = 0; a < all.size();) {
-    size_t b = all.find(' ', a);
-    if (b == std::string::npos) b = all.size();
-    const std::string kv = all.substr(a, b - a);
-    const size_t eq = kv.find('=');
-    if (eq != std::string::npos && eq > 0) { setenv(kv.substr(0, eq).c_str(), kv.substr(eq + 1).c_str(), 1); set.push_back(kv.substr(0, eq)); __android_log_print(ANDROID_LOG_INFO, "lizard", "env %s", kv.c_str()); }
-    a = b + 1;
-  }
-}
-
-// ai: the precision is the config's default, auto (the decoder times the classifiers' forms on its first batch)
-extern "C" JNIEXPORT jlong JNICALL Java_dev_lizard_receiver_Native_create(JNIEnv* e, jclass, jstring assets,
-    jstring cacheDir, jstring storeDir, jstring decoder, jstring layout) {
-  lizard::ReceiverConfig c;
-  c.assets = str(e, assets);
-  c.cacheDir = str(e, cacheDir);
-  c.storeDir = str(e, storeDir);
-  c.decoder = str(e, decoder);
-  c.layout = str(e, layout);
-  applyDebugEnv();
-  c.log = [](const std::string& s) { LOGI("%s", s.c_str()); };
-  try {
-    auto r = lizard::Receiver::create(c, release);
-    if (!r) { throwJava(e, "java/lang/IllegalStateException", "Receiver::create returned nothing"); return 0; }
-    return reinterpret_cast<jlong>(r.release());
-  } catch (const std::exception& x) {
-    throwJava(e, "java/lang/IllegalStateException", std::string("Receiver::create: ") + x.what());
-    return 0;
-  }
-}
-
-// ai: Throws (IllegalArgumentException) only before the receiver has the frame, so the caller closes the Image at once;
-// ai: once pushed, the frame is the receiver's until its release(tag), even when it drops it.
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_push(JNIEnv* e, jclass, jlong h, jobject hb,
-    jobject luma, jint width, jint height, jint stride, jlong timestampNs, jlong tag, jfloatArray lens) {
-  lizard::CameraFrame f;
-  if (hb) f.hb = AHardwareBuffer_fromHardwareBuffer(e, hb);
-  if (luma) f.luma = static_cast<const uint8_t*>(e->GetDirectBufferAddress(luma));
-  if (!h || (!f.hb && !f.luma)) {
-    throwJava(e, "java/lang/IllegalArgumentException", !h ? "no receiver" : "a frame with neither a buffer nor luma");
-    return;
-  }
-  f.width = static_cast<uint32_t>(width);
-  f.height = static_cast<uint32_t>(height);
-  f.stride = static_cast<uint32_t>(stride);
-  f.timestampNs = timestampNs;
-  f.tag = static_cast<uint64_t>(tag);
-  if (lens && e->GetArrayLength(lens) >= 4) e->GetFloatArrayRegion(lens, 0, 4, f.lens);
-  rx(h)->push(f);
-}
-
-// ai: A frame in a format the decoders do not read as it is (2026-10-27, Receive's Format: Engine.develop): P010,
-// ai: RAW16, RAW10, RAW12, described for the receiver, which develops it to luma (core/ingest/develop.h: the GPU
-// ai: decoder on its device, the C on this thread). The crop (x0, y0, w, h: even, from Engine) is all that is read;
-// ai: P010's bin is 1.
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_pushRaw(JNIEnv* e, jclass, jlong h, jobject plane, jint rowStride,
-    jint pixelStride, jint format, jint width, jint height, jint x0, jint y0, jint w, jint hh, jint bin, jint cfa, jfloatArray levels,
-    jlong timestampNs, jlong tag, jfloatArray lens) {
-  (void)cfa;   // ai: the levels already carry each position's colour (Engine.levelsOf)
-  const uint8_t* src = plane ? static_cast<const uint8_t*>(e->GetDirectBufferAddress(plane)) : nullptr;
-  const jlong cap = plane ? e->GetDirectBufferCapacity(plane) : 0;
-  if (!h || !src) { throwJava(e, "java/lang/IllegalArgumentException", !h ? "no receiver" : "a frame with no plane"); return; }
-  if (!lizard::rawFormatKnown(format)) { throwJava(e, "java/lang/IllegalArgumentException", "format " + std::to_string(format) + " is not developed here"); return; }
-  if (bin != 1 && bin != 2) bin = 1;
-  if (format == lizard::RAW_FMT_P010) bin = 1;
-  if (x0 < 0 || y0 < 0 || w < bin || hh < bin || x0 + w > width || y0 + hh > height) {
-    throwJava(e, "java/lang/IllegalArgumentException", "a crop outside the frame");
-    return;
-  }
-  const int ps = pixelStride > 0 ? pixelStride : 2;
-  if (static_cast<jlong>(static_cast<size_t>(y0 + hh - 1) * rowStride + lizard::rawRowBytes(format, x0 + w, ps)) > cap) {
-    throwJava(e, "java/lang/IllegalArgumentException", "the plane is shorter than its rows");
-    return;
-  }
-  lizard::RawFrame r;
-  r.plane = src;
-  r.rowStride = static_cast<uint32_t>(rowStride);
-  r.pixelStride = static_cast<uint32_t>(ps);
-  r.format = format;
-  r.x0 = static_cast<uint32_t>(x0); r.y0 = static_cast<uint32_t>(y0); r.bin = static_cast<uint32_t>(bin);
-  if (levels && e->GetArrayLength(levels) >= 9) e->GetFloatArrayRegion(levels, 0, 9, r.levels);
-  lizard::CameraFrame f;
-  f.raw = &r;
-  f.width = static_cast<uint32_t>(w / bin);
-  f.height = static_cast<uint32_t>(hh / bin);
-  f.timestampNs = timestampNs;
-  f.tag = static_cast<uint64_t>(tag);
-  if (lens && e->GetArrayLength(lens) >= 4) e->GetFloatArrayRegion(lens, 0, 4, f.lens);
-  rx(h)->push(f);
-}
-
 // ai: a system property's value ("" when unset): the switches a run driven over adb sets while the app runs
-// ai: (Engine.kt's delay test, debug.lizard.nudge)
+// ai: (debug.lizard.resolution)
 extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_prop(JNIEnv* e, jclass, jstring name) {
   const char* n = e->GetStringUTFChars(name, nullptr);
   char v[PROP_VALUE_MAX] = "";
   __system_property_get(n, v);
   e->ReleaseStringUTFChars(name, n);
   return e->NewStringUTF(v);
-}
-
-// ai: a USB accessory's fd (PcLink.openAccessory: UsbManager's, detached) to the PC stream's bridge (stream.h), which
-// ai: closes it; false where one is open already
-extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_streamAccessory(JNIEnv*, jclass, jint fd) {
-  return lizard::streamAccessory(fd, [](const std::string& s) { LOGI("%s", s.c_str()); }) ? JNI_TRUE : JNI_FALSE;
-}
-
-// ai: the PC link (stream.h linkUp): up while a USB cable is in, its hello naming layout; its state for the app's poll
-// ai: the PC stream's frames packed (.lizard frames) or raw: the Compression setting (stream.h linkPack)
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_linkPack(JNIEnv*, jclass, jboolean on) {
-  lizard::linkPack(on == JNI_TRUE);
-}
-
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_linkUp(JNIEnv* e, jclass, jstring layout) {
-  const char* l = e->GetStringUTFChars(layout, nullptr);
-  const std::string lay = l ? l : "1:1";
-  if (l) e->ReleaseStringUTFChars(layout, l);
-  lizard::linkUp(lay, [](const std::string& s) { LOGI("%s", s.c_str()); });
-}
-
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_linkDown(JNIEnv*, jclass) { lizard::linkDown(); }
-
-extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_linkState(JNIEnv* e, jclass) {
-  return e->NewStringUTF(lizard::linkState().c_str());
-}
-
-extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_accessoryOpen(JNIEnv*, jclass) {
-  return lizard::accessoryOpen() ? JNI_TRUE : JNI_FALSE;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL Java_dev_lizard_receiver_Native_wantsLuma(JNIEnv*, jclass, jlong h) {
-  return h && rx(h)->wantsLuma() ? JNI_TRUE : JNI_FALSE;
-}
-
-extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_stats(JNIEnv* e, jclass, jlong h) {
-  return e->NewStringUTF(h ? rx(h)->stats().c_str() : "{}");
-}
-
-// ai: Receiver::series as a double[]: [version, then 8 doubles a frame captured after sinceMs]; asked at every
-// ai: capture result, so no JSON is made or parsed on that path
-extern "C" JNIEXPORT jdoubleArray JNICALL Java_dev_lizard_receiver_Native_series(JNIEnv* e, jclass, jlong h, jdouble sinceMs) {
-  const std::vector<double> v = h ? rx(h)->series(sinceMs) : std::vector<double>{0};
-  jdoubleArray a = e->NewDoubleArray(static_cast<jsize>(v.size()));
-  if (a) e->SetDoubleArrayRegion(a, 0, static_cast<jsize>(v.size()), v.data());
-  return a;   // ai: null only with the VM's OutOfMemoryError pending
-}
-
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_batchCap(JNIEnv*, jclass, jlong h, jint n) {
-  if (h) rx(h)->batchCap(n);
-}
-
-extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_file(JNIEnv* e, jclass, jlong h) {
-  return e->NewStringUTF(h ? rx(h)->file().c_str() : "");
-}
-
-// ai: The camera's reader closed (Engine.closeReader, every frame of it handed back): Receiver::cameraClosed.
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_cameraClosed(JNIEnv*, jclass, jlong h) { if (h) rx(h)->cameraClosed(); }
-// ai: the transfer in hand forgotten, and the held word with it (Receiver::clear): the app's delete of the file it shows
-// ai: (2026-10-07), so the same file in the light is received anew, as the web's Clear did
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_clear(JNIEnv*, jclass, jlong h) { if (h) rx(h)->clear(); }
-// ai: one transfer forgotten by its root, the one in hand or one parked unfinished (Receiver::forget, 2026-10-22): Home's
-// ai: Delete of an unfinished transfer
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_forget(JNIEnv* e, jclass, jlong h, jstring root) {
-  if (!h || !root) return;
-  const char* s = e->GetStringUTFChars(root, nullptr);
-  std::string r(s ? s : "");
-  if (s) e->ReleaseStringUTFChars(root, s);
-  rx(h)->forget(r);
-}
-
-// ai: The receiver's destructor releases every frame it still holds (on this thread or its own) before it returns.
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_destroy(JNIEnv*, jclass, jlong h) {
-  delete rx(h);
-}
-
-// ai: Save replays (Developer Tools, 2026-10-03; liblizard/core/rx/replay.h): a handle is a shared_ptr to the replay, the receiver
-// ai: holding another while it takes frames, so the run outlives either; replayEnd lets the handle's go.
-namespace {
-std::shared_ptr<lizard::Replay>& replayOf(jlong r) { return *reinterpret_cast<std::shared_ptr<lizard::Replay>*>(r); }
-}
-
-extern "C" JNIEXPORT jlong JNICALL Java_dev_lizard_receiver_Native_replayNew(JNIEnv* e, jclass, jstring file, jstring run, jint frames) {
-  return reinterpret_cast<jlong>(new std::shared_ptr<lizard::Replay>(std::make_shared<lizard::Replay>(str(e, file), str(e, run), frames)));
-}
-
-extern "C" JNIEXPORT void JNICALL Java_dev_lizard_receiver_Native_record(JNIEnv*, jclass, jlong h, jlong replay) {
-  if (h) rx(h)->record(replay ? replayOf(replay) : nullptr);
-}
-
-// ai: The run's end (Replay::finish, which waits for the frames the GPU decoder still holds for it), the handle let
-// ai: go: {"frames", "bytes", "error"} as JSON (bytes the .lizard's), error the write that ended the frames early ("" none);
-// ai: an IllegalStateException where the file could not be made.
-extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_replayEnd(JNIEnv* e, jclass, jlong replay, jstring rxStats,
-    jstring rows, jstring more) {
-  if (!replay) { throwJava(e, "java/lang/IllegalStateException", "no replay"); return nullptr; }
-  auto* p = &replayOf(replay);
-  const int n = (*p)->finish(str(e, rxStats), str(e, rows), str(e, more));
-  const long long bytes = (*p)->bytes();
-  const std::string why = (*p)->error();
-  delete p;
-  if (n < 0) { throwJava(e, "java/lang/IllegalStateException", why); return nullptr; }
-  const std::string out = "{\"frames\":" + std::to_string(n) + ",\"bytes\":" + std::to_string(bytes) + ",\"error\":\"" + jsonText(why) + "\"}";
-  return e->NewStringUTF(out.c_str());
 }
 
 // ai: The sender (2026-10-01; liblizard/core/tx/sender.h): a handle is a Tx, the

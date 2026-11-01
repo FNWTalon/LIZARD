@@ -2,7 +2,7 @@
 # ai: The desktop app's .deb (build.gradle.kts packageDeb, then this as debDeps): jpackage lists in Depends what the
 # ai: bundled Java runtime and Compose's natives link; the app's own native library (inside its jar, extracted at start)
 # ai: also needs libvulkan1 (volk opens libvulkan.so.1: the presenter draws only through Vulkan), libxrandr2 (the
-# ai: monitor's refresh), and since the receiver (2026-10-25) TurboJPEG for an MJPEG camera's frames (camera/jpeg.cpp
+# ai: monitor's refresh), and since the receiver (2026-10-25) TurboJPEG for an MJPEG camera's frames (liblizard/core/cam/jpeg.cpp
 # ai: opens libturbojpeg.so.0 at run time): libturbojpeg, Ubuntu's name for it, or libturbojpeg0, Debian's; added here
 # ai: where missing. Each .deb in the folder given, once (2026-10-04). Since 2026-10-23 its desktop entry also takes
 # ai: files and folders (Exec ... %F, the sender adding them: Main.kt) and lists the sender for folders

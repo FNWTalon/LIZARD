@@ -15,6 +15,7 @@
 #include <android/hardware_buffer_jni.h>
 #endif
 
+#include "jni_session.h"
 #include "lizard.h"
 
 namespace {
@@ -487,5 +488,8 @@ extern "C" LIZ_API jint JNI_OnLoad(JavaVM* vm, void*) {
   gLizardExceptionInit = e->GetMethodID(gLizardException, "<init>", "(ILjava/lang/String;)V");
   if (!gLizardExceptionInit) return JNI_ERR;
   if (e->RegisterNatives(native, METHODS, sizeof METHODS / sizeof *METHODS) != JNI_OK) return JNI_ERR;
+  // ai: the receive session's (dev.lizard.SessionNative, jni_session.cpp), the same methods the desktop app's library
+  // ai: registers
+  if (!lizard::jni::registerSession(e)) return JNI_ERR;
   return JNI_VERSION_1_6;
 }

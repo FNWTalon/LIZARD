@@ -5,7 +5,7 @@
 // level and mask) and 10 of BCH, drawn twice. Aztec's mode message is 28 bits compact, 7 of data (layers and
 // codeword count) with Reed-Solomon over the rest. Neither says anything about the TRANSFER: a QR symbol's mode
 // indicator and character count live in the data stream, inside the payload's own error correction. LIZARD's do
-// the same. Sub-channels are 8 * version, the picture size is the smallest that holds them (sim/lizard_pick.mjs
+// the same. Sub-channels are 16 * version, the picture size is the smallest that holds them (sim/lizard_pick.mjs
 // N_FOR), the mode is always LDPC, the code rates are the rate profile the sub-channels give (focus.h
 // focus_tiers_for), and the fountain's header is payload.
 //
@@ -44,15 +44,17 @@
 // OB_FMT_MAGIC: a fixed byte the decoder checks after Reed-Solomon. RS can miscorrect past its distance, and a
 // wrong word is worse than none: it would send the receiver to another picture size and cost every block of
 // every frame until it changed again. 0x4c is 'L'.
-// OB_FMT_VERSION_MIN, OB_FMT_VERSION_MAX: the versions a word may state, LIZARD-16's 2 to LIZARD-1024's 128 (124 blocks
-// under the rate profile). A byte could say 0 to 255; keeping the range to the formats that exist keeps it a check on a
-// miscorrected word, with the magic. One block a frame (LIZARD-8, version 1) is no format since 2026-10-25: a version
-// byte of 1 is refused as 0 and 129 to 255 are. The byte, its place and the code are unchanged.
+// OB_FMT_VERSION_MIN, OB_FMT_VERSION_MAX: the versions a word may state, LIZARD-64's 4 to LIZARD-1024's 64, the version
+// being sub-channels / 16 (focus.h FOCUS_STEP; 7 blocks at version 4, 124 at 64 under the rate profile). A byte could
+// say 0 to 255; keeping the range to the formats that exist keeps it a check on a miscorrected word, with the magic: a
+// version byte of 0 to 3 or 65 to 255 is refused. Versions 1 to 3 (LIZARD-16, -32, -48) are no formats: their odd
+// blocks' pilots are one 7/8 block's 8 coefficients or none, too few for the phase lock's second reading; the smallest
+// format holds seven blocks, two 7/8 blocks of each parity.
 // OB_FMT_BYTES: the shortest word, RS(16, 3), the 64 ring's, and OB_FMT_SIDE_CELLS the cells a side it needs.
 // OB_FMT_BYTES_MAX: the longest a band holds, RS(64, 3), the 256 ring's (W = 128). A wider border paints its remaining
 // word cells light.
 enum { OB_FMT_MAGIC = 0x4c, OB_FMT_DATA = 3, OB_FMT_BYTES = 16, OB_FMT_BYTES_MAX = 64, OB_FMT_SIDE_CELLS = 32,
-       OB_FMT_VERSION_MIN = 2, OB_FMT_VERSION_MAX = 128 };
+       OB_FMT_VERSION_MIN = 4, OB_FMT_VERSION_MAX = 64 };
 
 typedef struct { int version, fps; } ob_fmt_t;
 

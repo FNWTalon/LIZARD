@@ -9,6 +9,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,8 @@ using json = nlohmann::json;
 // ai: A file's bytes by its path under the generated tree (a directory, or the app's assets).
 using ReadFile = std::function<std::vector<uint8_t>(const std::string&)>;
 ReadFile readDir(const std::string& root);
+// ai: A variant's setup's path under the tree: setup/<variant>.json.
+std::string setupName(const std::string& variant);
 
 // ai: A pipeline and its one bind group layout, as the web host's { p, bgl } pairs.
 struct Pipe {
@@ -47,6 +50,7 @@ struct Setup {
   std::map<std::string, std::shared_ptr<wg::Buffer>> buffers;
   std::map<std::string, std::shared_ptr<wg::BindGroupLayout>> bgls;
   std::map<std::string, std::shared_ptr<wg::Pipeline>> pipelines;
+  std::set<std::string> unbuilt;   // ai: pipelines left out, their workgroups past the device's invocations
   std::string variant;
   double buildMs = 0;
 
@@ -61,6 +65,7 @@ struct Setup {
   std::shared_ptr<wg::Buffer> bufPtr(const std::string& id);
   std::shared_ptr<wg::BindGroupLayout> bgl(const std::string& id);
   std::shared_ptr<wg::Pipeline> pipe(const std::string& id);
+  bool built(const std::string& id) const { return pipelines.count(id) > 0; }
   Pipe pair(const json& pb);   // ai: a tree's { p, bgl } (null gives an empty Pipe)
   void makeOne(const std::string& id) { make({id}); }
 

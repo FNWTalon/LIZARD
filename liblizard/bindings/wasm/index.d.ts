@@ -12,7 +12,7 @@ export declare class LizardError extends Error {
   readonly code: number;
 }
 
-export declare const BLOCK: 473, ID_BYTES: 4, PAYLOAD: 469, MIN_BLOCKS: 2, MAX_BLOCKS: 128, RINGS: 3, RING_DEFAULT: -1, GAP_MODULES: 12;
+export declare const BLOCK: 476, ID_BYTES: 4, PAYLOAD: 472, MIN_BLOCKS: 4, MAX_BLOCKS: 64, RINGS: 3, RING_DEFAULT: -1, GAP_MODULES: 12;
 export type PixelFormat = "grey" | "rgbx" | "rgba" | "bgra";
 
 export declare function version(): string;
@@ -20,7 +20,7 @@ export declare function version(): string;
 export declare function simd(): boolean;
 
 export interface Format {
-  /** The format's size, 2 to 128 (LIZARD-16 to LIZARD-1024); a symbol carries the rate profile's blocks
+  /** The format's size, 4 to 64 (LIZARD-64 to LIZARD-1024, 16 x the size); a symbol carries the rate profile's blocks
    *  (frameBlocks over codes). */
   blocks: number;
   /** 0 to 2 (the 64, 128 or 256 ring), -1 the default (the 128). */
@@ -44,13 +44,13 @@ export declare class Encoder {
   constructor(format: Format);
   readonly format: Required<Format>;
   readonly geometry: Geometry;
-  /** blocks: frameBlocks x 473 bytes; picture: the frame's count (its value mod 4 the pilots). */
+  /** blocks: frameBlocks x 476 bytes; picture: the frame's count (its value mod 4 the pilots). */
   paint<T extends Uint8Array | Uint8ClampedArray = Uint8ClampedArray>(blocks: Uint8Array, picture: number, out?: T, fmt?: PixelFormat): T;
   free(): void;
 }
 
 export interface Decoded {
-  /** Blocks verified, and their bytes (count x 473). */
+  /** Blocks verified, and their bytes (count x 476). */
   count: number;
   blocks: Uint8Array;
   found: boolean;

@@ -13,7 +13,7 @@ class LizardException(val code: Int, message: String) : RuntimeException(message
 
 enum class PixelFormat(internal val code: Int, val bytes: Int) { GREY(1, 1), RGBX(2, 4), RGBA(3, 4), BGRA(4, 4) }
 
-// ai: blocks, the format's size (2 to 128: LIZARD-16 to -1024; a symbol carries the rate profile's blocks, the
+// ai: blocks, the format's size (4 to 64: LIZARD-64 to -1024, 16 x blocks; a symbol carries the rate profile's blocks, the
 // ai: geometry's frameBlocks over codes); ring 0 to RINGS - 1 (the 64, 128 or 256 ring) or RING_DEFAULT; the
 // ai: display rate its word states; codes, 1 or 2 symbols side by side
 data class Format(val blocks: Int, val ring: Int = Lizard.RING_DEFAULT, val fps: Int = 60, val codes: Int = 1)
@@ -23,11 +23,11 @@ data class Geometry(val n: Int, val span: Int, val pxm: Int, val side: Int, val 
 data class Rect(val x: Int, val y: Int, val w: Int, val h: Int)
 
 object Lizard {
-  const val BLOCK = 473
+  const val BLOCK = 476
   const val ID_BYTES = 4
-  const val PAYLOAD = 469
-  const val MIN_BLOCKS = 2
-  const val MAX_BLOCKS = 128
+  const val PAYLOAD = 472
+  const val MIN_BLOCKS = 4
+  const val MAX_BLOCKS = 64
   const val RINGS = 3
   const val RING_DEFAULT = -1
   const val GAP_MODULES = 12
@@ -62,7 +62,7 @@ abstract class Handle internal constructor(protected var h: Long, private val re
 class Encoder(format: Format) : Handle(Native.encoderNew(format.blocks, format.ring, format.fps, format.codes), Native::encoderFree) {
   val format = format
   val geometry: Geometry = Lizard.geometry(format)
-  // ai: one frame: blocks, frameBlocks x 473 bytes; picture, the frame's count (mod 4 the pilots); out, width x height
+  // ai: one frame: blocks, frameBlocks x 476 bytes; picture, the frame's count (mod 4 the pilots); out, width x height
   // ai: pixels of fmt (made if not given)
   fun paint(blocks: ByteArray, picture: Int, out: ByteArray? = null, fmt: PixelFormat = PixelFormat.GREY): ByteArray {
     val o = out ?: ByteArray(geometry.width * geometry.height * fmt.bytes)
@@ -125,7 +125,7 @@ class Tx private constructor(h: Long) : Handle(h, Native::txFree) {
     // ai: the test stream from firstId (0: a random one)
     fun test(firstId: Int = 0) = Tx(Native.txNewTest(firstId))
   }
-  // ai: the next frame's n blocks (n x 473 bytes)
+  // ai: the next frame's n blocks (n x 476 bytes)
   fun next(n: Int, out: ByteArray = ByteArray(n * Lizard.BLOCK)): ByteArray { Native.txNext(live(), n, out); return out }
   val info: TxInfo get() {
     val l = LongArray(5)

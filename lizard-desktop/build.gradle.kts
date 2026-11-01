@@ -13,15 +13,19 @@ plugins {
     kotlin("jvm") version "2.1.20"
     id("org.jetbrains.kotlin.plugin.compose") version "2.1.20"
     id("org.jetbrains.compose") version "1.8.2"
+    // ai: the shared UI's (../lizard-ui, included as :lizard-ui by settings.gradle.kts): a Kotlin Multiplatform library with an
+    // ai: Android target beside this app's, which this build configures and never builds (no Android SDK needed here)
+    kotlin("multiplatform") version "2.1.20" apply false
+    id("com.android.library") version "8.11.0" apply false
 }
 
 kotlin { jvmToolchain(17) }
 
 dependencies {
+    // ai: the look both apps share: the theme, the icons and the parts drawn alike (../lizard-ui)
+    implementation(project(":lizard-ui"))
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
-    // ai: the stats JSON the native side writes (its element API alone: no serialization plugin)
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
 }
 
 // ai: What the app carries as resources: the native library (lizard-desktop/build/native, CMake on native/) and the GPU
@@ -99,21 +103,12 @@ val buildInfo by tasks.registering {
             .writeText(Instant.now().truncatedTo(ChronoUnit.SECONDS).toString())
     }
 }
-// ai: the type (2026-10-10): the web's faces from liblizard/vendor/fonts, outside the bundle as buildInfo is (Parts.kt
-// ai: Inter and Mono read them by their resource paths, fonts/...)
-val fonts by tasks.registering(Sync::class) {
-    into(layout.buildDirectory.dir("fonts"))
-    from(rootDir.resolve("../liblizard/vendor/fonts")) {
-        include("inter/InterVariable.ttf", "jetbrains-mono/JetBrainsMono-Regular.ttf")
-        into("fonts")
-    }
-}
-// ai: liblizard/kotlin's plain-JVM code the Android app shares (Tar.kt, Readout.kt, Pick.kt); PhaseLock.kt, the Android
-// ai: camera's phase lock, is left out: no camera here takes a capture's timing
+// ai: The Kotlin binding's sources (liblizard/bindings/kotlin: dev.lizard.Session, the receive session; its natives are
+// ai: this app's library's, registered as it loads, so the binding's own liblizard is never loaded here).
+// ai: liblizard/kotlin's plain-JVM code (Tar.kt, Readout.kt, Pick.kt) comes compiled with the shared UI (:lizard-ui).
 sourceSets.main {
-    resources.srcDir(bundle); resources.srcDir(buildInfo); resources.srcDir(fonts)
-    kotlin.srcDir(layout.projectDirectory.dir("../liblizard/kotlin"))
-    kotlin.exclude("PhaseLock.kt")
+    resources.srcDir(bundle); resources.srcDir(buildInfo)
+    kotlin.srcDir(layout.projectDirectory.dir("../liblizard/bindings/kotlin/lizard/src/main/kotlin"))
 }
 
 // ai: after packageDeb: the native library's own Depends added (packaging/deb-deps.sh says which and why)

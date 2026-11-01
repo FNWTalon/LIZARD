@@ -22,6 +22,7 @@ std::unique_ptr<CameraIngest> CameraIngest::create(wg::Device& d, ReadFile read)
 }
 
 CameraIngest::~CameraIngest() {
+  if (dev.abandoned) return;   // ai: a hung device (wg.h): its objects left as they are
   vkDeviceWaitIdle(dev.dev);
   forget();
   destroyPipe();
@@ -243,12 +244,15 @@ uint64_t CameraIngest::ingest(AHardwareBuffer* hb, uint32_t x, uint32_t y, uint3
 // ai: a Vulkan 1.2 entry point, which the NDK's libvulkan at API 29 does not export: taken from the device
 size_t CameraIngest::cameraClosed() {
   const size_t n = imports.size();
-  if (last) {
+  if (last && !dev.abandoned) {
     static PFN_vkWaitSemaphores wait = (PFN_vkWaitSemaphores)vkGetDeviceProcAddr(dev.dev, "vkWaitSemaphores");
     VkSemaphoreWaitInfo wi{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
     wi.semaphoreCount = 1; wi.pSemaphores = &timeline; wi.pValues = &last;
-    if (wait(dev.dev, &wi, 1000000000ull) != VK_SUCCESS) vkQueueWaitIdle(dev.queue2);
+    // ai: bounded as a batch's submit is (wg.h): an ingest still not done then is a hang, and the device is abandoned
+    const uint64_t ns = dev.hangMs ? (uint64_t)(dev.hangMs + wg::SETTLE_MS) * 1000000ull : UINT64_MAX;
+    if (wait(dev.dev, &wi, ns) == VK_TIMEOUT) { dev.lost = true; dev.abandoned = true; }
   }
+  if (dev.abandoned) { pending.clear(); return n; }
   for (auto& p : pending) vkFreeCommandBuffers(dev.dev, dev.pool2, 1, &p.cb);
   pending.clear();
   forget();
@@ -257,8 +261,11 @@ size_t CameraIngest::cameraClosed() {
 
 uint64_t CameraIngest::completed() const {
   static PFN_vkGetSemaphoreCounterValue get = (PFN_vkGetSemaphoreCounterValue)vkGetDeviceProcAddr(dev.dev, "vkGetSemaphoreCounterValue");
+  if (dev.lost) throw wg::Lost("the device is lost (" + dev.name + ")");
   uint64_t v = 0;
-  get(dev.dev, timeline, &v);
+  const VkResult r = get(dev.dev, timeline, &v);
+  if (r == VK_ERROR_DEVICE_LOST) dev.lost = true;
+  wg::check(r, "vkGetSemaphoreCounterValue (ingest)");
   return v;
 }
 

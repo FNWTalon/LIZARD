@@ -72,7 +72,7 @@ export async function readUrl(url) {
 }
 
 // ai: A weights file by URL. The document's `source` (not enumerable) is the URL it came from, by which the decoder
-// ai: knows an installed float file and finds its int8 twin (gpu/wgsl/classify.mjs INT8_TWINS).
+// ai: knows an installed float file and finds its int8 twin (gpu/plan/classify.mjs INT8_TWINS).
 export async function loadNet(url) {
   return Object.defineProperty(readNet(await readUrl(url)), "source", { value: String(url) });
 }

@@ -1,5 +1,5 @@
 // ai: A receiver told nothing, as an object (focus.h focus_acquire_ring; since 2026-09-27 the ring bootstraps what is
-// ai: inside). A codec a ring, each at n = 256, the smallest picture every ring holds: the finder
+// ai: inside). A codec a ring, each at the smallest picture a format has (384, the top format there): the finder
 // ai: registers against their layouts and the one that registered reads the word. The word names the sub-channels, so
 // ai: the picture n; the frame is finished by the codec for that count in that ring, built the first time the pair
 // ai: is seen and kept (FOCUS_ANY_PICS of them, the least recently used replaced): each count is a format of its own
@@ -26,7 +26,7 @@ typedef struct {
 } focus_any_t;
 
 // ai: a: zeroed, or a receiver to set up again. nmax: the largest picture it decodes (1536, the ladder's top, in every
-// ai: receiver since 2026-09-29; 1024 before). Returns the block bytes (473), or -1.
+// ai: receiver since 2026-09-29; 1024 before). Returns the block bytes (476), or -1.
 int focus_any_init(focus_any_t *a, int nmax);
 void focus_any_free(focus_any_t *a);
 // ai: One frame. blocks and ok hold focus_any_top(a) blocks. held: the sub-channel count / 8 of the last word the

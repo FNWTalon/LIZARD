@@ -1,25 +1,25 @@
-// The format word as a linear code, for the GPU reader (wgsl/word.mjs). The word is [0x4C, version, fps] and
+// The format word as a linear code, for the GPU reader (glsl/word.mjs). The word is [0x4C, version, fps] and
 // ai: bytes - 3 Reed-Solomon parity bytes, one code a ring over every word cell: RS(16,3), (32,3), (64,3) at W = 32, 64,
 // ai: 128 word cells a side, the 64, 128 and 256 rings (src/fmt.c, src/rs.c: GF(256), polynomial 0x11D, roots alpha^0
 // ai: upward, data first).
 // Reed-Solomon is linear over GF(2), so every valid word is BASE xor the rows of its version's and its fps's set bits,
-// ai: and there are (VERSION_MAX - VERSION_MIN + 1) x 256 of them a ring, 32,512 (any ring may carry any version since
-// ai: 2026-09-27): the reader decodes the soft bits by ordered statistics over this code (wgsl/word.mjs), where the
+// ai: and there are (VERSION_MAX - VERSION_MIN + 1) x 256 of them a ring, 16,384 (any ring may carry any version since
+// ai: 2026-09-27): the reader decodes the soft bits by ordered statistics over this code (glsl/word.mjs), where the
 // ai: reference decodes hard bytes with erasures.
 //
 // Bit order is the reader's: q index side * W + cell, cell 0..W - 1 along the side; byte k lives on side k % 4 at
 // cells 8 (k / 4) .. + 7, most significant bit first (src/fmt.c ob_fmt_bit). Cells past the codeword are light.
-import { N_FOR } from "../sim/lizard_pick.mjs";
+import { N_FOR, subchOf } from "../sim/lizard_pick.mjs";
 
 const EXP = new Uint8Array(512), LOG = new Uint8Array(256);
 { let x = 1; for (let i = 0; i < 255; i++) { EXP[i] = x; LOG[x] = i; x <<= 1; if (x & 256) x ^= 0x11d; } for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255]; }
 const mul = (a, b) => (a && b ? EXP[LOG[a] + LOG[b]] : 0);
 
 export const BYTES_MAX = 64;
-// ai: The versions a word states (src/fmt.h OB_FMT_VERSION_MIN, OB_FMT_VERSION_MAX): LIZARD-16's 2 to LIZARD-1024's
-// ai: 128; the version byte's 1, LIZARD-8, is no format since 2026-10-25, refused as 0 and 129 to 255 are.
-export const VERSION_MIN = 2;
-export const VERSION_MAX = 128;
+// ai: The versions a word states (src/fmt.h OB_FMT_VERSION_MIN, OB_FMT_VERSION_MAX): LIZARD-64's 4 to LIZARD-1024's
+// ai: 64, sub-channels / 16 (sim/lizard_pick.mjs STEP, since 2026-10-29); a version byte of 0 to 3 or 65 to 255 is refused.
+export const VERSION_MIN = 4;
+export const VERSION_MAX = 64;
 // The codeword's length for W word cells a side (src/fmt.c ob_fmt_bytes; no word under the 64 ring's 32 cells,
 // ai: src/fmt.h OB_FMT_SIDE_CELLS).
 export const bytesFor = (W) => (W < 32 ? 0 : Math.min(4 * Math.floor(W / 8), BYTES_MAX));
@@ -67,17 +67,30 @@ export function wordCode(W) {
 // ai: it, and one fixed share of the best side's sum was too thin a cut (scripts/gpu/word_check.mjs: a glared side at
 // ai: 0.758 of the best kept, a clean one at 0.74 dropped). E[m] is the most disagreements on m cells that keep the
 // ai: union bound (every word of the ring within E[m] of a random hard word on those m cells) at BUDGET / GATE_CHOICES,
-// ai: so the three together stay at BUDGET, the C's own false-word rate in that ring (SPEC 5.4: 1.8e-7, three roots
-// ai: left); -1 where no count does. The bound counts the 32,768 words the version byte's 1 to 128 can name, an upper
-// ai: bound on the 32,512 a ring holds (version 1 refused): 1.8e-7 over 32,768 is 1.79e-7 over them. Which cells count depends on the magnitudes
+// ai: so the three together stay at BUDGET, the C's own false-word rate in that ring (SPEC 5.4, three roots left: its
+// ai: steps' pass rate on garbage times the magic's 1/256 and the versions' share of the byte, cFalseWord below); -1
+// ai: where no count does. The bound counts the words of the versions a word may name, (VERSION_MAX - VERSION_MIN + 1)
+// ai: x 256. Which cells count depends on the magnitudes
 // ai: alone, which a garbage frame's signs do not, so the bound holds for each choice as it stands. SIDE_KEEP is the
 // ai: search's: F8 zeroes a side under SIDE_KEEP of the best side's sum, at most the two least, before it scores
 // ai: (0.75, the best of 0.85, 0.75 and 0.70 on the lab's damage sweep).
 export const TAU = 0.1, SIDE_KEEP = 0.75, GATE_CHOICES = 3;
-export const BUDGET = { 32: 1.8e-7, 64: 1.8e-7, 128: 1.8e-7 };
+// ai: The C's false-word rate on garbage (soft values uniform in -0.5 to 0.5) in a ring of W word cells a side, exact
+// ai: as test/fmt_test.c p_pass has it: RS(bytes, 3) passing errors only, then each erasure step (2, 4, ... nroots - 3
+// ai: least confident bytes, src/fmt.c ob_fmt_decode), a false codeword's data bytes uniform, so 1/256 for the magic and
+// ai: the versions' share of the version byte.
+export function cFalseWord(W) {
+  const bytes = bytesFor(W), nroots = bytes - 3;
+  const binom = (n, k) => { let r = 1; for (let i = 0; i < k; i++) r = (r * (n - i)) / (i + 1); return r; };
+  const pass = (f) => { const t = Math.floor((nroots - f) / 2); let v = 0; for (let i = 0; i <= t; i++) v += binom(bytes - f, i) * 255 ** i; return v / 256 ** (nroots - f); };
+  let steps = pass(0);
+  for (let f = 2; f <= nroots - 3; f += 2) steps += pass(f);
+  return (steps * (VERSION_MAX - VERSION_MIN + 1)) / 65536;
+}
+export const BUDGET = Object.fromEntries([32, 64, 128].map((W) => [W, cFalseWord(W)]));
 export function gateTable(W) {
   if (!(W in BUDGET)) throw new Error(`a ring of ${W} word cells a side: the gate holds ${Object.keys(BUDGET).join(", ")}`);
-  const nb = 4 * W, words = VERSION_MAX * 256, E = new Int16Array(nb + 1).fill(-1), budget = BUDGET[W] / GATE_CHOICES;
+  const nb = 4 * W, words = (VERSION_MAX - VERSION_MIN + 1) * 256, E = new Int16Array(nb + 1).fill(-1), budget = BUDGET[W] / GATE_CHOICES;
   for (let m = 0; m <= nb; m++) {
     let s = 0, c = 1;
     for (let d = 0; d <= m; d++) { s += c; if ((words * s) / 2 ** m > budget) break; E[m] = d; c = (c * (m - d)) / (d + 1); }
@@ -106,6 +119,6 @@ export function searchKeep(sums) {
 // ai: version the picture (gpu/tables.mjs PICTURES).
 export function versionRange(n) {
   let lo = 0, hi = -1;
-  for (let v = VERSION_MIN; v <= VERSION_MAX; v++) if (N_FOR(8 * v) === n) { if (!lo) lo = v; hi = v; }
+  for (let v = VERSION_MIN; v <= VERSION_MAX; v++) if (N_FOR(subchOf(v)) === n) { if (!lo) lo = v; hi = v; }
   return [lo, hi];
 }

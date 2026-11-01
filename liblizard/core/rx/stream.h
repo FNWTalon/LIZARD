@@ -3,7 +3,7 @@
 // ai: tethering (the phone's own switch; the PC's system drivers), Wi-Fi, adb reverse. The phone is the "pc" decoder
 // ai: (ReceiverConfig::decoder, makeStreamReceiver): it serves its frames, the receiver's crop of each camera frame's Y
 // ai: plane (crops.h: the centre square, or the 2:1 region whose halves the PC reads as frames), newest first, a frame
-// ai: the link has no room for dropped; the PC (lizard-desktop/native/camera/phone.cpp) decodes them and sends back its
+// ai: the link has no room for dropped; the PC (liblizard/core/cam/phone.cpp) decodes them and sends back its
 // ai: receiver's series (receiver.h series, its ms on the phone camera's clock) and its stats, so the phone's lock
 // ai: and screen read the PC's decode as they read their own receiver's.
 // ai: Wire (both ends little-endian: arm64 and x86-64): a message is u32 type, u32 payload bytes, the payload.
@@ -26,7 +26,7 @@
 // ai: BEACON_PORT, "LIZARD-STREAM <proto> port=<tcp port> w=<w> h=<h> fps=<fps> layout=<layout> name=<name>" (w, h,
 // ai: fps those of the frames sent last, 0 before any).
 // ai: Or over USB by Android Open Accessory (2026-10-27; on Windows a WinUSB driver bound by the user, Zadig): the PC
-// ai: switches the phone into accessory mode (lizard-desktop/native/camera/aoa.cpp), the app opens the accessory and hands its fd to
+// ai: switches the phone into accessory mode (liblizard/core/cam/aoa.cpp), the app opens the accessory and hands its fd to
 // ai: streamAccessory, and a bridge carries the same messages between it and the stream receiver: each session a
 // ai: socket pair the receiver serves as it serves a TCP connection (peer "USB"), whole messages written to the
 // ai: accessory, so a session that ends leaves the accessory's bytes at a message's end. The bridge lives with the
