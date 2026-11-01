@@ -272,7 +272,27 @@ static void fft_cols_mixed(const plan_t *p, float *re, float *im, int rows, int 
   while (ngrp < p->nst && p->len[ngrp] <= group) ngrp++;
   const int gsz = ngrp ? p->len[ngrp - 1] : 1;
   for (int g0 = 0; g0 < rows; g0 += gsz) for (int s = 0; s < ngrp; s++) do_stage(p, re, im, rows, cols, pitch, inverse, sgn, s, g0, gsz);
-  for (int s = ngrp; s < p->nst; s++) do_stage(p, re, im, rows, cols, pitch, inverse, sgn, s, 0, rows);
+  // ai: The long stages: two radix-2 stages in a row go two to a pass over four rows (rows4), as the power-of-two
+  // ai: schedule runs them, with this plan's twiddles; the same butterflies on every element, so the same floats.
+  for (int s = ngrp; s < p->nst; ) {
+    if (p->st[s] != 2 || s + 1 >= p->nst || p->st[s + 1] != 2) { do_stage(p, re, im, rows, cols, pitch, inverse, sgn, s, 0, rows); s++; continue; }
+    const int len = p->len[s], h = len / 2, step = rows / len, step2 = step / 2;
+    for (int i0 = 0; i0 < rows; i0 += 2 * len) for (int k = 0; k < h; k++) {
+      const int q[4] = { i0 + k, i0 + k + h, i0 + k + len, i0 + k + len + h };
+      float *r[4], *m[4], w[6];
+      for (int j = 0; j < 4; j++) { r[j] = re + (size_t)q[j] * pitch; m[j] = im + (size_t)q[j] * pitch; }
+      tw_of(p, rows, k * step, inverse, &w[0], &w[1]);
+      tw_of(p, rows, k * step2, inverse, &w[2], &w[3]);
+      tw_of(p, rows, (k + h) * step2, inverse, &w[4], &w[5]);
+      if (k == 0) {   // unit twiddles keep their multiply-free form, as do_stage gives them
+        rows2(r[0], m[0], r[1], m[1], cols, w[0], w[1], 1); rows2(r[2], m[2], r[3], m[3], cols, w[0], w[1], 1);
+        rows2(r[0], m[0], r[2], m[2], cols, w[2], w[3], 1); rows2(r[1], m[1], r[3], m[3], cols, w[4], w[5], 0);
+        continue;
+      }
+      rows4(r, m, cols, w[0], w[1], w[2], w[3], w[4], w[5]);
+    }
+    s += 2;
+  }
 }
 
 void fft_cols(float *re, float *im, int rows, int cols, int pitch, int inverse) {

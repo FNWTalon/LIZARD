@@ -359,7 +359,7 @@ export class Focus {
     // fault, it just makes every later decode return nothing, which reads exactly like a bad capture.
     M._focus_ldpc_tables(0, pD, 0);
     const d = M.HEAP32.subarray(pD >> 2, (pD >> 2) + 12);
-    // ai: np the bits never sent (the 7/8 code's first 93 since 2026-10-08), nt = n - np the bits a block's slots carry
+    // ai: np the bits never sent (the 7/8 code's last 128 of the data, its known zeros, since 2026-11-01; gpu/back/bitmap.mjs sentBit), nt = n - np the bits a block's slots carry
     const code = { n: d[0], k: d[1], m: d[2], z: d[3], zp: d[4], mb: d[5], kb: d[6], norm: d[7],
       slotsMax: d[8], slotsTotal: d[9], slots: d[10], np: d[11], nt: d[0] - d[11] };
     const pLay = M._malloc(4 * (code.mb + 1 + 2 * code.slots));

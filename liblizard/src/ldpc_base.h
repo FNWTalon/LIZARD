@@ -1,7 +1,8 @@
 // The format's LDPC base matrices, one a rate of the rate profile (focus.h focus_tiers_for: 7/8, 3/4, 2/3 and 1/2), every
 // code at circulant size z = 128 (a 128-lane workgroup a block row on a GPU) and its own base-graph width: 7/8 5 block
-// rows by 31 data columns, the first never sent (np = 1: a block's 4480 slots carry codeword bits 128 to 4607, and a
-// decoder feeds the first 128 as nothing known; ldpc.h np, nt), 3/4 10 by 30, 2/3 15 by 30, 1/2 30 by 30. Each holds the
+// rows by 31 data columns, the last never sent (np = 1: the 128 zeros past the block, codeword bits 3840 to 3967, known to
+// a decoder; a block's 4480 slots carry bits 0 to 3839 and 3968 to 4607, the first data column sent since 2026-11-01, where
+// it was never sent before; ldpc.h np, nt), 3/4 10 by 30, 2/3 15 by 30, 1/2 30 by 30. Each holds the
 // block's 476 B and its CRC-32 (3840 bits) in its k (3840, and 3968 at 7/8, whose last 128 data bits are zeros a
 // decoder is told). Each entry is a circulant's shift, -1 where the base graph has no edge; the staircase is not in it, being
 // the same for every code (ldpc.c). These ARE the format's codes (ldpc_init builds the rate's from here).
@@ -18,7 +19,7 @@
 
 enum { LDPC_BASE_Z = 128 };
 
-// The 7/8 code: z = 128, 5 block rows by 31 data columns (column 0 of degree 5, never sent; 1 to 4 of degree 5), n = 36 z = 4608 of which 35 z = 4480 are sent.
+// The 7/8 code: z = 128, 5 block rows by 31 data columns (0 to 4 of degree 5, the rest 3; column 30, the known zeros, never sent), n = 36 z = 4608 of which 35 z = 4480 are sent.
 enum { LDPC_BASE78_RATE = 6, LDPC_BASE78_MB = 5, LDPC_BASE78_KB = 31, LDPC_BASE78_NP = 1 };
 static const short LDPC_BASE78[LDPC_BASE78_MB][LDPC_BASE78_KB] = {
   {  18,  83,   3,  51,  98,  -1,  59, 124,  43,  -1,  -1,   7,  91,  -1,  15,  -1,  65, 108,  -1,  60, 102,  29,  -1, 102,  -1,  83,  -1, 121,  -1,  57,  72 },

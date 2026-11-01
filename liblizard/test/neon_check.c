@@ -37,8 +37,9 @@
 // ai:   $C -O3 -ffp-contract=off -DNDEBUG -Isrc -o build/neon/neon_check.neon test/neon_check.c $S -lm
 // ai:   $C -O3 -ffp-contract=off -DNDEBUG -Isrc -DOB_SCALAR -o build/neon/neon_check.scalar test/neon_check.c $S -lm
 // ai: It also builds with emcc (add -msimd128 or not, and -sNODERAWFS=1 -sALLOW_MEMORY_GROWTH=1 -sEXIT_RUNTIME=1, run
-// ai: by node) and with gcc on x86-64, scalar. The x86-64 build is good for synth; on a frames list it can die where a
-// ai: line hypothesis hands sample() a NaN coordinate (internal.h casts it to int: INT_MIN there, 0 on arm64 and wasm).
+// ai: by node) and with gcc on x86-64 (add -msse4.1: src/simd.h's SSE4.1 wrappers, unit and synth; -DOB_SCALAR the
+// ai: twins). On a frames list the x86-64 scalar build can die where a line hypothesis hands sample() a NaN coordinate
+// ai: (internal.h casts it to int: INT_MIN there, 0 on arm64 and wasm).
 #define _GNU_SOURCE   // ai: sched_getcpu, for the timing lines
 #include "any.h"
 #include "internal.h"
@@ -371,7 +372,7 @@ static void decode_one(rx_t *rx, const uint8_t *px, int w, int h, int held, int 
   if (!arm) return;
   dig_t d = DIG0;
   d = dig_int(d, res.found); d = dig_int(d, res.finders); d = dig(d, res.quad, sizeof res.quad); d = dig_int(d, res.orient);
-  d = dig(d, &res.mark_score, sizeof res.mark_score); d = dig(d, res.mark, sizeof res.mark); d = dig_int(d, a->which);
+  d = dig(d, &res.mark_score, sizeof res.mark_score); d = dig_int(d, a->which);
   d = dig(d, ob_finder_info, 8 * sizeof(float));
   o->reg = d;
   d = DIG0; d = dig_int(d, o->has_word); d = dig_int(d, o->version); d = dig_int(d, o->fps); d = dig_int(d, a->n); d = dig_int(d, a->held);
@@ -556,7 +557,7 @@ static uint8_t *paint_page(const focus_t *f, const uint8_t *blocks, int P, int *
 // ai: Every ring with every picture size: painted, read by the blind receiver, every block back byte for byte. The
 // ai: pairs and their payload are scripts/exp/ring_pairs.mjs's, the gate that holds the same on wasm.
 static int synth_pairs(void) {
-  static const int SUBCH[] = { 16, 48, 96, 320, 336, 656, 800, 1024 };   // ai: 256, 384, 512, 768, 1024, 1152, 1280, 1536
+  static const int SUBCH[] = { 64, 80, 96, 320, 336, 656, 800, 1024 };   // ai: 384 (the ladder's two smallest), 512, 768, 1024, 1152, 1280, 1536
   static rx_t rx;
   int fails = 0, idx = 0;
   dig_t total = DIG0;
@@ -593,7 +594,7 @@ static int synth_pairs(void) {
 // ai: tilt, tiers at three code rates, and the resampled ring and picture pairs.
 static int synth_lab(void) {
   static const struct { int n, subch, span; float tilt; int tiers; } LAB[] = {
-    { 256, 48, 256, 0, 0 }, { 1024, 192, 256, 0, 0 }, { 512, 320, 256, 9, 0 }, { 512, 0, 256, 9, 1 }, { 384, 64, 256, 0, 0 },
+    { 256, 64, 256, 0, 0 }, { 1024, 192, 256, 0, 0 }, { 512, 320, 256, 9, 0 }, { 512, 0, 256, 9, 1 }, { 384, 64, 256, 0, 0 },
     { 768, 144, 512, 0, 0 }, { 384, 64, 512, 0, 0 }, { 768, 320, 128, 0, 0 } };
   static const focus_tier_t TIERS[3] = { { 6, 8, 0 }, { 4, 12, 0 }, { 2, 12, 0 } };   // ai: rate, blocks (a block's slots its rate's)
   int fails = 0;

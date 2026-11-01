@@ -3,6 +3,8 @@
 // ai:   wasm with -msimd128      <wasm_simd128.h> itself
 // ai:   arm64 with NEON          v128_t and every wasm intrinsic the source uses, each over the NEON instruction of
 // ai:                            the same arithmetic (little-endian; -DOB_SCALAR leaves it out and builds the twins)
+// ai:   x86-64 with SSE4.1       the same over SSE's instructions (the native build's -msse4.1, liblizard/core;
+// ai:                            -DOB_SCALAR leaves it out)
 // ai:   anything else            nothing: the scalar twins
 // ai: OB_SIMD is defined where the vector paths exist, and is what the source tests.
 // ai: A NEON wrapper is wasm's operation lane for lane, the cases a scalar twin can tell apart included (NaN, a
@@ -147,5 +149,122 @@ OB_VFN uint32_t wasm_i8x16_bitmask(v128_t a) {
 #undef OB_OF_S8
 #undef OB_OF_U8
 #undef OB_OF_U32
+
+#elif (defined(__x86_64__) || defined(_M_X64)) && defined(__SSE4_1__) && !defined(OB_SCALAR)
+#include <smmintrin.h>
+#include <stdint.h>
+#define OB_SIMD 1
+
+// ai: x86-64 with SSE4.1 (and the SSSE3 and SSE2 it implies): the same wrappers over SSE's instructions. One type
+// ai: for every lane view, as on NEON; the float operations reinterpret it.
+typedef __m128i v128_t;
+#define OB_VFN static inline __attribute__((__always_inline__))
+#define OB_PS(a) _mm_castsi128_ps(a)
+#define OB_OF_PS(a) _mm_castps_si128(a)
+
+// ai: Memory. Sixteen bytes at any alignment, read and written as bytes.
+OB_VFN v128_t wasm_v128_load(const void *p) { return _mm_loadu_si128((const __m128i *)p); }
+OB_VFN void wasm_v128_store(void *p, v128_t a) { _mm_storeu_si128((__m128i *)p, a); }
+// ai: Eight signed bytes, each widened to a 16-bit lane.
+OB_VFN v128_t wasm_i16x8_load8x8(const void *p) { return _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i *)p)); }
+
+// ai: Bits.
+OB_VFN v128_t wasm_v128_and(v128_t a, v128_t b) { return _mm_and_si128(a, b); }
+OB_VFN v128_t wasm_v128_or(v128_t a, v128_t b) { return _mm_or_si128(a, b); }
+OB_VFN v128_t wasm_v128_xor(v128_t a, v128_t b) { return _mm_xor_si128(a, b); }
+// ai: (a & mask) | (b & ~mask), bit by bit.
+OB_VFN v128_t wasm_v128_bitselect(v128_t a, v128_t b, v128_t mask) { return _mm_or_si128(_mm_and_si128(a, mask), _mm_andnot_si128(mask, b)); }
+
+// ai: f32x4. Add, subtract, multiply and divide are IEEE single, rounded to nearest even (MXCSR's default, which
+// ai: nothing here changes), one rounding each; SSE has no fused multiply-add.
+OB_VFN v128_t wasm_f32x4_splat(float a) { return OB_OF_PS(_mm_set1_ps(a)); }
+OB_VFN v128_t wasm_f32x4_make(float c0, float c1, float c2, float c3) { return OB_OF_PS(_mm_setr_ps(c0, c1, c2, c3)); }
+OB_VFN v128_t wasm_f32x4_add(v128_t a, v128_t b) { return OB_OF_PS(_mm_add_ps(OB_PS(a), OB_PS(b))); }
+OB_VFN v128_t wasm_f32x4_sub(v128_t a, v128_t b) { return OB_OF_PS(_mm_sub_ps(OB_PS(a), OB_PS(b))); }
+OB_VFN v128_t wasm_f32x4_mul(v128_t a, v128_t b) { return OB_OF_PS(_mm_mul_ps(OB_PS(a), OB_PS(b))); }
+OB_VFN v128_t wasm_f32x4_div(v128_t a, v128_t b) { return OB_OF_PS(_mm_div_ps(OB_PS(a), OB_PS(b))); }
+// ai: The sign bit cleared, a NaN's payload kept.
+OB_VFN v128_t wasm_f32x4_abs(v128_t a) { return _mm_and_si128(a, _mm_set1_epi32(0x7fffffff)); }
+// ai: pmin(a, b) is b < a ? b : a and pmax(a, b) is a < b ? b : a. SSE's MINPS(x, y) is x < y ? x : y and MAXPS(x, y)
+// ai: x > y ? x : y, a select on one compare that gives y back on a NaN and of two zeros: with the operands swapped
+// ai: they are wasm's, NaNs and signed zeros included.
+OB_VFN v128_t wasm_f32x4_pmin(v128_t a, v128_t b) { return OB_OF_PS(_mm_min_ps(OB_PS(b), OB_PS(a))); }
+OB_VFN v128_t wasm_f32x4_pmax(v128_t a, v128_t b) { return OB_OF_PS(_mm_max_ps(OB_PS(b), OB_PS(a))); }
+// ai: A compare: a lane of all ones where true, zeros where false, and false whenever either side is NaN.
+OB_VFN v128_t wasm_f32x4_le(v128_t a, v128_t b) { return OB_OF_PS(_mm_cmple_ps(OB_PS(a), OB_PS(b))); }
+// ai: int32 to float, to nearest even.
+OB_VFN v128_t wasm_f32x4_convert_i32x4(v128_t a) { return OB_OF_PS(_mm_cvtepi32_ps(a)); }
+
+// ai: i32x4. Float to int32 towards zero, saturating at both ends, NaN to 0. CVTTPS2DQ gives 0x80000000 for a NaN
+// ai: and for anything out of range: right below, the largest int32 where the float is 2^31 or more (the compare is
+// ai: false on a NaN), and 0 where the float is a NaN.
+OB_VFN v128_t wasm_i32x4_trunc_sat_f32x4(v128_t a) {
+  const __m128 f = OB_PS(a);
+  const __m128i r = _mm_xor_si128(_mm_cvttps_epi32(f), OB_OF_PS(_mm_cmpge_ps(f, _mm_set1_ps(2147483648.0f))));
+  return _mm_and_si128(r, OB_OF_PS(_mm_cmpord_ps(f, f)));
+}
+OB_VFN v128_t wasm_i32x4_splat(int32_t a) { return _mm_set1_epi32(a); }
+// ai: Integer add, subtract and multiply wrap.
+OB_VFN v128_t wasm_i32x4_add(v128_t a, v128_t b) { return _mm_add_epi32(a, b); }
+OB_VFN v128_t wasm_i32x4_mul(v128_t a, v128_t b) { return _mm_mullo_epi32(a, b); }
+OB_VFN v128_t wasm_i32x4_min(v128_t a, v128_t b) { return _mm_min_epi32(a, b); }
+OB_VFN v128_t wasm_i32x4_max(v128_t a, v128_t b) { return _mm_max_epi32(a, b); }
+// ai: The lane number of an extract is a constant, so the extracts are macros over SSE's, which want one.
+#define wasm_i32x4_extract_lane(a, i) ((int32_t)_mm_extract_epi32((a), (i)))
+#define wasm_i64x2_extract_lane(a, i) ((int64_t)_mm_extract_epi64((a), (i)))
+#define wasm_u8x16_extract_lane(a, i) ((uint8_t)_mm_extract_epi8((a), (i)))
+// ai: A bitmask is each lane's top bit, lane 0 at bit 0.
+OB_VFN uint32_t wasm_i32x4_bitmask(v128_t a) { return (uint32_t)_mm_movemask_ps(OB_PS(a)); }
+
+// ai: i16x8 and u16x8.
+OB_VFN v128_t wasm_i16x8_splat(int16_t a) { return _mm_set1_epi16(a); }
+OB_VFN v128_t wasm_i16x8_add(v128_t a, v128_t b) { return _mm_add_epi16(a, b); }
+OB_VFN v128_t wasm_i16x8_sub(v128_t a, v128_t b) { return _mm_sub_epi16(a, b); }
+OB_VFN v128_t wasm_i16x8_mul(v128_t a, v128_t b) { return _mm_mullo_epi16(a, b); }
+OB_VFN v128_t wasm_i16x8_min(v128_t a, v128_t b) { return _mm_min_epi16(a, b); }
+OB_VFN v128_t wasm_i16x8_max(v128_t a, v128_t b) { return _mm_max_epi16(a, b); }
+// ai: abs(-32768) stays -32768 (PABSW).
+OB_VFN v128_t wasm_i16x8_abs(v128_t a) { return _mm_abs_epi16(a); }
+OB_VFN v128_t wasm_i16x8_lt(v128_t a, v128_t b) { return _mm_cmplt_epi16(a, b); }
+OB_VFN v128_t wasm_i16x8_eq(v128_t a, v128_t b) { return _mm_cmpeq_epi16(a, b); }
+// ai: Shifts take one count for every lane, taken modulo the lane's width.
+OB_VFN v128_t wasm_i16x8_shr(v128_t a, uint32_t n) { return _mm_sra_epi16(a, _mm_cvtsi32_si128((int)(n & 15))); }
+OB_VFN v128_t wasm_u16x8_shr(v128_t a, uint32_t n) { return _mm_srl_epi16(a, _mm_cvtsi32_si128((int)(n & 15))); }
+// ai: The low or the high eight unsigned bytes, each widened to a 16-bit lane.
+OB_VFN v128_t wasm_u16x8_extend_low_u8x16(v128_t a) { return _mm_cvtepu8_epi16(a); }
+OB_VFN v128_t wasm_u16x8_extend_high_u8x16(v128_t a) { return _mm_cvtepu8_epi16(_mm_srli_si128(a, 8)); }
+// ai: Neighbouring unsigned 16-bit lanes added into a 32-bit one: the even lanes masked, the odd ones shifted down
+// ai: (PMADDWD would take the lanes as signed).
+OB_VFN v128_t wasm_u32x4_extadd_pairwise_u16x8(v128_t a) { return _mm_add_epi32(_mm_and_si128(a, _mm_set1_epi32(0xffff)), _mm_srli_epi32(a, 16)); }
+
+// ai: i8x16 and u8x16.
+OB_VFN v128_t wasm_i8x16_splat(int8_t a) { return _mm_set1_epi8(a); }
+OB_VFN v128_t wasm_u8x16_splat(uint8_t a) { return _mm_set1_epi8((char)a); }
+OB_VFN v128_t wasm_u8x16_min(v128_t a, v128_t b) { return _mm_min_epu8(a, b); }
+OB_VFN v128_t wasm_u8x16_max(v128_t a, v128_t b) { return _mm_max_epu8(a, b); }
+// ai: SSE compares bytes as signed only: both sides' top bits flipped makes it the unsigned order.
+OB_VFN v128_t wasm_u8x16_lt(v128_t a, v128_t b) {
+  const __m128i s = _mm_set1_epi8((char)0x80);
+  return _mm_cmplt_epi8(_mm_xor_si128(a, s), _mm_xor_si128(b, s));
+}
+OB_VFN v128_t wasm_i8x16_ne(v128_t a, v128_t b) { return _mm_xor_si128(_mm_cmpeq_epi8(a, b), _mm_set1_epi32(-1)); }
+// ai: a - b, 0 where b is the larger.
+OB_VFN v128_t wasm_u8x16_sub_sat(v128_t a, v128_t b) { return _mm_subs_epu8(a, b); }
+// ai: Signed 16-bit lanes to bytes, saturating: to signed bytes, or (u8x16) to unsigned ones, a negative lane to 0;
+// ai: a's eight in the low half, b's in the high.
+OB_VFN v128_t wasm_i8x16_narrow_i16x8(v128_t a, v128_t b) { return _mm_packs_epi16(a, b); }
+OB_VFN v128_t wasm_u8x16_narrow_i16x8(v128_t a, v128_t b) { return _mm_packus_epi16(a, b); }
+// ai: Sixteen constant indices into a's bytes (0 to 15) then b's (16 to 31), by the compiler's generic shuffle (GCC
+// ai: 12 and later, and clang).
+typedef char ob_v16qi __attribute__((__vector_size__(16)));
+#define wasm_i8x16_shuffle(a, b, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15) \
+  ((__m128i)__builtin_shufflevector((ob_v16qi)(a), (ob_v16qi)(b), \
+    c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15))
+// ai: Sixteen top bits to sixteen mask bits, byte 0 at bit 0.
+OB_VFN uint32_t wasm_i8x16_bitmask(v128_t a) { return (uint32_t)_mm_movemask_epi8(a); }
+
+#undef OB_VFN
+#undef OB_PS
+#undef OB_OF_PS
 #endif
 #endif

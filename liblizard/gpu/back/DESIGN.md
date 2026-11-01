@@ -207,7 +207,8 @@ Formula and moments: section 1. The rule stage's soft pass, a dispatch a picture
 
 L stays in the C's slot order, whitened: L[slot] = (white[slot] ? -1 : 1) * llr[slot], WHITE a bit a slot of the
 frame over 1024 sub-channels in TAB. The LDPC reads the bit map at its gather, from TAB: a code's INV (codeword bit
-j's slot of the block, two u16 a word, 0xffff for a bit never sent: the 7/8 code's first 128, read as 0), its loads
+j's slot of the block, two u16 a word, 0xffff for a bit never sent: the 7/8 code's 128 known zeros, which the gather
+sets to 127 without reading INV), its loads
 L[block's first slot + inv[j]] (the block's first slot a multiple of 16, so L's word (slot0 + x slots) / 4 on).
 
 ## 5. The decline gate

@@ -23,8 +23,11 @@ namespace lizard {
 namespace {
 constexpr int TRIAL_BATCH = 8;   // ai: frames a launch at most (every picture size in one on a desktop GPU)
 constexpr uint32_t ID_TAG = 0x7a000000u;   // ai: a known block's id: ID_TAG | frame << 8 | block
-// ai: a known frame's least pixels a module: painted at one, the finder misses LIZARD-80 in the 256 ring at some noises
-// ai: and not others (a camera never samples a module once, square on), so such a frame is shown at whole multiples
+// ai: a known frame's least pixels a module, in its own paint: at one, the finder misses LIZARD-80 in the 256 ring at
+// ai: some noises and not others (a camera never samples a module once, square on); and a paint at one shown at a whole
+// ai: multiple is a picture of sharp pixel steps, which the GPU's read below the picture's size (TRANSFORM_DOWN) folds
+// ai: into the lowest frequencies, a few percent of the first block's soft values turned (a camera's lens blurs such
+// ai: steps away), so a frame takes a ring whose paint has this many
 constexpr int MIN_PXM = 2;
 
 double nowMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -147,20 +150,24 @@ void FormRecord::save() {
 
 // ai: ---- the known frames ----
 
-// ai: Frame i: the top format of the setup's picture size i, in ring (i + 1) mod 3 (every ring at two or three sizes),
-// ai: painted as the senders paint (focus_encode, focus_paint_grey: the border to the byte, whole pixels a module, the
-// ai: quiet margin) with the pilots' count i mod 4 and the display rate 60, shown at a whole multiple where the paint
-// ai: has fewer than MIN_PXM pixels a module (the largest frame 1,638 px a side), then gaussian noise of standard
-// ai: deviation `noise` grey levels added (a fixed seed a frame), clipped to 0..255.
+// ai: Frame i: the top format of the setup's picture size i, in ring (i + 1) mod 3, or the next smaller ring where that
+// ai: one's paint would have fewer than MIN_PXM pixels a module (the 256 ring's at 384 and 512: every ring at one size or
+// ai: more), painted as the senders paint (focus_encode, focus_paint_grey: the border to the byte, whole pixels a module,
+// ai: the quiet margin) with the pilots' count i mod 4 and the display rate 60, then gaussian noise of standard deviation
+// ai: `noise` grey levels added (a fixed seed a frame), clipped to 0..255.
 TrialFrames paintTrial(const json& pictures, double noise) {
   TrialFrames t;
   const double t0 = nowMs();
   for (size_t i = 0; i < pictures.size(); i++) {
     TrialFrames::Frame fr;
     fr.subch = pictures[i]["subch"].get<int>();
-    fr.ring = FOCUS_RING[(i + 1) % FOCUS_RINGS];
+    const int n = pictures[i]["n"].get<int>();
+    int ri = (int)((i + 1) % FOCUS_RINGS);
+    while (ri > 0 && focus_pxm_for(n, 2 * FOCUS_RING[ri]) < MIN_PXM) ri--;
+    if (focus_pxm_for(n, 2 * FOCUS_RING[ri]) < MIN_PXM) throw wg::Error("trial: no ring paints a " + std::to_string(n) + " picture at " + std::to_string(MIN_PXM) + " pixels a module");
+    fr.ring = FOCUS_RING[ri];
     focus_t f{};
-    if (focus_init(&f, pictures[i]["n"].get<int>(), fr.subch, 2.0f, 2 * fr.ring, 0.f)) { throw wg::Error("trial: no codec for LIZARD-" + std::to_string(fr.subch)); }
+    if (focus_init(&f, n, fr.subch, 2.0f, 2 * fr.ring, 0.f)) { throw wg::Error("trial: no codec for LIZARD-" + std::to_string(fr.subch)); }
     if (f.block_bytes != XFER_BLOCK) { focus_free(&f); throw wg::Error("trial: blocks of " + std::to_string(f.block_bytes) + " bytes"); }
     focus_fmt_fps(&f, 60);
     focus_parity(&f, (int)(i & 3));
@@ -176,14 +183,10 @@ TrialFrames paintTrial(const json& pictures, double noise) {
     }
     std::vector<float> drive((size_t)f.px * f.px);
     focus_encode(&f, blocks.data(), drive.data());
-    const uint32_t w = (uint32_t)(f.px + 2 * FOCUS_QUIET * f.pxm), u = (uint32_t)std::max(1, (MIN_PXM + f.pxm - 1) / f.pxm);
-    std::vector<uint8_t> grey((size_t)w * w);
-    focus_paint_grey(&f, drive.data(), grey.data());
-    focus_free(&f);
-    fr.side = w * u;
+    fr.side = (uint32_t)(f.px + 2 * FOCUS_QUIET * f.pxm);
     fr.px.resize((size_t)fr.side * fr.side);
-    for (uint32_t y = 0; y < fr.side; y++)
-      for (uint32_t x = 0; x < fr.side; x++) fr.px[(size_t)y * fr.side + x] = grey[(size_t)(y / u) * w + x / u];
+    focus_paint_grey(&f, drive.data(), fr.px.data());
+    focus_free(&f);
     Rng r{0x5eed5eedull + i};
     for (auto& v : fr.px) {
       const double z = std::sqrt(-2.0 * std::log(r.unit())) * std::cos(6.283185307179586 * r.unit());

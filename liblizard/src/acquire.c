@@ -195,8 +195,12 @@ static int run_edges(const uint8_t *row, int w, int *pos) {
   if (row[0]) pos[np++] = 0;
 #ifdef OB_SIMD
   for (; x + 16 <= w; x += 16) {
-    unsigned m = (unsigned)wasm_i8x16_bitmask(wasm_i8x16_ne(wasm_v128_load(row + x), wasm_v128_load(row + x - 1)));
-    for (; m; m &= m - 1) pos[np++] = x + __builtin_ctz(m);
+    const unsigned m = (unsigned)wasm_i8x16_bitmask(wasm_i8x16_ne(wasm_v128_load(row + x), wasm_v128_load(row + x - 1)));
+    if (!m) continue;
+    // ai: every position written and the count moved on by its bit, with no branch a boundary: a binarized picture
+    // ai: has one about every other pixel, and a loop over the set bits mispredicted its exit once a chunk (2026-11-01,
+    // ai: a third of the finder's time on the S26). np never passes x + k + 1, so pos's w + 2 entries hold every write.
+    for (int k = 0; k < 16; k++) { pos[np] = x + k; np += (int)(m >> k) & 1; }
   }
 #endif
   for (; x < w; x++) if (row[x] != row[x - 1]) pos[np++] = x;
@@ -2724,9 +2728,10 @@ void ob_sample_grid(const ob_layout_t *L, const image_t *pim, const ob_reg_t *re
     while (e < nx && !(i < L->nx - 2 && mx0 + (float)(x0 + e) * step >= L->node_x[i + 1])) e++;
     run_i[runs] = i; run_end[runs] = e; xx = e;
   }
+  // ai: the rows go down the grid, so the mesh row a row falls in only moves on: the same comparisons as a search from 0
+  int j = 0;
   for (int yy = 0; yy < ny; yy++) {
     float my = my0 + (float)(y0 + yy) * step;
-    int j = 0;
     while (j < L->ny - 2 && my >= L->node_y[j + 1]) j++;
     float v = (my - L->node_y[j]) / (L->node_y[j + 1] - L->node_y[j]);
     // ai: Along a row, mx is the one thing that changes, and within a run the mesh's displacement is linear in it, so
@@ -2740,42 +2745,57 @@ void ob_sample_grid(const ob_layout_t *L, const image_t *pim, const ob_reg_t *re
     const v128_t h0 = wasm_f32x4_splat(H.h[0]), h3 = wasm_f32x4_splat(H.h[3]), h6 = wasm_f32x4_splat(H.h[6]);
     const v128_t vku = wasm_f32x4_splat(ku), vkv = wasm_f32x4_splat(kv), vkw = wasm_f32x4_splat(kw);
     const v128_t vmx0 = wasm_f32x4_splat(mx0), vstep = wasm_f32x4_splat(step);
-#endif
+    // ai: Each run's terms first, then the row four points at a time from its first point: a vector across a run's end
+    // ai: takes each lane's own run's terms, so every point is worked out as the scalar walk works it out. (2026-11-01:
+    // ai: each run took its own vectors from its own first point, and its last one, reaching past its end, was worked
+    // ai: out again by the next run: about one vector a run, in a strip of 16, and a loop exit mispredicted a run.)
+    float tex[OB_MAX_NODES + 1], tcx[OB_MAX_NODES + 1], tey[OB_MAX_NODES + 1], tcy[OB_MAX_NODES + 1];
+    for (int r = 0; r < runs; r++) {
+      const int i = run_i[r];
+      const node_t *n00 = &nodes[j * L->nx + i], *n10 = n00 + 1, *n01 = n00 + L->nx, *n11 = n01 + 1;
+      const float inv = 1.0f / (L->node_x[i + 1] - L->node_x[i]);
+      tex[r] = ((n10->dx - n00->dx) * (1 - v) + (n11->dx - n01->dx) * v) * inv; tcx[r] = n00->dx * (1 - v) + n01->dx * v - tex[r] * L->node_x[i];
+      tey[r] = ((n10->dy - n00->dy) * (1 - v) + (n11->dy - n01->dy) * v) * inv; tcy[r] = n00->dy * (1 - v) + n01->dy * v - tey[r] * L->node_x[i];
+    }
+    v128_t vex = wasm_f32x4_splat(tex[0]), vcx = wasm_f32x4_splat(tcx[0]), vey = wasm_f32x4_splat(tey[0]), vcy = wasm_f32x4_splat(tcy[0]);
+    // The column index as floats, stepped by four: whole numbers, so exact.
+    v128_t vgx = wasm_f32x4_make((float)x0, (float)(x0 + 1), (float)(x0 + 2), (float)(x0 + 3));
+    for (int xx = 0, r = 0; xx < nx; xx += 4, vgx = wasm_f32x4_add(vgx, four)) {
+      if (xx >= run_end[r]) {
+        while (xx >= run_end[r]) r++;
+        vex = wasm_f32x4_splat(tex[r]); vcx = wasm_f32x4_splat(tcx[r]); vey = wasm_f32x4_splat(tey[r]); vcy = wasm_f32x4_splat(tcy[r]);
+      }
+      v128_t ex4 = vex, cx4 = vcx, ey4 = vey, cy4 = vcy;
+      for (int q = r; q + 1 < runs && run_end[q] < xx + 4; q++) {   // the lanes from run q's end on are run q + 1's
+        const v128_t past = wasm_f32x4_le(wasm_f32x4_splat((float)(x0 + run_end[q])), vgx);
+        ex4 = wasm_v128_bitselect(wasm_f32x4_splat(tex[q + 1]), ex4, past); cx4 = wasm_v128_bitselect(wasm_f32x4_splat(tcx[q + 1]), cx4, past);
+        ey4 = wasm_v128_bitselect(wasm_f32x4_splat(tey[q + 1]), ey4, past); cy4 = wasm_v128_bitselect(wasm_f32x4_splat(tcy[q + 1]), cy4, past);
+      }
+      const v128_t vmx = wasm_f32x4_add(vmx0, wasm_f32x4_mul(vgx, vstep));
+      const v128_t rw = wasm_f32x4_div(one, wasm_f32x4_add(wasm_f32x4_mul(h6, vmx), vkw));
+      const v128_t pu = wasm_f32x4_mul(wasm_f32x4_add(wasm_f32x4_mul(h0, vmx), vku), rw), pv = wasm_f32x4_mul(wasm_f32x4_add(wasm_f32x4_mul(h3, vmx), vkv), rw);
+      const v128_t dx = wasm_f32x4_add(cx4, wasm_f32x4_mul(ex4, vmx)), dy = wasm_f32x4_add(cy4, wasm_f32x4_mul(ey4, vmx));
+      const v128_t got = sample4(&im, wasm_f32x4_add(pu, dx), wasm_f32x4_add(pv, dy));
+      if (xx + 4 <= nx) { wasm_v128_store(out + yy * pitch + xx, got); continue; }
+      float t[4];   // the row's last vector, past its end: those lanes are dropped
+      wasm_v128_store(t, got);
+      for (int l = 0; xx + l < nx; l++) out[yy * pitch + xx + l] = t[l];
+    }
+#else
     for (int r = 0, xx = 0; r < runs; r++) {
       const int i = run_i[r], end = run_end[r];
       const node_t *n00 = &nodes[j * L->nx + i], *n10 = n00 + 1, *n01 = n00 + L->nx, *n11 = n01 + 1;
       const float inv = 1.0f / (L->node_x[i + 1] - L->node_x[i]);
       const float ex = ((n10->dx - n00->dx) * (1 - v) + (n11->dx - n01->dx) * v) * inv, cx = n00->dx * (1 - v) + n01->dx * v - ex * L->node_x[i];
       const float ey = ((n10->dy - n00->dy) * (1 - v) + (n11->dy - n01->dy) * v) * inv, cy = n00->dy * (1 - v) + n01->dy * v - ey * L->node_x[i];
-#ifdef OB_SIMD
-      const v128_t vex = wasm_f32x4_splat(ex), vcx = wasm_f32x4_splat(cx), vey = wasm_f32x4_splat(ey), vcy = wasm_f32x4_splat(cy);
-      // The column index as floats, stepped by four: whole numbers, so exact.
-      v128_t vgx = wasm_f32x4_make((float)(x0 + xx), (float)(x0 + xx + 1), (float)(x0 + xx + 2), (float)(x0 + xx + 3));
-      for (; xx < end; xx += 4, vgx = wasm_f32x4_add(vgx, four)) {
-        const v128_t vmx = wasm_f32x4_add(vmx0, wasm_f32x4_mul(vgx, vstep));
-        const v128_t rw = wasm_f32x4_div(one, wasm_f32x4_add(wasm_f32x4_mul(h6, vmx), vkw));
-        const v128_t pu = wasm_f32x4_mul(wasm_f32x4_add(wasm_f32x4_mul(h0, vmx), vku), rw), pv = wasm_f32x4_mul(wasm_f32x4_add(wasm_f32x4_mul(h3, vmx), vkv), rw);
-        const v128_t dx = wasm_f32x4_add(vcx, wasm_f32x4_mul(vex, vmx)), dy = wasm_f32x4_add(vcy, wasm_f32x4_mul(vey, vmx));
-        const v128_t got = sample4(&im, wasm_f32x4_add(pu, dx), wasm_f32x4_add(pv, dy));
-        // The run's last vector reaches past its end. Those lanes were worked out with this run's nodes, which are
-        // not theirs: the next run writes them again from its own (ai: so they are stored whole, where a copy of the
-        // lanes inside the run was a memcpy call a run a row), and the row's last run, which no run follows, drops
-        // them, a whole vector and a copy still cheaper than scalar points.
-        if (xx + 4 <= end || r + 1 < runs) { wasm_v128_store(out + yy * pitch + xx, got); continue; }
-        float t[4];
-        wasm_v128_store(t, got);
-        for (int l = 0; xx + l < end; l++) out[yy * pitch + xx + l] = t[l];
-      }
-      xx = end;
-#else
       for (; xx < end; xx++) {
         const float mx = mx0 + (float)(x0 + xx) * step, rw = 1 / (H.h[6] * mx + kw);
         const float pu = (H.h[0] * mx + ku) * rw, pv = (H.h[3] * mx + kv) * rw;
         const float dx = cx + ex * mx, dy = cy + ey * mx;
         out[yy * pitch + xx] = sample(&im, pu + dx, pv + dy);
       }
-#endif
     }
+#endif
   }
 }
 

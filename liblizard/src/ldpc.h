@@ -1,7 +1,7 @@
 // Quasi-cyclic IRA LDPC: H = [Hd | Hp], Hd built from Z x Z circulants over a base graph of kb data columns and mb
 // block rows (each of the format's four codes its own: ldpc_base.h, z = 128 for every one), Hp the bit-level
 // accumulator staircase. The format's codes ship as their base matrices, one a rate of the rate profile; the 7/8
-// code's first data column is never sent (np below). The construction is pre-2005 literature throughout (Gallager
+// code's last data column, the zeros past the block, is never sent (np below). The construction is pre-2005 literature throughout (Gallager
 // codes, IRA staircase encoding, circulant lifting with girth conditioning).
 #ifndef OB_LDPC_H
 #define OB_LDPC_H
@@ -11,7 +11,7 @@ enum { LDPC_RATES = 7 };
 
 typedef struct {
   int n, k, m, z, kb, mb, rate, norm;
-  int np, nt;         // codeword bits never sent (the first np, whole data columns), and n - np, what a block's slots carry
+  int np, nt;         // codeword bits never sent (the last np of the data, whole data columns: the 7/8 code's known zeros), and n - np, what a block's slots carry
   int edges;          // entries in H
   int *row_ptr;       // m + 1
   int *col_idx;       // edges, variable index per entry, row-major
@@ -20,6 +20,7 @@ typedef struct {
   int *lay_ptr, *lay_col, *lay_shift;
   int16_t *wl, *wq;   // posteriors (data in code order, parity transposed to [block row][position]); one layer's gathered rows
   int8_t *wr;         // check-to-bit messages, [slot][position]
+  int wide;           // the layer kernel ldpc_init chose: 0 the 128-bit one (or the scalar twin), 1 AVX2, 2 AVX-512
 } ldpc_t;
 
 // ai: Rate indices 0 to LDPC_RATES - 1, the format's four with a code: 2 (1/2), 3 (2/3), 4 (3/4), 6 (7/8); the name and
@@ -37,7 +38,7 @@ void ldpc_free(ldpc_t *c);
 // bits: one bit per byte. data k in, codeword n out (systematic, data first).
 void ldpc_encode(const ldpc_t *c, const uint8_t *data, uint8_t *codeword);
 
-// llr > 0 means bit 0; the np bits never sent are fed as 0. Returns iterations used, or -1 if the syndrome never
+// llr > 0 means bit 0; the np bits never sent are fed as the caller knows them (the 7/8 code's zeros at 127). Returns iterations used, or -1 if the syndrome never
 // cleared. out receives the n hard decisions either way.
 int ldpc_decode(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_iter);
 // The same with a way out for a block that is going nowhere (ldpc.c). Returns -3 when it took it.
