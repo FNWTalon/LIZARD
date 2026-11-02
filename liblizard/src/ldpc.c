@@ -84,7 +84,14 @@ int ldpc_init(ldpc_t *c, int rate) {
   c->wr = malloc((size_t)c->slots_total * c->zp);
   if (!c->wl || !c->wq || !c->wr) { ldpc_free(c); return -1; }
 #ifdef OB_NEON
-  if (c->z % 32 == 0 && c->zp == c->z) { c->w4 = malloc((size_t)c->kb * 4 * c->z * sizeof(int16_t)); if (!c->w4) { ldpc_free(c); return -1; } }
+  // ai: arm64's kernel leaves out the posteriors' clamp at 8191, which never acts while a posterior, its LLR (within
+  // ai: +-128) plus its column's messages (within +-127 each), stays inside it: the largest column degree at most 63
+  int dmax = 0;
+  for (int j = 0; j < kb; j++) { int d = 0; for (int r = 0; r < mb; r++) d += shift[r * kb + j] >= 0; if (d > dmax) dmax = d; }
+  if (c->z % 32 == 0 && c->zp == c->z && c->slots_max <= 64 && 128 + 127 * dmax <= 8191 && c->norm >= 8) {
+    c->w4 = malloc((size_t)c->kb * 4 * c->z * sizeof(int16_t));
+    if (!c->w4) { ldpc_free(c); return -1; }
+  }
 #endif
   return 0;
 }
@@ -169,53 +176,110 @@ static void layer_kernel(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
 }
 
 #ifdef OB_NEON
-// ai: arm64: the layer in NEON's own instructions, 32 checks a step, so four vectors' minima and signs are four
-// ai: independent chains the core runs side by side (the 128-bit kernel's one chain a step serialises a layer's edges);
-// ai: a message widened and taken off in one instruction (SSUBW), narrowed back in place (XTN, XTN2), the posteriors 64
-// ai: bytes a load and store. No index of the least magnitude: an edge whose magnitude is min1 takes min2, which decides
-// ai: as the index does (a second edge at min1 leaves min2 equal to min1), so every form decides alike.
+// ai: arm64: the layer in NEON's own instructions, 32 checks a step. The two passes run over the slots once a step
+// ai: together: pass 2 of step i (messages and posteriors out, the stores) beside pass 1 of step i + 32 (extrinsics,
+// ai: their minima and signs, the arithmetic), so the stores of one and the operations of the other share the core;
+// ai: one pass alone was bound by either. Pass 1: a message widened and taken off in one instruction (SSUBW), the
+// ai: extrinsics kept for pass 2 (vb) with their magnitudes as bytes saturated at 255 (ab), the minima on those bytes
+// ai: (UMIN, UMAX), the signs as the XOR of the high bytes. Pass 2: the scaled minima carry the check's sign; a message
+// ai: is min1's or min2's (by the byte against min1) under the extrinsic's sign, as bytes, stored as they are and added
+// ai: to the extrinsic (SADDW). No index of the least magnitude: an edge whose magnitude is min1 takes min2, which
+// ai: decides as the index does (a second edge at min1 leaves min2 equal to min1), so every form decides alike; on the
+// ai: saturated bytes alike, as min1 and min2 then scale to 127 both. No clamp at +-8191: a decode's posteriors stay
+// ai: inside it (ldpc_init).
 // ai: view: where each of the ns slots is read from and written to: slots 0 to nd - 1 in the decoder's four-times
-// ai: columns (w4: a new posterior written at the run and a column either side), the rest once where they lie (the
-// ai: staircase's rows of wl); the pass-1 differences go to the slot's row of Q. A view of Q's own rows with nd 0 is
-// ai: the layer as layer_kernel takes it (test/ldpc_neon.c holds the two alike).
-static void layer_kernel_neon(int16_t *Q, int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z) {
-  const int16x8_t big = vdupq_n_s16(32767), cap = vdupq_n_s16(2047), top = vdupq_n_s16(127), lo = vdupq_n_s16(-8191), hi = vdupq_n_s16(8191);
-  for (int i = 0; i < zp; i += 32) {
-    int16x8_t a1 = big, b1 = big, c1 = big, d1 = big, a2 = big, b2 = big, c2 = big, d2 = big;
-    int16x8_t as = vdupq_n_s16(0), bs = as, cs = as, ds = as;
-    for (int e = 0; e < ns; e++) {
-      const int8x16x2_t r = vld1q_s8_x2(R + e * zp + i);
-      int16x8x4_t v = vld1q_s16_x4(view[e] + i);
-      v.val[0] = vsubw_s8(v.val[0], vget_low_s8(r.val[0])); v.val[1] = vsubw_high_s8(v.val[1], r.val[0]);
-      v.val[2] = vsubw_s8(v.val[2], vget_low_s8(r.val[1])); v.val[3] = vsubw_high_s8(v.val[3], r.val[1]);
-      vst1q_s16_x4(Q + e * zp + i, v);
-      const int16x8_t aa = vabsq_s16(v.val[0]), ba = vabsq_s16(v.val[1]), ca = vabsq_s16(v.val[2]), da = vabsq_s16(v.val[3]);
-      as = veorq_s16(as, v.val[0]); bs = veorq_s16(bs, v.val[1]); cs = veorq_s16(cs, v.val[2]); ds = veorq_s16(ds, v.val[3]);
-      a2 = vminq_s16(a2, vmaxq_s16(a1, aa)); b2 = vminq_s16(b2, vmaxq_s16(b1, ba)); c2 = vminq_s16(c2, vmaxq_s16(c1, ca)); d2 = vminq_s16(d2, vmaxq_s16(d1, da));
-      a1 = vminq_s16(a1, aa); b1 = vminq_s16(b1, ba); c1 = vminq_s16(c1, ca); d1 = vminq_s16(d1, da);
-    }
-    // ai: (x * norm) >> 4 capped at 127, x capped at 2047 first, as the 128-bit kernel
-#define OB_SCALE(x) vminq_s16(vshrq_n_s16(vmulq_n_s16(vminq_s16((x), cap), (int16_t)norm), 4), top)
-    const int16x8_t an = OB_SCALE(a1), bn = OB_SCALE(b1), cn = OB_SCALE(c1), dn = OB_SCALE(d1);
-    const int16x8_t am = OB_SCALE(a2), bm = OB_SCALE(b2), cm = OB_SCALE(c2), dm = OB_SCALE(d2);
+// ai: columns (w4, run at 2z - sh[e]: a step's new posteriors written at the run and a column up below 2z, a column
+// ai: down from 2z, the step across 2z a column down too once the layer is done), the rest once where they lie (the
+// ai: staircase's rows of wl). A view of Q's own rows with nd 0 is the layer as layer_kernel takes it
+// ai: (test/ldpc_neon.c holds the two alike, on posteriors where no clamp acts).
+typedef struct { uint8x16_t a1, b1, a2, b2; int8x16_t sa, sb; } p1_acc;
+typedef struct { uint8x16_t a1, b1; int8x16_t an, am, bn, bm; } p2_msg;
+
+static inline __attribute__((always_inline)) void p1_slot(p1_acc *x, const int8_t *Rp, const int16_t *src, int16_t *vbp, uint8_t *abp) {
+  const int8x16x2_t r = vld1q_s8_x2(Rp);
+  int16x8x4_t v = vld1q_s16_x4(src);
+  v.val[0] = vsubw_s8(v.val[0], vget_low_s8(r.val[0])); v.val[1] = vsubw_high_s8(v.val[1], r.val[0]);
+  v.val[2] = vsubw_s8(v.val[2], vget_low_s8(r.val[1])); v.val[3] = vsubw_high_s8(v.val[3], r.val[1]);
+  vst1q_s16_x4(vbp, v);
+  const uint8x16x2_t m = { { vqmovn_high_u16(vqmovn_u16(vreinterpretq_u16_s16(vabsq_s16(v.val[0]))), vreinterpretq_u16_s16(vabsq_s16(v.val[1]))),
+                             vqmovn_high_u16(vqmovn_u16(vreinterpretq_u16_s16(vabsq_s16(v.val[2]))), vreinterpretq_u16_s16(vabsq_s16(v.val[3]))) } };
+  vst1q_u8_x2(abp, m);
+  x->sa = veorq_s8(x->sa, vuzp2q_s8(vreinterpretq_s8_s16(v.val[0]), vreinterpretq_s8_s16(v.val[1])));
+  x->sb = veorq_s8(x->sb, vuzp2q_s8(vreinterpretq_s8_s16(v.val[2]), vreinterpretq_s8_s16(v.val[3])));
+  x->a2 = vminq_u8(x->a2, vmaxq_u8(x->a1, m.val[0])); x->b2 = vminq_u8(x->b2, vmaxq_u8(x->b1, m.val[1]));
+  x->a1 = vminq_u8(x->a1, m.val[0]); x->b1 = vminq_u8(x->b1, m.val[1]);
+}
+
+// ai: a slot's new messages from its extrinsics, stored; the new posteriors returned
+static inline __attribute__((always_inline)) int16x8x4_t p2_slot(const p2_msg *g, int8_t *Rp, const int16_t *vbp, const uint8_t *abp) {
+  int16x8x4_t v = vld1q_s16_x4(vbp);
+  const uint8x16x2_t m = vld1q_u8_x2(abp);
+  const int8x16_t ta = vbslq_s8(vceqq_u8(m.val[0], g->a1), g->am, g->an), tb = vbslq_s8(vceqq_u8(m.val[1], g->b1), g->bm, g->bn);
+  const int8x16_t ga = vcltzq_s8(vuzp2q_s8(vreinterpretq_s8_s16(v.val[0]), vreinterpretq_s8_s16(v.val[1])));
+  const int8x16_t gb = vcltzq_s8(vuzp2q_s8(vreinterpretq_s8_s16(v.val[2]), vreinterpretq_s8_s16(v.val[3])));
+  const int8x16x2_t ro = { { vsubq_s8(veorq_s8(ta, ga), ga), vsubq_s8(veorq_s8(tb, gb), gb) } };
+  vst1q_s8_x2(Rp, ro);
+  v.val[0] = vaddw_s8(v.val[0], vget_low_s8(ro.val[0])); v.val[1] = vaddw_high_s8(v.val[1], ro.val[0]);
+  v.val[2] = vaddw_s8(v.val[2], vget_low_s8(ro.val[1])); v.val[3] = vaddw_high_s8(v.val[3], ro.val[1]);
+  return v;
+}
+
+static inline __attribute__((always_inline)) void p1_reset(p1_acc *x) {
+  x->a1 = x->b1 = x->a2 = x->b2 = vdupq_n_u8(255);
+  x->sa = x->sb = vdupq_n_s8(0);
+}
+
+// ai: (x * norm) >> 4 capped at 127, on the saturated bytes (alike from x = 157 up at norm 13), the check's sign folded in
+static inline __attribute__((always_inline)) p2_msg p2_from(const p1_acc *x, int norm) {
+  const uint8x16_t n = vdupq_n_u8((uint8_t)norm), top = vdupq_n_u8(127);
+#define OB_SCALE(v) vminq_u8(vshrn_high_n_u16(vshrn_n_u16(vmull_u8(vget_low_u8(v), vget_low_u8(n)), 4), vmull_high_u8((v), n), 4), top)
+#define OB_SIGNED(v, s) vsubq_s8(veorq_s8(vreinterpretq_s8_u8(OB_SCALE(v)), (s)), (s))
+  const int8x16_t sa = vcltzq_s8(x->sa), sb = vcltzq_s8(x->sb);
+  p2_msg g = { x->a1, x->b1, OB_SIGNED(x->a1, sa), OB_SIGNED(x->a2, sa), OB_SIGNED(x->b1, sb), OB_SIGNED(x->b2, sb) };
+#undef OB_SIGNED
 #undef OB_SCALE
-    for (int e = 0; e < ns; e++) {
-      int16x8x4_t v = vld1q_s16_x4(Q + e * zp + i);
-#define OB_MSG(V, M1, N1, N2, S, OUT) do { \
-        const int16x8_t mag_ = vbslq_s16(vceqq_s16(vabsq_s16(V), M1), N2, N1), neg_ = vshrq_n_s16(veorq_s16(S, V), 15); \
-        OUT = vsubq_s16(veorq_s16(mag_, neg_), neg_); \
-        V = vmaxq_s16(vminq_s16(vaddq_s16(V, OUT), hi), lo); } while (0)
-      int16x8_t ra, rb, rc, rd;
-      OB_MSG(v.val[0], a1, an, am, as, ra); OB_MSG(v.val[1], b1, bn, bm, bs, rb);
-      OB_MSG(v.val[2], c1, cn, cm, cs, rc); OB_MSG(v.val[3], d1, dn, dm, ds, rd);
-#undef OB_MSG
-      const int8x16x2_t ro = { { vmovn_high_s16(vmovn_s16(ra), rb), vmovn_high_s16(vmovn_s16(rc), rd) } };
-      vst1q_s8_x2(R + e * zp + i, ro);
-      int16_t *d = view[e] + i;
-      if (e < nd) { vst1q_s16_x4(d - z, v); vst1q_s16_x4(d, v); vst1q_s16_x4(d + z, v); }
-      else vst1q_s16_x4(d, v);
+  // ai: opaque to the compiler, which otherwise moves the fold after the selection, into every slot
+  __asm__("" : "+w"(g.an), "+w"(g.am), "+w"(g.bn), "+w"(g.bm));
+  return g;
+}
+
+static void layer_kernel_neon(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh) {
+  int16_t vb[2][64 * 32];   // ai: a step's extrinsics, slot by slot, this step's and the next's
+  uint8_t ab[2][64 * 32];   // ai: their magnitudes as bytes, saturated at 255
+  p1_acc x;
+  p1_reset(&x);
+  for (int e = 0; e < ns; e++) p1_slot(&x, R + e * zp, view[e], vb[0] + e * 32, ab[0] + e * 32);
+  for (int i = 0, b = 0; i < zp; i += 32, b ^= 1) {
+    const p2_msg g = p2_from(&x, norm);
+    const int16_t *vc = vb[b];
+    const uint8_t *ac = ab[b];
+    int8_t *Rp = R + i;
+    if (i + 32 < zp) {
+      int16_t *vn = vb[b ^ 1];
+      uint8_t *an = ab[b ^ 1];
+      p1_reset(&x);
+      for (int e = 0; e < nd; e++, Rp += zp, vc += 32, ac += 32, vn += 32, an += 32) {
+        int16_t *d = view[e] + i;
+        const int16x8x4_t v = p2_slot(&g, Rp, vc, ac);
+        p1_slot(&x, Rp + 32, d + 32, vn, an);
+        vst1q_s16_x4(d, v); vst1q_s16_x4(d + (i < sh[e] ? z : -z), v);
+      }
+      for (int e = nd; e < ns; e++, Rp += zp, vc += 32, ac += 32, vn += 32, an += 32) {
+        int16_t *d = view[e] + i;
+        vst1q_s16_x4(d, p2_slot(&g, Rp, vc, ac));
+        p1_slot(&x, Rp + 32, d + 32, vn, an);
+      }
+    } else {
+      for (int e = 0; e < nd; e++, Rp += zp, vc += 32, ac += 32) {
+        int16_t *d = view[e] + i;
+        const int16x8x4_t v = p2_slot(&g, Rp, vc, ac);
+        vst1q_s16_x4(d, v); vst1q_s16_x4(d + (i < sh[e] ? z : -z), v);
+      }
+      for (int e = nd; e < ns; e++, Rp += zp, vc += 32, ac += 32) vst1q_s16_x4(view[e] + i, p2_slot(&g, Rp, vc, ac));
     }
   }
+  // ai: the run that crosses 2z (s not a multiple of 32) was stored a column up; its part past 2z also a column down
+  for (int e = 0; e < nd; e++) if (sh[e] & 31) { int16_t *d = view[e] + (sh[e] & ~31); vst1q_s16_x4(d - z, vld1q_s16_x4(d)); }
 }
 #endif
 
@@ -351,7 +415,7 @@ static void layer_direct(const ldpc_t *c, int r, int16_t *Q, int8_t *R, int ns) 
   if (r == 0) { prev[0] = 8191; memcpy(prev + 1, Lp + (c->mb - 1) * z, (size_t)(z - 1) * 2); }
   view[nd] = r > 0 ? Lp + (r - 1) * z : prev;
   view[nd + 1] = Lp + r * z;
-  layer_kernel_neon(Q, R, ns, zp, c->norm, view, nd, z);
+  layer_kernel_neon(R, ns, zp, c->norm, view, nd, z, c->lay_shift + c->lay_ptr[r]);
   if (r == 0) memcpy(Lp + (c->mb - 1) * z, prev + 1, (size_t)(z - 1) * 2);
 }
 #endif
