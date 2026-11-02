@@ -68,6 +68,8 @@ int main(int argc, char **argv) {
   enum { NS_MAX = 32 };
   static int16_t q0[NS_MAX * 128], qa[NS_MAX * 128], qb[NS_MAX * 128];
   static int8_t r0[NS_MAX * 128], ra[NS_MAX * 128], rb[NS_MAX * 128];
+  int16_t *rows[NS_MAX];   // ai: the NEON kernel's view: every slot Q's own row
+  for (int e = 0; e < NS_MAX; e++) rows[e] = qb + e * zp;
   int fails = 0;
   for (int t = 0; t < layers; t++) {
     const int ns = 3 + (int)(next() % (NS_MAX - 2)), norm = t % 5 == 0 ? 16 : 13;
@@ -76,7 +78,7 @@ int main(int argc, char **argv) {
     kernel_scalar(qa, ra, ns, zp, norm);
     for (int w = 0; w < 2; w++) {
       memcpy(qb, q0, sizeof q0); memcpy(rb, r0, sizeof r0);
-      if (w) layer_kernel_neon(qb, rb, ns, zp, norm, 0, 0, 0); else layer_kernel(qb, rb, ns, zp, norm);
+      if (w) layer_kernel_neon(qb, rb, ns, zp, norm, rows, 0, 0); else layer_kernel(qb, rb, ns, zp, norm);
       if (memcmp(qa, qb, (size_t)ns * zp * 2) || memcmp(ra, rb, (size_t)ns * zp)) {
         if (fails < 5) printf("layer %d (ns %d, norm %d): %s apart from the scalar loop\n", t, ns, norm, w ? "NEON" : "128-bit");
         fails++;
