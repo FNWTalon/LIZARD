@@ -671,11 +671,13 @@ class SendState {
     private val settle = Timer(300) { repick() }.apply { isRepeats = false }
 
     // ai: macOS: the presenter's layer follows the canvas (a move or a resize of it or of the window)
-    fun canvasMoved() { if (p != 0L) Native.presentPlace(p, canvas.place()) }
+    fun canvasMoved() { if (p != 0L && !leased) Native.presentPlace(p, canvas.place()) }
 
     // ai: the canvas's window going: the presenter stopped first (its surface is that window); begun again on the next
+    // ai: (a leased presenter is not on it: handed the app's window, it goes on; stopping it here gave the monitor back
+    // ai: the moment the lease took the canvas out, 2026-11-02)
     fun canvasGone() {
-        if (p != 0L) { Native.presentStop(p); p = 0L }
+        if (p != 0L && !leased) { Native.presentStop(p); p = 0L }
     }
     // ai: the canvas's window made: the presenter begun where one is wanted
     fun canvasMade() { if (phase == Phase.On && p == 0L) repick() }
