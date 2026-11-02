@@ -40,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
@@ -94,8 +95,9 @@ val SidePad = 12.dp
 // ai: Whether a row of buttons in the column fills its width (ColumnWidth.stretch) or each button is its label's width
 val LocalButtonsFill = staticCompositionLocalOf { true }
 
-// ai: The sash's margin past its hairline, the column's own and drawn in nothing: the room its wide line (4 dp, the hairline
-// ai: and 3 more) grows into, so a view in the main area that Compose cannot draw over hides none of it (2026-11-02)
+// ai: The sash's margin past its hairline, the column's room in the main area's colour (ToolLandscape's `roomFill`, so it
+// ai: reads as the main area's): the room its wide line (4 dp, the hairline and 3 more) grows into, so a view in the main
+// ai: area that Compose cannot draw over hides none of it (2026-11-02)
 val EdgeRoom = 3.dp
 
 // ai: The edge's strip: a finger's width past the column's hairline, over its margin (EdgeRoom) and the main area's
@@ -190,10 +192,11 @@ private fun SideEdge(e: Edge, modifier: Modifier) {
 // ai: beside the hairline. Its edge a sash on the desktop (ColumnWidth.sash: no collapse button in the column's bar, the
 // ai: edge at the rail's hairline too), the collapse button alone on the phone; the rail's button opens it on both.
 // ai: `bare`: the main area alone, the column, rail, hairline, padding and edge gone, the main area's content where it was
-// ai: in the tree (the desktop's full screen, 2026-11-02: SendHost.codeAloneInPlace).
+// ai: in the tree (the desktop's full screen, 2026-11-02: SendHost.codeAloneInPlace). `roomFill`: the main area's colour
+// ai: beside the sash's margin (EdgeRoom), the margin's.
 @Composable
 fun ToolLandscape(title: String, collapsed: Boolean, onCollapse: () -> Unit, onHome: () -> Unit, swap: (@Composable () -> Unit)?,
-                  width: ColumnWidth, floor: Dp, mainPadding: Dp = 16.dp, onResized: () -> Unit = {}, bare: Boolean = false,
+                  width: ColumnWidth, floor: Dp, mainPadding: Dp = 16.dp, onResized: () -> Unit = {}, roomFill: Color = Bg, bare: Boolean = false,
                   rail: @Composable () -> Unit, side: @Composable () -> Unit, main: @Composable BoxWithConstraintsScope.() -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
         val screen = maxWidth
@@ -216,8 +219,8 @@ fun ToolLandscape(title: String, collapsed: Boolean, onCollapse: () -> Unit, onH
                     }
                 }
                 VerticalDivider(color = Line)
-                // ai: as a sash, the room the edge's wide line grows into: the column's, invisible, the main area past it
-                if (sash) Spacer(Modifier.width(EdgeRoom))
+                // ai: as a sash, the room the edge's wide line grows into, in the main area's colour, the main area past it
+                if (sash) Spacer(Modifier.width(EdgeRoom).fillMaxHeight().background(roomFill))
             }
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().padding(if (bare) 0.dp else mainPadding), contentAlignment = Alignment.Center) {
                 CompositionLocalProvider(LocalEdgeGrip provides if (sash && !bare) edge else null) { main() }

@@ -58,6 +58,17 @@ import kotlinx.coroutines.runBlocking
 // ai: itself, since nothing of Compose can be drawn over a heavyweight canvas.
 class CodeCanvas(private val s: SendState) : Canvas() {
     @Volatile var presenting = false
+    // ai: the area's fill (2026-11-02): the soft fill under the test stream's line and while a monitor of its own shows the
+    // ai: code, white under the file upload and round the presenter's code (it clears to white). The canvas's X background
+    // ai: is it, so a resize shows it before the paint (the test stream's area went white at each step of a dragged edge:
+    // ai: 69 of 183 frames on Xvfb), and the column's margin beside the canvas takes it (SendHost.codeFill)
+    var fill by mutableStateOf(Bg)
+        private set
+    fun look() {
+        val f = if (s.leased || (s.test && !presenting)) Soft else Bg
+        if (f != fill) { fill = f; if (isDisplayable) xBackground() }
+    }
+    private fun xBackground() { if (s.loadError.isEmpty()) runCatching { Native.windowBackground(this, fill.toArgb() and 0xFFFFFF) } }
     // ai: how near the left edge the pointer shows full screen's rail, the window's units
     private val EDGE_NEAR = 24
 
@@ -173,6 +184,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     // ai: One buffer, made again only to grow (a dragged edge resized it at each step), its top left corner used.
     private var back: BufferedImage? = null
     override fun paint(g: Graphics) {
+        look()
         // ai: the code shown on a monitor of its own: the area here plain, a line saying where (the window is the control)
         if (s.leased) { paintLeased(g as Graphics2D); return }
         if (presenting || width <= 0 || height <= 0) return
@@ -366,11 +378,11 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         }
     }
     // ai: its window made (Send entered): the area read and the idle look painted at once, not at AWT's first repaint
-    // ai: its window made (Send entered): its X background white (Native.windowBackground: AWT's, the theme's grey, showed
-    // ai: until the first paint), the area read and the idle look painted at once, not at AWT's first repaint
+    // ai: its window made (Send entered): its X background the area's fill (Native.windowBackground: AWT's, the theme's
+    // ai: grey, showed until the first paint), the area read and the idle look painted at once, not at AWT's first repaint
     override fun addNotify() {
         super.addNotify()
-        if (s.loadError.isEmpty()) runCatching { Native.windowBackground(this, 0xFFFFFF) }
+        look(); xBackground()
         EventQueue.invokeLater { s.areaChanged(); if (!presenting) paintNow() }
     }
     override fun removeNotify() { s.canvasGone(); super.removeNotify() }
@@ -898,6 +910,7 @@ class SendState {
         if (h == 0L || p != 0L || !canvas.isShowing || areaW <= 0 || areaH <= 0) return
         if (!configure()) return
         canvas.presenting = true
+        canvas.look()
         val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, vsync, false, canvas.place())
         if (pr == 0L) { fail("The code cannot be shown: ${Native.txError()}"); return }
         p = pr
