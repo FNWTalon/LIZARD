@@ -1036,11 +1036,17 @@ static float sub_scale(struct lizard_ws *w, int j, double m2, double m4) {
 }
 #ifdef OB_NEON
 // ai: arm64: the soft values of sub-channels j to j + 3 (lizard_finish_ext's loop over sub-channels, four at once):
-// ai: their coefficients gathered side by side (sub-channel j + l's s-th at 4 s + l), the moments' double sums one a
-// ai: lane (each in s order, as the loop adds them), the soft values a vector at a time, stored interleaved; the same
-// ai: doubles, floats and bytes as the loop
-static inline int32x4_t soft_q(float32x4_t k, float32x4_t y) {
-  return vcvtnq_s32_f32(vmulq_f32(vminq_f32(vmaxq_f32(vmulq_f32(k, y), vdupq_n_f32(-10)), vdupq_n_f32(10)), vdupq_n_f32(8)));
+// ai: their coefficients gathered side by side (sub-channel j + l's s-th at 4 s + l), by lanes (one store of four
+// ai: where the loop has four); the moments in float, a sub-channel a lane, four chains (s mod 4) added at the end, each
+// ai: |y|^2 one fused multiply-add (its own floats: the loop's doubles took a conversion each and two lanes a
+// ai: vector, 0.8 M instructions a frame more on the S26 replays); the soft values a vector at a time, stored interleaved
+// ai: (soft_q), the loop's bytes from these moments
+// ai: soft_q: four soft values clamped and quantised as the loop does, the 8 folded into the scale (k8 = 8 k: a power of
+// ai: two, so k8 y is 8 (k y) exactly) and the clamp taken on the rounded integers at +-80 (rounding is monotone and 80
+// ai: whole, so the same bytes), eight lanes a step on 16 bits; a NaN converts to 0 either way
+static inline int8x8_t soft_q(float32x4_t k8, float32x4_t a, float32x4_t b) {
+  const int16x8_t q = vcombine_s16(vqmovn_s32(vcvtnq_s32_f32(vmulq_f32(k8, a))), vqmovn_s32(vcvtnq_s32_f32(vmulq_f32(k8, b))));
+  return vmovn_s16(vminq_s16(vmaxq_s16(q, vdupq_n_s16(-80)), vdupq_n_s16(80)));
 }
 static void soft4(const lizard_t *f, struct lizard_ws *w, int j, const float *d) {
   const float *re = w->tre, *imag = w->tim;
@@ -1063,29 +1069,27 @@ static void soft4(const lizard_t *f, struct lizard_ws *w, int j, const float *d)
       }
     }
   } else for (int s = 0; s < LIZARD_SUB; s++) {
-    gr[4 * s] = re[p0[s]]; gr[4 * s + 1] = re[p1[s]]; gr[4 * s + 2] = re[p2[s]]; gr[4 * s + 3] = re[p3[s]];
-    gi[4 * s] = imag[p0[s]]; gi[4 * s + 1] = imag[p1[s]]; gi[4 * s + 2] = imag[p2[s]]; gi[4 * s + 3] = imag[p3[s]];
+    float32x4_t r = vld1q_dup_f32(re + p0[s]), m = vld1q_dup_f32(imag + p0[s]);
+    r = vld1q_lane_f32(re + p1[s], r, 1); r = vld1q_lane_f32(re + p2[s], r, 2); r = vld1q_lane_f32(re + p3[s], r, 3);
+    m = vld1q_lane_f32(imag + p1[s], m, 1); m = vld1q_lane_f32(imag + p2[s], m, 2); m = vld1q_lane_f32(imag + p3[s], m, 3);
+    vst1q_f32(gr + 4 * s, r); vst1q_f32(gi + 4 * s, m);
   }
-  float64x2_t m2a = vdupq_n_f64(0), m2b = m2a, m4a = m2a, m4b = m2a;
-  for (int s = 0; s < LIZARD_SUB; s++) {
-    const float32x4_t r = vld1q_f32(gr + 4 * s), i = vld1q_f32(gi + 4 * s);
-    const float64x2_t rl = vcvt_f64_f32(vget_low_f32(r)), rh = vcvt_high_f64_f32(r), il = vcvt_f64_f32(vget_low_f32(i)), ih = vcvt_high_f64_f32(i);
-    const float64x2_t el = vaddq_f64(vmulq_f64(rl, rl), vmulq_f64(il, il)), eh = vaddq_f64(vmulq_f64(rh, rh), vmulq_f64(ih, ih));
-    m2a = vaddq_f64(m2a, el); m4a = vaddq_f64(m4a, vmulq_f64(el, el));
-    m2b = vaddq_f64(m2b, eh); m4b = vaddq_f64(m4b, vmulq_f64(eh, eh));
+  float32x4_t m2v[4], m4v[4];
+  for (int q = 0; q < 4; q++) m2v[q] = m4v[q] = vdupq_n_f32(0);
+  for (int s = 0; s < LIZARD_SUB; s += 4) for (int q = 0; q < 4; q++) {
+    const float32x4_t r = vld1q_f32(gr + 4 * (s + q)), i = vld1q_f32(gi + 4 * (s + q)), e = vfmaq_f32(vmulq_f32(r, r), i, i);
+    m2v[q] = vaddq_f32(m2v[q], e); m4v[q] = vfmaq_f32(m4v[q], e, e);
   }
-  double m2[4], m4[4];
-  vst1q_f64(m2, m2a); vst1q_f64(m2 + 2, m2b); vst1q_f64(m4, m4a); vst1q_f64(m4 + 2, m4b);
-  float32x4_t k[4];
-  for (int l = 0; l < 4; l++) k[l] = vdupq_n_f32(sub_scale(w, j + l, m2[l], m4[l]));
+  float m2[4], m4[4];
+  vst1q_f32(m2, vaddq_f32(vaddq_f32(m2v[0], m2v[1]), vaddq_f32(m2v[2], m2v[3]))); vst1q_f32(m4, vaddq_f32(vaddq_f32(m4v[0], m4v[1]), vaddq_f32(m4v[2], m4v[3])));
+  float32x4_t k8[4];
+  for (int l = 0; l < 4; l++) k8[l] = vdupq_n_f32(8 * sub_scale(w, j + l, m2[l], m4[l]));
   int8_t *out = w->llrf + 2 * (size_t)j * LIZARD_SUB;
   for (int s = 0; s < LIZARD_SUB; s += 8) {
     // ai: val[l]: sub-channel j + l at s to s + 3 (a) and s + 4 to s + 7 (b)
     const float32x4x4_t ra = vld4q_f32(gr + 4 * s), rb = vld4q_f32(gr + 4 * s + 16), ia = vld4q_f32(gi + 4 * s), ib = vld4q_f32(gi + 4 * s + 16);
     for (int l = 0; l < 4; l++) {
-      const int8x8_t R = vmovn_s16(vcombine_s16(vmovn_s32(soft_q(k[l], ra.val[l])), vmovn_s32(soft_q(k[l], rb.val[l]))));
-      const int8x8_t I = vmovn_s16(vcombine_s16(vmovn_s32(soft_q(k[l], ia.val[l])), vmovn_s32(soft_q(k[l], ib.val[l]))));
-      const int8x8x2_t ri = { { R, I } };
+      const int8x8x2_t ri = { { soft_q(k8[l], ra.val[l], rb.val[l]), soft_q(k8[l], ia.val[l], ib.val[l]) } };
       vst2_s8(out + 2 * (size_t)l * LIZARD_SUB + 2 * s, ri);
     }
   }
