@@ -145,7 +145,7 @@ int ob_test_sample(const uint8_t *img, int iw, int ih, float gamma, int mesh, in
   image_t im;
   ob_image_init(&im, img, iw, ih, gamma);
   ob_reg_t reg;
-  if (!ob_acquire(&F.frame, &im, mesh, &reg, &R)) return 0;
+  if (!ob_acquire(&F.frame, &im, mesh, &reg, &R, NULL)) return 0;
   state_dump(&im, &reg, dims, state);
   const float g0 = F.margin + 0.5f / F.scale, step = 1.0f / F.scale;
   const double t0 = ob_now_ms();
