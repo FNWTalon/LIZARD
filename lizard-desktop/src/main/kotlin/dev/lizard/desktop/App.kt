@@ -100,7 +100,7 @@ fun ApplicationScope.LizardWindow(app: App, sendTest: SenderTest?, recvTest: Rec
     var before by remember { mutableStateOf(WindowPlacement.Floating) }
     Window(onCloseRequest = { app.close(); exitApplication() }, state = ws, title = "LIZARD", icon = rememberVectorPainter(Icons.mark)) {
         // ai: the frame white before Compose's first frame (2026-10-07): AWT's default grey showed until Skia drew
-        remember { window.background = java.awt.Color.WHITE; window.contentPane.background = java.awt.Color.WHITE; if (app.loadError.isEmpty()) whiten(window); app.frame = window; app.sendUi.window = window }
+        remember { window.background = java.awt.Color.WHITE; window.contentPane.background = java.awt.Color.WHITE; if (app.loadError.isEmpty()) whiten(window); app.frame = window; app.sendUi.window = window; s.frame = window }
         // ai: Keys wherever the focus is (the canvas takes none), as video players have them (2026-10-23; F11 and Escape
         // ai: before): Space or K play and pause (SendState.playPause), F or F11 full screen and back, Escape out of it,
         // ai: Ctrl+O (Command+O on macOS) add files where files are sent. A key held down acts once; the keys taken are taken whole (press,
@@ -143,7 +143,8 @@ fun ApplicationScope.LizardWindow(app: App, sendTest: SenderTest?, recvTest: Rec
         // ai: (2026-10-24): the same, the window's frame off over its monitor (Native.windowFullscreen); macOS,
         // ai: Compose's placement. Until then: Compose's placement on X11, and a leave through Floating then
         // ai: Maximized once the bounds held still, since Compose cannot set a window maximized again. The window is
-        // ai: found through the sender's canvas, which has none on Home and Receive (0: nothing read there).
+        // ai: found through itself (through the sender's canvas until 2026-11-02, which now has a window only while codes
+        // ai: play). Its other resizes on Send are resizes by hand (SendState.resizing: a run pauses).
         // ai: the window's place kept as a monitor is taken for the code (the window manager moves it off that monitor)
         // ai: and put back once it is given back (SendState.leased)
         var placeWas by remember { mutableStateOf(WindowPlacement.Floating to java.awt.Rectangle()) }
@@ -157,7 +158,7 @@ fun ApplicationScope.LizardWindow(app: App, sendTest: SenderTest?, recvTest: Rec
         s.raise = { window.toFront() }
         app.hide = { window.isVisible = false }
         s.fullscreen = { on ->
-            val top = runCatching { Native.windowOf(s.canvas) }.getOrDefault(0L)
+            val top = runCatching { Native.windowOf(window) }.getOrDefault(0L)
             if (!runCatching { Native.windowFullscreen(top, on) }.getOrDefault(false)) {
                 if (on) { before = ws.placement; ws.placement = WindowPlacement.Fullscreen } else ws.placement = before
             }
@@ -166,8 +167,9 @@ fun ApplicationScope.LizardWindow(app: App, sendTest: SenderTest?, recvTest: Rec
             val resized = object : java.awt.event.ComponentAdapter() {
                 override fun componentResized(e: java.awt.event.ComponentEvent) {
                     if (app.screen != Screen.Send) return
-                    val top = runCatching { Native.windowOf(s.canvas) }.getOrDefault(0L)
+                    val top = runCatching { Native.windowOf(window) }.getOrDefault(0L)
                     if (top != 0L) s.fullFromManager(Native.windowIsFullscreen(top))
+                    s.resizing()
                 }
             }
             window.addComponentListener(resized)

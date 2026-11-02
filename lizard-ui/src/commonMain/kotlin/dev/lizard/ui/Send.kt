@@ -95,6 +95,7 @@ interface SendHost {
     fun leaveCodeAlone()               // ai: the rail's collapser over the code alone
     val codePadding: Dp                // ai: the light round the code area in the page (the phone's 16 dp; the desktop's canvas fills)
     val codeFill: Color get() = Bg     // ai: the code area's fill at its left edge, which the column's margin beside it takes
+    val edgeRoom: Dp get() = EdgeRoom  // ai: the column's margin past its edge (ToolLandscape's `room`; the desktop's the edge's whole strip)
     fun codeSize(maxWidth: Dp, maxHeight: Dp, portrait: Boolean): DpSize?   // ai: the code area's size in its room, null to fill it
     val rootModifier: Modifier         // ai: the platform's on the whole screen (the desktop's drops)
     @Composable fun CodeArea(modifier: Modifier)
@@ -122,7 +123,7 @@ fun SendScreen(h: SendHost) = Box(Modifier.fillMaxSize().then(h.rootModifier)) {
         } else ToolLandscape("Send", h.folds.open(FoldKey.SendCollapsed), { h.folds.toggle(FoldKey.SendCollapsed) }, { h.goHome() },
             if (h.swapInColumn) ({ SwapBtn("Receiver") { h.goReceive() } }) else null, h.width,
             RowFloor(listOfNotNull(listOf("Stop") to 16.dp, listOf("Pause", "Resume") to 16.dp, if (h.fullscreen) listOf("Fullscreen") to 16.dp else null)),
-            mainPadding = h.codePadding, roomFill = h.codeFill, bare = h.codeAlone,
+            mainPadding = h.codePadding, room = h.edgeRoom, roomFill = h.codeFill, bare = h.codeAlone,
             rail = { SendRail(h) }, side = { Side(h) }) {
             val size = h.codeSize(maxWidth, maxHeight, false)
             code(if (size != null) Modifier.size(size.width, size.height) else Modifier.fillMaxSize())

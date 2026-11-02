@@ -105,7 +105,8 @@ std::string fmt(const char* f, double v) {
   X(vkCreateComputePipelines) X(vkDestroyPipeline) X(vkCreateDescriptorPool) X(vkDestroyDescriptorPool)               \
   X(vkResetDescriptorPool) X(vkAllocateDescriptorSets) X(vkUpdateDescriptorSets) X(vkCmdBindPipeline)                  \
   X(vkCmdBindDescriptorSets) X(vkCmdPushConstants) X(vkCmdDispatch) X(vkCreateBuffer) X(vkDestroyBuffer)          \
-  X(vkGetBufferMemoryRequirements) X(vkBindBufferMemory) X(vkMapMemory) X(vkCmdCopyBufferToImage)
+  X(vkGetBufferMemoryRequirements) X(vkBindBufferMemory) X(vkMapMemory) X(vkCmdCopyBufferToImage)                    \
+  X(vkCmdCopyImageToBuffer)
 #define LIZ_DECL(f) PFN_##f f = nullptr;
 struct InstFns {
   LIZ_INST_FNS(LIZ_DECL)
@@ -722,6 +723,16 @@ struct Presenter::Impl {
   VkDeviceMemory markMem = VK_NULL_HANDLE;
   uint8_t* markPtr = nullptr;
   size_t markSlots = 0;
+
+  // ai: the picture on screen read back (Presenter::snapshot): asked from any thread, read on the loop's, handed over
+  // ai: under snapMu
+  std::atomic<bool> snapAsk{false};
+  std::mutex snapMu;
+  std::condition_variable snapCv;
+  bool snapDone = false;
+  std::vector<unsigned char> snapPx;
+  int snapW = 0, snapH = 0;
+  void takeSnapshot();
 
   // ai: the loop's state (the present thread's alone)
   double t0 = 0, lastWin = 0, due = 0, modeHz = 0, measured = 0, early = 0, lastRemake = -1e9;
@@ -2203,13 +2214,15 @@ void Presenter::Impl::run() {
         window((now - lastWin) / 1000);
         lastWin = now;
       }
+      if (snapAsk) takeSnapshot();
       const bool p = paused;
       if (p) {
         // ai: paused: the last picture presented again a few times a second (a resize or an expose shows it), none taken
         wasPaused = true;
         std::unique_lock<std::mutex> l(wakeMu);
-        wake.wait_for(l, std::chrono::milliseconds(100), [&] { return quit.load() || !paused.load(); });
+        wake.wait_for(l, std::chrono::milliseconds(100), [&] { return quit.load() || !paused.load() || snapAsk.load(); });
         if (quit) break;
+        if (snapAsk) { l.unlock(); takeSnapshot(); }
         if (!paused) continue;
       } else if (wasPaused) {
         // ai: resumed: a new picture due now (on the grid, the first slot a refresh and a half on), no gap counted
@@ -2225,6 +2238,81 @@ void Presenter::Impl::run() {
     error = e.what();
   }
   if (!error.empty()) say("presenter: stopped: " + error);
+}
+
+// ai: The slot on screen copied to a host buffer (it rests in TRANSFER_SRC_OPTIMAL between its expand and its blits),
+// ai: the queue idle first so its expand is written; its red channel the grey (the expand writes g to r, g and b)
+void Presenter::Impl::takeSnapshot() {
+  std::vector<unsigned char> px;
+  int w = 0, h = 0;
+  VkBuffer buf = VK_NULL_HANDLE;
+  VkDeviceMemory bmem = VK_NULL_HANDLE;
+  VkCommandBuffer cb = VK_NULL_HANDLE;
+  VkFence f = VK_NULL_HANDLE;
+  try {
+    if (cur >= 0 && slots[cur].img && slots[cur].w > 0 && slots[cur].h > 0) {
+      const Slot& s = slots[cur];
+      VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+      bci.size = static_cast<VkDeviceSize>(s.w) * s.h * 4;
+      bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+      vkCheck(D.vkCreateBuffer(dev, &bci, nullptr, &buf), "vkCreateBuffer");
+      VkMemoryRequirements r;
+      D.vkGetBufferMemoryRequirements(dev, buf, &r);
+      VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+      ai.allocationSize = r.size;
+      ai.memoryTypeIndex = memType(r.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+      vkCheck(D.vkAllocateMemory(dev, &ai, nullptr, &bmem), "vkAllocateMemory");
+      vkCheck(D.vkBindBufferMemory(dev, buf, bmem, 0), "vkBindBufferMemory");
+      VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+      cai.commandPool = pool;
+      cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+      cai.commandBufferCount = 1;
+      vkCheck(D.vkAllocateCommandBuffers(dev, &cai, &cb), "vkAllocateCommandBuffers");
+      VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+      vkCheck(D.vkCreateFence(dev, &fci, nullptr, &f), "vkCreateFence");
+      qIdle();
+      VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+      bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+      D.vkBeginCommandBuffer(cb, &bi);
+      VkBufferImageCopy rg{};
+      rg.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+      rg.imageExtent = {static_cast<uint32_t>(s.w), static_cast<uint32_t>(s.h), 1};
+      D.vkCmdCopyImageToBuffer(cb, s.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &rg);
+      VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+      mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+      D.vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, nullptr, 0, nullptr);
+      D.vkEndCommandBuffer(cb);
+      VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+      si.commandBufferCount = 1;
+      si.pCommandBuffers = &cb;
+      vkCheck(qSubmit(si, f), "vkQueueSubmit");
+      vkCheck(D.vkWaitForFences(dev, 1, &f, VK_TRUE, 1000000000ull), "vkWaitForFences");
+      void* m = nullptr;
+      vkCheck(D.vkMapMemory(dev, bmem, 0, VK_WHOLE_SIZE, 0, &m), "vkMapMemory");
+      const auto* rgba = static_cast<const unsigned char*>(m);
+      px.resize(static_cast<size_t>(s.w) * s.h);
+      for (size_t i = 0; i < px.size(); i++) px[i] = rgba[4 * i];
+      w = s.w;
+      h = s.h;
+    }
+  } catch (const std::exception& e) {
+    say(std::string("presenter: snapshot: ") + e.what());
+    px.clear();
+  }
+  if (f) D.vkDestroyFence(dev, f, nullptr);
+  if (cb) D.vkFreeCommandBuffers(dev, pool, 1, &cb);
+  if (buf) D.vkDestroyBuffer(dev, buf, nullptr);
+  if (bmem) D.vkFreeMemory(dev, bmem, nullptr);
+  {
+    std::lock_guard<std::mutex> l(snapMu);
+    snapPx = std::move(px);
+    snapW = w;
+    snapH = h;
+    snapDone = true;
+    snapAsk = false;
+  }
+  snapCv.notify_all();
 }
 
 void Presenter::Impl::teardown() {
@@ -2377,6 +2465,22 @@ void Presenter::setPaused(bool on) {
     p_->paused = on;
   }
   p_->wake.notify_all();
+}
+
+bool Presenter::snapshot(std::vector<unsigned char>* grey, int* w, int* h) {
+  Impl& m = *p_;
+  std::unique_lock<std::mutex> l(m.snapMu);
+  m.snapDone = false;
+  {
+    std::lock_guard<std::mutex> wl(m.wakeMu);
+    m.snapAsk = true;
+  }
+  m.wake.notify_all();
+  if (!m.snapCv.wait_for(l, std::chrono::seconds(1), [&] { return m.snapDone; }) || m.snapPx.empty()) return false;
+  *grey = std::move(m.snapPx);
+  *w = m.snapW;
+  *h = m.snapH;
+  return true;
 }
 
 std::string Presenter::stats() {

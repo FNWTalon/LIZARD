@@ -52,6 +52,8 @@ object Native {
     @JvmStatic external fun presentSize(p: Long, size: Float, edge: Float)
     @JvmStatic external fun presentPause(p: Long, on: Boolean)
     @JvmStatic external fun presentStats(p: Long): String
+    // ai: the picture on screen as grey bytes (presenter.h snapshot), its width and height into wh; null where none
+    @JvmStatic external fun presentSnapshot(p: Long, wh: IntArray): ByteArray?
     @JvmStatic external fun presentStop(p: Long)
 
     // ai: the GPU tree (setup/send.json, the decoder's six setups, blobs/, spv/), as liblizard/out holds it

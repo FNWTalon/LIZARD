@@ -101,6 +101,7 @@ class SenderTest private constructor(private val secs: Double, private val kv: M
         val end = begun + (secs * 1e9).toLong()
         val todo = steps().toMutableList()
         var stopped = false
+        var missing = 0L   // ai: since when no presenter runs where one should
         var seen = ""
         while (System.nanoTime() < end) {
             (s.phase as? SendState.Phase.Error)?.let { fail(it.why) }
@@ -111,7 +112,10 @@ class SenderTest private constructor(private val secs: Double, private val kv: M
                 stopped = step(s, act, stopped)
             }
             if (stopped && s.presenting) stopped = false
-            if (!s.presenting && !stopped && s.phase != SendState.Phase.Preparing) fail("the presenter stopped")
+            // ai: paused in the window there is no presenter (a still), and a Resume makes one a few frames on
+            if (s.presenting || stopped || s.paused || s.phase == SendState.Phase.Preparing) missing = 0L
+            else if (missing == 0L) missing = System.nanoTime()
+            else if (System.nanoTime() - missing > 3_000_000_000L) fail("the presenter stopped")
             // ai: each second's presenter stats as they come (the poll's), on stderr: a cadence is read from all of them
             if (s.presentRaw.isNotEmpty() && s.presentRaw !== seen) { seen = s.presentRaw; System.err.println("present: $seen") }
             delay(100)
