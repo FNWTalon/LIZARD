@@ -83,6 +83,18 @@ void ob_luma(const uint8_t *rgba, int n, uint8_t *out) {
   for (; i < n; i++) out[i] = (uint8_t)((77 * rgba[4 * i] + 150 * rgba[4 * i + 1] + 29 * rgba[4 * i + 2] + 128) >> 8);
 }
 
+// A block's threshold: the mean of the block means within two blocks of it, as many as the image has, less 3.
+static inline int bin_threshold(const int *mean, int bw, int bh, int bx, int by) {
+  int s = 0, n = 0;
+  for (int dy = -2; dy <= 2; dy++) for (int dx = -2; dx <= 2; dx++) {
+    int yy = by + dy, xx = bx + dx;
+    if (yy < 0 || xx < 0 || yy >= bh || xx >= bw) continue;
+    s += mean[yy * bw + xx]; n++;
+  }
+  const int t = s / n - 3;
+  return t < 0 ? 0 : t;   // a pixel is never below 0, so a negative threshold and 0 mark the same (nothing)
+}
+
 // Three passes: 8 x 8 block means, a 5 x 5 mean of those less 3 as each block's threshold, then the
 // compare. The vector paths cover whole blocks; a ragged right or bottom edge takes the scalar one.
 static void binarize(const uint8_t *img, int w, int h, uint8_t *bin) {
@@ -90,9 +102,24 @@ static void binarize(const uint8_t *img, int w, int h, uint8_t *bin) {
   int *mean = malloc((size_t)bw * bh * sizeof(int));
   uint8_t *trow = malloc((size_t)bw * BLK + 16);
   uint16_t *col = malloc(((size_t)bw * BLK + 16) * sizeof(uint16_t));
+#ifdef OB_NEON
+  int *vsum = malloc(((size_t)bw + 4) * sizeof(int));   // a block row's sums down five block rows
+#endif
   for (int by = 0; by < bh; by++) {
     int bx = 0;
-#ifdef OB_SIMD
+#ifdef OB_NEON
+    // ai: arm64: four whole blocks a step: each image row's pixel pairs accumulated into 16-bit lanes (UADALP, 8 x 510
+    // ai: at most), the pairs added to fours (ADDP, 8,160 at most) and the fours to eights in 32-bit lanes (UADDLP):
+    // ai: the integer sums of the loop below, so the same means
+    if (by < h / BLK) {
+      const uint8_t *p = img + (size_t)by * BLK * w;
+      for (; (bx + 4) * BLK <= w; bx += 4) {
+        uint16x8_t a = vdupq_n_u16(0), b = a;
+        for (int r = 0; r < BLK; r++) { a = vpadalq_u8(a, vld1q_u8(p + (size_t)r * w + bx * BLK)); b = vpadalq_u8(b, vld1q_u8(p + (size_t)r * w + bx * BLK + 16)); }
+        vst1q_s32(mean + by * bw + bx, vreinterpretq_s32_u32(vshrq_n_u32(vpaddlq_u16(vpaddq_u16(a, b)), 6)));
+      }
+    }
+#elif defined(OB_SIMD)
     const int fw = w / BLK, fh = h / BLK;   // whole blocks
     if (by < fh) {
       // Column sums of the block row's eight image rows (2040 at most, so 16 bits), then eight columns to a block.
@@ -116,16 +143,33 @@ static void binarize(const uint8_t *img, int w, int h, uint8_t *bin) {
     }
   }
   for (int by = 0; by < bh; by++) {
-    for (int bx = 0; bx < bw; bx++) {
-      int s = 0, n = 0;
-      for (int dy = -2; dy <= 2; dy++) for (int dx = -2; dx <= 2; dx++) {
-        int yy = by + dy, xx = bx + dx;
-        if (yy < 0 || xx < 0 || yy >= bh || xx >= bw) continue;
-        s += mean[yy * bw + xx]; n++;
+    int bx = 0;
+#ifdef OB_NEON
+    // ai: arm64: a block row with two rows of blocks above and below, its blocks from the third to the third from the
+    // ai: end four a step: the five rows' sums, then five of those, all 25 blocks there (n = 25), s / 25 as
+    // ai: (s * 5243) >> 17 (exact for every s to 25 x 255 = 6,375), the threshold's byte spread over its block's 8
+    if (by >= 2 && by + 2 < bh && vsum) {
+      const int *m0 = mean + (by - 2) * bw;
+      int x = 0;
+      for (; x + 4 <= bw; x += 4) {
+        int32x4_t s = vld1q_s32(m0 + x);
+        for (int d = 1; d < 5; d++) s = vaddq_s32(s, vld1q_s32(m0 + d * bw + x));
+        vst1q_s32(vsum + x, s);
       }
-      int t = s / n - 3;
-      memset(trow + bx * BLK, t < 0 ? 0 : t, BLK);   // a pixel is never below 0, so a negative threshold and 0 mark the same (nothing)
+      for (; x < bw; x++) { int s = 0; for (int d = 0; d < 5; d++) s += m0[d * bw + x]; vsum[x] = s; }
+      static const uint8_t SPREAD[32] = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3 };
+      const uint8x16_t lo = vld1q_u8(SPREAD), hi = vld1q_u8(SPREAD + 16);
+      for (bx = 2; bx + 4 <= bw - 2; bx += 4) {
+        const int32x4_t s = vaddq_s32(vaddq_s32(vaddq_s32(vld1q_s32(vsum + bx - 2), vld1q_s32(vsum + bx - 1)), vaddq_s32(vld1q_s32(vsum + bx), vld1q_s32(vsum + bx + 1))), vld1q_s32(vsum + bx + 2));
+        const uint32x4_t q = vshrq_n_u32(vmulq_u32(vreinterpretq_u32_s32(s), vdupq_n_u32(5243)), 17);
+        const uint16x4_t t = vmovn_u32(vreinterpretq_u32_s32(vmaxq_s32(vsubq_s32(vreinterpretq_s32_u32(q), vdupq_n_s32(3)), vdupq_n_s32(0))));
+        const uint8x16_t t8 = vcombine_u8(vmovn_u16(vcombine_u16(t, t)), vdup_n_u8(0));
+        vst1q_u8(trow + bx * BLK, vqtbl1q_u8(t8, lo)); vst1q_u8(trow + bx * BLK + 16, vqtbl1q_u8(t8, hi));
+      }
+      for (int e = 0; e < 2; e++) memset(trow + e * BLK, bin_threshold(mean, bw, bh, e, by), BLK);
     }
+#endif
+    for (; bx < bw; bx++) memset(trow + bx * BLK, bin_threshold(mean, bw, bh, bx, by), BLK);
     for (int y = by * BLK; y < (by + 1) * BLK && y < h; y++) {
       const uint8_t *src = img + y * w;
       uint8_t *dst = bin + y * w;
@@ -137,6 +181,9 @@ static void binarize(const uint8_t *img, int w, int h, uint8_t *bin) {
       for (; x < w; x++) dst[x] = src[x] < trow[x];
     }
   }
+#ifdef OB_NEON
+  free(vsum);
+#endif
   free(mean); free(trow); free(col);
 }
 
@@ -231,13 +278,37 @@ enum { MAX_CAND = 1024 };
 
 static float cross2(const cand_t *a, const cand_t *b, const cand_t *c) { return (b->x - a->x) * (c->y - a->y) - (b->y - a->y) * (c->x - a->x); }
 
+#ifdef OB_NEON
+// ai: arm64: a four-pixel group's boundaries, as the bits of its lanes (bit i: lane i differs from the pixel before
+// ai: it), packed to the front, and how many there are
+static const int32_t RUN_PACK[16][4] = {
+  { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 2, 0, 0, 0 }, { 0, 2, 0, 0 }, { 1, 2, 0, 0 }, { 0, 1, 2, 0 },
+  { 3, 0, 0, 0 }, { 0, 3, 0, 0 }, { 1, 3, 0, 0 }, { 0, 1, 3, 0 }, { 2, 3, 0, 0 }, { 0, 2, 3, 0 }, { 1, 2, 3, 0 }, { 0, 1, 2, 3 } };
+static const uint8_t RUN_COUNT[16] = { 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4 };
+#endif
 // Run boundaries of one row, sixteen pixels to a compare: pos[2k] is where dark run k starts and
 // pos[2k + 1] where it ends. The pixel left of the row counts as light, and a dark run that reaches
 // the right edge ends there. Returns the number of boundaries, always even.
 static int run_edges(const uint8_t *row, int w, int *pos) {
   int np = 0, x = 1;
   if (row[0]) pos[np++] = 0;
-#ifdef OB_SIMD
+#ifdef OB_NEON
+  // ai: arm64: a chunk's sixteen compares weighted 1, 2, 4, 8 within each four and added pairwise twice (ADDP), which
+  // ai: leaves the four groups' bits in four bytes; each group's positions are one table row plus x and one store of
+  // ai: four, np moved on by the group's count: four stores where the loop below makes sixteen. A store writes past
+  // ai: np by at most three, never past x + 15.
+  const uint8x16_t wt = { 1, 2, 4, 8, 1, 2, 4, 8, 1, 2, 4, 8, 1, 2, 4, 8 };
+  for (; x + 16 <= w; x += 16) {
+    const uint8x16_t bits = vbicq_u8(wt, vceqq_u8(vld1q_u8(row + x), vld1q_u8(row + x - 1))), b2 = vpaddq_u8(bits, bits);
+    const uint32_t g = vgetq_lane_u32(vreinterpretq_u32_u8(vpaddq_u8(b2, b2)), 0);
+    if (!g) continue;
+    for (int q = 0; q < 4; q++) {
+      const unsigned k = (g >> 8 * q) & 15;
+      vst1q_s32(pos + np, vaddq_s32(vld1q_s32(RUN_PACK[k]), vdupq_n_s32(x + 4 * q)));
+      np += RUN_COUNT[k];
+    }
+  }
+#elif defined(OB_SIMD)
   for (; x + 16 <= w; x += 16) {
     const unsigned m = (unsigned)wasm_i8x16_bitmask(wasm_i8x16_ne(wasm_v128_load(row + x), wasm_v128_load(row + x - 1)));
     if (!m) continue;
@@ -1603,6 +1674,19 @@ static int mark_cross_merged(const uint8_t *bin, int w, int h, int cx, int cy, i
 // gapped form settled nothing (find_frame), and a sharp capture never pays for it.
 static void mark_note(cand_t *out, int *n, float fx, float fy, float u) {
   int c = 0;
+#ifdef OB_NEON
+  // ai: arm64: eight candidates a step, their x and y deinterleaved by LD4 (cand_t is four floats' width), the same
+  // ai: compares (FABD is fabsf of the difference); the step holding the first that is near stops it, and the loop
+  // ai: below finds that one
+  _Static_assert(sizeof(cand_t) == 4 * sizeof(float), "LD4 reads a candidate as four lanes");
+  const float32x4_t vx = vdupq_n_f32(fx), vy = vdupq_n_f32(fy), lim = vdupq_n_f32(u * 2);
+  for (; c + 8 <= *n; c += 8) {
+    const float32x4x4_t p = vld4q_f32(&out[c].x), q = vld4q_f32(&out[c + 4].x);
+    const uint32x4_t hp = vandq_u32(vcltq_f32(vabdq_f32(p.val[0], vx), lim), vcltq_f32(vabdq_f32(p.val[1], vy), lim));
+    const uint32x4_t hq = vandq_u32(vcltq_f32(vabdq_f32(q.val[0], vx), lim), vcltq_f32(vabdq_f32(q.val[1], vy), lim));
+    if (vmaxvq_u32(vorrq_u32(hp, hq))) break;
+  }
+#endif
   for (; c < *n; c++) if (fabsf(out[c].x - fx) < u * 2 && fabsf(out[c].y - fy) < u * 2) break;
   if (c < *n) {
     out[c].x = (out[c].x * out[c].hits + fx) / (out[c].hits + 1);
@@ -1611,40 +1695,91 @@ static void mark_note(cand_t *out, int *n, float fx, float fy, float u) {
     out[c].hits++;
   } else if (*n < MAX_CAND) out[(*n)++] = (cand_t){ fx, fy, u, 1 };
 }
+// The gapped form at dark runs k - 1 and k of row y (pos as run_edges leaves it): each way round, the line then
+// the core. noted: the core this row has counted, which met second in one pair is met first in the next.
+static inline void mark_pair(const uint8_t *bin, int w, int h, int y, int core, const int *pos, int k, int *noted, cand_t *out, int *n) {
+  const int a0 = pos[2 * k - 2], a1 = pos[2 * k - 1], b0 = pos[2 * k], b1 = pos[2 * k + 1];
+  if (a0 == 0 || b1 >= w) return;            // a run touching either end of the row has no light outside it
+  const int first = a1 - a0, gap = b0 - a1, second = b1 - b0;
+  for (int side = 0; side < 2; side++) {
+    // side 0: the corner is to the left, so the line is met first and the core second.
+    const int line = side ? second : first, cpx = side ? first : second;
+    const int cx0 = side ? a0 : b0, cx1 = side ? a1 : b1;
+    float uh, uv, fy;
+    if (cx0 == *noted) continue;
+    if (!mark_ratio(line, gap, cpx, core, &uh)) continue;
+    const int cx = (cx0 + cx1) >> 1;
+    if (!mark_cross(bin, w, h, cx, y, core, uh, &fy, &uv)) continue;
+    mark_note(out, n, (cx0 + cx1) / 2.0f, fy, 0.5f * (uh + uv));   // the run is [cx0, cx1) in sample()'s coordinates
+    *noted = cx0;
+    break;
+  }
+}
+// The merged form at dark run k of row y: one dark run with light at both ends that is a square of S - 2 modules
+// down its column.
+static inline void mark_square(const uint8_t *bin, int w, int h, int y, int sq, const int *pos, int k, cand_t *out, int *n) {
+  const int a0 = pos[2 * k], a1 = pos[2 * k + 1], run = a1 - a0;
+  if (a0 == 0 || a1 >= w || run < 8 || run > w / 3) return;
+  const float uh = (float)run / sq;
+  float uv, fy;
+  if (!mark_cross_merged(bin, w, h, (a0 + a1) >> 1, y, sq, uh, &fy, &uv)) return;
+  mark_note(out, n, (a0 + a1) / 2.0f, fy, 0.5f * (uh + uv));
+}
+#ifdef OB_NEON
+// ai: arm64: of the pairs of runs k0 - 1, k0 to k0 + 62, k0 + 63 in pos (runs to nr), the bits of those mark_ratio can pass
+// ai: on either side, four pairs a step on its own float operations in its order (FABD is fabsf of the difference,
+// ai: the halving a multiply by 0.5, the same value), so the same answer: a pair it leaves out returns at its ratio
+// ai: test both ways round. Reads pos to 2 nr + 5.
+static uint64_t mark_pairs64(const int *pos, int k0, int nr, int core) {
+  const float32x4_t den = vdupq_n_f32((float)(OB_THIN_LINE + OB_RING_DEEP + core)), fl = vdupq_n_f32((float)OB_THIN_LINE), fg = vdupq_n_f32((float)OB_RING_DEEP), fc = vdupq_n_f32((float)core);
+  const int32x4_t tmin = vdupq_n_s32(OB_THIN_LINE + OB_RING_DEEP + core), cmin = vdupq_n_s32(MARK_MIN_CORE);
+  const uint32x4_t bit = { 1, 2, 4, 8 };
+  uint64_t m = 0;
+  for (int g = 0; g < 64 && k0 + g < nr; g += 4) {
+    const int32x4x2_t a = vld2q_s32(pos + 2 * (k0 + g) - 2), b = vld2q_s32(pos + 2 * (k0 + g));   // starts, ends of runs k - 1 and k
+    const int32x4_t first = vsubq_s32(a.val[1], a.val[0]), gap = vsubq_s32(b.val[0], a.val[1]), second = vsubq_s32(b.val[1], b.val[0]);
+    const int32x4_t total = vaddq_s32(vaddq_s32(first, gap), second);
+    const float32x4_t ff = vcvtq_f32_s32(first), gf = vcvtq_f32_s32(gap), sf = vcvtq_f32_s32(second);
+    const float32x4_t u = vdivq_f32(vcvtq_f32_s32(total), den), tol = vaddq_f32(vmulq_f32(vdupq_n_f32(0.6f), u), vdupq_n_f32(0.5f));
+    const float32x4_t lu = vmulq_f32(fl, u), cu = vmulq_f32(fc, u), ctol = vmulq_f32(vmulq_f32(vmulq_f32(vdupq_n_f32(1.5f), tol), fc), vdupq_n_f32(0.5f));
+    const uint32x4_t both = vandq_u32(vcgeq_s32(total, tmin), vcleq_f32(vabdq_f32(gf, vmulq_f32(fg, u)), tol));
+    const uint32x4_t s0 = vandq_u32(vandq_u32(vcgeq_s32(second, cmin), vcleq_f32(vabdq_f32(ff, lu), tol)), vcleq_f32(vabdq_f32(sf, cu), ctol));
+    const uint32x4_t s1 = vandq_u32(vandq_u32(vcgeq_s32(first, cmin), vcleq_f32(vabdq_f32(sf, lu), tol)), vcleq_f32(vabdq_f32(ff, cu), ctol));
+    m |= (uint64_t)vaddvq_u32(vandq_u32(vandq_u32(both, vorrq_u32(s0, s1)), bit)) << g;
+  }
+  return nr - k0 < 64 ? m & ((1ull << (nr - k0)) - 1) : m;
+}
+// ai: arm64: of runs k0 to k0 + 63 (to nr), the bits of those 8 to w / 3 pixels long, which mark_square tests
+static uint64_t mark_runs64(const int *pos, int k0, int nr, int w) {
+  const int32x4_t lo = vdupq_n_s32(8), hi = vdupq_n_s32(w / 3);
+  const uint32x4_t bit = { 1, 2, 4, 8 };
+  uint64_t m = 0;
+  for (int g = 0; g < 64 && k0 + g < nr; g += 4) {
+    const int32x4x2_t r = vld2q_s32(pos + 2 * (k0 + g));
+    const int32x4_t run = vsubq_s32(r.val[1], r.val[0]);
+    m |= (uint64_t)vaddvq_u32(vandq_u32(vandq_u32(vcgeq_s32(run, lo), vcleq_s32(run, hi)), bit)) << g;
+  }
+  return nr - k0 < 64 ? m & ((1ull << (nr - k0)) - 1) : m;
+}
+#endif
 static int mark_candidates(const ob_layout_t *L, const uint8_t *bin, int w, int h, int merged, cand_t *out) {
   const int core = mark_core(L), sq = L->corner - 2;
-  int n = 0, *pos = malloc(((size_t)w + 2) * sizeof(int)), minc = merged ? sq : core;
+  // ai: pos: run_edges' w + 2 boundaries and the vector filters' reads past them (calloc: those reads are of written memory)
+  int n = 0, *pos = calloc((size_t)w + 8, sizeof(int)), minc = merged ? sq : core;
   if (!pos) return 0;
   for (int y = 1; y < h; y += 2) {
     const int np = run_edges(bin + y * w, w, pos);
-    int noted = -1;   // the core this row has counted: met second in one pair, it is met first in the next
-    for (int k = 1; !merged && 2 * k + 1 < np; k++) {
-      const int a0 = pos[2 * k - 2], a1 = pos[2 * k - 1], b0 = pos[2 * k], b1 = pos[2 * k + 1];
-      if (a0 == 0 || b1 >= w) continue;            // a run touching either end of the row has no light outside it
-      const int first = a1 - a0, gap = b0 - a1, second = b1 - b0;
-      for (int side = 0; side < 2; side++) {
-        // side 0: the corner is to the left, so the line is met first and the core second.
-        const int line = side ? second : first, cpx = side ? first : second;
-        const int cx0 = side ? a0 : b0, cx1 = side ? a1 : b1;
-        float uh, uv, fy;
-        if (cx0 == noted) continue;
-        if (!mark_ratio(line, gap, cpx, core, &uh)) continue;
-        const int cx = (cx0 + cx1) >> 1;
-        if (!mark_cross(bin, w, h, cx, y, core, uh, &fy, &uv)) continue;
-        mark_note(out, &n, (cx0 + cx1) / 2.0f, fy, 0.5f * (uh + uv));   // the run is [cx0, cx1) in sample()'s coordinates
-        noted = cx0;
-        break;
-      }
-    }
-    // The merged form: any one dark run with light at both ends that is a square of S - 2 modules down its column.
-    for (int k = 0; merged && 2 * k + 1 < np; k++) {
-      const int a0 = pos[2 * k], a1 = pos[2 * k + 1], run = a1 - a0;
-      if (a0 == 0 || a1 >= w || run < 8 || run > w / 3) continue;
-      const float uh = (float)run / sq;
-      float uv, fy;
-      if (!mark_cross_merged(bin, w, h, (a0 + a1) >> 1, y, sq, uh, &fy, &uv)) continue;
-      mark_note(out, &n, (a0 + a1) / 2.0f, fy, 0.5f * (uh + uv));
-    }
+    int noted = -1;
+#ifdef OB_NEON
+    // ai: arm64: the pairs (or runs) the vector filters keep, in the order the loops below meet them
+    for (int k0 = 1; !merged && k0 < np / 2; k0 += 64)
+      for (uint64_t m = mark_pairs64(pos, k0, np / 2, core); m; m &= m - 1) mark_pair(bin, w, h, y, core, pos, k0 + __builtin_ctzll(m), &noted, out, &n);
+    for (int k0 = 0; merged && k0 < np / 2; k0 += 64)
+      for (uint64_t m = mark_runs64(pos, k0, np / 2, w); m; m &= m - 1) mark_square(bin, w, h, y, sq, pos, k0 + __builtin_ctzll(m), out, &n);
+#else
+    for (int k = 1; !merged && 2 * k + 1 < np; k++) mark_pair(bin, w, h, y, core, pos, k, &noted, out, &n);
+    for (int k = 0; merged && 2 * k + 1 < np; k++) mark_square(bin, w, h, y, sq, pos, k, out, &n);
+#endif
     // No budget. A blurred picture offers about a thousand one-row blobs, and a list that fills before the scan
     // reaches the bottom marks has not recorded them, which is the failure SIDE_K has and the reason this finder
     // exists. A mark is crossed by every scan row through it, so a candidate the scan has left behind with fewer
@@ -1786,15 +1921,23 @@ static int mark_quads(const ob_layout_t *L, const cand_t *all, int nall, int mer
   // rat: a side's length over the module size its two ends report, as a share of the known count, or -1 where
   // the two cannot be adjacent marks at all.
   float rat[MARK_POOL][MARK_POOL];
+  // ai: adj[a]: bit b where rat[a][b] >= 0, so the walk below takes each next corner from a mask, in the same order
+  uint32_t adj[MARK_POOL] = { 0 };
+  _Static_assert(MARK_POOL <= 32, "a corner's neighbours are the bits of one word");
   for (int a = 0; a < n; a++) for (int b = a; b < n; b++) {
     const float dx = c[b].x - c[a].x, dy = c[b].y - c[a].y, mods = sqrtf(dx * dx + dy * dy) / (0.5f * (c[a].unit + c[b].unit));
     const int can = a != b && mods >= 0.6f * want && mods <= 1.5f * want;   // unit shrinks with the same tilt, so a squeezed side reads 2cos / (1 + cos): 0.6 is about 65 degrees
     rat[a][b] = rat[b][a] = can ? mods / want : -1;
+    if (can) { adj[a] |= 1u << b; adj[b] |= 1u << a; }
   }
-  // a is the cycle's lowest index and b < e, so each cycle is met once and not again backwards.
-  for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) if (rat[a][b] >= 0)
-    for (int d = a + 1; d < n; d++) if (d != b && rat[b][d] >= 0)
-      for (int e = b + 1; e < n; e++) if (e != d && rat[d][e] >= 0 && rat[e][a] >= 0) {
+  // a is the cycle's lowest index and b < e, so each cycle is met once and not again backwards. No corner is its own
+  // neighbour, so d != b and e != d hold of the masks.
+  for (int a = 0; a < n; a++) for (uint32_t mb = adj[a] & (~1u << a); mb; mb &= mb - 1) {
+    const int b = __builtin_ctz(mb);
+    for (uint32_t md = adj[b] & (~1u << a); md; md &= md - 1) {
+      const int d = __builtin_ctz(md);
+      for (uint32_t me = adj[d] & adj[a] & (~1u << b); me; me &= me - 1) {
+        const int e = __builtin_ctz(me);
         int id[4] = { a, b, d, e };
         float umin = 1e9f, umax = 0;
         for (int k = 0; k < 4; k++) { umin = fminf(umin, c[id[k]].unit); umax = fmaxf(umax, c[id[k]].unit); }
@@ -1821,6 +1964,8 @@ static int mark_quads(const ob_layout_t *L, const cand_t *all, int nall, int mer
         for (int k = 0; k < 4; k++) out[j].q[k] = c[id[k]];
         out[j].score = score;
       }
+    }
+  }
   // Each starts at the corner nearest the image's top left as seen from its own middle, which is what the
   // hypothesis numbering downstream was built on.
   for (int i = 0; i < nq; i++) {
@@ -2354,7 +2499,17 @@ static uint8_t *shrink2(const uint8_t *src, int w, int h) {
   for (int y = 0; y < sh; y++) {
     const uint8_t *a = src + (size_t)2 * y * w, *b = a + w;
     uint8_t *o = out + (size_t)y * sw;
-    for (int x = 0; x < sw; x++) o[x] = (uint8_t)((a[2 * x] + a[2 * x + 1] + b[2 * x] + b[2 * x + 1] + 2) >> 2);
+    int x = 0;
+#ifdef OB_NEON
+    // ai: arm64: sixteen a step, each 2 x 2's sum by pairwise adds (UADDLP, UADALP) and (s + 2) >> 2 by a rounding
+    // ai: narrowing shift (RSHRN): the same integers
+    for (; x + 16 <= sw; x += 16) {
+      const uint16x8_t s0 = vpadalq_u8(vpaddlq_u8(vld1q_u8(a + 2 * x)), vld1q_u8(b + 2 * x));
+      const uint16x8_t s1 = vpadalq_u8(vpaddlq_u8(vld1q_u8(a + 2 * x + 16)), vld1q_u8(b + 2 * x + 16));
+      vst1q_u8(o + x, vcombine_u8(vrshrn_n_u16(s0, 2), vrshrn_n_u16(s1, 2)));
+    }
+#endif
+    for (; x < sw; x++) o[x] = (uint8_t)((a[2 * x] + a[2 * x + 1] + b[2 * x] + b[2 * x + 1] + 2) >> 2);
   }
   return out;
 }
