@@ -13,9 +13,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import java.awt.Canvas
-import java.awt.Font
-import java.awt.Graphics2D
-import java.awt.RenderingHints
 import java.awt.datatransfer.DataFlavor
 import java.awt.dnd.DnDConstants
 import java.awt.dnd.DropTarget
@@ -42,15 +39,14 @@ import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import dev.lizard.ui.*
-import kotlinx.coroutines.runBlocking
 
 // ai: The code area's window while codes play: a heavyweight AWT canvas, a native window of its own inside the Compose
 // ai: window (Screen.kt's SwingPanel), on which the presenter's swapchain draws. In the window only while a presenter
 // ai: runs (`want`, 2026-11-02, as the phone's SurfaceView): idle, the area is Compose's, the file upload or the test
 // ai: stream's note, under no window of its own (that look painted here by AWT went, its every resize a frame of bare
 // ai: fill before the paint, a blink of the test stream's note on each step of a dragged edge; a hidden canvas would not
-// ai: do, its SwingPanel's container painting AWT's grey over Compose's area). White, and nothing painted over the
-// ai: presenter's pictures by AWT but, while a monitor of its own shows the code, where it plays. Before its window goes
+// ai: do, its SwingPanel's container painting AWT's grey over Compose's area). White, nothing of AWT painted on it;
+// ai: never in the control window while a monitor of its own shows the code (SendState.lease). Before its window goes
 // ai: (removeNotify: a dispose, a window made again) it stops the presenter on it. A click on it does nothing; files and
 // ai: folders dropped on it are taken (a run stops first).
 class CodeCanvas(private val s: SendState) : Canvas() {
@@ -64,7 +60,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         background = java.awt.Color.WHITE
         isFocusable = false
         addComponentListener(object : ComponentAdapter() {
-            override fun componentResized(e: ComponentEvent) { s.canvasMoved(); if (s.leased) repaint() }
+            override fun componentResized(e: ComponentEvent) = s.canvasMoved()
             override fun componentMoved(e: ComponentEvent) = s.canvasMoved()
         })
         if (Native.mac) addHierarchyBoundsListener(object : java.awt.event.HierarchyBoundsAdapter() {
@@ -96,44 +92,14 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     fun want(on: Boolean) { shown = on }
 
     // ai: its X background the area's colour (SendState.codeFill: white round the presenter's code, which clears to
-    // ai: white; the soft fill while a monitor of its own shows the code), so what X fills on a map or a resize before
-    // ai: anything draws is that (AWT sets the desktop theme's grey: a dark frame where the canvas came, 2026-11-02)
+    // ai: white), so what X fills on a map or a resize before anything draws is that (AWT sets the desktop theme's grey:
+    // ai: a dark frame where the canvas came, 2026-11-02)
     private fun look() { if (s.loadError.isEmpty() && isDisplayable) runCatching { Native.windowBackground(this, s.codeFill.toArgb() and 0xFFFFFF) } }
 
-    override fun update(g: Graphics) = paint(g)
-    // ai: the code shown on a monitor of its own: the area here plain, a line saying where (the window is the control);
-    // ai: otherwise the presenter's
-    override fun paint(g: Graphics) {
-        look()
-        if (s.leased) paintLeased(g as Graphics2D)
-    }
+    // ai: nothing painted by AWT: the presenter's pictures are the canvas's (Canvas's own paint clears it)
+    override fun update(g: Graphics) {}
+    override fun paint(g: Graphics) {}
 
-    // ai: the control window's area while the code plays on a monitor of its own: "Playing on <monitor>" (or "Paused
-    // ai: on"), centred on the soft fill
-    private fun paintLeased(g2: Graphics2D) {
-        g2.color = SOFT
-        g2.fillRect(0, 0, width, height)
-        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-        g2.color = FG
-        g2.font = face(Font.PLAIN, 16)
-        val text = "${if (s.paused) "Paused" else "Playing"} on ${s.leasedOn}"
-        val fm = g2.fontMetrics
-        g2.drawString(text, ((width - fm.stringWidth(text)) / 2.0).toFloat(), ((height - fm.height) / 2.0 + fm.ascent).toFloat())
-    }
-
-    companion object {
-        // ai: Inter (the shared theme's face, the web's: dev.lizard.ui interBytes) for the text AWT paints here, the
-        // ai: variable file at its default instance; the platform's sans where it does not load (2026-10-25: that sans
-        // ai: read beside Compose's Inter until then)
-        private val inter: Font? = runCatching {
-            Font.createFont(Font.TRUETYPE_FONT, java.io.ByteArrayInputStream(runBlocking { interBytes() }))
-        }.getOrNull()
-        private fun face(style: Int, size: Int): Font = inter?.deriveFont(style, size.toFloat()) ?: Font(Font.SANS_SERIF, style, size)
-        // ai: the shared theme's colours as AWT's
-        private fun awt(c: androidx.compose.ui.graphics.Color) = java.awt.Color(c.toArgb(), true)
-        private val FG = awt(Fg)
-        private val SOFT = awt(Soft)
-    }
     // ai: its window made (a presenter wanted): its X background the area's colour (Native.windowBackground), then the
     // ai: presenter begun on it
     override fun addNotify() {
@@ -255,7 +221,7 @@ class SendState {
     var exclusiveFull by mutableStateOf(Prefs.exclusiveFull)
     var leased by mutableStateOf(false)
     // ai: the taken monitor's name (its EDID's, else the output's: the stats' directName), the control window's line
-    var leasedOn = ""
+    var leasedOn by mutableStateOf("")
         private set
     var keepPlace: (() -> Unit)? = null
     var placeBack: (() -> Unit)? = null
@@ -291,7 +257,7 @@ class SendState {
     private val timer = Timer(1000) { poll() }
     // ai: while the monitor is taken: the presenter's word read five times a second, so a key or a click that gave it
     // ai: back brings the window back at once
-    private val leaseTimer = Timer(200) { if (leased && p != 0L && parse(Native.presentStats(p))?.str("direct").isNullOrEmpty()) leaseEnded() }
+    private val leaseTimer = Timer(200) { if (leased && p != 0L && parse(Native.presentStats(p))?.str("direct").isNullOrEmpty()) giveBack() }
 
     val presenting get() = p != 0L
     // ai: the code area's colour at its left edge (the column's margin beside it takes it, SendHost.codeFill; the canvas's
@@ -514,7 +480,6 @@ class SendState {
         paused = on
         if (leased) {
             if (p != 0L) Native.presentPause(p, on)
-            canvas.repaint()
             if (!on) takeOver()
             return
         }
@@ -549,13 +514,7 @@ class SendState {
     fun toggleFull() {
         edgeRail = false
         quiet()
-        // ai: a monitor given back: the codes go on in the window, or, paused, the picture there a still
-        if (leased) {
-            if (p != 0L) { if (paused) stamp = snapshot(p); Native.presentStop(p); p = 0L }
-            leaseEnded()
-            if (sending && !paused) begin() else canvas.want(false)
-            return
-        }
+        if (leased) { giveBack(); return }
         full = !full
         if (full && exclusiveFull && phase == Phase.On && !paused && p != 0L && lease()) return
         fullscreen?.invoke(full)
@@ -575,26 +534,40 @@ class SendState {
         full = true
         if (!lease()) { leaseRefused = true; fullscreen?.invoke(true) }
     }.apply { isRepeats = false }
-    // ai: the presenter begun again on the monitor under the window: true where the monitor was taken; else the new
-    // ai: presenter shows the window as the old one did
+    // ai: the presenter begun again on the monitor under the window, the display or nothing (presenter.h directOnly,
+    // ai: 2026-11-02): handed the app's window, which only names the monitor and takes the grab, so the control window
+    // ai: has no canvas and its area is Compose's (DesktopSend.LeasedNote). true where the monitor was taken; else the
+    // ai: codes go on in the window as before, and no take-over is tried again this session.
     private fun lease(): Boolean {
+        val win = frame ?: return false
         keepPlace?.invoke()
         Native.presentStop(p); p = 0L
-        val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, vsync, true, canvas.place())
-        if (pr == 0L) { fail("The code cannot be shown: ${Native.txError()}"); return true }
+        val pr = Native.presentStart(win, h, fps, size / 100f, edge, vsync, true, FloatArray(5))
+        if (pr == 0L) {
+            System.err.println("send: no monitor taken: ${Native.txError()}")
+            leaseRefused = true
+            begin()
+            return false
+        }
         p = pr
         if (paused) Native.presentPause(p, true)
         val st = parse(Native.presentStats(p))
-        leased = st?.str("direct").orEmpty().isNotEmpty()
+        leased = true
         leasedOn = st?.str("directName").orEmpty().ifEmpty { st?.str("direct").orEmpty() }
-        if (leased) {
-            // ai: the format for the monitor taken: its pixels the area (an auto pick, Size, Margin and Spacing measured on
-            // ai: it), held while leased; each setting changed in the control window re-picks on it
-            st?.str("directPx")?.split("x")?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == 2 && it[0] > 0 && it[1] > 0 }
-                ?.let { areaW = it[0]; areaH = it[1] }
-            leaseTimer.start(); canvas.repaint(); repick()
-        }
-        return leased
+        canvas.want(false)
+        // ai: the format for the monitor taken: its pixels the area (an auto pick, Size, Margin and Spacing measured on it),
+        // ai: held while leased; each setting changed in the control window re-picks on it
+        st?.str("directPx")?.split("x")?.mapNotNull { it.toIntOrNull() }?.takeIf { it.size == 2 && it[0] > 0 && it[1] > 0 }
+            ?.let { areaW = it[0]; areaH = it[1] }
+        leaseTimer.start(); repick()
+        return true
+    }
+    // ai: the monitor given back by hand (Fullscreen, Escape, a key or a click to the presenter): that presenter stopped
+    // ai: (it has no window to go on in), the codes on in the window, or, paused, the picture there a still
+    private fun giveBack() {
+        if (p != 0L) { if (paused) stamp = snapshot(p); Native.presentStop(p); p = 0L }
+        leaseEnded()
+        if (sending && !paused) begin() else canvas.want(false)
     }
     // ai: the monitor given back (a key or a click to the presenter, Stop, the window closing): full screen left and
     // ai: the window where it was before
@@ -604,9 +577,8 @@ class SendState {
         leased = false
         full = false
         placeBack?.invoke()
-        // ai: the area's size followed again: read now, and re-picked where the presenter goes on in the window
+        // ai: the area's size followed again (the window's presenter, begun after, picks from it)
         if (seenW > 0 && seenH > 0) { areaW = seenW; areaH = seenH }
-        if (p != 0L) settle.restart()
     }
     // ai: the manager's own word on the window (its shortcut, a leave of its own, a request of ours taken): followed,
     // ai: nothing asked

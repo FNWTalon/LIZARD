@@ -57,6 +57,10 @@ struct PresentOptions {
   // ai: its size the asked rate divides; X11 through VK_EXT_acquire_xlib_display. Where it cannot be taken (no such
   // ai: output, the extension missing, the server refusing, another system) the window as before, and the log says why.
   std::string direct;
+  // ai: The display or nothing (2026-11-02, the app's Exclusive fullscreen: its control window never presents): the
+  // ai: target window only names the monitor's grab, no surface is made on it; where the display is not taken start
+  // ai: fails (err says why), and once it is given back (a key or a click) nothing is presented until stop.
+  bool directOnly = false;
   bool mark = false;       // ai: present_check's: each present's picture count drawn in the image's top-left corner,
                            // ai: 24 squares of 8 px in a row (12 bits, the count mod 4096, then their complement; dark
                            // ai: a one), for a tool reading the screen back to say which picture each refresh showed
