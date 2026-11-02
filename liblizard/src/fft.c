@@ -14,7 +14,7 @@
 // out once, by putting the right row in each place in turn, and the transform just performs them.
 // ai: half: the twiddles the table holds, rows / 2 for an even size (past it W^j is -W^(j - rows / 2), tw_of), the whole
 // ai: circle for an odd one (3^b 5^c, which only fft_test asks for)
-typedef struct { int rows, nst, nswp, half, kind; float *wr, *wi; int *swp; int st[24], len[24]; } plan_t;
+typedef struct { int rows, nst, nswp, half, kind, ncyc; float *wr, *wi; int *swp, *cyc; int st[24], len[24]; } plan_t;
 // ai: each thread's own (a native receiver transforms on several): a plan is built on first use and a ninth size
 // ai: replaces the eighth, neither of which two threads could share
 static _Thread_local plan_t plans[8];
@@ -27,19 +27,25 @@ static int size_ok(int rows) {
   return !(rows & (rows - 1));
 }
 
-// ai: kind 0 the format's schedule (2s); kind 1 the decoder's transform on arm64 (fft_cols_dec), a power of two's stages
-// ai: as 4s, one 2 first where the exponent is odd
+// ai: kind 0 the format's schedule (2s); kind 1 the decoder's transform on arm64 (fft_cols_dec): the 3s, the 5s, one 2
+// ai: where the power of two's exponent is odd, then 4s, and one of the 4s moved to the front where there are two or
+// ai: more (a 4 first and last: the first stage then takes the digit reversal in, plan_kind)
 static int stage_list(int rows, int *st, int kind) {
   int k = 0;
-  while (rows % 3 == 0) { st[k++] = 3; rows /= 3; }
-  while (rows % 5 == 0) { st[k++] = 5; rows /= 5; }
   if (kind == 1) {
-    int bits = 0;
-    for (int t = rows; t > 1; t >>= 1) bits++;
+    int bits = 0, t3 = 0, t5 = 0;
+    for (int t = rows; t % 3 == 0; t /= 3) t3++;
+    for (int t = rows; t % 5 == 0; t /= 5) t5++;
+    for (int t = rows; t > 1 && !(t & 1); t >>= 1) bits++;
+    if (bits >= 4) { st[k++] = 4; bits -= 2; }
+    while (t3--) st[k++] = 3;
+    while (t5--) st[k++] = 5;
     if (bits & 1) st[k++] = 2;
     for (int b = bits & 1; b < bits; b += 2) st[k++] = 4;
     return k;
   }
+  while (rows % 3 == 0) { st[k++] = 3; rows /= 3; }
+  while (rows % 5 == 0) { st[k++] = 5; rows /= 5; }
   for (int t = rows; t > 1; t >>= 1) st[k++] = 2;
   return k;
 }
@@ -50,7 +56,7 @@ static const plan_t *plan_kind(int rows, int kind) {
   for (; slot < 8 && plans[slot].rows; slot++) if (plans[slot].rows == rows && plans[slot].kind == kind) return &plans[slot];
   if (slot == 8) slot = 7;   // more sizes than slots: the last one is rebuilt. LIZARD uses one size.
   plan_t *p = &plans[slot];
-  free(p->wr); free(p->wi); free(p->swp);
+  free(p->wr); free(p->wi); free(p->swp); free(p->cyc); p->cyc = NULL; p->ncyc = 0;
   p->rows = rows; p->kind = kind; p->half = rows & 1 ? rows : rows / 2;
   p->wr = malloc((size_t)(p->half + 1) * sizeof(float)); p->wi = malloc((size_t)(p->half + 1) * sizeof(float));
   p->swp = malloc((size_t)2 * rows * sizeof(int));
@@ -65,8 +71,28 @@ static const plan_t *plan_kind(int rows, int kind) {
     for (int s = 0; s < p->nst; s++) { j = j * p->st[s] + x % p->st[s]; x /= p->st[s]; }
     rev[i] = j;
   }
-  for (int i = 0; i < rows; i++) { at[i] = i; cur[i] = i; }
   p->nswp = 0;
+  if (kind == 1 && p->nst >= 2 && p->st[0] == 4 && p->st[p->nst - 1] == 4) {
+    // ai: no swaps: the decoder's first stage reads its inputs from their digit-reversed rows itself (first_stage_dec).
+    // ai: The rows 4 t + x + y M (x, y < 4, M = rows / 4) are tile t; with a 4 first and last, the butterflies writing
+    // ai: tile t read tile rev[4 t] / 4 and no other, a permutation of the tiles, kept as its cycles (each cycle's
+    // ai: length, then its tiles)
+    const int nt = rows / 16;
+    p->cyc = malloc((size_t)2 * nt * sizeof(int));
+    if (!p->cyc) { free(rev); free(at); free(cur); p->rows = 0; return NULL; }
+    for (int t = 0; t < nt; t++) at[t] = 0;
+    int w = 0;
+    for (int t = 0; t < nt; t++) {
+      if (at[t]) continue;
+      const int head = w++;
+      int len = 0;
+      for (int c = t; !at[c]; c = rev[4 * c] / 4) { at[c] = 1; p->cyc[w++] = c; len++; }
+      p->cyc[head] = len; p->ncyc++;
+    }
+    free(rev); free(at); free(cur);
+    return p;
+  }
+  for (int i = 0; i < rows; i++) { at[i] = i; cur[i] = i; }
   for (int i = 0; i < rows; i++) {
     const int from = at[rev[i]];
     if (from == i) continue;
@@ -323,6 +349,40 @@ static inline __attribute__((always_inline)) void rows3f(float *const r[3], floa
     r[2][x] = fmaf(-k, t2i, hr); m[2][x] = fmaf(k, t2r, hi);
   }
 }
+// ai: the decoder's radix-5 butterfly with fused multiply-adds (forward; rows5's arithmetic otherwise; twiddled, as the
+// ai: decoder's plan puts a 4 ahead of it): m1 = a + c1 t1 + c2 t2, m2 = a + c2 t1 + c1 t2, n1 = s1 t3 + s2 t4,
+// ai: n2 = s2 t3 - s1 t4
+static inline __attribute__((always_inline)) void rows5f(float *const r[5], float *const m[5], int cols, const float *w, int unit) {
+  const float32x4_t K = { 0.30901699437494742410f, -0.80901699437494742410f, 0.95105651629515357212f, 0.58778525229247312917f };
+  const float32x4_t W0 = vld1q_f32(w), W1 = vld1q_f32(w + 4);
+  int x = 0;
+  for (; x + 4 <= cols; x += 4) {
+    float32x4_t qr[4], qi[4];
+    for (int j = 0; j < 4; j++) { qr[j] = vld1q_f32(r[j + 1] + x); qi[j] = vld1q_f32(m[j + 1] + x); }
+    if (!unit) {
+      #define TW(j, V, l) { const float32x4_t pr = qr[j], pi = qi[j]; qr[j] = vfmsq_laneq_f32(vmulq_laneq_f32(pr, V, l), pi, V, l + 1); qi[j] = vfmaq_laneq_f32(vmulq_laneq_f32(pr, V, l + 1), pi, V, l); }
+      TW(0, W0, 0) TW(1, W0, 2) TW(2, W1, 0) TW(3, W1, 2)
+      #undef TW
+    }
+    const float32x4_t ar = vld1q_f32(r[0] + x), ai = vld1q_f32(m[0] + x);
+    const float32x4_t t1r = vaddq_f32(qr[0], qr[3]), t1i = vaddq_f32(qi[0], qi[3]), t2r = vaddq_f32(qr[1], qr[2]), t2i = vaddq_f32(qi[1], qi[2]);
+    const float32x4_t t3r = vsubq_f32(qr[0], qr[3]), t3i = vsubq_f32(qi[0], qi[3]), t4r = vsubq_f32(qr[1], qr[2]), t4i = vsubq_f32(qi[1], qi[2]);
+    const float32x4_t m1r = vfmaq_laneq_f32(vfmaq_laneq_f32(ar, t1r, K, 0), t2r, K, 1), m1i = vfmaq_laneq_f32(vfmaq_laneq_f32(ai, t1i, K, 0), t2i, K, 1);
+    const float32x4_t m2r = vfmaq_laneq_f32(vfmaq_laneq_f32(ar, t1r, K, 1), t2r, K, 0), m2i = vfmaq_laneq_f32(vfmaq_laneq_f32(ai, t1i, K, 1), t2i, K, 0);
+    const float32x4_t n1r = vfmaq_laneq_f32(vmulq_laneq_f32(t3r, K, 2), t4r, K, 3), n1i = vfmaq_laneq_f32(vmulq_laneq_f32(t3i, K, 2), t4i, K, 3);
+    const float32x4_t n2r = vfmsq_laneq_f32(vmulq_laneq_f32(t3r, K, 3), t4r, K, 2), n2i = vfmsq_laneq_f32(vmulq_laneq_f32(t3i, K, 3), t4i, K, 2);
+    vst1q_f32(r[0] + x, vaddq_f32(vaddq_f32(ar, t1r), t2r)); vst1q_f32(m[0] + x, vaddq_f32(vaddq_f32(ai, t1i), t2i));
+    vst1q_f32(r[1] + x, vaddq_f32(m1r, n1i)); vst1q_f32(m[1] + x, vsubq_f32(m1i, n1r));
+    vst1q_f32(r[4] + x, vsubq_f32(m1r, n1i)); vst1q_f32(m[4] + x, vaddq_f32(m1i, n1r));
+    vst1q_f32(r[2] + x, vaddq_f32(m2r, n2i)); vst1q_f32(m[2] + x, vsubq_f32(m2i, n2r));
+    vst1q_f32(r[3] + x, vsubq_f32(m2r, n2i)); vst1q_f32(m[3] + x, vaddq_f32(m2i, n2r));
+  }
+  if (x < cols) {   // ai: the last cols % 4 columns, rows5's loop
+    float *rr[5], *mm[5];
+    for (int j = 0; j < 5; j++) { rr[j] = r[j] + x; mm[j] = m[j] + x; }
+    rows5(rr, mm, cols - x, w, 1.0f, unit);
+  }
+}
 static inline __attribute__((always_inline)) void rows2f(float *ar, float *ai, float *br, float *bi, int cols, float wr, float wi, int unit) {
   if (unit) { rows2(ar, ai, br, bi, cols, 1, 0, 1); return; }
   const float32x4_t vwr = vdupq_n_f32(wr), vwi = vdupq_n_f32(wi);
@@ -440,8 +500,9 @@ void fft_cols(float *re, float *im, int rows, int cols, int pitch, int inverse) 
   #undef WI
 }
 
-// ai: The decoder's forward transform: on arm64 the radix-4 schedule (its own floats, fused multiply-adds), its short stages group by group in the
-// ai: first-level cache as fft_cols_mixed runs them, the long ones a stage a pass; elsewhere, and inverse, fft_cols.
+// ai: The decoder's forward transform: on arm64 the radix-4 schedule (its own floats, fused multiply-adds): the first
+// ai: stage with the digit reversal in it (first_stage_dec), the short stages group by group in the first-level cache
+// ai: (32 KB of rows, re and im), the long ones a stage a pass; elsewhere, and inverse, fft_cols.
 #ifdef OB_NEON
 // ai: each stage's twiddles in the order its butterflies take them (k, then j = 1 .. r - 1, re and im), made once a
 // ai: size and thread, so a butterfly reads its three or four floats in a row
@@ -473,8 +534,66 @@ static void stage_dec(const plan_t *p, const float *tw, float *re, float *im, in
       case 4: for (int k = 0; k < h; k++, w += 6) { rows4f(rr, mm, cols, w, k == 0); for (int j = 0; j < 4; j++) { rr[j] += pitch; mm[j] += pitch; } } break;
       case 3: for (int k = 0; k < h; k++, w += 4) { rows3f(rr, mm, cols, w, k == 0); for (int j = 0; j < 3; j++) { rr[j] += pitch; mm[j] += pitch; } } break;
       case 2: for (int k = 0; k < h; k++, w += 2) { rows2f(rr[0], mm[0], rr[1], mm[1], cols, w[0], w[1], k == 0); rr[0] += pitch; mm[0] += pitch; rr[1] += pitch; mm[1] += pitch; } break;
-      default: for (int k = 0; k < h; k++, w += 8) { rows5(rr, mm, cols, w, 1.0f, k == 0); for (int j = 0; j < 5; j++) { rr[j] += pitch; mm[j] += pitch; } } break;
+      default: for (int k = 0; k < h; k++, w += 8) { rows5f(rr, mm, cols, w, k == 0); for (int j = 0; j < 5; j++) { rr[j] += pitch; mm[j] += pitch; } } break;
     }
+  }
+}
+// ai: the first stage out of place, unit twiddles: input rows ir, ii (re, im) to output rows or_, oi, rows4f's
+// ai: arithmetic at k = 0
+static inline __attribute__((always_inline)) void bf4_first(const float *const ir[4], const float *const ii[4], float *const or_[4], float *const oi[4], int cols) {
+  int x = 0;
+  for (; x + 4 <= cols; x += 4) {
+    const float32x4_t ar = vld1q_f32(ir[0] + x), ai = vld1q_f32(ii[0] + x), br = vld1q_f32(ir[1] + x), bi = vld1q_f32(ii[1] + x);
+    const float32x4_t cr = vld1q_f32(ir[2] + x), ci = vld1q_f32(ii[2] + x), dr = vld1q_f32(ir[3] + x), di = vld1q_f32(ii[3] + x);
+    const float32x4_t t0r = vaddq_f32(ar, cr), t0i = vaddq_f32(ai, ci), t1r = vsubq_f32(ar, cr), t1i = vsubq_f32(ai, ci);
+    const float32x4_t t2r = vaddq_f32(br, dr), t2i = vaddq_f32(bi, di), t3r = vsubq_f32(br, dr), t3i = vsubq_f32(bi, di);
+    vst1q_f32(or_[0] + x, vaddq_f32(t0r, t2r)); vst1q_f32(oi[0] + x, vaddq_f32(t0i, t2i));
+    vst1q_f32(or_[2] + x, vsubq_f32(t0r, t2r)); vst1q_f32(oi[2] + x, vsubq_f32(t0i, t2i));
+    vst1q_f32(or_[1] + x, vaddq_f32(t1r, t3i)); vst1q_f32(oi[1] + x, vsubq_f32(t1i, t3r));
+    vst1q_f32(or_[3] + x, vsubq_f32(t1r, t3i)); vst1q_f32(oi[3] + x, vaddq_f32(t1i, t3r));
+  }
+  for (; x < cols; x++) {
+    const float ar = ir[0][x], ai = ii[0][x], br = ir[1][x], bi = ii[1][x], cr = ir[2][x], ci = ii[2][x], dr = ir[3][x], di = ii[3][x];
+    const float t0r = ar + cr, t0i = ai + ci, t1r = ar - cr, t1i = ai - ci, t2r = br + dr, t2i = bi + di, t3r = br - dr, t3i = bi - di;
+    or_[0][x] = t0r + t2r; oi[0][x] = t0i + t2i; or_[2][x] = t0r - t2r; oi[2][x] = t0i - t2i;
+    or_[1][x] = t1r + t3i; oi[1][x] = t1i - t3r; or_[3][x] = t1r - t3i; oi[3][x] = t1i + t3r;
+  }
+}
+// ai: the first stage with the digit reversal in it, a cycle of tiles at a time (plan_t cyc). Tile t's rows are
+// ai: 4 t + x + y M (M = rows / 4); the butterfly writing rows 4 t + y M + (0 .. 3) reads rows 4 s + y + (0 .. 3) M of
+// ai: tile s, the next one in the cycle. The cycle's first tile is copied aside, each tile is written from the next,
+// ai: the last from the copy: the swaps' pass over the strip (16 to 24% of the transform) is gone.
+enum { FOLD_W = 64 };
+static _Thread_local float fold_tile[16 * 2 * FOLD_W] __attribute__((aligned(16)));
+// ai: one cycle (c: its length, then its tiles) over cw <= FOLD_W columns from r0, m0
+static void fold_chain(const int *c, float *r0, float *m0, int M, int cw, int pitch) {
+  const int L = c[0];
+  for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) {
+    const float *sr = r0 + (size_t)(4 * c[1] + x + y * M) * pitch, *si = m0 + (size_t)(4 * c[1] + x + y * M) * pitch;
+    float *dr = fold_tile + (4 * y + x) * 2 * FOLD_W, *di = dr + FOLD_W;
+    int k = 0;
+    for (; k + 4 <= cw; k += 4) { vst1q_f32(dr + k, vld1q_f32(sr + k)); vst1q_f32(di + k, vld1q_f32(si + k)); }
+    for (; k < cw; k++) { dr[k] = sr[k]; di[k] = si[k]; }
+  }
+  for (int j = 1; j <= L; j++) {
+    const int dst = c[j], src = j < L ? c[j + 1] : -1;
+    for (int y = 0; y < 4; y++) {
+      const float *ir[4], *ii[4];
+      float *or_[4], *oi[4];
+      for (int d = 0; d < 4; d++) {
+        if (src >= 0) { const size_t at = (size_t)(4 * src + y + d * M) * pitch; ir[d] = r0 + at; ii[d] = m0 + at; }
+        else { ir[d] = fold_tile + (4 * d + y) * 2 * FOLD_W; ii[d] = ir[d] + FOLD_W; }
+        const size_t to = (size_t)(4 * dst + d + y * M) * pitch;
+        or_[d] = r0 + to; oi[d] = m0 + to;
+      }
+      bf4_first(ir, ii, or_, oi, cw);
+    }
+  }
+}
+static void first_stage_dec(const plan_t *p, float *re, float *im, int cols, int pitch) {
+  for (int x0 = 0; x0 < cols; x0 += FOLD_W) {
+    const int *c = p->cyc;
+    for (int q = 0; q < p->ncyc; q++, c += c[0] + 1) fold_chain(c, re + x0, im + x0, p->rows / 4, cols - x0 < FOLD_W ? cols - x0 : FOLD_W, pitch);
   }
 }
 #endif
@@ -483,18 +602,22 @@ void fft_cols_dec(float *re, float *im, int rows, int cols, int pitch) {
   const plan_t *p = plan_kind(rows, 1);
   const dec_tw_t *t = p ? dec_tw_for(p) : 0;
   if (!t) return;
+  int s0 = 0;
+  if (p->cyc) { first_stage_dec(p, re, im, cols, pitch); s0 = 1; }
   for (int s = 0; s < p->nswp; s++) {
     float *a = re + (size_t)p->swp[2 * s] * pitch, *b = re + (size_t)p->swp[2 * s + 1] * pitch;
     float *c = im + (size_t)p->swp[2 * s] * pitch, *d = im + (size_t)p->swp[2 * s + 1] * pitch;
     for (int x = 0; x < cols; x++) { float u = a[x]; a[x] = b[x]; b[x] = u; u = c[x]; c[x] = d[x]; d[x] = u; }
   }
+  // ai: 32 KB a group, every current big core's first-level data cache; 16 KB was 2 to 4% slower on the S26, 64 KB
+  // ai: no faster
   int group = 2;
-  while (group * 2 <= rows && (size_t)group * 2 * cols * 2 * sizeof(float) <= 16384) group *= 2;
+  while (group * 2 <= rows && (size_t)group * 2 * cols * 2 * sizeof(float) <= 32768) group *= 2;
   int ngrp = 0;
   while (ngrp < p->nst && p->len[ngrp] <= group) ngrp++;
   const int gsz = ngrp ? p->len[ngrp - 1] : 1;
-  for (int g0 = 0; g0 < rows; g0 += gsz) for (int s = 0; s < ngrp; s++) stage_dec(p, t->tw[s], re, im, cols, pitch, s, g0, gsz);
-  for (int s = ngrp; s < p->nst; s++) stage_dec(p, t->tw[s], re, im, cols, pitch, s, 0, rows);
+  if (ngrp > s0) for (int g0 = 0; g0 < rows; g0 += gsz) for (int s = s0; s < ngrp; s++) stage_dec(p, t->tw[s], re, im, cols, pitch, s, g0, gsz);
+  for (int s = ngrp > s0 ? ngrp : s0; s < p->nst; s++) stage_dec(p, t->tw[s], re, im, cols, pitch, s, 0, rows);
 #else
   fft_cols(re, im, rows, cols, pitch, 0);
 #endif
