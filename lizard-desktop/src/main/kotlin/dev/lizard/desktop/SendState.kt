@@ -12,7 +12,6 @@ import dev.lizard.tar.TarEntry
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import java.awt.BasicStroke
 import java.awt.Canvas
 import java.awt.Font
 import java.awt.Graphics2D
@@ -22,18 +21,15 @@ import java.awt.dnd.DnDConstants
 import java.awt.dnd.DropTarget
 import java.awt.dnd.DropTargetAdapter
 import java.awt.dnd.DropTargetDropEvent
-import java.awt.geom.Path2D
 import javax.swing.SwingUtilities
 import java.awt.Cursor
 import java.awt.EventQueue
 import java.awt.Graphics
-import java.awt.Rectangle
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import java.awt.event.HierarchyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
-import java.awt.image.BufferedImage
 import java.io.File
 import java.nio.file.Files
 import javax.swing.Timer
@@ -41,57 +37,40 @@ import kotlin.concurrent.thread
 import kotlin.math.floor
 import kotlin.math.min
 import kotlin.math.roundToInt
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import dev.lizard.ui.*
 import kotlinx.coroutines.runBlocking
 
-// ai: The code area (the web's <main>): a heavyweight AWT canvas, a native window of its own inside the Compose window
-// ai: (Screen.kt's SwingPanel), on which the presenter's swapchain draws; white, and nothing painted over the
-// ai: presenter's pictures by AWT. Its size in device px is the room the format is picked from; it tells the state when
-// ai: it has a window (addNotify), is shown or resized, and, before that window goes (removeNotify: a dispose, a window
-// ai: made again), stops the presenter on it. A click on it does nothing in full screen (2026-10-24: Escape, F, F11 and
-// ai: the rail's collapser leave it); the Idle
-// ai: (2026-10-07, the web's middle of its page and the app's code box) it is the file's area: the file upload (since
-// ai: 2026-10-26 the File and Folder tiles and the selection's card, paintUpload), or "Test stream"; files and folders
-// ai: dropped on it are taken (the test stream off; several, or a folder, one tar since 2026-10-16). AWT paints that
-// ai: itself, since nothing of Compose can be drawn over a heavyweight canvas.
+// ai: The code area's window while codes play: a heavyweight AWT canvas, a native window of its own inside the Compose
+// ai: window (Screen.kt's SwingPanel), on which the presenter's swapchain draws. In the window only while a presenter
+// ai: runs (`want`, 2026-11-02, as the phone's SurfaceView): idle, the area is Compose's, the file upload or the test
+// ai: stream's note, under no window of its own (that look painted here by AWT went, its every resize a frame of bare
+// ai: fill before the paint, a blink of the test stream's note on each step of a dragged edge; a hidden canvas would not
+// ai: do, its SwingPanel's container painting AWT's grey over Compose's area). White, and nothing painted over the
+// ai: presenter's pictures by AWT but, while a monitor of its own shows the code, where it plays. Before its window goes
+// ai: (removeNotify: a dispose, a window made again) it stops the presenter on it. A click on it does nothing; files and
+// ai: folders dropped on it are taken (a run stops first).
 class CodeCanvas(private val s: SendState) : Canvas() {
-    @Volatile var presenting = false
-    // ai: the area's fill (2026-11-02): the soft fill under the test stream's line and while a monitor of its own shows the
-    // ai: code, white under the file upload and round the presenter's code (it clears to white). The canvas's X background
-    // ai: is it, so a resize shows it before the paint (the test stream's area went white at each step of a dragged edge:
-    // ai: 69 of 183 frames on Xvfb), and the column's margin beside the canvas takes it (SendHost.codeFill)
-    var fill by mutableStateOf(Bg)
-        private set
-    fun look() {
-        val f = if (s.leased || (s.test && !presenting)) Soft else Bg
-        if (f != fill) { fill = f; if (isDisplayable) xBackground() }
-    }
-    private fun xBackground() { if (s.loadError.isEmpty()) runCatching { Native.windowBackground(this, fill.toArgb() and 0xFFFFFF) } }
     // ai: how near the left edge the pointer shows full screen's rail, the window's units
     private val EDGE_NEAR = 24
+    // ai: wanted in the window (a presenter is to draw into it; Screen.kt composes its SwingPanel while it is)
+    var shown by mutableStateOf(false)
+        private set
 
     init {
         background = java.awt.Color.WHITE
         isFocusable = false
         addComponentListener(object : ComponentAdapter() {
-            // ai: a resize paints the idle area too, at once: nothing else does on a heavyweight canvas that shrinks (no
-            // ai: expose), so the file upload stayed at the old size until the next change (2026-10-26); a queued repaint
-            // ai: left the old size's pixels smeared over the new area while the column's edge was dragged (2026-11-02)
-            override fun componentResized(e: ComponentEvent) { s.areaChanged(); s.canvasMoved(); if (!presenting) paintNow() }
+            override fun componentResized(e: ComponentEvent) { s.canvasMoved(); if (s.leased) repaint() }
             override fun componentMoved(e: ComponentEvent) = s.canvasMoved()
         })
         if (Native.mac) addHierarchyBoundsListener(object : java.awt.event.HierarchyBoundsAdapter() {
             override fun ancestorMoved(e: HierarchyEvent) = s.canvasMoved()
             override fun ancestorResized(e: HierarchyEvent) = s.canvasMoved()
         })
-        // ai: shown or hidden with its parents (Compose's SwingPanel sizes it before it shows it)
-        addHierarchyListener { e -> if (e.changeFlags and HierarchyEvent.SHOWING_CHANGED.toLong() != 0L) s.areaChanged() }
         addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
-                if (!s.full && !nearEdge(e) && chooses()) hits.firstOrNull { it.first.contains(e.point) }?.second?.invoke()
-            }
             override fun mousePressed(e: MouseEvent) {
                 if (e.button == MouseEvent.BUTTON1 && nearEdge(e)) { pressX = e.xOnScreen; pressed = true }
             }
@@ -101,8 +80,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
             }
             override fun mouseExited(e: MouseEvent) { if (!gripped) grip?.hover(false) }
         })
-        // ai: over the file upload, the hand only on what takes a click; the left-right resize cursor over the column's
-        // ai: edge; full screen's rail near the left edge
+        // ai: the left-right resize cursor over the column's edge; full screen's rail near the left edge
         addMouseMotionListener(object : MouseAdapter() {
             override fun mouseMoved(e: MouseEvent) {
                 // ai: full screen: nothing here takes a click, so the arrow (a resize cursor left from the column's edge stuck
@@ -114,11 +92,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
                 }
                 val near = nearEdge(e)
                 grip?.hover(near)
-                val c = when {
-                    near -> Cursor.E_RESIZE_CURSOR
-                    uploading() && chooses() && hits.any { it.first.contains(e.point) } -> Cursor.HAND_CURSOR
-                    else -> Cursor.DEFAULT_CURSOR
-                }
+                val c = if (near) Cursor.E_RESIZE_CURSOR else Cursor.DEFAULT_CURSOR
                 if (cursor.type != c) cursor = Cursor.getPredefinedCursor(c)
             }
             // ai: the edge dragged by the pointer's move on the screen (the canvas moves under it as the column resizes);
@@ -134,9 +108,8 @@ class CodeCanvas(private val s: SendState) : Canvas() {
                 g.drag(dx.dp)
             }
         })
-        addMouseWheelListener { e -> if (uploading()) { scroll += e.wheelRotation * 48; repaint() } }
         // ai: Files and folders dropped are added (a run stops first, as the web's does; refused while sending until
-        // ai: 2026-10-23); the window's column takes them too (Screen.kt), and the area's outline says so while a drag is over
+        // ai: 2026-10-23); the window's column and the idle area take them too (Screen.kt)
         dropTarget = DropTarget(this, object : DropTargetAdapter() {
             override fun dragEnter(e: java.awt.dnd.DropTargetDragEvent) = s.dragging(true)
             override fun dragExit(e: java.awt.dnd.DropTargetEvent) = s.dragging(false)
@@ -148,7 +121,10 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         })
     }
 
-    private fun chooses() = !s.sending && !s.test
+    // ai: put in the window for a presenter (its window made at addNotify, which begins it: SendState.canvasMade), taken
+    // ai: out at the presenter's end
+    fun want(on: Boolean) { shown = on }
+
     // ai: the column's edge over the canvas's left EdgeStrip less EdgeRoom (dev.lizard.ui.EdgeGrip: Compose neither draws
     // ai: nor hears over this heavyweight), given by the code area while the column is open, null otherwise
     // ai: (DesktopSend.CodeArea)
@@ -157,54 +133,18 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     private var gripped = false   // ai: and the edge is being dragged
     private var pressX = 0
     private fun nearEdge(e: MouseEvent) = grip != null && !s.full && e.x < (EdgeStrip - EdgeRoom).value
-    // ai: a pick being walked or the bundle made again (`reading`, which every add, remove and Clear sets) keeps the upload
-    // ai: up, the column's state line saying "Reading the files" (a cover took the area for it until 2026-10-26: a flash)
-    private fun uploading() = !s.test
-    private var hits: List<Pair<Rectangle, () -> Unit>> = emptyList()   // ai: the file upload's controls as last painted
-    private var scroll = 0
 
-    // ai: the look for the state, painted: the hand (mouseMoved's, over the file upload's controls) given back to the
-    // ai: arrow only where nothing here takes a click any more, full screen included (2026-11-02: every change of the
-    // ai: state reset it under a pointer resting on a tile)
-    fun idleLook() {
-        if (s.full || !uploading() || !chooses()) cursor = Cursor.getDefaultCursor()
-        repaint()
-    }
-    // ai: Painted now, not queued (2026-11-02): where the presenter has just let go of the window (Stop) or the canvas has
-    // ai: just been resized, a queued repaint left the last picture, or the old size's pixels, up until AWT came to it
-    fun paintNow() {
-        if (!isShowing) return
-        val g = graphics ?: return
-        try { paint(g) } finally { g.dispose() }
-    }
+    // ai: its X background the area's colour (SendState.codeFill: white round the presenter's code, which clears to
+    // ai: white; the soft fill while a monitor of its own shows the code), so what X fills on a map or a resize before
+    // ai: anything draws is that (AWT sets the desktop theme's grey: a dark frame where the canvas came, 2026-11-02)
+    private fun look() { if (s.loadError.isEmpty() && isDisplayable) runCatching { Native.windowBackground(this, s.codeFill.toArgb() and 0xFFFFFF) } }
 
     override fun update(g: Graphics) = paint(g)
-    // ai: Drawn off screen at the screen's pixels, then put on screen in one copy (2026-10-26): drawn straight onto the
-    // ai: heavyweight canvas, each repaint (a wheel step, a removal) showed the area cleared and half drawn for a moment.
-    // ai: One buffer, made again only to grow (a dragged edge resized it at each step), its top left corner used.
-    private var back: BufferedImage? = null
+    // ai: the code shown on a monitor of its own: the area here plain, a line saying where (the window is the control);
+    // ai: otherwise the presenter's
     override fun paint(g: Graphics) {
         look()
-        // ai: the code shown on a monitor of its own: the area here plain, a line saying where (the window is the control)
-        if (s.leased) { paintLeased(g as Graphics2D); return }
-        if (presenting || width <= 0 || height <= 0) return
-        val t = graphicsConfiguration?.defaultTransform
-        val sx = t?.scaleX ?: 1.0; val sy = t?.scaleY ?: 1.0
-        val bw = (width * sx).roundToInt().coerceAtLeast(1); val bh = (height * sy).roundToInt().coerceAtLeast(1)
-        val img = back?.takeIf { it.width >= bw && it.height >= bh } ?: BufferedImage(bw, bh, BufferedImage.TYPE_INT_RGB).also { back = it }
-        val g2 = img.createGraphics()
-        try { g2.clipRect(0, 0, bw, bh); g2.scale(sx, sy); draw(g2) } finally { g2.dispose() }
-        g.drawImage(img, 0, 0, width, height, 0, 0, bw, bh, null)
-    }
-    private fun draw(g2: Graphics2D) {
-        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-        if (uploading()) paintUpload(g2) else paintHint(g2)
-        // ai: a drag over the window: the web's dashed outline, 12 px in
-        if (s.dragOver) {
-            g2.color = FG; g2.stroke = BasicStroke(3f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(9f, 6f), 0f)
-            g2.drawRect(12, 12, width - 25, height - 25)
-        }
+        if (s.leased) paintLeased(g as Graphics2D)
     }
 
     // ai: the control window's area while the code plays on a monitor of its own: "Playing on <monitor>" (or "Paused
@@ -220,141 +160,10 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         g2.drawString(text, ((width - fm.stringWidth(text)) / 2.0).toFloat(), ((height - fm.height) / 2.0 + fm.ascent).toFloat())
     }
 
-    // ai: the test stream: the soft fill, the file icon and the line 8 px under it
-    private fun paintHint(g2: Graphics2D) {
-        g2.color = SOFT   // ai: the soft fill (the theme's Soft)
-        g2.fillRect(0, 0, width, height)
-        g2.color = MUTED
-        val cx = width / 2.0; val cy = height / 2.0 - 16
-        drawIcon(g2, FILE_ICON, cx - 12, cy - 12)
-        val text = "Test stream"
-        g2.font = face(Font.PLAIN, 14)
-        val fm = g2.fontMetrics
-        g2.drawString(text, (cx - fm.stringWidth(text) / 2.0).toFloat(), (cy + 12 + 8 + fm.ascent).toFloat())
-    }
-
-    // ai: The file upload (2026-10-26, LocalSend's geometry; the web's #pick): on white, a column at most 576 px wide
-    // ai: centred in the canvas, the whole centred in its height where it fits, else from 16 px down (the phone's shared
-    // ai: Upload stretches across its area at the top; a desktop window keeps the centred column, 2026-11-01): the File and
-    // ai: Folder tiles (104 px tall on the soft fill, an icon over one word, one row in equal cells), and under them, while
-    // ai: the selection holds something, its card as wide (the card fill): the count with Clear, then a tile an item on
-    // ai: white (its icon, its name with the stem cut and the ending kept, "N files" or its size, an x at its corner that
-    // ai: removes it), in rows stretched across the card, 104 px the narrowest before one folds; the card takes what height
-    // ai: is left (a row of items at least) and only its items scroll, down, by the wheel; 12 px under the card, centred,
-    // ai: what goes (choiceLine: the bundle's name, its stem cut and its ending kept, then its files and the bytes that go;
-    // ai: its room kept while the pick is walked or the bundle made; 2026-11-01, the column's state line before). The
-    // ai: tiles' words, the count, Clear, the items' names and the name under the card bold, the other lines plain.
-    private fun paintUpload(g2: Graphics2D) {
-        g2.color = java.awt.Color.WHITE
-        g2.fillRect(0, 0, width, height)
-        val items = s.items.toList()
-        val t = 104; val gap = 12; val ig = 8
-        val cardW = min(width - 32, 576)
-        val perRow = maxOf(1, (cardW - 24 + ig) / (t + ig))
-        val iw = (cardW - 24 - (perRow - 1) * ig) / perRow
-        val rows = (items.size + perRow - 1) / perRow
-        val avail = height - 32
-        val gridH = rows * t + (rows - 1) * ig
-        g2.font = face(Font.BOLD, 15)
-        val lineH = 12 + g2.fontMetrics.height   // ai: the line under the card and its gap
-        val cardH = if (items.isEmpty()) 0 else minOf(4 + 48 + 4 + gridH + 12, maxOf(avail - t - 16 - lineH, 4 + 48 + 4 + t + 12))
-        val viewH = cardH - (4 + 48 + 4 + 12)   // ai: the items' window inside the card
-        scroll = scroll.coerceIn(0, maxOf(0, gridH - viewH))
-        val total = t + if (items.isEmpty()) 0 else 16 + cardH + lineH
-        var y = if (total <= avail) (height - total) / 2 else 16
-        val got = ArrayList<Pair<Rectangle, () -> Unit>>()
-        val tiles = listOf<Triple<Path2D, String, () -> Unit>>(Triple(FILE_ICON, "File") { s.chooseFile() }, Triple(FOLDER_ICON, "Folder") { s.chooseFolder() })
-        val tw = (cardW - (tiles.size - 1) * gap) / tiles.size
-        var x = (width - cardW) / 2
-        g2.font = face(Font.BOLD, 15)
-        for ((icon, label, act) in tiles) {
-            g2.color = SOFT; g2.fillRoundRect(x, y, tw, t, 24, 24)
-            g2.color = FG; drawIcon(g2, icon, x + tw / 2.0 - 16, y + 22.0, 32.0 / 24)
-            val fm = g2.fontMetrics
-            g2.drawString(label, x + (tw - fm.stringWidth(label)) / 2, y + 22 + 32 + 8 + fm.ascent)
-            got += Rectangle(x, y, tw, t) to act
-            x += tw + gap
-        }
-        if (items.isNotEmpty()) {
-            y += t + 16
-            val cx = (width - cardW) / 2
-            g2.color = CARD; g2.fillRoundRect(cx, y, cardW, cardH, 24, 24)
-            g2.font = face(Font.BOLD, 14); g2.color = FG
-            var fm = g2.fontMetrics
-            g2.drawString("${items.size} ${if (items.size == 1) "item" else "items"}", cx + 16, y + 4 + (48 - fm.height) / 2 + fm.ascent)
-            g2.font = face(Font.BOLD, 15); fm = g2.fontMetrics
-            val clear = Rectangle(cx + cardW - 12 - (fm.stringWidth("Clear") + 24), y + 8, fm.stringWidth("Clear") + 24, 40)
-            g2.drawString("Clear", clear.x + 12, clear.y + (40 - fm.height) / 2 + fm.ascent)
-            got += clear to { s.clearPicks() }
-            s.choiceLine?.let { (name, after) ->
-                g2.font = face(Font.PLAIN, 15); val aw = g2.fontMetrics.stringWidth(after)
-                g2.font = face(Font.BOLD, 15); fm = g2.fontMetrics
-                val shown = fitName(g2, name, maxOf(cardW - aw, cardW / 2))
-                val nw = fm.stringWidth(shown)
-                g2.font = face(Font.PLAIN, 15)
-                val tail = fit(g2, after, cardW - nw)
-                val lx = cx + (cardW - nw - g2.fontMetrics.stringWidth(tail)) / 2; val ly = y + cardH + 12 + fm.ascent
-                g2.font = face(Font.BOLD, 15); g2.color = FG; g2.drawString(shown, lx, ly)
-                g2.font = face(Font.PLAIN, 15); g2.color = MUTED; g2.drawString(tail, lx + nw, ly)
-            }
-            val top = y + 4 + 48 + 4
-            val view = Rectangle(cx, top, cardW, viewH)
-            val clip = g2.clip
-            g2.clip(view)
-            for ((i, it) in items.withIndex()) {
-                val ix = cx + 12 + (i % perRow) * (iw + ig); val iy = top + (i / perRow) * (t + ig) - scroll
-                if (iy + t < top || iy > top + viewH) continue
-                g2.color = java.awt.Color.WHITE; g2.fillRoundRect(ix, iy, iw, t, 24, 24)
-                g2.color = MUTED; drawIcon(g2, if (it.dir) FOLDER_ICON else FILE_ICON, ix + iw / 2.0 - 14, iy + 18.0, 28.0 / 24)
-                g2.font = face(Font.BOLD, 13); g2.color = FG; fm = g2.fontMetrics
-                val name = fitName(g2, it.name, iw - 16)
-                g2.drawString(name, ix + (iw - fm.stringWidth(name)) / 2, iy + 18 + 28 + 6 + fm.ascent)
-                val nameBottom = iy + 18 + 28 + 6 + fm.height
-                g2.font = face(Font.PLAIN, 12); g2.color = MUTED; fm = g2.fontMetrics
-                val sub = fit(g2, if (it.dir) "${it.files} ${if (it.files == 1) "file" else "files"}" else Readout.bytes(it.size), iw - 16)
-                g2.drawString(sub, ix + (iw - fm.stringWidth(sub)) / 2, nameBottom + fm.ascent)
-                // ai: Remove: an x in a 28 px square at the tile's top right
-                val rx = ix + iw - 30; val ry = iy + 2
-                g2.color = FG; g2.stroke = BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-                g2.drawLine(rx + 9, ry + 9, rx + 19, ry + 19); g2.drawLine(rx + 19, ry + 9, rx + 9, ry + 19)
-                val key = it.key
-                Rectangle(rx, ry, 28, 28).intersection(view).takeIf { !it.isEmpty }?.let { r -> got += r to { s.remove(key) } }
-            }
-            g2.clip = clip
-        }
-        hits = got
-    }
-
-    // ai: a name cut to the room as the web's .fname and the Android app's NameLine cut it: the stem with an ellipsis, its
-    // ai: ending (Readout.nameParts) kept whole
-    private fun fitName(g2: Graphics2D, name: String, room: Int): String {
-        val fm = g2.fontMetrics
-        if (fm.stringWidth(name) <= room) return name
-        val (stem, end) = Readout.nameParts(name)
-        var t = stem
-        while (t.isNotEmpty() && fm.stringWidth("$t…$end") > room) t = t.dropLast(1)
-        return if (t.isEmpty()) fit(g2, name, room) else "$t…$end"
-    }
-
-    // ai: a line cut on a character with an ellipsis where it is wider than the room
-    private fun fit(g2: Graphics2D, text: String, room: Int): String {
-        val fm = g2.fontMetrics
-        if (fm.stringWidth(text) <= room) return text
-        var t = text
-        while (t.isNotEmpty() && fm.stringWidth("$t…") > room) t = t.dropLast(1)
-        return "$t…"
-    }
-    // ai: an icon on its 24 grid at (x, y), k times its size, its 2 px strokes scaled with it (as an svg.i drawn larger)
-    private fun drawIcon(g2: Graphics2D, icon: Path2D, x: Double, y: Double, k: Double = 1.0) {
-        g2.stroke = BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-        val t = g2.transform
-        g2.translate(x, y); g2.scale(k, k); g2.draw(icon); g2.transform = t
-    }
-
     companion object {
         // ai: Inter (the shared theme's face, the web's: dev.lizard.ui interBytes) for the text AWT paints here, the
-        // ai: variable file at its default instance, bold derived; the platform's sans where it does not load
-        // ai: (2026-10-25: that sans read beside Compose's Inter until then)
+        // ai: variable file at its default instance; the platform's sans where it does not load (2026-10-25: that sans
+        // ai: read beside Compose's Inter until then)
         private val inter: Font? = runCatching {
             Font.createFont(Font.TRUETYPE_FONT, java.io.ByteArrayInputStream(runBlocking { interBytes() }))
         }.getOrNull()
@@ -362,28 +171,14 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         // ai: the shared theme's colours as AWT's
         private fun awt(c: androidx.compose.ui.graphics.Color) = java.awt.Color(c.toArgb(), true)
         private val FG = awt(Fg)
-        private val MUTED = awt(Muted)
         private val SOFT = awt(Soft)
-        private val CARD = awt(Card)
-        // ai: Feather's file and folder (the shared Icons.file and Icons.folder) on a 24 grid
-        private val FILE_ICON = Path2D.Double().apply {
-            moveTo(14.0, 2.0); lineTo(6.0, 2.0); curveTo(4.9, 2.0, 4.0, 2.9, 4.0, 4.0); lineTo(4.0, 20.0); curveTo(4.0, 21.1, 4.9, 22.0, 6.0, 22.0)
-            lineTo(18.0, 22.0); curveTo(19.1, 22.0, 20.0, 21.1, 20.0, 20.0); lineTo(20.0, 8.0); closePath()
-            moveTo(14.0, 2.0); lineTo(14.0, 8.0); lineTo(20.0, 8.0)
-        }
-        private val FOLDER_ICON = Path2D.Double().apply {
-            moveTo(22.0, 19.0); curveTo(22.0, 20.1, 21.1, 21.0, 20.0, 21.0); lineTo(4.0, 21.0); curveTo(2.9, 21.0, 2.0, 20.1, 2.0, 19.0)
-            lineTo(2.0, 5.0); curveTo(2.0, 3.9, 2.9, 3.0, 4.0, 3.0); lineTo(9.0, 3.0); lineTo(11.0, 6.0); lineTo(20.0, 6.0)
-            curveTo(21.1, 6.0, 22.0, 6.9, 22.0, 8.0); closePath()
-        }
     }
-    // ai: its window made (Send entered): the area read and the idle look painted at once, not at AWT's first repaint
-    // ai: its window made (Send entered): its X background the area's fill (Native.windowBackground: AWT's, the theme's
-    // ai: grey, showed until the first paint), the area read and the idle look painted at once, not at AWT's first repaint
+    // ai: its window made (a presenter wanted): its X background the area's colour (Native.windowBackground), then the
+    // ai: presenter begun on it
     override fun addNotify() {
         super.addNotify()
-        look(); xBackground()
-        EventQueue.invokeLater { s.areaChanged(); if (!presenting) paintNow() }
+        look()
+        EventQueue.invokeLater { s.canvasMade() }
     }
     override fun removeNotify() { s.canvasGone(); super.removeNotify() }
 
@@ -396,13 +191,6 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         val k = graphicsConfiguration?.defaultTransform?.scaleX ?: 1.0
         return floatArrayOf((at.x - ins.left).toFloat(), (at.y - ins.top).toFloat(), width.toFloat(), height.toFloat(), k.toFloat())
     }
-
-    // ai: the canvas's size in device px (its user-space size by the screen's scale)
-    fun devicePx(): Pair<Int, Int> {
-        val t = graphicsConfiguration?.defaultTransform
-        return (width * (t?.scaleX ?: 1.0)).roundToInt() to (height * (t?.scaleY ?: 1.0)).roundToInt()
-    }
-
 }
 
 // ai: The run (the web's send.mjs, lizard-android/.../Send.kt SendState): the settings, kept (Prefs), the sender and
@@ -436,10 +224,10 @@ class SendState {
     private var bundling = 0        // ai: the newest bundle asked for; bundleNow while it is being made
     private var bundleNow = false
     private fun readingNow() { reading = walks > 0 || bundleNow }
-    // ai: a drag over the window (the canvas's drop target, Screen.kt's for the column): the code area's outline
-    var dragOver = false
+    // ai: a drag over the window (the canvas's drop target, Screen.kt's for the rest): the idle area's outline
+    var dragOver by mutableStateOf(false)
         private set
-    fun dragging(on: Boolean) { if (on != dragOver) { dragOver = on; canvas.repaint() } }
+    fun dragging(on: Boolean) { dragOver = on }
     // ai: what a drop hands over: its files and folders added (the test stream off); false where it holds none
     fun dropped(t: java.awt.datatransfer.Transferable): Boolean {
         @Suppress("UNCHECKED_CAST")
@@ -545,6 +333,10 @@ class SendState {
     private val leaseTimer = Timer(200) { if (leased && p != 0L && parse(Native.presentStats(p))?.str("direct").isNullOrEmpty()) leaseEnded() }
 
     val presenting get() = p != 0L
+    // ai: the code area's colour at its left edge (the column's margin beside it takes it, SendHost.codeFill; the canvas's
+    // ai: X background): the soft fill under the test stream's note and while a monitor of its own shows the code, white
+    // ai: under the file upload and round the presenter's code (it clears to white)
+    val codeFill: Color get() = if (leased || (test && !canvas.shown)) Soft else Bg
     val sending get() = phase == Phase.On || phase == Phase.Preparing
     val canStart get() = loadError.isEmpty() && !sending && (test || (choice != null && !reading))
     val railShown get() = collapsed
@@ -576,7 +368,7 @@ class SendState {
     fun pick(files: List<File>) {
         if (sending) stop()
         if (phase is Phase.Error) phase = Phase.Idle
-        walks++; readingNow(); canvas.idleLook()
+        walks++; readingNow()
         thread(name = "lizard-send-pick", isDaemon = true) {
             val got = runCatching { files.map { itemOf(it) } }
             EventQueue.invokeLater {
@@ -586,7 +378,6 @@ class SendState {
                     val fresh = list.filter { have.add(it.key) }
                     if (fresh.isNotEmpty()) { items.addAll(fresh); changed() }
                 }.onFailure { phase = Phase.Error("The files could not be read: ${it.message}") }
-                canvas.idleLook()
             }
         }
     }
@@ -616,7 +407,7 @@ class SendState {
         choice = null; singleFile = null; fileSize = 0; compressed = 0
         val list = items.toList()
         val my = ++bundling
-        bundleNow = list.isNotEmpty(); readingNow(); canvas.idleLook()
+        bundleNow = list.isNotEmpty(); readingNow()
         if (list.isEmpty()) return
         thread(name = "lizard-send-bundle", isDaemon = true) {
             val b = Bundle(list.flatMap { it.entries })
@@ -624,7 +415,6 @@ class SendState {
                 if (my != bundling) return@invokeLater
                 bundleNow = false; readingNow()
                 choice = b; singleFile = if (b.single != null) list[0].file else null; fileSize = b.size
-                canvas.idleLook()
             }
         }
     }
@@ -711,7 +501,7 @@ class SendState {
                 if (hnd == 0L) { phase = Phase.Error("This file cannot be sent: $err"); return@invokeLater }
                 h = hnd; gpuWhy = why; prepared = true; fmt = null; phase = Phase.On
                 if (why.isNotEmpty()) System.err.println("send: no GPU painter: $why")
-                areaChanged()
+                areaNow()
             }
         }
     }
@@ -722,8 +512,7 @@ class SendState {
         settle.stop()
         if (p != 0L) { Native.presentStop(p); p = 0L }
         if (leased) leaseEnded()
-        canvas.presenting = false
-        canvas.paintNow()
+        canvas.want(false)
         if (h != 0L && h != preparing) Native.txDestroy(h)
         h = 0L
         dropTar()
@@ -758,7 +547,7 @@ class SendState {
 
     fun toggleFull() {
         edgeRail = false
-        if (leased) { if (p != 0L) { Native.presentStop(p); p = 0L }; leaseEnded(); if (sending) begin(); return }
+        if (leased) { if (p != 0L) { Native.presentStop(p); p = 0L }; leaseEnded(); if (sending) begin() else canvas.want(false); return }
         full = !full
         if (full && exclusiveFull && phase == Phase.On && !paused && p != 0L && lease()) return
         fullscreen?.invoke(full)
@@ -807,7 +596,7 @@ class SendState {
         full = false
         placeBack?.invoke()
         // ai: the area's size followed again: read now, and re-picked where the presenter goes on in the window
-        if (canvas.isDisplayable) { val (w, hh) = canvas.devicePx(); areaW = w; areaH = hh }
+        if (seenW > 0 && seenH > 0) { areaW = seenW; areaH = seenH }
         if (p != 0L) settle.restart()
     }
     // ai: the manager's own word on the window (its shortcut, a leave of its own, a request of ours taken): followed,
@@ -879,20 +668,23 @@ class SendState {
         if (p == 0L) begin() else if (configure()) Native.presentSize(p, size / 100f, edge)
     }
 
-    // ai: the canvas's size (a resize, a window made); sending, a re-pick, or the start once it has one. While presenting
+    // ai: the code area's size in device px as Compose lays it out (Screen.kt's onSizeChanged: the canvas, hidden while
+    // ai: idle, is laid out by no one then); sending, a re-pick, or the start once it has one. While presenting
     // ai: the re-pick waits for the area to settle, 300 ms (the web's roomChanged): full screen passes through two or three
     // ai: sizes (the column folded, the manager's first size, the screen's), and a re-pick at each restarted the painters
     // ai: (2026-10-04, on a real screen: about 0.5 s of stalled presents a transition); the presenter meanwhile
     // ai: scales the picture it has into the new area.
-    fun areaChanged() {
+    private var seenW = 0
+    private var seenH = 0
+    fun areaChanged(w: Int, hh: Int) { seenW = w; seenH = hh; areaNow() }
+    private fun areaNow() {
         // ai: while a monitor is taken the area is the monitor's (lease): the control window's is no measure of it (read
         // ai: again at leaseEnded)
         if (leased) return
-        val (w, hh) = if (canvas.isDisplayable) canvas.devicePx() else 0 to 0
-        // ai: a canvas not yet sized (its window just made) keeps the area it had: Blocks' label read "Auto, N" -> "Auto"
-        // ai: -> "Auto, N" on each entry to Send (2026-11-02)
-        if (w <= 0 || hh <= 0) return
-        areaW = w; areaH = hh
+        // ai: an area not yet laid out keeps the area it had: Blocks' label read "Auto, N" -> "Auto" -> "Auto, N" on each
+        // ai: entry to Send (2026-11-02)
+        if (seenW <= 0 || seenH <= 0) return
+        areaW = seenW; areaH = seenH
         if (p == 0L) repick() else settle.restart()
     }
     private val settle = Timer(300) { repick() }.apply { isRepeats = false }
@@ -903,14 +695,16 @@ class SendState {
     // ai: the canvas's window going: the presenter stopped first (its surface is that window); begun again on the next
     fun canvasGone() {
         if (p != 0L) { Native.presentStop(p); p = 0L }
-        canvas.presenting = false
     }
+    // ai: the canvas's window made: the presenter begun where one is wanted
+    fun canvasMade() { if (phase == Phase.On && p == 0L) repick() }
 
+    // ai: the presenter needs the canvas's window made (wanted first: canvasMade comes back here), not shown: a Start at
+    // ai: the launch (the hook's) comes before AWT counts the window as showing
     private fun begin() {
-        if (h == 0L || p != 0L || !canvas.isShowing || areaW <= 0 || areaH <= 0) return
+        if (h == 0L || p != 0L || areaW <= 0 || areaH <= 0) return
+        if (!canvas.isDisplayable) { canvas.want(true); return }
         if (!configure()) return
-        canvas.presenting = true
-        canvas.look()
         val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, vsync, false, canvas.place())
         if (pr == 0L) { fail("The code cannot be shown: ${Native.txError()}"); return }
         p = pr

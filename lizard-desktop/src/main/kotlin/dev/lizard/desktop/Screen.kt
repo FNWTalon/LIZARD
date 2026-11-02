@@ -48,6 +48,18 @@ import java.awt.Dialog
 import java.awt.MouseInfo
 import java.awt.Window
 import dev.lizard.ui.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import dev.lizard.readout.Readout
 
 // ai: Send on the desktop (the screen is ../lizard-ui's SendScreen): the sender's state (SendState), the desktop's
 // ai: settings (Ring, Size; Exclusive fullscreen on Linux), Fullscreen beside Start, the code area the presenter's
@@ -117,7 +129,7 @@ class DesktopSend(private val app: App) : SendHost {
     override val edgeTap = false
     override fun leaveCodeAlone() { s.toggleFull(); if (s.collapsed) s.toggleRail() }
     override val codePadding = 0.dp
-    override val codeFill get() = s.canvas.fill
+    override val codeFill get() = s.codeFill
     override fun codeSize(maxWidth: Dp, maxHeight: Dp, portrait: Boolean): DpSize? = null
     // ai: files and folders dropped anywhere in the window are added as on the code area (SendState.dropped), the area's
     // ai: outline shown while a drag is over the window (2026-10-23)
@@ -129,17 +141,34 @@ class DesktopSend(private val app: App) : SendHost {
     }
     override val rootModifier: Modifier = Modifier.dragAndDropTarget({ it.awtTransferable.isDataFlavorSupported(DataFlavor.javaFileListFlavor) }, drops)
 
+    // ai: The code area (2026-11-02, as the phone's): idle, Compose's, the file upload in a column at most 576 dp wide,
+    // ai: centred, what goes named under its card (the AWT canvas painted it until then), or the test stream's note; a
+    // ai: drag's outline over it. While codes play the canvas (a window of its own, the presenter's) in its place, from
+    // ai: the presenter's start to its end. Its size, laid out here, is the room the format is picked from (SendState.areaChanged);
+    // ai: in full screen the pointer near its left edge shows the rail (the canvas hears that while shown).
+    @OptIn(ExperimentalComposeUiApi::class)
     @Composable
     override fun CodeArea(modifier: Modifier) {
-        // ai: the code area's idle look follows the file, the payload and the run
-        LaunchedEffect(s.choice, s.reading, s.test, s.phase, s.full, s.items.size, s.compressed) { s.canvas.idleLook() }
-        // ai: the column's edge over the canvas's left strip is the canvas's to hear (CodeCanvas.grip)
+        // ai: the column's edge over the canvas's left strip is the canvas's to hear while it shows (CodeCanvas.grip)
         val grip = LocalEdgeGrip.current
         DisposableEffect(grip) {
             s.canvas.grip = grip
             onDispose { if (s.canvas.grip === grip) { grip?.hover(false); s.canvas.grip = null } }
         }
-        SwingPanel(background = s.canvas.fill, factory = { s.canvas }, modifier = modifier)
+        val near = with(LocalDensity.current) { EDGE_NEAR.toPx() }
+        Box(modifier.onSizeChanged { s.areaChanged(it.width, it.height) }.onPointerEvent(PointerEventType.Move) { e ->
+            if (s.full && !s.leased && !s.edgeRail && (e.changes.firstOrNull()?.position?.x ?: near) < near) s.edgeRail = true
+        }) {
+            if (s.canvas.shown) SwingPanel(background = s.codeFill, factory = { s.canvas }, modifier = Modifier.fillMaxSize())
+            else {
+                if (s.test) TestStreamNote()
+                else Upload(listOf(Act("File", icon = Icons.file) { s.chooseFile() }, Act("Folder", icon = Icons.folder) { s.chooseFolder() }),
+                    s.items.map { UploadItem(it.key, it.name, if (it.dir) "${it.files} ${if (it.files == 1) "file" else "files"}" else Readout.bytes(it.size), it.dir) },
+                    enabled = !s.sending, landscape = false, onRemove = { s.remove(it) }, onClear = { s.clearPicks() },
+                    column = 576.dp, under = { ChoiceLine(s.choiceLine) })
+                if (s.dragOver) DropOutline()
+            }
+        }
     }
 
     @Composable
@@ -151,8 +180,36 @@ class DesktopSend(private val app: App) : SendHost {
     }
 }
 
+// ai: how near the code area's left edge the pointer shows full screen's rail
+private val EDGE_NEAR = 24.dp
+
+// ai: what goes, 12 dp under the upload's card (SendState.choiceLine; 2026-11-01, AWT's until 2026-11-02): the name
+// ai: semibold, its stem cut first and its ending kept, then its files and the bytes that go, regular and muted, centred;
+// ai: its line kept while the pick is walked or the bundle made
+@Composable
+private fun ChoiceLine(line: Pair<String, String>?) {
+    val name = MaterialTheme.typography.labelLarge
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+        if (line == null) Text("", style = name)
+        else {
+            val (stem, end) = Readout.nameParts(line.first)
+            Text(stem, style = name, color = Fg, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            Text(end, style = name, color = Fg, maxLines = 1)
+            Text(line.second, style = name.copy(fontWeight = FontWeight.Normal), color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+// ai: a drag over the window: the web's dashed outline, 12 dp in
+@Composable
+private fun DropOutline() = Canvas(Modifier.fillMaxSize()) {
+    val inset = 12.dp.toPx()
+    drawRect(Fg, topLeft = Offset(inset, inset), size = Size(size.width - 2 * inset, size.height - 2 * inset),
+        style = Stroke(3.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(9.dp.toPx(), 6.dp.toPx()))))
+}
+
 // ai: Full screen's rail (2026-10-23): the collapsed column over the screen's left edge while the pointer is within
-// ai: EDGE_NEAR of it (SendState.CodeCanvas) or over the rail, in a window of its own (nothing of Compose draws over the
+// ai: EDGE_NEAR of it (the code area's, or the canvas's while it shows: CodeCanvas) or over the rail, in a window of its own (nothing of Compose draws over the
 // ai: code's heavyweight canvas), over the code rather than beside it so the area and the format stay as they are. A
 // ai: popup (override-redirect on X11): the window manager neither places it (a dialog it centres on its owner at
 // ai: first) nor shades it, nor gives it the focus full screen holds. Mapped for as long as full screen lasts, parked
@@ -166,8 +223,10 @@ private fun EdgeRail(h: DesktopSend, s: SendState, owner: ComposeWindow) {
         create = { ComposeDialog(owner, Dialog.ModalityType.MODELESS).apply { type = Window.Type.POPUP; isUndecorated = true; isResizable = false; focusableWindowState = false } },
         dispose = ComposeDialog::dispose,
         update = { d ->
-            val h = maxOf(1, s.canvas.height)
-            if (shown && s.canvas.isShowing) s.canvas.locationOnScreen.let { d.setBounds(it.x, it.y, 57, h) } else d.setBounds(-10000, -10000, 57, h)
+            // ai: full screen's code area is the window's whole content
+            val c = owner.contentPane
+            val h = maxOf(1, c.height)
+            if (shown && c.isShowing) c.locationOnScreen.let { d.setBounds(it.x, it.y, 57, h) } else d.setBounds(-10000, -10000, 57, h)
         }) {
         LaunchedEffect(shown) {
             while (shown) {

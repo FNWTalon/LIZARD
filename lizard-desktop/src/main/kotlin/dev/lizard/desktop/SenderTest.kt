@@ -94,7 +94,7 @@ class SenderTest private constructor(private val secs: Double, private val kv: M
         while (!s.presenting) {
             (s.phase as? SendState.Phase.Error)?.let { fail(it.why) }
             if (s.phase == SendState.Phase.Idle) fail("the sender did not start")
-            if (System.nanoTime() - t0 > START_SECS * 1e9) fail("no presenter after ${START_SECS.toInt()} s (${s.phase}, the area ${s.areaW} x ${s.areaH} device px, the canvas ${if (s.canvas.isShowing) "shown" else "not shown"})")
+            if (System.nanoTime() - t0 > START_SECS * 1e9) fail("no presenter after ${START_SECS.toInt()} s (${s.phase}, the area ${s.areaW} x ${s.areaH} device px, the canvas's window ${if (s.canvas.isDisplayable) "made" else "not made"})")
             delay(50)
         }
         val begun = System.nanoTime()

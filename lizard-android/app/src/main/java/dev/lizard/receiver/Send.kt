@@ -660,11 +660,7 @@ internal class AndroidSend(private val a: MainActivity) : SendHost {
                 s.items.map { UploadItem(it.key, it.name, if (it.dir) "${it.files} ${if (it.files == 1) "file" else "files"}" else Readout.bytes(it.size), it.dir) },
                 enabled = !sending, landscape = maxWidth > maxHeight || LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE,
                 onRemove = { s.remove(it) }, onClear = { s.clear() })
-            else if (!shown) Column(Modifier.fillMaxSize().background(Soft), verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
-                horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.file, contentDescription = null, Modifier.size(24.dp), tint = Muted)
-                Text("Test stream", style = MaterialTheme.typography.bodyMedium, color = Muted, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 16.dp))
-            }
+            else if (!shown) TestStreamNote()
         }
     }
 
