@@ -213,29 +213,6 @@ static void box_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r,
   // ai: (at most 255 (2r + 1)^2, 57,375 at r 7, and a sum less its leaving row before the entering one is added); the
   // ai: rounded division by kk a multiply and a shift, exact for sums under 2^32 / kk^2 (85,000 and more at r 7)
   if (r <= 7) {
-#ifdef OB_NEON
-    // ai: arm64: a row's rw + 2r pixels its sums read, the clamped ones included, copied once into acc (rw ints, free
-    // ai: until the column sums; rw >= 16 holds them), and the sums taken from the copy sixteen columns a step, the
-    // ai: last step back over columns already summed (the same sums): no clamped read and no column summed alone
-    if (rw >= 16) {
-      uint8_t *buf = (uint8_t *)acc;
-      const int lo = x0 - r, n = rw + 2 * r, a0 = lo < 0 ? -lo : 0, a1 = (x0 + rw + r <= w ? x0 + rw + r : w) - lo;
-      for (int j = 0; j < rows; j++) {
-        const int sy = y0 - r + j;
-        const uint8_t *srow = src + (size_t)(sy < 0 ? 0 : sy >= h ? h - 1 : sy) * w;
-        uint16_t *t = tmp + (size_t)j * rw;
-        memset(buf, srow[0], (size_t)a0); memcpy(buf + a0, srow + lo + a0, (size_t)(a1 - a0)); memset(buf + a1, srow[w - 1], (size_t)(n - a1));
-        for (int x = 0;; x += 16) {
-          if (x + 16 > rw) x = rw - 16;
-          uint16x8_t s0 = vdupq_n_u16(0), s1 = s0;
-          for (int sft = 0; sft <= 2 * r; sft++) { const uint8x16_t b = vld1q_u8(buf + x + sft); s0 = vaddw_u8(s0, vget_low_u8(b)); s1 = vaddw_high_u8(s1, b); }
-          vst1q_u16(t + x, s0); vst1q_u16(t + x + 8, s1);
-          if (x + 16 >= rw) break;
-        }
-      }
-    } else
-#endif
-    {
     // the columns whose vector reads x0 + x - r .. x0 + x + r + 15 all lie in the row: x from xa while x <= xz
     const int xa = r - x0 > 0 ? r - x0 : 0, xz = w - 16 - r - x0;
     for (int j = 0; j < rows; j++) {
@@ -251,7 +228,6 @@ static void box_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r,
       }
       for (; x < rw; x++) { int a = 0; for (int i = x0 + x - r; i <= x0 + x + r; i++) a += srow[i < 0 ? 0 : i >= w ? w - 1 : i]; t[x] = (uint16_t)a; }
     }
-    }
     uint16_t *col = (uint16_t *)acc;   // rw ints hold rw 16-bit sums twice over
     int x = 0;
     for (; x + 8 <= rw; x += 8) {
@@ -264,22 +240,6 @@ static void box_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r,
     const unsigned half = (unsigned)kk / 2;
     for (int y = y0; y < y1; y++) {
       uint8_t *o = out + (size_t)y * w + x0;
-#ifdef OB_NEON
-      // ai: eight bytes a step, the same product in 64-bit lanes (M under 2^32), its high half; the row's last eight
-      // ai: again where the row is not whole steps (the same bytes)
-      if (rw >= 8) {
-        const uint32x4_t vh = vdupq_n_u32(half), vm = vdupq_n_u32((uint32_t)M);
-        for (int xx = 0;; xx += 8) {
-          if (xx + 8 > rw) xx = rw - 8;
-          const uint16x8_t c = vld1q_u16(col + xx);
-          const uint32x4_t lo = vaddw_u16(vh, vget_low_u16(c)), hi = vaddw_high_u16(vh, c);
-          const uint32x4_t qlo = vcombine_u32(vshrn_n_u64(vmull_u32(vget_low_u32(lo), vget_low_u32(vm)), 32), vshrn_n_u64(vmull_high_u32(lo, vm), 32));
-          const uint32x4_t qhi = vcombine_u32(vshrn_n_u64(vmull_u32(vget_low_u32(hi), vget_low_u32(vm)), 32), vshrn_n_u64(vmull_high_u32(hi, vm), 32));
-          vst1_u8(o + xx, vmovn_u16(vcombine_u16(vmovn_u32(qlo), vmovn_u32(qhi))));
-          if (xx + 8 >= rw) break;
-        }
-      } else
-#endif
       for (int xx = 0; xx < rw; xx++) o[xx] = (uint8_t)(((uint64_t)(col[xx] + half) * M) >> 32);
       if (y + 1 == y1) break;
       const uint16_t *ta = tmp + (size_t)(y - y0 + 2 * r + 1) * rw, *ts = tmp + (size_t)(y - y0) * rw;
@@ -312,6 +272,65 @@ static void box_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r,
     for (int x = 0; x < rw; x++) acc[x] += ta[x] - ts[x];
   }
 }
+
+#ifdef OB_NEON
+// ai: arm64's box_blur_rect for r <= 7 and rectangles 16 or more wide: the same integer sums, so the same bytes, with no
+// ai: rectangle's worth of row sums: each row's sums are made as the column sums take them in, into a ring of 2r + 2
+// ai: rows (ring: (2r + 2) rw), and a row's output and its column sums' step are one pass, from one copy of the column
+// ai: sums into the other (col: 2 rw, so the last step's columns, back over ones already done, give the same values).
+// ai: A row's sums sixteen columns a step from its rw + 2r pixels, through buf (rw + 2r bytes) only where a read is
+// ai: clamped; the last step back over columns already summed.
+static inline __attribute__((always_inline)) void msh_row_sums(const uint8_t *src, int w, int h, int r, int x0, int rw, int sy, uint16_t *t, uint8_t *buf) {
+  const int lo = x0 - r, n = rw + 2 * r;
+  const uint8_t *srow = src + (size_t)(sy < 0 ? 0 : sy >= h ? h - 1 : sy) * w, *p = srow + lo;
+  if (lo < 0 || lo + n > w) {
+    const int a0 = lo < 0 ? -lo : 0, a1 = (lo + n <= w ? lo + n : w) - lo;
+    memset(buf, srow[0], (size_t)a0); memcpy(buf + a0, srow + lo + a0, (size_t)(a1 - a0)); memset(buf + a1, srow[w - 1], (size_t)(n - a1));
+    p = buf;
+  }
+  for (int x = 0;; x += 16) {
+    if (x + 16 > rw) x = rw - 16;
+    uint16x8_t s0 = vdupq_n_u16(0), s1 = s0;
+    for (int sft = 0; sft <= 2 * r; sft++) { const uint8x16_t b = vld1q_u8(p + x + sft); s0 = vaddw_u8(s0, vget_low_u8(b)); s1 = vaddw_high_u8(s1, b); }
+    vst1q_u16(t + x, s0); vst1q_u16(t + x + 8, s1);
+    if (x + 16 >= rw) break;
+  }
+}
+static void msh_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r, int x0, int y0, int x1, int y1, uint16_t *ring, uint16_t *col, uint8_t *buf) {
+  const int rw = x1 - x0, R = 2 * r + 2, kk = (2 * r + 1) * (2 * r + 1);
+  for (int j = 0; j <= 2 * r; j++) msh_row_sums(src, w, h, r, x0, rw, y0 - r + j, ring + (size_t)j * rw, buf);
+  uint16_t *ca = col, *cb = col + rw;
+  for (int x = 0;; x += 8) {
+    if (x + 8 > rw) x = rw - 8;
+    uint16x8_t c = vld1q_u16(ring + x);
+    for (int j = 1; j <= 2 * r; j++) c = vaddq_u16(c, vld1q_u16(ring + (size_t)j * rw + x));
+    vst1q_u16(ca + x, c);
+    if (x + 8 >= rw) break;
+  }
+  // ai: the rounded division by kk: (c + kk / 2) M >> 32 in 64-bit lanes (M under 2^32), its high half (a 16-bit
+  // ai: multiply's high half and a shift, exact at every radius, measured no faster)
+  const uint64_t M = ((uint64_t)1 << 32) / (uint64_t)kk + 1;
+  const uint32x4_t vh = vdupq_n_u32((uint32_t)kk / 2), vm = vdupq_n_u32((uint32_t)M);
+  for (int y = y0; y < y1; y++) {
+    uint8_t *o = out + (size_t)y * w + x0;
+    const int last = y + 1 == y1, ja = y - y0 + 2 * r + 1;
+    uint16_t *ta = ring + (size_t)(ja % R) * rw;
+    const uint16_t *ts = ring + (size_t)((y - y0) % R) * rw;
+    if (!last) msh_row_sums(src, w, h, r, x0, rw, y0 - r + ja, ta, buf);
+    for (int x = 0;; x += 8) {
+      if (x + 8 > rw) x = rw - 8;
+      const uint16x8_t c = vld1q_u16(ca + x);
+      const uint32x4_t lo = vaddw_u16(vh, vget_low_u16(c)), hi = vaddw_high_u16(vh, c);
+      const uint32x4_t qlo = vcombine_u32(vshrn_n_u64(vmull_u32(vget_low_u32(lo), vget_low_u32(vm)), 32), vshrn_n_u64(vmull_high_u32(lo, vm), 32));
+      const uint32x4_t qhi = vcombine_u32(vshrn_n_u64(vmull_u32(vget_low_u32(hi), vget_low_u32(vm)), 32), vshrn_n_u64(vmull_high_u32(hi, vm), 32));
+      vst1_u8(o + x, vmovn_u16(vcombine_u16(vmovn_u32(qlo), vmovn_u32(qhi))));
+      if (!last) vst1q_u16(cb + x, vaddq_u16(vsubq_u16(c, vld1q_u16(ts + x)), vld1q_u16(ta + x)));
+      if (x + 8 >= rw) break;
+    }
+    uint16_t *sw = ca; ca = cb; cb = sw;
+  }
+}
+#endif
 
 typedef struct { float x, y, unit; int hits; } cand_t;
 enum { MAX_CAND = 1024 };
@@ -409,14 +428,17 @@ static void corner_coords(const ob_layout_t *L, float *src) {
 // ai: point's four pixels are read as two 16-bit pairs through general registers and divided in lanes where sample4
 // ai: reads sixteen bytes and sixteen table entries; the clamps, the truncation and the blend are sample()'s. On an
 // ai: S26 prime core 1.19x sample4 alone and 1.54x behind a homography's divisions, as the mesh reads it (a double
-// ai: multiply by 1/255, the same floats over all 256 bytes, and lane loads of the pairs were slower).
+// ai: multiply by 1/255, the same floats over all 256 bytes, and lane loads of the pairs were slower). The clamps are
+// ai: FMAX and FMIN (a NaN passes both, as it passes sample()'s compares; x - 0.5 is never -0), the bytes made floats
+// ai: by TBX under 0x4B (2^23 + byte, less 2^23): each about 3% of refine_node's time. Slower and gone: the division
+// ai: by 255 as a product and one fused correction step (the same floats over all 256 bytes, 5% slower: the divider
+// ai: is not the bound).
 static inline __attribute__((always_inline)) float32x4_t msh_sample4(const image_t *im, float32x4_t x, float32x4_t y) {
   if (!im->lin) return vreinterpretq_f32_s32(sample4(im, vreinterpretq_s32_f32(x), vreinterpretq_s32_f32(y)));
   const float32x4_t half = vdupq_n_f32(0.5f), zero = vdupq_n_f32(0), one = vdupq_n_f32(1), k255 = vdupq_n_f32(255.0f);
   const float32x4_t wm = vdupq_n_f32(im->w - 1.001f), hm = vdupq_n_f32(im->h - 1.001f);
   x = vsubq_f32(x, half); y = vsubq_f32(y, half);
-  x = vbslq_f32(vcltq_f32(x, zero), zero, x); x = vbslq_f32(vcltq_f32(wm, x), wm, x);
-  y = vbslq_f32(vcltq_f32(y, zero), zero, y); y = vbslq_f32(vcltq_f32(hm, y), hm, y);
+  x = vminq_f32(vmaxq_f32(x, zero), wm); y = vminq_f32(vmaxq_f32(y, zero), hm);
   const int32x4_t xi = vcvtq_s32_f32(x), yi = vcvtq_s32_f32(y);
   const float32x4_t fx = vsubq_f32(x, vcvtq_f32_s32(xi)), fy = vsubq_f32(y, vcvtq_f32_s32(yi));
   const int32x4_t idx = vmlaq_s32(xi, yi, vdupq_n_s32(im->w));
@@ -427,10 +449,14 @@ static inline __attribute__((always_inline)) float32x4_t msh_sample4(const image
   memcpy(hp + 4, p0 + w, 2); memcpy(hp + 5, p1 + w, 2); memcpy(hp + 6, p2 + w, 2); memcpy(hp + 7, p3 + w, 2);
   const uint64_t ab = (uint64_t)hp[0] | (uint64_t)hp[1] << 16 | (uint64_t)hp[2] << 32 | (uint64_t)hp[3] << 48;
   const uint64_t cd = (uint64_t)hp[4] | (uint64_t)hp[5] << 16 | (uint64_t)hp[6] << 32 | (uint64_t)hp[7] << 48;
-  const uint16x8_t v = vreinterpretq_u16_u64(vcombine_u64(vcreate_u64(ab), vcreate_u64(cd)));
-  const uint16x8_t lo = vandq_u16(v, vdupq_n_u16(0xff)), hi = vshrq_n_u16(v, 8);   // a and c in lo, b and d in hi
-  const float32x4_t a = vdivq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(lo))), k255), c = vdivq_f32(vcvtq_f32_u32(vmovl_high_u16(lo)), k255);
-  const float32x4_t b = vdivq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(hi))), k255), d = vdivq_f32(vcvtq_f32_u32(vmovl_high_u16(hi)), k255);
+  const uint8x16_t v = vreinterpretq_u8_u64(vcombine_u64(vcreate_u64(ab), vcreate_u64(cd)));
+  // ai: a point's pixel bytes (a, b at y; c, d at y + 1) moved under 0x4B by TBX: 2^23 + byte as a float, less 2^23
+  static const uint8_t IA[16] = { 0, 0xf0, 0xf0, 0xf0, 2, 0xf0, 0xf0, 0xf0, 4, 0xf0, 0xf0, 0xf0, 6, 0xf0, 0xf0, 0xf0 };   // ai: 0xf0 + 9 still past the table
+  const uint8x16_t k4b = vreinterpretq_u8_u32(vdupq_n_u32(0x4B000000u)), ia = vld1q_u8(IA);
+  const float32x4_t k23 = vdupq_n_f32(8388608.0f);
+#define MSH_BYTE(o) vsubq_f32(vreinterpretq_f32_u8(vqtbx1q_u8(k4b, v, vaddq_u8(ia, vdupq_n_u8(o)))), k23)
+  const float32x4_t a = vdivq_f32(MSH_BYTE(0), k255), b = vdivq_f32(MSH_BYTE(1), k255), c = vdivq_f32(MSH_BYTE(8), k255), d = vdivq_f32(MSH_BYTE(9), k255);
+#undef MSH_BYTE
   const float32x4_t top = vaddq_f32(a, vmulq_f32(vsubq_f32(b, a), fx)), bot = vaddq_f32(c, vmulq_f32(vsubq_f32(d, c), fx));
   return vaddq_f32(vmulq_f32(top, vsubq_f32(one, fy)), vmulq_f32(bot, fy));
 }
@@ -1073,7 +1099,7 @@ static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H,
     int bx = 0, by = 0;
     {
       // ai: the correlations two offsets a vector of doubles, each lane the scalar's operations; the peak then taken
-      // ai: in the scalar's order
+      // ai: in the scalar's order (the division by 256 as a multiply by 2^-8, the same doubles, measured no faster)
       const float64x2_t k256 = vdupq_n_f64(TS * TS), ktm = vdupq_n_f64(1 - (double)tm), two = vdupq_n_f64(2), tnd = vdupq_n_f64(tn), vmin = vdupq_n_f64(1e-12), zero = vdupq_n_f64(0);
       const int l25 = j25 - i25 + 1, l6 = j6 - i6 + 1;
 #define MBOX(I, x, y, s) vaddq_f64(vsubq_f64(vsubq_f64(vld1q_f64((I) + ((y) + (s)) * W1 + (x) + (s)), vld1q_f64((I) + (y) * W1 + (x) + (s))), vld1q_f64((I) + ((y) + (s)) * W1 + (x))), vld1q_f64((I) + (y) * W1 + (x)))
@@ -3496,12 +3522,18 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
 // and 3 outside, the coarse search's module and a half included, through H and a few pixels wider. Blurring the
 // whole frame instead cost 1.5 to 1.9 ms of a 3 to 4 ms acquisition at 1080; outside the band nothing reads it,
 // and what is there is the image itself.
-static uint8_t *border_blur(const ob_layout_t *L, const homo_t *H, const uint8_t *img, int iw, int ih, int r) {
-  uint8_t *out = malloc((size_t)iw * ih);
+// ai: spare: a buffer of iw x ih bytes to write the copy into (arm64 hands it the binarized picture's, whose pages are
+// ai: already the process's: a fresh one's first touches were most of the copy's time on an S26), or NULL for a new one
+static uint8_t *border_blur(const ob_layout_t *L, const homo_t *H, const uint8_t *img, int iw, int ih, int r, uint8_t *spare) {
+  uint8_t *out = spare ? spare : malloc((size_t)iw * ih);
   if (!out) return NULL;
   memcpy(out, img, (size_t)iw * ih);
   const float D = 16, Mo = 3, W = (float)L->w, Hh = (float)L->h;
   const float band[4][4] = { { -Mo, -Mo, W + Mo, D }, { -Mo, Hh - D, W + Mo, Hh + Mo }, { -Mo, -Mo, D, Hh + Mo }, { W - D, -Mo, W + Mo, Hh + Mo } };
+#ifdef OB_NEON
+  // ai: msh_blur_rect's ring, column sums and row copy, for rectangles up to the image's width
+  uint16_t *ring = r <= 7 ? malloc(((size_t)(2 * r + 4) * iw) * sizeof(uint16_t) + (size_t)iw + 2 * r) : NULL;
+#endif
   for (int k = 0; k < 4; k++) {
     float lo[2] = { 1e9f, 1e9f }, hi[2] = { -1e9f, -1e9f };
     for (int c = 0; c < 4; c++) {
@@ -3516,11 +3548,20 @@ static uint8_t *border_blur(const ob_layout_t *L, const homo_t *H, const uint8_t
     if (x1 > iw) x1 = iw;
     if (y1 > ih) y1 = ih;
     if (x1 <= x0 || y1 <= y0) continue;
+#ifdef OB_NEON
+    if (ring && x1 - x0 >= 16) {
+      msh_blur_rect(img, out, iw, ih, r, x0, y0, x1, y1, ring, ring + (size_t)(2 * r + 2) * iw, (uint8_t *)(ring + (size_t)(2 * r + 4) * iw));
+      continue;
+    }
+#endif
     uint16_t *tmp = malloc((size_t)(x1 - x0) * (y1 - y0 + 2 * r) * sizeof(uint16_t));
     int *acc = malloc((size_t)(x1 - x0) * sizeof(int));
     if (tmp && acc) box_blur_rect(img, out, iw, ih, r, x0, y0, x1, y1, tmp, acc);
     free(tmp); free(acc);
   }
+#ifdef OB_NEON
+  free(ring);
+#endif
   return out;
 }
 
@@ -3548,17 +3589,20 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
     PROF(PROF_FINDERS, got = find_frame(Ls, nL, &im, bin, thin_quad, &thin_orient, &thin_sc, which));
     L = Ls[*which];
   }
+#ifndef OB_NEON
   free(bin);
-  if (!got) return 0;
+  bin = NULL;
+#endif
+  if (!got) { free(bin); return 0; }
 
   double tm = ob_now_ms();
   float src[8];
   corner_coords(L, src);
   homo_t H;
   // The thin frame's finder has already settled rotation: it scores the coded track under every hypothesis.
-  if (!homography(src, thin_quad, &H)) return 0;
+  if (!homography(src, thin_quad, &H)) { free(bin); return 0; }
   memcpy(res->quad, thin_quad, sizeof thin_quad);
-  if (thin_orient < 0 || 2.0f + thin_sc < 2.0f) return 0;
+  if (thin_orient < 0 || 2.0f + thin_sc < 2.0f) { free(bin); return 0; }
   res->orient = thin_orient;
 
   // The node templates read the image under a box a module wide once a module is several pixels (border_blur). The
@@ -3571,7 +3615,7 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
     mpx += hypotf(res->quad[2 * k1] - res->quad[2 * k], res->quad[2 * k1 + 1] - res->quad[2 * k + 1]) / hypotf(src[2 * k1] - src[2 * k], src[2 * k1 + 1] - src[2 * k + 1]) / 4;
   }
   // ai: a box radius of at least one pixel, tested before the conversion (a NaN mpx blurs nothing, as before)
-  if (mpx / 2 >= 1 && (blurred = border_blur(L, &H, img, iw, ih, (int)(mpx / 2)))) rim.px = blurred;
+  if (mpx / 2 >= 1 && (blurred = border_blur(L, &H, img, iw, ih, (int)(mpx / 2), bin))) { rim.px = blurred; bin = NULL; }
   // Finders first, so the homography the marks are measured against is as good as four
   // points can make it.
   int nn = L->nx * L->ny;
@@ -3613,7 +3657,7 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
       refine_node(L, &rim, &H, order[k] % L->nx, order[k] / L->nx, nodes, have_alm ? &alm : 0);
     }
   }
-  free(blurred);
+  free(blurred); free(bin);
   // the border is all there is to hang the mesh on
   if (mesh) {
     if (have_alm) border_fill_anchors(L, &H, iw, ih, nodes, anchors, mpx);

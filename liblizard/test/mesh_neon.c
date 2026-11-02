@@ -15,7 +15,7 @@ static uint32_t rnd(void) { rs = rs * 1664525u + 1013904223u; return rs >> 8; }
 static float frand(void) { return (float)(rnd() & 0xffff) / 65536.0f; }
 int main(void) {
   const int iw = 1280, ih = 960, sides[3] = { 158, 286, 542 };
-  uint8_t *px = malloc((size_t)iw * ih);
+  uint8_t *px = malloc((size_t)iw * ih), *spare = malloc((size_t)iw * ih);   // ai: spare: border_blur's copy, as acquire_core hands it one
   int nfound = 0, ngood = 0, nnodes = 0;
   double tref = 0, tanc = 0, tblur = 0, tfit = 0;
   for (int t = 0; t < 36; t++) {
@@ -81,10 +81,9 @@ int main(void) {
     const int f2 = anchor_find(&L, &im, &H0, &lm, A);
     mix(&f2, sizeof f2); mix(A, sizeof A);
     t0 = ob_now_ms();
-    uint8_t *bl = border_blur(&L, &H0, px, iw, ih, 1 + t % 7);
+    uint8_t *bl = border_blur(&L, &H0, px, iw, ih, 1 + t % 7, spare);
     tblur += ob_now_ms() - t0;
     mix(bl, (size_t)iw * ih);
-    free(bl);
     for (int k = 0; k < 4096; k += 4) {
       float X[4], Y[4], o[4];
       for (int l = 0; l < 4; l++) {
@@ -125,7 +124,7 @@ int main(void) {
     free(nodes);
     ob_layout_free(&L);
   }
-  free(px);
+  free(px); free(spare);
   printf("mesh hash %016llx (nodes %d, trusted %d, anchors found %d of %d)\n", (unsigned long long)hs, nnodes, ngood, nfound, 36 * OB_ANCH_K * OB_ANCH_K);
   printf("ms: nodes %.2f, anchors %.2f, blur %.2f, lens fits %.2f\n", tref, tanc, tblur, tfit);
   return 0;
