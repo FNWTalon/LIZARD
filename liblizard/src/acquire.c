@@ -213,6 +213,29 @@ static void box_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r,
   // ai: (at most 255 (2r + 1)^2, 57,375 at r 7, and a sum less its leaving row before the entering one is added); the
   // ai: rounded division by kk a multiply and a shift, exact for sums under 2^32 / kk^2 (85,000 and more at r 7)
   if (r <= 7) {
+#ifdef OB_NEON
+    // ai: arm64: a row's rw + 2r pixels its sums read, the clamped ones included, copied once into acc (rw ints, free
+    // ai: until the column sums; rw >= 16 holds them), and the sums taken from the copy sixteen columns a step, the
+    // ai: last step back over columns already summed (the same sums): no clamped read and no column summed alone
+    if (rw >= 16) {
+      uint8_t *buf = (uint8_t *)acc;
+      const int lo = x0 - r, n = rw + 2 * r, a0 = lo < 0 ? -lo : 0, a1 = (x0 + rw + r <= w ? x0 + rw + r : w) - lo;
+      for (int j = 0; j < rows; j++) {
+        const int sy = y0 - r + j;
+        const uint8_t *srow = src + (size_t)(sy < 0 ? 0 : sy >= h ? h - 1 : sy) * w;
+        uint16_t *t = tmp + (size_t)j * rw;
+        memset(buf, srow[0], (size_t)a0); memcpy(buf + a0, srow + lo + a0, (size_t)(a1 - a0)); memset(buf + a1, srow[w - 1], (size_t)(n - a1));
+        for (int x = 0;; x += 16) {
+          if (x + 16 > rw) x = rw - 16;
+          uint16x8_t s0 = vdupq_n_u16(0), s1 = s0;
+          for (int sft = 0; sft <= 2 * r; sft++) { const uint8x16_t b = vld1q_u8(buf + x + sft); s0 = vaddw_u8(s0, vget_low_u8(b)); s1 = vaddw_high_u8(s1, b); }
+          vst1q_u16(t + x, s0); vst1q_u16(t + x + 8, s1);
+          if (x + 16 >= rw) break;
+        }
+      }
+    } else
+#endif
+    {
     // the columns whose vector reads x0 + x - r .. x0 + x + r + 15 all lie in the row: x from xa while x <= xz
     const int xa = r - x0 > 0 ? r - x0 : 0, xz = w - 16 - r - x0;
     for (int j = 0; j < rows; j++) {
@@ -228,6 +251,7 @@ static void box_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r,
       }
       for (; x < rw; x++) { int a = 0; for (int i = x0 + x - r; i <= x0 + x + r; i++) a += srow[i < 0 ? 0 : i >= w ? w - 1 : i]; t[x] = (uint16_t)a; }
     }
+    }
     uint16_t *col = (uint16_t *)acc;   // rw ints hold rw 16-bit sums twice over
     int x = 0;
     for (; x + 8 <= rw; x += 8) {
@@ -240,6 +264,22 @@ static void box_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r,
     const unsigned half = (unsigned)kk / 2;
     for (int y = y0; y < y1; y++) {
       uint8_t *o = out + (size_t)y * w + x0;
+#ifdef OB_NEON
+      // ai: eight bytes a step, the same product in 64-bit lanes (M under 2^32), its high half; the row's last eight
+      // ai: again where the row is not whole steps (the same bytes)
+      if (rw >= 8) {
+        const uint32x4_t vh = vdupq_n_u32(half), vm = vdupq_n_u32((uint32_t)M);
+        for (int xx = 0;; xx += 8) {
+          if (xx + 8 > rw) xx = rw - 8;
+          const uint16x8_t c = vld1q_u16(col + xx);
+          const uint32x4_t lo = vaddw_u16(vh, vget_low_u16(c)), hi = vaddw_high_u16(vh, c);
+          const uint32x4_t qlo = vcombine_u32(vshrn_n_u64(vmull_u32(vget_low_u32(lo), vget_low_u32(vm)), 32), vshrn_n_u64(vmull_high_u32(lo, vm), 32));
+          const uint32x4_t qhi = vcombine_u32(vshrn_n_u64(vmull_u32(vget_low_u32(hi), vget_low_u32(vm)), 32), vshrn_n_u64(vmull_high_u32(hi, vm), 32));
+          vst1_u8(o + xx, vmovn_u16(vcombine_u16(vmovn_u32(qlo), vmovn_u32(qhi))));
+          if (xx + 8 >= rw) break;
+        }
+      } else
+#endif
       for (int xx = 0; xx < rw; xx++) o[xx] = (uint8_t)(((uint64_t)(col[xx] + half) * M) >> 32);
       if (y + 1 == y1) break;
       const uint16_t *ta = tmp + (size_t)(y - y0 + 2 * r + 1) * rw, *ts = tmp + (size_t)(y - y0) * rw;
@@ -362,6 +402,76 @@ static void corner_coords(const ob_layout_t *L, float *src) {
 
 // ---------------------------------------------------------------- registration mesh
 
+#ifdef OB_NEON
+// ai: arm64's registration mesh (refine_node, anchor_find) in NEON's own instructions, each float its scalar twin's:
+// ai: the same operations in the same order, lane for lane, none fused. msh_sample4 is sample() at four points: at
+// ai: gamma 1 (image_t lin) a byte's table entry is the byte over 255 in one IEEE division (ob_image_init), so a
+// ai: point's four pixels are read as two 16-bit pairs through general registers and divided in lanes where sample4
+// ai: reads sixteen bytes and sixteen table entries; the clamps, the truncation and the blend are sample()'s. On an
+// ai: S26 prime core 1.19x sample4 alone and 1.54x behind a homography's divisions, as the mesh reads it (a double
+// ai: multiply by 1/255, the same floats over all 256 bytes, and lane loads of the pairs were slower).
+static inline __attribute__((always_inline)) float32x4_t msh_sample4(const image_t *im, float32x4_t x, float32x4_t y) {
+  if (!im->lin) return vreinterpretq_f32_s32(sample4(im, vreinterpretq_s32_f32(x), vreinterpretq_s32_f32(y)));
+  const float32x4_t half = vdupq_n_f32(0.5f), zero = vdupq_n_f32(0), one = vdupq_n_f32(1), k255 = vdupq_n_f32(255.0f);
+  const float32x4_t wm = vdupq_n_f32(im->w - 1.001f), hm = vdupq_n_f32(im->h - 1.001f);
+  x = vsubq_f32(x, half); y = vsubq_f32(y, half);
+  x = vbslq_f32(vcltq_f32(x, zero), zero, x); x = vbslq_f32(vcltq_f32(wm, x), wm, x);
+  y = vbslq_f32(vcltq_f32(y, zero), zero, y); y = vbslq_f32(vcltq_f32(hm, y), hm, y);
+  const int32x4_t xi = vcvtq_s32_f32(x), yi = vcvtq_s32_f32(y);
+  const float32x4_t fx = vsubq_f32(x, vcvtq_f32_s32(xi)), fy = vsubq_f32(y, vcvtq_f32_s32(yi));
+  const int32x4_t idx = vmlaq_s32(xi, yi, vdupq_n_s32(im->w));
+  const uint8_t *p0 = im->px + vgetq_lane_s32(idx, 0), *p1 = im->px + vgetq_lane_s32(idx, 1), *p2 = im->px + vgetq_lane_s32(idx, 2), *p3 = im->px + vgetq_lane_s32(idx, 3);
+  const int w = im->w;
+  uint16_t hp[8];
+  memcpy(hp + 0, p0, 2); memcpy(hp + 1, p1, 2); memcpy(hp + 2, p2, 2); memcpy(hp + 3, p3, 2);
+  memcpy(hp + 4, p0 + w, 2); memcpy(hp + 5, p1 + w, 2); memcpy(hp + 6, p2 + w, 2); memcpy(hp + 7, p3 + w, 2);
+  const uint64_t ab = (uint64_t)hp[0] | (uint64_t)hp[1] << 16 | (uint64_t)hp[2] << 32 | (uint64_t)hp[3] << 48;
+  const uint64_t cd = (uint64_t)hp[4] | (uint64_t)hp[5] << 16 | (uint64_t)hp[6] << 32 | (uint64_t)hp[7] << 48;
+  const uint16x8_t v = vreinterpretq_u16_u64(vcombine_u64(vcreate_u64(ab), vcreate_u64(cd)));
+  const uint16x8_t lo = vandq_u16(v, vdupq_n_u16(0xff)), hi = vshrq_n_u16(v, 8);   // a and c in lo, b and d in hi
+  const float32x4_t a = vdivq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(lo))), k255), c = vdivq_f32(vcvtq_f32_u32(vmovl_high_u16(lo)), k255);
+  const float32x4_t b = vdivq_f32(vcvtq_f32_u32(vmovl_u16(vget_low_u16(hi))), k255), d = vdivq_f32(vcvtq_f32_u32(vmovl_high_u16(hi)), k255);
+  const float32x4_t top = vaddq_f32(a, vmulq_f32(vsubq_f32(b, a), fx)), bot = vaddq_f32(c, vmulq_f32(vsubq_f32(d, c), fx));
+  return vaddq_f32(vmulq_f32(top, vsubq_f32(one, fy)), vmulq_f32(bot, fy));
+}
+// ai: project() at four points, its operations in its order
+static inline void msh_project4(const homo_t *H, float32x4_t x, float32x4_t y, float32x4_t *u, float32x4_t *v) {
+  const float *h = H->h;
+  const float32x4_t w = vaddq_f32(vaddq_f32(vmulq_f32(vdupq_n_f32(h[6]), x), vmulq_f32(vdupq_n_f32(h[7]), y)), vdupq_n_f32(1));
+  *u = vdivq_f32(vaddq_f32(vaddq_f32(vmulq_f32(vdupq_n_f32(h[0]), x), vmulq_f32(vdupq_n_f32(h[1]), y)), vdupq_n_f32(h[2])), w);
+  *v = vdivq_f32(vaddq_f32(vaddq_f32(vmulq_f32(vdupq_n_f32(h[3]), x), vmulq_f32(vdupq_n_f32(h[4]), y)), vdupq_n_f32(h[5])), w);
+}
+// ai: node_ncc at G (4 or 8) offsets (ox[l], oy[l]) at once, a lane each: a lane places, samples and sums the node's
+// ai: kept cells (a cell's middle cmx, cmy in modules, its sign tv) in node_ncc's order with node_ncc's operations, so
+// ai: its correlation is node_ncc's float; st and vt are the template's sums over those cells (refine_node's, the
+// ai: same). Only the cells node_ncc keeps are read.
+static inline __attribute__((always_inline)) void msh_ncc_g(const image_t *im, const homo_t *H, int cells, const float *cmx, const float *cmy, const float *tv, float st, float vt, float pdx, float pdy, const float *ox, const float *oy, float *out, const int G) {
+  const float32x4_t px = vdupq_n_f32(pdx), py = vdupq_n_f32(pdy), z = vdupq_n_f32(0);
+  float32x4_t ox4[2], oy4[2], s[2] = { z, z }, q[2] = { z, z }, t[2] = { z, z };
+  for (int g = 0; g < G; g++) { ox4[g] = vld1q_f32(ox + 4 * g); oy4[g] = vld1q_f32(oy + 4 * g); }
+  for (int k = 0; k < cells; k++) {
+    const float32x4_t cx = vdupq_n_f32(cmx[k]), cy = vdupq_n_f32(cmy[k]), tk = vdupq_n_f32(tv[k]);
+    for (int g = 0; g < G; g++) {
+      float32x4_t u, v;
+      msh_project4(H, vaddq_f32(cx, ox4[g]), vaddq_f32(cy, oy4[g]), &u, &v);
+      const float32x4_t sv = msh_sample4(im, vaddq_f32(u, px), vaddq_f32(v, py));
+      s[g] = vaddq_f32(s[g], sv); q[g] = vaddq_f32(q[g], vmulq_f32(sv, sv)); t[g] = vaddq_f32(t[g], vmulq_f32(tk, sv));
+    }
+  }
+  const float32x4_t n = vdupq_n_f32((float)cells), vst = vdupq_n_f32(st), vvt = vdupq_n_f32(vt);
+  for (int g = 0; g < G; g++) {
+    const float32x4_t vs = vsubq_f32(q[g], vdivq_f32(vmulq_f32(s[g], s[g]), n));
+    const float32x4_t c = vdivq_f32(vsubq_f32(t[g], vdivq_f32(vmulq_f32(vst, s[g]), n)), vsqrtq_f32(vmulq_f32(vvt, vs)));
+    vst1q_f32(out + 4 * g, vt <= 0 ? z : vbslq_f32(vcleq_f32(vs, vdupq_n_f32(1e-9f)), z, c));
+  }
+}
+static void msh_ncc(const image_t *im, const homo_t *H, int cells, const float *cmx, const float *cmy, const float *tv, float st, float vt, float pdx, float pdy, const float *ox, const float *oy, float *out, int lanes) {
+  if (lanes > 4) msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, out, 2);
+  else msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, out, 1);
+}
+#endif
+
+#ifndef OB_NEON   // ai: arm64's is msh_ncc's lanes
 // Normalized correlation of a node's known cells against the image, with the node shifted by
 // (ox, oy) modules from where the current estimate puts it.
 // r: the patch as cell offsets from (cx0, cy0), x from r[0] to r[1] and y from r[2] to r[3], ends excluded.
@@ -403,6 +513,7 @@ static float node_ncc(const ob_layout_t *L, const image_t *im, int cx0, int cy0,
   if (vt <= 0 || vs <= 1e-9f) return 0;
   return (sts - st * ss / n) / sqrtf(vt * vs);
 }
+#endif
 
 
 static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H, int i, int j, node_t *nodes, const struct lensm *lm) {
@@ -448,6 +559,19 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
   int at[OB_FB * OB_FB], cells = 0;
   const int lo = rect[0], ylo = rect[2], side = rect[1] - rect[0], tall = rect[3] - rect[2], GW = 2 * side + 5, GH = 2 * tall + 5;
   // Placed through the homography, as node_ncc does and for the same reason.
+#ifdef OB_NEON
+  // ai: a row in whole vectors: its last one runs on into the next row's first floats, which that row writes again
+  // ai: (the last row's into G's four spare floats, zeroed below)
+  for (int gy = 0; gy < GH; gy++) {
+    const float32x4_t vy = vdupq_n_f32((float)(2 * (cy0 + ylo) + gy - 2) * 0.5f), lane = { 0, 1, 2, 3 };
+    for (int gx = 0; gx < GW; gx += 4) {
+      const float32x4_t mx = vmulq_f32(vaddq_f32(vdupq_n_f32((float)(2 * (cx0 + lo) + gx - 2)), lane), vdupq_n_f32(0.5f));
+      float32x4_t u, v;
+      msh_project4(H, mx, vy, &u, &v);
+      vst1q_f32(G + gy * GW + gx, msh_sample4(im, vaddq_f32(u, vdupq_n_f32(pdx)), vaddq_f32(v, vdupq_n_f32(pdy))));
+    }
+  }
+#else
   for (int gy = 0; gy < GH; gy++) {
     const float my = (float)(2 * (cy0 + ylo) + gy - 2) * 0.5f;
     int gx = 0;
@@ -463,12 +587,19 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
 #endif
     for (; gx < GW; gx++) { const float mx = (float)(2 * (cx0 + lo) + gx - 2) * 0.5f; float u, v; project(H, mx, my, &u, &v); G[gy * GW + gx] = sample(im, u + pdx, v + pdy); }
   }
+#endif
   float st = 0, stt = 0;
+#ifdef OB_NEON
+  float cmx[OB_FB * OB_FB], cmy[OB_FB * OB_FB];   // ai: a kept cell's middle in modules, node_ncc's cx0 + dx + 0.5f
+#endif
   for (int dy = 0; dy < tall; dy++) for (int dx = 0; dx < side; dx++) {
     int kind = L->kind[(cy0 + ylo + dy) * L->w + cx0 + lo + dx];
     if (kind == CELL_DATA) continue;   // the picture inside the border: not the border's to know
     if (kind & CELL_WORD) continue;               // nor the format word, whose bits this end did not choose (layout.h)
     tv[cells] = (kind & 3) == CELL_DARK ? -1.0f : 1.0f; at[cells] = (2 * dy + 3) * GW + 2 * dx + 3;
+#ifdef OB_NEON
+    cmx[cells] = cx0 + lo + dx + 0.5f; cmy[cells] = cy0 + ylo + dy + 0.5f;
+#endif
     st += tv[cells]; stt += tv[cells] * tv[cells]; cells++;
   }
   const float vt = stt - st * st / cells;
@@ -512,7 +643,21 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
         for (int b2 = 0; b2 < 3; b2++) for (int a2 = 0; a2 < 3; a2++) { int sb = b2 + mb - 1, sa = a2 + ma - 1, in = sb >= 0 && sb < 3 && sa >= 0 && sa < 3; nh[b2][a2] = in && have[sb][sa]; ng[b2][a2] = in ? g[sb][sa] : 0; }
         memcpy(g, ng, sizeof g); memcpy(have, nh, sizeof have); ma = mb = 1;
       }
+#ifdef OB_NEON
+      {
+        // ai: the correlations this move lacks, a lane each (lanes past them repeat the first and are dropped)
+        float ox[8], oy[8], got[8];
+        int cell[8], m = 0;
+        for (int b2 = -1; b2 <= 1; b2++) for (int a2 = -1; a2 <= 1; a2++) if (!have[b2 + 1][a2 + 1]) { ox[m] = box + a2 * step; oy[m] = boy + b2 * step; cell[m++] = (b2 + 1) * 3 + a2 + 1; }
+        if (m) {
+          for (int l = m; l < 8; l++) { ox[l] = ox[0]; oy[l] = oy[0]; }
+          msh_ncc(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, got, m);
+          for (int l = 0; l < m; l++) { g[cell[l] / 3][cell[l] % 3] = got[l]; have[cell[l] / 3][cell[l] % 3] = 1; }
+        }
+      }
+#else
       for (int b2 = -1; b2 <= 1; b2++) for (int a2 = -1; a2 <= 1; a2++) if (!have[b2 + 1][a2 + 1]) { g[b2 + 1][a2 + 1] = node_ncc(L, im, cx0, cy0, rect, H, pdx, pdy, box + a2 * step, boy + b2 * step); have[b2 + 1][a2 + 1] = 1; }
+#endif
       int ba = 1, bb = 1;
       for (int b2 = 0; b2 < 3; b2++) for (int a2 = 0; a2 < 3; a2++) if (g[b2][a2] > g[bb][ba]) { ba = a2; bb = b2; }
       if (ba == 1 && bb == 1) break;
@@ -708,17 +853,25 @@ static int lensm_fit(int np, const double *qx, const double *qy, const double *d
   for (int round = 0; round < 4; round++) {
     double best = INFINITY, tb[LENS_P] = { 0 };
     int K = -1;
+    // ai: The normal equations summed once, at every term: a model of fewer terms takes their leading block (lens_rows'
+    // ai: first 8 + k entries are the same whatever follows, and an entry sums its products in the points' order), and
+    // ai: an entry below the diagonal is its transpose's sum (the same products), so the upper triangle is summed and
+    // ai: copied down. Each k's equations are the floats a sum of its own made; the block past p is never read (solve_lens
+    // ai: works rows below p and each column on its own).
+    double A3[LENS_P][LENS_P + 1], rx[LENS_P], ry[LENS_P];
+    memset(A3, 0, sizeof A3);
+    int n = 0;
+    for (int i = 0; i < np; i++) {
+      if (drop[i]) continue;
+      n++;
+      lens_rows(qx[i], qy[i], LENS_TERMS, rx, ry);
+      for (int a = 0; a < LENS_P; a++) { for (int b = a; b < LENS_P; b++) A3[a][b] += rx[a] * rx[b] + ry[a] * ry[b]; A3[a][LENS_P] += rx[a] * dx[i] + ry[a] * dy[i]; }
+    }
+    for (int a = 1; a < LENS_P; a++) for (int b = 0; b < a; b++) A3[a][b] = A3[b][a];
     for (int k = 0; k <= LENS_TERMS; k++) {
       const int p = 8 + k;
-      double A[LENS_P][LENS_P + 1], rx[LENS_P], ry[LENS_P];
-      memset(A, 0, sizeof A);
-      int n = 0;
-      for (int i = 0; i < np; i++) {
-        if (drop[i]) continue;
-        n++;
-        lens_rows(qx[i], qy[i], k, rx, ry);
-        for (int a = 0; a < p; a++) { for (int b = 0; b < p; b++) A[a][b] += rx[a] * rx[b] + ry[a] * ry[b]; A[a][LENS_P] += rx[a] * dx[i] + ry[a] * dy[i]; }
-      }
+      double A[LENS_P][LENS_P + 1];
+      memcpy(A, A3, sizeof A);
       for (int a = 0; a < p; a++) A[a][a] += 1e-12;
       if (2 * n - p - 1 <= 0 || !solve_lens(A, p)) continue;
       double t[LENS_P] = { 0 }, rss = 0;
@@ -782,6 +935,102 @@ static void anchor_map(const homo_t *H, const lensm_t *lm, float X, float Y, flo
 // ai: within 1.2; the anchors' map, extrapolated past the last anchor to a corner, is a module or two off on a strong lens)
 enum { ANCH_ROUNDS = 6, ANCH_CORNER = 3, ANCH_REACH = 3 };
 static const float ANCH_PEAK = 0.6f;
+#ifdef OB_NEON
+// ai: lensm_at's displacement added to four points (u, v), two lanes of doubles at a time: lens_rows' entries and the
+// ai: sum over them in its order, a constant entry's product (t[a] times 0 or 1) taken once as the scalar takes it
+static inline void msh_lens4(const struct lensm *m, float32x4_t *u, float32x4_t *v) {
+  const double *t = m->t;
+  const float64x2_t ax = vdupq_n_f64(m->ax), ay = vdupq_n_f64(m->ay), R = vdupq_n_f64(m->R), zero = vdupq_n_f64(0);
+  const float64x2_t t0 = vdupq_n_f64(t[0]), t1 = vdupq_n_f64(t[1]), t2 = vdupq_n_f64(t[2]), t3 = vdupq_n_f64(t[3]), t6 = vdupq_n_f64(t[6]), t7 = vdupq_n_f64(t[7]);
+  const float64x2_t x2 = vdupq_n_f64(t[2] * 0.0), x3 = vdupq_n_f64(t[3] * 0.0), x4 = vdupq_n_f64(t[4] * 1.0), x5 = vdupq_n_f64(t[5] * 0.0);
+  const float64x2_t y0 = vdupq_n_f64(t[0] * 0.0), y1 = vdupq_n_f64(t[1] * 0.0), y4 = vdupq_n_f64(t[4] * 0.0), y5 = vdupq_n_f64(t[5] * 1.0);
+  float32x2_t dx[2], dy[2];
+  for (int hf = 0; hf < 2; hf++) {
+    const float64x2_t uu = hf ? vcvt_high_f64_f32(*u) : vcvt_f64_f32(vget_low_f32(*u)), vv = hf ? vcvt_high_f64_f32(*v) : vcvt_f64_f32(vget_low_f32(*v));
+    const float64x2_t x = vdivq_f64(vsubq_f64(uu, ax), R), y = vdivq_f64(vsubq_f64(vv, ay), R), nx = vnegq_f64(x), ny = vnegq_f64(y);
+    float64x2_t fx = vaddq_f64(zero, vmulq_f64(t0, x)), fy = vaddq_f64(zero, y0);
+    fx = vaddq_f64(fx, vmulq_f64(t1, y)); fy = vaddq_f64(fy, y1);
+    fx = vaddq_f64(fx, x2); fy = vaddq_f64(fy, vmulq_f64(t2, x));
+    fx = vaddq_f64(fx, x3); fy = vaddq_f64(fy, vmulq_f64(t3, y));
+    fx = vaddq_f64(fx, x4); fy = vaddq_f64(fy, y4);
+    fx = vaddq_f64(fx, x5); fy = vaddq_f64(fy, y5);
+    fx = vaddq_f64(fx, vmulq_f64(t6, vmulq_f64(nx, x))); fy = vaddq_f64(fy, vmulq_f64(t6, vmulq_f64(nx, y)));
+    fx = vaddq_f64(fx, vmulq_f64(t7, vmulq_f64(nx, y))); fy = vaddq_f64(fy, vmulq_f64(t7, vmulq_f64(ny, y)));
+    const float64x2_t s = vaddq_f64(vmulq_f64(x, x), vmulq_f64(y, y));
+    float64x2_t sk = s;
+    for (int k = 0; k < m->K; k++, sk = vmulq_f64(sk, s)) {
+      const float64x2_t tk = vdupq_n_f64(t[8 + k]);
+      fx = vaddq_f64(fx, vmulq_f64(tk, vmulq_f64(sk, x))); fy = vaddq_f64(fy, vmulq_f64(tk, vmulq_f64(sk, y)));
+    }
+    dx[hf] = vcvt_f32_f64(fx); dy[hf] = vcvt_f32_f64(fy);
+  }
+  *u = vaddq_f32(*u, vcombine_f32(dx[0], dx[1])); *v = vaddq_f32(*v, vcombine_f32(dy[0], dy[1]));
+}
+// ai: anchor_find's window, four points a vector (W is 28, 40 or 64: whole vectors), each placed as anchor_map places
+// ai: it and sampled as sample() samples it
+static void msh_anchor_window(const image_t *im, const homo_t *H, const struct lensm *lm, float x0, float y0, float h, int r, int W, float *win) {
+  const float32x4_t lane = { 0, 1, 2, 3 }, half = vdupq_n_f32(0.5f), vh = vdupq_n_f32(h), vx0 = vdupq_n_f32(x0);
+  for (int wy = 0; wy < W; wy++) {
+    const float32x4_t Y = vdupq_n_f32(y0 + (wy - r + 0.5f) * h);
+    int wx = 0;
+    for (; wx + 4 <= W; wx += 4) {
+      float32x4_t u, v;
+      msh_project4(H, vaddq_f32(vx0, vmulq_f32(vaddq_f32(vaddq_f32(vdupq_n_f32((float)(wx - r)), lane), half), vh)), Y, &u, &v);
+      if (lm) msh_lens4(lm, &u, &v);
+      vst1q_f32(win + wy * W + wx, msh_sample4(im, u, v));
+    }
+    for (; wx < W; wx++) {
+      float u, v;
+      anchor_map(H, lm, x0 + (wx - r + 0.5f) * h, y0 + (wy - r + 0.5f) * h, &u, &v);
+      win[wy * W + wx] = sample(im, u, v);
+    }
+  }
+}
+// ai: the window's integral images (anchor_find's, its sums in its order): four rows at a time, a row's running sums
+// ai: in a lane of doubles (a 4 x 4 block of the window turned so a vector holds a column), each row's entries its
+// ai: running sum plus the row above's, as the scalar loop adds them
+static void msh_integral(const float *win, int W, double *I1, double *I2) {
+  const int W1 = W + 1;
+  for (int x = 0; x < W1; x++) I1[x] = I2[x] = 0;
+  int wy = 0;
+  if (!(W & 3) && W <= 64) {
+    double P[4 * 64], Q[4 * 64];   // ai: a row's running sums, row wy + k at [4 wx + k]
+    for (; wy + 4 <= W; wy += 4) {
+      float64x2_t s01 = vdupq_n_f64(0), s23 = s01, q01 = s01, q23 = s01;
+      for (int wx = 0; wx < W; wx += 4) {
+        const float32x4_t r0 = vld1q_f32(win + wy * W + wx), r1 = vld1q_f32(win + (wy + 1) * W + wx), r2 = vld1q_f32(win + (wy + 2) * W + wx), r3 = vld1q_f32(win + (wy + 3) * W + wx);
+        const float32x4x2_t a = vtrnq_f32(r0, r1), b = vtrnq_f32(r2, r3);
+        float32x4_t col[4];   // ai: col[c] = the four rows at wx + c
+        col[0] = vcombine_f32(vget_low_f32(a.val[0]), vget_low_f32(b.val[0])); col[1] = vcombine_f32(vget_low_f32(a.val[1]), vget_low_f32(b.val[1]));
+        col[2] = vcombine_f32(vget_high_f32(a.val[0]), vget_high_f32(b.val[0])); col[3] = vcombine_f32(vget_high_f32(a.val[1]), vget_high_f32(b.val[1]));
+        for (int c = 0; c < 4; c++) {
+          const float64x2_t v01 = vcvt_f64_f32(vget_low_f32(col[c])), v23 = vcvt_high_f64_f32(col[c]);
+          s01 = vaddq_f64(s01, v01); s23 = vaddq_f64(s23, v23); q01 = vaddq_f64(q01, vmulq_f64(v01, v01)); q23 = vaddq_f64(q23, vmulq_f64(v23, v23));
+          vst1q_f64(P + 4 * (wx + c), s01); vst1q_f64(P + 4 * (wx + c) + 2, s23); vst1q_f64(Q + 4 * (wx + c), q01); vst1q_f64(Q + 4 * (wx + c) + 2, q23);
+        }
+      }
+      for (int k = 0; k < 4; k++) {
+        double *i1 = I1 + (wy + k + 1) * W1, *i2 = I2 + (wy + k + 1) * W1;
+        const double *u1 = i1 - W1, *u2 = i2 - W1;
+        i1[0] = i2[0] = 0;
+        for (int wx = 0; wx < W; wx += 2) {
+          vst1q_f64(i1 + wx + 1, vaddq_f64(vld1q_f64(u1 + wx + 1), (float64x2_t){ P[4 * wx + k], P[4 * wx + 4 + k] }));
+          vst1q_f64(i2 + wx + 1, vaddq_f64(vld1q_f64(u2 + wx + 1), (float64x2_t){ Q[4 * wx + k], Q[4 * wx + 4 + k] }));
+        }
+      }
+    }
+  }
+  for (; wy < W; wy++) {
+    double s = 0, q = 0;
+    I1[(wy + 1) * W1] = I2[(wy + 1) * W1] = 0;
+    for (int wx = 0; wx < W; wx++) {
+      const double v = win[wy * W + wx];
+      s += v; q += v * v;
+      I1[(wy + 1) * W1 + wx + 1] = I1[wy * W1 + wx + 1] + s; I2[(wy + 1) * W1 + wx + 1] = I2[wy * W1 + wx + 1] + q;
+    }
+  }
+}
+#endif
 static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H, const lensm_t *lm, anchor_t *A) {
   const int a = ob_anchor_side(L), TS = OB_ANCH_TS;
   if (a < 1) return 0;
@@ -817,6 +1066,43 @@ static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H,
     if (an->ok) { found++; continue; }
     const float x0 = (float)ob_anchor_m0(L, i), y0 = (float)ob_anchor_m0(L, j);
     an->X = x0 + a * 0.5f; an->Y = y0 + a * 0.5f; an->peak = -1; an->dx = an->dy = 0;
+#ifdef OB_NEON
+    msh_anchor_window(im, H, lm, x0, y0, h, r, W, win);
+    msh_integral(win, W, I1, I2);
+    float best = -2;
+    int bx = 0, by = 0;
+    {
+      // ai: the correlations two offsets a vector of doubles, each lane the scalar's operations; the peak then taken
+      // ai: in the scalar's order
+      const float64x2_t k256 = vdupq_n_f64(TS * TS), ktm = vdupq_n_f64(1 - (double)tm), two = vdupq_n_f64(2), tnd = vdupq_n_f64(tn), vmin = vdupq_n_f64(1e-12), zero = vdupq_n_f64(0);
+      const int l25 = j25 - i25 + 1, l6 = j6 - i6 + 1;
+#define MBOX(I, x, y, s) vaddq_f64(vsubq_f64(vsubq_f64(vld1q_f64((I) + ((y) + (s)) * W1 + (x) + (s)), vld1q_f64((I) + (y) * W1 + (x) + (s))), vld1q_f64((I) + ((y) + (s)) * W1 + (x))), vld1q_f64((I) + (y) * W1 + (x)))
+      for (int oy = -r; oy <= r; oy++) {
+        const int py = r + oy;
+        int ox = -r;
+        for (; ox + 1 <= r; ox += 2) {
+          const int px = r + ox;
+          const float64x2_t s1 = MBOX(I1, px, py, TS), s2 = MBOX(I2, px, py, TS), var = vsubq_f64(s2, vdivq_f64(vmulq_f64(s1, s1), k256));
+          const float64x2_t s25 = j25 >= i25 ? MBOX(I1, px + i25, py + i25, l25) : zero, s6 = j6 >= i6 ? MBOX(I1, px + i6, py + i6, l6) : zero;
+          const float64x2_t st = vaddq_f64(vmulq_f64(two, vsubq_f64(s25, s6)), vmulq_f64(s1, ktm));
+          const float32x2_t c = vcvt_f32_f64(vdivq_f64(st, vmulq_f64(vsqrtq_f64(var), tnd)));
+          vst1_f32(C + (oy + r) * O + ox + r, vbsl_f32(vmovn_u64(vcgtq_f64(var, vmin)), c, vdup_n_f32(0)));
+        }
+        for (; ox <= r; ox++) {
+          const int px = r + ox;
+          const double s1 = ABOX(I1, px, py, TS), s2 = ABOX(I2, px, py, TS), var = s2 - s1 * s1 / (TS * TS);
+          const double s25 = j25 >= i25 ? ABOX(I1, px + i25, py + i25, j25 - i25 + 1) : 0, s6 = j6 >= i6 ? ABOX(I1, px + i6, py + i6, j6 - i6 + 1) : 0;
+          const double st = 2 * (s25 - s6) + s1 * (1 - (double)tm);
+          C[(oy + r) * O + ox + r] = var > 1e-12 ? (float)(st / (sqrt(var) * tn)) : 0;
+        }
+      }
+#undef MBOX
+    }
+    for (int oy = -r; oy <= r; oy++) for (int ox = -r; ox <= r; ox++) {
+      const float c = C[(oy + r) * O + ox + r];
+      if (c > best) { best = c; bx = ox; by = oy; }
+    }
+#else
     for (int wy = 0; wy < W; wy++) for (int wx = 0; wx < W; wx++) {
       float u, v;
       anchor_map(H, lm, x0 + (wx - r + 0.5f) * h, y0 + (wy - r + 0.5f) * h, &u, &v);
@@ -843,6 +1129,7 @@ static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H,
       C[(oy + r) * O + ox + r] = c;
       if (c > best) { best = c; bx = ox; by = oy; }
     }
+#endif
     float sx = 0, sy = 0;
     if (bx > -r && bx < r) { const float l = C[(by + r) * O + bx + r - 1], c = best, rr = C[(by + r) * O + bx + r + 1], d = l - 2 * c + rr; if (d < 0) sx = 0.5f * (l - rr) / d; }
     if (by > -r && by < r) { const float l = C[(by + r - 1) * O + bx + r], c = best, rr = C[(by + r + 1) * O + bx + r], d = l - 2 * c + rr; if (d < 0) sy = 0.5f * (l - rr) / d; }
@@ -2863,11 +3150,20 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
     for (int k = 0; k < OB_ANCH_K * OB_ANCH_K; k++) ob_anch_found += anchors[k].ok;
   }
   // Rings outward from the corners, so each mark starts from measured neighbours.
-  for (int ring = 1; mesh && ring < L->nx + L->ny; ring++) for (int j = 0; j < L->ny; j++) for (int i = 0; i < L->nx; i++) {
-    int di = i < L->nx - 1 - i ? i : L->nx - 1 - i, dj = j < L->ny - 1 - j ? j : L->ny - 1 - j;
-    if (di + dj != ring || nodes[j * L->nx + i].done) continue;
-    if (!L->node_mark[j * L->nx + i]) continue;
-    refine_node(L, &rim, &H, i, j, nodes, have_alm ? &alm : 0);
+  // ai: the marked nodes (the border's) in that order, ring by ring and in rows within one, by a counting sort on
+  // ai: the ring: a pass over the lattice, not one a ring
+  if (mesh) {
+    const int nx = L->nx, ny = L->ny;
+    int start[OB_MAX_NODES + 2] = { 0 }, order[4 * OB_MAX_NODES], no = 0;
+#define RING(i, j) (((i) < nx - 1 - (i) ? (i) : nx - 1 - (i)) + ((j) < ny - 1 - (j) ? (j) : ny - 1 - (j)))
+    for (int j = 0; j < ny; j++) for (int i = 0; i < nx; i++) if (L->node_mark[j * nx + i]) start[RING(i, j) + 1]++;
+    for (int k = 1; k < OB_MAX_NODES + 2; k++) start[k] += start[k - 1];
+    for (int j = 0; j < ny; j++) for (int i = 0; i < nx; i++) if (L->node_mark[j * nx + i]) { order[start[RING(i, j)]++] = j * nx + i; no++; }
+#undef RING
+    for (int k = 0; k < no; k++) {
+      if (nodes[order[k]].done) continue;
+      refine_node(L, &rim, &H, order[k] % L->nx, order[k] / L->nx, nodes, have_alm ? &alm : 0);
+    }
   }
   free(blurred);
   // the border is all there is to hang the mesh on
