@@ -134,9 +134,6 @@ class DesktopSend(private val app: App) : SendHost {
         LaunchedEffect(s.choice, s.reading, s.test, s.phase, s.full, s.items.size, s.compressed) { s.canvas.idleLook() }
         // ai: the column's edge over the canvas's left strip is the canvas's to hear (CodeCanvas.grip)
         val grip = LocalEdgeGrip.current
-        // ai: the edge's wide line, the canvas's part painted again as it comes and goes
-        val lit = grip?.lit == true
-        LaunchedEffect(lit) { s.canvas.repaint() }
         DisposableEffect(grip) {
             s.canvas.grip = grip
             onDispose { if (s.canvas.grip === grip) { grip?.hover(false); s.canvas.grip = null } }
