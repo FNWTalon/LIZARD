@@ -24,34 +24,35 @@ static inline float sample(const image_t *im, float x, float y) {
 #include "simd.h"
 #ifdef OB_NEON
 #include <string.h>
-// ai: arm64, the decode's picture sampler alone (ob_sample_grid_pic; registration keeps sample4): at gamma 1 a point's
-// ai: pixel pairs read as two 16-bit loads through general registers, blended on 0 to 255 with fused multiply-adds and
-// ai: scaled by 1/255 once, the clamps and truncation sample()'s. Its own floats (the blocks a decode verifies are its
-// ai: test), 1.5x sample4's walk on a phone core, where the exact NEON gathers gained nothing. Else sample4.
-static inline v128_t sample4(const image_t *im, v128_t X, v128_t Y);
-static inline v128_t sample4r(const image_t *im, v128_t X, v128_t Y) {
-  if (!im->lin) return sample4(im, X, Y);
-  const float32x4_t half = vdupq_n_f32(0.5f), zero = vdupq_n_f32(0);
-  const float32x4_t wm = vdupq_n_f32(im->w - 1.001f), hm = vdupq_n_f32(im->h - 1.001f);
-  float32x4_t x = vsubq_f32(vreinterpretq_f32_s32(X), half), y = vsubq_f32(vreinterpretq_f32_s32(Y), half);
-  x = vbslq_f32(vcltq_f32(x, zero), zero, x); x = vbslq_f32(vcltq_f32(wm, x), wm, x);
-  y = vbslq_f32(vcltq_f32(y, zero), zero, y); y = vbslq_f32(vcltq_f32(hm, y), hm, y);
-  const int32x4_t xi = vcvtq_s32_f32(x), yi = vcvtq_s32_f32(y);
-  const float32x4_t fx = vsubq_f32(x, vcvtq_f32_s32(xi)), fy = vsubq_f32(y, vcvtq_f32_s32(yi));
-  const int32x4_t idx = vmlaq_s32(xi, yi, vdupq_n_s32(im->w));
-  const uint8_t *p0 = im->px + vgetq_lane_s32(idx, 0), *p1 = im->px + vgetq_lane_s32(idx, 1), *p2 = im->px + vgetq_lane_s32(idx, 2), *p3 = im->px + vgetq_lane_s32(idx, 3);
-  const int w = im->w;
-  uint16_t h[8];
-  memcpy(h + 0, p0, 2); memcpy(h + 1, p1, 2); memcpy(h + 2, p2, 2); memcpy(h + 3, p3, 2);
-  memcpy(h + 4, p0 + w, 2); memcpy(h + 5, p1 + w, 2); memcpy(h + 6, p2 + w, 2); memcpy(h + 7, p3 + w, 2);
-  const uint64_t ab = (uint64_t)h[0] | (uint64_t)h[1] << 16 | (uint64_t)h[2] << 32 | (uint64_t)h[3] << 48;
-  const uint64_t cd = (uint64_t)h[4] | (uint64_t)h[5] << 16 | (uint64_t)h[6] << 32 | (uint64_t)h[7] << 48;
-  const uint16x8_t v = vreinterpretq_u16_u64(vcombine_u64(vcreate_u64(ab), vcreate_u64(cd)));
-  const uint16x8_t lo = vandq_u16(v, vdupq_n_u16(0xff)), hi = vshrq_n_u16(v, 8);   // a and c in lo, b and d in hi
-  const float32x4_t a = vcvtq_f32_u32(vmovl_u16(vget_low_u16(lo))), c = vcvtq_f32_u32(vmovl_high_u16(lo));
-  const float32x4_t b = vcvtq_f32_u32(vmovl_u16(vget_low_u16(hi))), d = vcvtq_f32_u32(vmovl_high_u16(hi));
-  const float32x4_t top = vfmaq_f32(a, vsubq_f32(b, a), fx), bot = vfmaq_f32(c, vsubq_f32(d, c), fx);
-  return vreinterpretq_s32_f32(vmulq_f32(vfmaq_f32(top, vsubq_f32(bot, top), fy), vdupq_n_f32(1.0f / 255.0f)));
+// ai: arm64, the decode's picture sampler alone (acquire.c ob_sample_grid_pic at gamma 1; registration keeps sample4):
+// ai: four points' bilinear reads, x and y already less the half pixel and clamped to the frame as sample() clamps them,
+// ai: on a frame of w pixels a row. A point's pixel pairs as two 32-bit words, row y's from its pixel and row y + 1's
+// ai: from two bytes before (both inside the frame at its last pixel), two words to a general register; one TBL over a
+// ai: word register and a register of 0x4B (the exponent of 2^23) makes each byte the float 2^23 + byte, so the
+// ai: differences are exact and a and c come back by one subtraction, with no conversion; blended on 0 to 255 with fused
+// ai: multiply-adds and scaled by 1/255 once. Its own floats: the blocks a decode verifies are its test.
+static inline float32x4_t sample4r(const uint8_t *px, int w, float32x4_t x, float32x4_t y) {
+  const float32x4_t fx = vsubq_f32(x, vrndq_f32(x)), fy = vsubq_f32(y, vrndq_f32(y));
+  const int32x4_t idx = vmlaq_s32(vcvtq_s32_f32(x), vcvtq_s32_f32(y), vdupq_n_s32(w));
+  const uint64_t i01 = vgetq_lane_u64(vreinterpretq_u64_s32(idx), 0), i23 = vgetq_lane_u64(vreinterpretq_u64_s32(idx), 1);
+  const size_t o0 = (uint32_t)i01, o1 = i01 >> 32, o2 = (uint32_t)i23, o3 = i23 >> 32;
+  const uint8_t *r0 = px, *r1 = px + w - 2;
+  uint32_t t0, t1, t2, t3, u0, u1, u2, u3;
+  memcpy(&t0, r0 + o0, 4); memcpy(&t1, r0 + o1, 4); memcpy(&t2, r0 + o2, 4); memcpy(&t3, r0 + o3, 4);
+  memcpy(&u0, r1 + o0, 4); memcpy(&u1, r1 + o1, 4); memcpy(&u2, r1 + o2, 4); memcpy(&u3, r1 + o3, 4);
+  const uint8x16_t k23 = vdupq_n_u8(0x4b);
+  const uint8x16x2_t T = { { vreinterpretq_u8_u64(vcombine_u64(vcreate_u64((uint64_t)t0 | (uint64_t)t1 << 32), vcreate_u64((uint64_t)t2 | (uint64_t)t3 << 32))), k23 } };
+  const uint8x16x2_t U = { { vreinterpretq_u8_u64(vcombine_u64(vcreate_u64((uint64_t)u0 | (uint64_t)u1 << 32), vcreate_u64((uint64_t)u2 | (uint64_t)u3 << 32))), k23 } };
+  // ai: a word's bytes: row y's a b (and two past them), row y + 1's (two before) c d; index 16 is the 0x4B, 255 a zero
+  const uint8x16_t ka = { 0, 255, 255, 16, 4, 255, 255, 16, 8, 255, 255, 16, 12, 255, 255, 16 };
+  const uint8x16_t kb = { 1, 255, 255, 16, 5, 255, 255, 16, 9, 255, 255, 16, 13, 255, 255, 16 };
+  const uint8x16_t kc = { 2, 255, 255, 16, 6, 255, 255, 16, 10, 255, 255, 16, 14, 255, 255, 16 };
+  const uint8x16_t kd = { 3, 255, 255, 16, 7, 255, 255, 16, 11, 255, 255, 16, 15, 255, 255, 16 };
+  const float32x4_t am = vreinterpretq_f32_u8(vqtbl2q_u8(T, ka)), bm = vreinterpretq_f32_u8(vqtbl2q_u8(T, kb));
+  const float32x4_t cm = vreinterpretq_f32_u8(vqtbl2q_u8(U, kc)), dm = vreinterpretq_f32_u8(vqtbl2q_u8(U, kd));
+  const float32x4_t a = vsubq_f32(am, vdupq_n_f32(8388608.0f)), c = vsubq_f32(cm, vdupq_n_f32(8388608.0f));
+  const float32x4_t top = vfmaq_f32(a, vsubq_f32(bm, am), fx), bot = vfmaq_f32(c, vsubq_f32(dm, cm), fx);
+  return vmulq_f32(vfmaq_f32(top, vsubq_f32(bot, top), fy), vdupq_n_f32(1.0f / 255.0f));
 }
 #endif
 #ifdef OB_SIMD
@@ -152,7 +153,7 @@ int ob_anchor_m0(const ob_layout_t *L, int i);
 int ob_thin_read_fmt(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float *q, int cells);
 // A block of a regular grid in module coordinates: see acquire.c.
 void ob_sample_grid(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch);
-// ai: the decode's picture through ob_sample_grid's walk: on arm64 sample4r's floats, elsewhere ob_sample_grid's
+// ai: the decode's picture: on arm64 at gamma 1 a walk of its own and its own floats (acquire.c), else ob_sample_grid's
 void ob_sample_grid_pic(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch);
 // What lizard_acquire left for lizard_finish (lizard_phy.h), for a caller that has to sample somewhere else. Valid
 // until the matching lizard_finish takes it up.
