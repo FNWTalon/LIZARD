@@ -1521,6 +1521,22 @@ static void block_range(const uint8_t *img, int w, int h, uint8_t *mn, uint8_t *
   int bw = (w + BLK - 1) / BLK, bh = (h + BLK - 1) / BLK;
   for (int by = 0; by < bh; by++) {
     int y0 = by * BLK, y1 = y0 + BLK > h ? h : y0 + BLK, bx = 0;
+#ifdef OB_NEON
+    // ai: arm64: eight blocks a step, a row's 64 pixels in four vectors, the blocks' extremes then by pairwise
+    // ai: minima and maxima (UMINP, UMAXP) three times over: the same bytes
+    for (; (bx + 8) * BLK <= w; bx += 8) {
+      uint8x16_t l0 = vdupq_n_u8(255), l1 = l0, l2 = l0, l3 = l0, h0 = vdupq_n_u8(0), h1 = h0, h2 = h0, h3 = h0;
+      for (int y = y0; y < y1; y++) {
+        const uint8_t *q = img + (size_t)y * w + bx * BLK;
+        const uint8x16_t a = vld1q_u8(q), b = vld1q_u8(q + 16), c = vld1q_u8(q + 32), d = vld1q_u8(q + 48);
+        l0 = vminq_u8(l0, a); l1 = vminq_u8(l1, b); l2 = vminq_u8(l2, c); l3 = vminq_u8(l3, d);
+        h0 = vmaxq_u8(h0, a); h1 = vmaxq_u8(h1, b); h2 = vmaxq_u8(h2, c); h3 = vmaxq_u8(h3, d);
+      }
+      const uint8x16_t lq = vpminq_u8(vpminq_u8(l0, l1), vpminq_u8(l2, l3)), hq = vpmaxq_u8(vpmaxq_u8(h0, h1), vpmaxq_u8(h2, h3));
+      vst1_u8(mn + by * bs + bx, vpmin_u8(vget_low_u8(lq), vget_high_u8(lq)));
+      vst1_u8(mx + by * bs + bx, vpmax_u8(vget_low_u8(hq), vget_high_u8(hq)));
+    }
+#endif
 #ifdef OB_SIMD
     for (; (bx + 2) * BLK <= w; bx += 2) {
       v128_t lo = wasm_u8x16_splat(255), hi = wasm_u8x16_splat(0);
@@ -1588,10 +1604,45 @@ static int edge_ctx_init(edge_ctx_t *c, const uint8_t *grey, int w, int h, int m
   return 0;
 }
 
+#ifdef OB_NEON
+// ai: arm64: edge_contrast over the pixels edge - EDGE_REACH .. edge + EDGE_REACH - 1 of the line held in one vector
+// ai: (a row's in one load of sixteen, a column's twelve by lane loads), the dark run's and the light run's lanes
+// ai: picked by masks on the lane number: the same darkest and brightest pixel, without a branch on either length.
+// ai: The caller keeps the pixels read inside the line (a row's load of sixteen reads four past the twelve).
+static inline int edge_contrast_n(const uint8_t *g, int sx, int edge, int inner, int dark_len, int light_len) {
+  static const uint8_t LANE[16] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
+  dark_len = dark_len < 0 ? 0 : dark_len > EDGE_REACH ? EDGE_REACH : dark_len;
+  light_len = light_len < 0 ? 0 : light_len > EDGE_REACH ? EDGE_REACH : light_len;
+  const uint8_t *b = g + (ptrdiff_t)(edge - EDGE_REACH) * sx;
+  uint8x16_t v;
+  if (sx == 1) v = vld1q_u8(b);
+  else {
+    v = vdupq_n_u8(0);
+    v = vld1q_lane_u8(b, v, 0); v = vld1q_lane_u8(b + sx, v, 1); v = vld1q_lane_u8(b + 2 * sx, v, 2); v = vld1q_lane_u8(b + 3 * sx, v, 3);
+    v = vld1q_lane_u8(b + 4 * sx, v, 4); v = vld1q_lane_u8(b + 5 * sx, v, 5); v = vld1q_lane_u8(b + 6 * sx, v, 6); v = vld1q_lane_u8(b + 7 * sx, v, 7);
+    v = vld1q_lane_u8(b + 8 * sx, v, 8); v = vld1q_lane_u8(b + 9 * sx, v, 9); v = vld1q_lane_u8(b + 10 * sx, v, 10); v = vld1q_lane_u8(b + 11 * sx, v, 11);
+  }
+  // ai: going into the picture with rising position the dark run ends below edge and the light run starts at it;
+  // ai: the other way the light run is below and the dark run from edge on
+  const int below = inner > 0 ? dark_len : light_len, above = inner > 0 ? light_len : dark_len;
+  const uint8x16_t lane = vld1q_u8(LANE);
+  const uint8x16_t lo = vandq_u8(vcgeq_u8(lane, vdupq_n_u8((uint8_t)(EDGE_REACH - below))), vcltq_u8(lane, vdupq_n_u8(EDGE_REACH)));
+  const uint8x16_t hi = vandq_u8(vcgeq_u8(lane, vdupq_n_u8(EDGE_REACH)), vcltq_u8(lane, vdupq_n_u8((uint8_t)(EDGE_REACH + above))));
+  const uint8x16_t dm = inner > 0 ? lo : hi, lm = inner > 0 ? hi : lo;
+  return (int)vmaxvq_u8(vandq_u8(v, lm)) - (int)vminvq_u8(vornq_u8(v, dm));
+}
+#endif
+
 // edge_contrast(...) >= min_con for an edge of scan line `line` (a row, or with axis 1 a column). The test reads
 // pixels edge - EDGE_REACH .. edge + EDGE_REACH - 1 of the line at most, so where the blocks under those hold no
 // such contrast between them the answer is no, and no pixel is read.
 static inline int edge_passes(const edge_ctx_t *c, int axis, int line, int edge, int inner, int dark_len, int light_len) {
+#ifdef OB_NEON
+  // ai: arm64: where the window lies inside the line its pixels are read at once; the blocks' test below is only a
+  // ai: shortcut to the same no (light - dark is never more than the blocks' range), so the answer is the same
+  if (edge >= EDGE_REACH && edge + (axis ? EDGE_REACH : 16 - EDGE_REACH) <= (axis ? c->h : c->w))
+    return edge_contrast_n(axis ? c->grey + line : c->grey + (size_t)line * c->w, axis ? c->w : 1, edge, inner, dark_len, light_len) >= c->min_con;
+#endif
   int len = axis ? c->h : c->w, lo = edge - EDGE_REACH < 0 ? 0 : edge - EDGE_REACH, hi = edge + EDGE_REACH - 1 >= len ? len - 1 : edge + EDGE_REACH - 1, mn = 255, mx = 0;
   for (int b = lo / BLK; b <= hi / BLK; b++) { int k = axis ? b * c->bs + line / BLK : (line / BLK) * c->bs + b; if (c->mn[k] < mn) mn = c->mn[k]; if (c->mx[k] > mx) mx = c->mx[k]; }
   if (mx - mn < c->min_con) return 0;
@@ -1632,6 +1683,15 @@ static inline void far_end(scan_t *s, const edge_ctx_t *c, int axis, int line, f
 //     could pass is a block or more further on, and the test reads no more than EDGE_REACH of a run.
 #define ACCEPT(s, out, line, at) { (out)[(s)->got] = (fpt_t){ (float)(line), (float)(at), (s)->got }; (s)->got++; }
 
+#ifdef OB_NEON
+// ai: arm64: which of the sixteen pixels at p differ from those at q, as bit 4 i for pixel i (the equal bytes' mask
+// ai: narrowed to a nibble a byte by SHRN, its low bits cleared where equal)
+static inline uint64_t bounds16(const uint8_t *p, const uint8_t *q) {
+  const uint8x16_t eq = vceqq_u8(vld1q_u8(p), vld1q_u8(q));
+  return ~vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(eq), 4)), 0) & 0x1111111111111111ull;
+}
+#endif
+
 // Candidates of the left border (near) and the right (far) from every second row: the first SIDE_K from each end.
 // Inside the picture nearly every dark run qualifies, so a scan is over a few runs past the border, and the
 // middle of the row, where most of the boundaries are, is never looked at.
@@ -1649,7 +1709,13 @@ static void row_points(const uint8_t *bin, int w, int h, const edge_ctx_t *c, fp
         s.open = row[u1 - 1] ? u0 : -1;
         continue;
       }
-#ifdef OB_SIMD
+#ifdef OB_NEON
+      // ai: arm64: the sixteen boundaries as a nibble each (SHRN), bit 4 i for pixel u0 + i
+      if (u0 && u1 == u0 + 16) {
+        for (uint64_t m = bounds16(row + u0, row + u0 - 1); m && s.got < SIDE_K; m &= m - 1) { int p = u0 + (__builtin_ctzll(m) >> 2); near_edge(&s, p, row[p], c, 0, y, out); }
+        continue;
+      }
+#elif defined(OB_SIMD)
       if (u0 && u1 == u0 + 16) {
         for (unsigned m = (unsigned)wasm_i8x16_bitmask(wasm_i8x16_ne(wasm_v128_load(row + u0), wasm_v128_load(row + u0 - 1))); m && s.got < SIDE_K; m &= m - 1) { int p = u0 + __builtin_ctz(m); near_edge(&s, p, row[p], c, 0, y, out); }
         continue;
@@ -1668,7 +1734,12 @@ static void row_points(const uint8_t *bin, int w, int h, const edge_ctx_t *c, fp
         s.open = u0 && row[u0 - 1] ? u1 : -1;
         continue;
       }
-#ifdef OB_SIMD
+#ifdef OB_NEON
+      if (u0 && u1 == u0 + 16) {
+        for (uint64_t m = bounds16(row + u0, row + u0 - 1); m && s.got < SIDE_K; ) { int b = 63 - __builtin_clzll(m), p = u0 + (b >> 2); m ^= 1ull << b; far_edge(&s, p, row[p], c, 0, y, out); }
+        continue;
+      }
+#elif defined(OB_SIMD)
       if (u0 && u1 == u0 + 16) {
         for (unsigned m = (unsigned)wasm_i8x16_bitmask(wasm_i8x16_ne(wasm_v128_load(row + u0), wasm_v128_load(row + u0 - 1))); m && s.got < SIDE_K; ) { int i = 31 - __builtin_clz(m), p = u0 + i; m &= ~(1u << i); far_edge(&s, p, row[p], c, 0, y, out); }
         continue;
@@ -1681,6 +1752,18 @@ static void row_points(const uint8_t *bin, int w, int h, const edge_ctx_t *c, fp
   }
 }
 
+#ifdef OB_NEON
+// ai: arm64: col_points' boundaries m of row y in chunk c (bit i: column 16 c + i), in column order
+static inline void col_bounds(scan_t *st, fpt_t *slot, const edge_ctx_t *ctx, int dir, int y, const uint8_t *r1, int c, unsigned m, uint16_t *active, int *live) {
+  for (; m; m &= m - 1) {
+    int i = __builtin_ctz(m), x = 16 * c + i;
+    scan_t *sc = &st[x >> 1];
+    if (dir) far_edge(sc, y, r1[x], ctx, 1, x, slot + (size_t)(x >> 1) * SIDE_K); else near_edge(sc, y, r1[x], ctx, 1, x, slot + (size_t)(x >> 1) * SIDE_K);
+    if (sc->got == SIDE_K) { active[c] &= (uint16_t)~(1u << i); (*live)--; }
+  }
+}
+#endif
+
 // The same for the top border (near) and the bottom (far), from every second column, without turning the image
 // over: all the columns are scanned at once, a row at a time. Comparing a row with the one before it gives the
 // columns that have a boundary there, sixteen to a compare, and a column drops out of the compare once it has its
@@ -1691,7 +1774,13 @@ static void col_points(const uint8_t *bin, int w, int h, const edge_ctx_t *ctx, 
   int nc = w / 2, chunks = ctx->chunks;
   scan_t *st = malloc((size_t)nc * sizeof(scan_t));
   fpt_t *slot = malloc((size_t)nc * SIDE_K * sizeof(fpt_t));
+#ifdef OB_NEON
+  // ai: arm64: the masks padded to whole groups of eight chunks, the padding never active, for the group test below
+  const int cpad = (chunks + 7) & ~7;
+  uint16_t *active = calloc((size_t)cpad * 2, sizeof(uint16_t)), *asleep = active + cpad;
+#else
   uint16_t *active = malloc((size_t)chunks * 2 * sizeof(uint16_t)), *asleep = active + chunks;
+#endif
   *nn = *nf = 0;
   for (int dir = 0; dir < 2 && st && slot && active; dir++) {
     int live = nc, cur = -1;
@@ -1725,6 +1814,37 @@ static void col_points(const uint8_t *bin, int w, int h, const edge_ctx_t *ctx, 
         }
       }
       const uint8_t *r1 = bin + (size_t)y * w, *r0 = r1 - w;
+#ifdef OB_NEON
+      // ai: arm64: eight chunks at a time: a group with no column awake passed over whole; a whole group's sixteen-bit
+      // ai: boundary masks made together (each byte's bit of its place in its half, then pairwise adds three times over,
+      // ai: ADDP: chunk k's two bytes are lane k), masked by the columns awake; then each chunk in order as the plain
+      // ai: loop takes it (a chunk's own boundaries change only its own mask), the group's last chunks one by one
+      for (int c0 = 0; c0 < chunks; c0 += 8) {
+        const uint16x8_t aw = vbicq_u16(vld1q_u16(active + c0), vld1q_u16(asleep + c0));
+        if (!vmaxvq_u16(aw)) continue;
+        if (16 * c0 + 128 <= w) {
+          static const uint8_t BIT[16] = { 1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128 };
+          const uint8x16_t bit = vld1q_u8(BIT);
+          uint8x16_t b[8];
+          for (int k = 0; k < 8; k++) b[k] = vbicq_u8(bit, vceqq_u8(vld1q_u8(r1 + 16 * (c0 + k)), vld1q_u8(r0 + 16 * (c0 + k))));
+          const uint8x16_t q = vpaddq_u8(vpaddq_u8(vpaddq_u8(b[0], b[1]), vpaddq_u8(b[2], b[3])), vpaddq_u8(vpaddq_u8(b[4], b[5]), vpaddq_u8(b[6], b[7])));
+          const uint16x8_t m8 = vandq_u16(vreinterpretq_u16_u8(q), aw);
+          if (!vmaxvq_u16(m8)) continue;
+          uint16_t ms[8];
+          vst1q_u16(ms, m8);
+          for (int k = 0; k < 8; k++) if (ms[k]) col_bounds(st, slot, ctx, dir, y, r1, c0 + k, ms[k], active, &live);
+          continue;
+        }
+        for (int c = c0; c < chunks; c++) {
+          const unsigned awake = active[c] & ~(unsigned)asleep[c];
+          if (!awake) continue;
+          unsigned m = 0;
+          if (16 * c + 16 <= w) m = (unsigned)wasm_i8x16_bitmask(wasm_i8x16_ne(wasm_v128_load(r1 + 16 * c), wasm_v128_load(r0 + 16 * c))) & awake;
+          else for (unsigned a = awake; a; a &= a - 1) { int i = __builtin_ctz(a); m |= (unsigned)(r1[16 * c + i] != r0[16 * c + i]) << i; }
+          col_bounds(st, slot, ctx, dir, y, r1, c, m, active, &live);
+        }
+      }
+#else
       for (int c = 0; c < chunks; c++) {
         const unsigned awake = active[c] & ~(unsigned)asleep[c];
         if (!awake) continue;
@@ -1741,6 +1861,7 @@ static void col_points(const uint8_t *bin, int w, int h, const edge_ctx_t *ctx, 
           if (sc->got == SIDE_K) { active[c] &= (uint16_t)~(1u << i); live--; }
         }
       }
+#endif
     }
     fpt_t *out = dir ? far : near;
     int n = 0;
@@ -1784,18 +1905,55 @@ static inline float line_at(const fline_t *l, float along) { float d = along - l
 
 // The fits test the same points against curve after curve, so the points are kept as two plain arrays and tested
 // four at a time. in4: which of four points lie within tol of the curve, as a bit each.
-#ifdef OB_SIMD
+#if defined(OB_SIMD) && !defined(OB_NEON)
 static inline v128_t curve_in4(const fline_t *l, v128_t al, v128_t ac, v128_t tol) {
   const v128_t d = wasm_f32x4_sub(al, wasm_f32x4_splat(l->mid));
   const v128_t at = wasm_f32x4_add(wasm_f32x4_add(wasm_f32x4_mul(wasm_f32x4_mul(wasm_f32x4_splat(l->c), d), d), wasm_f32x4_mul(wasm_f32x4_splat(l->a), al)), wasm_f32x4_splat(l->b));
   return wasm_f32x4_le(wasm_f32x4_abs(wasm_f32x4_sub(ac, at)), tol);
 }
 #endif
+#ifdef OB_NEON
+// ai: arm64: curve_in4's test in NEON's own instructions, the same float operations in the same order (FABD is the
+// ai: rounded difference made positive, as fabsf of it): a lane all ones where the point is within tol
+typedef struct { float32x4_t mid, c, a, b, tol; } curve4_t;
+static inline curve4_t curve4_of(const fline_t *l, float tol) {
+  return (curve4_t){ vdupq_n_f32(l->mid), vdupq_n_f32(l->c), vdupq_n_f32(l->a), vdupq_n_f32(l->b), vdupq_n_f32(tol) };
+}
+static inline uint32x4_t curve_in4n(const curve4_t *k, float32x4_t al, float32x4_t ac) {
+  const float32x4_t d = vsubq_f32(al, k->mid);
+  const float32x4_t at = vaddq_f32(vaddq_f32(vmulq_f32(vmulq_f32(k->c, d), d), vmulq_f32(k->a, al)), k->b);
+  return vcleq_f32(vabdq_f32(ac, at), k->tol);
+}
+#endif
 // How many of m points lie within tol of the curve, and the stretch of `along` they cover (lo > hi when none do).
 static int curve_support(const fline_t *l, const float *al, const float *ac, int m, float tol, float *plo, float *phi) {
   float lo = 1e9f, hi = -1e9f;
   int n = 0, k = 0;
-#ifdef OB_SIMD
+#ifdef OB_NEON
+  // ai: arm64: eight points a step; the count in lanes (a passing lane's all-ones subtracted), the stretch by
+  // ai: FMIN / FMAX over the passing lanes' along (a line number, whole and positive, so no NaN or signed zero for
+  // ai: them to treat otherwise than the compare-and-select), each order-free, so the same n, lo and hi
+  {
+    const curve4_t K = curve4_of(l, tol);
+    const float32x4_t big = vdupq_n_f32(lo), small = vdupq_n_f32(hi);
+    uint32x4_t c0 = vdupq_n_u32(0), c1 = c0;
+    float32x4_t lo0 = big, lo1 = big, hi0 = small, hi1 = small;
+    for (; k + 8 <= m; k += 8) {
+      const float32x4_t a0 = vld1q_f32(al + k), a1 = vld1q_f32(al + k + 4);
+      const uint32x4_t in0 = curve_in4n(&K, a0, vld1q_f32(ac + k)), in1 = curve_in4n(&K, a1, vld1q_f32(ac + k + 4));
+      c0 = vsubq_u32(c0, in0); c1 = vsubq_u32(c1, in1);
+      lo0 = vminq_f32(lo0, vbslq_f32(in0, a0, big)); lo1 = vminq_f32(lo1, vbslq_f32(in1, a1, big));
+      hi0 = vmaxq_f32(hi0, vbslq_f32(in0, a0, small)); hi1 = vmaxq_f32(hi1, vbslq_f32(in1, a1, small));
+    }
+    for (; k + 4 <= m; k += 4) {
+      const float32x4_t a0 = vld1q_f32(al + k);
+      const uint32x4_t in0 = curve_in4n(&K, a0, vld1q_f32(ac + k));
+      c0 = vsubq_u32(c0, in0);
+      lo0 = vminq_f32(lo0, vbslq_f32(in0, a0, big)); hi0 = vmaxq_f32(hi0, vbslq_f32(in0, a0, small));
+    }
+    n = (int)vaddvq_u32(vaddq_u32(c0, c1)); lo = vminvq_f32(vminq_f32(lo0, lo1)); hi = vmaxvq_f32(vmaxq_f32(hi0, hi1));
+  }
+#elif defined(OB_SIMD)
   v128_t vlo = wasm_f32x4_splat(lo), vhi = wasm_f32x4_splat(hi);
   const v128_t vtol = wasm_f32x4_splat(tol);
   for (; k + 4 <= m; k += 4) {
@@ -1827,7 +1985,36 @@ static void refit_curve(const float *al, const float *ac, int n, float tol, flin
     double S[3][4] = { { 0 } }; int m = 0, i = 0;
     #define TAKE(i) { double u = (al[i] - l->mid) / half, f[3] = { u * u, u, 1 }; \
       for (int r = 0; r < 3; r++) { for (int q = 0; q < 3; q++) S[r][q] += f[r] * f[q]; S[r][3] += f[r] * ac[i]; } m++; }
-#ifdef OB_SIMD
+#ifdef OB_NEON
+    // ai: arm64: the test eight points a step, a step with none passing left at one compare; u four a step (FDIV,
+    // ai: the same float division); the sums in their order but only the distinct ones, in pairs of lanes: with
+    // ai: f = (u u, u, 1), S[0][0] sums f0 f0 and S[0][1] = S[1][0] f0 u; S[0][2], S[2][0] and S[1][1] all sum f0
+    // ai: (f0 1, 1 f0 and u u are each f0 itself); S[1][2] = S[2][1] sums u, S[2][2] the count; S[r][3] sums f[r] ac,
+    // ai: S[2][3] ac. The same addends in the same order, so the same sums
+    {
+      const curve4_t K = curve4_of(l, tol);
+      const float32x4_t vmid = vdupq_n_f32(l->mid), vhalf = vdupq_n_f32(half);
+      float64x2_t s01 = vdupq_n_f64(0), s02 = s01, s03 = s01;
+      double s23 = 0;
+      float u4[8];
+      #define TAKE2(u, acv) { const double u_ = (u), ac_ = (acv); const float64x2_t f_ = { u_ * u_, u_ }; \
+        s01 = vaddq_f64(s01, vmulq_f64(f_, vdupq_n_f64(f_[0]))); s02 = vaddq_f64(s02, f_); s03 = vaddq_f64(s03, vmulq_f64(f_, vdupq_n_f64(ac_))); s23 += ac_; m++; }
+      for (; i + 8 <= n; i += 8) {
+        const float32x4_t a0 = vld1q_f32(al + i), a1 = vld1q_f32(al + i + 4);
+        const uint32x4_t in0 = curve_in4n(&K, a0, vld1q_f32(ac + i)), in1 = curve_in4n(&K, a1, vld1q_f32(ac + i + 4));
+        uint64_t bits = vget_lane_u64(vreinterpret_u64_u8(vmovn_u16(vcombine_u16(vmovn_u32(in0), vmovn_u32(in1)))), 0);
+        if (!bits) continue;
+        vst1q_f32(u4, vdivq_f32(vsubq_f32(a0, vmid), vhalf)); vst1q_f32(u4 + 4, vdivq_f32(vsubq_f32(a1, vmid), vhalf));
+        for (bits &= 0x0101010101010101ull; bits; bits &= bits - 1) { const int j = __builtin_ctzll(bits) >> 3; TAKE2(u4[j], ac[i + j]); }
+      }
+      for (; i < n; i++) if (fabsf(ac[i] - line_at(l, al[i])) <= tol) TAKE2((al[i] - l->mid) / half, ac[i]);
+      #undef TAKE2
+      const double f0 = vgetq_lane_f64(s02, 0), f1 = vgetq_lane_f64(s02, 1);
+      const double T[3][4] = { { vgetq_lane_f64(s01, 0), vgetq_lane_f64(s01, 1), f0, vgetq_lane_f64(s03, 0) },
+                               { vgetq_lane_f64(s01, 1), f0, f1, vgetq_lane_f64(s03, 1) }, { f0, f1, (double)m, s23 } };
+      memcpy(S, T, sizeof S);
+    }
+#elif defined(OB_SIMD)
     // The test four at a time, the sums over those that pass one at a time and in order, so they round as ever.
     const v128_t vtol = wasm_f32x4_splat(tol);
     for (; i + 4 <= n; i += 4) for (unsigned in = (unsigned)wasm_i32x4_bitmask(curve_in4(l, wasm_v128_load(al + i), wasm_v128_load(ac + i), vtol)); in; in &= in - 1) TAKE(i + __builtin_ctz(in));
@@ -2332,13 +2519,25 @@ static int fit_lines(const fpt_t *p, int n, float tol, float min_span, fline_t *
   for (int k = 0; k < n; k++) { al[k] = p[k].along; ac[k] = p[k].across; al3[k % 3][m3[k % 3]] = p[k].along; ac3[k % 3][m3[k % 3]++] = p[k].across; }
   uint32_t s = 12345u;
   #define RND(m) (s = s * 1664525u + 1013904223u, (int)((s >> 8) % (uint32_t)(m)))
+#ifdef OB_NEON
+  // ai: arm64: every rank's points in one pass, each rank's indices in their order (a counting sort on rank)
+  int rank_at[SIDE_K + 1] = { 0 };
+  for (int k = 0; k < n; k++) rank_at[p[k].rank + 1]++;
+  for (int r = 0; r < SIDE_K; r++) rank_at[r + 1] += rank_at[r];
+  { int fill[SIDE_K]; memcpy(fill, rank_at, sizeof fill); for (int k = 0; k < n; k++) idx[fill[p[k].rank]++] = k; }
+#endif
   for (int rank = 0; rank < SIDE_K; rank++) {
+#ifdef OB_NEON
+    const int *ix = idx + rank_at[rank], m = rank_at[rank + 1] - rank_at[rank];
+#else
     int m = 0;
+    const int *ix = idx;
     for (int k = 0; k < n; k++) if (p[k].rank == rank) idx[m++] = k;
+#endif
     if (m < 12) continue;
     fline_t best = { 0, 0, 0, 0, 0 };
     for (int it = 0; it < 120; it++) {
-      int i0 = idx[RND(m)], i1 = idx[RND(m)], i2 = idx[RND(m)];
+      int i0 = ix[RND(m)], i1 = ix[RND(m)], i2 = ix[RND(m)];
       if (p[i0].along > p[i1].along) { int q = i0; i0 = i1; i1 = q; }
       if (p[i1].along > p[i2].along) { int q = i1; i1 = i2; i2 = q; }
       if (p[i0].along > p[i1].along) { int q = i0; i0 = i1; i1 = q; }
