@@ -50,6 +50,7 @@ static void lensm_at(const struct lensm *m, double u, double v, float *dx, float
 void ob_image_init(image_t *im, const uint8_t *px, int w, int h, float gamma) {
   im->px = px; im->w = w; im->h = h;
   for (int i = 0; i < 256; i++) im->lut[i] = gamma == 1.0f ? i / 255.0f : powf(i / 255.0f, gamma);
+  im->lin = gamma == 1.0f;
 }
 
 // ---------------------------------------------------------------- finder search
@@ -159,6 +160,49 @@ void ob_test_binarize(const uint8_t *img, int w, int h, uint8_t *bin) { binarize
 // the image's own edges clamped, rounded back to bytes. tmp holds (x1 - x0) * (y1 - y0 + 2r) and acc (x1 - x0).
 static void box_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r, int x0, int y0, int x1, int y1, uint16_t *tmp, int *acc) {
   const int rw = x1 - x0, rows = y1 - y0 + 2 * r, kk = (2 * r + 1) * (2 * r + 1);
+#ifdef OB_SIMD
+  // ai: the same integer sums a vector at a time, so the same bytes. A row's sums directly, 2r + 1 widened byte loads per
+  // ai: eight columns where no read is clamped (the clamped columns by the scalar sum); the column sums in 16-bit lanes
+  // ai: (at most 255 (2r + 1)^2, 57,375 at r 7, and a sum less its leaving row before the entering one is added); the
+  // ai: rounded division by kk a multiply and a shift, exact for sums under 2^32 / kk^2 (85,000 and more at r 7)
+  if (r <= 7) {
+    // the columns whose vector reads x0 + x - r .. x0 + x + r + 15 all lie in the row: x from xa while x <= xz
+    const int xa = r - x0 > 0 ? r - x0 : 0, xz = w - 16 - r - x0;
+    for (int j = 0; j < rows; j++) {
+      const int sy = y0 - r + j;
+      const uint8_t *srow = src + (size_t)(sy < 0 ? 0 : sy >= h ? h - 1 : sy) * w;
+      uint16_t *t = tmp + (size_t)j * rw;
+      int x = 0;
+      for (; x < rw && x < xa; x++) { int a = 0; for (int i = x0 + x - r; i <= x0 + x + r; i++) a += srow[i < 0 ? 0 : i >= w ? w - 1 : i]; t[x] = (uint16_t)a; }
+      for (; x + 8 <= rw && x <= xz; x += 8) {
+        v128_t a = wasm_i16x8_splat(0);
+        for (int sft = -r; sft <= r; sft++) a = wasm_i16x8_add(a, wasm_u16x8_extend_low_u8x16(wasm_v128_load(srow + x0 + x + sft)));
+        wasm_v128_store(t + x, a);
+      }
+      for (; x < rw; x++) { int a = 0; for (int i = x0 + x - r; i <= x0 + x + r; i++) a += srow[i < 0 ? 0 : i >= w ? w - 1 : i]; t[x] = (uint16_t)a; }
+    }
+    uint16_t *col = (uint16_t *)acc;   // rw ints hold rw 16-bit sums twice over
+    int x = 0;
+    for (; x + 8 <= rw; x += 8) {
+      v128_t c = wasm_i16x8_splat(0);
+      for (int j = 0; j < 2 * r + 1; j++) c = wasm_i16x8_add(c, wasm_v128_load(tmp + (size_t)j * rw + x));
+      wasm_v128_store(col + x, c);
+    }
+    for (; x < rw; x++) { int c = 0; for (int j = 0; j < 2 * r + 1; j++) c += tmp[(size_t)j * rw + x]; col[x] = (uint16_t)c; }
+    const uint64_t M = ((uint64_t)1 << 32) / (uint64_t)kk + 1;
+    const unsigned half = (unsigned)kk / 2;
+    for (int y = y0; y < y1; y++) {
+      uint8_t *o = out + (size_t)y * w + x0;
+      for (int xx = 0; xx < rw; xx++) o[xx] = (uint8_t)(((uint64_t)(col[xx] + half) * M) >> 32);
+      if (y + 1 == y1) break;
+      const uint16_t *ta = tmp + (size_t)(y - y0 + 2 * r + 1) * rw, *ts = tmp + (size_t)(y - y0) * rw;
+      int xx = 0;
+      for (; xx + 8 <= rw; xx += 8) wasm_v128_store(col + xx, wasm_i16x8_add(wasm_i16x8_sub(wasm_v128_load(col + xx), wasm_v128_load(ts + xx)), wasm_v128_load(ta + xx)));
+      for (; xx < rw; xx++) col[xx] = (uint16_t)(col[xx] - ts[xx] + ta[xx]);
+    }
+    return;
+  }
+#endif
   for (int j = 0; j < rows; j++) {
     const int sy = y0 - r + j;
     const uint8_t *srow = src + (size_t)(sy < 0 ? 0 : sy >= h ? h - 1 : sy) * w;
@@ -2715,7 +2759,9 @@ void ob_map_point(const ob_layout_t *L, const ob_reg_t *reg, float mx, float my,
 // block is at (mx0 + (x0 + xx) * step, my0 + (y0 + yy) * step) and lands in out[yy * pitch + xx]. Points up to the
 // next mesh column share their four nodes and differ in mx alone, so a row is walked in such runs, four points
 // to a vector. The picture is such a grid, n samples across its span, taken a strip of columns at a time.
-void ob_sample_grid(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
+// ai: relaxed (a constant where it is called): the vectors through sample4r, the decode's picture on arm64
+static inline __attribute__((always_inline)) void sample_grid_walk(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch, const int relaxed) {
+  (void)relaxed;
   const image_t im = *pim;
   const homo_t H = reg->H;
   const node_t *nodes = reg->nodes;
@@ -2775,7 +2821,11 @@ void ob_sample_grid(const ob_layout_t *L, const image_t *pim, const ob_reg_t *re
       const v128_t rw = wasm_f32x4_div(one, wasm_f32x4_add(wasm_f32x4_mul(h6, vmx), vkw));
       const v128_t pu = wasm_f32x4_mul(wasm_f32x4_add(wasm_f32x4_mul(h0, vmx), vku), rw), pv = wasm_f32x4_mul(wasm_f32x4_add(wasm_f32x4_mul(h3, vmx), vkv), rw);
       const v128_t dx = wasm_f32x4_add(cx4, wasm_f32x4_mul(ex4, vmx)), dy = wasm_f32x4_add(cy4, wasm_f32x4_mul(ey4, vmx));
+#ifdef OB_NEON
+      const v128_t got = relaxed ? sample4r(&im, wasm_f32x4_add(pu, dx), wasm_f32x4_add(pv, dy)) : sample4(&im, wasm_f32x4_add(pu, dx), wasm_f32x4_add(pv, dy));
+#else
       const v128_t got = sample4(&im, wasm_f32x4_add(pu, dx), wasm_f32x4_add(pv, dy));
+#endif
       if (xx + 4 <= nx) { wasm_v128_store(out + yy * pitch + xx, got); continue; }
       float t[4];   // the row's last vector, past its end: those lanes are dropped
       wasm_v128_store(t, got);
@@ -2797,5 +2847,11 @@ void ob_sample_grid(const ob_layout_t *L, const image_t *pim, const ob_reg_t *re
     }
 #endif
   }
+}
+void ob_sample_grid(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
+  sample_grid_walk(L, pim, reg, mx0, my0, step, x0, nx, y0, ny, out, pitch, 0);
+}
+void ob_sample_grid_pic(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
+  sample_grid_walk(L, pim, reg, mx0, my0, step, x0, nx, y0, ny, out, pitch, 1);
 }
 

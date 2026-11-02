@@ -4,7 +4,8 @@
 #include "ob.h"
 #include <math.h>
 
-typedef struct { const uint8_t *px; int w, h; float lut[256]; } image_t;
+// ai: lin: the table is i / 255 (gamma 1, as both C decoders read), which the picture sampler on arm64 makes in registers
+typedef struct { const uint8_t *px; int w, h; float lut[256]; int lin; } image_t;
 
 static inline float sample(const image_t *im, float x, float y) {
   x -= 0.5f; y -= 0.5f;
@@ -21,6 +22,38 @@ static inline float sample(const image_t *im, float x, float y) {
 }
 
 #include "simd.h"
+#ifdef OB_NEON
+#include <string.h>
+// ai: arm64, the decode's picture sampler alone (ob_sample_grid_pic; registration keeps sample4): at gamma 1 a point's
+// ai: pixel pairs read as two 16-bit loads through general registers, blended on 0 to 255 with fused multiply-adds and
+// ai: scaled by 1/255 once, the clamps and truncation sample()'s. Its own floats (the blocks a decode verifies are its
+// ai: test), 1.5x sample4's walk on a phone core, where the exact NEON gathers gained nothing. Else sample4.
+static inline v128_t sample4(const image_t *im, v128_t X, v128_t Y);
+static inline v128_t sample4r(const image_t *im, v128_t X, v128_t Y) {
+  if (!im->lin) return sample4(im, X, Y);
+  const float32x4_t half = vdupq_n_f32(0.5f), zero = vdupq_n_f32(0);
+  const float32x4_t wm = vdupq_n_f32(im->w - 1.001f), hm = vdupq_n_f32(im->h - 1.001f);
+  float32x4_t x = vsubq_f32(vreinterpretq_f32_s32(X), half), y = vsubq_f32(vreinterpretq_f32_s32(Y), half);
+  x = vbslq_f32(vcltq_f32(x, zero), zero, x); x = vbslq_f32(vcltq_f32(wm, x), wm, x);
+  y = vbslq_f32(vcltq_f32(y, zero), zero, y); y = vbslq_f32(vcltq_f32(hm, y), hm, y);
+  const int32x4_t xi = vcvtq_s32_f32(x), yi = vcvtq_s32_f32(y);
+  const float32x4_t fx = vsubq_f32(x, vcvtq_f32_s32(xi)), fy = vsubq_f32(y, vcvtq_f32_s32(yi));
+  const int32x4_t idx = vmlaq_s32(xi, yi, vdupq_n_s32(im->w));
+  const uint8_t *p0 = im->px + vgetq_lane_s32(idx, 0), *p1 = im->px + vgetq_lane_s32(idx, 1), *p2 = im->px + vgetq_lane_s32(idx, 2), *p3 = im->px + vgetq_lane_s32(idx, 3);
+  const int w = im->w;
+  uint16_t h[8];
+  memcpy(h + 0, p0, 2); memcpy(h + 1, p1, 2); memcpy(h + 2, p2, 2); memcpy(h + 3, p3, 2);
+  memcpy(h + 4, p0 + w, 2); memcpy(h + 5, p1 + w, 2); memcpy(h + 6, p2 + w, 2); memcpy(h + 7, p3 + w, 2);
+  const uint64_t ab = (uint64_t)h[0] | (uint64_t)h[1] << 16 | (uint64_t)h[2] << 32 | (uint64_t)h[3] << 48;
+  const uint64_t cd = (uint64_t)h[4] | (uint64_t)h[5] << 16 | (uint64_t)h[6] << 32 | (uint64_t)h[7] << 48;
+  const uint16x8_t v = vreinterpretq_u16_u64(vcombine_u64(vcreate_u64(ab), vcreate_u64(cd)));
+  const uint16x8_t lo = vandq_u16(v, vdupq_n_u16(0xff)), hi = vshrq_n_u16(v, 8);   // a and c in lo, b and d in hi
+  const float32x4_t a = vcvtq_f32_u32(vmovl_u16(vget_low_u16(lo))), c = vcvtq_f32_u32(vmovl_high_u16(lo));
+  const float32x4_t b = vcvtq_f32_u32(vmovl_u16(vget_low_u16(hi))), d = vcvtq_f32_u32(vmovl_high_u16(hi));
+  const float32x4_t top = vfmaq_f32(a, vsubq_f32(b, a), fx), bot = vfmaq_f32(c, vsubq_f32(d, c), fx);
+  return vreinterpretq_s32_f32(vmulq_f32(vfmaq_f32(top, vsubq_f32(bot, top), fy), vdupq_n_f32(1.0f / 255.0f)));
+}
+#endif
 #ifdef OB_SIMD
 // sample() for four points at once: the same operations in the same order, so the same floats.
 // The sixteen pixel reads stay scalar (wasm has no gather); the arithmetic around them is what is shared.
@@ -119,6 +152,8 @@ int ob_anchor_m0(const ob_layout_t *L, int i);
 int ob_thin_read_fmt(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float *q, int cells);
 // A block of a regular grid in module coordinates: see acquire.c.
 void ob_sample_grid(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch);
+// ai: the decode's picture through ob_sample_grid's walk: on arm64 sample4r's floats, elsewhere ob_sample_grid's
+void ob_sample_grid_pic(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch);
 // What lizard_acquire left for lizard_finish (lizard_phy.h), for a caller that has to sample somewhere else. Valid
 // until the matching lizard_finish takes it up.
 struct lizard_s;
