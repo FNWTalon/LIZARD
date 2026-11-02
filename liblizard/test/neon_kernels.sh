@@ -24,10 +24,10 @@ adb push "$out/ldpc_neon" "$out/fft_dec" "$out/crc_check" "$out/mesh_neon" "$out
 fail=0
 for t in "ldpc_neon 20000 500 5" "fft_dec 30" "crc_check"; do
   echo "== $t"
-  adb shell "input keyevent KEYCODE_WAKEUP; taskset $CORE $P/$t; echo exit \$?" | tee /dev/stderr | tail -1 | grep -q 'exit 0' || fail=1
+  adb shell "input keyevent KEYCODE_WAKEUP; taskset $CORE $P/$t; echo exit \$?" | tee -a /dev/stderr | tail -1 | grep -q 'exit 0' || fail=1
 done 2>&1
 echo "== mesh_neon, mesh_scalar"
-hv=$(adb shell "input keyevent KEYCODE_WAKEUP; taskset $CORE $P/mesh_neon" | tee /dev/stderr | grep 'mesh hash')
-hs=$(adb shell "taskset $CORE $P/mesh_scalar" | tee /dev/stderr | grep 'mesh hash')
+hv=$(adb shell "input keyevent KEYCODE_WAKEUP; taskset $CORE $P/mesh_neon" | tee -a /dev/stderr | grep 'mesh hash')
+hs=$(adb shell "taskset $CORE $P/mesh_scalar" | tee -a /dev/stderr | grep 'mesh hash')
 [ -n "$hv" ] && [ "$hv" = "$hs" ] || { echo "the mesh's NEON forms and scalar twins differ"; fail=1; }
 exit $fail
