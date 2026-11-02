@@ -159,17 +159,19 @@ static inline void turned(const lizard_t *f, const struct lizard_ws *w, int p, f
 }
 #ifdef OB_NEON
 // ai: arm64: turned() on four coefficients p at once, the turned values returned and the spectrum left as it is: (u, v)
-// ai: out of the index by shifts (bw 64) and a division by n in float, exact (the quotient, a block of columns, is under
-// ai: 32 and q / n falls short of the next whole number by 1 / n at least, far more than a float's spacing there), then
+// ai: out of the index by shifts (bw 64) and a division by n as SQDMULH by m = ceil(2^31 / n), floor(2 q m / 2^32):
+// ai: exact, as q m / 2^31 is q / n and less than q / 2^31 more (under 2^-16 for every block row q of 1536), and q / n
+// ai: falls short of the next whole number by 1 / n at least (a float division and two conversions before); then
 // ai: turned()'s floats
-typedef struct { float32x4_t dx, dy, sc, nf; int32x4_t n, half, low, turns; } turn4_t;
+typedef struct { float32x4_t dx, dy, sc; int32x4_t n, half, low, turns, inv; } turn4_t;
 static inline turn4_t turn4_at(const lizard_t *f, const float d[2]) {
-  const turn4_t t = { vdupq_n_f32(d[0]), vdupq_n_f32(d[1]), vdupq_n_f32((float)ALIGN_TURNS / (float)f->n), vdupq_n_f32((float)f->n),
-                      vdupq_n_s32(f->n), vdupq_n_s32(f->n / 2), vdupq_n_s32(63), vdupq_n_s32(ALIGN_TURNS - 1) };
+  const turn4_t t = { vdupq_n_f32(d[0]), vdupq_n_f32(d[1]), vdupq_n_f32((float)ALIGN_TURNS / (float)f->n),
+                      vdupq_n_s32(f->n), vdupq_n_s32(f->n / 2), vdupq_n_s32(63), vdupq_n_s32(ALIGN_TURNS - 1),
+                      vdupq_n_s32((int32_t)(((1ll << 31) + f->n - 1) / f->n)) };
   return t;
 }
 static inline __attribute__((always_inline)) void turn4(const turn4_t *t, const float *tre, const float *tim, const float *rot, int32x4_t p, float32x4_t *yr, float32x4_t *yi) {
-  const int32x4_t q = vshrq_n_s32(p, 6), blk = vcvtq_s32_f32(vdivq_f32(vcvtq_f32_s32(q), t->nf));
+  const int32x4_t q = vshrq_n_s32(p, 6), blk = vqdmulhq_s32(q, t->inv);
   const int32x4_t uw = vmlsq_s32(q, blk, t->n), vv = vaddq_s32(vshlq_n_s32(blk, 6), vandq_s32(p, t->low));
   const int32x4_t uu = vbslq_s32(vcltq_s32(uw, t->half), uw, vsubq_s32(uw, t->n));
   const float32x4_t a = vmulq_f32(vaddq_f32(vmulq_f32(vcvtq_f32_s32(uu), t->dx), vmulq_f32(vcvtq_f32_s32(vv), t->dy)), t->sc);
