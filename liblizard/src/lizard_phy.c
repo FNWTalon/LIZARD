@@ -1302,8 +1302,18 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
 #endif
   double td = ob_now_ms(); ob_prof_ms[PROF_F_FFT] += td - ts;
   px /= n * w->sx2; py /= n * w->sx2; pxy /= w->sx2 * w->sx2; pxx /= n * w->sq2; pyy /= n * w->sq2;
+#ifdef OB_NEON
+  // ai: arm64: the xy term off only the rows and columns a block's coefficients take (ws dkeep, dcols), all that is read
+  // ai: after this; the rest keep the transform's values, which the floats hash sees and nothing else reads
+  for (int b = 0; b < f->vblocks; b++) {
+    const int keep = w->dkeep[b], lo = keep < n - 1 ? keep : n - 1, hi = n - keep > lo + 1 ? n - keep : lo + 1;
+    for (int u = 0; u < n; u = u == lo ? hi : u + 1)
+      sub_scaled(w->tre + ((size_t)b * n + u) * bw, w->tim + ((size_t)b * n + u) * bw, w->x1r + b * bw, w->x1i + b * bw, (float)(pxy * w->x1r[u]), (float)(pxy * w->x1i[u]), w->dcols[b]);
+  }
+#else
   for (int b = 0; b < f->vblocks; b++) for (int u = 0; u < n; u++)
     sub_scaled(w->tre + ((size_t)b * n + u) * bw, w->tim + ((size_t)b * n + u) * bw, w->x1r + b * bw, w->x1i + b * bw, (float)(pxy * w->x1r[u]), (float)(pxy * w->x1i[u]), bw);
+#endif
   for (int u = 0; u < n; u++) {
     w->tre[(size_t)u * bw] -= (float)(n * (px * w->x1r[u] + pxx * w->x2r[u])); w->tim[(size_t)u * bw] -= (float)(n * (px * w->x1i[u] + pxx * w->x2i[u]));
   }
