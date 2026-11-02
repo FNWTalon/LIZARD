@@ -525,6 +525,22 @@ bool x11Background(unsigned long window, unsigned rgb) {
 #endif
 }
 
+bool x11KeepOnResize(unsigned long window) {
+#if LIZ_X11 && !defined(_WIN32)
+  Display* d = XOpenDisplay(nullptr);
+  if (!d) return false;
+  XSetWindowAttributes a{};
+  a.bit_gravity = NorthWestGravity;
+  XChangeWindowAttributes(d, static_cast<Window>(window), CWBitGravity, &a);
+  XFlush(d);
+  XCloseDisplay(d);
+  return true;
+#else
+  (void)window;
+  return false;
+#endif
+}
+
 #if defined(_WIN32)
 namespace {
 // ai: the windows full screen now, each with what it was before: its style, its rectangle as a normal window, maximized

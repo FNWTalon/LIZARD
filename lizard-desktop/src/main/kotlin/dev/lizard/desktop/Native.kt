@@ -47,6 +47,8 @@ object Native {
     // ai: a heavyweight component's native window given its own background, 0xRRGGBB: what X fills it with where it is
     // ai: shown or uncovered before it draws (2026-11-02; AWT's is the desktop theme's grey); false where it could not be
     @JvmStatic external fun windowBackground(component: java.awt.Component, rgb: Int): Boolean
+    // ai: a heavyweight's contents kept at its top left on a resize, only the uncovered area filled (presenter.h x11KeepOnResize)
+    @JvmStatic external fun windowKeep(component: java.awt.Component): Boolean
     @JvmStatic external fun presentFps(p: Long, fps: Int)
     @JvmStatic external fun presentVsync(p: Long, on: Boolean)
     @JvmStatic external fun presentSize(p: Long, size: Float, edge: Float)

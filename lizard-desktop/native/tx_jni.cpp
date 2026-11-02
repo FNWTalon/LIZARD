@@ -387,6 +387,17 @@ FN(jboolean, windowIsFullscreen)(JNIEnv*, jclass, jlong window) {
 }
 // ai: a heavyweight component's native window given its own background, 0xRRGGBB (presenter.h x11Background,
 // ai: 2026-11-02); false where it has no window yet or off X11 (Windows and macOS show no such fill)
+// ai: presenter.h x11KeepOnResize: a heavyweight's contents kept on a resize, only the uncovered area filled (X11)
+FN(jboolean, windowKeep)(JNIEnv* e, jclass, jobject component) {
+#if defined(__linux__)
+  lizard::PresentTarget target;
+  if (!canvasTarget(e, component, target)) return JNI_FALSE;
+  return lizard::x11KeepOnResize(target.x11Window) ? JNI_TRUE : JNI_FALSE;
+#else
+  (void)e; (void)component;
+  return JNI_FALSE;
+#endif
+}
 FN(jboolean, windowBackground)(JNIEnv* e, jclass, jobject component, jint rgb) {
 #if defined(__linux__)
   lizard::PresentTarget target;
