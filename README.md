@@ -6,7 +6,7 @@ carries about 4 MB/s (see [Status](#status)).
 
 - **Demo:** [fosslabs.dev](https://fosslabs.dev)
 - **How it works:** [an example on video](https://www.youtube.com/shorts/pjcAtQ7GcVQ)
-- **Apps:** [0.7.1 (beta)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.7.1): the Android app, and the desktop app for Linux, Windows and macOS, which sends, and receives through a USB or built-in camera or an Android phone on a cable
+- **Apps:** [0.8 (beta)](https://github.com/FNWTalon/LIZARD/releases/tag/v0.8): the Android app, and the desktop app for Linux, Windows and macOS, which sends, and receives through a USB or built-in camera, a machine vision camera (USB3 Vision or GigE Vision) or an Android phone on a cable
 
 ## The idea
 
@@ -167,33 +167,20 @@ The phone announces itself on the tether alone (UDP 47231) and serves the stream
 hear it, Camera › Phone by address takes the address the phone's PC link field shows.
 
 **Over the cable alone, as an Android Open Accessory.** The PC switches the phone into accessory mode and reads the
-stream over USB bulk transfers, with no network at all. The desktop app loads libusb-1.0 at run time:
-`libusb-1.0.so.0` on Linux (Debian's and Ubuntu's `libusb-1.0-0`), `libusb-1.0.dylib` from Homebrew on macOS, and
-`libusb-1.0.dll` on Windows (from [libusb's releases](https://github.com/libusb/libusb/releases), beside the app's
-executable or on the `PATH`). The phone then shows under Camera as USB; Start switches it (the phone asks once whether
-LIZARD may open the accessory) and the phone reappears on the bus as Google's accessory device, 18d1:2d00 or 18d1:2d01.
+stream over USB bulk transfers, with no network at all. The desktop app loads libusb-1.0 at run time: the Windows and
+macOS packages carry it, and the .deb depends on Debian's and Ubuntu's `libusb-1.0-0`. The phone then shows under
+Camera as USB; Start switches it (the phone asks once whether LIZARD may open the accessory) and the phone reappears on
+the bus as Google's accessory device, 18d1:2d00 or 18d1:2d01.
 
-- **Linux**: the logged-in user needs access to both USB devices, the phone as it plugs in and the accessory it
-  becomes. Desktops grant it to most phones already; where the camera list does not show the phone, a udev rule for the
-  phone's vendor (Samsung's is 04e8) and Google's, for example `/etc/udev/rules.d/51-lizard.rules`:
-
-  ```
-  SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", MODE="0660", TAG+="uaccess"
-  SUBSYSTEM=="usb", ATTR{idVendor}=="04e8", MODE="0660", TAG+="uaccess"
-  ```
-
-  then `sudo udevadm control --reload-rules` and plug the phone in again.
-- **Windows**: libusb reaches a device only through the WinUSB driver, which [Zadig](https://zadig.akeo.ie) binds:
-  1. Plug the phone in. In Zadig, choose Options › List All Devices, pick the phone, set the driver to WinUSB and press
-     Replace Driver. This takes the phone's file transfer (MTP) away from Explorer while WinUSB holds it.
-  2. In LIZARD, press Start with the phone chosen under Camera. The phone switches into accessory mode and Windows
-     finds a new device.
-  3. In Zadig again, pick that device (18d1:2d00 or 2d01, interface 0), choose WinUSB and press Install Driver. Press
-     Start in LIZARD again. Windows remembers both drivers for those devices.
-
-  To undo it, uninstall the device in Device Manager with its driver deleted, and plug it in again. This route has
-  not been tried on Windows yet; the USB tether needs none of it.
-- **macOS**: nothing to install beyond libusb; not tried yet.
+- **Linux**: the .deb installs a udev rule (`/lib/udev/rules.d/70-lizard.rules`) that gives the logged-in user the
+  phone, by its MTP, PTP or adb interface, and Google's accessory ids; plug the phone in again after installing.
+- **Windows**: libusb reaches a device only through the WinUSB driver. A phone with no such driver shows under Camera
+  as "(no USB driver)"; choosing it offers Install USB driver, which binds WinUSB to the phone and prepares it for the
+  accessory the phone becomes (one administrator's prompt; the app's `lizard_usb.exe`, built on
+  [libwdi](https://github.com/pbatard/libwdi), Zadig's library). While WinUSB holds the phone, Explorer does not show
+  its files on that PC; Receive › Settings › Remove USB driver gives the phone its own driver back. With USB debugging
+  on, the phone's adb interface already has WinUSB and the accessory alone needs the driver.
+- **macOS**: nothing to install; not tried yet.
 
 On a link of 42 MB/s, what a USB 2 cable carries, a 2:1 crop at 1080p and 60 captures a second (110 MB/s raw) arrives at
 about 31 captures a second, where raw luma got about 22 (measured over a throttled loopback); a USB 3 cable and port
@@ -499,7 +486,12 @@ which no phase lock helps: a webcam cannot delay a single frame, so a sender for
 It also takes a phone as its camera ([A phone as a PC's camera](#a-phone-as-a-pcs-camera)): the phone sends its
 camera's crop as `.lizard` frames over a USB tether or, as an Android Open Accessory, over the cable alone. The
 accessory has run over a USB 2 cable on Linux (the link steady at 41 to 42 MB/s); the tether and the accessory on
-Windows and macOS have not run on a cable yet.
+Windows and macOS have not run on a cable yet. Machine vision cameras (GenICam: USB3 Vision and GigE Vision) are read
+through [Aravis](https://github.com/AravisProject/aravis), which the Windows and macOS packages carry and the Debian
+package recommends; they run free, at any rate the camera offers, including past 60 frames a second. They are checked
+against Aravis's simulated GigE camera on loopback (60 and 120 frames a second on Linux) and have not run on a real
+camera yet. On Windows a USB3 Vision camera, like a phone on the cable, needs the WinUSB driver, which the app's
+Install USB driver binds.
 
 ## Layout
 
