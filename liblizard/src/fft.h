@@ -14,9 +14,16 @@
 // ai: a third slower on the S26 at a strip of 64, research/10 s12, wasm both; it left the code on 2026-10-25). The
 // ai: format's: the encoder paints with it, and the decoder off arm64.
 void fft_cols(float *re, float *im, int rows, int cols, int pitch, int inverse);
-// ai: The decoder's forward transform: on arm64 (OB_NEON) radix 4 with fused multiply-adds, its twiddles tabled a stage at
-// ai: a time, 1.2 to 1.4x fft_cols on a phone core; it rounds otherwise than the format's transform, which the encoder
-// ai: keeps (test/fft_dec.c holds it to the definition). Elsewhere fft_cols itself.
-void fft_cols_dec(float *re, float *im, int rows, int cols, int pitch);
+// ai: The decoder's forward transforms, every column of a rows x cols block. On arm64 (OB_NEON) their own kernels (radix
+// ai: 12, 6, 5, 4, 3 and 2, fused multiply-adds, each stage's twiddles tabled), which round otherwise than the format's
+// ai: transform, the encoder's (test/fft_dec.c holds them to the definition), and keep rows in the digit-reversed order
+// ai: of their own plan, so no row is moved for it: fft_dec_dif leaves frequency k in row place[k]; fft_dec_dit takes
+// ai: sample t from row place[t] and leaves the frequencies in order; where keep < rows / 2 its last stage writes only
+// ai: rows [0, keep] and [rows - keep, rows) (the others hold what the stage before left). place = fft_dec_place(rows),
+// ai: the calling thread's, valid until it transforms a ninth size. Elsewhere both are fft_cols, rows in order, keep
+// ai: unread, and fft_dec_place is NULL.
+void fft_dec_dif(float *re, float *im, int rows, int cols, int pitch);
+void fft_dec_dit(float *re, float *im, int rows, int cols, int pitch, int keep);
+const int *fft_dec_place(int rows);
 
 #endif

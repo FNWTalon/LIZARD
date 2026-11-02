@@ -46,6 +46,11 @@ struct lizard_ws {
   // lizard_acquire's answer, waiting for lizard_finish. The image is held by pointer, so the caller's pixels must
   // outlive the pair; the rig's do, since a worker owns the frame for the whole decode.
   image_t hold_im; ob_reg_t hold_reg; int hold_valid;
+#ifdef OB_NEON
+  // ai: arm64's block transforms (fft_dec_dit), a block at a time: the rows its coefficients take, [0, dkeep] and
+  // ai: [n - dkeep, n) (the most |u| in the block), and its columns, to the last v that holds one rounded up to 4
+  int *dkeep, *dcols;
+#endif
 };
 
 extern uint32_t ob_debug_hash;   // the host's (wasm.c, core/cpu/codec.c): armed by a test, which then reads back a hash of the floats and soft values behind the decision
@@ -252,6 +257,17 @@ static int ws_init(lizard_t *f) {
   double *e = malloc((size_t)2 * n * sizeof(double));
   if (!w->tre || !w->tim || !w->wre || !w->wim || !tab || !w->bits || !w->data || !e || !w->amp || !w->blk_its || !w->blk_est || !w->blk_pilot || (w->fmt_cells && !w->fmt_q) || !w->slot || !w->llr2 || !w->white || !w->llrf || !w->sub_est || !w->sub_rms) { free(tab); free(e); return -1; }
   whiten_fill(w->white, f->subch * LIZARD_SUB * 2);
+#ifdef OB_NEON
+  w->dkeep = calloc((size_t)2 * f->vblocks, sizeof(int));
+  if (!w->dkeep) { free(tab); free(e); return -1; }
+  w->dcols = w->dkeep + f->vblocks;
+  for (int i = 0; i < f->subch * LIZARD_SUB; i++) {
+    const int p = f->pos[i], b = p / (n * f->bw), u = p % (n * f->bw) / f->bw, c = p % f->bw, au = u < n - u ? u : n - u;
+    if (au > w->dkeep[b]) w->dkeep[b] = au;
+    if (c + 1 > w->dcols[b]) w->dcols[b] = c + 1;
+  }
+  for (int b = 0; b < f->vblocks; b++) w->dcols[b] = (w->dcols[b] + 3) / 4 * 4 < f->bw ? (w->dcols[b] + 3) / 4 * 4 : f->bw;
+#endif
   for (int j = 0; j < f->subch; j++) { w->amp[j] = f->tilt > 0 && f->subch > 1 ? (float)pow(10.0, -f->tilt * j / (20.0 * (f->subch - 1))) : 1.0f; w->power += (double)LIZARD_SUB * w->amp[j] * w->amp[j]; }
   w->cx = tab; w->qx = tab + n; w->x1r = tab + 2 * n; w->x1i = tab + 3 * n; w->x2r = tab + 4 * n; w->x2i = tab + 5 * n;
   double m2 = 0;
@@ -563,7 +579,11 @@ int lizard_anchor_geom(const lizard_t *f, int out[8]) {
 
 void lizard_free(lizard_t *f) {
   struct lizard_ws *w = f->ws;
-  if (w) { free(w->tre); free(w->wre); free(w->wim); free(w->cx); free(w->bits); free(w->data); free(w->amp); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->llrf); free(w->sub_est); free(w->sub_rms); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < LIZARD_TIERS; t++) free(w->perm[t]); free(w); }
+  if (w) { free(w->tre); free(w->wre); free(w->wim); free(w->cx); free(w->bits); free(w->data); free(w->amp); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->llrf); free(w->sub_est); free(w->sub_rms); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < LIZARD_TIERS; t++) free(w->perm[t]);
+#ifdef OB_NEON
+    free(w->dkeep);
+#endif
+    free(w); }
   for (int t = 0; t < LIZARD_TIERS; t++) ldpc_free(&f->code[t]);
   free(f->pos); free(f->block_tier); ob_layout_free(&f->frame); memset(f, 0, sizeof *f);
 }
@@ -632,53 +652,64 @@ static void clip_row(const float *src, float *dst, int cols, float lim, float sc
 // Only v < vblocks * bw is ever wanted, but the partner row n - v lies in the half the old code threw away, so this
 // runs before anything is discarded.
 #ifdef OB_NEON
-// ai: arm64: four vectors, row k holding a row's four values, written turned over: column l of the four to dst + l pitch
-static inline void store_turned4(float *dst, size_t pitch, float32x4_t r0, float32x4_t r1, float32x4_t r2, float32x4_t r3) {
+// ai: arm64: four vectors, row k holding a row's four values, written turned over: column l of the four to row rows[l]
+// ai: of base (pitch apart)
+static inline void store_turned4(float *base, const int *rows, size_t pitch, float32x4_t r0, float32x4_t r1, float32x4_t r2, float32x4_t r3) {
   const float64x2_t t0 = vreinterpretq_f64_f32(vtrn1q_f32(r0, r1)), t1 = vreinterpretq_f64_f32(vtrn2q_f32(r0, r1));
   const float64x2_t t2 = vreinterpretq_f64_f32(vtrn1q_f32(r2, r3)), t3 = vreinterpretq_f64_f32(vtrn2q_f32(r2, r3));
-  vst1q_f32(dst, vreinterpretq_f32_f64(vtrn1q_f64(t0, t2))); vst1q_f32(dst + pitch, vreinterpretq_f32_f64(vtrn1q_f64(t1, t3)));
-  vst1q_f32(dst + 2 * pitch, vreinterpretq_f32_f64(vtrn2q_f64(t0, t2))); vst1q_f32(dst + 3 * pitch, vreinterpretq_f32_f64(vtrn2q_f64(t1, t3)));
+  vst1q_f32(base + rows[0] * pitch, vreinterpretq_f32_f64(vtrn1q_f64(t0, t2))); vst1q_f32(base + rows[1] * pitch, vreinterpretq_f32_f64(vtrn1q_f64(t1, t3)));
+  vst1q_f32(base + rows[2] * pitch, vreinterpretq_f32_f64(vtrn2q_f64(t0, t2))); vst1q_f32(base + rows[3] * pitch, vreinterpretq_f32_f64(vtrn2q_f64(t1, t3)));
 }
 #endif
+// ai: Rows go through the decoder transforms' place (fft.h fft_dec_place; NULL, rows in order, off arm64): the strip's
+// ai: frequency v is read from its row place[v], and picture column x written to the block's row place[x], where the
+// ai: block's transform takes it.
 static void unpack_turn(const lizard_t *f, int x0, const float *z0) {
   struct lizard_ws *w = f->ws;
   const int n = f->n, bw = f->bw, sw = LIZARD_STRIP, hw = STRIP_HALF;
 #ifdef OB_NEON
+  const int *P = fft_dec_place(n);
   // ai: arm64: four rows v a step (bw a multiple of four, so one block's columns c to c + 3) by four columns j, the
   // ai: same arithmetic as below, turned over in registers so each store is four neighbouring floats of one row x
-  // ai: (the loop below writes one float a row, bw floats apart)
-  if (bw % 4 == 0) {
+  // ai: (the loop below writes one float a row, bw floats apart). A block's rows are written a group of four columns j
+  // ai: at a time, every c, so each row's lines are filled one after the other: the rows place[x] of one strip are n / 4
+  // ai: apart, at 1280 a multiple of 16 KB, and a strip's rows filled 16 bytes a pass over them shared too few cache
+  // ai: sets (the transform stage 0.98 against 1.16 ms a frame on the S26's 1280 replay, 0.70 against 0.76 at 1152)
+  if (bw % 4 == 0 && P) {
     const float32x4_t h = vdupq_n_f32(0.5f), nh = vdupq_n_f32(-0.5f);
-    for (int v = 0; v < f->vblocks * bw; v += 4) {
-      const int b = v / bw, c = v % bw;
-      const float *zr0 = z0 + (size_t)v * sw, *zr1 = zr0 + sw, *zr2 = zr1 + sw, *zr3 = zr2 + sw;
-      const float *mr0 = z0 + (size_t)(v ? n - v : 0) * sw, *mr1 = z0 + (size_t)(n - v - 1) * sw, *mr2 = mr1 - sw, *mr3 = mr2 - sw;
-      float *lo = w->tre + ((size_t)b * n + x0) * bw + c, *loi = w->tim + ((size_t)b * n + x0) * bw + c;
-      float *hi = lo + (size_t)hw * bw, *hii = loi + (size_t)hw * bw;
+    for (int b = 0; b < f->vblocks; b++) {
+      float *const lo = w->tre + (size_t)b * n * bw, *const loi = w->tim + (size_t)b * n * bw;
       for (int j = 0; j < hw; j += 4) {
+        const int *pl = P + x0 + j, *ph = pl + hw;
+        for (int c = 0; c < bw; c += 4) {
+          const int v = b * bw + c;
+          const float *zr0 = z0 + (size_t)P[v] * sw + j, *zr1 = z0 + (size_t)P[v + 1] * sw + j, *zr2 = z0 + (size_t)P[v + 2] * sw + j, *zr3 = z0 + (size_t)P[v + 3] * sw + j;
+          const float *mr0 = z0 + (size_t)P[v ? n - v : 0] * sw + j, *mr1 = z0 + (size_t)P[n - v - 1] * sw + j, *mr2 = z0 + (size_t)P[n - v - 2] * sw + j, *mr3 = z0 + (size_t)P[n - v - 3] * sw + j;
 #define UT_ROW(k) \
-        const float32x4_t ar##k = vld1q_f32(zr##k + j), ai##k = vld1q_f32(zr##k + hw + j), br##k = vld1q_f32(mr##k + j), bi##k = vld1q_f32(mr##k + hw + j); \
-        const float32x4_t L##k = vmulq_f32(h, vaddq_f32(ar##k, br##k)), Li##k = vmulq_f32(h, vsubq_f32(ai##k, bi##k)); \
-        const float32x4_t H##k = vmulq_f32(h, vaddq_f32(ai##k, bi##k)), Hi##k = vmulq_f32(nh, vsubq_f32(ar##k, br##k));
-        UT_ROW(0) UT_ROW(1) UT_ROW(2) UT_ROW(3)
+          const float32x4_t ar##k = vld1q_f32(zr##k), ai##k = vld1q_f32(zr##k + hw), br##k = vld1q_f32(mr##k), bi##k = vld1q_f32(mr##k + hw); \
+          const float32x4_t L##k = vmulq_f32(h, vaddq_f32(ar##k, br##k)), Li##k = vmulq_f32(h, vsubq_f32(ai##k, bi##k)); \
+          const float32x4_t H##k = vmulq_f32(h, vaddq_f32(ai##k, bi##k)), Hi##k = vmulq_f32(nh, vsubq_f32(ar##k, br##k));
+          UT_ROW(0) UT_ROW(1) UT_ROW(2) UT_ROW(3)
 #undef UT_ROW
-        const size_t o = (size_t)j * bw;
-        store_turned4(lo + o, bw, L0, L1, L2, L3); store_turned4(loi + o, bw, Li0, Li1, Li2, Li3);
-        store_turned4(hi + o, bw, H0, H1, H2, H3); store_turned4(hii + o, bw, Hi0, Hi1, Hi2, Hi3);
+          store_turned4(lo + c, pl, bw, L0, L1, L2, L3); store_turned4(loi + c, pl, bw, Li0, Li1, Li2, Li3);
+          store_turned4(lo + c, ph, bw, H0, H1, H2, H3); store_turned4(loi + c, ph, bw, Hi0, Hi1, Hi2, Hi3);
+        }
       }
     }
     return;
   }
+#else
+  const int *const P = 0;
 #endif
   for (int v = 0; v < f->vblocks * bw; v++) {
     const int b = v / bw, c = v % bw, vm = v ? n - v : 0;
-    const float *zr = z0 + (size_t)v * sw, *zi = zr + hw;
-    const float *mr = z0 + (size_t)vm * sw, *mi = mr + hw;
-    float *lo = w->tre + ((size_t)b * n + x0) * bw + c, *loi = w->tim + ((size_t)b * n + x0) * bw + c;
-    float *hi = lo + (size_t)hw * bw, *hii = loi + (size_t)hw * bw;
+    const float *zr = z0 + (size_t)(P ? P[v] : v) * sw, *zi = zr + hw;
+    const float *mr = z0 + (size_t)(P ? P[vm] : vm) * sw, *mi = mr + hw;
+    float *lo = w->tre + (size_t)b * n * bw + c, *loi = w->tim + (size_t)b * n * bw + c;
     for (int j = 0; j < hw; j++) {
-      lo[(size_t)j * bw] = 0.5f * (zr[j] + mr[j]); loi[(size_t)j * bw] = 0.5f * (zi[j] - mi[j]);
-      hi[(size_t)j * bw] = 0.5f * (zi[j] + mi[j]); hii[(size_t)j * bw] = -0.5f * (zr[j] - mr[j]);
+      const size_t xl = (size_t)(P ? P[x0 + j] : x0 + j) * bw, xh = (size_t)(P ? P[x0 + hw + j] : x0 + hw + j) * bw;
+      lo[xl] = 0.5f * (zr[j] + mr[j]); loi[xl] = 0.5f * (zi[j] - mi[j]);
+      lo[xh] = 0.5f * (zi[j] + mi[j]); loi[xh] = -0.5f * (zr[j] - mr[j]);
     }
   }
 }
@@ -1251,13 +1282,18 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
 #endif
     double tc = ob_now_ms(); ob_prof_ms[PROF_F_DETREND] += tc - tb;
     // The strip's two halves ARE the real and imaginary inputs, in place, at the strip's pitch (unpack_turn).
-    fft_cols_dec(z, z + STRIP_HALF, n, STRIP_HALF, sw);
+    fft_dec_dif(z, z + STRIP_HALF, n, STRIP_HALF, sw);
     unpack_turn(f, x0, z);
     ob_prof_ms[PROF_F_FFT] += ob_now_ms() - tc;
   }
   ob_reg_free(&reg);
   double ts = ob_now_ms();
-  for (int b = 0; b < f->vblocks; b++) fft_cols_dec(w->tre + (size_t)b * n * bw, w->tim + (size_t)b * n * bw, n, bw, bw);
+  // ai: arm64: each block's transform makes only the rows and columns its coefficients take (ws dkeep, dcols)
+#ifdef OB_NEON
+  for (int b = 0; b < f->vblocks; b++) fft_dec_dit(w->tre + (size_t)b * n * bw, w->tim + (size_t)b * n * bw, n, w->dcols[b], bw, w->dkeep[b]);
+#else
+  for (int b = 0; b < f->vblocks; b++) fft_dec_dit(w->tre + (size_t)b * n * bw, w->tim + (size_t)b * n * bw, n, bw, bw, n);
+#endif
   double td = ob_now_ms(); ob_prof_ms[PROF_F_FFT] += td - ts;
   px /= n * w->sx2; py /= n * w->sx2; pxy /= w->sx2 * w->sx2; pxx /= n * w->sq2; pyy /= n * w->sq2;
   for (int b = 0; b < f->vblocks; b++) for (int u = 0; u < n; u++)
