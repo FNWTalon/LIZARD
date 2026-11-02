@@ -182,6 +182,9 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         val g2 = img.createGraphics()
         try { g2.clipRect(0, 0, bw, bh); g2.scale(sx, sy); draw(g2) } finally { g2.dispose() }
         g.drawImage(img, 0, 0, width, height, 0, 0, bw, bh, null)
+        // ai: the column's edge drawn wide (EdgeGrip.lit): its 4-wide line grows from the hairline, which ends where this
+        // ai: canvas begins, over this side; Compose draws nothing over a heavyweight, so the canvas paints those 3 itself
+        if (grip?.lit == true) { g.color = PRESSED; g.fillRect(0, 0, 3, height) }
     }
     private fun draw(g2: Graphics2D) {
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
@@ -352,6 +355,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         private val MUTED = awt(Muted)
         private val SOFT = awt(Soft)
         private val CARD = awt(Card)
+        private val PRESSED = awt(Pressed)
         // ai: Feather's file and folder (the shared Icons.file and Icons.folder) on a 24 grid
         private val FILE_ICON = Path2D.Double().apply {
             moveTo(14.0, 2.0); lineTo(6.0, 2.0); curveTo(4.9, 2.0, 4.0, 2.9, 4.0, 4.0); lineTo(4.0, 20.0); curveTo(4.0, 21.1, 4.9, 22.0, 6.0, 22.0)

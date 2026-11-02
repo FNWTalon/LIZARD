@@ -103,6 +103,9 @@ val EdgeStrip = 20.dp
 // ai: edge (`hover`), and a press there dragged sideways drags it (`start`, `drag` by the pointer's move, `done` at the
 // ai: release). Given to the main area where the edge is a sash (LocalEdgeGrip), open or collapsed; null otherwise.
 interface EdgeGrip {
+    // ai: the edge drawn wide (hovered 300 ms or dragged): a view that hides what Compose draws over its side (the
+    // ai: desktop's code canvas) paints the wide line's part over it itself
+    val lit: Boolean
     fun hover(on: Boolean)
     fun start()
     fun drag(dx: Dp)
@@ -130,6 +133,8 @@ private class Edge : EdgeGrip {
     private var shut = false
     var held by mutableStateOf(false)
     var near by mutableStateOf(false)
+    var hoverLit by mutableStateOf(false)   // ai: under the pointer for 300 ms
+    override val lit get() = hoverLit || held
     override fun hover(on: Boolean) { near = on }
     override fun start() { at = width; shut = collapsed; held = true; onStart() }
     override fun drag(dx: Dp) {
@@ -157,25 +162,25 @@ private fun rememberEdge(width: Dp, screen: Dp, lo: Dp, sash: Boolean, collapsed
 // ai: beside it an invisible strip wide enough for a finger, laid over what is there. Dragged sideways it sets the
 // ai: column's width; onDone on release (the app keeps it; Send re-picks). Under the pointer for 300 ms (the strip's
 // ai: or a view's that takes it, EdgeGrip), and while dragged, the hairline grows to a line 4 dp wide in a pressed
-// ai: button's grey (Pressed), widening over the column's side so a heavyweight view beside it hides none of it, as an
-// ai: editor's sash. The pointer over the strip the app's left-right resize cursor (LocalResizeIcon). `modifier` places
-// ai: it with the hairline's right side 4 dp from its start.
+// ai: button's grey (Pressed), widening over the main area's side, as an editor's sash (2026-11-02; over the column's
+// ai: side before, so that the desktop's heavyweight code canvas hid none of it: that canvas now paints its part itself,
+// ai: EdgeGrip.lit). The pointer over the strip the app's left-right resize cursor (LocalResizeIcon). `modifier` places
+// ai: it at the hairline's left side.
 @Composable
 private fun SideEdge(e: Edge, modifier: Modifier) {
     val density = LocalDensity.current
     val state = rememberDraggableState { dx -> e.drag(with(density) { dx.toDp() }) }
     val hover = remember { MutableInteractionSource() }
     val hovered by hover.collectIsHoveredAsState()
-    var lit by remember { mutableStateOf(false) }
     val over = hovered || e.near
-    LaunchedEffect(over) { if (over) { delay(300); lit = true } else lit = false }
-    val on = lit || e.held
+    LaunchedEffect(over) { if (over) { delay(300); e.hoverLit = true } else e.hoverLit = false }
+    val on = e.lit
     val thick by animateDpAsState(if (on) 4.dp else 1.dp, tween(120))
     val colour by animateColorAsState(if (on) Pressed else Line, tween(120))
-    Row(modifier.fillMaxHeight()) {
-        Box(Modifier.width(4.dp).fillMaxHeight(), contentAlignment = Alignment.CenterEnd) { Box(Modifier.width(thick).fillMaxHeight().background(colour)) }
-        Box(Modifier.width(EdgeStrip).fillMaxHeight().hoverable(hover).pointerHoverIcon(LocalResizeIcon.current).draggable(state, Orientation.Horizontal,
-            onDragStarted = { e.start() }, onDragStopped = { e.done() }))
+    Box(modifier.fillMaxHeight()) {
+        Box(Modifier.width(thick).fillMaxHeight().background(colour))
+        Box(Modifier.padding(start = 1.dp).width(EdgeStrip).fillMaxHeight().hoverable(hover).pointerHoverIcon(LocalResizeIcon.current)
+            .draggable(state, Orientation.Horizontal, onDragStarted = { e.start() }, onDragStopped = { e.done() }))
     }
 }
 
@@ -216,7 +221,7 @@ fun ToolLandscape(title: String, collapsed: Boolean, onCollapse: () -> Unit, onH
                 CompositionLocalProvider(LocalEdgeGrip provides if (sash && !bare) edge else null) { main() }
             }
         }
-        if (sash && !bare) SideEdge(edge, Modifier.offset(x = shown - 3.dp))
+        if (sash && !bare) SideEdge(edge, Modifier.offset(x = shown))
     }
 }
 
