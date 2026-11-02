@@ -44,8 +44,9 @@ static constexpr double MiB = 1 << 20;
 // ai: pass 1's bilinear reads by the texture unit (a layout's `sampler` entry: the device's immutable linear sampler),
 // ai: the soft and LDPC steps dispatched from the gate's ARGS (each rule step's `argsAt`); 4 the LDPC pipelines'
 // ai: `lanes`; 3 REDO's R2 args; 2 PEAKS; 1 from 2026-10-29. 6 since 2026-10-31: a pipeline's `needs` (the device
-// ai: features its module asks beyond the variant's: "int16", the LDPC's "reg+i16" forms).
-static constexpr int TREE_VERSION = 6;
+// ai: features its module asks beyond the variant's: "int16", the LDPC's "reg+i16" forms). 7 since 2026-11-02: the
+// ai: front's `trace` (TRACE, each quad's bend, in both rounds' grids) and HYP doubled (SCORE's bend bit).
+static constexpr int TREE_VERSION = 7;
 
 Consts Consts::of(const json& c) {
   Consts k;
@@ -410,6 +411,7 @@ void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H) {
     };
     bindNets(ln);
     ln.scoreGroup = group(P("score"), {ln.quadsBuf, FBP("planBuf"), ln.scoreBuf, FBP("planUni")}, true);
+    ln.traceGroup = group(P("trace"), {ln.quadsBuf}, true);
     ln.voteGroup = group(P("vote"), {ln.framesBuf, ln.readingsBuf, ln.accBuf, ln.p5Uni}, false);
     ln.peaksGroup = group(P("peaks"), {ln.framesBuf, ln.accBuf, ln.vlistBuf, ln.vcountBuf, ln.p5Uni}, false);
     ln.gatherGroup = group(P("gather"), {ln.framesBuf, ln.readingsBuf, ln.accBuf, ln.candBuf, ln.quadsBuf, ln.p5Uni, ln.vlistBuf, ln.vcountBuf}, false);
@@ -425,6 +427,9 @@ void FrontHalf::ensure(Lane& ln, uint32_t W, uint32_t H) {
       auto lvc = ln.lvEntries(true);
       lvc.insert(lvc.end(), {ln.readingsBuf, ln.quadsBuf, ln.p5Uni});
       ln.completeGroup2 = dev.createBindGroup(P("complete").bgl, lvc);
+      auto lvt = ln.lvEntries(true);
+      lvt.insert(lvt.end(), {ln.quadsBuf});
+      ln.traceGroup2 = dev.createBindGroup(P("trace").bgl, lvt);
       ln.redoGroup = group(P("redo"), {ln.framesBuf, ln.selBuf, ln.frames2Buf, ln.accBuf, ln.readingsBuf, ln.candBuf, ln.quadsBuf, ln.p5Uni, ln.args2Buf, ln.r2Uni}, false);
     }
     ln.nodesGroup = group(P("nodesP"), {FBP("nodesBuf"), FBP("tmplBuf"), ln.mapsBuf, ln.selBuf, ln.measBuf, S->bufPtr(S->tree["front"]["round"])}, true);
@@ -826,14 +831,14 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
     const uint32_t XB0 = fcn2X ? form["XB"][0].get<uint32_t>() : 0, XB1 = fcn2X ? form["XB"][1].get<uint32_t>() : 0;
     // ai: decoder.mjs grids2: the second round's grids for one frame (gpu/glsl/finder.mjs R2), in its order: the bank's
     // ai: X passes and networks on the levels below coarseFrom, then SELECT, the classifier, VOTE, PEAKS, GATHER,
-    // ai: COMPLETE, SCORE and PICK, each (x, y, z, the axis that counts frames); the rest unused (w 3)
+    // ai: COMPLETE, TRACE, SCORE and PICK, each (x, y, z, the axis that counts frames); the rest unused (w 3)
     {
       std::vector<std::array<uint32_t, 4>> g;
       if (fcn2X) for (auto& lv : ln.fcn2Levels) if (lv.l < coarseFrom) g.push_back({ceilDiv(lv.w, XB0), ceilDiv(lv.h, XB1), 1, 2});
       for (auto& lv : ln.fcn2Levels) if (lv.l < coarseFrom) g.push_back({ceilDiv(ceilDiv(lv.w, C.TILE * TX), walk), ceilDiv(lv.h, C.TILE * TY), 1, 2});
       const uint32_t cp = (uint32_t)cap;
       for (const auto& x : std::vector<std::array<uint32_t, 4>>{{1, 1, 1, 0}, {ceilDiv(cp, classify.P), 1, 1, 1}, {ceilDiv(cp, C.VOTE_READS), 1, 1, 1},
-             {ceilDiv(ln.gx * ln.gy, 256u), 1, 1, 1}, {1, 1, 1, 0}, {C.K, 1, 1, 0}, {C.HYP, 1, 1, 0}, {1, 1, 1, 0}}) g.push_back(x);
+             {ceilDiv(ln.gx * ln.gy, 256u), 1, 1, 1}, {1, 1, 1, 0}, {C.K, 1, 1, 0}, {C.K, 1, 1, 0}, {C.HYP, 1, 1, 0}, {1, 1, 1, 0}}) g.push_back(x);
       if (g.size() > C.R2_N) throw wg::Error("the second round has " + std::to_string(g.size()) + " grids, R2 holds " + std::to_string(C.R2_N));
       std::vector<uint32_t> u(4ull * C.R2_N, 0);
       for (uint32_t i = 0; i < C.R2_N; i++) { if (i < g.size()) std::copy(g[i].begin(), g[i].end(), u.begin() + 4 * i); else u[4 * i + 3] = 3; }
@@ -875,6 +880,7 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
   step(P("vote"), ln.voteGroup, ceilDiv((uint32_t)cap, C.VOTE_READS), n);
   step(P("peaks"), ln.peaksGroup, ceilDiv(ln.gx * ln.gy, 256u), n);
   step(P("gather"), ln.gatherGroup, n);
+  step(P("trace"), ln.traceGroup, C.K * n);   // ai: each quad's bend (glsl/finder.mjs TRACE) before SCORE reads through it
   begin("score");
   step(P("score"), ln.scoreGroup, C.HYP * n);
   step(P("pick"), ln.pickGroup, n);
@@ -894,6 +900,7 @@ std::unique_ptr<InFlight> FrontHalf::run(const std::vector<Slot*>& slots, int he
     again(P("gather"), ln.gatherGroup2);
     // ai: F5d (glsl/finder.mjs COMPLETE), a workgroup a (frame, quad): on a frame neither round found four corners of
     again(P("complete"), ln.completeGroup2);
+    again(P("trace"), ln.traceGroup2);
     again(P("score"), ln.scoreGroup2);
     again(P("pick"), ln.pickGroup2);
   }

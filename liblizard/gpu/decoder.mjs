@@ -12,7 +12,7 @@
 // ai: run and batch, the int8 twins' measurement, the self-test's probe) and the WGSL twins of every stage are in
 // ai: archive/webgpu-decoder/ (2026-10-31): the native host is its port, name for name.
 import { PYRAMID } from "./glsl/pyramid.mjs";
-import { VOTE, GATHER, COMPLETE, SCORE, PICK, REDO, PEAKS } from "./glsl/finder.mjs";
+import { VOTE, GATHER, COMPLETE, SCORE, PICK, REDO, PEAKS, TRACE } from "./glsl/finder.mjs";
 import { SELECT } from "./glsl/bank.mjs";
 import { NODES, REFIT, REFIT_POST, nodesSource } from "./glsl/register.mjs";
 import { WORD } from "./glsl/word.mjs";
@@ -237,7 +237,7 @@ export class FrontHalf {
     // ai: activations stored as halves (under 18,692 B; WebGPU promises only 16 KB) gets its FitError: no GPU decoder
     // ai: there, and the receiver decodes with the C.
     const bank = (async () => { this.bank = await import("./bank_fcn2.mjs"); await this.bank.build(this); })();
-    const [pyramid, large, twinLarge, vote, gather, complete, score, pick, redo, nodesP, refit, refitPost, wordP, select, peaks] = await Promise.all([
+    const [pyramid, large, twinLarge, vote, gather, complete, score, pick, redo, nodesP, refit, refitPost, wordP, select, peaks, trace] = await Promise.all([
       // ai: The pyramid in one kernel (glsl/pyramid.mjs): the layer, the frame records, levels
       // ai: 1 to 4, the levels' dims.
       P(PYRAMID, ["tex", "ro", "rw", "rw", "rw", "rw", "uniform"]),
@@ -266,9 +266,11 @@ export class FrontHalf {
       P(SELECT, ["ro", "ro", "rw", "rw", "uniform"]),
       // ai: F5b (glsl/finder.mjs PEAKS): a lane a cell, the merged rings' peaks into the frame's list
       P(PEAKS, ["ro", "ro", "rw", "rw", "uniform"]),
+      // ai: TRACE (glsl/finder.mjs): each quad's bend, a workgroup a (frame, quad): the levels, then quads
+      P(TRACE, [...LV, "rw"]),
       bank,
     ]);
-    Object.assign(this, { pyramid, vote, gather, complete, score, pick, redo, nodesP, refit, refitPost, wordP, select, peaks });
+    Object.assign(this, { pyramid, vote, gather, complete, score, pick, redo, nodesP, refit, refitPost, wordP, select, peaks, trace });
     this.classify = large.pipe;
     this.weightsBuf = large.buf;
     this.arch = large.plan.name;

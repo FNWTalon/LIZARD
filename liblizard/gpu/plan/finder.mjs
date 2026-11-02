@@ -1,4 +1,4 @@
-// ai: F5 and F6's constants (glsl/finder.mjs VOTE, PEAKS, GATHER, COMPLETE, SCORE, PICK, REDO), which the host and
+// ai: F5 and F6's constants (glsl/finder.mjs VOTE, PEAKS, GATHER, COMPLETE, TRACE, SCORE, PICK, REDO), which the host and
 // ai: ../../gen/gen.mjs (the native tree's consts) read too.
 import { RINGS as RING_CELLS } from "../../sim/lizard_pick.mjs";
 
@@ -14,7 +14,11 @@ export const RING_COUNT = RING_CELLS.length;
 if (RING_COUNT > 4) throw new Error(`${RING_COUNT} rings: the finder's uniforms hold four`);
 // ai: GATHER's reach runs from the first ring's to the last's, so the rings go smallest first.
 if (RING_CELLS.some((c, i) => i && c <= RING_CELLS[i - 1])) throw new Error(`rings ${RING_CELLS.join(", ")}: smallest first`);
-export const HYP = K * ORIENT * RING_COUNT;   // ai: hypotheses a frame
+// ai: SCORE reads each quad twice, through the marks' homography alone and through the quad's traced bend (TRACE), and
+// ai: the better read wins: near the corners, where the track is read, an ordinary lens is the homography's and a
+// ai: fisheye the bend's.
+export const BENDS = 2;
+export const HYP = K * ORIENT * RING_COUNT * BENDS;   // ai: hypotheses a frame, the bend the top bit
 // ai: A reading votes, and supports a quad, when the network's mark probability p reaches SMIN (the trainer reports
 // ai: at 0.5).
 export const SMIN = 0.35;
