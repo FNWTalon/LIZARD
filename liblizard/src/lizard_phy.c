@@ -1030,7 +1030,7 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
       const int c = n / 8;
       float *row = w->wre;
       for (int r = 0; r < c; r++) {
-        ob_sample_grid(&f->frame, &im, &reg, g0, g0, 8 * step, 0, c, r, 1, row, c);
+        ob_sample_grid_pic(&f->frame, &im, &reg, g0, g0, 8 * step, 0, c, r, 1, row, c);
         for (int k = 0; k < c; k++) mean += row[k];
       }
       mean /= (double)c * c;
@@ -1045,7 +1045,7 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
     // paths differ in this one pointer and nothing else.
     float *z = grid ? grid + (size_t)(x0 / sw) * n * sw : w->wre;
     if (!grid) {
-      ob_sample_grid(&f->frame, &im, &reg, g0, g0, step, x0, sw, 0, n, w->wre, sw);
+      ob_sample_grid_pic(&f->frame, &im, &reg, g0, g0, step, x0, sw, 0, n, w->wre, sw);
       for (int i = 0; i < OB_ANCH_K; i++) {
         const int xl = elo[i] > x0 ? elo[i] : x0, xh = ehi[i] < x0 + sw - 1 ? ehi[i] : x0 + sw - 1;
         if (xl > xh) continue;
@@ -1060,13 +1060,13 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
     }
     double tc = ob_now_ms(); ob_prof_ms[PROF_F_DETREND] += tc - tb;
     // The strip's two halves ARE the real and imaginary inputs, in place, at the strip's pitch (unpack_turn).
-    fft_cols(z, z + STRIP_HALF, n, STRIP_HALF, sw, 0);
+    fft_cols_dec(z, z + STRIP_HALF, n, STRIP_HALF, sw);
     unpack_turn(f, x0, z);
     ob_prof_ms[PROF_F_FFT] += ob_now_ms() - tc;
   }
   ob_reg_free(&reg);
   double ts = ob_now_ms();
-  for (int b = 0; b < f->vblocks; b++) fft_cols(w->tre + (size_t)b * n * bw, w->tim + (size_t)b * n * bw, n, bw, bw, 0);
+  for (int b = 0; b < f->vblocks; b++) fft_cols_dec(w->tre + (size_t)b * n * bw, w->tim + (size_t)b * n * bw, n, bw, bw);
   double td = ob_now_ms(); ob_prof_ms[PROF_F_FFT] += td - ts;
   px /= n * w->sx2; py /= n * w->sx2; pxy /= w->sx2 * w->sx2; pxx /= n * w->sq2; pyy /= n * w->sq2;
   for (int b = 0; b < f->vblocks; b++) for (int u = 0; u < n; u++)

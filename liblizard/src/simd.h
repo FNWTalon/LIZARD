@@ -23,6 +23,9 @@
 #include <arm_neon.h>
 #include <stdint.h>
 #define OB_SIMD 1
+// ai: OB_NEON: arm64, where a site may also carry a kernel in NEON's own instructions beside the wrappers' form
+// ai: (ldpc.c's layer, fft.c's decoder transform, internal.h's picture sampler)
+#define OB_NEON 1
 
 // ai: One type for every lane view, as wasm's v128_t is: four int32 lanes carry the bits and each wrapper
 // ai: reinterprets them as the lanes its operation works on.

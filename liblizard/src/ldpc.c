@@ -83,10 +83,13 @@ int ldpc_init(ldpc_t *c, int rate) {
   c->wq = calloc((size_t)c->slots_max * c->zp, sizeof(int16_t));
   c->wr = malloc((size_t)c->slots_total * c->zp);
   if (!c->wl || !c->wq || !c->wr) { ldpc_free(c); return -1; }
+#ifdef OB_NEON
+  if (c->z % 32 == 0 && c->zp == c->z) { c->w4 = malloc((size_t)c->kb * 4 * c->z * sizeof(int16_t)); if (!c->w4) { ldpc_free(c); return -1; } }
+#endif
   return 0;
 }
 
-void ldpc_free(ldpc_t *c) { free(c->row_ptr); free(c->col_idx); free(c->lay_ptr); free(c->lay_col); free(c->lay_shift); free(c->wl); free(c->wq); free(c->wr); memset(c, 0, sizeof *c); }
+void ldpc_free(ldpc_t *c) { free(c->row_ptr); free(c->col_idx); free(c->lay_ptr); free(c->lay_col); free(c->lay_shift); free(c->wl); free(c->wq); free(c->wr); free(c->w4); memset(c, 0, sizeof *c); }
 
 void ldpc_encode(const ldpc_t *c, const uint8_t *data, uint8_t *cw) {
   memcpy(cw, data, (size_t)c->k);
@@ -164,6 +167,55 @@ static void layer_kernel(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
   }
 #endif
 }
+
+#ifdef OB_NEON
+// ai: arm64: the layer in NEON's own instructions, 32 checks a step, so four vectors' minima and signs are four
+// ai: independent chains the core runs side by side (the 128-bit kernel's one chain a step serialises a layer's edges);
+// ai: a message widened and taken off in one instruction (SSUBW), narrowed back in place (XTN, XTN2), the posteriors 64
+// ai: bytes a load and store. No index of the least magnitude: an edge whose magnitude is min1 takes min2, which decides
+// ai: as the index does (a second edge at min1 leaves min2 equal to min1), so every form decides alike.
+// ai: view: where slots 0 to nd - 1 are read from and written to (the decoder's four-times columns, w4: a new posterior
+// ai: written at the run and a column either side); the pass-1 differences go to the slot's row of Q either way. With
+// ai: no view every slot is Q's row, as layer_kernel takes them (test/ldpc_neon.c holds the two alike).
+static void layer_kernel_neon(int16_t *Q, int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z) {
+  const int16x8_t big = vdupq_n_s16(32767), cap = vdupq_n_s16(2047), top = vdupq_n_s16(127), lo = vdupq_n_s16(-8191), hi = vdupq_n_s16(8191);
+  for (int i = 0; i < zp; i += 32) {
+    int16x8_t a1 = big, b1 = big, c1 = big, d1 = big, a2 = big, b2 = big, c2 = big, d2 = big;
+    int16x8_t as = vdupq_n_s16(0), bs = as, cs = as, ds = as;
+    for (int e = 0; e < ns; e++) {
+      const int8x16x2_t r = vld1q_s8_x2(R + e * zp + i);
+      int16x8x4_t v = vld1q_s16_x4(e < nd ? view[e] + i : Q + e * zp + i);
+      v.val[0] = vsubw_s8(v.val[0], vget_low_s8(r.val[0])); v.val[1] = vsubw_high_s8(v.val[1], r.val[0]);
+      v.val[2] = vsubw_s8(v.val[2], vget_low_s8(r.val[1])); v.val[3] = vsubw_high_s8(v.val[3], r.val[1]);
+      vst1q_s16_x4(Q + e * zp + i, v);
+      const int16x8_t aa = vabsq_s16(v.val[0]), ba = vabsq_s16(v.val[1]), ca = vabsq_s16(v.val[2]), da = vabsq_s16(v.val[3]);
+      as = veorq_s16(as, v.val[0]); bs = veorq_s16(bs, v.val[1]); cs = veorq_s16(cs, v.val[2]); ds = veorq_s16(ds, v.val[3]);
+      a2 = vminq_s16(a2, vmaxq_s16(a1, aa)); b2 = vminq_s16(b2, vmaxq_s16(b1, ba)); c2 = vminq_s16(c2, vmaxq_s16(c1, ca)); d2 = vminq_s16(d2, vmaxq_s16(d1, da));
+      a1 = vminq_s16(a1, aa); b1 = vminq_s16(b1, ba); c1 = vminq_s16(c1, ca); d1 = vminq_s16(d1, da);
+    }
+    // ai: (x * norm) >> 4 capped at 127, x capped at 2047 first, as the 128-bit kernel
+#define OB_SCALE(x) vminq_s16(vshrq_n_s16(vmulq_n_s16(vminq_s16((x), cap), (int16_t)norm), 4), top)
+    const int16x8_t an = OB_SCALE(a1), bn = OB_SCALE(b1), cn = OB_SCALE(c1), dn = OB_SCALE(d1);
+    const int16x8_t am = OB_SCALE(a2), bm = OB_SCALE(b2), cm = OB_SCALE(c2), dm = OB_SCALE(d2);
+#undef OB_SCALE
+    for (int e = 0; e < ns; e++) {
+      int16x8x4_t v = vld1q_s16_x4(Q + e * zp + i);
+#define OB_MSG(V, M1, N1, N2, S, OUT) do { \
+        const int16x8_t mag_ = vbslq_s16(vceqq_s16(vabsq_s16(V), M1), N2, N1), neg_ = vshrq_n_s16(veorq_s16(S, V), 15); \
+        OUT = vsubq_s16(veorq_s16(mag_, neg_), neg_); \
+        V = vmaxq_s16(vminq_s16(vaddq_s16(V, OUT), hi), lo); } while (0)
+      int16x8_t ra, rb, rc, rd;
+      OB_MSG(v.val[0], a1, an, am, as, ra); OB_MSG(v.val[1], b1, bn, bm, bs, rb);
+      OB_MSG(v.val[2], c1, cn, cm, cs, rc); OB_MSG(v.val[3], d1, dn, dm, ds, rd);
+#undef OB_MSG
+      const int8x16x2_t ro = { { vmovn_high_s16(vmovn_s16(ra), rb), vmovn_high_s16(vmovn_s16(rc), rd) } };
+      vst1q_s8_x2(R + e * zp + i, ro);
+      if (e < nd) { int16_t *d = view[e] + i; vst1q_s16_x4(d - z, v); vst1q_s16_x4(d, v); vst1q_s16_x4(d + z, v); }
+      else vst1q_s16_x4(Q + e * zp + i, v);
+    }
+  }
+}
+#endif
 
 // x86-64: the same layer, 16 and 32 checks a vector (AVX2, AVX-512 with its byte and word lanes), each compiled for
 // its own instruction set and taken by ldpc_init where the processor has it; lane for lane the 128-bit kernel's
@@ -256,7 +308,10 @@ static void layer_kernel_for(const ldpc_t *c, int16_t *Q, int8_t *R, int ns) {
 static void layer_gather(const ldpc_t *c, int r, int16_t *Q) {
   int z = c->z, zp = c->zp, nd = c->lay_ptr[r + 1] - c->lay_ptr[r];
   const int16_t *Ls = c->wl, *Lp = c->wl + c->k;
-  for (int e = 0; e < nd; e++) {
+  // ai: arm64's decode keeps the data columns four times over (w4): a slot's rotation is one run there
+  const int four = c->w4 && c->wide != -1;
+  for (int e = 0; e < nd && four; e++) memcpy(Q + e * zp, c->w4 + (size_t)c->lay_col[c->lay_ptr[r] + e] * 4 * z + 2 * z - c->lay_shift[c->lay_ptr[r] + e], (size_t)z * 2);
+  for (int e = 0; e < nd && !four; e++) {
     int s = c->lay_shift[c->lay_ptr[r] + e];
     const int16_t *col = Ls + c->lay_col[c->lay_ptr[r] + e] * z;
     memcpy(Q + e * zp, col + z - s, (size_t)s * 2);
@@ -282,6 +337,26 @@ static void layer_scatter(const ldpc_t *c, int r, const int16_t *Q) {
   else memcpy(Lp + (c->mb - 1) * z, prev + 1, (size_t)(z - 1) * 2);
   memcpy(Lp + r * z, Q + (nd + 1) * zp, (size_t)z * 2);
 }
+
+#ifdef OB_NEON
+// ai: arm64: the layer read from and written to the columns where they lie (w4), so no slot is copied into check order
+// ai: and back: slot e's rotation by its shift s is the run of z at 2z - s; the two staircase slots go through Q as
+// ai: layer_gather and layer_scatter take them. (The copies cost about as much as the kernel, and a row stored split at
+// ai: s and read back in 64-byte pieces across the split waited on both stores.)
+static void layer_direct(const ldpc_t *c, int r, int16_t *Q, int8_t *R, int ns) {
+  const int z = c->z, zp = c->zp, nd = ns - 2;
+  int16_t *Lp = c->wl + c->k, *prev = Q + nd * zp;
+  if (r > 0) memcpy(prev, Lp + (r - 1) * z, (size_t)z * 2);
+  else { prev[0] = 8191; memcpy(prev + 1, Lp + (c->mb - 1) * z, (size_t)(z - 1) * 2); }
+  memcpy(Q + (nd + 1) * zp, Lp + r * z, (size_t)z * 2);
+  int16_t *view[64];
+  for (int e = 0; e < nd; e++) view[e] = c->w4 + (size_t)c->lay_col[c->lay_ptr[r] + e] * 4 * z + 2 * z - c->lay_shift[c->lay_ptr[r] + e];
+  layer_kernel_neon(Q, R, ns, zp, c->norm, view, nd, z);
+  if (r > 0) memcpy(Lp + (r - 1) * z, prev, (size_t)z * 2);
+  else memcpy(Lp + (c->mb - 1) * z, prev + 1, (size_t)(z - 1) * 2);
+  memcpy(Lp + r * z, Q + (nd + 1) * zp, (size_t)z * 2);
+}
+#endif
 
 // The sign of an XOR is the XOR of the signs, so a row's parities are one XOR per slot.
 // How many of the m checks are violated: layers_clear without the early way out.
@@ -322,13 +397,28 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
   int16_t *L = c->wl, *Q = c->wq;
   for (int v = 0; v < c->k; v++) L[v] = llr[v];
   for (int chk = 0; chk < c->m; chk++) L[c->k + (chk % mb) * z + chk / mb] = llr[c->k + chk];
+  const int four = c->w4 && c->wide != -1;
+#ifdef OB_NEON
+  // ai: each data column's z LLRs widened once and written four times over
+  for (int j = 0; four && j < c->kb; j++) {
+    int16_t *d = c->w4 + (size_t)j * 4 * z;
+    for (int t = 0; t < z; t += 16) {
+      const int8x16_t b = vld1q_s8(llr + j * z + t);
+      const int16x8x2_t v = { { vmovl_s8(vget_low_s8(b)), vmovl_high_s8(b) } };
+      for (int q = 0; q < 4; q++) vst1q_s16_x2(d + q * z + t, v);
+    }
+  }
+#endif
   memset(c->wr, 0, (size_t)c->slots_total * zp);
   for (int it = 0; it < max_iter; it++) {
     for (int step = 0; step < mb; step++) {
       int r = (it & 1) ? mb - 1 - step : step, ns = c->lay_ptr[r + 1] - c->lay_ptr[r] + 2;
       int8_t *R = c->wr + (size_t)(c->lay_ptr[r] + 2 * r) * zp;
-      layer_gather(c, r, Q);
       if (r == 0) R[(ns - 2) * zp] = 0;
+#ifdef OB_NEON
+      if (four) { layer_direct(c, r, Q, R, ns); continue; }
+#endif
+      layer_gather(c, r, Q);
       layer_kernel_for(c, Q, R, ns);
       layer_scatter(c, r, Q);
     }
@@ -339,7 +429,8 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
       else if ((float)bad > stall_ratio * (float)first) { used = -3; break; }
     } else if (layers_clear(c, Q)) { used = it + 1; break; }
   }
-  for (int v = 0; v < c->k; v++) out[v] = L[v] < 0;
+  if (four) for (int j = 0; j < c->kb; j++) { const int16_t *col = c->w4 + (size_t)j * 4 * z + z; for (int t = 0; t < z; t++) out[j * z + t] = col[t] < 0; }
+  else for (int v = 0; v < c->k; v++) out[v] = L[v] < 0;
   for (int chk = 0; chk < c->m; chk++) out[c->k + chk] = L[c->k + (chk % mb) * z + chk / mb] < 0;
   return used;
 }

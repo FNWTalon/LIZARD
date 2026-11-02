@@ -14,7 +14,7 @@
 // out once, by putting the right row in each place in turn, and the transform just performs them.
 // ai: half: the twiddles the table holds, rows / 2 for an even size (past it W^j is -W^(j - rows / 2), tw_of), the whole
 // ai: circle for an odd one (3^b 5^c, which only fft_test asks for)
-typedef struct { int rows, nst, nswp, half; float *wr, *wi; int *swp; int st[24], len[24]; } plan_t;
+typedef struct { int rows, nst, nswp, half, kind; float *wr, *wi; int *swp; int st[24], len[24]; } plan_t;
 // ai: each thread's own (a native receiver transforms on several): a plan is built on first use and a ninth size
 // ai: replaces the eighth, neither of which two threads could share
 static _Thread_local plan_t plans[8];
@@ -27,28 +27,37 @@ static int size_ok(int rows) {
   return !(rows & (rows - 1));
 }
 
-static int stage_list(int rows, int *st) {
+// ai: kind 0 the format's schedule (2s); kind 1 the decoder's transform on arm64 (fft_cols_dec), a power of two's stages
+// ai: as 4s, one 2 first where the exponent is odd
+static int stage_list(int rows, int *st, int kind) {
   int k = 0;
   while (rows % 3 == 0) { st[k++] = 3; rows /= 3; }
   while (rows % 5 == 0) { st[k++] = 5; rows /= 5; }
+  if (kind == 1) {
+    int bits = 0;
+    for (int t = rows; t > 1; t >>= 1) bits++;
+    if (bits & 1) st[k++] = 2;
+    for (int b = bits & 1; b < bits; b += 2) st[k++] = 4;
+    return k;
+  }
   for (int t = rows; t > 1; t >>= 1) st[k++] = 2;
   return k;
 }
 
-static const plan_t *plan_for(int rows) {
+static const plan_t *plan_kind(int rows, int kind) {
   if (!size_ok(rows)) return NULL;
   int slot = 0;
-  for (; slot < 8 && plans[slot].rows; slot++) if (plans[slot].rows == rows) return &plans[slot];
+  for (; slot < 8 && plans[slot].rows; slot++) if (plans[slot].rows == rows && plans[slot].kind == kind) return &plans[slot];
   if (slot == 8) slot = 7;   // more sizes than slots: the last one is rebuilt. LIZARD uses one size.
   plan_t *p = &plans[slot];
   free(p->wr); free(p->wi); free(p->swp);
-  p->rows = rows; p->half = rows & 1 ? rows : rows / 2;
+  p->rows = rows; p->kind = kind; p->half = rows & 1 ? rows : rows / 2;
   p->wr = malloc((size_t)(p->half + 1) * sizeof(float)); p->wi = malloc((size_t)(p->half + 1) * sizeof(float));
   p->swp = malloc((size_t)2 * rows * sizeof(int));
   int *rev = malloc((size_t)rows * sizeof(int)), *at = malloc((size_t)rows * sizeof(int)), *cur = malloc((size_t)rows * sizeof(int));
   if (!p->wr || !p->wi || !p->swp || !rev || !at || !cur) { free(rev); free(at); free(cur); p->rows = 0; return NULL; }
   for (int j = 0; j < p->half; j++) { double a = -2 * 3.14159265358979323846 * j / rows; p->wr[j] = (float)cos(a); p->wi[j] = (float)sin(a); }
-  p->nst = stage_list(rows, p->st);
+  p->nst = stage_list(rows, p->st, kind);
   for (int s = 0, L = 1; s < p->nst; s++) { L *= p->st[s]; p->len[s] = L; }
   // The input goes to its digit-reversed place: the digits of i in the stages' own radices, read back to front.
   for (int i = 0; i < rows; i++) {
@@ -68,6 +77,7 @@ static const plan_t *plan_for(int rows) {
   free(rev); free(at); free(cur);
   return p;
 }
+static const plan_t *plan_for(int rows) { return plan_kind(rows, 0); }
 
 // W_rows^j for any j < rows, from a table that holds only the first half circle: past it the sign flips.
 // ai: (an odd size's table holds the whole circle, half = rows, so j never passes it)
@@ -238,6 +248,97 @@ static void rows5(float *const r[5], float *const m[5], int cols, const float *w
   }
 }
 
+#ifdef OB_NEON
+// ai: arm64, the decoder's transform alone (fft_cols_dec): one radix-4 butterfly across four rows (decimation in time,
+// ai: forward), every column: rows 1 to 3 twiddled by W^k, W^2k, W^3k (w: three (re, im) pairs) with fused
+// ai: multiply-adds, then the 4-point DFT, its -i a swap: t0 = a + c, t1 = a - c, t2 = b + d, t3 = b - d;
+// ai: out0 = t0 + t2, out2 = t0 - t2, out1 = t1 - i t3, out3 = t1 + i t3. unit: k = 0, no twiddles. It rounds otherwise
+// ai: than the format's radix-2 pairs: its check is the definition (test/fft_dec.c) and the blocks a decode verifies.
+static inline __attribute__((always_inline)) void rows4f(float *const r[4], float *const m[4], int cols, const float *w, int unit) {
+  const float32x4_t w1r = vdupq_n_f32(w[0]), w1i = vdupq_n_f32(w[1]), w2r = vdupq_n_f32(w[2]), w2i = vdupq_n_f32(w[3]), w3r = vdupq_n_f32(w[4]), w3i = vdupq_n_f32(w[5]);
+  int x = 0;
+  for (; x + 4 <= cols; x += 4) {
+    float32x4_t br = vld1q_f32(r[1] + x), bi = vld1q_f32(m[1] + x), cr = vld1q_f32(r[2] + x), ci = vld1q_f32(m[2] + x), dr = vld1q_f32(r[3] + x), di = vld1q_f32(m[3] + x);
+    if (!unit) {
+      const float32x4_t b2r = vfmsq_f32(vmulq_f32(br, w1r), bi, w1i), b2i = vfmaq_f32(vmulq_f32(br, w1i), bi, w1r);
+      const float32x4_t c2r = vfmsq_f32(vmulq_f32(cr, w2r), ci, w2i), c2i = vfmaq_f32(vmulq_f32(cr, w2i), ci, w2r);
+      const float32x4_t d2r = vfmsq_f32(vmulq_f32(dr, w3r), di, w3i), d2i = vfmaq_f32(vmulq_f32(dr, w3i), di, w3r);
+      br = b2r; bi = b2i; cr = c2r; ci = c2i; dr = d2r; di = d2i;
+    }
+    const float32x4_t ar = vld1q_f32(r[0] + x), ai = vld1q_f32(m[0] + x);
+    const float32x4_t t0r = vaddq_f32(ar, cr), t0i = vaddq_f32(ai, ci), t1r = vsubq_f32(ar, cr), t1i = vsubq_f32(ai, ci);
+    const float32x4_t t2r = vaddq_f32(br, dr), t2i = vaddq_f32(bi, di), t3r = vsubq_f32(br, dr), t3i = vsubq_f32(bi, di);
+    vst1q_f32(r[0] + x, vaddq_f32(t0r, t2r)); vst1q_f32(m[0] + x, vaddq_f32(t0i, t2i));
+    vst1q_f32(r[2] + x, vsubq_f32(t0r, t2r)); vst1q_f32(m[2] + x, vsubq_f32(t0i, t2i));
+    vst1q_f32(r[1] + x, vaddq_f32(t1r, t3i)); vst1q_f32(m[1] + x, vsubq_f32(t1i, t3r));
+    vst1q_f32(r[3] + x, vsubq_f32(t1r, t3i)); vst1q_f32(m[3] + x, vaddq_f32(t1i, t3r));
+  }
+  for (; x < cols; x++) {
+    float br = r[1][x], bi = m[1][x], cr = r[2][x], ci = m[2][x], dr = r[3][x], di = m[3][x];
+    if (!unit) {
+      const float b2r = fmaf(-bi, w[1], br * w[0]), b2i = fmaf(bi, w[0], br * w[1]);
+      const float c2r = fmaf(-ci, w[3], cr * w[2]), c2i = fmaf(ci, w[2], cr * w[3]);
+      const float d2r = fmaf(-di, w[5], dr * w[4]), d2i = fmaf(di, w[4], dr * w[5]);
+      br = b2r; bi = b2i; cr = c2r; ci = c2i; dr = d2r; di = d2i;
+    }
+    const float ar = r[0][x], ai = m[0][x], t0r = ar + cr, t0i = ai + ci, t1r = ar - cr, t1i = ai - ci, t2r = br + dr, t2i = bi + di, t3r = br - dr, t3i = bi - di;
+    r[0][x] = t0r + t2r; m[0][x] = t0i + t2i; r[2][x] = t0r - t2r; m[2][x] = t0i - t2i;
+    r[1][x] = t1r + t3i; m[1][x] = t1i - t3r; r[3][x] = t1r - t3i; m[3][x] = t1i + t3r;
+  }
+}
+#endif
+
+#ifdef OB_NEON
+// ai: the decoder's radix-3 and radix-2 butterflies on arm64, with fused multiply-adds (forward; rows3 and rows2's
+// ai: arithmetic otherwise): out0 = a + t1, out1 = a - t1 / 2 - i (sqrt 3 / 2) t2, out2 the same with + i, t1 = b + c,
+// ai: t2 = b - c; and (a, b) -> (a + w b, a - w b).
+static inline __attribute__((always_inline)) void rows3f(float *const r[3], float *const m[3], int cols, const float *w, int unit) {
+  const float32x4_t w1r = vdupq_n_f32(w[0]), w1i = vdupq_n_f32(w[1]), w2r = vdupq_n_f32(w[2]), w2i = vdupq_n_f32(w[3]);
+  const float32x4_t vk = vdupq_n_f32(0.86602540378443864676f), vh = vdupq_n_f32(0.5f);
+  int x = 0;
+  for (; x + 4 <= cols; x += 4) {
+    float32x4_t br = vld1q_f32(r[1] + x), bi = vld1q_f32(m[1] + x), cr = vld1q_f32(r[2] + x), ci = vld1q_f32(m[2] + x);
+    if (!unit) {
+      const float32x4_t b2r = vfmsq_f32(vmulq_f32(br, w1r), bi, w1i), b2i = vfmaq_f32(vmulq_f32(br, w1i), bi, w1r);
+      const float32x4_t c2r = vfmsq_f32(vmulq_f32(cr, w2r), ci, w2i), c2i = vfmaq_f32(vmulq_f32(cr, w2i), ci, w2r);
+      br = b2r; bi = b2i; cr = c2r; ci = c2i;
+    }
+    const float32x4_t ar = vld1q_f32(r[0] + x), ai = vld1q_f32(m[0] + x);
+    const float32x4_t t1r = vaddq_f32(br, cr), t1i = vaddq_f32(bi, ci), t2r = vsubq_f32(br, cr), t2i = vsubq_f32(bi, ci);
+    const float32x4_t hr = vfmsq_f32(ar, vh, t1r), hi = vfmsq_f32(ai, vh, t1i);
+    vst1q_f32(r[0] + x, vaddq_f32(ar, t1r)); vst1q_f32(m[0] + x, vaddq_f32(ai, t1i));
+    vst1q_f32(r[1] + x, vfmaq_f32(hr, vk, t2i)); vst1q_f32(m[1] + x, vfmsq_f32(hi, vk, t2r));
+    vst1q_f32(r[2] + x, vfmsq_f32(hr, vk, t2i)); vst1q_f32(m[2] + x, vfmaq_f32(hi, vk, t2r));
+  }
+  for (; x < cols; x++) {
+    float br = r[1][x], bi = m[1][x], cr = r[2][x], ci = m[2][x];
+    if (!unit) {
+      const float b2r = fmaf(-bi, w[1], br * w[0]), b2i = fmaf(bi, w[0], br * w[1]), c2r = fmaf(-ci, w[3], cr * w[2]), c2i = fmaf(ci, w[2], cr * w[3]);
+      br = b2r; bi = b2i; cr = c2r; ci = c2i;
+    }
+    const float ar = r[0][x], ai = m[0][x], t1r = br + cr, t1i = bi + ci, t2r = br - cr, t2i = bi - ci, k = 0.86602540378443864676f;
+    const float hr = fmaf(-0.5f, t1r, ar), hi = fmaf(-0.5f, t1i, ai);
+    r[0][x] = ar + t1r; m[0][x] = ai + t1i;
+    r[1][x] = fmaf(k, t2i, hr); m[1][x] = fmaf(-k, t2r, hi);
+    r[2][x] = fmaf(-k, t2i, hr); m[2][x] = fmaf(k, t2r, hi);
+  }
+}
+static inline __attribute__((always_inline)) void rows2f(float *ar, float *ai, float *br, float *bi, int cols, float wr, float wi, int unit) {
+  if (unit) { rows2(ar, ai, br, bi, cols, 1, 0, 1); return; }
+  const float32x4_t vwr = vdupq_n_f32(wr), vwi = vdupq_n_f32(wi);
+  int x = 0;
+  for (; x + 4 <= cols; x += 4) {
+    const float32x4_t pr = vld1q_f32(ar + x), pi = vld1q_f32(ai + x), qr = vld1q_f32(br + x), qi = vld1q_f32(bi + x);
+    const float32x4_t xr = vfmsq_f32(vmulq_f32(qr, vwr), qi, vwi), xi = vfmaq_f32(vmulq_f32(qr, vwi), qi, vwr);
+    vst1q_f32(br + x, vsubq_f32(pr, xr)); vst1q_f32(bi + x, vsubq_f32(pi, xi)); vst1q_f32(ar + x, vaddq_f32(pr, xr)); vst1q_f32(ai + x, vaddq_f32(pi, xi));
+  }
+  for (; x < cols; x++) {
+    const float xr = fmaf(-bi[x], wi, br[x] * wr), xi = fmaf(bi[x], wr, br[x] * wi);
+    br[x] = ar[x] - xr; bi[x] = ai[x] - xi; ar[x] = ar[x] + xr; ai[x] = ai[x] + xi;
+  }
+}
+#endif
+
 // One stage of the mixed-radix schedule (2, 3 or 5), over the rows [from, from + span). The short stages are run group by group
 // while a group sits in the first-level cache, exactly as the radix-2 schedule does.
 static void do_stage(const plan_t *p, float *re, float *im, int rows, int cols, int pitch, int inverse, float sgn, int s, int from, int span) {
@@ -337,4 +438,64 @@ void fft_cols(float *re, float *im, int rows, int cols, int pitch, int inverse) 
   }
   #undef ROW
   #undef WI
+}
+
+// ai: The decoder's forward transform: on arm64 the radix-4 schedule (its own floats, fused multiply-adds), its short stages group by group in the
+// ai: first-level cache as fft_cols_mixed runs them, the long ones a stage a pass; elsewhere, and inverse, fft_cols.
+#ifdef OB_NEON
+// ai: each stage's twiddles in the order its butterflies take them (k, then j = 1 .. r - 1, re and im), made once a
+// ai: size and thread, so a butterfly reads its three or four floats in a row
+typedef struct { int rows; float *tw[24]; } dec_tw_t;
+static _Thread_local dec_tw_t dec_tws[8];
+static const dec_tw_t *dec_tw_for(const plan_t *p) {
+  int slot = 0;
+  for (; slot < 8 && dec_tws[slot].rows; slot++) if (dec_tws[slot].rows == p->rows) return &dec_tws[slot];
+  if (slot == 8) slot = 7;
+  dec_tw_t *t = &dec_tws[slot];
+  for (int s = 0; s < 24; s++) { free(t->tw[s]); t->tw[s] = 0; }
+  t->rows = p->rows;
+  for (int s = 0; s < p->nst; s++) {
+    const int r = p->st[s], len = p->len[s], h = len / r, step = p->rows / len;
+    float *w = t->tw[s] = malloc((size_t)h * (r - 1) * 2 * sizeof(float));
+    if (!w) { t->rows = 0; return 0; }
+    for (int k = 0; k < h; k++) for (int j = 1; j < r; j++) tw_of(p, p->rows, j * k * step, 0, &w[(k * (r - 1) + j - 1) * 2], &w[(k * (r - 1) + j - 1) * 2 + 1]);
+  }
+  return t;
+}
+// ai: one stage over the rows [from, from + span): a group's r row pointers stepped down a row a butterfly
+static void stage_dec(const plan_t *p, const float *tw, float *re, float *im, int cols, int pitch, int s, int from, int span) {
+  const int r = p->st[s], len = p->len[s], h = len / r;
+  for (int i0 = from; i0 < from + span; i0 += len) {
+    float *rr[5], *mm[5];
+    for (int j = 0; j < r; j++) { rr[j] = re + (size_t)(i0 + j * h) * pitch; mm[j] = im + (size_t)(i0 + j * h) * pitch; }
+    const float *w = tw;
+    switch (r) {
+      case 4: for (int k = 0; k < h; k++, w += 6) { rows4f(rr, mm, cols, w, k == 0); for (int j = 0; j < 4; j++) { rr[j] += pitch; mm[j] += pitch; } } break;
+      case 3: for (int k = 0; k < h; k++, w += 4) { rows3f(rr, mm, cols, w, k == 0); for (int j = 0; j < 3; j++) { rr[j] += pitch; mm[j] += pitch; } } break;
+      case 2: for (int k = 0; k < h; k++, w += 2) { rows2f(rr[0], mm[0], rr[1], mm[1], cols, w[0], w[1], k == 0); rr[0] += pitch; mm[0] += pitch; rr[1] += pitch; mm[1] += pitch; } break;
+      default: for (int k = 0; k < h; k++, w += 8) { rows5(rr, mm, cols, w, 1.0f, k == 0); for (int j = 0; j < 5; j++) { rr[j] += pitch; mm[j] += pitch; } } break;
+    }
+  }
+}
+#endif
+void fft_cols_dec(float *re, float *im, int rows, int cols, int pitch) {
+#ifdef OB_NEON
+  const plan_t *p = plan_kind(rows, 1);
+  const dec_tw_t *t = p ? dec_tw_for(p) : 0;
+  if (!t) return;
+  for (int s = 0; s < p->nswp; s++) {
+    float *a = re + (size_t)p->swp[2 * s] * pitch, *b = re + (size_t)p->swp[2 * s + 1] * pitch;
+    float *c = im + (size_t)p->swp[2 * s] * pitch, *d = im + (size_t)p->swp[2 * s + 1] * pitch;
+    for (int x = 0; x < cols; x++) { float u = a[x]; a[x] = b[x]; b[x] = u; u = c[x]; c[x] = d[x]; d[x] = u; }
+  }
+  int group = 2;
+  while (group * 2 <= rows && (size_t)group * 2 * cols * 2 * sizeof(float) <= 16384) group *= 2;
+  int ngrp = 0;
+  while (ngrp < p->nst && p->len[ngrp] <= group) ngrp++;
+  const int gsz = ngrp ? p->len[ngrp - 1] : 1;
+  for (int g0 = 0; g0 < rows; g0 += gsz) for (int s = 0; s < ngrp; s++) stage_dec(p, t->tw[s], re, im, cols, pitch, s, g0, gsz);
+  for (int s = ngrp; s < p->nst; s++) stage_dec(p, t->tw[s], re, im, cols, pitch, s, 0, rows);
+#else
+  fft_cols(re, im, rows, cols, pitch, 0);
+#endif
 }
