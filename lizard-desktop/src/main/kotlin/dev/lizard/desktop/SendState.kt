@@ -94,7 +94,13 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         // ai: edge; full screen's rail near the left edge
         addMouseMotionListener(object : MouseAdapter() {
             override fun mouseMoved(e: MouseEvent) {
-                if (s.full && !s.leased) { if (e.x < EDGE_NEAR && !s.edgeRail) s.edgeRail = true; return }
+                // ai: full screen: nothing here takes a click, so the arrow (a resize cursor left from the column's edge stuck
+                // ai: there, 2026-11-02), and the rail near the left edge
+                if (s.full && !s.leased) {
+                    if (cursor.type != Cursor.DEFAULT_CURSOR) cursor = Cursor.getDefaultCursor()
+                    if (e.x < EDGE_NEAR && !s.edgeRail) s.edgeRail = true
+                    return
+                }
                 val near = nearEdge(e)
                 grip?.hover(near)
                 val c = when {
@@ -146,10 +152,10 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     private var scroll = 0
 
     // ai: the look for the state, painted: the hand (mouseMoved's, over the file upload's controls) given back to the
-    // ai: arrow only where nothing here takes a click any more (2026-11-02: every change of the state reset it under a
-    // ai: pointer resting on a tile)
+    // ai: arrow only where nothing here takes a click any more, full screen included (2026-11-02: every change of the
+    // ai: state reset it under a pointer resting on a tile)
     fun idleLook() {
-        if (!uploading() || !chooses()) cursor = Cursor.getDefaultCursor()
+        if (s.full || !uploading() || !chooses()) cursor = Cursor.getDefaultCursor()
         repaint()
     }
     // ai: Painted now, not queued (2026-11-02): where the presenter has just let go of the window (Stop) or the canvas has
