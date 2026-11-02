@@ -174,9 +174,10 @@ static void layer_kernel(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
 // ai: a message widened and taken off in one instruction (SSUBW), narrowed back in place (XTN, XTN2), the posteriors 64
 // ai: bytes a load and store. No index of the least magnitude: an edge whose magnitude is min1 takes min2, which decides
 // ai: as the index does (a second edge at min1 leaves min2 equal to min1), so every form decides alike.
-// ai: view: where slots 0 to nd - 1 are read from and written to (the decoder's four-times columns, w4: a new posterior
-// ai: written at the run and a column either side); the pass-1 differences go to the slot's row of Q either way. With
-// ai: no view every slot is Q's row, as layer_kernel takes them (test/ldpc_neon.c holds the two alike).
+// ai: view: where each of the ns slots is read from and written to: slots 0 to nd - 1 in the decoder's four-times
+// ai: columns (w4: a new posterior written at the run and a column either side), the rest once where they lie (the
+// ai: staircase's rows of wl); the pass-1 differences go to the slot's row of Q. A view of Q's own rows with nd 0 is
+// ai: the layer as layer_kernel takes it (test/ldpc_neon.c holds the two alike).
 static void layer_kernel_neon(int16_t *Q, int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z) {
   const int16x8_t big = vdupq_n_s16(32767), cap = vdupq_n_s16(2047), top = vdupq_n_s16(127), lo = vdupq_n_s16(-8191), hi = vdupq_n_s16(8191);
   for (int i = 0; i < zp; i += 32) {
@@ -184,7 +185,7 @@ static void layer_kernel_neon(int16_t *Q, int8_t *R, int ns, int zp, int norm, i
     int16x8_t as = vdupq_n_s16(0), bs = as, cs = as, ds = as;
     for (int e = 0; e < ns; e++) {
       const int8x16x2_t r = vld1q_s8_x2(R + e * zp + i);
-      int16x8x4_t v = vld1q_s16_x4(e < nd ? view[e] + i : Q + e * zp + i);
+      int16x8x4_t v = vld1q_s16_x4(view[e] + i);
       v.val[0] = vsubw_s8(v.val[0], vget_low_s8(r.val[0])); v.val[1] = vsubw_high_s8(v.val[1], r.val[0]);
       v.val[2] = vsubw_s8(v.val[2], vget_low_s8(r.val[1])); v.val[3] = vsubw_high_s8(v.val[3], r.val[1]);
       vst1q_s16_x4(Q + e * zp + i, v);
@@ -210,8 +211,9 @@ static void layer_kernel_neon(int16_t *Q, int8_t *R, int ns, int zp, int norm, i
 #undef OB_MSG
       const int8x16x2_t ro = { { vmovn_high_s16(vmovn_s16(ra), rb), vmovn_high_s16(vmovn_s16(rc), rd) } };
       vst1q_s8_x2(R + e * zp + i, ro);
-      if (e < nd) { int16_t *d = view[e] + i; vst1q_s16_x4(d - z, v); vst1q_s16_x4(d, v); vst1q_s16_x4(d + z, v); }
-      else vst1q_s16_x4(Q + e * zp + i, v);
+      int16_t *d = view[e] + i;
+      if (e < nd) { vst1q_s16_x4(d - z, v); vst1q_s16_x4(d, v); vst1q_s16_x4(d + z, v); }
+      else vst1q_s16_x4(d, v);
     }
   }
 }
@@ -308,10 +310,7 @@ static void layer_kernel_for(const ldpc_t *c, int16_t *Q, int8_t *R, int ns) {
 static void layer_gather(const ldpc_t *c, int r, int16_t *Q) {
   int z = c->z, zp = c->zp, nd = c->lay_ptr[r + 1] - c->lay_ptr[r];
   const int16_t *Ls = c->wl, *Lp = c->wl + c->k;
-  // ai: arm64's decode keeps the data columns four times over (w4): a slot's rotation is one run there
-  const int four = c->w4 && c->wide != -1;
-  for (int e = 0; e < nd && four; e++) memcpy(Q + e * zp, c->w4 + (size_t)c->lay_col[c->lay_ptr[r] + e] * 4 * z + 2 * z - c->lay_shift[c->lay_ptr[r] + e], (size_t)z * 2);
-  for (int e = 0; e < nd && !four; e++) {
+  for (int e = 0; e < nd; e++) {
     int s = c->lay_shift[c->lay_ptr[r] + e];
     const int16_t *col = Ls + c->lay_col[c->lay_ptr[r] + e] * z;
     memcpy(Q + e * zp, col + z - s, (size_t)s * 2);
@@ -340,21 +339,20 @@ static void layer_scatter(const ldpc_t *c, int r, const int16_t *Q) {
 
 #ifdef OB_NEON
 // ai: arm64: the layer read from and written to the columns where they lie (w4), so no slot is copied into check order
-// ai: and back: slot e's rotation by its shift s is the run of z at 2z - s; the two staircase slots go through Q as
-// ai: layer_gather and layer_scatter take them. (The copies cost about as much as the kernel, and a row stored split at
-// ai: s and read back in 64-byte pieces across the split waited on both stores.)
+// ai: and back: slot e's rotation by its shift s is the run of z at 2z - s; the two staircase slots are wl's rows in
+// ai: place, but check 0's bit before it (the last row moved up a lane under a certain zero, as layer_gather lays it),
+// ai: which goes through Q. (The copies cost about as much as the kernel, and a row stored split at s and read back in
+// ai: 64-byte pieces across the split waited on both stores.)
 static void layer_direct(const ldpc_t *c, int r, int16_t *Q, int8_t *R, int ns) {
   const int z = c->z, zp = c->zp, nd = ns - 2;
   int16_t *Lp = c->wl + c->k, *prev = Q + nd * zp;
-  if (r > 0) memcpy(prev, Lp + (r - 1) * z, (size_t)z * 2);
-  else { prev[0] = 8191; memcpy(prev + 1, Lp + (c->mb - 1) * z, (size_t)(z - 1) * 2); }
-  memcpy(Q + (nd + 1) * zp, Lp + r * z, (size_t)z * 2);
   int16_t *view[64];
   for (int e = 0; e < nd; e++) view[e] = c->w4 + (size_t)c->lay_col[c->lay_ptr[r] + e] * 4 * z + 2 * z - c->lay_shift[c->lay_ptr[r] + e];
+  if (r == 0) { prev[0] = 8191; memcpy(prev + 1, Lp + (c->mb - 1) * z, (size_t)(z - 1) * 2); }
+  view[nd] = r > 0 ? Lp + (r - 1) * z : prev;
+  view[nd + 1] = Lp + r * z;
   layer_kernel_neon(Q, R, ns, zp, c->norm, view, nd, z);
-  if (r > 0) memcpy(Lp + (r - 1) * z, prev, (size_t)z * 2);
-  else memcpy(Lp + (c->mb - 1) * z, prev + 1, (size_t)(z - 1) * 2);
-  memcpy(Lp + r * z, Q + (nd + 1) * zp, (size_t)z * 2);
+  if (r == 0) memcpy(Lp + (c->mb - 1) * z, prev + 1, (size_t)(z - 1) * 2);
 }
 #endif
 
@@ -386,6 +384,107 @@ static int layers_clear(const ldpc_t *c, int16_t *Q) {
   return 1;
 }
 
+#ifdef OB_NEON
+// ai: arm64: the checks' parities read where the posteriors lie, nothing gathered: a data slot's rotation is its run in
+// ai: the four-times columns (w4), the staircase slots wl's rows (check 0's bit before it the last row moved up a lane,
+// ai: a zero in front, as layer_gather lays it); one XOR a slot over 32 checks at a time, only the signs counted.
+// ai: count 0: 1 when every check holds, else 0 at the first layer holding a violated one (layers_clear);
+// ai: count 1: how many of the m checks are violated (layers_unsat).
+static int layers_parity_neon(const ldpc_t *c, int count) {
+  const int z = c->z, mb = c->mb;
+  const int16_t *Lp = c->wl + c->k;
+  int bad = 0;
+  for (int r = 0; r < mb; r++) {
+    const int p0 = c->lay_ptr[r], nd = c->lay_ptr[r + 1] - p0;
+    const int16_t *view[64];
+    for (int e = 0; e < nd; e++) view[e] = c->w4 + (size_t)c->lay_col[p0 + e] * 4 * z + 2 * z - c->lay_shift[p0 + e];
+    const int16_t *own = Lp + r * z, *prev = Lp + (r > 0 ? r - 1 : mb - 1) * z;
+    uint16x8_t acc = vdupq_n_u16(0);
+    int16x8_t carry = vdupq_n_s16(0);
+    for (int i = 0; i < z; i += 32) {
+      int16x8x4_t x = vld1q_s16_x4(own + i);
+      const int16x8x4_t p = vld1q_s16_x4(prev + i);
+      if (r > 0) {
+        x.val[0] = veorq_s16(x.val[0], p.val[0]); x.val[1] = veorq_s16(x.val[1], p.val[1]);
+        x.val[2] = veorq_s16(x.val[2], p.val[2]); x.val[3] = veorq_s16(x.val[3], p.val[3]);
+      } else {
+        x.val[0] = veorq_s16(x.val[0], vextq_s16(carry, p.val[0], 7)); x.val[1] = veorq_s16(x.val[1], vextq_s16(p.val[0], p.val[1], 7));
+        x.val[2] = veorq_s16(x.val[2], vextq_s16(p.val[1], p.val[2], 7)); x.val[3] = veorq_s16(x.val[3], vextq_s16(p.val[2], p.val[3], 7));
+        carry = p.val[3];
+      }
+      for (int e = 0; e < nd; e++) {
+        const int16x8x4_t v = vld1q_s16_x4(view[e] + i);
+        x.val[0] = veorq_s16(x.val[0], v.val[0]); x.val[1] = veorq_s16(x.val[1], v.val[1]);
+        x.val[2] = veorq_s16(x.val[2], v.val[2]); x.val[3] = veorq_s16(x.val[3], v.val[3]);
+      }
+      const uint16x8_t s0 = vshrq_n_u16(vreinterpretq_u16_s16(x.val[0]), 15), s1 = vshrq_n_u16(vreinterpretq_u16_s16(x.val[1]), 15);
+      const uint16x8_t s2 = vshrq_n_u16(vreinterpretq_u16_s16(x.val[2]), 15), s3 = vshrq_n_u16(vreinterpretq_u16_s16(x.val[3]), 15);
+      acc = vaddq_u16(acc, vaddq_u16(vaddq_u16(s0, s1), vaddq_u16(s2, s3)));
+    }
+    const int b = (int)vaddvq_u16(acc);
+    if (!count && b) return 0;
+    bad += b;
+  }
+  return count ? bad : 1;
+}
+
+// ai: 16 rows of 16 bytes transposed in place: TRN1 and TRN2 on rows t and t + 2^s, at 8, 16, 32 and 64 bits
+static inline void transpose16(uint8x16_t x[16]) {
+  for (int t = 0; t < 16; t += 2) { const uint8x16_t a = x[t], b = x[t + 1]; x[t] = vtrn1q_u8(a, b); x[t + 1] = vtrn2q_u8(a, b); }
+  for (int t = 0; t < 16; t++) if (!(t & 2)) {
+    const uint16x8_t a = vreinterpretq_u16_u8(x[t]), b = vreinterpretq_u16_u8(x[t + 2]);
+    x[t] = vreinterpretq_u8_u16(vtrn1q_u16(a, b)); x[t + 2] = vreinterpretq_u8_u16(vtrn2q_u16(a, b));
+  }
+  for (int t = 0; t < 16; t++) if (!(t & 4)) {
+    const uint32x4_t a = vreinterpretq_u32_u8(x[t]), b = vreinterpretq_u32_u8(x[t + 4]);
+    x[t] = vreinterpretq_u8_u32(vtrn1q_u32(a, b)); x[t + 4] = vreinterpretq_u8_u32(vtrn2q_u32(a, b));
+  }
+  for (int t = 0; t < 8; t++) {
+    const uint64x2_t a = vreinterpretq_u64_u8(x[t]), b = vreinterpretq_u64_u8(x[t + 8]);
+    x[t] = vreinterpretq_u8_u64(vtrn1q_u64(a, b)); x[t + 8] = vreinterpretq_u8_u64(vtrn2q_u64(a, b));
+  }
+}
+
+// ai: The parity bits between code order (check i * mb + r, a row of mb a position) and wl's [block row][position],
+// ai: 16 positions by 16 block rows at a time (a code of 16 rows or more: the last 16 of them where fewer remain, two
+// ai: rows written alike). With fewer than 16 rows a position's 16-byte row runs into the next positions', which the
+// ai: next row's store puts right; the last 16 positions go through a buffer, so nothing is read or written past m.
+static void parity_in(const int8_t *src, int16_t *dst, int z, int mb) {
+  uint8_t tail[16 * 16 + 16] = { 0 };
+  for (int i0 = 0; i0 < z; i0 += 16) {
+    const uint8_t *s = (const uint8_t *)src + i0 * mb;
+    if (mb < 16 && i0 + 16 == z) { memcpy(tail, s, (size_t)16 * mb); s = tail; }
+    for (int r0 = 0; r0 < mb; r0 += 16) {
+      const int c0 = r0 + 16 <= mb ? r0 : mb >= 16 ? mb - 16 : 0, nc = mb - c0 < 16 ? mb - c0 : 16;
+      uint8x16_t x[16];
+      for (int t = 0; t < 16; t++) x[t] = vld1q_u8(s + t * mb + c0);
+      transpose16(x);
+      for (int r = 0; r < nc; r++) {
+        const int8x16_t b = vreinterpretq_s8_u8(x[r]);
+        const int16x8x2_t v = { { vmovl_s8(vget_low_s8(b)), vmovl_high_s8(b) } };
+        vst1q_s16_x2(dst + (c0 + r) * z + i0, v);
+      }
+    }
+  }
+}
+
+static void parity_out(const int16_t *src, uint8_t *dst, int z, int mb) {
+  uint8_t tail[16 * 16 + 16];
+  for (int i0 = 0; i0 < z; i0 += 16) {
+    const int last = mb < 16 && i0 + 16 == z;
+    uint8_t *d = last ? tail : dst + i0 * mb;
+    for (int r0 = 0; r0 < mb; r0 += 16) {
+      const int c0 = r0 + 16 <= mb ? r0 : mb >= 16 ? mb - 16 : 0, nc = mb - c0 < 16 ? mb - c0 : 16;
+      uint8x16_t x[16];
+      for (int r = 0; r < 16; r++) x[r] = r < nc ? vshrq_n_u8(vld2q_u8((const uint8_t *)(src + (c0 + r) * z + i0)).val[1], 7) : vdupq_n_u8(0);
+      transpose16(x);
+      for (int t = 0; t < 16; t++) vst1q_u8(d + t * mb + c0, x[t]);
+    }
+    if (last) memcpy(dst + i0 * mb, tail, (size_t)16 * mb);
+  }
+}
+#endif
+
 int ldpc_decode(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_iter) { return ldpc_decode_stall(c, llr, out, max_iter, 0, 0); }
 
 // stall_it > 0: a block that will never decode is let go early. Such a block makes no headway at all: its count of
@@ -395,20 +494,26 @@ int ldpc_decode(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_iter) 
 int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_iter, int stall_it, float stall_ratio) {
   int z = c->z, zp = c->zp, mb = c->mb, used = -1, first = 0;
   int16_t *L = c->wl, *Q = c->wq;
-  for (int v = 0; v < c->k; v++) L[v] = llr[v];
-  for (int chk = 0; chk < c->m; chk++) L[c->k + (chk % mb) * z + chk / mb] = llr[c->k + chk];
-  const int four = c->w4 && c->wide != -1;
 #ifdef OB_NEON
-  // ai: each data column's z LLRs widened once and written four times over
-  for (int j = 0; four && j < c->kb; j++) {
-    int16_t *d = c->w4 + (size_t)j * 4 * z;
-    for (int t = 0; t < z; t += 16) {
-      const int8x16_t b = vld1q_s8(llr + j * z + t);
-      const int16x8x2_t v = { { vmovl_s8(vget_low_s8(b)), vmovl_high_s8(b) } };
-      for (int q = 0; q < 4; q++) vst1q_s16_x2(d + q * z + t, v);
+  const int four = c->w4 && c->wide != -1;
+  if (four) {
+    // ai: each data column's z LLRs widened once and written into the middle two of its four copies, the only ones a
+    // ai: run reads ([z, 3z): the outer two only take the stores either side of a run); wl's data part goes unused.
+    for (int j = 0; j < c->kb; j++) {
+      int16_t *d = c->w4 + (size_t)j * 4 * z + z;
+      for (int t = 0; t < z; t += 16) {
+        const int8x16_t b = vld1q_s8(llr + j * z + t);
+        const int16x8x2_t v = { { vmovl_s8(vget_low_s8(b)), vmovl_high_s8(b) } };
+        vst1q_s16_x2(d + t, v); vst1q_s16_x2(d + z + t, v);
+      }
     }
-  }
+    parity_in(llr + c->k, L + c->k, z, mb);
+  } else
 #endif
+  {
+    for (int v = 0; v < c->k; v++) L[v] = llr[v];
+    for (int chk = 0; chk < c->m; chk++) L[c->k + (chk % mb) * z + chk / mb] = llr[c->k + chk];
+  }
   memset(c->wr, 0, (size_t)c->slots_total * zp);
   for (int it = 0; it < max_iter; it++) {
     for (int step = 0; step < mb; step++) {
@@ -422,6 +527,17 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
       layer_kernel_for(c, Q, R, ns);
       layer_scatter(c, r, Q);
     }
+#ifdef OB_NEON
+    if (four) {
+      if (stall_it > 0 && (it == 0 || it == stall_it - 1)) {
+        const int bad = layers_parity_neon(c, 1);
+        if (!bad) { used = it + 1; break; }
+        if (it == 0) first = bad;
+        else if ((float)bad > stall_ratio * (float)first) { used = -3; break; }
+      } else if (layers_parity_neon(c, 0)) { used = it + 1; break; }
+      continue;
+    }
+#endif
     if (stall_it > 0 && (it == 0 || it == stall_it - 1)) {
       int bad = layers_unsat(c, Q);
       if (!bad) { used = it + 1; break; }
@@ -429,8 +545,21 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
       else if ((float)bad > stall_ratio * (float)first) { used = -3; break; }
     } else if (layers_clear(c, Q)) { used = it + 1; break; }
   }
-  if (four) for (int j = 0; j < c->kb; j++) { const int16_t *col = c->w4 + (size_t)j * 4 * z + z; for (int t = 0; t < z; t++) out[j * z + t] = col[t] < 0; }
-  else for (int v = 0; v < c->k; v++) out[v] = L[v] < 0;
+#ifdef OB_NEON
+  if (four) {
+    // ai: the data from w4's second copy, a sign bit to a byte
+    for (int j = 0; j < c->kb; j++) {
+      const int16_t *col = c->w4 + (size_t)j * 4 * z + z;
+      for (int t = 0; t < z; t += 16) {
+        const uint8x16x2_t b = vld2q_u8((const uint8_t *)(col + t));
+        vst1q_u8(out + j * z + t, vshrq_n_u8(b.val[1], 7));
+      }
+    }
+    parity_out(L + c->k, out + c->k, z, mb);
+    return used;
+  }
+#endif
+  for (int v = 0; v < c->k; v++) out[v] = L[v] < 0;
   for (int chk = 0; chk < c->m; chk++) out[c->k + chk] = L[c->k + (chk % mb) * z + chk / mb] < 0;
   return used;
 }
