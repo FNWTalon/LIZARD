@@ -346,9 +346,11 @@ class ReceiveState(private val app: App) {
     }
     // ai: the camera's mode: kept by the session as the camera's (its "mode" setting); running, the stream started again
     // ai: in it (a stop and a start, as a hand would); with no session, named at the next start
+    private var pendingMode: Mode? = null   // ai: the mode pickMode started the camera again in, until it reports it
+    private var pendingStopped = false      // ai: and whether the camera has shown it stopped since
     private fun pickMode(m: Mode) {
         mode = m
-        if (running) { chosenMode = m; stop(); start() }
+        if (running) { chosenMode = m; pendingMode = m; pendingStopped = false; stop(); start() }
         else session?.set("mode", m.index.toDouble()) ?: run { chosenMode = m }
     }
     fun chooseDecoder(d: String) {
@@ -550,6 +552,7 @@ class ReceiveState(private val app: App) {
         root = f?.str("root").orEmpty()
         val ph = rxPhaseOf(j)
         if (ph != phase) phase = ph
+        if (phase is RxPhase.Error) pendingMode = null   // ai: a chosen mode that would not start: the field shows what is
         if (decoder == "auto" && running) j?.str("autoRan")?.takeIf { it.isNotEmpty() }?.let { autoRan = it }
         // ai: a phone's or an upload's own crop is the receiver's (the session makes it so at the start)
         if (fixed) j?.str("layout")?.takeIf { it == "1:1" || it == "2:1" }?.let { if (it != layout) layout = it }
@@ -574,11 +577,19 @@ class ReceiveState(private val app: App) {
         if (cj == camJson) return
         camJson = cj
         val j = parse(cj)
+        if (pendingMode != null && j?.let { camInfo(it) } == null) pendingStopped = true
         val ci = j?.let { camInfo(it) } ?: return
         info = ci
         val started = j.num("mode").toInt()
         val kept = j["kept"] as? JsonObject
-        mode = ci.modes.getOrNull(if (started >= 0) started else kept?.num("mode")?.toInt() ?: -1) ?: mode
+        // ai: a mode just chosen (pickMode) stays the field's until the camera reports a stream started after its stop: in
+        // ai: between, the session describes the reopened camera with no stream and its kept mode still the old one, which
+        // ai: put the old mode back in the menu for a moment (2026-11-02; on a slow camera's reopen every time)
+        val pm = pendingMode
+        if (pm != null) {
+            if (started < 0) pendingStopped = true
+            else if (pendingStopped) { pendingMode = null; mode = ci.modes.getOrNull(started) ?: mode }
+        } else mode = ci.modes.getOrNull(if (started >= 0) started else kept?.num("mode")?.toInt() ?: -1) ?: mode
         val key = "${ci.id}/$layout"
         if (key != keptFor) {
             keptFor = key
