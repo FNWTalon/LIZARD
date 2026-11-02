@@ -112,7 +112,19 @@ static void map_in(const lizard_t *f, const struct lizard_ws *w, int t, int firs
   const int nt = c->nt, *perm = w->perm[t];
   const uint8_t *wh = w->white + 2 * (size_t)first;
   for (int i = c->k - c->np; i < c->k; i++) cw[i] = 0;
-  for (int i = 0; i < nt; i++) cw[perm[i]] = wh[i] ? (int8_t)-slot[i] : slot[i];
+  int i = 0;
+#ifdef OB_NEON
+  // ai: arm64: sixteen slots a step, the whitening's sign taken off as (x ^ m) - m with m = -bit, then stored lane by lane
+  for (; i + 16 <= nt; i += 16) {
+    const int8x16_t m = vnegq_s8(vreinterpretq_s8_u8(vld1q_u8(wh + i))), v = vsubq_s8(veorq_s8(vld1q_s8(slot + i), m), m);
+    const int *q = perm + i;
+    vst1q_lane_s8(cw + q[0], v, 0); vst1q_lane_s8(cw + q[1], v, 1); vst1q_lane_s8(cw + q[2], v, 2); vst1q_lane_s8(cw + q[3], v, 3);
+    vst1q_lane_s8(cw + q[4], v, 4); vst1q_lane_s8(cw + q[5], v, 5); vst1q_lane_s8(cw + q[6], v, 6); vst1q_lane_s8(cw + q[7], v, 7);
+    vst1q_lane_s8(cw + q[8], v, 8); vst1q_lane_s8(cw + q[9], v, 9); vst1q_lane_s8(cw + q[10], v, 10); vst1q_lane_s8(cw + q[11], v, 11);
+    vst1q_lane_s8(cw + q[12], v, 12); vst1q_lane_s8(cw + q[13], v, 13); vst1q_lane_s8(cw + q[14], v, 14); vst1q_lane_s8(cw + q[15], v, 15);
+  }
+#endif
+  for (; i < nt; i++) cw[perm[i]] = wh[i] ? (int8_t)-slot[i] : slot[i];
 }
 
 // ai: The grid's shift from the pilots (2026-10-01; the format paints them whatever the phone, so a decoder may steer
@@ -137,6 +149,33 @@ static inline void turned(const lizard_t *f, const struct lizard_ws *w, int p, f
   const float c = w->rot[2 * k], sn = w->rot[2 * k + 1], r = w->tre[p], i = w->tim[p];
   *yr = r * c + i * sn; *yi = i * c - r * sn;
 }
+#ifdef OB_NEON
+// ai: arm64: turned() on four coefficients p at once, the turned values returned and the spectrum left as it is: (u, v)
+// ai: out of the index by shifts (bw 64) and a division by n in float, exact (the quotient, a block of columns, is under
+// ai: 32 and q / n falls short of the next whole number by 1 / n at least, far more than a float's spacing there), then
+// ai: turned()'s floats
+typedef struct { float32x4_t dx, dy, sc, nf; int32x4_t n, half, low, turns; } turn4_t;
+static inline turn4_t turn4_at(const lizard_t *f, const float d[2]) {
+  const turn4_t t = { vdupq_n_f32(d[0]), vdupq_n_f32(d[1]), vdupq_n_f32((float)ALIGN_TURNS / (float)f->n), vdupq_n_f32((float)f->n),
+                      vdupq_n_s32(f->n), vdupq_n_s32(f->n / 2), vdupq_n_s32(63), vdupq_n_s32(ALIGN_TURNS - 1) };
+  return t;
+}
+static inline __attribute__((always_inline)) void turn4(const turn4_t *t, const float *tre, const float *tim, const float *rot, int32x4_t p, float32x4_t *yr, float32x4_t *yi) {
+  const int32x4_t q = vshrq_n_s32(p, 6), blk = vcvtq_s32_f32(vdivq_f32(vcvtq_f32_s32(q), t->nf));
+  const int32x4_t uw = vmlsq_s32(q, blk, t->n), vv = vaddq_s32(vshlq_n_s32(blk, 6), vandq_s32(p, t->low));
+  const int32x4_t uu = vbslq_s32(vcltq_s32(uw, t->half), uw, vsubq_s32(uw, t->n));
+  const float32x4_t a = vmulq_f32(vaddq_f32(vmulq_f32(vcvtq_f32_s32(uu), t->dx), vmulq_f32(vcvtq_f32_s32(vv), t->dy)), t->sc);
+  const int32x4_t k = vandq_s32(vcvtnq_s32_f32(a), t->turns);
+  const int p0 = vgetq_lane_s32(p, 0), p1 = vgetq_lane_s32(p, 1), p2 = vgetq_lane_s32(p, 2), p3 = vgetq_lane_s32(p, 3);
+  const float32x4_t cs01 = vcombine_f32(vld1_f32(rot + 2 * vgetq_lane_s32(k, 0)), vld1_f32(rot + 2 * vgetq_lane_s32(k, 1)));
+  const float32x4_t cs23 = vcombine_f32(vld1_f32(rot + 2 * vgetq_lane_s32(k, 2)), vld1_f32(rot + 2 * vgetq_lane_s32(k, 3)));
+  const float32x4_t c = vuzp1q_f32(cs01, cs23), sn = vuzp2q_f32(cs01, cs23);
+  float32x4_t r = vld1q_dup_f32(tre + p0), m = vld1q_dup_f32(tim + p0);
+  r = vld1q_lane_f32(tre + p1, r, 1); r = vld1q_lane_f32(tre + p2, r, 2); r = vld1q_lane_f32(tre + p3, r, 3);
+  m = vld1q_lane_f32(tim + p1, m, 1); m = vld1q_lane_f32(tim + p2, m, 2); m = vld1q_lane_f32(tim + p3, m, 3);
+  *yr = vaddq_f32(vmulq_f32(r, c), vmulq_f32(m, sn)); *yi = vsubq_f32(vmulq_f32(m, c), vmulq_f32(r, sn));
+}
+#endif
 static int pilot_align(const lizard_t *f, struct lizard_ws *w, float d[2]) {
   const int n = f->n, bw = f->bw, half = n / 2, nbw = n * bw;
   const double k = 2.0 * 3.14159265358979323846 / n;
@@ -585,9 +624,45 @@ static void clip_row(const float *src, float *dst, int cols, float lim, float sc
 // A and B there by itself, which is what a real column's zero frequency is.
 // Only v < vblocks * bw is ever wanted, but the partner row n - v lies in the half the old code threw away, so this
 // runs before anything is discarded.
+#ifdef OB_NEON
+// ai: arm64: four vectors, row k holding a row's four values, written turned over: column l of the four to dst + l pitch
+static inline void store_turned4(float *dst, size_t pitch, float32x4_t r0, float32x4_t r1, float32x4_t r2, float32x4_t r3) {
+  const float64x2_t t0 = vreinterpretq_f64_f32(vtrn1q_f32(r0, r1)), t1 = vreinterpretq_f64_f32(vtrn2q_f32(r0, r1));
+  const float64x2_t t2 = vreinterpretq_f64_f32(vtrn1q_f32(r2, r3)), t3 = vreinterpretq_f64_f32(vtrn2q_f32(r2, r3));
+  vst1q_f32(dst, vreinterpretq_f32_f64(vtrn1q_f64(t0, t2))); vst1q_f32(dst + pitch, vreinterpretq_f32_f64(vtrn1q_f64(t1, t3)));
+  vst1q_f32(dst + 2 * pitch, vreinterpretq_f32_f64(vtrn2q_f64(t0, t2))); vst1q_f32(dst + 3 * pitch, vreinterpretq_f32_f64(vtrn2q_f64(t1, t3)));
+}
+#endif
 static void unpack_turn(const lizard_t *f, int x0, const float *z0) {
   struct lizard_ws *w = f->ws;
   const int n = f->n, bw = f->bw, sw = LIZARD_STRIP, hw = STRIP_HALF;
+#ifdef OB_NEON
+  // ai: arm64: four rows v a step (bw a multiple of four, so one block's columns c to c + 3) by four columns j, the
+  // ai: same arithmetic as below, turned over in registers so each store is four neighbouring floats of one row x
+  // ai: (the loop below writes one float a row, bw floats apart)
+  if (bw % 4 == 0) {
+    const float32x4_t h = vdupq_n_f32(0.5f), nh = vdupq_n_f32(-0.5f);
+    for (int v = 0; v < f->vblocks * bw; v += 4) {
+      const int b = v / bw, c = v % bw;
+      const float *zr0 = z0 + (size_t)v * sw, *zr1 = zr0 + sw, *zr2 = zr1 + sw, *zr3 = zr2 + sw;
+      const float *mr0 = z0 + (size_t)(v ? n - v : 0) * sw, *mr1 = z0 + (size_t)(n - v - 1) * sw, *mr2 = mr1 - sw, *mr3 = mr2 - sw;
+      float *lo = w->tre + ((size_t)b * n + x0) * bw + c, *loi = w->tim + ((size_t)b * n + x0) * bw + c;
+      float *hi = lo + (size_t)hw * bw, *hii = loi + (size_t)hw * bw;
+      for (int j = 0; j < hw; j += 4) {
+#define UT_ROW(k) \
+        const float32x4_t ar##k = vld1q_f32(zr##k + j), ai##k = vld1q_f32(zr##k + hw + j), br##k = vld1q_f32(mr##k + j), bi##k = vld1q_f32(mr##k + hw + j); \
+        const float32x4_t L##k = vmulq_f32(h, vaddq_f32(ar##k, br##k)), Li##k = vmulq_f32(h, vsubq_f32(ai##k, bi##k)); \
+        const float32x4_t H##k = vmulq_f32(h, vaddq_f32(ai##k, bi##k)), Hi##k = vmulq_f32(nh, vsubq_f32(ar##k, br##k));
+        UT_ROW(0) UT_ROW(1) UT_ROW(2) UT_ROW(3)
+#undef UT_ROW
+        const size_t o = (size_t)j * bw;
+        store_turned4(lo + o, bw, L0, L1, L2, L3); store_turned4(loi + o, bw, Li0, Li1, Li2, Li3);
+        store_turned4(hi + o, bw, H0, H1, H2, H3); store_turned4(hii + o, bw, Hi0, Hi1, Hi2, Hi3);
+      }
+    }
+    return;
+  }
+#endif
   for (int v = 0; v < f->vblocks * bw; v++) {
     const int b = v / bw, c = v % bw, vm = v ? n - v : 0;
     const float *zr = z0 + (size_t)v * sw, *zi = zr + hw;
@@ -839,6 +914,34 @@ void lizard_encode(const lizard_t *f, const uint8_t *blocks, float *drive) {
   ob_prof_ms[PROF_F_ENC_REST] += ob_now_ms() - tall;
 }
 
+#ifdef OB_NEON
+// ai: arm64: the lanes of four vectors summed in double, ((l0 + l1) + l2) + l3 as row_sums adds them, out[r] vector r's
+static inline void lane_sums4(float32x4_t r0, float32x4_t r1, float32x4_t r2, float32x4_t r3, double out[4]) {
+  const float64x2_t t0 = vreinterpretq_f64_f32(vtrn1q_f32(r0, r1)), t1 = vreinterpretq_f64_f32(vtrn2q_f32(r0, r1));
+  const float64x2_t t2 = vreinterpretq_f64_f32(vtrn1q_f32(r2, r3)), t3 = vreinterpretq_f64_f32(vtrn2q_f32(r2, r3));
+  // ai: lane l of r0, r1, r2, r3
+  const float32x4_t l0 = vreinterpretq_f32_f64(vtrn1q_f64(t0, t2)), l1 = vreinterpretq_f32_f64(vtrn1q_f64(t1, t3));
+  const float32x4_t l2 = vreinterpretq_f32_f64(vtrn2q_f64(t0, t2)), l3 = vreinterpretq_f32_f64(vtrn2q_f64(t1, t3));
+  vst1q_f64(out, vaddq_f64(vaddq_f64(vaddq_f64(vcvt_f64_f32(vget_low_f32(l0)), vcvt_f64_f32(vget_low_f32(l1))), vcvt_f64_f32(vget_low_f32(l2))), vcvt_f64_f32(vget_low_f32(l3))));
+  vst1q_f64(out + 2, vaddq_f64(vaddq_f64(vaddq_f64(vcvt_high_f64_f32(l0), vcvt_high_f64_f32(l1)), vcvt_high_f64_f32(l2)), vcvt_high_f64_f32(l3)));
+}
+// ai: arm64: row_sums on four rows at once (z's rows pitch apart): row_sums' chains (lane l the columns l mod 4, in
+// ai: column order), the four rows' twelve interleaved, cx and qx read once for the four, and z c, z q fused into their
+// ai: sums (one rounding where row_sums has two): its own floats, the doubles summed as row_sums sums them
+static void row_sums4(const float *z, size_t pitch, const float *cx, const float *qx, int cols, double rs[4], double rx[4], double rq[4]) {
+  const float *z1 = z + pitch, *z2 = z1 + pitch, *z3 = z2 + pitch;
+  float32x4_t a0 = vdupq_n_f32(0), a1 = a0, a2 = a0, a3 = a0, b0 = a0, b1 = a0, b2 = a0, b3 = a0, c0 = a0, c1 = a0, c2 = a0, c3 = a0;
+  for (int x = 0; x < cols; x += 4) {
+    const float32x4_t vc = vld1q_f32(cx + x), vq = vld1q_f32(qx + x);
+    const float32x4_t v0 = vld1q_f32(z + x), v1 = vld1q_f32(z1 + x), v2 = vld1q_f32(z2 + x), v3 = vld1q_f32(z3 + x);
+    a0 = vaddq_f32(a0, v0); b0 = vfmaq_f32(b0, v0, vc); c0 = vfmaq_f32(c0, v0, vq);
+    a1 = vaddq_f32(a1, v1); b1 = vfmaq_f32(b1, v1, vc); c1 = vfmaq_f32(c1, v1, vq);
+    a2 = vaddq_f32(a2, v2); b2 = vfmaq_f32(b2, v2, vc); c2 = vfmaq_f32(c2, v2, vq);
+    a3 = vaddq_f32(a3, v3); b3 = vfmaq_f32(b3, v3, vc); c3 = vfmaq_f32(c3, v3, vq);
+  }
+  lane_sums4(a0, a1, a2, a3, rs); lane_sums4(b0, b1, b2, b3, rx); lane_sums4(c0, c1, c2, c3, rq);
+}
+#else
 // Sums over one row of a strip for the detrend's projections: z, z c, z q. Four chains in float, as the vector path
 // keeps them, so both paths round alike; the caller carries on in double.
 static void row_sums(const float *z, const float *cx, const float *qx, int cols, double *rs, double *rx, double *rq) {
@@ -856,6 +959,7 @@ static void row_sums(const float *z, const float *cx, const float *qx, int cols,
 #endif
   *rs = (double)A[0] + A[1] + A[2] + A[3]; *rx = (double)B[0] + B[1] + B[2] + B[3]; *rq = (double)Q[0] + Q[1] + Q[2] + Q[3];
 }
+#endif
 
 // t -= (ar + i ai) * x over cols values.
 static void sub_scaled(float *tr, float *ti, const float *xr, const float *xi, float ar, float ai, int cols) {
@@ -870,6 +974,77 @@ static void sub_scaled(float *tr, float *ti, const float *xr, const float *xi, f
 #endif
   for (; c < cols; c++) { float r = xr[c], i = xi[c]; tr[c] -= ar * r - ai * i; ti[c] -= ar * i + ai * r; }
 }
+
+// ai: Sub-channel j's soft value scale from its moments' sums over its LIZARD_SUB coefficients (m2 of |y|^2, m4 of
+// ai: |y|^4): its rms axis value and information estimate set (sub_rms, sub_est), the scale returned.
+static float sub_scale(struct lizard_ws *w, int j, double m2, double m4) {
+  m2 /= LIZARD_SUB; m4 /= LIZARD_SUB;
+  w->sub_rms[j] = m2 > 0 ? (float)sqrt(m2 / 2) : 0;
+  double a2 = 2 * m2 * m2 - m4;
+  a2 = a2 > 0 ? sqrt(a2) : 0;
+  double nv = m2 - a2;
+  if (nv < 0.02 * m2) nv = 0.02 * m2;
+  w->sub_est[j] = axis_info(a2 / nv);
+  // Per axis: amplitude sqrt(a2 / 2), noise variance nv / 2, so LLR = 2 sqrt(2 a2) y / nv.
+  return (float)(0.7 * 2 * sqrt(2 * a2) / nv);
+}
+#ifdef OB_NEON
+// ai: arm64: the soft values of sub-channels j to j + 3 (lizard_finish_ext's loop over sub-channels, four at once):
+// ai: their coefficients gathered side by side (sub-channel j + l's s-th at 4 s + l), the moments' double sums one a
+// ai: lane (each in s order, as the loop adds them), the soft values a vector at a time, stored interleaved; the same
+// ai: doubles, floats and bytes as the loop
+static inline int32x4_t soft_q(float32x4_t k, float32x4_t y) {
+  return vcvtnq_s32_f32(vmulq_f32(vminq_f32(vmaxq_f32(vmulq_f32(k, y), vdupq_n_f32(-10)), vdupq_n_f32(10)), vdupq_n_f32(8)));
+}
+static void soft4(const lizard_t *f, struct lizard_ws *w, int j, const float *d) {
+  const float *re = w->tre, *imag = w->tim;
+  const int *p0 = f->pos + j * LIZARD_SUB, *p1 = p0 + LIZARD_SUB, *p2 = p1 + LIZARD_SUB, *p3 = p2 + LIZARD_SUB;
+  float gr[4 * LIZARD_SUB], gi[4 * LIZARD_SUB];
+  if (d) {
+    // ai: the pilots' shift turned back as the coefficients are gathered, the spectrum itself left unturned (the pilots'
+    // ai: read turns its own, lizard_finish_ext)
+    const turn4_t t = turn4_at(f, d);
+    for (int s = 0; s < LIZARD_SUB; s += 4) {
+      const int32x4_t a0 = vld1q_s32(p0 + s), a1 = vld1q_s32(p1 + s), a2 = vld1q_s32(p2 + s), a3 = vld1q_s32(p3 + s);
+      const int64x2_t t0 = vreinterpretq_s64_s32(vtrn1q_s32(a0, a1)), t1 = vreinterpretq_s64_s32(vtrn2q_s32(a0, a1));
+      const int64x2_t t2 = vreinterpretq_s64_s32(vtrn1q_s32(a2, a3)), t3 = vreinterpretq_s64_s32(vtrn2q_s32(a2, a3));
+      const int32x4_t q[4] = { vreinterpretq_s32_s64(vtrn1q_s64(t0, t2)), vreinterpretq_s32_s64(vtrn1q_s64(t1, t3)),
+                               vreinterpretq_s32_s64(vtrn2q_s64(t0, t2)), vreinterpretq_s32_s64(vtrn2q_s64(t1, t3)) };
+      for (int u = 0; u < 4; u++) {
+        float32x4_t yr, yi;
+        turn4(&t, w->tre, w->tim, w->rot, q[u], &yr, &yi);
+        vst1q_f32(gr + 4 * (s + u), yr); vst1q_f32(gi + 4 * (s + u), yi);
+      }
+    }
+  } else for (int s = 0; s < LIZARD_SUB; s++) {
+    gr[4 * s] = re[p0[s]]; gr[4 * s + 1] = re[p1[s]]; gr[4 * s + 2] = re[p2[s]]; gr[4 * s + 3] = re[p3[s]];
+    gi[4 * s] = imag[p0[s]]; gi[4 * s + 1] = imag[p1[s]]; gi[4 * s + 2] = imag[p2[s]]; gi[4 * s + 3] = imag[p3[s]];
+  }
+  float64x2_t m2a = vdupq_n_f64(0), m2b = m2a, m4a = m2a, m4b = m2a;
+  for (int s = 0; s < LIZARD_SUB; s++) {
+    const float32x4_t r = vld1q_f32(gr + 4 * s), i = vld1q_f32(gi + 4 * s);
+    const float64x2_t rl = vcvt_f64_f32(vget_low_f32(r)), rh = vcvt_high_f64_f32(r), il = vcvt_f64_f32(vget_low_f32(i)), ih = vcvt_high_f64_f32(i);
+    const float64x2_t el = vaddq_f64(vmulq_f64(rl, rl), vmulq_f64(il, il)), eh = vaddq_f64(vmulq_f64(rh, rh), vmulq_f64(ih, ih));
+    m2a = vaddq_f64(m2a, el); m4a = vaddq_f64(m4a, vmulq_f64(el, el));
+    m2b = vaddq_f64(m2b, eh); m4b = vaddq_f64(m4b, vmulq_f64(eh, eh));
+  }
+  double m2[4], m4[4];
+  vst1q_f64(m2, m2a); vst1q_f64(m2 + 2, m2b); vst1q_f64(m4, m4a); vst1q_f64(m4 + 2, m4b);
+  float32x4_t k[4];
+  for (int l = 0; l < 4; l++) k[l] = vdupq_n_f32(sub_scale(w, j + l, m2[l], m4[l]));
+  int8_t *out = w->llrf + 2 * (size_t)j * LIZARD_SUB;
+  for (int s = 0; s < LIZARD_SUB; s += 8) {
+    // ai: val[l]: sub-channel j + l at s to s + 3 (a) and s + 4 to s + 7 (b)
+    const float32x4x4_t ra = vld4q_f32(gr + 4 * s), rb = vld4q_f32(gr + 4 * s + 16), ia = vld4q_f32(gi + 4 * s), ib = vld4q_f32(gi + 4 * s + 16);
+    for (int l = 0; l < 4; l++) {
+      const int8x8_t R = vmovn_s16(vcombine_s16(vmovn_s32(soft_q(k[l], ra.val[l])), vmovn_s32(soft_q(k[l], rb.val[l]))));
+      const int8x8_t I = vmovn_s16(vcombine_s16(vmovn_s32(soft_q(k[l], ia.val[l])), vmovn_s32(soft_q(k[l], ib.val[l]))));
+      const int8x8x2_t ri = { { R, I } };
+      vst2_s8(out + 2 * (size_t)l * LIZARD_SUB + 2 * s, ri);
+    }
+  }
+}
+#endif
 
 // The decode is split at the sampling boundary so the sampler can live somewhere else: on a GPU a fence costs more
 // than the stage unless the caller can have several frames out at once, which it cannot while the decode is one
@@ -1053,11 +1228,20 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
       }
     }
     double tb = ob_now_ms(); ob_prof_ms[PROF_F_SAMPLE] += tb - ta;
+#ifdef OB_NEON
+    // ai: four rows a call (every picture size a multiple of four), each row then taken in turn as below
+    for (int y = 0; y < n; y += 4) {
+      double rs[4], rx[4], rq[4];
+      row_sums4(z + (size_t)y * sw, sw, w->cx + x0, w->qx + x0, sw, rs, rx, rq);
+      for (int k = 0; k < 4; k++) { px += rx[k]; py += rs[k] * w->cx[y + k]; pxy += rx[k] * w->cx[y + k]; pxx += rq[k]; pyy += rs[k] * w->qx[y + k]; }
+    }
+#else
     for (int y = 0; y < n; y++) {
       double rs, rx, rq;
       row_sums(z + (size_t)y * sw, w->cx + x0, w->qx + x0, sw, &rs, &rx, &rq);
       px += rx; py += rs * w->cx[y]; pxy += rx * w->cx[y]; pxx += rq; pyy += rs * w->qx[y];
     }
+#endif
     double tc = ob_now_ms(); ob_prof_ms[PROF_F_DETREND] += tc - tb;
     // The strip's two halves ARE the real and imaginary inputs, in place, at the strip's pitch (unpack_turn).
     fft_cols_dec(z, z + STRIP_HALF, n, STRIP_HALF, sw);
@@ -1093,8 +1277,18 @@ have_llr:
   // ai: the grid's shift by the pilots, turned back on every coefficient the frame carries before any is read
   // ai: (a turn leaves each |y| as it was, so the moments, the estimate and the decline verdict read the same)
   w->align[0] = w->align[1] = 0;
+#ifdef OB_NEON
+  // ai: arm64, where the sub-channels come in fours (every format's): soft4 below. With bw 64 (every picture size's)
+  // ai: there is no pass over the frame: soft4 turns each coefficient as it gathers it (turn4) and the pilots' read each
+  // ai: of its own, the spectrum left unturned
+  const int four = f->subch % 4 == 0;
+  const float *turn = 0;
+#endif
   if (!ext_llr && w->rot && pilot_align(f, w, w->align) && (w->align[0] != 0 || w->align[1] != 0)) {
     const int all = f->subch * LIZARD_SUB;
+#ifdef OB_NEON
+    if (four && bw == 64) turn = w->align; else
+#endif
     for (int i = 0; i < all; i++) { const int p = f->pos[i]; turned(f, w, p, w->align[0], w->align[1], &w->tre[p], &w->tim[p]); }
   }
   // Blur scales each ring differently, so signal and noise are estimated per sub-channel from the second and fourth
@@ -1108,20 +1302,15 @@ have_llr:
       memcpy(w->llrf, ext_llr, (size_t)f->subch * 2 * LIZARD_SUB);
       for (int j = 0; j < f->subch; j++) { w->sub_est[j] = ext_est[j]; w->sub_rms[j] = 0; }
     } else for (int j = 0; j < f->subch; j++) {
+#ifdef OB_NEON
+      if (four) { soft4(f, w, j, turn); j += 3; continue; }
+#endif
       const int *pp = f->pos + j * LIZARD_SUB;
       float gr[LIZARD_SUB], gi[LIZARD_SUB];
       double m2 = 0, m4 = 0;
       for (int s = 0; s < LIZARD_SUB; s++) { gr[s] = re[pp[s]]; gi[s] = imag[pp[s]]; }
       for (int s = 0; s < LIZARD_SUB; s++) { double e = (double)gr[s] * gr[s] + (double)gi[s] * gi[s]; m2 += e; m4 += e * e; }
-      m2 /= LIZARD_SUB; m4 /= LIZARD_SUB;
-      w->sub_rms[j] = m2 > 0 ? (float)sqrt(m2 / 2) : 0;
-      double a2 = 2 * m2 * m2 - m4;
-      a2 = a2 > 0 ? sqrt(a2) : 0;
-      double nv = m2 - a2;
-      if (nv < 0.02 * m2) nv = 0.02 * m2;
-      w->sub_est[j] = axis_info(a2 / nv);
-      // Per axis: amplitude sqrt(a2 / 2), noise variance nv / 2, so LLR = 2 sqrt(2 a2) y / nv.
-      const float k = (float)(0.7 * 2 * sqrt(2 * a2) / nv);
+      const float k = sub_scale(w, j, m2, m4);
       int8_t *out = w->llrf + 2 * j * LIZARD_SUB;
       for (int s = 0; s < LIZARD_SUB; s++) {
         float lr = k * gr[s], li = k * gi[s];
@@ -1157,7 +1346,11 @@ have_llr:
           const int gs = s0 + i, p = f->pos[gs / 2];
           const float rms = w->sub_rms[gs / (2 * LIZARD_SUB)];
           if (!(rms > 0)) continue;
-          cs += (wh[i] ? -1.0 : 1.0) * ((i & 1) ? imag[p] : re[p]) / rms;
+          float y = (i & 1) ? imag[p] : re[p];
+#ifdef OB_NEON
+          if (turn) { float yr, yi; turned(f, w, p, turn[0], turn[1], &yr, &yi); y = (i & 1) ? yi : yr; }
+#endif
+          cs += (wh[i] ? -1.0 : 1.0) * y / rms;
           got++;
         }
         if (got) w->blk_pilot[b] = (float)(cs / (nb - code->nt));
