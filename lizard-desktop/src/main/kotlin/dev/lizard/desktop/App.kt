@@ -208,10 +208,12 @@ private val CREDITS_HERE = listOf(
 
 // ai: Every heavyweight under the window but the code canvas given a white X background (2026-11-02,
 // ai: Native.windowBackground): Compose's drawing surface is one, and where the code canvas's window went (Send left) X
-// ai: filled the area with the surface's own, AWT's, the desktop theme's grey (dark on a dark theme), until Skia drew it
+// ai: filled the area with the surface's own, AWT's, the desktop theme's grey (dark on a dark theme), until Skia drew it.
+// ai: Their contents kept on a resize too (Native.windowKeep): AWT's ForgetGravity had X clear the whole surface at each
+// ai: step of a window's resize before Skia drew it again, the whole window blinking (2026-11-02)
 private fun whiten(c: java.awt.Container) {
     for (k in c.components) {
-        if (k is java.awt.Canvas && k !is CodeCanvas) runCatching { Native.windowBackground(k, 0xFFFFFF) }
+        if (k is java.awt.Canvas && k !is CodeCanvas) runCatching { Native.windowBackground(k, 0xFFFFFF); Native.windowKeep(k) }
         if (k is java.awt.Container) whiten(k)
     }
 }

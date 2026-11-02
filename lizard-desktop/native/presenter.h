@@ -37,6 +37,11 @@ bool x11IsFullscreen(unsigned long top);
 // ai: component's colour, and with sun.awt.noerasebackground nothing of AWT paints over it: a frame of it showed where
 // ai: the code canvas came or went. Set (false where it could not be: no display, not X11)
 bool x11Background(unsigned long window, unsigned rgb);
+// ai: an X11 window's contents kept at its top left on a resize (bit gravity NorthWest; 2026-11-02): X fills only the
+// ai: area a resize uncovers with its background, where AWT's canvases have ForgetGravity, which clears the whole window
+// ai: at each resize before its client draws again (Compose's surface: the whole window blinked at every step of a
+// ai: resize). Set (false where it could not be: no display, not X11)
+bool x11KeepOnResize(unsigned long window);
 // ai: Windows' full screen for a top-level window (2026-10-24), as Windows apps make it: its frame and caption off and
 // ai: the monitor covered, then its style and placement (maximized or not) given back; set (false where it could not
 // ai: be: not Windows) and read. The window's own thread receives the changes; these may be called from any.
