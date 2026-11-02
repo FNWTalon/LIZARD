@@ -1234,18 +1234,16 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
       elo[i] = lo < 0 ? 0 : lo; ehi[i] = hi > n - 1 ? n - 1 : hi;
     }
     // ai: the mean of a caller's grid over every sample; of one sampled here, over every eighth sample each way (a
-    // ai: whole grid sampled for its mean alone was 9.4 MB at 1536, faulted in every frame)
+    // ai: whole grid sampled for its mean alone was 9.4 MB at 1536, faulted in every frame), its c rows of c taken in
+    // ai: one call into the strip's buffer (n / 8 squared, within its n by LIZARD_STRIP), summed in the same order
     double mean = 0;
     if (grid) {
       for (size_t k = 0; k < (size_t)n * n; k++) mean += grid[k];
       mean /= (double)n * n;
     } else {
       const int c = n / 8;
-      float *row = w->wre;
-      for (int r = 0; r < c; r++) {
-        ob_sample_grid_pic(&f->frame, &im, &reg, g0, g0, 8 * step, 0, c, r, 1, row, c);
-        for (int k = 0; k < c; k++) mean += row[k];
-      }
+      ob_sample_grid_pic(&f->frame, &im, &reg, g0, g0, 8 * step, 0, c, 0, c, w->wre, c);
+      for (size_t k = 0; k < (size_t)c * c; k++) mean += w->wre[k];
       mean /= (double)c * c;
     }
     mv = (float)mean;
