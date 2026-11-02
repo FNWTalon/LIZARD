@@ -69,7 +69,7 @@ struct Lane {
   GroupP anchFindGroup, anchFitGroup, anchRefitGroup, anchNodesGroup;
   // ai: the finder's second round (decoder.mjs, gpu/glsl/finder.mjs REDO): its frame records and its groups over them
   BufP frames2Buf;
-  GroupP pickGroup2, redoGroup, selGroup2, classifyGroup2, scoreGroup2, voteGroup2, peaksGroup2, gatherGroup2, completeGroup2;
+  GroupP pickGroup2, redoGroup, selGroup2, classifyGroup2, scoreGroup2, voteGroup2, peaksGroup2, gatherGroup2, completeGroup2, traceGroup2;
   // ai: PEAKS's list (PEAK_LIST vec4f a frame) and its counts (decoder.mjs vlistBuf, vcountBuf); the second round's
   // ai: grids, REDO's args and their one-frame template (decoder.mjs args2Buf, r2Uni; gpu/glsl/finder.mjs R2)
   BufP vlistBuf, vcountBuf, args2Buf, r2Uni;
@@ -81,7 +81,7 @@ struct Lane {
   std::vector<Level> level;
   uint32_t slots = 0, gx = 0, gy = 0;
   BufP rawBuf, accBuf;
-  GroupP selGroup, classifyGroup, scoreGroup, voteGroup, peaksGroup, gatherGroup, wordGroup, pyrGroup;
+  GroupP selGroup, classifyGroup, scoreGroup, voteGroup, peaksGroup, gatherGroup, wordGroup, pyrGroup, traceGroup;
   GroupP nodesGroup;
   struct Fcn2Level { uint32_t l, w, h; GroupP group, xgroup, group2, xgroup2; BufP plane, uni; };   // ai: group2, xgroup2: a level below coarseFrom's
   std::vector<Fcn2Level> fcn2Levels;

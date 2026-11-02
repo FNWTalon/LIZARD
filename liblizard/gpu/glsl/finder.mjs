@@ -1,6 +1,7 @@
 // F5 to F6 and the second round's REDO in GLSL, the WGSL finder.mjs (archived) statement for statement (its comments say what
 // each kernel does and why, and its constants are the ones used here): VOTE, PEAKS, GATHER, COMPLETE, SCORE, PICK and
-// REDO, with the bindings, workgroup sizes and dispatches of the WGSL kernels.
+// REDO, with the bindings, workgroup sizes and dispatches of the WGSL kernels; TRACE (each quad's bend, before SCORE) is
+// GLSL alone.
 // ai: WGSL's workgroupUniformLoad is common.mjs uniformLoad; its atomicLoad and atomicStore are common.mjs wgLoad and
 // ai: wgStore on a workgroup variable, devLoad and devStore on a storage buffer. Workgroup memory is not zeroed but
 // ai: GATHER's keys, which atomicMax builds on from 0 (NULL_INIT); every other workgroup variable is written before the
@@ -280,7 +281,7 @@ void gather(uint f, uint pk, vec4 c, uint lane) {
     for (uint q = 0u; q < 4u; q++) {
       if (!lead || ${wgLoad("slotK[16u * pk + 4u * q]")} == 0u) { pts[q] = vec4(0.0); continue; }
       uint o = 3u * (f * P.cap + (${wgLoad("slotK[16u * pk + 4u * q + 3u]")} & 8191u));
-      pts[q] = vec4(readings[o].xy, CENTRE[f2u(readings[o + 2u].x)], 1.0);
+      pts[q] = vec4(readings[o].xy, CENTRE[f2u(readings[o + 2u].x)], max(readings[o].z, 1e-3));   // ai: w: the mark's own module size (> 0: the corner is there)
       n++;
     }
     float u = 0.0;
@@ -289,7 +290,7 @@ void gather(uint f, uint pk, vec4 c, uint lane) {
       u = 0.25 * (distance(pts[0].xy, pts[1].xy) + distance(pts[1].xy, pts[2].xy) + distance(pts[2].xy, pts[3].xy) + distance(pts[3].xy, pts[0].xy)) / (P.modules[m] - 2.0 * pts[0].z);
     }
     for (uint q = 0u; q < 4u; q++) { quads[base + q] = pts[q]; }
-    quads[base + 4u] = vec4(c.z, u, c.w, float(n));
+    quads[base + 4u] = vec4(c.z, u, 0.0, float(n));   // ai: z: the quad's bend (TRACE), 0 until traced
   }
 }
 void main() {
@@ -546,7 +547,7 @@ void main() {
     vec2 Pm = R + (c - 2.0) * um * (ta + tb);
     if (distance(Pm, Pm0) > 0.25 * distance(G[0].xy, G[0].zw)) { return; }
     uint m = f2u(G[3].x);
-    quads[base + m] = vec4(Pm, c, 1.0);
+    quads[base + m] = vec4(Pm, c, um);
     vec4 qm = quads[base + 4u];
     vec2 p0 = quads[base].xy;
     vec2 p1 = quads[base + 1u].xy;
@@ -626,8 +627,194 @@ float[9] hypH(vec4 quad[4], uint o, float M) {
 }
 `;
 
+
+// ai: A quad's bend about the camera's axis in the map's own radial form (common.mjs
+// ai: MAP toImage): an image point p is, undistorted, c + e (1 + k |e|^2 iR2), e = p - c, c the frame's axis (its dims'
+// ai: third word, the centre where 0) and R its farthest corner from c; bend() the inverse, toImage's Newton steps.
+const BEND = /* glsl */ `
+vec3 bendAxis(Frame F) {
+  vec2 LA = vec2(0.5 * float(F.w), 0.5 * float(F.h));
+  if (F.size != 0u) { LA = vec2(0.5 * float(F.size & 0xffffu) - 16384.0, 0.5 * float(F.size >> 16u) - 16384.0); }
+  vec2 fwh = vec2(float(F.w), float(F.h));
+  float R = max(max(length(LA), length(vec2(fwh.x, 0.0) - LA)), max(length(vec2(0.0, fwh.y) - LA), length(fwh - LA)));
+  return vec3(LA, 1.0 / max(R * R, 1.0));
+}
+vec2 unbend(vec2 p, vec3 ax, float k) { vec2 e = p - ax.xy; return ax.xy + e * (1.0 + k * dot(e, e) * ax.z); }
+vec2 bend(vec2 u, vec3 ax, float k) {
+  if (k == 0.0) { return u; }
+  vec2 e = u - ax.xy;
+  float g = k * dot(e, e) * ax.z;
+  float s = 1.0;
+  for (int i = 0; i < 3; i++) { float gs = g * s * s; s = s - (s * (1.0 + gs) - 1.0) / (1.0 + 3.0 * gs); }
+  return ax.xy + e * s;
+}
+`;
+
+// ai: TRACE: each quad's bend, a workgroup a (frame, quad) (COMPLETE's grid), 32 lanes a side from one of its ends, in
+// ai: the marks' own module sizes (each corner's w, the classifier's, toward the other end's along the chord; not the
+// ai: meta's u, which is in GATHER's guessed ring's modules): the ring's inner edge (depth 3) from 16 modules past the
+// ai: mark, a station every TR_STEP modules, each
+// ai: predicted from those found (quadratic in the station index), located across by the light (gap), dark (ring), light
+// ai: (rim and margin) profile within three modules, accepted at a correlation of 0.6 off the window's edge; to the
+// ai: chord's middle, or two misses. A station's 49 samples are fetched across its 32 lanes and its 25 offsets
+// ai: correlated at once; every lane of a side then takes the same decision from shared memory, so the stations' barriers
+// ai: stay in uniform control flow. Then the bend: k scanned -0.3 to 1.0 by 0.02 (a lane each) and refined by 0.002 about
+// ai: the best, the traced sides unbent and each scored by its scatter's smaller over larger eigenvalue (the plumb line);
+// ai: written to the quad's meta z where two sides traced four points or more, else 0. (A workgroup a frame with a lane
+// ai: a side, each station's 49 samples one after another, cost the S26 0.11 to 0.17 ms a frame; this, 0.01.)
+const TR_MAX = 24, TR_STEP = 12, TR_L = 32;
+export const TRACE = VERSION + SAMPLERLESS + DIMS + CONVERT + LEVEL_BINDINGS + LEVELS + BEND + /* glsl */ `
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+layout(set = 0, binding = 7, std430) buffer Quads { vec4 quads[]; };
+shared vec2 tp[8][${TR_MAX}];
+shared uint tn[8];
+shared float prof[8][49];
+shared float nc[8][25];
+shared uint alive[8];
+shared vec2 best[66];
+float tmpl(uint k) { float a = -2.0 + 0.25 * float(k) + 0.125; return (a >= 0.0 && a < 2.0) ? -4.0 / 3.0 : 2.0 / 3.0; }
+float ncc(uint tr, int o) {
+  float m = 0.0;
+  for (uint k = 0u; k < 24u; k++) { m += prof[tr][uint(int(k) + 12 + o)]; }
+  m /= 24.0;
+  float sv = 0.0;
+  float sx = 0.0;
+  for (uint k = 0u; k < 24u; k++) { float d = prof[tr][uint(int(k) + 12 + o)] - m; sv += d * d; sx += d * tmpl(k); }
+  return sv > 1e-9 ? sx / (sqrt(sv) * 4.6188022) : 0.0;
+}
+float plumb(float k, vec3 ax) {
+  float e = 0.0;
+  uint sides = 0u;
+  for (uint sd = 0u; sd < 4u; sd++) {
+    uint t0 = 2u * sd;
+    uint n0 = tn[t0];
+    uint n1 = tn[t0 + 1u];
+    if (n0 + n1 < 4u) { continue; }
+    vec2 mu = vec2(0.0);
+    for (uint i = 0u; i < n0; i++) { mu += unbend(tp[t0][i], ax, k); }
+    for (uint i = 0u; i < n1; i++) { mu += unbend(tp[t0 + 1u][i], ax, k); }
+    mu /= float(n0 + n1);
+    vec3 S = vec3(0.0);
+    for (uint i = 0u; i < n0; i++) { vec2 d = unbend(tp[t0][i], ax, k) - mu; S += vec3(d.x * d.x, d.y * d.y, d.x * d.y); }
+    for (uint i = 0u; i < n1; i++) { vec2 d = unbend(tp[t0 + 1u][i], ax, k) - mu; S += vec3(d.x * d.x, d.y * d.y, d.x * d.y); }
+    float tr = S.x + S.y;
+    float rt = sqrt(max(0.25 * tr * tr - (S.x * S.y - S.z * S.z), 0.0));
+    float l1 = 0.5 * tr + rt;
+    if (l1 > 0.0) { e += (0.5 * tr - rt) / l1; }
+    sides++;
+  }
+  return sides >= 2u ? e : 3.0e38;
+}
+void main() {
+  uint wq = gl_WorkGroupID.x;
+  uint f = wq / ${K}u;
+  uint base = 5u * wq;
+  uint li = gl_LocalInvocationIndex;
+  uint tr = li / ${TR_L}u;
+  uint j = li % ${TR_L}u;
+  Frame F = frames[f];
+  vec4 qm = quads[base + 4u];
+  if (F.valid > 1u || F.valid == 0u || !(qm.w == 4.0 || qm.w == 5.0)) { return; }
+  vec3 ax = bendAxis(F);
+  uint side = tr >> 1u;
+  vec4 a4 = quads[base + side];
+  vec4 b4 = quads[base + ((side + 1u) & 3u)];
+  if ((tr & 1u) == 1u) { vec4 t4 = a4; a4 = b4; b4 = t4; }
+  vec2 A = a4.xy;
+  vec2 B = b4.xy;
+  vec2 g = 0.25 * (quads[base].xy + quads[base + 1u].xy + quads[base + 2u].xy + quads[base + 3u].xy);
+  float dc = a4.z;
+  float ua = a4.w;
+  float ub = b4.w;
+  float len = distance(A, B);
+  vec2 U = (B - A) / max(len, 1e-6);
+  vec2 n = vec2(-U.y, U.x);
+  if (dot(n, 0.5 * (A + B) - g) < 0.0) { n = -n; }
+  vec2 p0 = A + U * (16.0 - dc) * ua + n * (dc - 3.0) * ua;
+  uint np = 0u;
+  uint miss = 0u;
+  bool live = ua > 0.0;
+  for (uint st = 0u; st < ${TR_MAX}u; st++) {
+    vec2 P = vec2(0.0);
+    vec2 tv = vec2(0.0);
+    vec2 v = vec2(0.0);
+    if (live) {
+      float t = 16.0 + ${TR_STEP}.0 * float(st);
+      if (np < 2u) {
+        P = A + U * (t - dc) * ua + n * (dc - 3.0) * ua;
+        tv = U;
+        if (np == 1u) { P += tp[tr][0] - p0; }
+      } else if (np == 2u) {
+        P = 2.0 * tp[tr][1] - tp[tr][0];
+        tv = tp[tr][1] - tp[tr][0];
+      } else {
+        P = 3.0 * tp[tr][np - 1u] - 3.0 * tp[tr][np - 2u] + tp[tr][np - 3u];
+        tv = P - tp[tr][np - 1u];
+      }
+      float tl = length(tv);
+      if (!(tl > 0.0)) { live = false; } else {
+        tv /= tl;
+        v = vec2(-tv.y, tv.x);
+        if (dot(v, n) < 0.0) { v = -v; }
+        if (dot(P - A, U) > 0.5 * len + 3.0 * ua) { live = false; }
+        if (P.x < 2.0 || P.y < 2.0 || P.x > float(F.w) - 3.0 || P.y > float(F.h) - 3.0) { live = false; }
+      }
+    }
+    if (live) {
+      float u = ua + (ub - ua) * clamp(dot(P - A, U) / len, 0.0, 1.0);
+      for (uint k = j; k < 49u; k += ${TR_L}u) {
+        float a = -5.0 + 0.25 * float(k);
+        prof[tr][k] = look(0u, f, P + (v * a - tv) * u) + look(0u, f, P + v * a * u) + look(0u, f, P + (v * a + tv) * u);
+      }
+    }
+    barrier();
+    if (live && j < 25u) { nc[tr][j] = ncc(tr, int(j) - 12); }
+    barrier();
+    if (live) {
+      float bc = -2.0;
+      int bo = 0;
+      for (int o = -12; o <= 12; o++) { float c = nc[tr][o + 12]; if (c > bc) { bc = c; bo = o; } }
+      if (bc < 0.6 || bo == -12 || bo == 12) { miss++; if (miss > 2u) { live = false; } } else {
+        miss = 0u;
+        float l = nc[tr][bo + 11];
+        float r = nc[tr][bo + 13];
+        float dd = l - 2.0 * bc + r;
+        float off = float(bo) + ((dd < 0.0) ? 0.5 * (l - r) / dd : 0.0);
+        float u = ua + (ub - ua) * clamp(dot(P - A, U) / len, 0.0, 1.0);
+        if (j == 0u) { tp[tr][np] = P + v * (0.25 * off) * u; }
+        np++;
+      }
+    }
+    if (j == 0u) { alive[tr] = live ? 1u : 0u; }
+    barrier();
+    uint alive0 = 0u;
+    for (uint t = 0u; t < 8u; t++) { alive0 |= alive[t]; }
+    if (alive0 == 0u) { break; }
+  }
+  if (j == 0u) { tn[tr] = np; }
+  barrier();
+  if (li < 66u) { float k = -0.3 + 0.02 * float(li); best[li] = vec2(plumb(k, ax), k); }
+  barrier();
+  if (li == 0u) {
+    vec2 b = best[0];
+    for (uint i = 1u; i < 66u; i++) { if (best[i].x < b.x) { b = best[i]; } }
+    best[0] = vec2(b.x, b.x < 3.0e38 ? b.y : 0.0);
+  }
+  barrier();
+  float k0 = best[0].y;
+  barrier();
+  if (li < 21u) { float k = k0 - 0.02 + 0.002 * float(li); best[li] = vec2(plumb(k, ax), k); }
+  barrier();
+  if (li == 0u) {
+    vec2 b = vec2(3.0e38, k0);
+    for (uint i = 0u; i < 21u; i++) { if (best[i].x < b.x) { b = best[i]; } }
+    quads[base + 4u] = vec4(qm.x, qm.y, b.x < 3.0e38 ? b.y : 0.0, qm.w);
+  }
+}
+`;
+
 // ai: F6a: every hypothesis through the track read, a workgroup each (the WGSL's SCORE).
-export const SCORE = VERSION + SAMPLERLESS + DIMS + CONVERT + LEVEL_BINDINGS + LEVELS + HOMOGRAPHY + /* glsl */ `
+export const SCORE = VERSION + SAMPLERLESS + DIMS + CONVERT + LEVEL_BINDINGS + LEVELS + HOMOGRAPHY + BEND + /* glsl */ `
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(set = 0, binding = 7, std430) readonly buffer Quads { vec4 quads[]; };
 layout(set = 0, binding = 8, std430) readonly buffer PlanPoints { vec4 plan[]; };
@@ -646,17 +833,25 @@ void main() {
   uint f = wg.x / ${HYP}u;
   if (frames[f].valid > 1u) { return; }
   uint hyp = wg.x % ${HYP}u;
-  uint qk = hyp / ${ORIENT * RING_COUNT}u;
-  uint o = (hyp / ${RING_COUNT}u) % ${ORIENT}u;
-  uint rg = hyp % ${RING_COUNT}u;
+  uint h0 = hyp % ${K * ORIENT * RING_COUNT}u;
+  uint bendBit = hyp / ${K * ORIENT * RING_COUNT}u;
+  uint qk = h0 / ${ORIENT * RING_COUNT}u;
+  uint o = (h0 / ${RING_COUNT}u) % ${ORIENT}u;
+  uint rg = h0 % ${RING_COUNT}u;
   uint base = 5u * (f * ${K}u + qk);
   vec4 qm = quads[base + 4u];
   uvec4 at = PL.at[rg];
   float M = float(at.w);
+  // ai: the bend bit: 0 the marks' homography alone, 1 the quad's bend (TRACE), the marks unbent for H and every read
+  // ai: bent back
+  float kb = bendBit == 0u ? 0.0 : qm.z;
+  vec3 ax = bendAxis(frames[f]);
   if (li == 0u) {
     ok = (frames[f].valid != 0u && (qm.w == 4.0 || qm.w == 5.0)) ? 1u : 0u;
     if (ok == 1u) {
-      float h[9] = hypH(vec4[4](quads[base], quads[base + 1u], quads[base + 2u], quads[base + 3u]), o, M);
+      vec4 c4[4] = vec4[4](quads[base], quads[base + 1u], quads[base + 2u], quads[base + 3u]);
+      if (kb != 0.0) { for (int k = 0; k < 4; k++) { c4[k].xy = unbend(c4[k].xy, ax, kb); } }
+      float h[9] = hypH(c4, o, M);
       for (int j = 0; j < 9; j++) { H[j] = h[j]; }
       if (h[8] == 0.0) { ok = 0u; }
     }
@@ -674,10 +869,10 @@ void main() {
   for (uint s = li; s < at.y; s += 64u) {
     uint b = at.x + 4u * s;
     if (!near(plan[b].xy, M)) { continue; }
-    vec2 q0 = applyH(Hl, plan[b].xy);
-    vec2 q1 = applyH(Hl, plan[b + 1u].xy);
-    vec2 q2 = applyH(Hl, plan[b + 2u].xy);
-    vec2 q3 = applyH(Hl, plan[b + 3u].xy);
+    vec2 q0 = bend(applyH(Hl, plan[b].xy), ax, kb);
+    vec2 q1 = bend(applyH(Hl, plan[b + 1u].xy), ax, kb);
+    vec2 q2 = bend(applyH(Hl, plan[b + 2u].xy), ax, kb);
+    vec2 q3 = bend(applyH(Hl, plan[b + 3u].xy), ax, kb);
     if (!(onFrame(f, q0) && onFrame(f, q1) && onFrame(f, q2) && onFrame(f, q3))) { continue; }
     acc += vec4(look(l, f, q0), look(l, f, q1), look(l, f, q2) + look(l, f, q3), 1.0);
   }
@@ -696,7 +891,7 @@ void main() {
   for (uint j = li; j < at.z; j += 64u) {
     vec4 pt = plan[at.x + 4u * at.y + j];
     if (!near(pt.xy, M)) { continue; }
-    vec2 qp = applyH(Hl, pt.xy);
+    vec2 qp = bend(applyH(Hl, pt.xy), ax, kb);
     if (!onFrame(f, qp)) { continue; }
     q += pt.z * clamp((thr - look(l, f, qp)) / max(con, 1e-3), -0.5, 0.5);
     nq += 1.0;
@@ -712,7 +907,7 @@ void main() {
 `;
 
 // ai: F6b: the frame's answer, one workgroup a frame (the WGSL's PICK).
-export const PICK = VERSION + DIMS + HOMOGRAPHY + /* glsl */ `
+export const PICK = VERSION + DIMS + HOMOGRAPHY + BEND + /* glsl */ `
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) readonly buffer Frames { Frame frames[]; };
 layout(set = 0, binding = 1, std430) readonly buffer Quads { vec4 quads[]; };
@@ -732,16 +927,24 @@ void main() {
     if (s > best) { best = s; bh = h; }
   }
   bool found = frames[f].valid != 0u && best >= P.tau;
-  uint qk = bh / ${ORIENT * RING_COUNT}u;
-  uint o = (bh / ${RING_COUNT}u) % ${ORIENT}u;
-  uint rg = bh % ${RING_COUNT}u;
+  uint bh0 = bh % ${K * ORIENT * RING_COUNT}u;
+  uint bendBit = bh / ${K * ORIENT * RING_COUNT}u;
+  uint qk = bh0 / ${ORIENT * RING_COUNT}u;
+  uint o = (bh0 / ${RING_COUNT}u) % ${ORIENT}u;
+  uint rg = bh0 % ${RING_COUNT}u;
   maps[f] = ${zeros(16)};
   result[f] = float[32](${Array(32).fill("0.0").join(", ")});
   result[f][1] = best;
   if (found) {
     uint base = 5u * (f * ${K}u + qk);
     vec4 quad[4] = vec4[4](quads[base], quads[base + 1u], quads[base + 2u], quads[base + 3u]);
-    float H[9] = hypH(quad, o, P.modules[rg]);
+    // ai: a bent winner: H of the unbent marks, the bend in the map's radial slot (toImage reads it)
+    float kb = bendBit == 0u ? 0.0 : quads[base + 4u].z;
+    vec3 ax = bendAxis(frames[f]);
+    vec4 qu[4] = quad;
+    if (kb != 0.0) { for (int k = 0; k < 4; k++) { qu[k].xy = unbend(qu[k].xy, ax, kb); } }
+    float H[9] = hypH(qu, o, P.modules[rg]);
+    if (kb != 0.0) { maps[f][9] = kb; maps[f][10] = ax.x; maps[f][11] = ax.y; maps[f][12] = ax.z; }
     ${Array.from({ length: 9 }, (_, j) => `maps[f][${j}] = H[${j}]; result[f][${8 + j}] = H[${j}];`).join("\n    ")}
     for (uint k = 0u; k < 4u; k++) {
       vec4 p = atSlot(quad, slotOf(o, k));
