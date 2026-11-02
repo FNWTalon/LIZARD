@@ -51,13 +51,16 @@ import kotlinx.coroutines.delay
 // ai: The tool screens' column (Receive and Send, the web's landscape pages): its width as dragged, kept by the app.
 // ai: `default` the app's own when none is dragged (the desktop's the web's 20rem, 320 dp; the phone's 240 dp or a
 // ai: third of the screen where that is less), `dp` what its edge was dragged to (0 none), `save` keeps it. `stretch`:
-// ai: the column's rows of buttons stretch with a column dragged wider than its default (the phone's), or keep the
-// ai: default's width from its start (the desktop's, 2026-11-01: LocalButtonsWidest); narrower, they shrink with it. The
-// ai: bar, the folds and the rest stretch either way.
+// ai: the column's rows of buttons fill its width (the phone's), or each button takes its label's width (the desktop's,
+// ai: 2026-11-01: LocalButtonsFill). The bar, the folds and the rest stretch either way.
 interface ColumnWidth {
     var dp: Float
     var dragging: Boolean
     val stretch: Boolean get() = true
+    // ai: The column's edge as an editor's sash, the desktop's (2026-11-01): dragged it resizes the column, pulled under half
+    // ai: its floor it closes to the rail, and pulled out from the rail it opens again; no collapse button. False (the
+    // ai: phone's): the collapse button alone and no edge, a drag at the screen's side being the system's swipe.
+    val sash: Boolean get() = false
     fun default(screen: Dp): Dp
     fun save()
 }
@@ -88,8 +91,8 @@ fun RowFloor(buttons: List<Pair<List<String>, Dp>>): Dp {
 // ai: The column's light at its start and before its hairline (its bar and its scrolling part alike)
 val SidePad = 12.dp
 
-// ai: The widest a row of buttons in the column is drawn (ColumnWidth.stretch): unspecified, the column's width
-val LocalButtonsWidest = staticCompositionLocalOf { Dp.Unspecified }
+// ai: Whether a row of buttons in the column fills its width (ColumnWidth.stretch) or each button is its label's width
+val LocalButtonsFill = staticCompositionLocalOf { true }
 
 // ai: The edge's strip: a finger's width over the main area's side of the column's hairline, taking no room of its own
 // ai: (the main area starts at the hairline, its own padding after it, as before the column was dragged)
@@ -98,7 +101,7 @@ val EdgeStrip = 20.dp
 // ai: The column's edge as a view the main area holds takes it, where Compose can neither draw nor hear over that view
 // ai: (the desktop's code canvas, a heavyweight): the pointer within EdgeStrip of the view's left edge is over the
 // ai: edge (`hover`), and a press there dragged sideways drags it (`start`, `drag` by the pointer's move, `done` at the
-// ai: release). Given to the main area while the column is open (LocalEdgeGrip), null otherwise.
+// ai: release). Given to the main area where the edge is a sash (LocalEdgeGrip), open or collapsed; null otherwise.
 interface EdgeGrip {
     fun hover(on: Boolean)
     fun start()
@@ -109,30 +112,44 @@ interface EdgeGrip {
 val LocalEdgeGrip = staticCompositionLocalOf<EdgeGrip?> { null }
 
 // ai: The edge's drag and hover, one for the strip and for a view that takes it (EdgeGrip): a drag from the width at
-// ai: its start, no narrower than `low` (the screen's floor) nor wider than three fifths of the screen
+// ai: its start, no narrower than `low` (the screen's floor) nor wider than three fifths of the screen. As a sash
+// ai: (ColumnWidth.sash) the drag under half of `low` closes the column to the rail and back over it opens it again,
+// ai: `onSnap` the column's collapse toggled at each crossing (`shut` follows it within the drag, before the screen
+// ai: has composed the new state); the width is left as it was while closed.
 private class Edge : EdgeGrip {
     var width = 0.dp
     var low = 180.dp
     var hi = 180.dp
+    var sash = false
+    var collapsed = false
     var onStart: () -> Unit = {}
     var onDrag: (Dp) -> Unit = {}
     var onDone: () -> Unit = {}
+    var onSnap: () -> Unit = {}
     private var at = 0.dp
+    private var shut = false
     var held by mutableStateOf(false)
     var near by mutableStateOf(false)
     override fun hover(on: Boolean) { near = on }
-    override fun start() { at = width; held = true; onStart() }
-    override fun drag(dx: Dp) { at += dx; onDrag(at.coerceIn(low, hi)) }
+    override fun start() { at = width; shut = collapsed; held = true; onStart() }
+    override fun drag(dx: Dp) {
+        at += dx
+        val close = sash && at < low / 2
+        if (close != shut) { shut = close; onSnap() }
+        if (!close) onDrag(at.coerceIn(low, hi))
+    }
     override fun done() { held = false; onDone() }
 }
 
 @Composable
-private fun rememberEdge(width: Dp, screen: Dp, lo: Dp, onStart: () -> Unit, onDrag: (Dp) -> Unit, onDone: () -> Unit): Edge {
+private fun rememberEdge(width: Dp, screen: Dp, lo: Dp, sash: Boolean, collapsed: Boolean, onSnap: () -> Unit, onStart: () -> Unit,
+                         onDrag: (Dp) -> Unit, onDone: () -> Unit): Edge {
     val e = remember { Edge() }
     e.width = width
     e.low = maxOf(180.dp, lo)
     e.hi = maxOf(e.low, screen * 0.6f)
-    e.onStart = onStart; e.onDrag = onDrag; e.onDone = onDone
+    e.sash = sash; e.collapsed = collapsed
+    e.onSnap = onSnap; e.onStart = onStart; e.onDrag = onDrag; e.onDone = onDone
     return e
 }
 
@@ -163,37 +180,43 @@ private fun SideEdge(e: Edge, modifier: Modifier) {
 }
 
 // ai: A tool screen in landscape (Receive and Send, the web's pages; 2026-10-02): the column on the left (the bar over the
-// ai: rest, which scrolls on its own, the platform's scrollbar at its edge), its hairline, its edge dragged to resize it,
-// ai: and the main area on the right from the hairline, `mainPadding` inside it; collapsed, the column is the 56 dp rail
-// ai: (its squares, Home at its foot) beside the hairline.
+// ai: rest, which scrolls on its own, the platform's scrollbar at its edge), its hairline, and the main area on the right
+// ai: from the hairline, `mainPadding` inside it; collapsed, the column is the 56 dp rail (its squares, Home at its foot)
+// ai: beside the hairline. Its edge a sash on the desktop (ColumnWidth.sash: no collapse button in the column's bar, the
+// ai: edge at the rail's hairline too), the collapse button alone on the phone; the rail's button opens it on both.
+// ai: `bare`: the main area alone, the column, rail, hairline, padding and edge gone, the main area's content where it was
+// ai: in the tree (the desktop's full screen, 2026-11-02: SendHost.codeAloneInPlace).
 @Composable
 fun ToolLandscape(title: String, collapsed: Boolean, onCollapse: () -> Unit, onHome: () -> Unit, swap: (@Composable () -> Unit)?,
-                  width: ColumnWidth, floor: Dp, mainPadding: Dp = 16.dp, onResized: () -> Unit = {}, rail: @Composable () -> Unit,
-                  side: @Composable () -> Unit, main: @Composable BoxWithConstraintsScope.() -> Unit) {
+                  width: ColumnWidth, floor: Dp, mainPadding: Dp = 16.dp, onResized: () -> Unit = {}, bare: Boolean = false,
+                  rail: @Composable () -> Unit, side: @Composable () -> Unit, main: @Composable BoxWithConstraintsScope.() -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
         val screen = maxWidth
         val sideW = SideWidth(screen, width.dp, width.default(screen), floor)
-        val buttons = if (width.stretch) Dp.Unspecified else width.default(screen) - SidePad * 2
-        val edge = rememberEdge(sideW, screen, floor, onStart = { width.dragging = true }, onDrag = { width.dp = it.value },
-            onDone = { width.dragging = false; width.save(); onResized() })
+        val sash = width.sash
+        val shown = if (collapsed) RailWidth else sideW
+        val edge = rememberEdge(shown, screen, floor, sash, collapsed, onSnap = onCollapse, onStart = { width.dragging = true },
+            onDrag = { width.dp = it.value }, onDone = { width.dragging = false; width.save(); onResized() })
         Row(Modifier.fillMaxSize()) {
-            if (collapsed) Rail(onClick = onCollapse, foot = { Square { IconBtn(Icons.back, "Home", onClick = onHome) } }) { rail() }
-            else Column(Modifier.width(sideW).fillMaxHeight()) {
-                Box(Modifier.padding(horizontal = SidePad)) { TopBar(title) { swap?.invoke(); CollapseBtn(false, onCollapse) } }
-                Box(Modifier.weight(1f).fillMaxWidth()) {
-                    val scroll = rememberScrollState()
-                    Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = SidePad)) {
-                        CompositionLocalProvider(LocalButtonsWidest provides buttons) { side() }
+            if (!bare) {
+                if (collapsed) Rail(onClick = onCollapse, foot = { Square { IconBtn(Icons.back, "Home", onClick = onHome) } }) { rail() }
+                else Column(Modifier.width(sideW).fillMaxHeight()) {
+                    Box(Modifier.padding(horizontal = SidePad)) { TopBar(title) { swap?.invoke(); if (!sash) CollapseBtn(false, onCollapse) } }
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                        val scroll = rememberScrollState()
+                        Column(Modifier.fillMaxSize().verticalScroll(scroll).padding(horizontal = SidePad)) {
+                            CompositionLocalProvider(LocalButtonsFill provides width.stretch) { side() }
+                        }
+                        LocalScrollbar.current(scroll, Modifier.align(Alignment.CenterEnd).fillMaxHeight())
                     }
-                    LocalScrollbar.current(scroll, Modifier.align(Alignment.CenterEnd).fillMaxHeight())
                 }
+                VerticalDivider(color = Line)
             }
-            VerticalDivider(color = Line)
-            BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().padding(mainPadding), contentAlignment = Alignment.Center) {
-                CompositionLocalProvider(LocalEdgeGrip provides if (collapsed) null else edge) { main() }
+            BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().padding(if (bare) 0.dp else mainPadding), contentAlignment = Alignment.Center) {
+                CompositionLocalProvider(LocalEdgeGrip provides if (sash && !bare) edge else null) { main() }
             }
         }
-        if (!collapsed) SideEdge(edge, Modifier.offset(x = sideW - 3.dp))
+        if (sash && !bare) SideEdge(edge, Modifier.offset(x = shown - 3.dp))
     }
 }
 

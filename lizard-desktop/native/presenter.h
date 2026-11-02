@@ -31,6 +31,11 @@ std::string x11OutputAt(unsigned long window);
 // ai: the window manager's own full screen for its window (x11TopLevel's), asked (true where the request went) and read
 bool x11Fullscreen(unsigned long top, bool on);
 bool x11IsFullscreen(unsigned long top);
+// ai: an X11 window's own background, 0xRRGGBB: what X fills the window with where it is shown or uncovered before its
+// ai: client draws (2026-11-02). AWT gives its windows the desktop theme's grey (dark on a dark theme) whatever the
+// ai: component's colour, and with sun.awt.noerasebackground nothing of AWT paints over it: a frame of it showed where
+// ai: the code canvas came or went. Set (false where it could not be: no display, not X11)
+bool x11Background(unsigned long window, unsigned rgb);
 // ai: Windows' full screen for a top-level window (2026-10-24), as Windows apps make it: its frame and caption off and
 // ai: the monitor covered, then its style and placement (maximized or not) given back; set (false where it could not
 // ai: be: not Windows) and read. The window's own thread receives the changes; these may be called from any.

@@ -178,9 +178,9 @@ FN(jstring, txConfigure)(JNIEnv* e, jclass, jlong h, jint subch, jint span, jint
   return jstr(e, r);
 }
 
-// ai: The blocks a frame of subch sub-channels carries under the format's rate profile (src/focus.h focus_blocks_for),
+// ai: The blocks a frame of subch sub-channels carries under the format's rate profile (src/lizard_phy.h lizard_blocks_for),
 // ai: for the Blocks slider's figures before a configure
-FN(jint, blocksFor)(JNIEnv*, jclass, jint subch) { return focus_blocks_for(subch); }
+FN(jint, blocksFor)(JNIEnv*, jclass, jint subch) { return lizard_blocks_for(subch); }
 
 FN(jstring, txStats)(JNIEnv* e, jclass, jlong h) {
   std::string s;
@@ -365,5 +365,17 @@ FN(jboolean, windowIsFullscreen)(JNIEnv*, jclass, jlong window) {
   return window && lizard::win32IsFullscreen(reinterpret_cast<void*>(static_cast<uintptr_t>(window))) ? JNI_TRUE : JNI_FALSE;
 #else
   return window && lizard::x11IsFullscreen(static_cast<unsigned long>(window)) ? JNI_TRUE : JNI_FALSE;
+#endif
+}
+// ai: a heavyweight component's native window given its own background, 0xRRGGBB (presenter.h x11Background,
+// ai: 2026-11-02); false where it has no window yet or off X11 (Windows and macOS show no such fill)
+FN(jboolean, windowBackground)(JNIEnv* e, jclass, jobject component, jint rgb) {
+#if defined(__linux__)
+  lizard::PresentTarget target;
+  if (!canvasTarget(e, component, target)) return JNI_FALSE;
+  return lizard::x11Background(target.x11Window, static_cast<unsigned>(rgb)) ? JNI_TRUE : JNI_FALSE;
+#else
+  (void)e; (void)component; (void)rgb;
+  return JNI_FALSE;
 #endif
 }

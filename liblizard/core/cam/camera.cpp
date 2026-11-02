@@ -3,9 +3,9 @@
 // ai: (the receiving camera is a machine vision camera, as the Android app's request since 2026-10-06; Android's own,
 // ai: Camera2's keys, in android.cpp's header):
 // ai:   the ISP's enhancements off: sharpness at its minimum, backlight compensation off (UVC's, and Media
-// ai:   Foundation's and AVFoundation's where they reach them);
+// ai:   Foundation's and AVFoundation's where they reach them; GenICam's standard features name none);
 // ai:   the frame rate held: no exposure priority that lowers it in the dark (V4L2's exposure_dynamic_framerate 0, the
-// ai:   others' equivalent);
+// ai:   others' equivalent; a GenICam camera's AcquisitionFrameRate at the mode's, its limit switched on);
 // ai:   exposure, gain, focus and zoom as the device has them at start, no backend sets them: the camera's own
 // ai:   automatic where it runs one, else the value it holds, which on a UVC device may be one another program left
 // ai:   (a manual focus stays manual); the user's values (Settings: zoom, exposure, gain) set by the session after
@@ -26,6 +26,9 @@ const char* pixName(Pix p) {
     case Pix::Unknown: return "Unknown";
     case Pix::Grey8: return "Grey8";
     case Pix::Grey16: return "Grey16";
+    case Pix::Mono10p: return "Mono10p";
+    case Pix::Mono12p: return "Mono12p";
+    case Pix::Mono12Packed: return "Mono12Packed";
     case Pix::YUYV: return "YUYV";
     case Pix::UYVY: return "UYVY";
     case Pix::YVYU: return "YVYU";
@@ -35,8 +38,10 @@ const char* pixName(Pix p) {
     case Pix::I420: return "I420";
     case Pix::YV12: return "YV12";
     case Pix::Bayer8: return "Bayer8";
+    case Pix::Bayer16: return "Bayer16";
     case Pix::RGB24: return "RGB24";
     case Pix::BGR24: return "BGR24";
+    case Pix::RGBA32: return "RGBA32";
     case Pix::BGRA32: return "BGRA32";
     case Pix::MJPEG: return "MJPEG";
   }
@@ -56,6 +61,7 @@ std::vector<Info> list(std::vector<std::string>* notes) {
   add(avfList(notes));
 #endif
 #if !defined(__ANDROID__)
+  add(aravisList(notes));
   add(phoneList(notes));
 #endif
   add(simList(notes));
@@ -70,6 +76,7 @@ std::string listStamp() {
   s += v4l2Stamp();
 #endif
 #if !defined(__ANDROID__)
+  s += aravisStamp();
   s += phoneStamp();
 #endif
   return s;
@@ -94,6 +101,7 @@ std::unique_ptr<Camera> open(const std::string& id, std::string& why) {
   if (is("avf:")) return said(avfOpen(id, why));
 #endif
 #if !defined(__ANDROID__)
+  if (is("aravis:")) return said(aravisOpen(id, why));
   if (is("phone:")) return said(phoneOpen(id, why));
 #endif
   if (is("upload:")) return said(uploadOpen(id, why));

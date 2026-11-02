@@ -11,12 +11,12 @@
 // A variant is a decoder setting applied to the same capture, which is how ablations stay
 // paired. `fresh` counts fountain blocks not seen before, `seen` every valid block in the
 // capture. usefulBytes is what one block hands the fountain: headers and ids are not payload.
-import { init as initOb, Focus, FocusAny, prof, streamBlock } from "./ob.mjs";
+import { init as initOb, Lizard, LizardAny, prof, streamBlock } from "./ob.mjs";
 import { isControlId, PAYLOAD } from "./xfer.mjs";
 import { PICTURE_SIZES } from "./lizard_pick.mjs";
 
-// What the sender paints outside a LIZARD frame, in SAMPLES: the codec's margin (fc.quiet modules, src/focus.h
-// FOCUS_QUIET), or spec.quiet modules where an experiment overrides it. Specs give modules; the painters take samples,
+// What the sender paints outside a LIZARD frame, in SAMPLES: the codec's margin (fc.quiet modules, src/lizard_phy.h
+// LIZARD_QUIET), or spec.quiet modules where an experiment overrides it. Specs give modules; the painters take samples,
 // and until 2026-09-23 this file handed the margin over unconverted, so the rig painted half a module where the
 // harnesses painted two.
 const marginSamples = (spec, fc) => (spec.quiet ?? fc.quiet) * fc.cell;
@@ -38,7 +38,7 @@ export function blockBytesShake(id, len, out = new Uint8Array(len)) {
 }
 
 // The spec a RECORDING was made with, fit to replay: every recording kept names its span, mode 1 and the bit map
-// (src/focus.h FOCUS_BITMAP), so it replays as written (the rules for the specs of 2026-09-23, before the map and the
+// (src/lizard_phy.h LIZARD_BITMAP), so it replays as written (the rules for the specs of 2026-09-23, before the map and the
 // spans were written down, went with those recordings).
 export const recordedSpec = (spec) => spec;
 
@@ -48,7 +48,7 @@ export const recordedSpec = (spec) => spec;
 // ai: codec only when a word names it (src/wasm.c pic_for, a few ms since the same day's counting sort).
 export const BLIND_NMAX = PICTURE_SIZES.at(-1);
 // ai: The blind spec, the one a receiver decodes LIZARD with: any ring, any picture to nmax, told nothing.
-export const blindSpec = (nmax = BLIND_NMAX) => ({ phy: "focus", blind: 1, nmax });
+export const blindSpec = (nmax = BLIND_NMAX) => ({ phy: "lizard", blind: 1, nmax });
 // ai: A recording read blind, as a receiver would have read it; stream is the recording's generator, for blockJudge.
 // ai: Only a recording on today's border reads: research/captures v0.1 and v0.2 were painted before the three rings
 // ai: (2026-09-27), and scripts/exp/recordings.mjs lists the current version's runs alone.
@@ -100,7 +100,7 @@ export function blockJudge(payload = PAYLOAD, stream = "shake256") {
   };
 }
 
-// ai: The blind receiver in the C (sim/ob.mjs FocusAny): it registers against every ring, reads the word there and
+// ai: The blind receiver in the C (sim/ob.mjs LizardAny): it registers against every ring, reads the word there and
 // ai: decodes the picture the word names, to spec.nmax. It holds the last word it read and decodes a wordless frame
 // ai: with it (since 2026-09-27: the ring bootstraps the word, and a frame whose word does not decode leaves the held
 // ai: one as it is): the one piece of state that carries from frame to frame, so frames go through one of these in the
@@ -108,11 +108,11 @@ export function blockJudge(payload = PAYLOAD, stream = "shake256") {
 // ai: (blockJudge); spec.stream names a replay's generator, SHAKE256 when left out.
 async function makeBlind(spec) {
   await initOb();
-  const nmax = spec.nmax ?? BLIND_NMAX, fa = new FocusAny(nmax);
+  const nmax = spec.nmax ?? BLIND_NMAX, fa = new LizardAny(nmax);
   const judge = blockJudge(fa.blockBytes - 4, spec.stream ?? "shake256");
   let held = 0, builds = 0;
   return {
-    label: `focus blind to ${nmax}`, family: "focus", variants: ["blind"], usefulBytes: fa.blockBytes - 4, nmax,
+    label: `lizard blind to ${nmax}`, family: "lizard", variants: ["blind"], usefulBytes: fa.blockBytes - 4, nmax,
     decode(img, iw, ih, truth, rgba = false) {
       const t = performance.now(), r = fa.decode(img, iw, ih, { mesh: 2, held, rgba }), total = performance.now() - t;
       if (r.fmt) held = r.fmt.version;
@@ -126,18 +126,18 @@ async function makeBlind(spec) {
   };
 }
 // variants: [{ name, gamma, mesh }]. Each block starts with its 4-byte fountain id.
-async function makeFocus(spec) {
+async function makeLizard(spec) {
   await initOb();
   const { n = 512, subch = 32, mode = 1, clip = 2, span = 0, tilt = 0, tiers = null, bitmap, fps = 0, variants = [{ name: "ldpc" }] } = spec;
-  const fc = new Focus(n, subch, mode, { clip, span, tilt, tiers, bitmap }), B = fc.blockBytes, T = fc.blocks, seen = variants.map(() => new Set()), buf = new Uint8Array(T * B), want = new Uint8Array(B - 4);
+  const fc = new Lizard(n, subch, mode, { clip, span, tilt, tiers, bitmap }), B = fc.blockBytes, T = fc.blocks, seen = variants.map(() => new Set()), buf = new Uint8Array(T * B), want = new Uint8Array(B - 4);
   const quiet = marginSamples(spec, fc);
   // The page's pixels come from the codec's own paint, which has only its margin: an experiment's override has no way there.
   const noRGBA = spec.quiet !== undefined && spec.quiet !== fc.quiet ? `spec.quiet ${spec.quiet} is the simulator's override; the codec paints ${fc.quiet}` : null;
   if (fps) fc.setFps(fps);   // the display rate goes in the band (src/fmt.h); 0 states none, which is the default
   let source = sourceFor(spec.stream);
   return {
-    label: `focus ${n} ${tiers ? tiers.map(([r, b]) => `${b}x${RATE[r]}`).join("+") : `${subch}sub`}${span ? " span" + span : ""}${tilt ? " tilt " + tilt + " dB" : ""}`, family: "focus", variants: variants.map((v) => v.name), usefulBytes: B - 4, blocksPerFrame: T, modules: fc.side, bitmap: fc.bitmap,
-    // ai: the paint's samples a module and the codec's margin in modules (src/focus.h FOCUS_QUIET), for a painter
+    label: `lizard ${n} ${tiers ? tiers.map(([r, b]) => `${b}x${RATE[r]}`).join("+") : `${subch}sub`}${span ? " span" + span : ""}${tilt ? " tilt " + tilt + " dB" : ""}`, family: "lizard", variants: variants.map((v) => v.name), usefulBytes: B - 4, blocksPerFrame: T, modules: fc.side, bitmap: fc.bitmap,
+    // ai: the paint's samples a module and the codec's margin in modules (src/lizard_phy.h LIZARD_QUIET), for a painter
     // ai: that places symbols in modules (lizard-web/send-worker.mjs: two codes a gap apart, 2026-09-30)
     cell: fc.cell, quiet: fc.quiet,
     // baseId may instead be the frame's T ids, for a sender whose ids are not a run (sim/xfer.mjs: chunk and symbol).
@@ -198,6 +198,6 @@ async function makeFocus(spec) {
 }
 
 export async function makePhy(spec) {
-  if (spec.phy === "focus") return spec.blind ? makeBlind(spec) : makeFocus(spec);
+  if (spec.phy === "lizard") return spec.blind ? makeBlind(spec) : makeLizard(spec);
   throw new Error(`unknown phy ${spec.phy}`);
 }

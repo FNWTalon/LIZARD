@@ -1,13 +1,14 @@
-// ai: The receiving camera (2026-10-25, the PC's; Android's since 2026-10-31), one interface over each system's own camera
-// ai: API: UVC devices through V4L2 on Linux, Media Foundation on Windows, AVFoundation on macOS; Camera2 through the
-// ai: NDK on Android (android.cpp); a phone streaming to a PC, a replay played, and the simulated camera the tests read
-// ai: (sim.cpp). A camera hands over each frame as luma (luma.h): a YUV mode's Y bytes as they are, an MJPEG frame
-// ai: decoded to grey, a Bayer mosaic's 2 x 2 sums, a colour mode's luma; or, where the system has them (Android), the
-// ai: camera's own buffer for the GPU decoder to sample in place (Frame::hb, held until release) or a frame to develop
-// ai: (Frame::raw: RAW16, RAW10, RAW12; ingest/develop.h). The receiver (core/rx/receiver.h) takes those three. The camera rules (camera.cpp's header)
-// ai: are applied at start and the controls a backend changed, the rules' and set's, are put back at stop, since a UVC
-// ai: device keeps them for the next app: the user's settings last one stream, and the session sets them again after
-// ai: each start (session.h set).
+// ai: The receiving camera (2026-10-25, the PC's; Android's since 2026-10-31), one interface over each system's own
+// ai: camera API: UVC devices through V4L2 on Linux, Media Foundation on Windows, AVFoundation on macOS; GenICam
+// ai: cameras (USB3 Vision, GigE Vision) through Aravis on all three (aravis.cpp); Camera2 through the NDK on Android
+// ai: (android.cpp); a phone streaming to a PC, a replay played, and the simulated camera the tests read (sim.cpp). A
+// ai: camera hands over each frame as luma (luma.h): a YUV mode's Y bytes as they are, an MJPEG frame decoded to grey,
+// ai: a Bayer mosaic's 2 x 2 sums, a colour mode's luma; or, where the system has them (Android), the camera's own
+// ai: buffer for the GPU decoder to sample in place (Frame::hb, held until release) or a frame to develop (Frame::raw:
+// ai: RAW16, RAW10, RAW12; ingest/develop.h). The receiver (core/rx/receiver.h) takes those three. The camera rules
+// ai: (camera.cpp's header) are applied at start and the controls a backend changed, the rules' and set's, are put back
+// ai: at stop, since a UVC device keeps them for the next app: the user's settings last one stream, and the session
+// ai: sets them again after each start (session.h set).
 // ai: Threads: list and open from any thread; one Camera is driven by one thread at a time (the session's), and its
 // ai: frames come on the backend's own capture thread.
 #pragma once
@@ -25,25 +26,29 @@ struct RawFrame;   // ai: ingest/develop.h
 
 namespace lizard::cam {
 
-// ai: How a mode's bytes become luma (luma.h convert): the layouts the backends meet. Grey16 is little-endian
-// ai: samples of `bits` significant bits (Mode::bits), the top 8 kept.
+// ai: How a mode's bytes become luma (luma.h convert): the layouts the backends meet. Grey16 and Bayer16 are
+// ai: little-endian samples of `bits` significant bits (Mode::bits), the top 8 kept. Mono10p, Mono12p, Mono12Packed,
+// ai: Bayer16 and RGBA32 are GenICam's (aravis.cpp's PFNC map).
 enum class Pix : uint8_t {
-  Unknown, Grey8, Grey16, YUYV, UYVY, YVYU, VYUY, NV12, NV21, I420, YV12, Bayer8, RGB24, BGR24, BGRA32, MJPEG,
+  Unknown, Grey8, Grey16, Mono10p, Mono12p, Mono12Packed, YUYV, UYVY, YVYU, VYUY, NV12, NV21, I420, YV12,
+  Bayer8, Bayer16, RGB24, BGR24, RGBA32, BGRA32, MJPEG,
 };
 const char* pixName(Pix p);
 
 struct Mode {
   uint32_t width = 0, height = 0;
-  double fps = 0;           // ai: the rate it runs at: a UVC interval's, the top of a range (AVFoundation)
+  double fps = 0;           // ai: the rate it runs at: a UVC interval's, the top of a range (AVFoundation), the free
+                            // ai: run's rate asked (Aravis: a mode a rate)
   double fpsMin = 0;        // ai: a range's bottom; fps where the mode has one rate
   // ai: the camera's own name for its pixels, as its backend writes it: V4L2's fourcc (YUYV, MJPG, GREY, RGGB), Media
-  // ai: Foundation's subtype (NV12, YUY2, L8), AVFoundation's FourCharCode (420v, 2vuy), the simulated camera's (GREY)
+  // ai: Foundation's subtype (NV12, YUY2, L8), AVFoundation's FourCharCode (420v, 2vuy), GenICam's PixelFormat entry
+  // ai: (Mono8, BayerRG8), the simulated camera's (GREY)
   std::string format;
   Pix pix = Pix::Unknown;
-  uint8_t bits = 8;         // ai: Grey16: the significant bits of a sample
+  uint8_t bits = 8;         // ai: Grey16, Bayer16: the significant bits of a sample
   bool compressed = false;  // ai: MJPEG: decoded on the host (TurboJPEG on Linux; the system's decoder elsewhere)
-  // ai: the backend's own: V4L2's fourcc, Media Foundation's media type index, AVFoundation's format index, Android's
-  // ai: ImageFormat (0 for its "auto")
+  // ai: the backend's own: V4L2's fourcc, Media Foundation's media type index, AVFoundation's format index, Aravis's
+  // ai: PFNC pixel format, Android's ImageFormat (0 for its "auto")
   uint64_t key = 0;
   // ai: the size of the second stream a camera with one writes for the platform's preview (Android's, previewTo), 0
   // ai: none: the app sizes its preview surface to it before the stream starts (the surface's size is what the camera
@@ -62,11 +67,12 @@ struct Control {
 
 struct Info {
   // ai: unique across backends and stable across runs where the system allows (a saved choice finds it again):
-  // ai: v4l2:<the /dev/v4l/by-id link, else the node>, mf:<symbolic link>, avf:<unique id>,
-  // ai: sim:0 (the simulated camera, LIZ_CAMERA_SIM), upload:<path> (a replay played, never listed)
+  // ai: v4l2:<the /dev/v4l/by-id link, else the node>, mf:<symbolic link>, avf:<unique id>, aravis:<Aravis's device
+  // ai: id, vendor-model-serial>, sim:0 (the simulated camera, LIZ_CAMERA_SIM), upload:<path> (a replay played, never
+  // ai: listed)
   std::string id;
   std::string name;         // ai: the device's own
-  std::string backend;      // ai: uvc, phone, upload or sim
+  std::string backend;      // ai: uvc, aravis, phone, upload or sim
   std::string detail;       // ai: the bus, the driver
 };
 
@@ -80,7 +86,8 @@ struct Frame {
   const lizard::RawFrame* raw = nullptr;
   uint32_t width = 0, height = 0, stride = 0;
   // ai: in ns on one clock for the whole stream: when the capture began, the system's time for the frame (V4L2's
-  // ai: monotonic buffer time, Media Foundation's QPC, AVFoundation's host clock), moved onto steadyNs's (clock.h);
+  // ai: monotonic buffer time, Media Foundation's QPC, AVFoundation's host clock, a GenICam device's own timestamp),
+  // ai: moved onto steadyNs's (clock.h);
   // ai: Android's the sensor's own timestamp, the clock its capture results carry (Capture::ns), not moved
   int64_t ns = 0;
   uint64_t seq = 0;                // ai: the camera's frame count
@@ -171,13 +178,16 @@ class Camera {
   virtual bool delayOnce(int64_t us) { (void)us; return false; }
 };
 
-// ai: Every backend's cameras: the system's (UVC; Android's back cameras) first, then the simulated one where
-// ai: LIZ_CAMERA_SIM is set. A
-// ai: backend that could not look (Media Foundation absent, a node named by LIZ_V4L2_NODES missing) says why in notes.
+// ai: Every backend's cameras: the system's (UVC; Android's back cameras) first, then GenICam's through Aravis (not on
+// ai: Android: the last discovery's, aravis.cpp), the phones, then the simulated one where LIZ_CAMERA_SIM is set. A
+// ai: backend that could not look (Media Foundation absent, a node named by LIZ_V4L2_NODES missing, Aravis not loaded)
+// ai: says why in notes.
 std::vector<Info> list(std::vector<std::string>* notes = nullptr);
 // ai: A cheap mark of what list() would find (2026-10-27): the USB devices libusb sees (none opened), the V4L2 nodes,
-// ai: the phones whose beacons are heard. It changes where a camera may have come or gone, so a caller watches it and
-// ai: lists again only then. Media Foundation's and AVFoundation's devices are in it only through libusb.
+// ai: the phones whose beacons are heard, the GenICam cameras of Aravis's last discovery (each read of it starting a
+// ai: discovery in the background where none ran in the last 2 s). It changes where a camera may have come or gone, so
+// ai: a caller watches it and lists again only then. Media Foundation's and AVFoundation's devices are in it only
+// ai: through libusb.
 std::string listStamp();
 std::unique_ptr<Camera> open(const std::string& id, std::string& why);
 

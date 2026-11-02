@@ -18,13 +18,16 @@ export function collapser(button, key) {
   });
 }
 
-// ai: sideResizer(key, floor): the landscape column's width set by dragging its edge (2026-10-05, as the Android app's): a
-// ai: strip on the column's right edge (.side-edge, ui.css), dragged sideways, sets --side, within 180 px (or floor(),
-// ai: px, where a page gives one: the least its content needs with no word broken, read at each drag's start and at the
-// ai: restore; recv.mjs actionsFloor) and three fifths of the window; kept under `key` on release (each page's inline
-// ai: script restores it before the first paint). The sender re-picks as it does for a resized window.
+// ai: sideResizer(key, floor, shutKey): the landscape column's width set by dragging its edge (2026-10-05, as the Android
+// ai: app's; a mouse's alone since 2026-11-01, ui.css): a strip on the column's right edge (.side-edge), dragged sideways,
+// ai: sets --side, within 180 px (or floor(), px, where a page gives one: the least its content needs with no word
+// ai: broken, read at each drag's start and at the restore; recv.mjs actionsFloor) and three fifths of the window; kept
+// ai: under `key` on release (each page's inline script restores it before the first paint). An editor's sash: dragged
+// ai: under half the floor the column closes to the rail (body.collapsed, kept under shutKey as the collapser keeps
+// ai: it), and dragged back over it opens again at the floor or wider; the width kept is the last open one. The
+// ai: sender re-picks as it does for a resized window.
 export const SIDE_MIN = 180, sideClamp = (px, min = SIDE_MIN) => Math.max(min, Math.min(px, innerWidth * 0.6));
-export function sideResizer(key, floor) {
+export function sideResizer(key, floor, shutKey) {
   const root = document.documentElement, edge = document.createElement("div"), lo = () => Math.max(SIDE_MIN, floor?.() || 0);
   edge.className = "side-edge";
   edge.setAttribute("role", "separator"); edge.setAttribute("aria-orientation", "vertical"); edge.setAttribute("aria-label", "Sidebar width");
@@ -36,7 +39,14 @@ export function sideResizer(key, floor) {
     e.preventDefault();
     edge.setPointerCapture(e.pointerId);
     document.body.classList.add("resizing");
-    const min = lo(), move = (m) => root.style.setProperty("--side", `${sideClamp(m.clientX, min)}px`);
+    const min = lo(), move = (m) => {
+      const shut = m.clientX < min / 2;
+      if (shut !== document.body.classList.contains("collapsed")) {
+        document.body.classList.toggle("collapsed", shut);
+        try { localStorage.setItem(shutKey, shut ? "1" : "0"); } catch {}
+      }
+      if (!shut) root.style.setProperty("--side", `${sideClamp(m.clientX, min)}px`);
+    };
     const up = () => {
       for (const [t, f] of [["pointermove", move], ["pointerup", up], ["pointercancel", up]]) edge.removeEventListener(t, f);
       document.body.classList.remove("resizing");

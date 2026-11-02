@@ -89,8 +89,8 @@ static int thin_init(ob_layout_t *L, int w, int h) {
         dark = ob_thin_track(side, run / 2 * OB_BAND_RUN + cell % OB_BAND_RUN);
     }
     // The guard interval is the picture's, not the frame's: DATA, so no template reads it and no sampler expects
-    // it to be anything, as focus.c paints it.
-    L->kind[y * w + x] = d >= L->margin - FOCUS_CP ? CELL_DATA : dark ? CELL_DARK : CELL_LIGHT;   // DATA: the picture, which the frame's templates skip
+    // it to be anything, as lizard_phy.c paints it.
+    L->kind[y * w + x] = d >= L->margin - LIZARD_CP ? CELL_DATA : dark ? CELL_DARK : CELL_LIGHT;   // DATA: the picture, which the frame's templates skip
   }
   for (int j = 0; j < L->ny; j++) for (int i = 0; i < L->nx; i++) {
     int edge_x = i == 0 || i == L->nx - 1, edge_y = j == 0 || j == L->ny - 1;

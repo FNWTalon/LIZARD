@@ -12,8 +12,8 @@
 // ai:       index, section by section (exact; the twiddles to a float's last bit)
 // ai:   tx_check gpucheck <subch> [ring] [frames]   the GPU's frames of the test stream's blocks against
 // ai:       the C's paint at the same counts (the border to the byte, the square within a grey level: the web's auto
-// ai:       rule), then its GPU ms a frame over encodes of its most; ring an index into src/focus.h FOCUS_RING, the
-// ai:       default ring (FOCUS_RING_DEFAULT, the 128) unset
+// ai:       rule), then its GPU ms a frame over encodes of its most; ring an index into src/lizard_phy.h LIZARD_RING, the
+// ai:       default ring (LIZARD_RING_DEFAULT, the 128) unset
 // ai:   LIZ_PAINTER=gpu|auto tx_check paint ...   the Sender painting on the GPU (or auto), every frame read blind as before
 // ai:   LIZ_CODES=2 [LIZ_GAP=<modules>] tx_check paint ...   two codes a frame (2026-10-03), the gap between them set
 // ai:       (2026-10-04, TxFormat.gap; GAP_MODULES unset), each read blind at its own offset
@@ -48,7 +48,7 @@
 #include "xfer_tx.h"
 
 extern "C" {
-#include "focus.h"
+#include "lizard_phy.h"
 #include "shake.h"
 }
 
@@ -152,8 +152,8 @@ int main(int argc, char** argv) {
     const char* pt = getenv("LIZ_PAINTER");
     f.painter = !pt ? 0 : std::string(pt) == "gpu" ? 1 : std::string(pt) == "auto" ? 2 : 0;
     f.assets = assets();
-    // ai: the blocks a frame carries: the format's rate profile's (src/focus.h focus_blocks_for)
-    const int wantBlocks = focus_blocks_for(subch), wantSubch = subch;
+    // ai: the blocks a frame carries: the format's rate profile's (src/lizard_phy.h lizard_blocks_for)
+    const int wantBlocks = lizard_blocks_for(subch), wantSubch = subch;
     const std::string err = s.configure(f);
     if (!err.empty()) { printf("FAIL configure: %s\n", err.c_str()); return 1; }
     printf("painter: %s%s%s\n", s.painter().c_str(), s.gpuWhy().empty() ? "" : ", not the GPU: ", s.gpuWhy().c_str());
@@ -182,7 +182,7 @@ int main(int argc, char** argv) {
       const int got = cpu_dec_frame(d, luma.data(), W, W, held, blocks.data(), ok.data(), &fr);
       if (fr.word) { words++; held = fr.version; }
       verified += got; total += fr.total;
-      if (fr.version != wantSubch / FOCUS_STEP || got != wantBlocks) { faults++; if (faults < 5) printf("frame %d: word %d version %d, %d of %d blocks\n", k, fr.word, fr.version, got, fr.total); }
+      if (fr.version != wantSubch / LIZARD_STEP || got != wantBlocks) { faults++; if (faults < 5) printf("frame %d: word %d version %d, %d of %d blocks\n", k, fr.word, fr.version, got, fr.total); }
       for (int b = 0; b < fr.total; b++) {
         if (!ok[b]) continue;
         const uint8_t* blk = blocks.data() + static_cast<size_t>(b) * BB;
@@ -226,12 +226,12 @@ int main(int argc, char** argv) {
     for (const auto& e : index) {
       const int subch = e["subch"], ring = e["ring"], n = e["n"];
       const std::string name = e["name"];
-      focus_t f{};
-      if (ring < 0 || ring >= FOCUS_RINGS || focus_init(&f, n, subch, 2.0f, 2 * FOCUS_RING[ring], 0.f)) { printf("FAIL %s: the codec refused it\n", name.c_str()); bad++; continue; }
-      focus_fmt_fps(&f, 60);
+      lizard_t f{};
+      if (ring < 0 || ring >= LIZARD_RINGS || lizard_init(&f, n, subch, 2.0f, 2 * LIZARD_RING[ring], 0.f)) { printf("FAIL %s: the codec refused it\n", name.c_str()); bad++; continue; }
+      lizard_fmt_fps(&f, 60);
       SendTables t;
       const std::string te = sendTables(f, k, 4, t, e.value("codes", 1));
-      if (!te.empty()) { printf("FAIL %s: %s\n", name.c_str(), te.c_str()); bad++; focus_free(&f); continue; }
+      if (!te.empty()) { printf("FAIL %s: %s\n", name.c_str(), te.c_str()); bad++; lizard_free(&f); continue; }
       std::vector<std::string> off;
       auto same = [&](const char* sec, const void* p, size_t bytes, bool ulp = false) {
         const auto ref = slurp(dir + "/" + name + "." + sec + ".bin");
@@ -253,18 +253,18 @@ int main(int argc, char** argv) {
       if (fail || (done < 3 && !off.empty())) { printf("%s %s:", fail ? "FAIL" : "note", name.c_str()); for (auto& x : off) printf(" %s;", x.c_str()); printf("\n"); }
       bad += fail;
       done++;
-      focus_free(&f);
+      lizard_free(&f);
     }
     printf("%d formats: %d differ\n%s\n", done, bad, bad ? "FAILED" : "ok");
     return bad ? 1 : 0;
   }
   if (mode == "gpucheck" && argc >= 3) {
-    const int subch = atoi(argv[2]), ring = argc > 3 ? atoi(argv[3]) : FOCUS_RING_DEFAULT, frames = argc > 4 ? atoi(argv[4]) : 8, codes = argc > 5 ? atoi(argv[5]) : 1;
-    if (ring < 0 || ring >= FOCUS_RINGS) { printf("FAIL ring %d: an index of FOCUS_RING, 0 to %d\n", ring, FOCUS_RINGS - 1); return 1; }
+    const int subch = atoi(argv[2]), ring = argc > 3 ? atoi(argv[3]) : LIZARD_RING_DEFAULT, frames = argc > 4 ? atoi(argv[4]) : 8, codes = argc > 5 ? atoi(argv[5]) : 1;
+    if (ring < 0 || ring >= LIZARD_RINGS) { printf("FAIL ring %d: an index of LIZARD_RING, 0 to %d\n", ring, LIZARD_RINGS - 1); return 1; }
     std::unique_ptr<GpuPainter> g;
     try { g = GpuPainter::create(assets(), [](const std::string& m) { printf("%s\n", m.c_str()); }); }
     catch (const std::exception& e) { printf("FAIL no GPU painter: %s\n", e.what()); return 1; }
-    const std::string ce = g->configure(subch, 2 * FOCUS_RING[ring], 60, 4, codes, GAP_MODULES, 0, 0, 0, false);
+    const std::string ce = g->configure(subch, 2 * LIZARD_RING[ring], 60, 4, codes, GAP_MODULES, 0, 0, 0, false);
     if (!ce.empty()) { printf("FAIL configure: %s\n", ce.c_str()); return 1; }
     const int V = subch / 8 * codes, R = g->frames();
     const auto blocks = testBlocks(std::max(frames, R), V);
@@ -272,7 +272,7 @@ int main(int argc, char** argv) {
     char an[160] = "";
     snprintf(an, sizeof an, ", the anchors %ld pixels (%ld dark) %ld apart", c.anchorPx, c.anchorDark, c.anchorDiff);
     printf("check, %d frames of LIZARD-%d x %d in the %d ring on %s: border %ld pixels apart, the square %ld pixels apart, at most %d levels%s: %s\n",
-           frames, subch, codes, FOCUS_RING[ring], g->device().c_str(), c.borderDiff, c.squareDiff, c.squareMax, an, c.ok ? "ok" : "FAILED");
+           frames, subch, codes, LIZARD_RING[ring], g->device().c_str(), c.borderDiff, c.squareDiff, c.squareMax, an, c.ok ? "ok" : "FAILED");
     std::vector<std::vector<uint8_t>> out(R);
     double gpu = 0, wall = 0;
     const int encodes = 16;
@@ -300,7 +300,7 @@ int main(int argc, char** argv) {
       if (!memcmp(want.data(), blk + 4, XFER_PAYLOAD)) stream++;
     }
     printf("decode: found %d, ring %d, n %d, word %d (version %d = LIZARD-%d, %d a second), %d blocks verified, %d of them the test stream's, pilots %d blocks r %.2f %.2f\n",
-           fr.found, fr.ring, fr.n, fr.word, fr.version, FOCUS_STEP * fr.version, fr.fps, got, stream, fr.pilot_blocks, fr.pilot_r[0], fr.pilot_r[1]);
+           fr.found, fr.ring, fr.n, fr.word, fr.version, LIZARD_STEP * fr.version, fr.fps, got, stream, fr.pilot_blocks, fr.pilot_r[0], fr.pilot_r[1]);
     cpu_dec_free(d);
     return got > 0 ? 0 : 1;
   }

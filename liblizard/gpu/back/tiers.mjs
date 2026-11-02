@@ -1,4 +1,4 @@
-// ai: The format's rate profile on the GPU (2026-10-07; src/focus.h focus_tiers_for; the kernels in
+// ai: The format's rate profile on the GPU (2026-10-07; src/lizard_phy.h lizard_tiers_for; the kernels in
 // ai: ../glsl/back_tiers.mjs, TAB's layout and the codes' shapes in ../plan/back_tiers.mjs): one stage a back half, its
 // ai: soft values and LDPC. Every version's profile is a row of TAB, so any version at any picture slot decodes. A
 // ai: lane's groups and the dispatches are the native host's (core/dec/front.cpp), from exportFor.

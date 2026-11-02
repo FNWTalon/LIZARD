@@ -21,21 +21,21 @@ OB_TLS double ob_prof_ms[PROF_N];
 // score and orient, then which form and which mark quad won, the source of the final quad (0 marks, 1 lines,
 // -1 none), whether the marks alone settled it, the mark stage's best, and form 0's quad count.
 OB_TLS float ob_finder_info[8];
-// ai: The lens's axis in the next image this thread decodes (focus_set_axis), image px; NaN for the image's centre.
+// ai: The lens's axis in the next image this thread decodes (lizard_set_axis), image px; NaN for the image's centre.
 static OB_TLS float ob_axis[2] = { NAN, NAN };
-void focus_set_axis(float x, float y) { ob_axis[0] = x; ob_axis[1] = y; }
+void lizard_set_axis(float x, float y) { ob_axis[0] = x; ob_axis[1] = y; }
 // ai: The anchors (2026-10-26; part of every symbol since 2026-10-27, as the pilots are; SPEC 6.13,
 // ai: research/build/anchors/PLAN.md): a 7 x 7 grid of squares inside the picture, B / 32 modules a side (2, 4, 8 in
 // ai: the 64, 128, 256 rings), square (i, j) on the modules from round(OB_MARGIN + span (i + 0.5) / 7 - a / 2) on, each
 // ai: a light middle (Chebyshev distance under a quarter of the half-side), a dark ring (to 0.6 of it) and a light rim.
-// ai: focus_encode paints them over the picture. acquire_core finds them through the corners' homography first, three
+// ai: lizard_encode paints them over the picture. acquire_core finds them through the corners' homography first, three
 // ai: modules wide, in rounds through the lens model the ones found so far give (anchor_grow), starts every border
 // ai: node's search from that model plus its measured neighbours' residuals from it, and fills the interior from the
-// ai: border and the anchors (border_fill_anchors) where it found OB_ANCH_MIN (12) or more; focus_finish erases them always.
+// ai: border and the anchors (border_fill_anchors) where it found OB_ANCH_MIN (12) or more; lizard_finish erases them always.
 //
-// ai: the samples erased round an anchor's square (focus.c): two, measured on the published lenses' captures (one left
+// ai: the samples erased round an anchor's square (lizard_phy.c): two, measured on the published lenses' captures (one left
 // ai: the blurred rim in where the map sits a few tenths of a sample off: 26 of 192 frames lost blocks; three read as two)
-// ai: the anchors the last acquisition counted (anchor_register's, read out by the wasm's focus_anchors_found for the
+// ai: the anchors the last acquisition counted (anchor_register's, read out by the wasm's lizard_anchors_found for the
 // ai: lab's checks), -1 where no mesh was made
 OB_TLS int ob_anch_found = -1;
 int ob_anchor_side(const ob_layout_t *L) { return (L->w - 2 * OB_MARGIN) / 64; }
@@ -445,7 +445,7 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
 // ai:   fit alone cost 20 to 43% of the blocks. So K is at most 1 there, a term the patch carries anyway.
 // ai: - Within that, the K the evidence pays for, by AICc (below).
 // ai: The axis is the image's centre unless the caller says where the camera's axis falls in this crop
-// ai: (focus_set_axis). What the fit leaves is carried inward by the same Coons patch.
+// ai: (lizard_set_axis). What the fit leaves is carried inward by the same Coons patch.
 enum { LENS_TERMS = 3, LENS_P = 8 + LENS_TERMS };
 _Static_assert((int)OB_ANCH_MIN >= (int)LENS_P, "the anchors the geometry takes are at least the lens model's terms (internal.h)");
 static int solve_lens(double A[LENS_P][LENS_P + 1], int n) {
@@ -2322,7 +2322,7 @@ static uint8_t *shrink2(const uint8_t *src, int w, int h) {
 // ring (2026-10-04: the 32 ring's 64 cells held at 0.212 until it left the format on 2026-10-25).
 static inline int rotation_holds(float best, int orient) { return best >= 0.15f && orient < 4; }
 
-// Ls: the layouts the symbol may be, which differ only in how many modules a side (focus.h FOCUS_RING); *which
+// Ls: the layouts the symbol may be, which differ only in how many modules a side (lizard_phy.h LIZARD_RING); *which
 // comes back as the one that registered. The mark path scores every one before a hold settles it; the line path tries
 // the first (the 64 ring) first and the others only when it does not register.
 static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, const uint8_t *bin, float *quad, int *orient, float *score_out, int *which) {

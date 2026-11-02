@@ -106,6 +106,12 @@ endif()
 add_library(lizard_phase STATIC rx/phase_lock.cpp)
 target_include_directories(lizard_phase PUBLIC rx)
 if(NOT EMSCRIPTEN)
+# ai: the threads' priority (sys/priority.h): the sender's, the camera's and the decoder's threads raise their own;
+# ai: libdbus-1 (rtkit on Linux) loaded at run time
+add_library(lizard_sys STATIC sys/priority.cpp)
+target_include_directories(lizard_sys PUBLIC sys)
+target_link_libraries(lizard_sys PUBLIC ${CMAKE_DL_LIBS})
+
 add_executable(phase_lock_check tools/phase_lock_check.cpp)
 target_link_libraries(phase_lock_check PRIVATE lizard_phase)
 endif()
@@ -115,7 +121,7 @@ endif()
 # ai: twins in their place, for the check that the two give the same bytes.
 option(LIZ_SCALAR "the C codec's scalar paths only" OFF)
 set(CODEC ${LZ}/src)
-add_library(lizard_codec STATIC cpu/codec.c ${CODEC}/focus.c ${CODEC}/acquire.c ${CODEC}/layout.c ${CODEC}/fmt.c ${CODEC}/rs.c
+add_library(lizard_codec STATIC cpu/codec.c ${CODEC}/lizard_phy.c ${CODEC}/acquire.c ${CODEC}/layout.c ${CODEC}/fmt.c ${CODEC}/rs.c
   ${CODEC}/ldpc.c ${CODEC}/fft.c ${CODEC}/any.c)
 target_include_directories(lizard_codec PUBLIC cpu PRIVATE ${CODEC})
 target_compile_options(lizard_codec PRIVATE ${LIZ_FAST})
@@ -153,7 +159,7 @@ if(LIZ_GPU)
 add_library(lizard_tx STATIC tx/sender.cpp tx/send_tables.cpp tx/gpu_painter.cpp)
 target_include_directories(lizard_tx PUBLIC tx)
 target_include_directories(lizard_tx SYSTEM PRIVATE ${TP})
-target_link_libraries(lizard_tx PUBLIC lizard_xfer lizard_codec wg Threads::Threads)
+target_link_libraries(lizard_tx PUBLIC lizard_xfer lizard_codec wg lizard_sys Threads::Threads)
 
 add_executable(tx_check tools/tx_check.cpp)
 target_include_directories(tx_check SYSTEM PRIVATE ${TP})
@@ -172,7 +178,7 @@ target_link_libraries(lizard_replay PUBLIC lizard_codec lizard_xfer_core)
 add_library(lizard_rx STATIC rx/receiver.cpp rx/stream.cpp)
 target_include_directories(lizard_rx PUBLIC rx)
 target_include_directories(lizard_rx SYSTEM PRIVATE ${TP})
-target_link_libraries(lizard_rx PUBLIC dec lizard_xfer lizard_cpu lizard_replay)
+target_link_libraries(lizard_rx PUBLIC dec lizard_xfer lizard_cpu lizard_replay lizard_sys)
 endif()
 
 # ai: The receive session (rx/session.h, 2026-10-31: the desktop's RxSession and cameras moved into the engine; Android's
@@ -181,7 +187,8 @@ endif()
 # ai: the receiver, which the C API's layer 5 (api/session.cpp), the apps, lizard_receive and cam_check share, the phase
 # ai: lock (lizard_phase, rx/phase_host.h) fed from a camera that can delay a capture. lizard_api_static: the C API's
 # ai: layers 1 to 3 (../api) as a static library for the simulated screen's painter (cam/scene.cpp: liz_tx_next,
-# ai: liz_encoder_paint), LIZ_STATIC leaving LIZ_API empty; a shared library that holds the API itself pulls none of it. TurboJPEG, libusb and Media Foundation's functions
+# ai: liz_encoder_paint), LIZ_STATIC leaving LIZ_API empty; a shared library that holds the API itself pulls none of it.
+# ai: TurboJPEG, libusb, Aravis (the GenICam cameras, cam/aravis_api.h; not on Android) and Media Foundation's functions
 # ai: are loaded at run time; Media Foundation's GUIDs (Windows), AVFoundation's frameworks (macOS) and Camera2's and the
 # ai: image reader's NDK libraries (Android) linked.
 if(LIZ_GPU AND NOT EMSCRIPTEN)
@@ -193,7 +200,7 @@ if(LIZ_GPU AND NOT EMSCRIPTEN)
   if(ANDROID)
     list(APPEND LIZ_CAM_SOURCES cam/android.cpp)
   else()
-    list(APPEND LIZ_CAM_SOURCES cam/phone.cpp cam/aoa.cpp)
+    list(APPEND LIZ_CAM_SOURCES cam/phone.cpp cam/aoa.cpp cam/aravis.cpp cam/trigger.cpp)
   endif()
   if(WIN32)
     list(APPEND LIZ_CAM_SOURCES cam/mf.cpp)

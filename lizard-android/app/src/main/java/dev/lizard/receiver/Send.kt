@@ -86,10 +86,10 @@ class SendState(private val a: MainActivity) {
     var size by mutableStateOf(0L)
     var type by mutableStateOf("")
     val ready get() = choice != null && !reading
-    // ai: The transfer made at the pick (2026-10-19): the file copied (or the bundle's tar written) into the cache and
-    // ai: every chunk compressed (txCreate) on a thread of its own once the choice is read, so the ready line says what
-    // ai: goes, "<compressed> (<raw> raw)", and Start takes it at once (or waits for one still being made). compressed:
-    // ai: its bytes as they go, 0 until made, kept through a run; a stop makes the next one while the app is in front.
+    // ai: The transfer made at Start (2026-11-01; at the pick and again at each stop from 2026-10-19, every chunk
+    // ai: compressed for picks never sent): the file copied (or the bundle's tar written) into the cache and every chunk
+    // ai: compressed (txCreate) on a thread of its own, the line "Preparing" meanwhile. compressed: its bytes as they go,
+    // ai: 0 until a run makes it, kept through the run and after it until the choice changes.
     var compressed by mutableStateOf(0L)
     private var made = 0L                 // ai: the transfer made for the choice, not yet sending (0: none)
     private var madeFile: File? = null    // ai: the cache file it maps
@@ -212,7 +212,6 @@ class SendState(private val a: MainActivity) {
                 if (my != bundling) return@runOnUiThread
                 bundled = my; reading = false; choice = b
                 name = b.name; size = b.size; type = b.single?.let { typeOf[it] } ?: TAR_TYPE
-                make()
             }
         }
     }
@@ -397,10 +396,6 @@ class SendState(private val a: MainActivity) {
         shown = false; placed = false
         stats = Stats(); paused = false
         screenFor(false)
-        // ai: the next Start's transfer, made afresh while the app is in front (a stop from onPause makes none: Start does)
-        if (choice != null && made == 0L && !makingNow) a.window.decorView.post {
-            if (a.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED) && phase !is Phase.Preparing && phase != Phase.On && choice != null && made == 0L && !makingNow) make()
-        }
     }
 
     // ai: the format the code's square holds now (a turn of the phone re-picks it; the transfer goes on)
@@ -571,24 +566,24 @@ internal class AndroidSend(private val a: MainActivity) : SendHost {
     override val pauseShown get() = s.paused
     override val fullscreen = false
     override fun toggleFull() {}
-    // ai: the state line: the file and its sizes ("<compressed> (<raw> raw)" once the transfer is made, "<raw> raw" while it
-    // ai: is being made), "Preparing", "Sending" with the bytes that go, "Paused", or what went wrong
+    // ai: the state line: the file and its sizes ("<compressed> (<raw> raw)" once a run has made the transfer, the size
+    // ai: alone before), "Preparing", "Sending" with the bytes that go, "Paused", or what went wrong
     override val line: SendLine get() {
-        val what = if (s.test) "the test stream" else s.name
+        val what = s.name
         val count = s.choice?.takeIf { it.single == null }?.files?.let { "$it ${if (it == 1) "file" else "files"}, " } ?: ""
-        val sizeText = if (s.compressed > 0) "${Readout.bytes(s.compressed)} (${Readout.bytes(s.size)}\u00a0raw)" else "${Readout.bytes(s.size)}\u00a0raw"
+        val sizeText = if (s.compressed > 0) "${Readout.bytes(s.compressed)} (${Readout.bytes(s.size)}\u00a0raw)" else Readout.bytes(s.size)
         val err = (s.phase as? SendState.Phase.Error)?.why
         val preparing = s.phase == SendState.Phase.Preparing
         val named = !s.test && err == null && (preparing || (on && !s.paused) || (!on && !s.reading && s.choice != null))
         if (named) return SendLine(when { preparing -> "Preparing "; on -> "Sending "; else -> "" }, what,
             if (preparing || s.size <= 0) "" else ", ${if (on) "" else count}$sizeText", false)
-        val sized = if (s.test || s.size <= 0) what else "$what, ${if (on) "" else count}$sizeText"
+        val sized = if (s.size <= 0) what else "$what, ${if (on) "" else count}$sizeText"
         val text = when {
             err != null -> err
-            preparing -> "Preparing $what"
             on && s.paused -> "Paused"
+            s.test -> if (preparing) "Preparing" else if (on) "Sending" else ""
+            preparing -> "Preparing $what"
             on -> "Sending $sized"
-            s.test -> "The test stream"
             s.reading -> "Reading the files"
             s.choice != null -> sized
             else -> ""

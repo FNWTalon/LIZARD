@@ -1,8 +1,8 @@
 // The codec's own exports in the library's WebAssembly module, beside the C API (CMakeLists.txt's list): for the tree's
-// pages, the native generator and the lab through sim/ob.mjs, over one focus_t and one focus_any_t. No stable interface.
+// pages, the native generator and the lab through sim/ob.mjs, over one lizard_t and one lizard_any_t. No stable interface.
 #include "ob.h"
 #include "internal.h"
-#include "focus.h"
+#include "lizard_phy.h"
 #include "any.h"
 #include "ldpc.h"
 #include "xfer.h"
@@ -22,102 +22,102 @@ const uint8_t *ob_luma_strip(const uint8_t *rgba, int n, int offset, int total) 
   return lum;
 }
 const ob_result_t *ob_last(void) { return &R; }
-// Test hook (scripts/exp/simd_check.mjs, focus_bench.mjs): nonzero asks a decode to leave a hash of its floats and soft
-// values here (focus.c). The host defines it (core/cpu/codec.c, in this module too).
+// Test hook (scripts/exp/simd_check.mjs, lizard_bench.mjs): nonzero asks a decode to leave a hash of its floats and soft
+// values here (lizard_phy.c). The host defines it (core/cpu/codec.c, in this module too).
 extern uint32_t ob_debug_hash;
 uint32_t ob_dbg_hash(int arm) { uint32_t v = ob_debug_hash; ob_debug_hash = (uint32_t)arm; return v; }
 double ob_prof(int i) { return i >= 0 && i < PROF_N ? ob_prof_ms[i] : 0; }
 void ob_prof_reset(void) { for (int i = 0; i < PROF_N; i++) ob_prof_ms[i] = 0; }
 
-static focus_t F;
+static lizard_t F;
 static int fready;
-// ai: The format at n and subch in the ring span names (focus.h focus_init), clip and tilt the sender's.
-int focus_setup(int n, int subch, float clip, int span, float tilt) {
-  if (fready) { focus_free(&F); fready = 0; }
-  if (focus_init(&F, n, subch, clip, span, tilt)) return -1;
+// ai: The format at n and subch in the ring span names (lizard_phy.h lizard_init), clip and tilt the sender's.
+int lizard_setup(int n, int subch, float clip, int span, float tilt) {
+  if (fready) { lizard_free(&F); fready = 0; }
+  if (lizard_init(&F, n, subch, clip, span, tilt)) return -1;
   fready = 1;
   return F.block_bytes;
 }
-// Up to four runs (FOCUS_TIERS) of blocks at different code rates (focus.h): rate index and blocks (a block's slots are
-// its rate's, focus_block_slots); a run of 0 blocks ends the list.
-int focus_setup_tiers(int n, float clip, int span, float tilt, int r0, int b0, int r1, int b1, int r2, int b2, int r3, int b3) {
-  const focus_tier_t all[FOCUS_TIERS] = { { r0, b0, 0 }, { r1, b1, 0 }, { r2, b2, 0 }, { r3, b3, 0 } };
+// Up to four runs (LIZARD_TIERS) of blocks at different code rates (lizard_phy.h): rate index and blocks (a block's slots are
+// its rate's, lizard_block_slots); a run of 0 blocks ends the list.
+int lizard_setup_tiers(int n, float clip, int span, float tilt, int r0, int b0, int r1, int b1, int r2, int b2, int r3, int b3) {
+  const lizard_tier_t all[LIZARD_TIERS] = { { r0, b0, 0 }, { r1, b1, 0 }, { r2, b2, 0 }, { r3, b3, 0 } };
   int tiers = 0;
-  while (tiers < FOCUS_TIERS && all[tiers].blocks > 0) tiers++;
-  if (fready) { focus_free(&F); fready = 0; }
-  if (focus_init_tiers(&F, n, all, tiers, clip, span, tilt)) return -1;
+  while (tiers < LIZARD_TIERS && all[tiers].blocks > 0) tiers++;
+  if (fready) { lizard_free(&F); fready = 0; }
+  if (lizard_init_tiers(&F, n, all, tiers, clip, span, tilt)) return -1;
   fready = 1;
   return F.block_bytes;
 }
 // ai: A receiver told nothing: the module's one blind receiver (any.h), behind the exports.
-static focus_any_t ANY = { .which = -1 };
+static lizard_any_t ANY = { .which = -1 };
 // ai: nmax: the largest picture this receiver decodes (1536, the ladder's top, in every receiver since 2026-09-29). Returns the
 // ai: block bytes (476), or -1.
-int focus_any_setup(int nmax) { return focus_any_init(&ANY, nmax); }
-// ai: blocks and ok hold focus_any_max_blocks() blocks. held: the version (sub-channels / 16) of the last word the
-// ai: caller read, 0 for none. Returns the blocks decoded; focus_any_which says which ring registered
-// ai: (-1 none), focus_any_n the picture finished (0 none), focus_any_held whether the held configuration stood in.
-int focus_any_rx(const uint8_t *img, int iw, int ih, float gamma, int mesh, uint8_t *blocks, uint8_t *ok, int held) {
-  return focus_any_frame(&ANY, img, iw, ih, gamma, mesh, blocks, ok, held, &R);
+int lizard_any_setup(int nmax) { return lizard_any_init(&ANY, nmax); }
+// ai: blocks and ok hold lizard_any_max_blocks() blocks. held: the version (sub-channels / 16) of the last word the
+// ai: caller read, 0 for none. Returns the blocks decoded; lizard_any_which says which ring registered
+// ai: (-1 none), lizard_any_n the picture finished (0 none), lizard_any_held whether the held configuration stood in.
+int lizard_any_rx(const uint8_t *img, int iw, int ih, float gamma, int mesh, uint8_t *blocks, uint8_t *ok, int held) {
+  return lizard_any_frame(&ANY, img, iw, ih, gamma, mesh, blocks, ok, held, &R);
 }
-int focus_any_which(void) { return ANY.which; }
-int focus_any_n(void) { return ANY.n; }
-int focus_any_held(void) { return ANY.held; }
+int lizard_any_which(void) { return ANY.which; }
+int lizard_any_n(void) { return ANY.n; }
+int lizard_any_held(void) { return ANY.held; }
 // ai: Pictures built since the setup, for a caller timing its first frames (the rig's workersFirst).
-int focus_any_builds(void) { return ANY.builds; }
-int focus_any_blocks(void) { return ANY.last ? ANY.last->blocks : 0; }
-int focus_any_max_blocks(void) { return focus_any_top(&ANY); }
+int lizard_any_builds(void) { return ANY.builds; }
+int lizard_any_blocks(void) { return ANY.last ? ANY.last->blocks : 0; }
+int lizard_any_max_blocks(void) { return lizard_any_top(&ANY); }
 // ai: The word this frame's ring read, or 0: the held configuration is the caller's, never reported as read.
-const ob_fmt_t *focus_any_fmt(void) { return focus_any_word(&ANY); }
+const ob_fmt_t *lizard_any_fmt(void) { return lizard_any_word(&ANY); }
 // ai: the pilots the blind receiver's last frame read: out[0], out[1] r of the even and of the odd blocks, out[2],
 // ai: out[3] their standard errors; the blocks read, 0 for none
-int focus_any_pilot_get(float *out) { return focus_any_pilot(&ANY, out, out + 2); }
+int lizard_any_pilot_get(float *out) { return lizard_any_pilot(&ANY, out, out + 2); }
 
-// The bit map of the codec focus_setup made (focus.h FOCUS_BITMAP, the only one), which a spec may name (sim/ob.mjs
+// The bit map of the codec lizard_setup made (lizard_phy.h LIZARD_BITMAP, the only one), which a spec may name (sim/ob.mjs
 // Focus refuses any other).
-int focus_bitmap_get(void) { return fready ? F.bitmap : -1; }
+int lizard_bitmap_get(void) { return fready ? F.bitmap : -1; }
 
 // What the last decode read out of the band, as the ints of an ob_fmt_t (fmt.h), or 0 for nothing read.
-const ob_fmt_t *focus_fmt_rx_ptr(void) { return fready ? focus_fmt_rx(&F) : 0; }
-// The display rate the painted band states (focus.h). A sender may call this between frames.
-int focus_fmt_fps_set(int fps) { return fready ? focus_fmt_fps(&F, fps) : -1; }
-// ai: The pilots (focus.h focus_parity, focus_pilot): the count mod 4 the next encode paints, and what the last told
+const ob_fmt_t *lizard_fmt_rx_ptr(void) { return fready ? lizard_fmt_rx(&F) : 0; }
+// The display rate the painted band states (lizard_phy.h). A sender may call this between frames.
+int lizard_fmt_fps_set(int fps) { return fready ? lizard_fmt_fps(&F, fps) : -1; }
+// ai: The pilots (lizard_phy.h lizard_parity, lizard_pilot): the count mod 4 the next encode paints, and what the last told
 // ai: decode read, out[0], out[1] r of the even and of the odd blocks, out[2], out[3] their standard errors; the
 // ai: blocks read, 0 for none.
-int focus_parity_set(int c) { return fready ? focus_parity(&F, c) : -1; }
-int focus_pilot_get(float *out) { return fready ? focus_pilot(&F, 0, out, out + 2) : 0; }
-// ai: the grid's shift the last decode read off the pilots and turned back (focus.h focus_align), for a measurement
-// ai: that re-reads the coefficients focus_dbg_coef holds, which are the ones before the turn (2026-10-07)
-int focus_align_get(float *out) { if (!fready) return 0; focus_align(&F, out); return 1; }
-int focus_subch(void) { return F.subch; }
-int focus_blocks(void) { return F.blocks; }
-int focus_side(void) { return F.px; }
-int focus_cell(void) { return F.pxm; }   // whole pixels a module in the painted symbol
-int focus_quiet(void) { return FOCUS_QUIET; }   // the margin the codec paints, in modules, so the JS has no copy of its own
-void focus_tx(const uint8_t *blocks, float *drive) { focus_encode(&F, blocks, drive); }
+int lizard_parity_set(int c) { return fready ? lizard_parity(&F, c) : -1; }
+int lizard_pilot_get(float *out) { return fready ? lizard_pilot(&F, 0, out, out + 2) : 0; }
+// ai: the grid's shift the last decode read off the pilots and turned back (lizard_phy.h lizard_align), for a measurement
+// ai: that re-reads the coefficients lizard_dbg_coef holds, which are the ones before the turn (2026-10-07)
+int lizard_align_get(float *out) { if (!fready) return 0; lizard_align(&F, out); return 1; }
+int lizard_subch(void) { return F.subch; }
+int lizard_blocks(void) { return F.blocks; }
+int lizard_side(void) { return F.px; }
+int lizard_cell(void) { return F.pxm; }   // whole pixels a module in the painted symbol
+int lizard_quiet(void) { return LIZARD_QUIET; }   // the margin the codec paints, in modules, so the JS has no copy of its own
+void lizard_tx(const uint8_t *blocks, float *drive) { lizard_encode(&F, blocks, drive); }
 // The same encode and the page's pixels in one call, margin included: drive is the scratch the encode writes, rgba
 // what is painted.
-void focus_tx_rgba(const uint8_t *blocks, float *drive, uint8_t *rgba) { focus_encode(&F, blocks, drive); focus_paint_rgba(&F, drive, rgba); }
-// ai: The resampler's geometry and taps (focus.h focus_resample_geom): out[0..3] q, the square's first drive pixel, n
+void lizard_tx_rgba(const uint8_t *blocks, float *drive, uint8_t *rgba) { lizard_encode(&F, blocks, drive); lizard_paint_rgba(&F, drive, rgba); }
+// ai: The resampler's geometry and taps (lizard_phy.h lizard_resample_geom): out[0..3] q, the square's first drive pixel, n
 // ai: and px, out[4] and out[5] the heap offsets of the q first samples and the q x 6 weights. 0, or -1 before a setup.
-int focus_rs_geom(int *out) {
+int lizard_rs_geom(int *out) {
   const int *i0; const float *w;
-  if (!fready || focus_resample_geom(&F, out, &i0, &w)) return -1;
+  if (!fready || lizard_resample_geom(&F, out, &i0, &w)) return -1;
   out[4] = (int)(intptr_t)i0; out[5] = (int)(intptr_t)w;
   return 0;
 }
-int focus_rx(const uint8_t *img, int iw, int ih, float gamma, int mesh, uint8_t *blocks, uint8_t *ok) { return focus_decode(&F, img, iw, ih, gamma, mesh, blocks, ok, &R); }
+int lizard_rx(const uint8_t *img, int iw, int ih, float gamma, int mesh, uint8_t *blocks, uint8_t *ok) { return lizard_decode(&F, img, iw, ih, gamma, mesh, blocks, ok, &R); }
 static const int8_t *dbg_sym; static const float *dbg_coef;
-int focus_dbg(int on) { dbg_sym = 0; dbg_coef = 0; return fready ? focus_debug(&F, on, &dbg_sym, &dbg_coef) : -1; }
-const int8_t *focus_dbg_sym(void) { return dbg_sym; }
-const float *focus_dbg_coef(void) { return dbg_coef; }
-const int8_t *focus_blk_its(void) { const int8_t *i; const float *e; focus_block_stats(&F, &i, &e); return i; }
-const float *focus_blk_est(void) { const int8_t *i; const float *e; focus_block_stats(&F, &i, &e); return e; }
+int lizard_dbg(int on) { dbg_sym = 0; dbg_coef = 0; return fready ? lizard_debug(&F, on, &dbg_sym, &dbg_coef) : -1; }
+const int8_t *lizard_dbg_sym(void) { return dbg_sym; }
+const float *lizard_dbg_coef(void) { return dbg_coef; }
+const int8_t *lizard_blk_its(void) { const int8_t *i; const float *e; lizard_block_stats(&F, &i, &e); return i; }
+const float *lizard_blk_est(void) { const int8_t *i; const float *e; lizard_block_stats(&F, &i, &e); return e; }
 // The top of the heap. sbrk never gives memory back here, so this is the most the module has had in use.
 unsigned ob_heap_top(void) { return (unsigned)(uintptr_t)sbrk(0); }
 
 // Test hook for a second implementation of ob_sample_grid (the GPU back half's checks, scripts/gpu/back/). Acquires
-// one capture with the current FOCUS setup, writes out everything the sampler reads, then the grid it produces,
+// one capture with the current LIZARD setup, writes out everything the sampler reads, then the grid it produces,
 // so the two can be held to the same floats. A GPU cannot be byte-identical to the scalar build the way
 // scripts/exp/simd_check.mjs holds the vector build, so what this exists for is a tolerance and an ulp count.
 //   dims:  nx, ny, n, found
@@ -155,27 +155,27 @@ int ob_test_sample(const uint8_t *img, int iw, int ih, float gamma, int mesh, in
   return n;
 }
 
-// The decode in two halves (focus.h), for a receiver that samples on the GPU. focus_rx_acquire registers and
-// writes out what the sampler needs, in state_dump's layout above minus the trailing ms; focus_rx_finish takes
+// The decode in two halves (lizard_phy.h), for a receiver that samples on the GPU. lizard_rx_acquire registers and
+// writes out what the sampler needs, in state_dump's layout above minus the trailing ms; lizard_rx_finish takes
 // the grid back. A caller that passes grid = 0 gets the sampler the decoder has always had, which is how the
 // two arms are compared on one build.
-int focus_rx_acquire(const uint8_t *img, int iw, int ih, float gamma, int mesh, int32_t *dims, float *state) {
+int lizard_rx_acquire(const uint8_t *img, int iw, int ih, float gamma, int mesh, int32_t *dims, float *state) {
   if (!fready) return 0;
   dims[0] = F.frame.nx; dims[1] = F.frame.ny; dims[2] = F.n; dims[3] = 0;
-  if (!focus_acquire(&F, img, iw, ih, gamma, mesh, &R)) return 0;
-  state_dump(focus_held_image(&F), focus_held_reg(&F), dims, state);
+  if (!lizard_acquire(&F, img, iw, ih, gamma, mesh, &R)) return 0;
+  state_dump(lizard_held_image(&F), lizard_held_reg(&F), dims, state);
   return 1;
 }
 // Acquisition from a quad found elsewhere, so a GPU finder can be held to the decode it produces. Writes the
-// same state focus_rx_acquire does.
-int focus_rx_acquire_quad(const uint8_t *img, int iw, int ih, float gamma, int mesh, const float *quad, int orient, float score, int32_t *dims, float *state) {
+// same state lizard_rx_acquire does.
+int lizard_rx_acquire_quad(const uint8_t *img, int iw, int ih, float gamma, int mesh, const float *quad, int orient, float score, int32_t *dims, float *state) {
   if (!fready) return 0;
   dims[0] = F.frame.nx; dims[1] = F.frame.ny; dims[2] = F.n; dims[3] = 0;
-  if (!focus_acquire_quad(&F, img, iw, ih, gamma, mesh, &R, quad, orient, score)) return 0;
-  state_dump(focus_held_image(&F), focus_held_reg(&F), dims, state);
+  if (!lizard_acquire_quad(&F, img, iw, ih, gamma, mesh, &R, quad, orient, score)) return 0;
+  state_dump(lizard_held_image(&F), lizard_held_reg(&F), dims, state);
   return 1;
 }
-int focus_rx_finish(float *grid, uint8_t *blocks, uint8_t *ok) { return fready ? focus_finish(&F, grid, blocks, ok, &R) : 0; }
+int lizard_rx_finish(float *grid, uint8_t *blocks, uint8_t *ok) { return fready ? lizard_finish(&F, grid, blocks, ok, &R) : 0; }
 
 // ai: The mesh tables (the node lattice, the per-module kind map, which nodes carry a mark), for gpu/tables.mjs and the
 // ai: checks that read a symbol's cells (test/vectors.mjs, scripts/exp/ring_held.mjs and fmt_word.mjs).
@@ -193,48 +193,48 @@ int ob_test_thin_score_out(const uint8_t *img, int w, int h, const float *centre
 }
 void ob_test_finder_out(float *out) { for (int k = 0; k < 8; k++) out[k] = ob_finder_info[k]; }
 // ai: the anchors (SPEC 6.13): how many the last acquisition counted (-1 where it made no mesh), and their geometry in
-// ai: the current symbol for the sender's WebGPU encoder (focus.h focus_anchor_geom: out[0] the side, out[1..7] the
+// ai: the current symbol for the sender's WebGPU encoder (lizard_phy.h lizard_anchor_geom: out[0] the side, out[1..7] the
 // ai: first modules; 7, or 0 before a setup)
-int focus_anchors_found(void) { return ob_anch_found; }
-int focus_anchor_geom_get(int *out) { return fready ? focus_anchor_geom(&F, out) : 0; }
+int lizard_anchors_found(void) { return ob_anch_found; }
+int lizard_anchor_geom_get(int *out) { return fready ? lizard_anchor_geom(&F, out) : 0; }
 int ob_test_fmt_cells(void) { return fready ? ob_fmt_side_cells(F.frame.w < F.frame.h ? F.frame.w : F.frame.h, F.frame.reserve) : 0; }
 
 // The current layout's mark geometry (acquire.c ob_mark_geom), for gpu/tables.mjs and scripts/exp/fmt_word.mjs.
 int ob_test_marks(float *out) { if (!fready) return 0; ob_mark_geom(&F.frame, out); return 1; }
 // Shapes the GPU pipeline has to allocate for: n, bw, vblocks, subch, blocks, and the coefficient index table's
-// length. The table itself is focus_pos_ptr: subch * FOCUS_SUB ints into the spectrum (src/focus.c).
-int focus_shape(int32_t *out) {
+// length. The table itself is lizard_pos_ptr: subch * LIZARD_SUB ints into the spectrum (src/lizard_phy.c).
+int lizard_shape(int32_t *out) {
   if (!fready) return 0;
-  out[0] = F.n; out[1] = F.bw; out[2] = F.vblocks; out[3] = F.subch; out[4] = F.blocks; out[5] = F.subch * FOCUS_SUB;
+  out[0] = F.n; out[1] = F.bw; out[2] = F.vblocks; out[3] = F.subch; out[4] = F.blocks; out[5] = F.subch * LIZARD_SUB;
   return 1;
 }
-const int *focus_pos_ptr(void) { return fready ? F.pos : 0; }
-void focus_tables_out(float *out) { if (fready) focus_tables(&F, out); }
+const int *lizard_pos_ptr(void) { return fready ? F.pos : 0; }
+void lizard_tables_out(float *out) { if (fready) lizard_tables(&F, out); }
 // The decode finished from soft values quantised elsewhere: llr is subch runs of
-// 2 * FOCUS_SUB int8, est one information estimate per sub-channel. The transform is not run.
-int focus_rx_ldpc(const int8_t *llr, const float *est, uint8_t *blocks, uint8_t *ok) {
-  return fready ? focus_finish_ext(&F, 0, llr, est, blocks, ok, &R) : 0;
+// 2 * LIZARD_SUB int8, est one information estimate per sub-channel. The transform is not run.
+int lizard_rx_ldpc(const int8_t *llr, const float *est, uint8_t *blocks, uint8_t *ok) {
+  return fready ? lizard_finish_ext(&F, 0, llr, est, blocks, ok, &R) : 0;
 }
 // Which slot of the frame each block starts at, and how many it spans: what maps a flat per-slot soft-value array
-// (subch runs of 2 * FOCUS_SUB) onto the blocks.
-void focus_block_runs(int32_t *first, int32_t *count) {
+// (subch runs of 2 * LIZARD_SUB) onto the blocks.
+void lizard_block_runs(int32_t *first, int32_t *count) {
   if (!fready) return;
   for (int b = 0; b < F.blocks; b++) { first[b] = F.block_slot[b]; count[b] = F.tier[F.block_tier[b]].slots; }
 }
 
-// The LDPC code of a tier, for a decoder running elsewhere: tier is an index into the frame's tiers (focus.h
-// focus_tiers_for gives each one's blocks). See ldpc.c ldpc_tables for the layout (12 dims).
-void focus_ldpc_tables(int tier, int32_t *dims, int32_t *lay) {
-  if (fready && tier >= 0 && tier < FOCUS_TIERS) ldpc_tables(&F.code[tier], dims, lay);
+// The LDPC code of a tier, for a decoder running elsewhere: tier is an index into the frame's tiers (lizard_phy.h
+// lizard_tiers_for gives each one's blocks). See ldpc.c ldpc_tables for the layout (12 dims).
+void lizard_ldpc_tables(int tier, int32_t *dims, int32_t *lay) {
+  if (fready && tier >= 0 && tier < LIZARD_TIERS) ldpc_tables(&F.code[tier], dims, lay);
 }
-int focus_fmt_check_out(const float *q) { return fready ? focus_fmt_check(&F, q) : 0; }
-int focus_fmt_soft_out(float *out) { return fready ? focus_fmt_soft(&F, out) : 0; }
+int lizard_fmt_check_out(const float *q) { return fready ? lizard_fmt_check(&F, q) : 0; }
+int lizard_fmt_soft_out(float *out) { return fready ? lizard_fmt_soft(&F, out) : 0; }
 // The sampled grid's origin and step in module coordinates, what state_dump hands a sampler after an
 // acquisition, for a sampler that runs without one.
-void focus_grid_out(float *out) { out[0] = F.margin + 0.5f / F.scale; out[1] = 1.0f / F.scale; }
+void lizard_grid_out(float *out) { out[0] = F.margin + 0.5f / F.scale; out[1] = 1.0f / F.scale; }
 
 // The decline gate against the live configuration, for the GPU back half's to be held to (scripts/gpu/back/frames.mjs).
-// The CRC itself needs no state, so ob_test_crc_hash is exported straight out of src/focus.c.
+// The CRC itself needs no state, so ob_test_crc_hash is exported straight out of src/lizard_phy.c.
 int ob_test_crc_gate_out(const float *est, float *blk_est, float *bar, uint8_t *declined) {
   return fready ? ob_test_crc_gate(&F, est, blk_est, bar, declined) : 0;
 }

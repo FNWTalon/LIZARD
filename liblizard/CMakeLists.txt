@@ -79,16 +79,16 @@ if(EMSCRIPTEN)
       _liz_decoder_free _liz_decoder_max_blocks _liz_decode _liz_layout_rects _liz_stream_fill _liz_tx_new
       _liz_tx_new_test _liz_tx_free _liz_tx_next _liz_tx_info_get _liz_rx_new _liz_rx_free _liz_rx_frame
       _liz_rx_progress _liz_rx_chunks _liz_rx_meta _liz_rx_data _liz_rx_clear
-      _focus_setup _focus_setup_tiers _focus_any_setup _focus_any_rx _focus_any_held _focus_any_max_blocks _focus_any_which
-      _focus_any_n _focus_any_blocks _focus_any_fmt _focus_any_builds _focus_bitmap_get _focus_subch
-      _focus_blocks _focus_side _focus_cell _focus_quiet _focus_fmt_rx_ptr _focus_fmt_fps_set _focus_parity_set
-      _focus_pilot_get _focus_any_pilot_get _focus_align_get _focus_tx _focus_tx_rgba _focus_rs_geom _focus_rx _focus_dbg
-      _focus_dbg_sym _focus_dbg_coef _focus_blk_its _focus_blk_est _ob_heap_top
+      _lizard_setup _lizard_setup_tiers _lizard_any_setup _lizard_any_rx _lizard_any_held _lizard_any_max_blocks _lizard_any_which
+      _lizard_any_n _lizard_any_blocks _lizard_any_fmt _lizard_any_builds _lizard_bitmap_get _lizard_subch
+      _lizard_blocks _lizard_side _lizard_cell _lizard_quiet _lizard_fmt_rx_ptr _lizard_fmt_fps_set _lizard_parity_set
+      _lizard_pilot_get _lizard_any_pilot_get _lizard_align_get _lizard_tx _lizard_tx_rgba _lizard_rs_geom _lizard_rx _lizard_dbg
+      _lizard_dbg_sym _lizard_dbg_coef _lizard_blk_its _lizard_blk_est _ob_heap_top
       _ob_last _ob_prof _ob_prof_reset _ob_luma_strip _ob_test_binarize _ob_test_sample _ob_test_marks
       _ob_test_mesh_tables_out _ob_test_fmt_plan _ob_test_fmt_cells _ob_test_thin_plan _ob_test_thin_score_out
-      _ob_test_finder_out _focus_rx_acquire _focus_rx_acquire_quad _focus_rx_finish _focus_shape _focus_pos_ptr
-      _focus_tables_out _focus_rx_ldpc _focus_block_runs _focus_ldpc_tables _focus_tiers_for _focus_set_axis
-      _focus_anchors_found _focus_anchor_geom_get _focus_fmt_check_out _focus_fmt_soft_out _focus_grid_out _ob_test_crc_hash
+      _ob_test_finder_out _lizard_rx_acquire _lizard_rx_acquire_quad _lizard_rx_finish _lizard_shape _lizard_pos_ptr
+      _lizard_tables_out _lizard_rx_ldpc _lizard_block_runs _lizard_ldpc_tables _lizard_tiers_for _lizard_set_axis
+      _lizard_anchors_found _lizard_anchor_geom_get _lizard_fmt_check_out _lizard_fmt_soft_out _lizard_grid_out _ob_test_crc_hash
       _ob_test_crc_gate_out _ob_dbg_hash _stream_fill _xfer_layout _xfer_id_of _xfer_kind_of _xfer_hdr_write _xfer_hdr_parse
       _xfer_mf_parse _xfer_chunk_ok _xfer_manifest_blocks _xfer_manifest_write _xfer_manifest_check _xfer_root
       _xfer_chunk_cv _xfer_b3_hash _xfer_b3_sub

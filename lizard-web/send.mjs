@@ -7,12 +7,12 @@
 // ai: Tools, their ids the URL presets.
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { DEFAULT_LOG2, PAYLOAD } from "../liblizard/sim/xfer.mjs";
-import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor, STEP } from "../liblizard/sim/lizard_pick.mjs";
+import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, LIZARD_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor, STEP } from "../liblizard/sim/lizard_pick.mjs";
 import { GAP_MODULES } from "../liblizard/gpu/encoder.mjs";
 import { bundle } from "./tar.mjs";
 import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, collapser, sideResizer, icon, sayName, nameParts } from "./ui.mjs";
 
-// The room a format needs holds the codec's margin (src/focus.h FOCUS_QUIET), and only the codec knows it.
+// The room a format needs holds the codec's margin (src/lizard_phy.h LIZARD_QUIET), and only the codec knows it.
 await initOb();
 let offeredKBs = 0;
 let fileBytes = 0, sentBytes = 0;   // ai: the file's bytes and its bytes as sent (every chunk's zstd frame or its own; 2026-10-05), for the sending line
@@ -20,11 +20,11 @@ let fileBytes = 0, sentBytes = 0;   // ai: the file's bytes and its bytes as sen
 // ai: to" beside it, are #tx's since), at module scope: start() names its file's bytes `bytes`, which there shadows
 // ai: ui.mjs's formatter (a TypeError on the first frame left the line at "Preparing")
 const sizeLine = () => (fileBytes ? `, ${sizeText(sentBytes, fileBytes)}` : "");
-// ai: what goes, "<compressed> (<raw> raw)" once the transfer is made, "<raw> raw" while it is being made (2026-10-19;
-// ai: the native senders' the same)
+// ai: what goes, "<compressed> (<raw> raw)" once a Start has made the transfer, the size alone before (2026-11-01; the
+// ai: native senders' the same)
 // ai: each figure kept whole on its line, "raw" with its own (no-break spaces, 2026-10-23: "(47 KB / raw)" broke there)
 const nbsp = (t) => t.replace(/ /g, "\u00a0");
-const sizeText = (sent, raw) => (sent ? `${nbsp(bytes(sent))} ${nbsp(`(${bytes(raw)} raw)`)}` : nbsp(`${bytes(raw)} raw`));
+const sizeText = (sent, raw) => (sent ? `${nbsp(bytes(sent))} ${nbsp(`(${bytes(raw)} raw)`)}` : nbsp(bytes(raw)));
 const $ = (id) => document.getElementById(id), canvas = $("c"), ctx = canvas.getContext("2d"), tmp = document.createElement("canvas"), tctx = tmp.getContext("2d"), gcanvas = $("cg");
 // nextId is the block id space and seq only counts painted frames. They are separate because
 // blocksPerFrame changes when repick() swaps the layout mid-stream: seq * blocksPerFrame would
@@ -201,8 +201,8 @@ function gpuGiveUp(e) {
   if (running) go();
 }
 
-// ai: The format's size, a slider (2026-10-01): every version from 2 to 64, 16 sub-channels a step (src/focus.h
-// ai: FOCUS_STEP, sim/lizard_pick.mjs STEP), which is what the format word names, so every step is a symbol every
+// ai: The format's size, a slider (2026-10-01): every version from 2 to 64, 16 sub-channels a step (src/lizard_phy.h
+// ai: LIZARD_STEP, sim/lizard_pick.mjs STEP), which is what the format word names, so every step is a symbol every
 // ai: receiver reads (steps of 8 sub-channels from 2026-10-01 to 2026-10-29). #subch holds what the page reads, "auto"
 // ai: or the sub-channels; the slider (#blocks) is a view over it, kept out of the saved settings, its first step (1)
 // ai: auto (2026-10-05; an Auto box beside it before; 0 while the ladder started at version 1). The slider commits on release (a re-pick for every step dragged
@@ -229,7 +229,7 @@ $("subch").addEventListener("change", showBlocks);
 // ai: one thing about an animated symbol that no single frame shows.
 // It is what the box asks for, not what the loop achieved: a sender falling behind then reads as
 // what it is, the band saying 60 where the receiver counts 15 distinct frames a second. Re-stating it is free,
-// since only the word's cells are repainted (src/focus.c focus_fmt_fps), so the box can move mid-transfer.
+// since only the word's cells are repainted (src/lizard_phy.c lizard_fmt_fps), so the box can move mid-transfer.
 let bandFps = 0;
 function stateFps(force = false) {
   const v = Math.max(0, Math.min(255, Math.round(+$("fps").value) || 0));
@@ -252,13 +252,13 @@ const FIT = URLP.get("fit") ?? "stretch", SURROUND = URLP.get("bg") ?? "none";
 const STREAM = "shake256";
 
 function spec() {
-  // ai: The format's rate profile (the codec's, from the sub-channel count: src/focus.c focus_tiers_for, four rates
+  // ai: The format's rate profile (the codec's, from the sub-channel count: src/lizard_phy.c lizard_tiers_for, four rates
   // ai: since 2026-10-08), equal power, soft LDPC: the power tilt and RS(80,64) lost (research/10).
   // n is derived from the version (N_FOR in sim/lizard_pick.mjs) and is never chosen here.
   const subch = $("subch").value === "auto" ? pick(room()).subch : +$("subch").value, n = N_FOR(subch);
   // ai: The span of the ring Settings names, or of the default ring, the same for every picture (sim/lizard_pick.mjs
   // ai: RING_DEFAULT).
-  return { phy: "focus", n, subch, mode: 1, span: SPAN(n, ringChosen() ?? RING_DEFAULT), bitmap: FOCUS_BITMAP,
+  return { phy: "lizard", n, subch, mode: 1, span: SPAN(n, ringChosen() ?? RING_DEFAULT), bitmap: LIZARD_BITMAP,
     variants: [{ name: "rx" }], stream: STREAM };
 }
 
@@ -266,8 +266,8 @@ function spec() {
 // from the receiver: a back channel would make the optical link pointless, so both numbers are the sender's guess.
 //
 // The symbol is the picture resampled into its ring's span (SPAN) plus a 15-module border a side
-// (sim/lizard_pick.mjs OB_MARGIN), so SAMPLES(n) samples, and the margin the codec paints outside that (src/focus.h
-// FOCUS_QUIET), which ROOM_FOR counts. NEVER let the browser
+// (sim/lizard_pick.mjs OB_MARGIN), so SAMPLES(n) samples, and the margin the codec paints outside that (src/lizard_phy.h
+// LIZARD_QUIET), which ROOM_FOR counts. NEVER let the browser
 // squeeze a format below the room it needs: downscaling past it throws the outer rings away, which is the whole payload
 // above the first few. So take the largest format that fits, and stretch up to
 // fill the rest of the room (an upscale only interpolates; research/09 measures smoothed fractional scaling at 2% of
@@ -384,7 +384,7 @@ function showReady() {
   $("go").hidden = false; $("go").disabled = !isTest() && !f; $("stop").hidden = true;
   showChoice(false); $("nums").textContent = "";
   if (f && !isTest()) sayName($("state"), "", f.name, `, ${f.bundled ? `${f.files} ${f.files === 1 ? "file" : "files"}, ` : ""}${sizeText(f.sent, f.size)}`);
-  else say($("state"), isTest() ? "The test stream" : "");
+  else say($("state"), "");
   showRail();
 }
 // ai: Pause and resume (the rail's button, and Resume beside Stop while paused, so the open column has it too).
@@ -455,16 +455,17 @@ async function start() {
   stop();
   const test = isTest(), file = test ? null : chosen;
   if (!test && !file) { showReady(); return; }
-  const what = test ? "the test stream" : file.name, my = gen;
+  const what = test ? "" : file.name, my = gen;
   running = true;
-  showRunning(test ? `Preparing ${what}` : "Preparing ", test ? null : what);
+  showRunning(test ? "Preparing" : "Preparing ", test ? null : what);
   holdWake();
   // ai: A browser reads a chosen file only as it was when chosen: once it has been saved again, moved or replaced
   // ai: on disk the read is refused (NotReadableError, in the browser's own words "permission problems that have
   // ai: occurred after a reference to a file was acquired"). The page says what to do about it.
-  // ai: the file's transfer is the worker's, made at the pick (prepare; a start waits there for one still being made,
-  // ai: once the page has handed the file over); one whose making failed is read and made here, which says why
-  if (!test) await file.posted;
+  // ai: the file's transfer is the worker's, made at the pick's first Start (prepare, 2026-11-01; at the pick before,
+  // ai: every chunk compressed for picks never sent) and kept through stops; one whose making failed is read and made
+  // ai: here, which says why
+  if (!test) { file.posted ??= prepare(file); await file.posted; }
   if (my !== gen) return;
   const bytes = test || !file.failed ? null : await readOf(file);
   if (my !== gen) return;   // ai: stopped, or started again, while the file was read
@@ -555,7 +556,7 @@ async function start() {
     samples = fr.w;
     // ai: the first frame painted: a sender has seen what the tips say (ui.mjs), so they go on every page of this origin
     // ai: the file's size and, where compression shrank it, the bytes that actually go (2026-10-05)
-    if (!live) { live = true; showChoice(true); const sz = sizeLine(); sendingLine = file ? () => sayName($("state"), "Sending ", what, sz) : () => say($("state"), `Sending ${what}`); sendingLine(); tipsDone(); }
+    if (!live) { live = true; showChoice(true); const sz = sizeLine(); sendingLine = file ? () => sayName($("state"), "Sending ", what, sz) : () => say($("state"), "Sending"); sendingLine(); tipsDone(); }
     if (now - lastReport > 1000 && painted) {
       const g = gcfg ? genc.takeGpuMs() : null;
       gpuMs = gcfg ? g ?? gpuMs : null;
@@ -603,7 +604,7 @@ function stop() {
 // A resize, a rotation or going fullscreen changes what fits, and both numbers are picked from it.
 // ai: Re-pick; the receiver reads the new version from the next frame's word.
 // This is safe mid-transfer because block_bytes is the same at every rate
-// (src/focus.h FOCUS_BLOCK, 476 B at every rate), not from n or the sub-channel
+// (src/lizard_phy.h LIZARD_BLOCK, 476 B at every rate), not from n or the sub-channel
 // count, so bytes per block does not move and Wirehair, being rateless, does not mind that a frame now carries a
 // different number of blocks. The check below refuses the change if that ever stops being true.
 //
@@ -684,9 +685,9 @@ $("railSend").onclick = playPause;
 // ai: The selection (2026-10-23; until then a pick replaced the last): items added by each pick, drop or share, in
 // ai: order, each a file or a folder with its entries under its own name (tar.mjs bundle's), so files and folders mix.
 // ai: The payload is their bundle (one file alone is itself, else one tar). An item already listed is not added again
-// ai: (a file by its name, size and time, a folder by its name, files and bytes). Every change stops a run first and
-// ai: makes the transfer again at once in the worker (prepare: every chunk compressed), so the state line says what
-// ai: goes before Start; a reply for a selection since changed is ignored by its pick number.
+// ai: (a file by its name, size and time, a folder by its name, files and bytes). Every change stops a run first; its
+// ai: transfer is made at the next Start (prepare: every chunk compressed); a reply for a selection since changed is
+// ai: ignored by its pick number.
 let picks = 0, items = [];
 function itemOf(name, entries) {
   const files = entries.filter((e) => !e.dir), size = files.reduce((n, f) => n + f.blob.size, 0);
@@ -709,7 +710,6 @@ function changed() {
   if (p) { p.pick = ++picks; p.sent = 0; p.failed = null; }
   else ++picks;
   showReady();
-  if (p) p.posted = prepare(p);
 }
 // ai: the chosen file's bytes, with the page's words for one the browser no longer reads
 const readOf = (file) => file.blob.arrayBuffer().then((b) => new Uint8Array(b), (e) => {
@@ -850,7 +850,7 @@ for (const ev of ["fullscreenchange", "webkitfullscreenchange"]) document.addEve
 $("fs").onclick = enterFull;
 // ai: the sidebar collapser (ui.mjs): <main> grows, and the ResizeObserver re-picks as for Fullscreen
 collapser($("collapse"), "send:collapsed");
-sideResizer("send:side");   // ai: the column's edge dragged to resize it (2026-10-05); <main> re-picks as for a resized window
+sideResizer("send:side", null, "send:collapsed");   // ai: the column's edge dragged to resize it (2026-10-05); <main> re-picks as for a resized window
 // ai: A tap on the code in full screen does nothing (2026-10-24), except in the fallback, body.full with no browser full
 // ai: screen behind it, where a phone has no Escape and the tap is the only way back. The File tile opens the picker
 // ai: (until 2026-10-26 a tap on the middle did).

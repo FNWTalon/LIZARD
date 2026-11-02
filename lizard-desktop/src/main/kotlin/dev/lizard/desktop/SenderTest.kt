@@ -161,7 +161,7 @@ class SenderTest private constructor(private val secs: Double, private val kv: M
             "add" -> { s.pick(v.split(java.io.File.pathSeparatorChar).filter { it.isNotEmpty() }.map { java.io.File(it) }); return true }
             "remove" -> { s.items.firstOrNull { it.name == v }?.let { s.remove(it.key) } ?: fail("LIZ_SENDER_TEST: no item $v"); return true }
             "clear" -> { s.clearPicks(); return true }
-            "list" -> System.err.println("list: ${(s.items.map { "${it.name} (${if (it.dir) "${it.files} files, " else ""}${it.size} B${if (it.links > 0) ", ${it.links} links skipped" else ""})" } + s.stateLine).joinToString(" | ")}")
+            "list" -> System.err.println("list: ${(s.items.map { "${it.name} (${if (it.dir) "${it.files} files, " else ""}${it.size} B${if (it.links > 0) ", ${it.links} links skipped" else ""})" } + (s.choiceLine?.let { (n, a) -> "$n$a" } ?: s.stateLine)).joinToString(" | ")}")
             else -> fail("LIZ_SENDER_TEST: unknown step $act")
         }
         return stopped

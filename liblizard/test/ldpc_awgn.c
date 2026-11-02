@@ -3,7 +3,7 @@
 // rate (the code's k over the bits it sends, nt) is what the code wastes. The bits never sent (the 7/8 code's first
 // np) come in as 0.
 // ai: A second table follows: the same crossing on the format's 3/4 code
-// ai: for decoder arms (ldpc_ref.h), each on the same frames: today's decoder as focus.c runs it (the int8 soft values,
+// ai: for decoder arms (ldpc_ref.h), each on the same frames: today's decoder as lizard_phy.c runs it (the int8 soft values,
 // ai: 30 iterations, the stall rule), without the rule and at 100 iterations, at other scales, float min-sum, offset
 // ai: min-sum over a sweep of offsets, and sum-product (BP) on the float LLRs and on the int8 ones. Each arm's crossing
 // ai: comes from a grid in channel information, 0.004 bits a bit apart, walked with a quarter of the frames to the
@@ -215,7 +215,7 @@ static void arms(int frames, int threads) {
   for (int j = 0; j < GRID; j++) sigma[j] = ref_sigma_for(GRID_MI0 + j * GRID_STEP);
   printf("\nthe format's code (n %d, k %d, z %d), BI-AWGN, %d frames at each bracketing point, %d threads\n",
          ctx[0].code.n, ctx[0].code.k, ctx[0].code.z, frames, threads);
-  printf("int8 = the soft stage's round(8 x LLR), LLR clipped to +-10; float = the channel's LLR; stall = focus.c's rule;\n");
+  printf("int8 = the soft stage's round(8 x LLR), LLR clipped to +-10; float = the channel's LLR; stall = lizard_phy.c's rule;\n");
   printf("its = mean iterations run at the crossing, failures at what they spent; wrong = clear syndromes not the truth\n");
   printf("arm                                    |  MI@10%%     se     gap |   its | FER at bracket  n | wrong | cpu s\n");
   const awgn_arm_t today[] = {

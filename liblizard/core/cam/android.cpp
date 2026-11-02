@@ -7,9 +7,11 @@
 // ai: sizes that format lists, and "raw16", "raw10", "raw12" at each resolution (the lens's whole array, cropped to the
 // ai: zoom's centre at the resolution's shape, a 2 x 2 bin where half of it still holds the resolution, developed to
 // ai: luma by the receiver: ingest/develop.h). P010 is not offered here: the NDK's image reader takes no YCBCR_P010 and
-// ai: its outputs no dynamic range profile. The rate: [60, 60] where offered, else the highest fixed range, else the
-// ai: highest top. Each mode carries its preview size: the largest PRIVATE size of the capture's shape up to 1280 wide
-// ai: (it is only for aiming), else the capture's.
+// ai: its outputs no dynamic range profile. The rates (since 2026-11-01, a mode each): every fixed range the lens
+// ai: lists for a regular capture session (CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES; the constrained high-speed
+// ai: session's own list is never read) up to 60, the fastest first, so the session's pick at 60 is the default; with
+// ai: none fixed, the highest top. Each mode carries its preview size: the largest PRIVATE size of the capture's shape
+// ai: up to 1280 wide (it is only for aiming), else the capture's.
 // ai: The request (TEMPLATE_RECORD), each enhancement off where the lens lists its off mode (the camera is a machine
 // ai: vision camera: STATUS "The ISP's enhancements off"): noise reduction, edge enhancement, hot pixel correction,
 // ai: chromatic aberration correction, face detection, scene modes (CONTROL_MODE AUTO with SCENE_MODE DISABLED), the
@@ -202,17 +204,23 @@ Size largest(const std::vector<Size>& v) {
   return b;
 }
 
-// ai: [60, 60] where offered, else the highest fixed range (a fixed range holds the exposure time to the frame), else
-// ai: the highest top; {0, 0} where none is listed
-std::pair<int32_t, int32_t> pickFps(const Chars& c) {
+// ai: a phone's camera runs at 60 a second at most (the root's Settled: nothing past 60 captured but a machine vision
+// ai: camera's)
+constexpr int32_t MAX_FPS = 60;
+// ai: the rates a mode can take: each fixed range up to MAX_FPS (a fixed range holds the exposure time to the frame),
+// ai: the fastest first; with none, the highest top up to MAX_FPS; {{0, 0}} where none is listed
+std::vector<std::pair<int32_t, int32_t>> ratesOf(const Chars& c) {
   const std::vector<int32_t> v = c.i32s(ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
-  std::pair<int32_t, int32_t> fixed{0, 0}, top{0, 0};
+  std::vector<std::pair<int32_t, int32_t>> fixed;
+  std::pair<int32_t, int32_t> top{0, 0};
   for (size_t i = 0; i + 1 < v.size(); i += 2) {
-    if (v[i] == 60 && v[i + 1] == 60) return {60, 60};
-    if (v[i] == v[i + 1] && v[i + 1] > fixed.second) fixed = {v[i], v[i + 1]};
+    if (v[i + 1] > MAX_FPS) continue;
+    if (v[i] == v[i + 1] && std::find(fixed.begin(), fixed.end(), std::make_pair(v[i], v[i + 1])) == fixed.end())
+      fixed.push_back({v[i], v[i + 1]});
     if (v[i + 1] > top.second) top = {v[i], v[i + 1]};
   }
-  return fixed.second ? fixed : top;
+  std::sort(fixed.begin(), fixed.end(), [](auto& a, auto& b) { return a.second > b.second; });
+  return fixed.empty() ? std::vector<std::pair<int32_t, int32_t>>{top} : fixed;
 }
 
 // ai: the preview: the largest PRIVATE size of the capture's shape up to 1280 wide, else the capture's own
@@ -287,7 +295,7 @@ std::vector<std::pair<std::string, std::unique_ptr<Chars>>> backCameras(std::str
 // ai: the modes (the file's header): auto at each resolution offered, then each format the app reads
 std::vector<Mode> modesOf(const Chars& c) {
   const std::vector<Size> priv = sizesOf(c, AIMAGE_FORMAT_PRIVATE), yuv = sizesOf(c, AIMAGE_FORMAT_YUV_420_888);
-  const auto fps = pickFps(c);
+  const auto rates = ratesOf(c);
   std::vector<Size> res;
   for (const auto& r : RESOLUTIONS)
     if (has(priv, {int32_t(r[0]), int32_t(r[1])}) || has(yuv, {int32_t(r[0]), int32_t(r[1])})) res.push_back({int32_t(r[0]), int32_t(r[1])});
@@ -301,19 +309,22 @@ std::vector<Mode> modesOf(const Chars& c) {
     if (near.w) res.push_back(near);
   }
   std::vector<Mode> out;
+  // ai: a mode each rate
   auto add = [&](Size s, const char* key, int32_t img, Size cap) {
-    Mode m;
-    m.width = uint32_t(s.w);
-    m.height = uint32_t(s.h);
-    m.fps = fps.second;
-    m.fpsMin = fps.first;
-    m.format = key;
-    m.pix = img && isRaw(img) ? Pix::Grey16 : Pix::Grey8;
-    m.key = uint64_t(uint32_t(img));
     const Size p = previewFor(c, cap);
-    m.previewW = uint32_t(p.w);
-    m.previewH = uint32_t(p.h);
-    out.push_back(m);
+    for (const auto& r : rates) {
+      Mode m;
+      m.width = uint32_t(s.w);
+      m.height = uint32_t(s.h);
+      m.fps = r.second;
+      m.fpsMin = r.first;
+      m.format = key;
+      m.pix = img && isRaw(img) ? Pix::Grey16 : Pix::Grey8;
+      m.key = uint64_t(uint32_t(img));
+      m.previewW = uint32_t(p.w);
+      m.previewH = uint32_t(p.h);
+      out.push_back(m);
+    }
   };
   for (const Size& s : res) add(s, "auto", 0, s);
   for (const Fmt& f : FORMATS) {
@@ -345,7 +356,7 @@ class AndroidCamera : public Camera {
     info_.detail = std::string("back") + (logical ? ", logical" : "");
     modes_ = modesOf(*ch_);
     bar_ = lockBarOf(*ch_);
-    fps_ = pickFps(*ch_);
+    fps_ = ratesOf(*ch_).front();
     // ai: the zoom's range: CONTROL_ZOOM_RATIO_RANGE from API 30, else 1 to the largest digital zoom (a crop region)
     const std::vector<float> zr = ch_->floats(ACAMERA_CONTROL_ZOOM_RATIO_RANGE);
     if (api() >= 30 && zr.size() >= 2) {
@@ -561,6 +572,8 @@ bool AndroidCamera::start(const Mode& mode, Sink sink, Ended ended, std::string&
   std::unique_lock<std::mutex> rl(repMu_);
   mode_ = mode;
   note_.clear();
+  // ai: the mode's rate (a fixed range; the session keeps the one chosen)
+  if (mode.fps > 0) fps_ = {int32_t(mode.fpsMin), int32_t(mode.fps)};
   // ai: the format: auto PRIVATE for the GPU decoder's zero copy where the size lists it, else YUV_420_888; Private
   // ai: only for a receiver that takes the camera's buffer; one the lens does not offer at the size falls to auto
   const std::vector<Size> priv = sizesOf(*ch_, AIMAGE_FORMAT_PRIVATE);

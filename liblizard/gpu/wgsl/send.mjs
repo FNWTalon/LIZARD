@@ -1,7 +1,7 @@
 // ai: The sender's GPU encoder (gpu/encoder.mjs; 2026-09-29, as the sender has lagged at LIZARD-1024; bit exact only in
 // ai: the ring): PAINT, a block's codeword onto the disc (below: every code of the format's rate profile), then the
 // ai: inverse transforms (wgsl/inverse.mjs irows and ipic: PIC, n x n f32 a symbol in 0..1, clipped), then three
-// ai: shaders, the C's arithmetic (src/focus.c resample, focus_paint_rgba):
+// ai: shaders, the C's arithmetic (src/lizard_phy.c resample, lizard_paint_rgba):
 // ai: TPOSE, the picture row-major: ipic leaves it quad-major (PICQ[x / 4][y], four columns' rows consecutive, so its
 // ai:   stores are whole lines); a tile of 16 quads by 16 rows a workgroup through workgroup memory, read a quad's 16
 // ai:   rows (256 B) at a time and written a row's 16 quads at a time, so both sides move whole lines.
@@ -12,7 +12,7 @@
 // ai: RSH, across and out: a thread one u32 of a frame row, four bytes, the codes symbols side by side (FW = codes W
 // ai:   pixels a row, W rows, each row padded to RW words: W need not be a multiple of four, pxm 1 in the 128 ring at
 // ai:   n = 256): inside a symbol's square (q pixels from sq) the same six taps along the row of TMP, clamped to 0..1,
-// ai:   then (drive 255 + 0.5) truncated and held to 255 as focus_paint_rgba does; anywhere else the border's byte
+// ai:   then (drive 255 + 0.5) truncated and held to 255 as lizard_paint_rgba does; anywhere else the border's byte
 // ai:   (BORDER, one symbol W x W, the C's own paint: ring, marks, band, word, quiet margin), so the border is the C's
 // ai:   to the byte and nothing border-shaped is drawn here. No integer division: a row a workgroup y, the symbol by
 // ai:   subtraction (2026-09-29: with the frame's words flat and the wrap taken mod n a tap, 7.35 ms of the iGPU's
@@ -22,7 +22,7 @@
 // ai: would have given exactly (rshSource({ copy: true })).
 // ai: PRESENT, a render pass onto the canvas: pixel (x, y) shows the frame's byte (x / whole, y / whole), grey.
 // ai: The tolerance: the square within one grey level of the C's (its FFT's rounding differs), the border equal.
-// ai: The anchors (SPEC 6.13; src/focus.c focus_encode paints them): RSH and its copy form take the border's byte over
+// ai: The anchors (SPEC 6.13; src/lizard_phy.c lizard_encode paints them): RSH and its copy form take the border's byte over
 // ai: the anchors' squares too, BORDER being the C's paint (core/tx/send_tables.cpp, gpu/encoder.mjs), so the anchors
 // ai: are the C's to the byte and nothing here draws them; RSH's uniform two vec4u longer (GA: each anchor's first
 // ai: pixel and the side).
@@ -52,17 +52,17 @@ const GA = /* wgsl */ `
 struct G { a: vec4u, b: vec4u, c: vec4u, d: vec4u, e: vec4u }
 `;
 
-// ai: PAINT, a workgroup a (block, symbol), 128 threads (src/focus.c focus_encode and map_out, the C's arithmetic
+// ai: PAINT, a workgroup a (block, symbol), 128 threads (src/lizard_phy.c lizard_encode and map_out, the C's arithmetic
 // ai: exactly): the block's 476 payload bytes from BLOCKS, their CRC-32 (the LDPC's split CRC), its code's systematic
 // ai: codeword (the data bits, zeros past the 480 B where the code holds more (the 7/8 code's last 128), then the m parity bits: the IRA
 // ai: accumulator, a prefix XOR over the checks in check order, a lane ceil(m / 128) of them), its slots (slot i the
 // ai: codeword bit its code's bit map names, a slot past the codeword a bit of its frame's count: the pilots; each
 // ai: XOR the whitening at its slot of the frame) and the QPSK coefficients (+-a a bit, a = 0.70710678, amp 1 at
 // ai: tilt 0) into the symbol's disc in S at the UV entries. A block's code and first slot come from its tier
-// ai: (src/focus.h focus_tiers_for: 7/8 blocks of 4496 slots, 3/4 of 5152, 2/3 of 5760, 1/2 of 7680, packed from the
+// ai: (src/lizard_phy.h lizard_tiers_for: 7/8 blocks of 4496 slots, 3/4 of 5152, 2/3 of 5760, 1/2 of 7680, packed from the
 // ai: frame's first slot, the lowest frequencies, out), the codes' shapes and tables from TAB, so the shader holds no code
 // ai: of its own. The frame's last block's workgroup also paints the padding past the last block, the whitening alone
-// ai: (src/focus.c focus_encode), so every coefficient the frame holds is sent.
+// ai: (src/lizard_phy.c lizard_encode), so every coefficient the frame holds is sent.
 // ai: Bindings: BLOCKS (ro, 120 words a block, block b of symbol r at (r blocks + b) 120), TAB (ro, gpu/encoder.mjs
 // ai: sendTab: word 0 the whitening's offset, then 16 words a code at 16 + 16 c, (n, k, m, z, mb, rows, lay, perm,
 // ai: slots, nt): its block's slots, its block rows' first entries, its entries (col | shift << 16), its bit map two

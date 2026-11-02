@@ -33,7 +33,7 @@ const dir = process.argv[2] ?? at("../research/build/check"), CW = +(process.env
 // stream: the same generator the live sender uses, so this measures what the demo measures.
 // SUBCH picks the LIZARD version (96 unless asked; a bigger one needs a clip tall enough for its picture, CW and CH).
 const SUBCH = +(process.env.SUBCH ?? 96), REPICK = +(process.env.REPICK ?? 0), LIE = process.env.LIE === "1", LIE_EVERY = 24;
-const spec = { phy: "focus", stream: "shake256", n: N_FOR(SUBCH), subch: SUBCH, mode: 1, fps: FD, variants: [{ name: "rx" }] };
+const spec = { phy: "lizard", stream: "shake256", n: N_FOR(SUBCH), subch: SUBCH, mode: 1, fps: FD, variants: [{ name: "rx" }] };
 // VERIFY=1: the receiver's crop, checked from outside. The clip gets a grey marker (60, 100, 140, 180, clockwise
 // from the top left) 4 to 20 px inside each corner of what the page should be decoding (the centred square of the
 // short side, or the whole frame with CROP=full), and the page reports what it sent to the decoder at three points
@@ -179,7 +179,7 @@ if (process.env.ONLY !== "files") {
   let lies = 0;
   if (LIE) { const gen = sourceFor("shake256"), T = phy.blocksPerFrame; phy.setSource((id, out) => { gen(id, out); if (id % (LIE_EVERY * T) === 1) { out[0] ^= 1; lies++; } }); }
   // ai: REPICK: the second half at another version, its ids from where the first half's end. Made at the cut, not
-  // ai: before: the wasm holds one LIZARD codec, and a second Focus replaces the first's.
+  // ai: before: the wasm holds one LIZARD codec, and a second Lizard replaces the first's.
   let phy2 = null;
   const cut = Math.floor((half * FD) / FC), spec2 = { ...spec, n: N_FOR(REPICK), subch: REPICK };
   await clip(`${dir}/test.y4m`, async (seq) => {

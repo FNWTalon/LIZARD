@@ -33,12 +33,12 @@ void ref_free(ref_dec_t *d);
 // ai: (stop = 1), max_iter if the last iteration's is clear (stop = 0), or -1.
 int ref_decode(ref_dec_t *d, const float *llr, uint8_t *out, const ref_opts_t *o);
 
-// ai: focus.c's stall rule (FOCUS_STALL_IT, FOCUS_STALL_RATIO), restated here because focus.c keeps it private: after
+// ai: lizard_phy.c's stall rule (LIZARD_STALL_IT, LIZARD_STALL_RATIO), restated here because lizard_phy.c keeps it private: after
 // ai: iteration 9, give up if the violated checks are above 0.95 of their count after iteration 1.
 #define REF_STALL_IT 9
 #define REF_STALL_RATIO 0.95f
 
-// ai: The soft stage's quantiser (focus.c): an LLR clipped to +-10, times 8, rounded to nearest even. [-80, 80].
+// ai: The soft stage's quantiser (lizard_phy.c): an LLR clipped to +-10, times 8, rounded to nearest even. [-80, 80].
 int8_t ref_quant8(float llr);
 
 // ai: An arm: one decoder with its settings, as test/ldpc_awgn.c compares them.
@@ -46,7 +46,7 @@ typedef struct {
   const char *name;
   int today;       // ai: 1: src/ldpc.c's decoder on the int8 soft values; 0: ref_decode
   int norm;        // ai: today: its min-sum scale in sixteenths (13 is the format's)
-  int stall;       // ai: today: 1 applies the stall rule above, as focus.c does
+  int stall;       // ai: today: 1 applies the stall rule above, as lizard_phy.c does
   int quant;       // ai: ref: 1 decodes the int8 soft values over 8, 0 the unquantised LLRs
   ref_opts_t ref;  // ai: ref's rule; ref.max_iter is the cap for both kinds
 } ref_arm_t;

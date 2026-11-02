@@ -1,6 +1,6 @@
 # LIZARD format specification
 
-The C in `liblizard/src/` is normative: the format is what `focus.c`, `layout.c`, `fmt.c`, `rs.c`, `ldpc.c`, `shake.c`,
+The C in `liblizard/src/` is normative: the format is what `lizard_phy.c`, `layout.c`, `fmt.c`, `rs.c`, `ldpc.c`, `shake.c`,
 `xfer.c` and their headers do, with the official BLAKE3 C 1.8.7 (`liblizard/vendor/blake3/`) under `xfer.c`. Where
 this text and the code disagree, the code defines the format. Definitions cite their source as `file:function`, paths
 under `liblizard/src/` unless given in full. The test vectors are checked against the codec's wasm build
@@ -47,7 +47,7 @@ dead at one resolution.
 
 | term | meaning |
 |---|---|
-| ring B | one of the three border sizes, named by its band cells a side: B = 64, 128 or 256 (`focus.h:FOCUS_RING`) |
+| ring B | one of the three border sizes, named by its band cells a side: B = 64, 128 or 256 (`lizard_phy.h:LIZARD_RING`) |
 | symbol | the picture inside the border, S = 2B + 30 modules a side (158, 286, 542). S and module coordinates exclude the margin |
 | module | the border's unit of length |
 | span | the picture's width in modules, 2B |
@@ -55,12 +55,12 @@ dead at one resolution.
 | sample | one of the picture's n x n values; scale = n / span samples a module |
 | pxm | painted pixels a module, a whole number (3.3) |
 | painted image | the symbol and its margin as the codec paints them, (S + 4) pxm pixels a side |
-| drive | the symbol as the encoder's float image, S pxm pixels a side, 0 dark and 1 light, margin excluded (`focus.c:focus_encode`) |
+| drive | the symbol as the encoder's float image, S pxm pixels a side, 0 dark and 1 light, margin excluded (`lizard_phy.c:lizard_encode`) |
 | border | the 15 modules round the picture: rim, ring, gap, band, light depths and guard (4.3) |
 | outer border | depths 0 to 11, everything but the guard; every module one level, dark or light |
 | ring (line) | the dark line at depths 1 and 2; by extension the border's size, as in "ring B" |
 | guard | depths 12 to 14, the picture's periodic extension (4.4) |
-| margin | 2 modules of light round the symbol, `FOCUS_QUIET`, painted by the codec (4.8). The C's variable `margin` is the 15-module border depth, not this |
+| margin | 2 modules of light round the symbol, `LIZARD_QUIET`, painted by the codec (4.8). The C's variable `margin` is the 15-module border depth, not this |
 | mark | a corner mark, the 12 x 12 module square at each corner (4.5) |
 | band, cell | depths 5 and 6, in cells of 2 x 2 modules: track cells and word cells (4.6) |
 | word | the format word, one Reed-Solomon codeword over the band's word cells (section 5) |
@@ -84,7 +84,7 @@ dead at one resolution.
 ## 2. Constraints (normative)
 
 1. **Luminance only.** A sender MUST carry information in luminance alone. Every pixel it paints, margin included, is
-   a grey level: `focus.c:focus_paint_rgba` writes one value to R, G and B. Colour MUST NOT carry information. A sender
+   a grey level: `lizard_phy.c:lizard_paint_rgba` writes one value to R, G and B. Colour MUST NOT carry information. A sender
    MAY paint the dark and light ends of the grey ramp in two brand colours, the data still only in luminance, if the
    pair meets both halves of the palette rule:
    - the luma difference is at least 60% of full range, about 153 of 255, with luma
@@ -102,7 +102,7 @@ dead at one resolution.
    the blocks (3.1, 3.2, section 5). Anything about the transfer belongs in the payload, never in the border (7.5 to
    7.8).
 5. **The margin is part of the symbol.** An encoder MUST paint 2 modules of light round the symbol's S x S modules
-   (`focus.h:FOCUS_QUIET` = 2, 4.8). With the border's light rim, the ring has 3 modules of light outside it.
+   (`lizard_phy.h:LIZARD_QUIET` = 2, 4.8). With the border's light rim, the ring has 3 modules of light outside it.
 6. **The channel.** The symbol and its margin are undisturbed; noise lies outside them (a busy page, a noisy surround,
    clutter up to the margin). Nothing is painted over the symbol.
 7. **Scope.** This specification is the 2D code and the layouts that carry the transfer (7.5 to 7.9). Wirehair and
@@ -115,9 +115,9 @@ by painting a symbol that decodes: the border (sections 4 and 5, the margin incl
 the coded bits exactly as 6.3 to 6.5 and sections 7 and 8 define them, and the real arithmetic of the picture (6.6 to
 6.8) to the formula, not to the reference's last bits. A receiver never checks conformance.
 
-**Not the format.** `focus_init` takes two sender parameters that no receiver needs and the word cannot state: the
+**Not the format.** `lizard_init` takes two sender parameters that no receiver needs and the word cannot state: the
 clipping ratio c (6.7) and a power tilt t across the sub-channels (6.5). Every sender paints c = 2 and t = 0, and
-whether a conforming sender may use others is open (13, item 8). `focus.c:focus_init_tiers` builds rate tiers other
+whether a conforming sender may use others is open (13, item 8). `lizard_phy.c:lizard_init_tiers` builds rate tiers other
 than the profile's for experiments; a frame painted with them is not LIZARD and a receiver told nothing reads it
 wrongly.
 
@@ -129,14 +129,14 @@ figure states its conditions (a still camera, exact registration or a white scre
 
 ### 3.1 Names, versions and the ladder (normative)
 
-- A **sub-channel** is 320 consecutive coefficients of the coefficient order (`focus.h:FOCUS_SUB`, 6.3), 640 slots. A
+- A **sub-channel** is 320 consecutive coefficients of the coefficient order (`lizard_phy.h:LIZARD_SUB`, 6.3), 640 slots. A
   format counts its sub-channels; the receiver's soft values are estimated a sub-channel at a time (8.5).
 - A **block** is 476 bytes coded as one codeword, followed by its pilots, on consecutive slots, as many as its rate
-  needs (`focus.c:focus_block_slots`): 4496 at 7/8, 5152 at 3/4, 5760 at 2/3, 7680 at 1/2 (3.4). Blocks are laid from
-  slot 0 outwards, each beginning on the slot after the one before ended, whatever the sub-channels (`focus.c:init`,
+  needs (`lizard_phy.c:lizard_block_slots`): 4496 at 7/8, 5152 at 3/4, 5760 at 2/3, 7680 at 1/2 (3.4). Blocks are laid from
+  slot 0 outwards, each beginning on the slot after the one before ended, whatever the sub-channels (`lizard_phy.c:init`,
   `block_slot`); the slots past the last block are the padding (6.5).
 - A **format** is named after its sub-channel count: LIZARD-k has subch = k, a multiple of 16. Its **version** is
-  V = subch / 16 (`focus.h:FOCUS_STEP`), which the word's version byte carries (`focus.c:fmt_paint`).
+  V = subch / 16 (`lizard_phy.h:LIZARD_STEP`), which the word's version byte carries (`lizard_phy.c:fmt_paint`).
 - The **ladder** is every version from 4 to 64: LIZARD-64, -80, ..., -1024, 61 formats
   (`liblizard/sim/lizard_pick.mjs:VERSIONS`). A sender MAY paint any of them. A receiver reads any version the word
   names, with no flag (`fmt.c:ob_fmt_decode`, `OB_FMT_VERSION_MIN` = 4, `OB_FMT_VERSION_MAX` = 64).
@@ -144,9 +144,9 @@ figure states its conditions (a still camera, exact registration or a white scre
   blocks of each parity (7.3). Versions 1 to 3 are no formats: LIZARD-16's 10,240 slots hold one 7/8 and one 3/4
   block, and the odd blocks' pilots of LIZARD-32 and -48 are one 7/8 block's 8 coefficients, which read past the
   pilots' model on captures mixed with a neighbouring picture and under 0.9 on clean ones (7.3, 9.1). A sub-channel
-  count that is not a multiple of 16 is no format: its version would not be whole, and `focus_tiers_for` has no
+  count that is not a multiple of 16 is no format: its version would not be whole, and `lizard_tiers_for` has no
   profile for it.
-- A version past 64 cannot be stated by the word: `focus.c:init` refuses more than 1024 sub-channels.
+- A version past 64 cannot be stated by the word: `lizard_phy.c:init` refuses more than 1024 sub-channels.
 
 **The rate profile.** A frame of subch sub-channels has S = 640 subch slots. Inner first, it carries a blocks at 7/8
 (s7 = 4496 slots each), m at 3/4 (s3 = 5152), t at 2/3 (s2 = 5760) and c at 1/2 (s1 = 7680), with
@@ -158,12 +158,12 @@ the least
 (1000 a s7 - 390 S)^2 + (1000 t s2 - 150 S)^2 + (1000 c s1 - 200 S)^2
 ```
 
-in integers, the first of equals in rising a, then rising t, then rising c (`focus.c:focus_tiers_for`, `FOCUS_TIER_IN`
-= 390, `FOCUS_TIER_23` = 150, `FOCUS_TIER_OUT` = 200, thousandths of the slots; `liblizard/sim/lizard_pick.mjs:tiersFor`,
+in integers, the first of equals in rising a, then rising t, then rising c (`lizard_phy.c:lizard_tiers_for`, `LIZARD_TIER_IN`
+= 390, `LIZARD_TIER_23` = 150, `LIZARD_TIER_OUT` = 200, thousandths of the slots; `liblizard/sim/lizard_pick.mjs:tiersFor`,
 which counts in units of 16 slots, every block's slots being a multiple of 16, so that each cost is an exact integer
 under 2^53). The targets are the profile's split over the sub-channels before the blocks were packed by slots (39, 15 and 20%
 at 7/8, 2/3 and 1/2), now shares of the slots (12, 13). Every format has all four tiers. B(V) = a + m + t + c
-(`focus_blocks_for`) is under 2V at every version and never falls as V rises. The padding runs from none (LIZARD-320 and -1008) to 4976 slots
+(`lizard_blocks_for`) is under 2V at every version and never falls as V rises. The padding runs from none (LIZARD-320 and -1008) to 4976 slots
 (LIZARD-768), at most 10.7% of a frame (LIZARD-64's 4384), under 5% from LIZARD-96 up and under 2% from LIZARD-320 up
 (0.46% at LIZARD-656). Nothing about the profile is signalled: it
 follows from the version.
@@ -193,7 +193,7 @@ R = sqrt(2 * 320 * subch / pi) = sqrt(10240 * V / pi)
 ```
 
 n MUST be the first of 256, 384, 512, 768, 1024, 1152, 1280 and 1536 with n >= 3R, computed in double precision, or 1536 where
-none holds (`focus.c:focus_n_for` over `FOCUS_PICTURES`; `liblizard/sim/lizard_pick.mjs:N_FOR`). The fallback never
+none holds (`lizard_phy.c:lizard_n_for` over `LIZARD_PICTURES`; `liblizard/sim/lizard_pick.mjs:N_FOR`). The fallback never
 binds on the ladder (LIZARD-1024 has 3R = 1370.2). Since n >= 3R is V <= pi n^2 / 92160 (the 256 picture holds
 versions 1 and 2, which are no formats, 3.1; no format's picture is 256):
 
@@ -209,37 +209,37 @@ versions 1 and 2, which are no formats, 3.1; no format's picture is 256):
 | 1280 | 46 to 55 | LIZARD-736 to -880 | 10 | 89 to 106 | 42008 to 50032 |
 | 1536 | 56 to 64 | LIZARD-896 to -1024 | 9 | 108 to 124 | 50976 to 58528 |
 
-n / 2R runs from 1.50 to 2.24 on the ladder. Only the word states n: a receiver takes n = `focus_n_for(16 * version)`
+n / 2R runs from 1.50 to 2.24 on the ladder. Only the word states n: a receiver takes n = `lizard_n_for(16 * version)`
 and nothing checks the version against the ring.
 
 **n sets only how finely the same coefficients are sampled.** Every coefficient a format uses lies within R + 0.07,
 and n / 2 >= 1.5 R, so a coefficient that a larger n adds sorts after all of them. Therefore a format's coefficients
 are the same at every n that can hold it, and within one n each format's coefficients are the first 320 subch of the
 top format's: block b of any version sits on the same coefficients, with the same bit map and whitening, as block b of
-the top version of that n wherever their tiers agree (`wasm.c:focus_any_setup`, `pic_for`).
+the top version of that n wherever their tiers agree (`wasm.c:lizard_any_setup`, `pic_for`).
 
-`focus.c:init` checks only that n is one of the eight sizes (each with n / 2 a whole number of the transform's 64-column strips)
+`lizard_phy.c:init` checks only that n is one of the eight sizes (each with n / 2 a whole number of the transform's 64-column strips)
 and that the half-plane holds 320 subch coefficients ((n / 2)(n - 2) at most).
 
 ### 3.3 The rings (normative)
 
-Ring B has B band cells of 2 x 2 modules a side, B = 64, 128 or 256 (`focus.h:FOCUS_RING`), and its geometry does not
+Ring B has B band cells of 2 x 2 modules a side, B = 64, 128 or 256 (`lizard_phy.h:LIZARD_RING`), and its geometry does not
 depend on the picture:
 
-- span = 2B modules across the picture (128, 256, 512); `focus_init`'s span argument names the ring, 0 the default,
-  any other value is refused (`focus.c:init`).
-- The border is 15 modules a side: the corner mark's 12 (`OB_THIN_CORNER`) and the guard's 3 (`FOCUS_CP`).
+- span = 2B modules across the picture (128, 256, 512); `lizard_init`'s span argument names the ring, 0 the default,
+  any other value is refused (`lizard_phy.c:init`).
+- The border is 15 modules a side: the corner mark's 12 (`OB_THIN_CORNER`) and the guard's 3 (`LIZARD_CP`).
 - S = 2B + 30 modules a side (158, 286, 542); the painted square, with the margin, is S + 4 (162, 290, 546).
 
 **Any ring may carry any picture.** A sender MAY paint a picture of any n in any ring. The reference senders paint the
-128 ring unless another is named (`focus.h:FOCUS_RING_DEFAULT`, `liblizard/sim/lizard_pick.mjs:RING_DEFAULT`,
+128 ring unless another is named (`lizard_phy.h:LIZARD_RING_DEFAULT`, `liblizard/sim/lizard_pick.mjs:RING_DEFAULT`,
 `liblizard/kotlin/Pick.kt`). A receiver MUST NOT infer n from the ring: the module count identifies the ring and
 nothing else.
 
 In ring B carrying a picture of n samples:
 
 ```
-pxm = max( ceil(n / span - 0.0001), ceil(384 / span) )        the first term in single precision (focus.c:init)
+pxm = max( ceil(n / span - 0.0001), ceil(384 / span) )        the first term in single precision (lizard_phy.c:init)
 scale = n / span                                              samples a module
 ```
 
@@ -277,7 +277,7 @@ The resampled square is (span + 6) pxm pixels a side from pixel 12 pxm on both a
 | 256 | 512 | 542 | 1280 | 5/2 | 3 | 6/5 | 1626 | 1638 | 1554, 36 |
 | 256 | 512 | 542 | 1536 | 3 | 3 | copy | 1626 | 1638 | 1554, 36 |
 
-The pixel columns are the painted image's own size (`_focus_side()`, `_focus_cell()`); a sender then scales it to the
+The pixel columns are the painted image's own size (`_lizard_side()`, `_lizard_cell()`); a sender then scales it to the
 room (3.5, 9.5).
 
 ### 3.4 Capacity (normative)
@@ -294,14 +294,14 @@ room (3.5, 9.5).
   32 at 3/4; a 2/3 or 1/2 block has none. Every code is lifted by z = 128 (section 8); the 7/8 code's last data
   column, the 128 zero information bits past the CRC, is never sent (np = 128, 8.6).
 - The information word is the 476 block bytes and their CRC-32, 3840 bits, the k of the 3/4, 2/3 and 1/2 codes; the
-  7/8 code's k holds 128 zero bits past them (7.1). A block is 476 bytes whatever its rate (`focus.h:FOCUS_BLOCK`, `focus.c:init`, `block_bytes`).
+  7/8 code's k holds 128 zero bits past them (7.1). A block is 476 bytes whatever its rate (`lizard_phy.h:LIZARD_BLOCK`, `lizard_phy.c:init`, `block_bytes`).
 - The first 4 of the 476 bytes are the block id (7.5), which leaves 472 useful bytes (3776 bits).
 
 A frame of version V has 5120 V coefficients, 10240 V slots, B(V) blocks, the padding past them (3.1) and 472 B(V)
 useful bytes in any ring (3.2's table by n, 3.6 by format). Its ceiling in bytes a second is 472 B(V) times the display
-rate. To reproduce a row: `M._focus_setup(n, subch, 2, 2B, 0)` (n, subch, clip, span, tilt) returns 476, then
-`M._focus_blocks()`, `M._focus_side()`, `M._focus_cell()` and `M._focus_quiet()` give B(V), S pxm, pxm and 2;
-`M._focus_tiers_for(subch, p)` writes the tiers as (rate index, blocks, slots a block) triplets.
+rate. To reproduce a row: `M._lizard_setup(n, subch, 2, 2B, 0)` (n, subch, clip, span, tilt) returns 476, then
+`M._lizard_blocks()`, `M._lizard_side()`, `M._lizard_cell()` and `M._lizard_quiet()` give B(V), S pxm, pxm and 2;
+`M._lizard_tiers_for(subch, p)` writes the tiers as (rate index, blocks, slots a block) triplets.
 
 ### 3.5 Choosing a version (non-normative)
 
@@ -310,7 +310,7 @@ take (the room), and makes no camera assumption.
 
 - **Room a format needs**, margin included, in ring B:
   `ROOM_FOR(subch, ring) = (MODULES + 2 M) / SPAN * 2.7 * R(subch)` with SPAN = 2B, MODULES = 2B + 30, M = 2
-  (`PAINTED_MARGIN()`, the codec's `FOCUS_QUIET`), and 2.7 device px a cycle at the top ring (`T_DISPLAY_CYCLE`). In one
+  (`PAINTED_MARGIN()`, the codec's `LIZARD_QUIET`), and 2.7 device px a cycle at the top ring (`T_DISPLAY_CYCLE`). In one
   ring the room is a constant times R, so it rises with the version.
 - **The pick** is the largest ladder format whose room fits, or LIZARD-64 where none does (flagged `tight`); the ring
   is the default unless named. The library does not cap; an app is advised to stop at LIZARD-560 unless it is a fixed
@@ -392,7 +392,7 @@ Derived from 3.1 to 3.4 (normative) for every version; the room and camera colum
 ## 4. The border
 
 Normative except 4.10 and 4.11. Sources: `layout.h`, `layout.c` (`thin_init`, `thin_corner`, `ob_thin_track`,
-`ob_layout_set_fmt`), `focus.c` (`init`, `focus_encode`, `resample_init`, `focus_paint_rgba`), `focus.h`.
+`ob_layout_set_fmt`), `lizard_phy.c` (`init`, `lizard_encode`, `resample_init`, `lizard_paint_rgba`), `lizard_phy.h`.
 
 ### 4.1 Units and coordinates
 
@@ -436,7 +436,7 @@ word's cells.
 
 ### 4.4 Guard
 
-Depths 12 to 14 (`FOCUS_CP` = 3) are the picture wrapped round its own edge. The encoder resamples over span + 6
+Depths 12 to 14 (`LIZARD_CP` = 3) are the picture wrapped round its own edge. The encoder resamples over span + 6
 modules from module 12 and reads the picture as periodic on both axes, so the guard is a torus wrap, corners included.
 In drive pixels, with `o = 12 pxm`, for `0 <= X < 3 pxm` column `o + X` equals column `o + X + span pxm` over the
 whole resampled square, row `o + X` equals row `o + X + span pxm`, and the corners follow. An encoder MUST paint the
@@ -502,11 +502,11 @@ so the track alone tells the rotation and mirroring (8 hypotheses).
 
 ### 4.8 Margin
 
-`focus.h:FOCUS_QUIET` = 2 modules of light, 2 pxm pixels, outside depth 0 on every side: 6 to 24 pixels in the 64
+`lizard_phy.h:LIZARD_QUIET` = 2 modules of light, 2 pxm pixels, outside depth 0 on every side: 6 to 24 pixels in the 64
 ring, 4 to 12 in the 128 and 2 to 6 in the 256 (pxm from 3.3). An encoder MUST paint it. The painted image is
 (S + 4) pxm pixels a side. The margin lies outside the module grid, whose origin stays the symbol's outer corner
-(4.1). `focus_paint_rgba(f, drive, rgba)` paints the drive as grey (6.8) inside `FOCUS_QUIET` modules of white, as RGBA
-with R = G = B and alpha 255; the wasm exports it as `focus_tx_rgba` and the margin as `focus_quiet`.
+(4.1). `lizard_paint_rgba(f, drive, rgba)` paints the drive as grey (6.8) inside `LIZARD_QUIET` modules of white, as RGBA
+with R = G = B and alpha 255; the wasm exports it as `lizard_tx_rgba` and the margin as `lizard_quiet`.
 
 ### 4.9 One corner
 
@@ -565,13 +565,13 @@ any registration template: the fps byte is the sender's choice.
 ### 4.11 Settings in liblizard/src/ that are not the format (non-normative)
 
 None: `liblizard/src/` paints this border alone, and its constants (`OB_RING_DEEP`, `OB_CELL`, `OB_BAND_RUN`,
-`FOCUS_CP`, `OB_THIN_CORNER`) are plain definitions in `layout.h`, not build settings.
+`LIZARD_CP`, `OB_THIN_CORNER`) are plain definitions in `layout.h`, not build settings.
 
 ## 5. The format word
 
 Normative except 5.4 and 5.5. Sources: `fmt.h`; `fmt.c` (`ob_fmt_side_cells`, `ob_fmt_bytes`, `ob_fmt_encode`,
 `ob_fmt_bit`, `ob_fmt_decode`); `rs.c` (`init`, `rs_encode`); painted by `layout.c:ob_layout_set_fmt` from
-`focus.c:fmt_paint`. The word is the only information the border carries.
+`lizard_phy.c:fmt_paint`. The word is the only information the border carries.
 
 ### 5.1 Fields
 
@@ -587,7 +587,7 @@ side and bytes = W / 2 (16, 32, 64). A receiver has B from the ring it registere
 | byte | field | value |
 |---|---|---|
 | `cw[0]` | magic | `0x4C` (ASCII `L`) |
-| `cw[1]` | version | sub-channels / 16, 2 to 64; 0, 1 and 65 to 255 are no version. The picture is n = `focus_n_for(16 * version)` (3.2), the blocks and their rates the profile's (3.1) |
+| `cw[1]` | version | sub-channels / 16, 2 to 64; 0, 1 and 65 to 255 are no version. The picture is n = `lizard_n_for(16 * version)` (3.2), the blocks and their rates the profile's (3.1) |
 | `cw[2]` | fps | whole frames a second the sender means to paint at, 1 to 255; 0 means not stated |
 | `cw[3]` to `cw[bytes - 1]` | parity | Reed-Solomon, 5.2 |
 
@@ -595,7 +595,7 @@ side and bytes = W / 2 (16, 32, 64). A receiver has B from the ring it registere
 - A decoder MUST accept every version from 2 to 64 in every ring, and MUST NOT reject a word for the ring it was read
   in.
 - fps is the rate the sender intends, not the rate it achieves; no decode decision depends on it. A sender MAY change
-  it between frames, which repaints only the word's cells (`focus.c:focus_fmt_fps`).
+  it between frames, which repaints only the word's cells (`lizard_phy.c:lizard_fmt_fps`).
 - Nothing else is in the word: the code is always LDPC at the profile's rates, the bit map always LINEAR (7.3), and
   everything about the transfer is in the header block (7.7).
 
@@ -632,7 +632,7 @@ side and bytes = W / 2 (16, 32, 64). A receiver has B from the ring it registere
   not `0x4C` or whose version is outside 2 to 64.
 
 **Test vectors**, `cw[0]` to `cw[bytes - 1]` in hex, read back out of the painted cells by `liblizard/test/vectors.mjs`
-(`_focus_setup(n, subch, 2, 2B, 0)`, `_focus_fmt_fps_set(fps)`) and held by `liblizard/test/fmt_test.c`; the word does
+(`_lizard_setup(n, subch, 2, 2B, 0)`, `_lizard_fmt_fps_set(fps)`) and held by `liblizard/test/fmt_test.c`; the word does
 not depend on n:
 
 ```
@@ -729,8 +729,8 @@ The rule both reference receivers follow (10.1, 10.2):
 
 ## 6. The picture
 
-Normative except where marked. Sources: `focus.c` (`init`, `ws_init`, `focus_encode`, `turn_pack`, `clip_row`,
-`resample_init`, `resample`, `focus_paint_rgba`, `focus_n_for`), `focus.h`, `fft.h`.
+Normative except where marked. Sources: `lizard_phy.c` (`init`, `ws_init`, `lizard_encode`, `turn_pack`, `clip_row`,
+`resample_init`, `resample`, `lizard_paint_rgba`, `lizard_n_for`), `lizard_phy.h`, `fft.h`.
 
 ### 6.1 Coordinates
 
@@ -755,7 +755,7 @@ The candidates are the upper half-plane without DC and without the Nyquist row a
 -n/2 < u < n/2,   0 <= v < n/2,   and not (v = 0 and u <= 0)
 ```
 
-sorted by u^2 + v^2 ascending, then v ascending, then u ascending (`focus.c:by_freq`): C_0, C_1, ... A frame of subch
+sorted by u^2 + v^2 ascending, then v ascending, then u ascending (`lizard_phy.c:by_freq`): C_0, C_1, ... A frame of subch
 sub-channels uses C_0 to C_(320 subch - 1); every other coefficient of the half-plane is zero. The order does not
 depend on n (3.2): every format's coefficients are a prefix of LIZARD-1024's. Its first 24 entries, as (u, v):
 
@@ -764,7 +764,7 @@ depend on n (3.2): every format's coefficients are a prefix of LIZARD-1024's. It
 (3,0) (0,3) (-3,1) (3,1) (-1,3) (1,3) (-3,2) (3,2) (-2,3) (2,3) (4,0) (0,4)
 ```
 
-**Sub-channels.** Sub-channel j is C_(320 j) to C_(320 j + 319) (`FOCUS_SUB` = 320); higher j is higher frequency.
+**Sub-channels.** Sub-channel j is C_(320 j) to C_(320 j + 319) (`LIZARD_SUB` = 320); higher j is higher frequency.
 The last coefficient of some sub-channel counts:
 
 | sub-channels | last coefficient (u, v) | u^2 + v^2 | radius |
@@ -802,14 +802,14 @@ x_i = w[i], the whitening alone), coefficient s carries
 H(C_s) = (a_j / sqrt 2) * ( (1 - 2 x_(2s)) + i (1 - 2 x_(2s+1)) ),      j = floor(s / 320),  i = sqrt(-1)
 ```
 
-that is, bit 0 gives + and bit 1 gives -, on each axis independently (`focus_encode`; the magnitude
+that is, bit 0 gives + and bit 1 gives -, on each axis independently (`lizard_encode`; the magnitude
 `0.70710678f * a_j` in float32). a_j is sub-channel j's amplitude:
 
 ```
 a_j = 10^( -t * j / (20 * (subch - 1)) )        t = tilt in dB; t = 0 gives a_j = 1 for every j
 ```
 
-(`focus.c:ws_init`). Every sender uses t = 0 (section 2, Not the format).
+(`lizard_phy.c:ws_init`). Every sender uses t = 0 (section 2, Not the format).
 
 ### 6.6 The transform
 
@@ -821,7 +821,7 @@ p(x, y) = sum over s < 320 subch of  2 Re[ H(C_s) exp( +2 pi i (u_s x + v_s y) /
 
 Equivalently: set H(-u, -v) = conj(H(u, v)) (indices mod n), zero everywhere else, and take the unscaled inverse 2D
 DFT with kernel exp(+2 pi i (u x + v y) / n); no 1 / n^2 factor (`fft.h`). The reference evaluates it in float32 over
-the half-plane (`focus_encode`, `turn_pack`, `fft.c:fft_cols`) from one twiddle table W^j = exp(-2 pi i j / n),
+the half-plane (`lizard_encode`, `turn_pack`, `fft.c:fft_cols`) from one twiddle table W^j = exp(-2 pi i j / n),
 j < n / 2, computed in double and stored as float32 (conjugated for the inverse). For n a power of two the FFT is radix
 2; otherwise its radix-3 stages come first (one for n = 3 x 2^k, two for 1152 = 9 x 2^7), then its radix-5 stage (one
 for 1280 = 5 x 2^8), then the radix-2 stages, on the input in digit-reversed order in those radices (`fft.c`
@@ -864,14 +864,14 @@ g(x, y) = 1/2 + clamp(p(x, y), -L, L) / (2 L)
 
 g is in [0, 1], 0 black and 1 white. The reference computes the level in float32 as `lim = 2 * c * sqrtf(0.5 * 320
 subch)` at t = 0, or `2 * c * sqrt(0.5 * P)` with P summed in double when t > 0, and g as `0.5f + clamp(p) * (0.5f /
-lim)` (`focus_encode`, `clip_row`). Every sender uses c = 2; a receiver does not depend on it.
+lim)` (`lizard_encode`, `clip_row`). Every sender uses c = 2; a receiver does not depend on it.
 
 ### 6.8 Resampling onto the painted grid
 
 Drive pixel (X, Y) covers module coordinates [X / pxm, (X + 1) / pxm), centre (X + 0.5) / pxm.
 
 **The resampled square.** Modules [12, span + 18) on both axes are the resampler's alone: the picture and the 3-module
-guard round it (`FOCUS_CP` = 3; `focus_encode` takes cp = min(FOCUS_CP, margin - OB_THIN), 3 in the format), a square
+guard round it (`LIZARD_CP` = 3; `lizard_encode` takes cp = min(LIZARD_CP, margin - OB_THIN), 3 in the format), a square
 of q = (span + 6) pxm pixels from pixel (12 pxm, 12 pxm). The outer border outside it is painted from the layout
 (section 4).
 
@@ -920,7 +920,7 @@ clamp acts. The anchors are painted over D afterwards (6.13).
 G = floor(D * 255 + 0.5), clamped to [0, 255];     R = G = B = G, alpha 255
 ```
 
-(`focus_paint_rgba`, as float32 `D * 255.0f + 0.5f` truncated). The outer border paints only 0 and 255; the picture
+(`lizard_paint_rgba`, as float32 `D * 255.0f + 0.5f` truncated). The outer border paints only 0 and 255; the picture
 and its guard use all 256 levels.
 
 **How exact.** The reference evaluates 6.5 to 6.8 in float32, so an implementation in double precision meets its grey
@@ -934,8 +934,8 @@ Picture sample (x, y) is at module coordinates
 ( 15 + (x + 0.5) * span / n,   15 + (y + 0.5) * span / n )
 ```
 
-so the grid starts at 15 + 0.5 / scale and steps by 1 / scale modules (`focus_finish_ext`: `g0 = margin + 0.5f /
-scale`, `step = 1.0f / scale`, float32; `wasm.c:focus_grid_out`). A receiver that takes the forward DFT of an n x n
+so the grid starts at 15 + 0.5 / scale and steps by 1 / scale modules (`lizard_finish_ext`: `g0 = margin + 0.5f /
+scale`, `step = 1.0f / scale`, float32; `wasm.c:lizard_grid_out`). A receiver that takes the forward DFT of an n x n
 grid MUST take it at these points: a grid displaced by (dx, dy) samples turns coefficient (u, v) by
 2 pi (u dx + v dy) / n.
 
@@ -953,7 +953,7 @@ signalled: a receiver estimates each sub-channel's amplitude and noise itself (8
 ### 6.10 What the receiver removes before reading (non-normative)
 
 A brightness ramp across the picture lands on the coefficients nearest zero frequency, which carry block 0. The
-reference receiver removes the least-squares surface in 1, x, y, xy, x^2, y^2 (`focus_finish_ext`, basis in `ws_init`).
+reference receiver removes the least-squares surface in 1, x, y, xy, x^2, y^2 (`lizard_finish_ext`, basis in `ws_init`).
 With c_i = (2 i + 1 - n) / n and q_i = c_i^2 - mean(c^2), i = 0 to n - 1, the five non-constant functions c(x), c(y),
 c(x) c(y), q(x), q(y) are orthogonal on the grid and to the constant, so each coefficient is one projection of the
 samples s:
@@ -983,13 +983,13 @@ DC carries nothing and X1(0) = X2(0) = 0, so DC is untouched.
 
 ### 6.12 Test vectors
 
-Computed with the codec's wasm through `liblizard/sim/ob.mjs`: `_focus_setup(n, subch, 2, 128, 0)` (clip 2, span 128:
-the 64 ring; no tilt), `_focus_dbg(1)`, `_focus_tx` on a payload of blocks x 476 zero bytes, then the drive (float32,
-S pxm pixels square, row-major), the slot bits from `_focus_dbg_sym` (int8 a slot, +1 for bit 0, -1 for bit 1, frame
-slot order) and the coefficient positions from `_focus_pos_ptr`. Grey bytes are G of 6.8. The word states fps 0 and
-the count is 0 (`_focus_parity_set` not called). The slot bits do not depend on the ring or on n.
+Computed with the codec's wasm through `liblizard/sim/ob.mjs`: `_lizard_setup(n, subch, 2, 128, 0)` (clip 2, span 128:
+the 64 ring; no tilt), `_lizard_dbg(1)`, `_lizard_tx` on a payload of blocks x 476 zero bytes, then the drive (float32,
+S pxm pixels square, row-major), the slot bits from `_lizard_dbg_sym` (int8 a slot, +1 for bit 0, -1 for bit 1, frame
+slot order) and the coefficient positions from `_lizard_pos_ptr`. Grey bytes are G of 6.8. The word states fps 0 and
+the count is 0 (`_lizard_parity_set` not called). The slot bits do not depend on the ring or on n.
 
-**P1, the order.** `_focus_pos_ptr` holds 320 subch int32, entry i for C_i, an offset into the reference's strip
+**P1, the order.** `_lizard_pos_ptr` holds 320 subch int32, entry i for C_i, an offset into the reference's strip
 layout. With `bw = min(n / 2, 64)`:
 
 ```
@@ -1062,14 +1062,14 @@ geometry inside the border.
 - **Erasing (a receiver MUST).** Before the detrend (6.10) and the transform, on every frame, whether or not it found
   the anchors, a receiver sets every picture sample a square touches and 2 samples beyond it on each side to the
   picture's mean: on either axis the samples from floor((m0(i) - 15) scale) - 2 to ceil((m0(i) + a - 15) scale) - 1 + 2,
-  clamped to [0, n - 1], for each i, the 49 products of the 7 ranges on the two axes (`focus.c:focus_finish_ext`). The
+  clamped to [0, n - 1], for each i, the 49 products of the 7 ranges on the two axes (`lizard_phy.c:lizard_finish_ext`). The
   mean need not be exact (the reference takes it over every eighth sample each way).
 - **Reading them** is the receiver's (10.1, 10.2).
 
 ## 7. Blocks, the bit mapping and the transfer
 
-Normative except where marked. Sources: `focus.c` (`init`, `focus_encode`, `whiten_fill`, `perm_fill`, `map_out`,
-`map_in`, `focus_finish_ext`), `focus.h`, `layout.c:ob_crc32`; for the transfer (7.5 to 7.10) `xfer.h`, `xfer.c` and
+Normative except where marked. Sources: `lizard_phy.c` (`init`, `lizard_encode`, `whiten_fill`, `perm_fill`, `map_out`,
+`map_in`, `lizard_finish_ext`), `lizard_phy.h`, `layout.c:ob_crc32`; for the transfer (7.5 to 7.10) `xfer.h`, `xfer.c` and
 their wasm exports in `wasm.c`.
 
 A frame of version V carries B(V) blocks, each one LDPC codeword with its own CRC-32, independent of the others. In
@@ -1085,7 +1085,7 @@ picture size.
 
 The picture codec treats the 476 bytes as opaque. A frame's payload is 472 B(V) bytes.
 
-**Information word**, k bits (`focus.c:focus_encode`): 3968 at 7/8, 3840 at 3/4, 2/3 and 1/2.
+**Information word**, k bits (`lizard_phy.c:lizard_encode`): 3968 at 7/8, 3840 at 3/4, 2/3 and 1/2.
 
 | bits | content |
 |---|---|
@@ -1114,7 +1114,7 @@ component (6.5). In LIZARD-656 the blocks start at frame slots 0, 4496, ..., 157
 A codeword has n bits, of which np are never sent: codeword bits k - np to k - 1, the 7/8 code's zero information bits
 past the CRC (np = 128 at 7/8, 0 otherwise, 8.6). Sent bit t is codeword bit s(t) = t for t < k - np and t + np
 otherwise; the nt = n - np sent bits fill the first nt of the block's L_b slots, and the rest is the tail. The format's one map is LINEAR
-(`focus.h:FOCUS_BITMAP` = 3). For block b, its codeword c (section 8), the whitening w and the pilot bit q:
+(`lizard_phy.h:LIZARD_BITMAP` = 3). For block b, its codeword c (section 8), the whitening w and the pilot bit q:
 
 ```
 slot[i] = (i < nt ? c[s((st * i) mod nt)] : q) XOR w[S_b + i],    i = 0 .. L_b - 1
@@ -1122,7 +1122,7 @@ slot[i] = (i < nt ? c[s((st * i) mod nt)] : q) XOR w[S_b + i],    i = 0 .. L_b -
 
 Frame slot i of the padding (S_B(V) <= i < 640 subch) is w[i]: a coefficient there carries the whitening alone.
 
-**The permutation** (`focus.c:perm_fill`). The stride st is floor(0.3819660113 nt + 0.5) (1/phi^2), then raised by 1
+**The permutation** (`lizard_phy.c:perm_fill`). The stride st is floor(0.3819660113 nt + 0.5) (1/phi^2), then raised by 1
 until gcd(st, nt) = 1. Sent bit t (codeword bit s(t)) lies on slot st^-1 t mod nt.
 
 | rate | nt | np | st | st^-1 mod nt | tail slots T | tail coefficients of the block |
@@ -1159,9 +1159,9 @@ after reads, in size, r = 1 - 2a - 2b, and r2 = 1 - 2a where c is even and 1 - 2
 from one picture or the other; a uniform blend reads (1 - 2f) / sqrt(1 - 2f + 2f^2) for share f). The readings say
 which neighbour a capture holds, which a receiver steering its camera's phase uses (10). A reading's standard error is
 its blocks' spread of r_b over the square root of their count. Both reference decoders report the two readings
-(`focus.h:focus_pilot`).
+(`lizard_phy.h:lizard_pilot`).
 
-**The whitening** (`focus.c:whiten_fill`) is PRBS-23 on x^23 + x^18 + 1, started from all ones, not inverted:
+**The whitening** (`lizard_phy.c:whiten_fill`) is PRBS-23 on x^23 + x^18 + 1, started from all ones, not inverted:
 
 ```
 w[i] = w[i - 23] XOR w[i - 18],    w[j] = 1 for j < 0
@@ -1232,9 +1232,9 @@ only the pilot slots of the blocks whose bit is 1 differ):
 From `liblizard/`:
 
 ```js
-import { init, Focus } from "./sim/ob.mjs";
+import { init, Lizard } from "./sim/ob.mjs";
 await init();
-const f = new Focus(384, 64, 1);                         // LIZARD-64, LINEAR
+const f = new Lizard(384, 64, 1);                         // LIZARD-64, LINEAR
 const B = f.blockBytes, blocks = new Uint8Array(7 * B);  // B = 476
 for (let b = 0; b < 7; b++) { blocks[b * B] = b; for (let j = 0; j < 472; j++) blocks[b * B + 4 + j] = j & 255; }
 f.measure(true); f.encode(blocks);
@@ -1441,7 +1441,7 @@ vectors, whole and split into chunks of 2^10 to 2^17 bytes.
 
 ## 8. The LDPC code
 
-Normative except 8.3 and 8.5. Sources: `ldpc_base.h`, `ldpc.h`, `ldpc.c` (`ldpc_init`, `ldpc_encode`), `focus.c:init`.
+Normative except 8.3 and 8.5. Sources: `ldpc_base.h`, `ldpc.h`, `ldpc.c` (`ldpc_init`, `ldpc_encode`), `lizard_phy.c:init`.
 
 A block's code is one of four quasi-cyclic irregular repeat-accumulate codes, H = [Hd | Hp], by its tier (3.1): rate
 7/8, 3/4, 2/3 and 1/2, every one lifted by z = 128, each over its own base graph. Hd is built from z x z circulant
@@ -1532,7 +1532,7 @@ p_c = p_(c-1) XOR (XOR of the data bits in check c),    p_(-1) = 0
 ### 8.5 Soft values into the code, and the reference decoder (non-normative)
 
 The format fixes only the sign convention (positive means bit 0) and the bit map; a decoder computes its soft values
-as it likes. The reference (`focus.c` `focus_finish_ext`, `axis_info`, `map_in`; `ldpc.c:ldpc_decode_stall`):
+as it likes. The reference (`lizard_phy.c` `lizard_finish_ext`, `axis_info`, `map_in`; `ldpc.c:ldpc_decode_stall`):
 
 - **Per sub-channel**, over its 320 received coefficients y after the transform, detrend and pilot alignment: m2 and m4
   the means of |y|^2 and |y|^4; A2 = sqrt(max(0, 2 m2^2 - m4)), the signal power; N = max(m2 - A2, 0.02 m2); each
@@ -1544,12 +1544,12 @@ as it likes. The reference (`focus.c` `focus_finish_ext`, `axis_info`, `map_in`;
 - **Decline gate.** Each sub-channel's information per coded bit is J(2 sqrt(A2 / N)), with
   J(sigma) = (1 - 2^(-0.3073 sigma^1.787))^1.1064; a block's estimate is the mean over its slots of their sub-channels'
   information (each sub-channel weighted by the block's slots in it), and a block whose estimate is under 0.2 k / nt
-  (`FOCUS_DECLINE`: 0.177 at 7/8, 0.15 at 3/4, 0.133 at 2/3, 0.10 at 1/2) is not decoded.
+  (`LIZARD_DECLINE`: 0.177 at 7/8, 0.15 at 3/4, 0.133 at 2/3, 0.10 at 1/2) is not decoded.
 - **LDPC**, layered normalised min-sum: a layer is one block row (its z checks share no bit); int8 check-to-bit
   messages, int16 posteriors clamped to [-8191, 8191]; min1 and min2 scaled by 13/16 as (x x 13) >> 4; the sweep's
   direction alternates every iteration; check 0's missing parity bit fed as a certain 0; at most 30 iterations, stopping
   at a zero syndrome, and a block whose unsatisfied checks after iteration 9 are above 0.95 of those after iteration 1
-  given up (`FOCUS_STALL_IT`, `FOCUS_STALL_RATIO`); a posterior below 0 decides bit 1.
+  given up (`LIZARD_STALL_IT`, `LIZARD_STALL_RATIO`); a posterior below 0 decides bit 1.
 
 ### 8.6 The 7/8, 2/3 and 1/2 codes
 
@@ -1802,11 +1802,11 @@ two pilot readings (7.3), and the Android app holds its camera's phase against t
 ### 10.1 The C decoder (`liblizard/src/`)
 
 The reference, built to wasm for the web receiver (a worker pool, one thread a worker) and natively for the apps
-(NEON on arm64, SSE4.1 on x86-64, `liblizard/core/cpu/`). `wasm.c:focus_any_setup(nmax)` builds a codec a ring;
-`focus_any_rx(img, iw, ih, gamma, mesh, blocks, ok, held)` registers the frame against the three rings' layouts, reads
-the word in the ring that registered, builds (and caches, `FOCUS_ANY_PICS` = 2) the codec for that ring and version,
+(NEON on arm64, SSE4.1 on x86-64, `liblizard/core/cpu/`). `wasm.c:lizard_any_setup(nmax)` builds a codec a ring;
+`lizard_any_rx(img, iw, ih, gamma, mesh, blocks, ok, held)` registers the frame against the three rings' layouts, reads
+the word in the ring that registered, builds (and caches, `LIZARD_ANY_PICS` = 2) the codec for that ring and version,
 and finishes the frame there, or at the held version `held` (0 for none) when the word does not read. The steps of one
-frame (`focus.c:focus_decode`, `focus_acquire` then `focus_finish`):
+frame (`lizard_phy.c:lizard_decode`, `lizard_acquire` then `lizard_finish`):
 
 1. **Luma.** (77 R + 150 G + 29 B + 128) >> 8 (`acquire.c:ob_luma`), then an optional gamma table.
 2. **Binarize**, for the finder only: 8 x 8 block means, each block's threshold the mean of the 5 x 5 blocks round it
@@ -1826,10 +1826,10 @@ frame (`focus.c:focus_decode`, `focus_acquire` then `focus_finish`):
 7. **Erase and detrend**: the anchors' squares erased (6.13), the surface fitted (6.10).
 8. **Transform** along y a strip of 64 columns at a time, along x only the rows v < n / 2.
 9. **Pilot alignment, soft values, decline gate and LDPC** (8.5): the grid's shift fitted from the pilots' known
-   symbols and turned back where its chi-square passes 13.8 (`focus.c:pilot_align`).
+   symbols and turned back where its chi-square passes 13.8 (`lizard_phy.c:pilot_align`).
 10. **CRC-32** (7.1).
 
-`focus_acquire_quad`, `focus_finish` and `focus_finish_ext` take a quad, a sampled grid or soft values made elsewhere,
+`lizard_acquire_quad`, `lizard_finish` and `lizard_finish_ext` take a quad, a sampled grid or soft values made elsewhere,
 so another front or back half is held to the C's acceptance rules.
 
 ### 10.2 The GPU decoder (`liblizard/gpu/`)

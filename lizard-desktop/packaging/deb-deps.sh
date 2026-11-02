@@ -25,6 +25,32 @@ for deb in "$1"/*.deb; do
     sed -i '/^Depends:/ s/[[:space:]]*$/, libturbojpeg | libturbojpeg0/' "$t/x/DEBIAN/control"
     changed=1
   fi
+  # ai: since 2026-11-01: libusb for the phone on the cable (liblizard/core/cam/aoa.cpp opens libusb-1.0.so.0) and Aravis
+  # ai: recommended for a GenICam camera (cam/aravis.cpp opens libaravis-0.8.so.0); 70-lizard.rules gives the user at the
+  # ai: seat those devices, the rules read again at the install
+  if ! grep -q 'libusb-1.0-0' "$t/x/DEBIAN/control"; then
+    sed -i '/^Depends:/ s/[[:space:]]*$/, libusb-1.0-0/' "$t/x/DEBIAN/control"
+    changed=1
+  fi
+  if ! grep -q '^Recommends:.*libaravis' "$t/x/DEBIAN/control"; then
+    if grep -q '^Recommends:' "$t/x/DEBIAN/control"; then sed -i '/^Recommends:/ s/[[:space:]]*$/, libaravis-0.8-0/' "$t/x/DEBIAN/control"
+    else sed -i '/^Depends:/ a Recommends: libaravis-0.8-0' "$t/x/DEBIAN/control"; fi
+    changed=1
+  fi
+  if [ ! -f "$t/x/lib/udev/rules.d/70-lizard.rules" ]; then
+    install -D -m 644 "$(dirname "$0")/70-lizard.rules" "$t/x/lib/udev/rules.d/70-lizard.rules"
+    for s in postinst postrm; do
+      f="$t/x/DEBIAN/$s"
+      [ -f "$f" ] || printf '#!/bin/sh\nset -e\n' > "$f"
+      # ai: before the script's own exit (jpackage's end in "exit 0"), else at its end
+      line='if command -v udevadm > /dev/null 2>&1; then udevadm control --reload-rules || true; udevadm trigger --subsystem-match=usb --action=change || true; fi'
+      if grep -q '^exit 0' "$f"; then
+        awk -v l="$line" '!done && /^exit 0/ { print l; done = 1 } { print }' "$f" > "$f.new" && mv "$f.new" "$f"
+      else printf '%s\n' "$line" >> "$f"; fi
+      chmod 755 "$f"
+    done
+    changed=1
+  fi
   for entry in "$t"/x/opt/*/lib/*.desktop; do
     [ -f "$entry" ] || continue
     if ! grep -q '^Exec=.*%F' "$entry"; then

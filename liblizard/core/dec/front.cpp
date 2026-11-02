@@ -5,7 +5,7 @@
 #include "front.h"
 #include "camera.h"
 extern "C" {
-#include "focus.h"
+#include "lizard_phy.h"
 }
 
 #include <algorithm>
@@ -85,18 +85,18 @@ std::unique_ptr<FrontHalf> FrontHalf::create(wg::Device& d, ReadFile read, const
   const int treeVersion = T.value("treeVersion", 0);
   if (treeVersion != TREE_VERSION)
     throw wg::Error("the setup is tree version " + std::to_string(treeVersion) + ", this host reads " + std::to_string(TREE_VERSION) + " (liblizard/gen/gen.mjs on another tree): generate it again");
-  // ai: the format the tree was made for against the codec's (src/fmt.h, src/focus.h): the versions a word names here,
+  // ai: the format the tree was made for against the codec's (src/fmt.h, src/lizard_phy.h): the versions a word names here,
   // ai: the rings below. F8, the slots' version ranges and the rule's tables are the tree's, so a tree of other
   // ai: versions would read every word as another format.
   if (T["consts"]["VERSION_MIN"] != OB_FMT_VERSION_MIN || T["consts"]["VERSION_MAX"] != OB_FMT_VERSION_MAX)
     throw wg::Error("the setup's versions are not the codec's " + std::to_string(OB_FMT_VERSION_MIN) + " to " + std::to_string(OB_FMT_VERSION_MAX) + " (liblizard/gen/gen.mjs on another tree): generate it again");
   fh->C = Consts::of(T["consts"]);
-  // ai: the finder's rings the C's (src/focus.h FOCUS_RING): a ring index from the GPU names the same ring in a replay's
+  // ai: the finder's rings the C's (src/lizard_phy.h LIZARD_RING): a ring index from the GPU names the same ring in a replay's
   // ai: meta and the receiver's rows (2026-10-25, the 32 ring archived: a tree of four rings beside a C of three would
   // ai: label every ring one off)
-  bool rings = fh->C.RING_COUNT == FOCUS_RINGS;
-  for (uint32_t r = 0; rings && r < fh->C.RING_COUNT; r++) rings = T["modules"][r].get<double>() == 2 * FOCUS_RING[r] + 30;
-  if (!rings) throw wg::Error("the setup's finder has " + std::to_string(fh->C.RING_COUNT) + " rings, not the codec's " + std::to_string(FOCUS_RINGS) + " (liblizard/gen/gen.mjs on another tree): generate it again");
+  bool rings = fh->C.RING_COUNT == LIZARD_RINGS;
+  for (uint32_t r = 0; rings && r < fh->C.RING_COUNT; r++) rings = T["modules"][r].get<double>() == 2 * LIZARD_RING[r] + 30;
+  if (!rings) throw wg::Error("the setup's finder has " + std::to_string(fh->C.RING_COUNT) + " rings, not the codec's " + std::to_string(LIZARD_RINGS) + " (liblizard/gen/gen.mjs on another tree): generate it again");
   fh->nets = T["nets"];
   fh->cap = T["cap"];
   fh->nodesMax = T["nodesMax"];
@@ -1053,7 +1053,7 @@ BatchOut FrontHalf::finishBatch(std::unique_ptr<InFlight> f) {
     const json& rb = bk["rule"]["blocks"];
     const int nblk = fo.version > 0 && fo.version < (int)rb.size() ? rb[fo.version].get<int>() : fo.version;
     if (fo.version > 0 && fo.backCounts.size() > 6 && fo.backCounts[6] > 0) {
-      // ai: a parity with no finite pilot reads NaN, as focus_pilot's does
+      // ai: a parity with no finite pilot reads NaN, as lizard_pilot's does
       fo.pilotR = fo.pilotSd = fo.pilotR2 = fo.pilotSd2 = NAN;
       for (int g = 0; g < 2; g++) {
         double s = 0, s2 = 0;

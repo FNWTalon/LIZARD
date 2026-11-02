@@ -15,7 +15,7 @@
 #endif
 
 extern "C" {
-#include "focus.h"
+#include "lizard_phy.h"
 }
 
 namespace lizard {
@@ -152,7 +152,7 @@ void FormRecord::save() {
 
 // ai: Frame i: the top format of the setup's picture size i, in ring (i + 1) mod 3, or the next smaller ring where that
 // ai: one's paint would have fewer than MIN_PXM pixels a module (the 256 ring's at 384 and 512: every ring at one size or
-// ai: more), painted as the senders paint (focus_encode, focus_paint_grey: the border to the byte, whole pixels a module,
+// ai: more), painted as the senders paint (lizard_encode, lizard_paint_grey: the border to the byte, whole pixels a module,
 // ai: the quiet margin) with the pilots' count i mod 4 and the display rate 60, then gaussian noise of standard deviation
 // ai: `noise` grey levels added (a fixed seed a frame), clipped to 0..255.
 TrialFrames paintTrial(const json& pictures, double noise) {
@@ -162,15 +162,15 @@ TrialFrames paintTrial(const json& pictures, double noise) {
     TrialFrames::Frame fr;
     fr.subch = pictures[i]["subch"].get<int>();
     const int n = pictures[i]["n"].get<int>();
-    int ri = (int)((i + 1) % FOCUS_RINGS);
-    while (ri > 0 && focus_pxm_for(n, 2 * FOCUS_RING[ri]) < MIN_PXM) ri--;
-    if (focus_pxm_for(n, 2 * FOCUS_RING[ri]) < MIN_PXM) throw wg::Error("trial: no ring paints a " + std::to_string(n) + " picture at " + std::to_string(MIN_PXM) + " pixels a module");
-    fr.ring = FOCUS_RING[ri];
-    focus_t f{};
-    if (focus_init(&f, n, fr.subch, 2.0f, 2 * fr.ring, 0.f)) { throw wg::Error("trial: no codec for LIZARD-" + std::to_string(fr.subch)); }
-    if (f.block_bytes != XFER_BLOCK) { focus_free(&f); throw wg::Error("trial: blocks of " + std::to_string(f.block_bytes) + " bytes"); }
-    focus_fmt_fps(&f, 60);
-    focus_parity(&f, (int)(i & 3));
+    int ri = (int)((i + 1) % LIZARD_RINGS);
+    while (ri > 0 && lizard_pxm_for(n, 2 * LIZARD_RING[ri]) < MIN_PXM) ri--;
+    if (lizard_pxm_for(n, 2 * LIZARD_RING[ri]) < MIN_PXM) throw wg::Error("trial: no ring paints a " + std::to_string(n) + " picture at " + std::to_string(MIN_PXM) + " pixels a module");
+    fr.ring = LIZARD_RING[ri];
+    lizard_t f{};
+    if (lizard_init(&f, n, fr.subch, 2.0f, 2 * fr.ring, 0.f)) { throw wg::Error("trial: no codec for LIZARD-" + std::to_string(fr.subch)); }
+    if (f.block_bytes != XFER_BLOCK) { lizard_free(&f); throw wg::Error("trial: blocks of " + std::to_string(f.block_bytes) + " bytes"); }
+    lizard_fmt_fps(&f, 60);
+    lizard_parity(&f, (int)(i & 3));
     fr.blocks.resize(f.blocks);
     std::vector<uint8_t> blocks((size_t)f.blocks * XFER_BLOCK);
     for (int b = 0; b < f.blocks; b++) {
@@ -182,11 +182,11 @@ TrialFrames paintTrial(const json& pictures, double noise) {
       memcpy(blocks.data() + (size_t)b * XFER_BLOCK, o.data(), XFER_BLOCK);
     }
     std::vector<float> drive((size_t)f.px * f.px);
-    focus_encode(&f, blocks.data(), drive.data());
-    fr.side = (uint32_t)(f.px + 2 * FOCUS_QUIET * f.pxm);
+    lizard_encode(&f, blocks.data(), drive.data());
+    fr.side = (uint32_t)(f.px + 2 * LIZARD_QUIET * f.pxm);
     fr.px.resize((size_t)fr.side * fr.side);
-    focus_paint_grey(&f, drive.data(), fr.px.data());
-    focus_free(&f);
+    lizard_paint_grey(&f, drive.data(), fr.px.data());
+    lizard_free(&f);
     Rng r{0x5eed5eedull + i};
     for (auto& v : fr.px) {
       const double z = std::sqrt(-2.0 * std::log(r.unit())) * std::cos(6.283185307179586 * r.unit());

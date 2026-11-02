@@ -98,10 +98,10 @@ val LizardColours = lightColorScheme(primary = Fg, onPrimary = Bg, background = 
 // ai: drags sideways (LocalResizeIcon; the platform's left-right resize cursor where it has one, the default otherwise)
 @Composable
 fun LizardTheme(target: Dp, scrollbar: @Composable (ScrollState, Modifier) -> Unit = { _, _ -> }, resizeIcon: PointerIcon = PointerIcon.Default,
-                content: @Composable () -> Unit) {
+                credits: List<Credit> = emptyList(), content: @Composable () -> Unit) {
     val inter = interFamily()
     val type = remember(inter) { lizardType(inter) }
-    CompositionLocalProvider(LocalTarget provides target, LocalScrollbar provides scrollbar, LocalResizeIcon provides resizeIcon) {
+    CompositionLocalProvider(LocalTarget provides target, LocalScrollbar provides scrollbar, LocalResizeIcon provides resizeIcon, LocalCredits provides credits) {
         MaterialTheme(colorScheme = LizardColours, typography = type, content = content)
     }
 }

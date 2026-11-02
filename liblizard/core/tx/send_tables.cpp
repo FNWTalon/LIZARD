@@ -46,9 +46,9 @@ void uvOf(int p, int n, int bw, int& u, int& v) {
 uint32_t bitsOf(float x) { uint32_t b; std::memcpy(&b, &x, 4); return b; }
 }  // namespace
 
-std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTables& t, int codes, int gap) {
+std::string sendTables(const lizard_t& f, const SendConsts& k, int frames, SendTables& t, int codes, int gap) {
   t = SendTables{};
-  t.n = f.n; t.subch = f.subch; t.blocks = f.blocks; t.blockBytes = f.block_bytes; t.npos = f.subch * FOCUS_SUB;
+  t.n = f.n; t.subch = f.subch; t.blocks = f.blocks; t.blockBytes = f.block_bytes; t.npos = f.subch * LIZARD_SUB;
   const int n = f.n, bw = f.bw;
   // ai: discLayout: row v holds u = ustart .. umaxP then -umaxN .. -1 (ustart 1 on v = 0), packed at off[v]
   std::map<int, std::vector<int>> byV;
@@ -83,7 +83,7 @@ std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTa
   // ai: the twiddles as the web computes them, in double, kept as f32
   t.tw.resize(2 * n);
   for (int m = 0; m < n; m++) { const double th = -2 * M_PI * m / n; t.tw[2 * m] = static_cast<float>(std::cos(th)); t.tw[2 * m + 1] = static_cast<float>(std::sin(th)); }
-  // ai: gpu/back/paint.mjs clipLimit at the codec's clip (src/focus.c's level at tilt 0): fround(fround(2 clip) x
+  // ai: gpu/back/paint.mjs clipLimit at the codec's clip (src/lizard_phy.c's level at tilt 0): fround(fround(2 clip) x
   // ai: fround(sqrt(fround(0.5 subch 320)))); its reciprocal halved in double
   const float lim = 2.0f * f.clip * std::sqrt(static_cast<float>(0.5 * f.subch * 320));
   t.su = {static_cast<uint32_t>(n), static_cast<uint32_t>(t.Vr), static_cast<uint32_t>(t.Vr * n), static_cast<uint32_t>(t.npos),
@@ -92,7 +92,7 @@ std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTa
   int geo[4];
   const int* i0 = nullptr;
   const float* w = nullptr;
-  if (focus_resample_geom(&f, geo, &i0, &w)) return "the codec has no resampler tables";
+  if (lizard_resample_geom(&f, geo, &i0, &w)) return "the codec has no resampler tables";
   t.q = geo[0];
   if (geo[2] != n) return "the resampler's n " + std::to_string(geo[2]) + " is not the codec's " + std::to_string(n);
   t.taps.resize(12 * static_cast<size_t>(t.q));
@@ -103,8 +103,8 @@ std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTa
     t.taps[6 * t.q + 6 * x + s] = bitsOf(wt);
     if (wt != (s == 2 ? 1.f : 0.f)) t.copy = false;
   }
-  t.W = f.px + 2 * FOCUS_QUIET * f.pxm;
-  t.sq = geo[1] + FOCUS_QUIET * f.pxm;
+  t.W = f.px + 2 * LIZARD_QUIET * f.pxm;
+  t.sq = geo[1] + LIZARD_QUIET * f.pxm;
   if (codes < 1 || codes > 2) return "codes are 1 or 2, not " + std::to_string(codes);
   if (gap < 0 || gap > 64) return "the gap is 0 to 64 modules, not " + std::to_string(gap);
   t.codes = codes;
@@ -115,7 +115,7 @@ std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTa
          static_cast<uint32_t>(t.FW), static_cast<uint32_t>(t.RW), static_cast<uint32_t>(t.FS), 1, 0, static_cast<uint32_t>(t.gap), 0};
   // ai: the paint's uniform: block count, the slots the blocks take and the coefficients the frame holds at slot 0 (the
   // ai: last block's workgroup paints the padding between); each tier at slot 1 + its code's place in TAB (first block,
-  // ai: first slot, blocks; src/focus.c init packs the tiers by slots from the lowest frequencies in order); dims
+  // ai: first slot, blocks; src/lizard_phy.c init packs the tiers by slots from the lowest frequencies in order); dims
   // ai: (blocks, npos, symbols an encode, parity | codes << 2: set an encode)
   t.pu.assign(k.paramsWords, 0);
   int used = 0;
@@ -133,19 +133,19 @@ std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTa
   t.pu[k.paramsDims] = static_cast<uint32_t>(f.blocks); t.pu[k.paramsDims + 1] = static_cast<uint32_t>(t.npos); t.pu[k.paramsDims + 2] = static_cast<uint32_t>(frames * codes);
   std::copy(k.pw.begin(), k.pw.end(), t.pu.begin() + k.paramsPw);
   // ai: the border: the C's paint of the symbol with every block zero (only the square depends on them, and not the
-  // ai: anchors' squares in it: focus_encode paints them over the picture, the same whatever the blocks)
+  // ai: anchors' squares in it: lizard_encode paints them over the picture, the same whatever the blocks)
   std::vector<uint8_t> zero(static_cast<size_t>(f.blocks) * f.block_bytes, 0), rgba(static_cast<size_t>(t.W) * t.W * 4);
   std::vector<float> drive(static_cast<size_t>(f.px) * f.px);
-  focus_encode(&f, zero.data(), drive.data());
-  focus_paint_rgba(&f, drive.data(), rgba.data());
+  lizard_encode(&f, zero.data(), drive.data());
+  lizard_paint_rgba(&f, drive.data(), rgba.data());
   t.border.assign(4 * ((static_cast<size_t>(t.W) * t.W + 3) / 4), 0);
   for (size_t i = 0; i < static_cast<size_t>(t.W) * t.W; i++) t.border[i] = rgba[4 * i];
-  // ai: the anchors' runs in a symbol's pixels (src/focus.c focus_encode: square i from module m0(i) of the drive, a
-  // ai: modules a side, the drive FOCUS_QUIET modules into the symbol), d and e of rsh's G (gpu/wgsl/send.mjs GA)
+  // ai: the anchors' runs in a symbol's pixels (src/lizard_phy.c lizard_encode: square i from module m0(i) of the drive, a
+  // ai: modules a side, the drive LIZARD_QUIET modules into the symbol), d and e of rsh's G (gpu/wgsl/send.mjs GA)
   int geo8[8];
-  focus_anchor_geom(&f, geo8);
+  lizard_anchor_geom(&f, geo8);
   t.anch.assign(8, 0);
-  for (int i = 0; i < 7; i++) t.anch[i] = static_cast<uint32_t>((geo8[1 + i] + FOCUS_QUIET) * f.pxm);
+  for (int i = 0; i < 7; i++) t.anch[i] = static_cast<uint32_t>((geo8[1 + i] + LIZARD_QUIET) * f.pxm);
   t.anch[7] = static_cast<uint32_t>(geo8[0] * f.pxm);
   return "";
 }

@@ -6,11 +6,11 @@ import kotlin.math.sqrt
 
 // ai: Which format a room holds (liblizard/sim/lizard_pick.mjs pickVersion, liblizard/api/format.cpp liz_pick): the
 // ai: largest of the 61 formats whose top ring keeps T_DISPLAY_CYCLE device px a cycle in the room, the margin the
-// ai: codec paints (FOCUS_QUIET, 2 modules) counted; where none fits, LIZARD-64. The Android app's and the desktop app's
-// ai: senders use this file (compiled with their shared UI, lizard-ui); the picture size is the sender's own (focus_n_for), never set here.
+// ai: codec paints (LIZARD_QUIET, 2 modules) counted; where none fits, LIZARD-64. The Android app's and the desktop app's
+// ai: senders use this file (compiled with their shared UI, lizard-ui); the picture size is the sender's own (lizard_n_for), never set here.
 // ai: Pure: no Android in here.
 object Pick {
-    // ai: the sub-channels a version (src/focus.h FOCUS_STEP): 16 x the version
+    // ai: the sub-channels a version (src/lizard_phy.h LIZARD_STEP): 16 x the version
     const val STEP = 16
     // ai: a block's payload, bytes (src/xfer.h XFER_PAYLOAD: the block's 476 less its 4-byte id): what a block carries
     const val PAYLOAD = 472
@@ -19,10 +19,10 @@ object Pick {
     const val VERSION_MIN = 4
     const val VERSION_MAX = 64
     val VERSIONS = (VERSION_MIN..VERSION_MAX).map { STEP * it }
-    // ai: liblizard/src/focus.h FOCUS_RING: 64, 128 and 256 band cells a side; FOCUS_RING_DEFAULT, the 128
+    // ai: liblizard/src/lizard_phy.h LIZARD_RING: 64, 128 and 256 band cells a side; LIZARD_RING_DEFAULT, the 128
     val RINGS = intArrayOf(64, 128, 256)
     const val RING_DEFAULT = 1
-    // ai: the margin the codec paints round a symbol, modules (src/focus.h FOCUS_QUIET)
+    // ai: the margin the codec paints round a symbol, modules (src/lizard_phy.h LIZARD_QUIET)
     const val QUIET = 2
     // ai: the pictures a second offered: 60 and its divisors to 10, every picture a whole number of refreshes at 60 Hz
     val FPS = listOf(60, 30, 20, 15, 10)

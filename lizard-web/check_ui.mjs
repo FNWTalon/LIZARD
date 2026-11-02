@@ -134,8 +134,9 @@ const SIZES = [
     const idle = await evaluate(s, MEASURE_SEND);
     if (k === 0) check(!idle.dev, `send ${z.name}: the Developer panel is closed on a fresh profile`);
     check(idle.state === "" && idle.hint && idle.go && idle.buttons.join() === "Start,Fullscreen", `send ${z.name}: idle, no state line, the File and Folder tiles shown, buttons ${idle.buttons.join(" and ")}, Start ${idle.go ? "disabled" : "ENABLED"}`);
-    // ai: Home in the bar in portrait, in the rail's last square in landscape, where the bar has the collapser (2026-10-05)
-    check(idle.bar === (z.w > z.h ? "Send,Receiver,Sidebar" : "Home,Send,Receiver") && idle.railHome === "index.html", `send ${z.name}: the bar "${idle.bar}", the rail's Home "${idle.railHome}"`);
+    // ai: Home in the bar in portrait, in the rail's last square in landscape, where the bar has the collapser (2026-10-05);
+    // ai: since 2026-11-01 a phone's landscape bar the collapser alone, a mouse's the switch alone (its edge a sash)
+    check(idle.bar === (z.w > z.h ? (z.mobile ? "Send,Sidebar" : "Send,Receiver") : "Home,Send,Receiver") && idle.railHome === "index.html", `send ${z.name}: the bar "${idle.bar}", the rail's Home "${idle.railHome}"`);
     // ai: The File tile opens the chooser (2026-10-26; a tap on the middle of the page until then), which the DevTools
     // ai: protocol intercepts here instead of showing.
     if (k === 0) {
@@ -284,9 +285,9 @@ const SIZES = [
     await step("cleared", [], "");
     await setFiles("file", [join(src, "c.txt")]);
     await step("one file alone, sent as itself", ["c.txt"], "c.txt, ");
-    // ai: the made transfer: the line gains its bytes as sent
-    await until(s, `/\\(30\\sB\\sraw\\)$/.test(document.getElementById("state").textContent)`, 10000, "the transfer made");   // ai: no-break spaces in the figures
-    check(/\(30\sB\sraw\)$/.test(await evaluate(s, `document.getElementById("state").textContent`)), `send: the made transfer's line "${await evaluate(s, `document.getElementById("state").textContent`)}"`);
+    // ai: the size alone until a Start makes the transfer (2026-11-01: nothing compressed at the pick)
+    await until(s, `/, 30\\sB$/.test(document.getElementById("state").textContent)`, 10000, "the file's size");   // ai: no-break spaces in the figures
+    check(/, 30\sB$/.test(await evaluate(s, `document.getElementById("state").textContent`)), `send: the picked file's line, its size alone "${await evaluate(s, `document.getElementById("state").textContent`)}"`);
     // ai: long names (2026-10-23): the state line's head, up to the name and its comma, on one line, the stem cut with an
     // ai: ellipsis and its ending whole (".txt," for a file, " and 1 more.tar," for a bundle); the row cut to its width
     const long = join(src, "a very long file name for the ellipsis check, longer than any row is wide.txt");
@@ -359,8 +360,10 @@ const SIZES = [
       check(m.v.w > 100 && m.v.h > 100 && m.vDisplay !== "none" && m.vVisibility !== "hidden", `${tag}: #v ${m.v.w.toFixed(0)} x ${m.v.h.toFixed(0)}, display ${m.vDisplay}, visibility ${m.vVisibility}`);
       check(m.sw <= m.iw, `${tag}: no horizontal scroll (${m.sw} of ${m.iw})`);
       if (z.phone) check(m.goBox.top >= 0 && m.goBox.bottom <= m.ih && m.view.top >= 0 && m.view.bottom <= m.ih, `${tag}: #go and #view on screen unscrolled`);
-      // ai: the switch to the sender page (2026-09-30), in the bar since 2026-10-01, on screen with Start camera
-      check(m.swap === "Sender send.html" && m.swapBox.w > 0 && (!z.phone || (m.swapBox.top >= 0 && m.swapBox.bottom <= m.ih)), `${tag}: "${m.swap}" in the bar`);
+      // ai: the switch to the sender page (2026-09-30), in the bar since 2026-10-01, on screen with Start camera; not in a
+      // ai: phone's landscape bar since 2026-11-01 (the collapser alone there), Home's tiles the way between the pages
+      if (z.mobile && z.w > z.h) check(m.swapBox.w === 0, `${tag}: no switch in the landscape bar`);
+      else check(m.swap === "Sender send.html" && m.swapBox.w > 0 && (!z.phone || (m.swapBox.top >= 0 && m.swapBox.bottom <= m.ih)), `${tag}: "${m.swap}" in the bar`);
     }
     // ai: open now: remembered over a reload (then closed again for the next size)
     if (k === 0) {
@@ -406,7 +409,7 @@ const SIZES = [
   await initWh(); await initZstd();
   const M = await initOb(), bytes = new Uint8Array(LEN);
   for (let i = 0, v = 7; i < LEN; i++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; bytes[i] = v >>> 16; }
-  const phy = await makePhy({ phy: "focus", stream: "shake256", n: N_FOR(SUBCH), subch: SUBCH, mode: 1, fps: FD, variants: [{ name: "rx" }] }), B = phy.blocksPerFrame;
+  const phy = await makePhy({ phy: "lizard", stream: "shake256", n: N_FOR(SUBCH), subch: SUBCH, mode: 1, fps: FD, variants: [{ name: "rx" }] }), B = phy.blocksPerFrame;
   async function clip(path, frameOf, n) {
     const fd = openSync(path, "w"), y = Buffer.alloc(CW * CH), chroma = Buffer.alloc((CW * CH) / 2, 128);
     writeSync(fd, `YUV4MPEG2 W${CW} H${CH} F${FC}:1 Ip A1:1 C420jpeg\n`);
@@ -446,7 +449,7 @@ const SIZES = [
   // ai: on a clip of the same stream whose word says 30 (a picture a camera frame).
   check(!/LIZARD app/.test(ts.why), `at 24 fps no word of the LIZARD app: "${ts.why}"`);
   {
-    const fastPhy = await makePhy({ phy: "focus", stream: "shake256", n: N_FOR(SUBCH), subch: SUBCH, mode: 1, fps: FC, variants: [{ name: "rx" }] }), fastPath = join(scratch, "fast.y4m");
+    const fastPhy = await makePhy({ phy: "lizard", stream: "shake256", n: N_FOR(SUBCH), subch: SUBCH, mode: 1, fps: FC, variants: [{ name: "rx" }] }), fastPath = join(scratch, "fast.y4m");
     const fd = openSync(fastPath, "w"), y = Buffer.alloc(CW * CH), chroma = Buffer.alloc((CW * CH) / 2, 128);
     writeSync(fd, `YUV4MPEG2 W${CW} H${CH} F${FC}:1 Ip A1:1 C420jpeg\n`);
     for (let i = 0; i < 60; i++) {
@@ -535,6 +538,40 @@ const SIZES = [
     check(m[form] && !m.spilled && (w === 180 ? m.side > 180 : m.side === 500), `the actions at a ${w} px column: ${form === "row" ? "one row" : "two columns, Open over Save beside Share over Start camera"}, the column ${m.side} px${m.spilled ? `, spilled: ${m.spilled}` : ""}`);
   }
   await evaluate(s, `localStorage.removeItem("recv:side")`);
+  // ai: The column's edge as a sash under a mouse (2026-11-01, ui.mjs sideResizer): pulled under half its floor it closes to
+  // ai: the rail, pulled out from the rail it opens at the width it was dragged to; a phone has the collapser instead.
+  {
+    await navigate(s, BASE);
+    await until(s, `document.getElementById("go").textContent === "Start camera"`, 10000, "the receiver up");
+    const drag = async (from, to) => {
+      const y = 300;
+      await s.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: from, y });
+      await s.send("Input.dispatchMouseEvent", { type: "mousePressed", x: from, y, button: "left", clickCount: 1 });
+      for (let i = 1; i <= 8; i++) await s.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: from + ((to - from) * i) / 8, y, button: "left" });
+      await s.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: to, y, button: "left", clickCount: 1 });
+      await sleep(200);
+    };
+    const STATE = `(() => ({ shut: document.body.classList.contains("collapsed"), kept: localStorage.getItem("recv:collapsed"),
+      side: parseFloat(getComputedStyle(document.body).getPropertyValue("--side")), edge: getComputedStyle(document.querySelector(".side-edge")).display,
+      button: getComputedStyle(document.getElementById("collapse")).display, rail: getComputedStyle(document.getElementById("rail")).display,
+      at: ((r) => r.left + r.width / 2)(document.querySelector(".side-edge").getBoundingClientRect()) }))()`;
+    const open0 = await evaluate(s, STATE);
+    check(!open0.shut && open0.edge === "block" && open0.button === "none", `the receiver under a mouse: the column's edge shown, no collapser (edge ${open0.edge}, collapser ${open0.button})`);
+    await drag(open0.at, 40);
+    const shut = await evaluate(s, STATE);
+    await screenshot(s, `${OUT}/recv-laptop-sash-closed.png`);
+    check(shut.shut && shut.kept === "1" && shut.rail === "flex" && shut.side === 56 && shut.button === "flex", `the edge pulled to 40 px closes the column to the rail, its expander shown (collapsed ${shut.shut}, kept ${shut.kept}, rail ${shut.rail}, --side ${shut.side}, expander ${shut.button})`);
+    await drag(shut.at, 300);
+    const opened = await evaluate(s, STATE);
+    check(!opened.shut && opened.kept === "0" && Math.abs(opened.side - 300) < 1 && opened.button === "none", `the rail's edge pulled to 300 px opens the column there, no collapser (collapsed ${opened.shut}, kept ${opened.kept}, --side ${opened.side}, collapser ${opened.button})`);
+    // ai: the rail's expander opens it too (2026-11-01: the collapse button alone went from a mouse's column)
+    await drag(opened.at, 40);
+    await evaluate(s, `document.getElementById("collapse").click()`);
+    await sleep(200);
+    const clicked = await evaluate(s, STATE);
+    check(!clicked.shut && clicked.kept === "0", `the rail's expander clicked opens the column (collapsed ${clicked.shut}, kept ${clicked.kept})`);
+    await evaluate(s, `localStorage.removeItem("recv:side"); localStorage.removeItem("recv:collapsed")`);
+  }
 
   // ai: 4. Home (2026-10-01) in the same profile: the file just received is listed, its Save holds its bytes and Open opens
   // ai: it in a tab of its own; the tips card is shown on this fresh profile, and once dismissed stays so over a reload

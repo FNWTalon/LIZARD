@@ -14,7 +14,7 @@
 #include <vector>
 
 extern "C" {
-#include "focus.h"
+#include "lizard_phy.h"
 }
 
 namespace lizard {
@@ -53,10 +53,10 @@ struct SendTables {
 // ai: lizard-web/send-worker.mjs the same, since 2026-09-30); TxFormat.gap sets it
 constexpr int GAP_MODULES = 12;
 
-// ai: The tables of f's format (focus_init'd, its rate set: the border's word states it), encodes of up to `frames`
+// ai: The tables of f's format (lizard_init'd, its rate set: the border's word states it), encodes of up to `frames`
 // ai: frames of `codes` symbols side by side (2026-10-03, the desktop sender's two codes: the frame codes W + gap wide, the
 // ai: gap the margin's byte, rsh stepping W + gap; the paint's symbols frames x codes, a frame's codes one pilot count),
 // ai: `gap` modules apart (2026-10-04). "" or why not (the disc not as the shader reads it).
-std::string sendTables(const focus_t& f, const SendConsts& k, int frames, SendTables& t, int codes = 1, int gap = GAP_MODULES);
+std::string sendTables(const lizard_t& f, const SendConsts& k, int frames, SendTables& t, int codes = 1, int gap = GAP_MODULES);
 
 }  // namespace lizard

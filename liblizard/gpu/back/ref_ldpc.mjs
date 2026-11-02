@@ -2,7 +2,7 @@
 // glsl/back_tiers.mjs) and the sender's paint (../encoder.mjs, wgsl/send.mjs).
 import { loadStop, ruleUrlFor } from "./stop/rule.mjs";
 
-export const PAYLOAD = 476;                   // bytes a block, the id first (src/focus.h FOCUS_BLOCK)
+export const PAYLOAD = 476;                   // bytes a block, the id first (src/lizard_phy.h LIZARD_BLOCK)
 
 // ai: A code's learned stop (DESIGN section 6), what glsl/back_tiers.mjs builds the code's kernel from: after
 // ai: iterations 1 to 29 the MLP of stop/ on (bad, low, first, prev, t, grow) gives up when its score is under its

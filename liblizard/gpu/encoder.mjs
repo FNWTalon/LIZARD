@@ -6,19 +6,19 @@
 // ai: The kernels, one compute pass an encode of up to `sub` frames, a symbol a workgroup z (frames x codes, the codes
 // ai: of a frame side by side):
 // ai:   paint: a block a workgroup (wgsl/send.mjs paintSource, 2026-10-07): CRC-32, its code's systematic codeword
-// ai:     (every code of the format's rate profile, src/focus.h focus_tiers_for; the codes' tables in TAB, sendTab,
+// ai:     (every code of the format's rate profile, src/lizard_phy.h lizard_tiers_for; the codes' tables in TAB, sendTab,
 // ai:     from the wasm's codec), the bit map and whitening, the pilots, QPSK onto the disc;
 // ai:   irows, ipic: the decoder's own butterflies as the inverse transforms (wgsl/inverse.mjs): the inverse along x,
 // ai:     turn_pack's packing and the inverse along y, clipped to 0..1 in f32, left quad-major for whole-line stores;
 // ai:   tpose: the picture row-major again (wgsl/send.mjs);
 // ai:   rsv, rsh: the C's Lanczos-3 resample onto the ring's square with the C's own taps (sim/ob.mjs resampleGeom),
-// ai:     grey as focus_paint_rgba rounds it, and every pixel outside the square the border's byte (wgsl/send.mjs);
+// ai:     grey as lizard_paint_rgba rounds it, and every pixel outside the square the border's byte (wgsl/send.mjs);
 // ai:     where every tap is the C's on-sample copy (pxm = n / span: 384 to 1536 in the 64 ring, 512, 768, 1024, 1280
 // ai:     and 1536 in the 128, 512, 1024 and 1536 in the 256, 15 of the 24 pairs) rsh alone, reading the picture (rsh's
 // ai:     copy form);
 // ai:   present: a render pass onto the canvas, whole canvas pixels a frame pixel, a frame of a batch.
 // ai: The border (ring, marks, band, word, quiet margin) is the C's paint, taken once a configuration and again at each
-// ai: fps change from this module's own Focus on the importing thread's wasm, so it is the C's to the byte. The square
+// ai: fps change from this module's own Lizard on the importing thread's wasm, so it is the C's to the byte. The square
 // ai: is not: the transform's rounding differs, within one grey level of the C's (scripts/gpu/encoder_check.mjs); `check`
 // ai: holds a device to that on frames of its choosing (a driver that returns garbage fails it), not a conformance
 // ai: rule: a sender's symbol need only decode (2026-09-29).
@@ -38,7 +38,7 @@
 // ai: which is why the encodes are small and the page paces them (cfg.frameMs, the measured GPU ms a frame of that
 // ai: configuration: timestamps, or a submission's time to done where there are none). A configuration is its own
 // ai: buffers, so frames encoded before a re-pick present from theirs while the next one's are made; cfg left out is
-// ai: the latest. The wasm holds one codec at a time, the latest configuration's Focus (cfg.focus): configure, check
+// ai: the latest. The wasm holds one codec at a time, the latest configuration's Lizard (cfg.lizard): configure, check
 // ai: and setFps run one at a time on a chain shared by every encoder, and only the latest configuration's border is ever painted again (an fps
 // ai: change leaves an older one's last frames at the old rate). batch 16 and sub 4 unless asked, sub then batch halved
 // ai: while the device cannot hold a configuration's buffers (cfg.batch, cfg.sub say what it got).
@@ -55,7 +55,7 @@ export const GAP_MODULES = 12;
 import { crcPowers, PAYLOAD } from "./back/ref_ldpc.mjs";
 import { clipLimit } from "./back/paint.mjs";
 import { computePipeline } from "./pipeline.mjs";
-import { init as initOb, Focus } from "../sim/ob.mjs";
+import { init as initOb, Lizard } from "../sim/ob.mjs";
 import { STEP, versionOf } from "../sim/lizard_pick.mjs";
 
 // ai: A block's 476 bytes in BLOCKS, 119 words of the 120 a block (wgsl/send.mjs paintSource; the 120th the paint's CRC word).
@@ -101,9 +101,9 @@ export const STAGES = ["paint", "irows", "ipic", "tpose", "rsv", "rsh"];
 export class Unavailable extends Error {}
 
 // ai: The wasm holds one codec for the whole module, whichever encoder set it up: the steps that use it (configure,
-// ai: check, setFps) run one at a time on this chain across every GpuEncoder, and focus is the Focus that holds it
-// ai: (null while it changes hands). A configuration paints its border only while its Focus is this one.
-const codec = { chain: Promise.resolve(), focus: null };
+// ai: check, setFps) run one at a time on this chain across every GpuEncoder, and lizard is the Lizard that holds it
+// ai: (null while it changes hands). A configuration paints its border only while its Lizard is this one.
+const codec = { chain: Promise.resolve(), lizard: null };
 
 export class GpuEncoder {
   // ai: adapter: one the caller asked for, else the one powerPreference names (high-performance: the sender is for a
@@ -189,17 +189,17 @@ export class GpuEncoder {
     alive();
     const pipes = this.pipesFor(n);
     // ai: The codec changes hands from here (ruleTables, the first time, and transformTables set up and free their own,
-    // ai: then this configuration's Focus), so the Focus before it can no longer paint, whether or not this
+    // ai: then this configuration's Lizard), so the Lizard before it can no longer paint, whether or not this
     // ai: configuration comes to be.
-    codec.focus?.free();
-    codec.focus = null;
+    codec.lizard?.free();
+    codec.lizard = null;
     codesOnce ??= await ruleTables();
     const rt = codesOnce, profile = subch % STEP ? null : rt.profiles[versionOf(subch)];
     if (!profile) throw new Unavailable(`the GPU encoder paints the format's ladder (LIZARD-16 to -1024), not LIZARD-${subch}`);
     // ai: TAB, the encoder's for its life (the same for every format; release leaves it, destroy takes the device)
     if (!this.TAB) { const tab = sendTab(rt); this.TAB = this.device.createBuffer({ size: tab.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }); this.device.queue.writeBuffer(this.TAB, 0, tab); }
     const [tb] = await transformTables([{ n, subch }]);
-    const fc = new Focus(n, subch, 1, { span });
+    const fc = new Lizard(n, subch, 1, { span });
     let c = null;
     try {
       alive();
@@ -240,7 +240,7 @@ export class GpuEncoder {
         c = t;
       }
     } catch (e) { fc.free(); throw e; }
-    c.focus = codec.focus = fc;
+    c.lizard = codec.lizard = fc;
     this.cfg = c;
     this.cfgs.add(c);
     this.paintBorder(c);
@@ -267,7 +267,7 @@ export class GpuEncoder {
     // ai: the anchors' runs in a symbol's pixels for RSH's G (gpu/wgsl/send.mjs GA: each square's first pixel along
     // ai: either axis, the drive fc.quiet modules into the symbol, then the side; core/tx/send_tables.cpp the same)
     const anch = [...ag.m0.map((m) => (m + fc.quiet) * fc.cell), ag.side * fc.cell];
-    return { spec, n, subch, span, codes, gap, V, B, W, FW, RW, FS, q, sq: g.o + fc.quiet * fc.cell, words, Vr, sStride, yStride, batch, sub, R, copy, sizes, irows, ipic, anch, bufs: [], whole: 0, frameMs: null, focus: null,
+    return { spec, n, subch, span, codes, gap, V, B, W, FW, RW, FS, q, sq: g.o + fc.quiet * fc.cell, words, Vr, sStride, yStride, batch, sub, R, copy, sizes, irows, ipic, anch, bufs: [], whole: 0, frameMs: null, lizard: null,
       label: `LIZARD-${subch} at ${n}, ${W} px a symbol${codes > 1 ? ` x ${codes}` : ""}` };
   }
 
@@ -326,10 +326,10 @@ export class GpuEncoder {
   }
 
   // ai: The C's paint of configuration c's symbol, its grey bytes (every pixel outside the square is read from them): at
-  // ai: configure and at every fps change, when only the word's cells move. Only while c's Focus is the wasm's codec.
+  // ai: configure and at every fps change, when only the word's cells move. Only while c's Lizard is the wasm's codec.
   paintBorder(c) {
-    if (!c.focus || c.focus !== codec.focus) throw new Error(`${c.label}: its codec is no longer the wasm's`);
-    const { rgba } = c.focus.encodeRGBA(new Uint8Array(c.V * c.B)), grey = new Uint8Array(4 * Math.ceil((c.W * c.W) / 4));
+    if (!c.lizard || c.lizard !== codec.lizard) throw new Error(`${c.label}: its codec is no longer the wasm's`);
+    const { rgba } = c.lizard.encodeRGBA(new Uint8Array(c.V * c.B)), grey = new Uint8Array(4 * Math.ceil((c.W * c.W) / 4));
     for (let i = 0; i < c.W * c.W; i++) grey[i] = rgba[4 * i];
     this.device.queue.writeBuffer(c.BORDER, 0, grey);
   }
@@ -337,8 +337,8 @@ export class GpuEncoder {
   setFps(fps) {
     return this.serial(() => {
       const c = this.cfg;
-      if (!c || c.focus !== codec.focus) return;
-      c.focus.setFps(fps);
+      if (!c || c.lizard !== codec.lizard) return;
+      c.lizard.setFps(fps);
       this.paintBorder(c);
     });
   }
@@ -448,7 +448,7 @@ export class GpuEncoder {
   // ai: behind another configure is refused, never run on the other configuration).
   check(blocks, count = 1, c = this.cfg) { return this.serial(() => this.checkNow(blocks, count, c)); }
   async checkNow(blocks, count, c) {
-    if (!c || c !== this.cfg || c.focus !== codec.focus) throw new Error(`check: ${c?.label ?? "no configuration"} is no longer the latest`);
+    if (!c || c !== this.cfg || c.lizard !== codec.lizard) throw new Error(`check: ${c?.label ?? "no configuration"} is no longer the latest`);
     const per = c.V * c.B, fb = c.codes * per;
     // ai: frame f painted as the f-th picture (count f mod 4), the C told the same before its encode
     for (let f0 = 0; f0 < count; f0 += c.sub) {
@@ -460,9 +460,9 @@ export class GpuEncoder {
     for (let f = 0; f < count; f++) {
       const px = await this.readback(f, c);
       got.set(px, f * c.FW * c.W);
-      c.focus.setParity(f & 3);
+      c.lizard.setParity(f & 3);
       for (let k = 0; k < c.codes; k++) {
-        const { rgba } = c.focus.encodeRGBA(blocks.subarray((f * c.codes + k) * per, (f * c.codes + k + 1) * per));
+        const { rgba } = c.lizard.encodeRGBA(blocks.subarray((f * c.codes + k) * per, (f * c.codes + k + 1) * per));
         for (let y = 0; y < c.W; y++) for (let x = 0; x < c.W; x++) {
           const dv = Math.abs(px[y * c.FW + k * (c.W + c.gap) + x] - rgba[4 * (y * c.W + x)]);
           if (!dv) continue;
@@ -470,20 +470,20 @@ export class GpuEncoder {
         }
       }
     }
-    c.focus.setParity(0);
+    c.lizard.setParity(0);
     return { ok: !this.lost && !this.error && borderDiff === 0 && squareMax <= 1, borderDiff, squareMax, squareDiff, pixels: count * c.codes * c.W * c.W, got };
   }
 
-  // ai: A configuration's buffers freed (its Focus stays the wasm's codec while it is the latest: another configure frees it).
+  // ai: A configuration's buffers freed (its Lizard stays the wasm's codec while it is the latest: another configure frees it).
   release(c) {
     if (!c || !this.cfgs.delete(c)) return;
     for (const b of c.bufs) b.destroy();
     if (this.cfg === c) this.cfg = null;
   }
-  // ai: A configure still running on the chain throws at its next step (dead) and frees its own Focus.
+  // ai: A configure still running on the chain throws at its next step (dead) and frees its own Lizard.
   destroy() {
     this.dead = true;
-    if (this.cfg && this.cfg.focus === codec.focus) { codec.focus?.free(); codec.focus = null; }
+    if (this.cfg && this.cfg.lizard === codec.lizard) { codec.lizard?.free(); codec.lizard = null; }
     for (const c of [...this.cfgs]) this.release(c);
     this.device.destroy();
   }

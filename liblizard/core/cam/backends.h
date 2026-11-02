@@ -33,6 +33,11 @@ std::vector<Info> avfList(std::vector<std::string>* notes);
 std::unique_ptr<Camera> avfOpen(const std::string& id, std::string& why);
 #endif
 #if !defined(__ANDROID__)
+// ai: aravis.cpp: GenICam cameras, USB3 Vision and GigE Vision, through Aravis 0.8 loaded at run time (aravis:<Aravis's
+// ai: device id>, 2026-11-01; aravis_api.h: where the library is looked for); every system but Android
+std::vector<Info> aravisList(std::vector<std::string>* notes);
+std::string aravisStamp();   // ai: the last discovery's ids, a discovery begun where it is stale (camera.h listStamp)
+std::unique_ptr<Camera> aravisOpen(const std::string& id, std::string& why);
 // ai: phone.cpp: a phone streaming its frames over TCP (phone:<ipv4>:<port>, 2026-10-27; liblizard/core/rx/stream.h),
 // ai: listed while its beacon is heard, or over USB as an Android Open Accessory (phone:usb:<place>, aoa.h); every
 // ai: system but Android, the phone end

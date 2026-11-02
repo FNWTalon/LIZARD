@@ -48,7 +48,7 @@ function actionsFloor() {
   const w = (label) => c.measureText(label).width + parseFloat(b.paddingLeft) + parseFloat(b.paddingRight);
   return Math.ceil(Math.max(w("Open"), w("Save")) + parseFloat(top.columnGap) + Math.max(w("Share"), w("Start camera")) + parseFloat(side.paddingLeft) + parseFloat(side.paddingRight));
 }
-sideResizer("recv:side", actionsFloor);   // ai: the column's edge dragged to resize it (2026-10-05), no narrower than the actions need
+sideResizer("recv:side", actionsFloor, "recv:collapsed");   // ai: the column's edge dragged to resize it (2026-10-05), no narrower than the actions need
 // ai: The app's shell (2026-10-01): the bar's Settings, the first-run tip, About and the installed app's worker.
 about($("about"));
 registerApp(() => about($("about"), true));
@@ -214,7 +214,7 @@ const seenAdd = (id) => { seenIds.add(id); if (seenIds.size >= SEEN_KEEP) { seen
 const policy = new PoolPolicy();
 let repeatShare = 0, stuck = 0, workerErrs = 0, lastErr = "";
 // Rates come from one-second buckets, the last five summed: a window that slides instead of one that restarts.
-// msFound and msMiss are split because a frame that registers nothing returns after detect (src/focus.c)
+// msFound and msMiss are split because a frame that registers nothing returns after detect (src/lizard_phy.c)
 // and costs a quarter of one that goes on to sample and FEC. Over the recorded sessions that is 8 ms against 31 at
 // the 1080 crop, so a mix that moves reads as the decoder getting slower when nothing about it changed.
 // ai: tapEmpty: callbacks on which the tap had no new VideoFrame; tapDelivered, tapClosedUnseen, tapGapMax: the tap's own
@@ -581,7 +581,7 @@ function take(m) {
 // ai: went 2026-09-29).
 // ai: Versions are this page's own, which the workers' ready echoes.
 let cfgVersion = 0;
-const lizardConfig = () => ({ version: ++cfgVersion, spec: { phy: "focus", blind: 1, nmax: PICTURE_SIZES.at(-1) }, usefulBytes: PAYLOAD });
+const lizardConfig = () => ({ version: ++cfgVersion, spec: { phy: "lizard", blind: 1, nmax: PICTURE_SIZES.at(-1) }, usefulBytes: PAYLOAD });
 // ai: New decoder settings: every worker told, the window's counters restarted. newTransfer: what is held goes (the ids
 // ai: seen, the file line, the fountain's transfer: sim/xfer.mjs, its header from the light).
 // ai: The transfer in hand let go: its ids, file line and clocks, and the fountain's receiver (a new one).

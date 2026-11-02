@@ -100,7 +100,7 @@ fun ApplicationScope.LizardWindow(app: App, sendTest: SenderTest?, recvTest: Rec
     var before by remember { mutableStateOf(WindowPlacement.Floating) }
     Window(onCloseRequest = { app.close(); exitApplication() }, state = ws, title = "LIZARD", icon = rememberVectorPainter(Icons.mark)) {
         // ai: the frame white before Compose's first frame (2026-10-07): AWT's default grey showed until Skia drew
-        remember { window.background = java.awt.Color.WHITE; window.contentPane.background = java.awt.Color.WHITE; app.frame = window; app.sendUi.window = window }
+        remember { window.background = java.awt.Color.WHITE; window.contentPane.background = java.awt.Color.WHITE; if (app.loadError.isEmpty()) whiten(window); app.frame = window; app.sendUi.window = window }
         // ai: Keys wherever the focus is (the canvas takes none), as video players have them (2026-10-23; F11 and Escape
         // ai: before): Space or K play and pause (SendState.playPause), F or F11 full screen and back, Escape out of it,
         // ai: Ctrl+O (Command+O on macOS) add files where files are sent. A key held down acts once; the keys taken are taken whole (press,
@@ -173,11 +173,44 @@ fun ApplicationScope.LizardWindow(app: App, sendTest: SenderTest?, recvTest: Rec
             window.addComponentListener(resized)
             onDispose { window.removeComponentListener(resized) }
         }
-        LizardTheme(TARGET, scrollbar = { s, m -> FadingScrollbar(s, m) }, resizeIcon = RESIZE) {
+        LizardTheme(TARGET, scrollbar = { s, m -> FadingScrollbar(s, m) }, resizeIcon = RESIZE, credits = CREDITS_HERE) {
             Screens(app.screen, app.home, app.sendUi, app.receive)
         }
         if (sendTest != null) LaunchedEffect(Unit) { sendTest.run(s) }
         if (recvTest != null) LaunchedEffect(Unit) { recvTest.run(app) }
+    }
+}
+
+// ai: About's credits for what this app's packages carry besides the core (the repository's NOTICE): the runtime and the
+// ai: UI's libraries; on Windows and macOS libusb and Aravis with what Aravis loads, beside the native library; on
+// ai: Windows libwdi in lizard_usb.exe with the driver frameworks' co-installers
+private val CREDITS_HERE = listOf(
+    Credit("Compose Multiplatform", "Apache License 2.0"),
+    Credit("Kotlin", "Apache License 2.0"),
+    Credit("Skia", "BSD 3-Clause"),
+    Credit("an OpenJDK runtime", "GPLv2 with the Classpath Exception"),
+) + (if (Native.windows || Native.mac) listOf(
+    Credit("libusb", "LGPL 2.1 or later"),
+    Credit("Aravis", "LGPL 2.1 or later"),
+    Credit("GLib", "LGPL 2.1 or later"),
+    Credit("GNU libintl", "LGPL 2.1 or later"),
+    Credit("libiconv", "LGPL 2.1 or later"),
+    Credit("libxml2", "MIT"),
+    Credit("libffi", "MIT"),
+    Credit("PCRE2", "BSD 3-Clause"),
+    Credit("zlib", "zlib License"),
+) else emptyList()) + (if (Native.windows) listOf(
+    Credit("libwdi", "LGPL 3.0 or later"),
+    Credit("the Windows Driver Frameworks co-installers", "Microsoft's license terms"),
+) else emptyList())
+
+// ai: Every heavyweight under the window but the code canvas given a white X background (2026-11-02,
+// ai: Native.windowBackground): Compose's drawing surface is one, and where the code canvas's window went (Send left) X
+// ai: filled the area with the surface's own, AWT's, the desktop theme's grey (dark on a dark theme), until Skia drew it
+private fun whiten(c: java.awt.Container) {
+    for (k in c.components) {
+        if (k is java.awt.Canvas && k !is CodeCanvas) runCatching { Native.windowBackground(k, 0xFFFFFF) }
+        if (k is java.awt.Container) whiten(k)
     }
 }
 

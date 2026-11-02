@@ -1,4 +1,4 @@
-// Symbol geometry: LIZARD's border (the thin frame, below) round the picture focus.c owns. Everything that is not
+// Symbol geometry: LIZARD's border (the thin frame, below) round the picture lizard_phy.c owns. Everything that is not
 // the picture is static from frame to frame, so a receiver can register on it even in a frame whose picture is torn
 // between two display updates.
 #ifndef OB_LAYOUT_H
@@ -43,7 +43,7 @@ enum { CELL_DATA = 0, CELL_LIGHT = 1, CELL_DARK = 2, CELL_WORD = 8 };
 // track were raced against this border on 2026-09-20 and 21 and lost (STATUS.md); they left the code on 2026-10-25.
 // OB_THIN_RESERVE: modules kept clear at each end of a side so the mark never meets a read cell, the mark plus 3 of
 // light (2 at least, or blur drags thin_levels' light reference dark): the band's B cells then run exactly beside the
-// picture's 2 B modules (focus.h FOCUS_RING).
+// picture's 2 B modules (lizard_phy.h LIZARD_RING).
 enum { OB_THIN_CORNER = 12, OB_THIN_RESERVE = OB_THIN_CORNER + 3 };
 // How many modules deep every band of the border is that is not the solid line: the light gap, the timing track
 // and the format ring, and the light ring inside a mark, which is the gap carried round it.
@@ -87,11 +87,11 @@ enum { OB_THIN_LINE = 2, OB_THIN_PITCH = 16,
        OB_THIN_FMT = OB_THIN_TRACK,                     // ONE band: the track and the word share it, see below
        OB_THIN = OB_THIN_TRACK + OB_RING_DEEP };
 // Modules of guard interval between the picture and the rest of the border: the picture wrapped round its own edge
-// (focus.c paints it, layout.c marks those cells as the picture's), in the border's spare depths past OB_THIN.
-#define FOCUS_CP 3
+// (lizard_phy.c paints it, layout.c marks those cells as the picture's), in the border's spare depths past OB_THIN.
+#define LIZARD_CP 3
 // The border's depth: the corner mark and the guard interval, which cannot share depths (a mark reaching past the
-// guard's inner line is a mark inside the picture, focus.c THE RULE). 15.
-enum { OB_MARGIN = OB_THIN_CORNER + FOCUS_CP };
+// guard's inner line is a mark inside the picture, lizard_phy.c THE RULE). 15.
+enum { OB_MARGIN = OB_THIN_CORNER + LIZARD_CP };
 // Cell geometry along the border: the middle of cell i, and the first module of the Manchester PAIR that
 // module t falls in (a pair is two cells, one dark and one light by construction).
 #define OB_CELL_MID (OB_CELL / 2.0f)

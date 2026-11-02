@@ -65,9 +65,10 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         background = java.awt.Color.WHITE
         isFocusable = false
         addComponentListener(object : ComponentAdapter() {
-            // ai: a resize repaints the idle area too: nothing else does on a heavyweight canvas that shrinks (no expose), so
-            // ai: the file upload stayed at the old size until the next change (2026-10-26)
-            override fun componentResized(e: ComponentEvent) { s.areaChanged(); s.canvasMoved(); if (!presenting) repaint() }
+            // ai: a resize paints the idle area too, at once: nothing else does on a heavyweight canvas that shrinks (no
+            // ai: expose), so the file upload stayed at the old size until the next change (2026-10-26); a queued repaint
+            // ai: left the old size's pixels smeared over the new area while the column's edge was dragged (2026-11-02)
+            override fun componentResized(e: ComponentEvent) { s.areaChanged(); s.canvasMoved(); if (!presenting) paintNow() }
             override fun componentMoved(e: ComponentEvent) = s.canvasMoved()
         })
         if (Native.mac) addHierarchyBoundsListener(object : java.awt.event.HierarchyBoundsAdapter() {
@@ -144,15 +145,25 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     private var hits: List<Pair<Rectangle, () -> Unit>> = emptyList()   // ai: the file upload's controls as last painted
     private var scroll = 0
 
-    // ai: the look for the state: the default cursor, the hand over the file upload's controls alone (mouseMoved)
+    // ai: the look for the state, painted: the hand (mouseMoved's, over the file upload's controls) given back to the
+    // ai: arrow only where nothing here takes a click any more (2026-11-02: every change of the state reset it under a
+    // ai: pointer resting on a tile)
     fun idleLook() {
-        cursor = Cursor.getDefaultCursor()
+        if (!uploading() || !chooses()) cursor = Cursor.getDefaultCursor()
         repaint()
+    }
+    // ai: Painted now, not queued (2026-11-02): where the presenter has just let go of the window (Stop) or the canvas has
+    // ai: just been resized, a queued repaint left the last picture, or the old size's pixels, up until AWT came to it
+    fun paintNow() {
+        if (!isShowing) return
+        val g = graphics ?: return
+        try { paint(g) } finally { g.dispose() }
     }
 
     override fun update(g: Graphics) = paint(g)
     // ai: Drawn off screen at the screen's pixels, then put on screen in one copy (2026-10-26): drawn straight onto the
     // ai: heavyweight canvas, each repaint (a wheel step, a removal) showed the area cleared and half drawn for a moment.
+    // ai: One buffer, made again only to grow (a dragged edge resized it at each step), its top left corner used.
     private var back: BufferedImage? = null
     override fun paint(g: Graphics) {
         // ai: the code shown on a monitor of its own: the area here plain, a line saying where (the window is the control)
@@ -161,10 +172,10 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         val t = graphicsConfiguration?.defaultTransform
         val sx = t?.scaleX ?: 1.0; val sy = t?.scaleY ?: 1.0
         val bw = (width * sx).roundToInt().coerceAtLeast(1); val bh = (height * sy).roundToInt().coerceAtLeast(1)
-        val img = back?.takeIf { it.width == bw && it.height == bh } ?: BufferedImage(bw, bh, BufferedImage.TYPE_INT_RGB).also { back = it }
+        val img = back?.takeIf { it.width >= bw && it.height >= bh } ?: BufferedImage(bw, bh, BufferedImage.TYPE_INT_RGB).also { back = it }
         val g2 = img.createGraphics()
-        try { g2.scale(sx, sy); draw(g2) } finally { g2.dispose() }
-        g.drawImage(img, 0, 0, width, height, null)
+        try { g2.clipRect(0, 0, bw, bh); g2.scale(sx, sy); draw(g2) } finally { g2.dispose() }
+        g.drawImage(img, 0, 0, width, height, 0, 0, bw, bh, null)
     }
     private fun draw(g2: Graphics2D) {
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
@@ -207,11 +218,13 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     // ai: centred in the canvas, the whole centred in its height where it fits, else from 16 px down (the phone's shared
     // ai: Upload stretches across its area at the top; a desktop window keeps the centred column, 2026-11-01): the File and
     // ai: Folder tiles (104 px tall on the soft fill, an icon over one word, one row in equal cells), and under them, while
-    // ai: the selection holds something, its card as wide (the card fill): the count with Clear (the state line says the
-    // ai: size), then a tile an item on white (its icon, its name with the stem cut and the ending kept, "N files" or its
-    // ai: size, an x at its corner that removes it), in rows stretched across the card, 104 px the narrowest before one
-    // ai: folds; the card takes what height is left (a row of items at least) and only its items scroll, down, by the
-    // ai: wheel. The tiles' words, the count, Clear and the items' names bold, the lines under the names plain.
+    // ai: the selection holds something, its card as wide (the card fill): the count with Clear, then a tile an item on
+    // ai: white (its icon, its name with the stem cut and the ending kept, "N files" or its size, an x at its corner that
+    // ai: removes it), in rows stretched across the card, 104 px the narrowest before one folds; the card takes what height
+    // ai: is left (a row of items at least) and only its items scroll, down, by the wheel; 12 px under the card, centred,
+    // ai: what goes (choiceLine: the bundle's name, its stem cut and its ending kept, then its files and the bytes that go;
+    // ai: its room kept while the pick is walked or the bundle made; 2026-11-01, the column's state line before). The
+    // ai: tiles' words, the count, Clear, the items' names and the name under the card bold, the other lines plain.
     private fun paintUpload(g2: Graphics2D) {
         g2.color = java.awt.Color.WHITE
         g2.fillRect(0, 0, width, height)
@@ -223,10 +236,12 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         val rows = (items.size + perRow - 1) / perRow
         val avail = height - 32
         val gridH = rows * t + (rows - 1) * ig
-        val cardH = if (items.isEmpty()) 0 else minOf(4 + 48 + 4 + gridH + 12, maxOf(avail - t - 16, 4 + 48 + 4 + t + 12))
+        g2.font = face(Font.BOLD, 15)
+        val lineH = 12 + g2.fontMetrics.height   // ai: the line under the card and its gap
+        val cardH = if (items.isEmpty()) 0 else minOf(4 + 48 + 4 + gridH + 12, maxOf(avail - t - 16 - lineH, 4 + 48 + 4 + t + 12))
         val viewH = cardH - (4 + 48 + 4 + 12)   // ai: the items' window inside the card
         scroll = scroll.coerceIn(0, maxOf(0, gridH - viewH))
-        val total = t + if (items.isEmpty()) 0 else 16 + cardH
+        val total = t + if (items.isEmpty()) 0 else 16 + cardH + lineH
         var y = if (total <= avail) (height - total) / 2 else 16
         val got = ArrayList<Pair<Rectangle, () -> Unit>>()
         val tiles = listOf<Triple<Path2D, String, () -> Unit>>(Triple(FILE_ICON, "File") { s.chooseFile() }, Triple(FOLDER_ICON, "Folder") { s.chooseFolder() })
@@ -252,6 +267,17 @@ class CodeCanvas(private val s: SendState) : Canvas() {
             val clear = Rectangle(cx + cardW - 12 - (fm.stringWidth("Clear") + 24), y + 8, fm.stringWidth("Clear") + 24, 40)
             g2.drawString("Clear", clear.x + 12, clear.y + (40 - fm.height) / 2 + fm.ascent)
             got += clear to { s.clearPicks() }
+            s.choiceLine?.let { (name, after) ->
+                g2.font = face(Font.PLAIN, 15); val aw = g2.fontMetrics.stringWidth(after)
+                g2.font = face(Font.BOLD, 15); fm = g2.fontMetrics
+                val shown = fitName(g2, name, maxOf(cardW - aw, cardW / 2))
+                val nw = fm.stringWidth(shown)
+                g2.font = face(Font.PLAIN, 15)
+                val tail = fit(g2, after, cardW - nw)
+                val lx = cx + (cardW - nw - g2.fontMetrics.stringWidth(tail)) / 2; val ly = y + cardH + 12 + fm.ascent
+                g2.font = face(Font.BOLD, 15); g2.color = FG; g2.drawString(shown, lx, ly)
+                g2.font = face(Font.PLAIN, 15); g2.color = MUTED; g2.drawString(tail, lx + nw, ly)
+            }
             val top = y + 4 + 48 + 4
             val view = Rectangle(cx, top, cardW, viewH)
             val clip = g2.clip
@@ -332,7 +358,14 @@ class CodeCanvas(private val s: SendState) : Canvas() {
             curveTo(21.1, 6.0, 22.0, 6.9, 22.0, 8.0); closePath()
         }
     }
-    override fun addNotify() { super.addNotify(); EventQueue.invokeLater { s.areaChanged() } }
+    // ai: its window made (Send entered): the area read and the idle look painted at once, not at AWT's first repaint
+    // ai: its window made (Send entered): its X background white (Native.windowBackground: AWT's, the theme's grey, showed
+    // ai: until the first paint), the area read and the idle look painted at once, not at AWT's first repaint
+    override fun addNotify() {
+        super.addNotify()
+        if (s.loadError.isEmpty()) runCatching { Native.windowBackground(this, 0xFFFFFF) }
+        EventQueue.invokeLater { s.areaChanged(); if (!presenting) paintNow() }
+    }
     override fun removeNotify() { s.canvasGone(); super.removeNotify() }
 
     // ai: macOS: where the presenter's layer goes (native/macos.h Place): the canvas's bounds in points from the top left
@@ -363,7 +396,7 @@ class CodeCanvas(private val s: SendState) : Canvas() {
 // ai: holds one lock for configure and the presenter's take.
 class SendState {
     sealed interface Phase { data object Idle : Phase; data object Preparing : Phase; data object On : Phase; data class Error(val why: String) : Phase }
-    // ai: what is painted: the format configured (its picture the sender's own, focus_n_for, in its stats)
+    // ai: what is painted: the format configured (its picture the sender's own, lizard_n_for, in its stats)
     data class Format(val subch: Int, val span: Int, val fps: Int, val codes: Int, val gap: Int, val painter: Int)
 
     // ai: What Start sends (2026-10-16): one file as itself, or several files or a folder as one tar
@@ -400,10 +433,10 @@ class SendState {
     var fileSize by mutableStateOf(0L)
     // ai: the file's bytes as they go, every chunk's zstd frame or its own (the sender's stats, 2026-10-05); 0 before a send
     val sentBytes: Long get() = sender?.num("sentBytes")?.toLong() ?: 0L
-    // ai: The transfer made at the pick (2026-10-19): the bundle's tar written and every chunk compressed (txCreate) on a
-    // ai: thread of its own as soon as the choice is read, so the idle line says what goes, "<compressed> (<raw> raw)",
-    // ai: and Start takes it at once (or waits for one still being made). compressed: its bytes as they go, 0 until it is
-    // ai: made, kept through a run. A stop makes the next one; a new pick or the window's close lets it go.
+    // ai: The transfer made at Start (2026-11-01; at the pick and again at each stop from 2026-10-19, every chunk
+    // ai: compressed for picks never sent): the bundle's tar written and every chunk compressed (txCreate) on a thread of
+    // ai: its own, the line "Preparing" meanwhile. compressed: its bytes as they go, 0 until a run makes it, kept through
+    // ai: the run and after it until the choice changes. A new pick or the window's close lets a made one go.
     var compressed by mutableStateOf(0L)
     private var made = 0L                 // ai: the transfer made for the choice, not yet sending (0: none)
     private var madeTar: File? = null     // ai: its tar, where the choice is a bundle
@@ -555,8 +588,8 @@ class SendState {
         if (out.isEmpty()) throw java.io.IOException("${f.name} is not a file or a folder")
         return Item(top.path, top, f.name, out[0].dir, out.count { !it.dir }, out.filter { !it.dir }.sumOf { it.size }, links, out)
     }
-    // ai: the selection changed: the run stopped, the made transfer let go, the bundle made again off the UI thread and
-    // ai: its transfer made (make)
+    // ai: the selection changed: the run stopped, the made transfer let go, the bundle made again off the UI thread (its
+    // ai: transfer waits for Start)
     private fun changed() {
         if (sending) stop()
         dropMade()
@@ -572,7 +605,6 @@ class SendState {
                 if (my != bundling) return@invokeLater
                 bundleNow = false; readingNow()
                 choice = b; singleFile = if (b.single != null) list[0].file else null; fileSize = b.size
-                make()
                 canvas.idleLook()
             }
         }
@@ -636,7 +668,7 @@ class SendState {
     fun start() {
         if (!canStart) return
         runTest = test
-        runName = if (test) "the test stream" else choice!!.name
+        runName = if (test) "" else choice!!.name
         dropTar()
         phase = Phase.Preparing; paused = false
         // ai: the file's transfer still being made (or its make let go): Start waits for it
@@ -672,15 +704,13 @@ class SendState {
         if (p != 0L) { Native.presentStop(p); p = 0L }
         if (leased) leaseEnded()
         canvas.presenting = false
-        canvas.repaint()
+        canvas.paintNow()
         if (h != 0L && h != preparing) Native.txDestroy(h)
         h = 0L
         dropTar()
         startWhenMade = false
         if (sending) phase = Phase.Idle
         paused = false; fmt = null; present = null; sender = null
-        // ai: the next Start's transfer, made afresh (the stopped one went with its run)
-        if (!closing && choice != null && made == 0L && !makingNow) EventQueue.invokeLater { if (!closing && !sending && choice != null && made == 0L && !makingNow) make() }
     }
     // ai: the window closing: the run stopped and the made transfer let go
     fun close() { closing = true; stop(); dropMade() }
@@ -840,6 +870,9 @@ class SendState {
         // ai: again at leaseEnded)
         if (leased) return
         val (w, hh) = if (canvas.isDisplayable) canvas.devicePx() else 0 to 0
+        // ai: a canvas not yet sized (its window just made) keeps the area it had: Blocks' label read "Auto, N" -> "Auto"
+        // ai: -> "Auto, N" on each entry to Send (2026-11-02)
+        if (w <= 0 || hh <= 0) return
         areaW = w; areaH = hh
         if (p == 0L) repick() else settle.restart()
     }
@@ -896,10 +929,10 @@ class SendState {
         if (e.isNotEmpty()) fail(e)
     }
 
-    // ai: what goes, "<compressed> (<raw> raw)" once the transfer is made, "<raw> raw" while it is being made (the web's
-    // ai: and the app's the same)
+    // ai: what goes, "<compressed> (<raw> raw)" once a run has made the transfer, the size alone before (the web's and the
+    // ai: app's the same)
     // ai: "raw" kept with its figure (a no-break space, 2026-10-23: "(47 KB / raw)" broke there)
-    private fun sizeText() = if (compressed > 0) "${Readout.bytes(compressed)} (${Readout.bytes(fileSize)}\u00a0raw)" else "${Readout.bytes(fileSize)}\u00a0raw"
+    private fun sizeText() = if (compressed > 0) "${Readout.bytes(compressed)} (${Readout.bytes(fileSize)}\u00a0raw)" else Readout.bytes(fileSize)
 
     // ai: The state line (the web's #state): what is sent, paused, or the error (red; Main.kt colours it). A line naming
     // ai: the file says so in three parts, the name between (2026-10-23), for the shared NameLine to hold its head on one
@@ -907,11 +940,15 @@ class SendState {
     data class StateLine(val before: String, val name: String? = null, val after: String = "")
     val stateParts: StateLine get() = when (val ph = phase) {
         is Phase.Error -> StateLine(ph.why)
-        Phase.Preparing -> if (runTest) StateLine("Preparing $runName") else StateLine("Preparing ", runName)
-        Phase.On -> if (paused) StateLine("Paused") else if (runTest) StateLine("Sending $runName") else StateLine("Sending ", runName, ", ${sizeText()}")
-        // ai: idle, the web's "<name>, <size>" (sizeText) or the app's "The test stream"
-        Phase.Idle -> if (loadError.isNotEmpty()) StateLine(loadError) else if (test) StateLine("The test stream") else if (reading) StateLine("Reading the files")
-            else choice?.let { StateLine("", it.name, ", ${if (it.single == null) "${it.files} ${if (it.files == 1) "file" else "files"}, " else ""}${sizeText()}") } ?: StateLine("")
+        Phase.Preparing -> if (runTest) StateLine("Preparing") else StateLine("Preparing ", runName)
+        Phase.On -> if (paused) StateLine("Paused") else if (runTest) StateLine("Sending") else StateLine("Sending ", runName, ", ${sizeText()}")
+        // ai: idle, nothing but "Reading the files" or an error: the choice is named on its card (choiceLine, 2026-11-01)
+        Phase.Idle -> if (loadError.isNotEmpty()) StateLine(loadError) else if (!test && reading) StateLine("Reading the files") else StateLine("")
+    }
+    // ai: the choice's name and what follows it, ", N files, " for a bundle and the bytes that go (the web's "<name>,
+    // ai: <size>"); null while the pick is walked or the bundle made
+    val choiceLine: Pair<String, String>? get() = choice?.takeIf { !reading }?.let {
+        it.name to ", ${if (it.single == null) "${it.files} ${if (it.files == 1) "file" else "files"}, " else ""}${sizeText()}"
     }
     val stateLine: String get() = stateParts.let { "${it.before}${it.name ?: ""}${it.after}" }
 

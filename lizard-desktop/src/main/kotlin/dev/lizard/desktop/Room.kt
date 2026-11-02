@@ -6,7 +6,7 @@ import dev.lizard.pick.Pick
 // ai: the area's edges Margin from them, both from the rings (lizard-web/send.mjs room the same).
 object Room {
     // ai: Spacing and Margin (2026-10-23; one Margin, two of them between codes, that morning; a gap between two codes
-    // ai: before): the light between two codes' rings, two quiet zones (Pick.QUIET, FOCUS_QUIET) at least, and between a
+    // ai: before): the light between two codes' rings, two quiet zones (Pick.QUIET, LIZARD_QUIET) at least, and between a
     // ai: ring and the area's edge, one at least, in modules. SPACING_MAX a painter's widest gap (64 modules) and its quiet
     // ai: zones; SPACING_DEFAULT the encoders' own gap (liblizard/gpu/encoder.mjs GAP_MODULES, 12) and its quiet zones
     const val SPACING_MIN = 2 * Pick.QUIET

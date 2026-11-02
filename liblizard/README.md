@@ -45,9 +45,12 @@ reference the engine's C++ lock (`core/rx/phase_lock`) is held to; neither app c
    GPU's encoder, else the C). The GPU paths read their kernels and nets from an assets directory (`share/lizard` as
    installed); with none, or no Vulkan device that runs them, the CPU does the work. Vulkan is loaded at run time.
 5. **The receive session** (desktop systems and Android; `core/rx/session.h`, the cameras in `core/cam/`):
-   `liz_session` drives a camera of the system's (UVC through V4L2, Media Foundation or AVFoundation; Android's back
-   cameras through Camera2's NDK, the camera's own buffer sampled in place by the GPU decoder; a phone streaming to the
-   machine; a `.lizard` replay played as a camera; the simulated camera of `LIZ_CAMERA_SIM`) into a receiver, and does
+   `liz_session` drives a camera of the system's (UVC through V4L2, Media Foundation or AVFoundation; GenICam cameras,
+   USB3 Vision and GigE Vision, through Aravis 0.8 loaded at run time on the desktop systems, `LIZ_ARAVIS`, else the
+   library's own folder, then the system's; Android's back cameras through Camera2's NDK, the camera's own buffer
+   sampled in place by the GPU decoder; a phone streaming to the machine, over a tether or as an Android Open Accessory
+   through libusb-1.0 loaded at run time, `LIZ_LIBUSB`, else the library's own folder, then the system's; a `.lizard`
+   replay played as a camera; the simulated camera of `LIZ_CAMERA_SIM`) into a receiver, and does
    around it what every receiving app does: the phase a screen shows, the camera's settings kept per camera, a verified
    file taken out of the store into the data folder's `kept/` for the app to place (`liz_kept`, `liz_kept_placed`), the
    camera stopped once a file is in, one session a data folder, Save replays, the stats and the preview; on a camera
@@ -57,7 +60,9 @@ reference the engine's C++ lock (`core/rx/phase_lock`) is held to; neither app c
    a USB accessory (`liz_usb_accessory`), refused elsewhere. A take that fails leaves the file in the store, which
    keeps it, and is tried again at each start, a camera's close and a session's start and end. Its calls return at
    once (the work runs in order on the session's own thread; the outcome is in its stats), the preview surface's
-   hand-over aside, which waits for the camera. Elsewhere (wasm) layer 5 says `LIZ_E_UNSUPPORTED`.
+   hand-over aside, which waits for the camera. Elsewhere (wasm) layer 5 says `LIZ_E_UNSUPPORTED`. The threads that
+   keep frames on time (a camera's capture, the decoder's, the sender's) raise their own scheduling priority as far as
+   a user's process may (`core/sys/priority.h`; `LIZ_PRIORITY=normal` leaves it).
 
 Errors are codes (`LIZ_E_*`) with `liz_last_error()` and `liz_last_error_code()` for the calling thread; the bindings
 throw (`LizardException` and the JVM's own, `LizardError` in JS). A handle is used from one thread at a time.

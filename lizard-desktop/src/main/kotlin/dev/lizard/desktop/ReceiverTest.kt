@@ -4,6 +4,7 @@ import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlin.system.exitProcess
 import dev.lizard.ui.*
 
@@ -21,7 +22,9 @@ import dev.lizard.ui.*
 // ai: <seconds>:<action> from the first answer, each as its control does it:
 // ai: start, stop (Start and Stop camera), swap (the bar's swap: to Send, or back to Receive), home (Home), receive
 // ai: (Home's Receive), layout=1:1|2:1, decoder=auto|gpu|cpu, res=<W>x<H>, format=<name> and fps=<rate> (Settings' menus), zoom=<v>,
-// ai: exposure=<us>|auto and gain=<v>|auto (Settings' bars, a value the camera's own units); logged on stderr as "step
+// ai: exposure=<us>|auto and gain=<v>|auto (Settings' bars, a value the camera's own units), driver (Windows: the first
+// ai: device UsbDriver lists as needing one chosen in the Camera menu and Install USB driver pressed; its outcome
+// ai: logged as "usb: ..." and in the line's "usb"), undriver (Remove USB driver); logged on stderr as "step
 // ai: <s>: <action>". Each second's stats go to stderr as "rx: <stats JSON>". A camera stopped by a step, away from
 // ai: Receive, or by itself once a file is in, is no failure; one stopped by an error is.
 class ReceiverTest private constructor(private val secs: Double, private val kv: Map<String, String>) {
@@ -114,8 +117,10 @@ class ReceiverTest private constructor(private val secs: Double, private val kv:
         val cam: JsonElement = dev.lizard.ui.parse(r.cameraNow()) ?: JsonObject(emptyMap())
         // ai: the list read once the close has waited for the filings (a tar's unpack may still run when the time is up)
         app.close()
+        val usb = UsbDriver.state()?.let { u -> JsonObject(mapOf("devices" to JsonArray(u.devices.map { JsonPrimitive(it.name) }),
+            "installed" to JsonPrimitive(u.installed), "note" to JsonPrimitive(r.driverNote))) } ?: JsonObject(emptyMap())
         val line = JsonObject(mapOf("rx" to stats, "received" to JsonArray(Received.list().map { Received.asJson(it) }),
-            "camera" to cam)).toString()
+            "camera" to cam, "usb" to usb)).toString()
         println(line)
         System.out.flush()
         exitProcess(0)
@@ -154,6 +159,15 @@ class ReceiverTest private constructor(private val secs: Double, private val kv:
             "zoom" -> v.toDoubleOrNull()?.let { r.zoomTo(it) } ?: fail("LIZ_RECEIVER_TEST: step $act")
             "exposure" -> if (v == "auto") r.exposureTo(null) else v.toDoubleOrNull()?.let { r.exposureTo(it) } ?: fail("LIZ_RECEIVER_TEST: step $act")
             "gain" -> if (v == "auto") r.gainTo(null) else v.toDoubleOrNull()?.let { r.gainTo(it) } ?: fail("LIZ_RECEIVER_TEST: step $act")
+            "driver" -> {
+                val st = UsbDriver.state() ?: fail("LIZ_RECEIVER_TEST: step $act: no USB driver helper here")
+                r.usb = st
+                val d = st.devices.firstOrNull() ?: fail("LIZ_RECEIVER_TEST: step $act: no USB device needs a driver")
+                r.chooseCameraOption(d.id)
+                System.err.println("usb: ${d.name} (${d.spec}) chosen; Install USB driver ${if (r.driverFor == d) "offered" else "not offered"}")
+                r.installDriver()
+            }
+            "undriver" -> r.removeDriver()
             else -> fail("LIZ_RECEIVER_TEST: unknown step $act")
         }
         return away

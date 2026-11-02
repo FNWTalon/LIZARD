@@ -15,7 +15,7 @@
 // ai:                                      and its painter), and every
 // ai:                                      ring with every picture size painted, read blind and compared byte for
 // ai:                                      byte. No input files.
-// ai:   neon_check frames <list> [passes]  every frame of the list through focus_any_frame (one focus_any_t, nmax
+// ai:   neon_check frames <list> [passes]  every frame of the list through lizard_any_frame (one lizard_any_t, nmax
 // ai:                                      1536, gamma 1, mesh 2, as the receivers call it): a line a frame of
 // ai:                                      digests, a stage each, and a total. passes > 0 then times that many
 // ai:                                      passes over the list, one thread, ms a frame, with the core and clock
@@ -27,12 +27,12 @@
 // ai:   reg   the registration: found, finders, quad, orientation, track score, best mark, the ring, and the finder's
 // ai:         own account of itself (acquire.c ob_finder_info)
 // ai:   word  the format word, the picture, whether the held word stood in
-// ai:   spec  focus.c's test hook: the whole spectrum after the detrend, and every block's soft values
+// ai:   spec  lizard_phy.c's test hook: the whole spectrum after the detrend, and every block's soft values
 // ai:   stat  each block's LDPC iterations and its estimate
 // ai:   blk   the ok flags and every block's bytes
 // ai: No timing is in any of them. Exit 1 on a unit failure, a synth round trip that did not come back, or a build
 // ai: that contracts a multiply and an add (-ffp-contract=off is missing).
-// ai: From liblizard/ (C = the NDK's aarch64-linux-android29-clang; S = src/focus.c src/acquire.c src/layout.c src/fmt.c
+// ai: From liblizard/ (C = the NDK's aarch64-linux-android29-clang; S = src/lizard_phy.c src/acquire.c src/layout.c src/fmt.c
 // ai: src/rs.c src/ldpc.c src/fft.c src/any.c):
 // ai:   $C -O3 -ffp-contract=off -DNDEBUG -Isrc -o build/neon/neon_check.neon test/neon_check.c $S -lm
 // ai:   $C -O3 -ffp-contract=off -DNDEBUG -Isrc -DOB_SCALAR -o build/neon/neon_check.scalar test/neon_check.c $S -lm
@@ -54,7 +54,7 @@
 #include <sched.h>
 #endif
 
-uint32_t ob_debug_hash;                                                   // ai: the host's, read by focus.c (as wasm.c and core/cpu/codec.c)
+uint32_t ob_debug_hash;                                                   // ai: the host's, read by lizard_phy.c (as wasm.c and core/cpu/codec.c)
 void ob_test_binarize(const uint8_t *img, int w, int h, uint8_t *bin);    // ai: acquire.c
 
 #if defined(__wasm_simd128__)
@@ -339,7 +339,7 @@ static int unit(int full) { (void)full; printf("unit: a scalar build has no vect
 
 // ai: ---------------------------------------------------------------- one frame, read blind
 
-typedef struct { focus_any_t any; int top, B; uint8_t *blocks, *ok; } rx_t;
+typedef struct { lizard_any_t any; int top, B; uint8_t *blocks, *ok; } rx_t;
 // ai: via: what gave the finder its quad (acquire.c ob_finder_info[4]): 0 the corner marks, 1 the line fit, 2 the crop
 // ai: round one mark, -1 nothing.
 typedef struct { dig_t reg, word, stat, blk; uint32_t spec; int found, via, ring, n, held, has_word, version, fps, got, total; float ms_detect, ms_sample, ms_decode; } out_t;
@@ -347,26 +347,26 @@ typedef struct { dig_t reg, word, stat, blk; uint32_t spec; int found, via, ring
 static int rx_init(rx_t *rx) {
   memset(rx, 0, sizeof *rx);
   rx->any.which = -1;
-  rx->B = focus_any_init(&rx->any, 1536);
+  rx->B = lizard_any_init(&rx->any, 1536);
   if (rx->B < 0) return -1;
-  rx->top = focus_any_top(&rx->any);
+  rx->top = lizard_any_top(&rx->any);
   rx->blocks = malloc((size_t)rx->top * rx->B); rx->ok = malloc((size_t)rx->top);
   return rx->blocks && rx->ok ? 0 : -1;
 }
-static void rx_free(rx_t *rx) { focus_any_free(&rx->any); free(rx->blocks); free(rx->ok); }
+static void rx_free(rx_t *rx) { lizard_any_free(&rx->any); free(rx->blocks); free(rx->ok); }
 
-// ai: arm: take focus.c's hash of the spectrum and the soft values, which costs a pass over both (off when timing).
+// ai: arm: take lizard_phy.c's hash of the spectrum and the soft values, which costs a pass over both (off when timing).
 static void decode_one(rx_t *rx, const uint8_t *px, int w, int h, int held, int arm, out_t *o) {
-  focus_any_t *a = &rx->any;
+  lizard_any_t *a = &rx->any;
   ob_result_t res;
   memset(o, 0, sizeof *o);
   memset(rx->blocks, 0, (size_t)rx->top * rx->B); memset(rx->ok, 0, (size_t)rx->top);
   ob_debug_hash = arm ? 1 : 0;
   for (int k = 0; k < 8; k++) ob_finder_info[k] = -2;
-  o->got = focus_any_frame(a, px, w, h, 1.0f, 2, rx->blocks, rx->ok, held, &res);
+  o->got = lizard_any_frame(a, px, w, h, 1.0f, 2, rx->blocks, rx->ok, held, &res);
   o->spec = arm && ob_debug_hash != 1 ? ob_debug_hash : 0;   // ai: still 1: the frame never reached the transform
   ob_debug_hash = 0;
-  const ob_fmt_t *fm = focus_any_word(a);
+  const ob_fmt_t *fm = lizard_any_word(a);
   o->found = res.found; o->via = (int)ob_finder_info[4]; o->ring = a->which; o->n = a->n; o->held = a->held; o->has_word = fm != 0; o->version = fm ? fm->version : 0; o->fps = fm ? fm->fps : 0;
   o->ms_detect = res.ms_detect; o->ms_sample = res.ms_sample; o->ms_decode = res.ms_decode;
   if (!arm) return;
@@ -380,7 +380,7 @@ static void decode_one(rx_t *rx, const uint8_t *px, int w, int h, int held, int 
   d = DIG0;
   if (a->last) {
     const int8_t *its; const float *est;
-    focus_block_stats(a->last, &its, &est);
+    lizard_block_stats(a->last, &its, &est);
     o->total = a->last->blocks;
     d = dig(d, its, (size_t)o->total); d = dig(d, est, (size_t)o->total * sizeof(float));
   }
@@ -424,7 +424,7 @@ static int frames(const char *list, int passes) {
   fclose(fl);
   if (!nf) { printf("%s lists no frame\n", list); return 1; }
   static rx_t rx;
-  if (rx_init(&rx)) { printf("focus_any_init failed\n"); return 1; }
+  if (rx_init(&rx)) { printf("lizard_any_init failed\n"); return 1; }
   dig_t total = DIG0;
   int blocks = 0, registered = 0, held = 0;
   for (int i = 0; i < nf; i++) {
@@ -534,16 +534,16 @@ static void synth_binarize(void) {
   printf("synth binarize: %016llx\n", (unsigned long long)d);
 }
 
-// ai: A symbol painted by the codec (focus_encode, focus_paint_rgba, then the painter's RGBA back to luma) on a
+// ai: A symbol painted by the codec (lizard_encode, lizard_paint_rgba, then the painter's RGBA back to luma) on a
 // ai: white page, P pixels of it all round.
-static uint8_t *paint_page(const focus_t *f, const uint8_t *blocks, int P, int *side, dig_t *d) {
-  const int W = f->px + 2 * FOCUS_QUIET * f->pxm, S = W + 2 * P;
+static uint8_t *paint_page(const lizard_t *f, const uint8_t *blocks, int P, int *side, dig_t *d) {
+  const int W = f->px + 2 * LIZARD_QUIET * f->pxm, S = W + 2 * P;
   float *drive = malloc((size_t)f->px * f->px * sizeof(float));
   uint8_t *rgba = malloc((size_t)W * W * 4), *luma = malloc((size_t)W * W), *img = malloc((size_t)S * S);
   if (!drive || !rgba || !luma || !img) { free(drive); free(rgba); free(luma); free(img); return NULL; }
-  focus_encode(f, blocks, drive);
+  lizard_encode(f, blocks, drive);
   *d = dig(*d, drive, (size_t)f->px * f->px * sizeof(float));
-  focus_paint_rgba(f, drive, rgba);
+  lizard_paint_rgba(f, drive, rgba);
   *d = dig(*d, rgba, (size_t)W * W * 4);
   ob_luma(rgba, W * W, luma);
   *d = dig(*d, luma, (size_t)W * W);
@@ -561,11 +561,11 @@ static int synth_pairs(void) {
   static rx_t rx;
   int fails = 0, idx = 0;
   dig_t total = DIG0;
-  if (rx_init(&rx)) { printf("focus_any_init failed\n"); return 1; }
-  for (int r = 0; r < FOCUS_RINGS; r++) for (size_t s = 0; s < sizeof SUBCH / sizeof *SUBCH; s++) {
-    const int subch = SUBCH[s], n = focus_n_for(subch);
-    focus_t f;
-    if (focus_init(&f, n, subch, 2, 2 * FOCUS_RING[r], 0)) { printf("focus_init %d in ring %d failed\n", subch, FOCUS_RING[r]); fails++; continue; }
+  if (rx_init(&rx)) { printf("lizard_any_init failed\n"); return 1; }
+  for (int r = 0; r < LIZARD_RINGS; r++) for (size_t s = 0; s < sizeof SUBCH / sizeof *SUBCH; s++) {
+    const int subch = SUBCH[s], n = lizard_n_for(subch);
+    lizard_t f;
+    if (lizard_init(&f, n, subch, 2, 2 * LIZARD_RING[r], 0)) { printf("lizard_init %d in ring %d failed\n", subch, LIZARD_RING[r]); fails++; continue; }
     uint8_t *blocks = malloc((size_t)f.blocks * f.block_bytes);
     for (int i = 0; i < f.blocks * f.block_bytes; i++) blocks[i] = (uint8_t)((uint32_t)((uint64_t)i * 2654435761ULL + (uint64_t)(r * 97 + subch)) >> 13);   // ai: scripts/exp/ring_pairs.mjs's payload
     dig_t enc = DIG0;
@@ -576,14 +576,14 @@ static int synth_pairs(void) {
     decode_one(&rx, img, S, S, 0, 1, &o);
     int back = 0;
     for (int b = 0; b < f.blocks; b++) back += rx.ok[b] && !memcmp(rx.blocks + (size_t)b * rx.B, blocks + (size_t)b * f.block_bytes, (size_t)f.block_bytes);
-    const int good = o.ring == r && o.n == n && o.has_word && o.version == subch / FOCUS_STEP && back == f.blocks;
+    const int good = o.ring == r && o.n == n && o.has_word && o.version == subch / LIZARD_STEP && back == f.blocks;
     if (!good) fails++;
     char name[64];
-    snprintf(name, sizeof name, "ring%d_n%d_%dpx", FOCUS_RING[r], n, S);
-    printf("synth pair ring %3d LIZARD-%-4d n %4d: encode %016llx, %d of %d blocks back%s\n", FOCUS_RING[r], subch, n, (unsigned long long)enc, back, f.blocks, good ? "" : "  FAILED");
+    snprintf(name, sizeof name, "ring%d_n%d_%dpx", LIZARD_RING[r], n, S);
+    printf("synth pair ring %3d LIZARD-%-4d n %4d: encode %016llx, %d of %d blocks back%s\n", LIZARD_RING[r], subch, n, (unsigned long long)enc, back, f.blocks, good ? "" : "  FAILED");
     total = dig(total, &enc, sizeof enc);
     total = out_line("synth", idx++, name, &o, total);
-    free(img); free(blocks); focus_free(&f);
+    free(img); free(blocks); lizard_free(&f);
   }
   printf("synth pairs: %d of %d read blind, digest %016llx\n", idx - fails, idx, (unsigned long long)total);
   rx_free(&rx);
@@ -596,12 +596,12 @@ static int synth_lab(void) {
   static const struct { int n, subch, span; float tilt; int tiers; } LAB[] = {
     { 256, 64, 256, 0, 0 }, { 1024, 192, 256, 0, 0 }, { 512, 320, 256, 9, 0 }, { 512, 0, 256, 9, 1 }, { 384, 64, 256, 0, 0 },
     { 768, 144, 512, 0, 0 }, { 384, 64, 512, 0, 0 }, { 768, 320, 128, 0, 0 } };
-  static const focus_tier_t TIERS[3] = { { 6, 8, 0 }, { 4, 12, 0 }, { 2, 12, 0 } };   // ai: rate, blocks (a block's slots its rate's)
+  static const lizard_tier_t TIERS[3] = { { 6, 8, 0 }, { 4, 12, 0 }, { 2, 12, 0 } };   // ai: rate, blocks (a block's slots its rate's)
   int fails = 0;
   for (size_t k = 0; k < sizeof LAB / sizeof *LAB; k++) {
-    focus_t f;
-    const int bad = LAB[k].tiers ? focus_init_tiers(&f, LAB[k].n, TIERS, 3, 2, LAB[k].span, LAB[k].tilt)
-                                 : focus_init(&f, LAB[k].n, LAB[k].subch, 2, LAB[k].span, LAB[k].tilt);
+    lizard_t f;
+    const int bad = LAB[k].tiers ? lizard_init_tiers(&f, LAB[k].n, TIERS, 3, 2, LAB[k].span, LAB[k].tilt)
+                                 : lizard_init(&f, LAB[k].n, LAB[k].subch, 2, LAB[k].span, LAB[k].tilt);
     if (bad) { printf("synth lab %zu: init failed\n", k); fails++; continue; }
     uint8_t *blocks = malloc((size_t)f.blocks * f.block_bytes), *got = calloc((size_t)f.blocks * f.block_bytes, 1), *ok = calloc((size_t)f.blocks, 1);
     rnd_seed(900 + k);
@@ -612,17 +612,17 @@ static int synth_lab(void) {
     if (!img) { printf("out of memory\n"); return 1; }
     ob_result_t res;
     ob_debug_hash = 1;
-    const int n = focus_decode(&f, img, S, S, 1.0f, 2, got, ok, &res);
+    const int n = lizard_decode(&f, img, S, S, 1.0f, 2, got, ok, &res);
     const uint32_t spec = ob_debug_hash; ob_debug_hash = 0;
     const int8_t *its; const float *est;
-    focus_block_stats(&f, &its, &est);
+    lizard_block_stats(&f, &its, &est);
     d = dig_int(d, n); d = dig(d, &spec, sizeof spec); d = dig(d, res.quad, sizeof res.quad); d = dig(d, &res.mark_score, sizeof res.mark_score); d = dig_int(d, res.orient);
     d = dig(d, ok, (size_t)f.blocks); d = dig(d, got, (size_t)f.blocks * f.block_bytes);
     d = dig(d, its, (size_t)f.blocks); d = dig(d, est, (size_t)f.blocks * sizeof(float));
     const int back = n == f.blocks && !memcmp(got, blocks, (size_t)f.blocks * f.block_bytes);
     if (!back) fails++;
     printf("synth lab n %4d subch %3d span %3d tilt %g%s: %016llx, %d of %d blocks%s\n", LAB[k].n, f.subch, LAB[k].span, (double)LAB[k].tilt, LAB[k].tiers ? " tiers" : "", (unsigned long long)d, n, f.blocks, back ? "" : "  FAILED");
-    free(img); free(blocks); free(got); free(ok); focus_free(&f);
+    free(img); free(blocks); free(got); free(ok); lizard_free(&f);
   }
   return fails;
 }

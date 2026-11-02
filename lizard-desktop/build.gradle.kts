@@ -45,6 +45,10 @@ val nativeLib = rootDir.resolve("build/native/" + when {
 // ai: macOS (2026-10-23): MoltenVK, Vulkan over Metal, carried beside the library (its rpath is the library's own
 // ai: folder): build/native/libMoltenVK.dylib, from a MoltenVK release (the desktop workflow fetches it)
 val moltenVk = rootDir.resolve("build/native/libMoltenVK.dylib")
+// ai: the files carried beside the library where a system's package needs them (2026-11-01): libusb, Aravis and their
+// ai: libraries, Windows' driver helper lizard_usb.exe (packaging/windows-extra.sh, packaging/macos-extra.sh), and in
+// ai: licenses/ their license texts, which licenseText adds; none on Linux, whose package depends on the system's
+val extraNative = rootDir.resolve("build/native/extra")
 // ai: the TAB blob send.json names (the paint's codes); a tree without liblizard/out or the native library (a fresh clone) still
 // ai: configures, and bundleInputs says what to run (a Sync with no files is skipped, its own actions too)
 val sendJson = liblizardOut.resolve("setup/send.json")
@@ -67,6 +71,7 @@ val bundle by tasks.registering(Sync::class) {
     into(bundled)
     from(nativeLib) { into("lizard/native") }
     if (onMac) from(moltenVk) { into("lizard/native") }
+    from(extraNative) { exclude("licenses/**"); into("lizard/native") }
     from(liblizardOut) {
         include("setup/*.json", "blobs/*.bin", "spv/*.spv")
         exclude("spv/*.raw.spv")
@@ -140,6 +145,8 @@ val licenseText by tasks.registering(LicenseText::class) {
         project.file("packaging/skia.LICENSE"), lib.resolve("vendor/fonts/inter/LICENSE.txt"), lib.resolve("vendor/fonts/jetbrains-mono/OFL.txt"))
     // ai: macOS: MoltenVK's (Apache 2.0), carried beside the library; its release's LICENSE at build/native
     if (onMac) { titles.add("MoltenVK (Vulkan over Metal, macOS)"); parts.from(rootDir.resolve("build/native/MoltenVK.LICENSE")) }
+    // ai: the libraries carried beside the library (extraNative), each text headed with what it covers
+    extraNative.resolve("licenses").listFiles()?.filter { it.isFile }?.sortedBy { it.name }?.forEach { titles.add(""); parts.from(it) }
     out.set(layout.buildDirectory.file("license/copyright.txt"))
 }
 
@@ -185,7 +192,7 @@ compose.desktop {
             // ai: the app's name as a user reads it: LIZARD, in capitals (the launcher bin/LIZARD, the menu entry)
             packageName = "LIZARD"
             packageVersion = "1.0.$releaseCode"
-            description = "LIZARD"
+            description = "Move files from a screen to a camera, with no network"
             vendor = "LIZARD"
             // ai: the repository's license, NOTICE and the vendored code's licenses (licenseText), which jpackage writes
             // ai: into the package (the .deb's share/doc/copyright said "License: Unknown" without them; the MSI shows it

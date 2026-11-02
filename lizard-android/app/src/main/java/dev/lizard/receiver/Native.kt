@@ -24,7 +24,7 @@ object Native {
     @JvmStatic external fun txError(): String
     @JvmStatic external fun txConfigure(h: Long, subch: Int, span: Int, fps: Int, threads: Int, painter: Int, assets: String, codes: Int, gap: Int, vsynced: Boolean, vsync: Boolean): String
     @JvmStatic external fun txPrepare(h: Long, assets: String): String
-    // ai: the blocks a frame of subch sub-channels carries (the format's rate profile, src/focus.h focus_blocks_for)
+    // ai: the blocks a frame of subch sub-channels carries (the format's rate profile, src/lizard_phy.h lizard_blocks_for)
     @JvmStatic external fun blocksFor(subch: Int): Int
     @JvmStatic external fun txPresent(h: Long, surface: android.view.Surface): Boolean
     // ai: the vsync path's post (2026-10-07, jni.cpp txPost): a picture due at the frame timeline `vsync` (expected on

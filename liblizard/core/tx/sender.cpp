@@ -11,10 +11,11 @@
 #include <sstream>
 
 extern "C" {
-#include "focus.h"
+#include "lizard_phy.h"
 #include "shake.h"
 #include "xfer.h"
 }
+#include "priority.h"
 
 namespace lizard {
 
@@ -59,11 +60,11 @@ std::string Sender::configure(const TxFormat& f) {
   if (f.codes < 1 || f.codes > 2) return "codes are 1 or 2, not " + std::to_string(f.codes);
   if (f.gap < 0 || f.gap > 64) return "the gap is 0 to 64 modules, not " + std::to_string(f.gap);
   // ai: one codec made here to say what the format is (and that it is one); each painter makes its own
-  // ai: the format's picture (src/focus.h focus_n_for: a receiver takes it from the word's version) and clip ratio, 2
+  // ai: the format's picture (src/lizard_phy.h lizard_n_for: a receiver takes it from the word's version) and clip ratio, 2
   // ai: (SPEC 6.7)
-  focus_t probe{};
-  const int n = focus_n_for(f.subch);
-  if (focus_init(&probe, n, f.subch, 2.0f, f.span, 0.f)) return "the codec refused LIZARD-" + std::to_string(f.subch);
+  lizard_t probe{};
+  const int n = lizard_n_for(f.subch);
+  if (lizard_init(&probe, n, f.subch, 2.0f, f.span, 0.f)) return "the codec refused LIZARD-" + std::to_string(f.subch);
   // ai: The device and the painter are made here where no prepare did: the frame ring lives in the painter whatever
   // ai: paints (2026-10-07), so a sender needs a Vulkan device. The GPU paints where asked (or auto); auto keeps it only
   // ai: where two frames of the test stream's blocks come out as the C paints them (gpu/encoder.mjs checkNow's rule), so
@@ -72,7 +73,7 @@ std::string Sender::configure(const TxFormat& f) {
   gpuWhy_.clear();
   if (!gpu_) {
     try { gpu_ = GpuPainter::create(f.assets, nullptr, f.device, extras_.get()); }
-    catch (const std::exception& e) { focus_free(&probe); return std::string("no Vulkan device for the frames: ") + e.what(); }
+    catch (const std::exception& e) { lizard_free(&probe); return std::string("no Vulkan device for the frames: ") + e.what(); }
   }
   assets_ = f.assets;
   const int aheadFrames = std::max(1, static_cast<int>(std::lround(f.fps * f.aheadSecs)));
@@ -97,13 +98,13 @@ std::string Sender::configure(const TxFormat& f) {
       }
     } catch (const std::exception& e) { gpuWhy_ = e.what(); }
     if (gpuWhy_.empty()) gpu = true;
-    else if (f.painter == 1) { focus_free(&probe); return "the GPU cannot paint here: " + gpuWhy_; }
+    else if (f.painter == 1) { lizard_free(&probe); return "the GPU cannot paint here: " + gpuWhy_; }
   }
   if (!gpu) {
     std::string e;
     try { e = gpu_->configure(f.subch, f.span, f.fps, 1, f.codes, f.gap, aheadFrames, f.aheadBytes, f.margin, true); }
     catch (const std::exception& x) { e = x.what(); }
-    if (!e.empty()) { focus_free(&probe); return "no frame ring on the device: " + e; }
+    if (!e.empty()) { lizard_free(&probe); return "no frame ring on the device: " + e; }
   }
   std::lock_guard<std::mutex> l(mu_);
   fmt_ = f;
@@ -114,25 +115,26 @@ std::string Sender::configure(const TxFormat& f) {
   depth_ = gpu_->depth();
   blocks_ = probe.blocks;
   blockBytes_ = probe.block_bytes;
-  side_ = probe.px + 2 * FOCUS_QUIET * probe.pxm;
+  side_ = probe.px + 2 * LIZARD_QUIET * probe.pxm;
   gap_ = f.codes > 1 ? f.gap * probe.pxm : 0;
   width_ = f.codes * side_ + (f.codes - 1) * gap_;
   // ai: the profile as text: "7/8 x 34, 3/4 x 18, 2/3 x 10, 1/2 x 10" at LIZARD-592 (the stats' tiers), read before
   // ai: the probe is freed
   tiers_.clear();
   for (int t = 0; t < probe.tiers; t++) tiers_ += (t ? ", " : "") + std::string(probe.tier[t].rate == 6 ? "7/8" : probe.tier[t].rate == 4 ? "3/4" : probe.tier[t].rate == 3 ? "2/3" : "1/2") + " x " + std::to_string(probe.tier[t].blocks);
-  focus_free(&probe);
+  lizard_free(&probe);
   label_ = "LIZARD-" + std::to_string(f.subch) + (f.codes > 1 ? " x " + std::to_string(f.codes) : "");
   // ai: what was made or painted under the old format goes; the count goes on from the screen's
   jobs_.clear(); ready_.clear(); hostOf_.clear(); toUpload_.clear(); dataOf_.clear(); spare_.clear();
   made_ = shown_;
   stop_ = false;
   gen_++;
-  producer_ = std::thread([this] { produce(); });
-  if (gpu) painters_.emplace_back([this] { paintGpu(); });
+  // ai: each thread at the priority a user's process may give it (sys/priority.h)
+  producer_ = std::thread([this] { sys::raiseThread(); produce(); });
+  if (gpu) painters_.emplace_back([this] { sys::raiseThread(); paintGpu(); });
   else {
-    for (int k = 0; k < fmt_.threads; k++) painters_.emplace_back([this, k] { paint(k); });
-    uploader_ = std::thread([this] { upload(); });
+    for (int k = 0; k < fmt_.threads; k++) painters_.emplace_back([this, k] { sys::raiseThread(); paint(k); });
+    uploader_ = std::thread([this] { sys::raiseThread(); upload(); });
   }
   return "";
 }
@@ -178,12 +180,12 @@ void Sender::produce() {
   }
 }
 
-// ai: A painter: its own codec, the oldest frame made, the pilots' count its number mod 4 (src/focus.h focus_parity).
+// ai: A painter: its own codec, the oldest frame made, the pilots' count its number mod 4 (src/lizard_phy.h lizard_parity).
 // ai: The frame grey, packed as the ring's rows (4 x rowWords bytes a row; with two codes each symbol painted on its
 // ai: own and copied into its place, the gap the margin's byte beside it, as lizard-web/send-worker.mjs does), handed
 // ai: to the uploader.
 void Sender::paint(int) {
-  focus_t f{};
+  lizard_t f{};
   TxFormat fm;
   int n = 0;
   size_t rowBytes = 0, bytes = 0;
@@ -194,12 +196,12 @@ void Sender::paint(int) {
     rowBytes = 4ull * gpu_->rowWords();
     bytes = 4ull * gpu_->frameWords();
   }
-  if (focus_init(&f, n, fm.subch, 2.0f, fm.span, 0.f)) {
+  if (lizard_init(&f, n, fm.subch, 2.0f, fm.span, 0.f)) {
     std::lock_guard<std::mutex> l(mu_);
     error_ = "a painter's codec failed";
     return;
   }
-  focus_fmt_fps(&f, fm.fps);
+  lizard_fmt_fps(&f, fm.fps);
   std::vector<float> drive(static_cast<size_t>(f.px) * f.px);
   const int W = side_, codes = fm.codes, gap = gap_;
   const size_t per = static_cast<size_t>(blocks_) * blockBytes_;
@@ -215,10 +217,10 @@ void Sender::paint(int) {
     l.unlock();
     out.resize(bytes);
     const double t0 = nowMs();
-    focus_parity(&f, static_cast<int>(j.seq & 3));
+    lizard_parity(&f, static_cast<int>(j.seq & 3));
     for (int k = 0; k < codes; k++) {
-      focus_encode(&f, j.blocks.data() + k * per, drive.data());
-      focus_paint_grey(&f, drive.data(), part.data());
+      lizard_encode(&f, j.blocks.data() + k * per, drive.data());
+      lizard_paint_grey(&f, drive.data(), part.data());
       const size_t x0 = static_cast<size_t>(k) * (W + gap);
       for (int y = 0; y < W; y++) {
         uint8_t* o = out.data() + y * rowBytes + x0;
@@ -235,7 +237,7 @@ void Sender::paint(int) {
     cv_.notify_all();
   }
   l.unlock();
-  focus_free(&f);
+  lizard_free(&f);
 }
 
 // ai: The uploader (the CPU painters' mode): each painted frame into its slot of the ring, in order, then ready; the

@@ -10,7 +10,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 
 const LIB = new URL("../", import.meta.url);
 const imp = (p) => import(new URL(p, LIB).href);
-const { init, Focus } = await imp("sim/ob.mjs");
+const { init, Lizard } = await imp("sim/ob.mjs");
 const { transformTables } = await imp("gpu/back/disc.mjs");
 const { PARAMS_AT } = await imp("gpu/wgsl/back_ldpc.mjs");
 const { CODES } = await imp("gpu/plan/back_tiers.mjs");
@@ -30,7 +30,7 @@ const index = [];
 for (const { subch, ring } of formats) {
   const n = N_FOR(subch), span = 2 * RINGS[ring];
   const [tb] = await transformTables([{ n, subch }]);
-  const fc = new Focus(n, subch, 1, { span });
+  const fc = new Lizard(n, subch, 1, { span });
   fc.setFps(FPS);
   const g = fc.resampleGeom(), q = g.q, W = fc.side + 2 * fc.quiet * fc.cell, sq = g.o + fc.quiet * fc.cell;
   const gap = CODES_N > 1 ? GAP_MODULES * fc.cell : 0, FW = CODES_N * W + (CODES_N - 1) * gap, RW = Math.ceil(FW / 4), FS = 64 * Math.ceil((RW * W) / 64);

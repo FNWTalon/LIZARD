@@ -61,6 +61,14 @@ class ReceiveState(private val app: App) {
     var cameras by mutableStateOf<List<Cam>>(emptyList())
     var camera by mutableStateOf(Prefs.Rx.camera)              // ai: the camera chosen ("": the first listed)
     var info by mutableStateOf<CamInfo?>(null)                 // ai: the camera open
+    // ai: Windows: the phones and USB3 Vision cameras with no driver libusb can use, and a LIZARD driver's presence
+    // ai: (UsbDriver); the one chosen in the Camera menu, Install USB driver's; its run, and what it said where it failed
+    var usb by mutableStateOf<UsbDriver.State?>(null)
+    var driverFor by mutableStateOf<UsbDriver.Device?>(null)
+    var driverBusy by mutableStateOf(false)
+    var driverNote by mutableStateOf("")
+    private var pickUsbPhone = false
+    private var pickCamera = false
     var mode by mutableStateOf<Mode?>(null)                    // ai: its mode, running or next
     var decoder by mutableStateOf(Prefs.Rx.decoder)
     var layout by mutableStateOf(Prefs.Rx.layout)
@@ -98,8 +106,10 @@ class ReceiveState(private val app: App) {
     // ai: is off; from a start the receiver's own, 0 until the stream's first second has closed
     val live get() = on && stats?.flag("live") == true
     val testing get() = on && rx.state == "test"
-    // ai: the received file the receiver holds, once it is in the list; none while the test stream is read
-    val kept: Received.Entry? get() = if (rx.verified && !testing && root.isNotEmpty()) files.firstOrNull { it.root == root } else null
+    // ai: the receiver holds a verified file (the camera stops then); none while the test stream is read
+    val holds get() = rx.verified && !testing && root.isNotEmpty()
+    // ai: that file's entry, once it is in the list (filed into Downloads a moment after the camera stops)
+    val kept: Received.Entry? get() = if (holds) files.firstOrNull { it.root == root } else null
     val cpu get() = decoder == "cpu" || (decoder == "auto" && autoRan == "CPU")
 
     // ai: The received files' own work, one at a time in the order asked: a filing pass (Received.retry: each take in
@@ -137,6 +147,7 @@ class ReceiveState(private val app: App) {
             Session(Native.data.apply { mkdirs() }.path, Native.assets, cache.path, decoder, layout, forgetSettings = Prefs.forgotten).also { s ->
                 session = s
                 taken = -1L   // ai: a new session counts its takes from 0
+                seq = 0L; preview = null   // ai: and its frames from 0: the last session's picture is not this one's
                 s.batchCap(batch)
                 s.replays(replays, replayMeta())
                 timer.start()
@@ -209,11 +220,15 @@ class ReceiveState(private val app: App) {
     // ai: (the stream's port where none is typed), listed by it while no listing has it
     var askAddress by mutableStateOf(false)
     val typedPhone: String? get() = camera.takeIf { c -> c.startsWith("phone:") && !c.startsWith("phone:usb:") && cameras.none { it.id == c } }
+    // ai: the cameras listed, and the one open while it is not (none is listed until the Camera menu first opens: the field
+    // ai: names the camera open, not its blank "Camera", 2026-11-02)
     val cameraOptions: List<Pair<String, String>> get() =
-        cameras.map { it.id to it.label } + listOfNotNull(typedPhone?.let { it to "Phone at ${it.removePrefix("phone:").removeSuffix(":$PHONE_PORT")}" }) +
+        cameras.map { it.id to it.label } + listOfNotNull(info?.takeIf { i -> cameras.none { it.id == i.id } }?.let { it.id to it.name }) + usb?.devices.orEmpty().map { it.id to "${it.name} (no USB driver)" } + listOfNotNull(typedPhone?.let { it to "Phone at ${it.removePrefix("phone:").removeSuffix(":$PHONE_PORT")}" }) +
             listOfNotNull(uploaded?.let { it to File(it.removePrefix("upload:")).name }) + ("phone:" to "Phone by address") + ("upload:" to "Upload")
     fun chooseCameraOption(id: String) {
         askAddress = id == "phone:"
+        driverFor = usb?.devices?.firstOrNull { it.id == id }
+        if (driverFor != null) return
         if (id == "upload:") chooseUpload() else if (id != "phone:") chooseCamera(id)
     }
     fun choosePhoneAddress(typed: String) {
@@ -255,6 +270,9 @@ class ReceiveState(private val app: App) {
         val id = testCamera ?: camera
         s.reconfigure(decoder, layout)
         s.batchCap(batch)
+        // ai: every start opens the camera afresh (2026-11-01): a Stop keeps it open and the session's open keeps an open
+        // ai: camera of the same id, so a Start after a Stop went on in the same open; closed first, it opens again
+        s.closeCamera()
         s.open(id)
         val named = testMode ?: chosenMode?.takeIf { info?.id == id }?.index?.toString() ?: ""
         chosenMode = null
@@ -262,7 +280,6 @@ class ReceiveState(private val app: App) {
         poll()
     }
     fun stop() {
-        previewTimer.stop()
         session?.stop() ?: run { if (running) phase = RxPhase.Idle }
         poll()
     }
@@ -278,7 +295,7 @@ class ReceiveState(private val app: App) {
     // ai: last, CLOSE_FILING_SECS at most (the window is hidden by then, App.close); a filing still under way after that
     // ai: is done again from the app's folder at the next launch (Received.retry), its half-made unpack never in place.
     fun close() {
-        timer.stop(); previewTimer.stop(); watchTimer.stop()
+        timer.stop(); watchTimer.stop()
         closed = true
         val s = session
         session = null
@@ -349,7 +366,6 @@ class ReceiveState(private val app: App) {
     // ai: starts it again around it; until its stats are its own the phase is Loading)
     private fun reconfigure() {
         val s = session ?: return
-        if (running) previewTimer.stop()
         s.reconfigure(decoder, layout)
         poll()
     }
@@ -366,17 +382,56 @@ class ReceiveState(private val app: App) {
     fun chooseStats(on: Boolean) { showStats = on; Prefs.Rx.stats = on }
     fun chooseReplays(on: Boolean) { replays = on; session?.replays(on, replayMeta()) }
 
-    // ai: the cameras read again (the Camera menu opening), off the UI thread: a backend's listing opens each device
-    // ai: (V4L2's nodes, Media Foundation's sources)
+    // ai: the cameras read again (the Camera menu opening, the camera watch's stamp moved), off the UI thread: a backend's
+    // ai: listing opens each device (V4L2's nodes, Media Foundation's sources)
     private var listing = false
     fun refreshCameras() {
         if (listing || app.loadError.isNotEmpty()) return
         listing = true
         thread(name = "lizard-cameras", isDaemon = true) {
             val l = runCatching { listed() }.getOrNull()
+            val u = if (UsbDriver.here) UsbDriver.state() else null
             post {
                 listing = false
-                if (l != null) { cameras = l; dropGonePhone() }
+                usb = u
+                if (driverFor != null && u?.devices?.none { it.id == driverFor?.id } != false) driverFor = null
+                if (l != null) {
+                    cameras = l
+                    dropGonePhone()
+                    // ai: the phone or camera its driver was installed for, chosen once it is listed
+                    if (pickUsbPhone) l.firstOrNull { it.id.startsWith(if (pickCamera) "aravis:" else "phone:usb:") }?.let { pickUsbPhone = false; chooseCamera(it.id) }
+                }
+            }
+        }
+    }
+
+    // ai: Install USB driver (Windows, UsbDriver): WinUSB for the device chosen (a phone's accessory too), then the
+    // ai: cameras listed again and the device chosen as it shows; Remove USB driver: every LIZARD driver off, each
+    // ai: device's own back
+    fun installDriver() {
+        val p = driverFor ?: return
+        if (driverBusy) return
+        driverBusy = true
+        driverNote = ""
+        thread(name = "lizard-usb-driver", isDaemon = true) {
+            val why = UsbDriver.install(p)
+            post {
+                driverBusy = false
+                if (why.isEmpty()) { driverFor = null; pickUsbPhone = true; pickCamera = p.camera; refreshCameras() }
+                else driverNote = "The USB driver was not installed: $why"
+            }
+        }
+    }
+    fun removeDriver() {
+        if (driverBusy) return
+        driverBusy = true
+        driverNote = ""
+        thread(name = "lizard-usb-driver", isDaemon = true) {
+            val why = UsbDriver.remove()
+            post {
+                driverBusy = false
+                if (why.isNotEmpty()) driverNote = "The USB driver was not removed: $why"
+                refreshCameras()
             }
         }
     }
@@ -408,7 +463,7 @@ class ReceiveState(private val app: App) {
                 if (st != null && st != stamp) {
                     val first = stamp == null
                     stamp = st
-                    if (!first) refreshCameras()   // ai: the first mark only taken (enter lists already)
+                    if (!first) refreshCameras()   // ai: the first mark only taken (the Camera menu lists as it opens)
                 }
             }
         }
@@ -495,7 +550,6 @@ class ReceiveState(private val app: App) {
         root = f?.str("root").orEmpty()
         val ph = rxPhaseOf(j)
         if (ph != phase) phase = ph
-        if (phase == RxPhase.On) { if (!previewTimer.isRunning) previewTimer.start() } else previewTimer.stop()
         if (decoder == "auto" && running) j?.str("autoRan")?.takeIf { it.isNotEmpty() }?.let { autoRan = it }
         // ai: a phone's or an upload's own crop is the receiver's (the session makes it so at the start)
         if (fixed) j?.str("layout")?.takeIf { it == "1:1" || it == "2:1" }?.let { if (it != layout) layout = it }
@@ -550,19 +604,21 @@ class ReceiveState(private val app: App) {
         if (app.screen == Screen.Receive || running) return
         if (runs.any { it.state == RunState.Recording || it.state == RunState.Ending }) return
         session = null
+        seq = 0L; preview = null
         timer.stop()
         closing = thread(name = "lizard-rx-close", isDaemon = true) { runCatching { s.close() } }
     }
     private var closing: Thread? = null   // ai: a session let go and still closing (the app's close waits for it)
 
     // ai: The preview: the newest frame's crop as the decoder reads it, at most PREVIEW px on its long side, grey, into
-    // ai: one of two Skia bitmaps in turn (installPixels copies the bytes; Compose draws a bitmap by its copy), while On
-    private val previewTimer = Timer(16) { pull() }   // ai: every frame of a 60 a second stream (a phone's, as it sends them)
+    // ai: one of two Skia bitmaps in turn (installPixels copies the bytes; Compose draws a bitmap by its copy), while On,
+    // ai: pulled at each frame the window draws (DesktopReceive.Picture: Compose's frame clock; a 16 ms Swing timer
+    // ai: beside the display's refresh until 2026-11-02, its frames now and then held two refreshes or skipped)
     private val buf = ByteArray(PREVIEW * PREVIEW)
     private var seq = 0L
     private val bitmaps = arrayOfNulls<Bitmap>(2)
     private var flip = 0
-    private fun pull() {
+    fun pull() {
         val s = session ?: return
         if (phase != RxPhase.On) return
         val got = runCatching { s.preview(seq, PREVIEW, buf) }.getOrNull() ?: return
@@ -584,7 +640,10 @@ class ReceiveState(private val app: App) {
     val cropRatio: Float get() = if (layout != "2:1") 1f else if ((mode?.h ?: 0) > (mode?.w ?: 1)) 0.5f else 2f
     // ai: One hint, the first that holds, while the camera runs and a word is read (dev.lizard.ui hintOf): no camera of a
     // ai: PC's is held by the phase lock; the mode's rate where the camera agreed to none
-    val hint: String get() = hintOf(stats, on, phone, upload, locked = false, modeFps = mode?.fps ?: 0.0)
+    // ai: locked: the phase lock on the camera (a GenICam camera's software trigger, cam/aravis.cpp, since 2026-11-01;
+    // ai: UVC's lock is {"off": why}, a stream whose trigger did not arm {})
+    val hint: String get() = hintOf(stats, on, phone, upload,
+        locked = (stats?.get("lock") as? JsonObject)?.let { it.isNotEmpty() && "off" !in it } == true, modeFps = mode?.fps ?: 0.0)
 
     // ai: The readout (Developer Tools; the app's devReadout): a labelled line or two a part, from the stats (receiver.cpp
     // ai: stats, the session's camera line in "camera") and the camera's mode; a part with nothing to say left

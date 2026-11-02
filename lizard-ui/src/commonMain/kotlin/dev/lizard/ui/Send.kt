@@ -20,13 +20,11 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -87,6 +85,10 @@ interface SendHost {
     val readout: Code?                 // ai: the lab's text under Developer Tools' fields (CodeBlock's own 6 dp under them)
     val about: String
     val codeAlone: Boolean             // ai: the code alone on the screen (the phone's send running; the desktop's full screen)
+    // ai: the code alone drawn as the landscape layout bare (ToolLandscape's `bare`), the code area never moved in the tree:
+    // ai: the desktop's, whose code area is a heavyweight canvas a move destroys and makes again, its presenter stopped
+    // ai: and begun anew (2026-11-02, every full-screen switch); the phone's CodeAlone otherwise
+    val codeAloneInPlace: Boolean get() = false
     val edgeTap: Boolean               // ai: a tap near the left edge shows the rail over the code alone (the phone's)
     fun leaveCodeAlone()               // ai: the rail's collapser over the code alone
     val codePadding: Dp                // ai: the light round the code area in the page (the phone's 16 dp; the desktop's canvas fills)
@@ -107,7 +109,7 @@ fun SendScreen(h: SendHost) = Box(Modifier.fillMaxSize().then(h.rootModifier)) {
     val code = remember(h) { movableContentOf<Modifier> { m -> h.CodeArea(m) } }
     BoxWithConstraints {
         val portrait = h.canPortrait && maxHeight > maxWidth
-        if (h.codeAlone) CodeAlone(h, code)
+        if (h.codeAlone && !(h.codeAloneInPlace && !portrait)) CodeAlone(h, code)
         else if (portrait) ToolPortrait("Send", { h.goHome() }, { SwapBtn("Receiver") { h.goReceive() } }) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 val size = h.codeSize(maxWidth, maxHeight, true)
@@ -117,7 +119,7 @@ fun SendScreen(h: SendHost) = Box(Modifier.fillMaxSize().then(h.rootModifier)) {
         } else ToolLandscape("Send", h.folds.open(FoldKey.SendCollapsed), { h.folds.toggle(FoldKey.SendCollapsed) }, { h.goHome() },
             if (h.swapInColumn) ({ SwapBtn("Receiver") { h.goReceive() } }) else null, h.width,
             RowFloor(listOfNotNull(listOf("Stop") to 16.dp, listOf("Pause", "Resume") to 16.dp, if (h.fullscreen) listOf("Fullscreen") to 16.dp else null)),
-            mainPadding = h.codePadding,
+            mainPadding = h.codePadding, bare = h.codeAlone,
             rail = { SendRail(h) }, side = { Side(h) }) {
             val size = h.codeSize(maxWidth, maxHeight, false)
             code(if (size != null) Modifier.size(size.width, size.height) else Modifier.fillMaxSize())
@@ -155,7 +157,7 @@ private const val RAIL_MS = 4000L
 // ai: sending, and the code's capacity
 @Composable
 fun SendRail(h: SendHost) {
-    h.heat?.let { HeatSquare(it) }
+    h.heat?.let { AlertSquare(it) }
     Square {
         IconBtn(if (h.on && !h.paused) Icons.pause else Icons.play, if (!h.on) "Start" else if (h.paused) "Resume" else "Pause",
             enabled = h.on || h.canStart) { if (h.on) h.pause(!h.paused) else h.requestStart() }
@@ -166,10 +168,12 @@ fun SendRail(h: SendHost) {
 @Composable
 private fun Side(h: SendHost) {
     Spacer(Modifier.height(12.dp))
-    Row(Modifier.widthIn(max = LocalButtonsWidest.current).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (!h.busy) Btn("Start", Kind.Primary, enabled = h.canStart, modifier = Modifier.weight(1f)) { h.requestStart() }
+    val fill = LocalButtonsFill.current
+    Row(if (fill) Modifier.fillMaxWidth() else Modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        val grow = if (fill) Modifier.weight(1f) else Modifier
+        if (!h.busy) Btn("Start", Kind.Primary, enabled = h.canStart, modifier = grow) { h.requestStart() }
         else {
-            Btn("Stop", modifier = Modifier.weight(1f), pad = 16.dp) { h.stop() }
+            Btn("Stop", modifier = grow, pad = 16.dp) { h.stop() }
             if (h.pauseShown) {
                 if (h.paused) Btn("Resume", Kind.Primary, pad = 16.dp) { h.pause(false) }
                 else Btn("Pause", enabled = h.on, pad = 16.dp) { h.pause(true) }
@@ -180,9 +184,13 @@ private fun Side(h: SendHost) {
     val ln = h.line
     val color = if (ln.bad) Bad else Fg
     val named = ln.name
+    // ai: from Start until Stop the state line and the figures keep a line each, empty or not (2026-11-02: Preparing,
+    // ai: Sending, the first second's figures and Pause moved everything under them); idle, only what has words
+    val held = h.busy
     if (named != null) NameLine(ln.before, named, ln.after, MaterialTheme.typography.titleMedium, color, Modifier.padding(top = 12.dp))
-    else if (ln.before.isNotEmpty()) Text(ln.before, style = MaterialTheme.typography.titleMedium, color = color, modifier = Modifier.padding(top = 12.dp))
-    if (h.figures.isNotEmpty()) Text(h.figures, style = MaterialTheme.typography.bodyMedium, color = Muted, modifier = Modifier.padding(top = 2.dp))
+    else if (ln.before.isNotEmpty() || held) Text(ln.before, style = MaterialTheme.typography.titleMedium, color = color,
+        maxLines = if (ln.bad) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 12.dp))
+    if (h.figures.isNotEmpty() || held) Text(h.figures, style = MaterialTheme.typography.bodyMedium, color = Muted, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
     h.heat?.let { Warning(it, Modifier.padding(top = 8.dp)) }
     Spacer(Modifier.height(16.dp))
     Fold("Settings", h.folds.open(FoldKey.SendSettings), { h.folds.toggle(FoldKey.SendSettings) }) { Settings(h.settings) }
@@ -191,8 +199,7 @@ private fun Side(h: SendHost) {
         Settings(h.tools)
         h.readout?.let { CodeBlock(it.text, it.size) }
     }
-    HorizontalDivider(color = Line)
-    ListRow("About", h.about.ifEmpty { null })
+    AboutFold(h.about)
     Spacer(Modifier.height(24.dp))
 }
 

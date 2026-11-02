@@ -1,5 +1,5 @@
 // ai: The forms' trial (2026-10-31): a GPU decoder is used only in forms that read known frames right on this device.
-// ai: Frames painted by the C (src/focus.h) with blocks of known bytes, one a picture size the setup holds, the rings in
+// ai: Frames painted by the C (src/lizard_phy.h) with blocks of known bytes, one a picture size the setup holds, the rings in
 // ai: turn, under a fixed noise so the LDPC iterates, are decoded in each variant, each LDPC form and the classifier's
 // ai: int8 twin; a form passes when every painted block comes back verified with its bytes, and is refused when one is
 // ai: missing or verified wrong, or when the device hangs or is lost in it (wg::Lost). A refused form is left out (the

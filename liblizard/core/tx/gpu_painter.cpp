@@ -71,7 +71,7 @@ std::unique_ptr<GpuPainter> GpuPainter::create(const std::string& assets, std::f
 GpuPainter::~GpuPainter() {
   try { if (dev_) dev_->waitIdle(); } catch (const std::exception&) {}   // ai: a lost or hung device (wg::Lost): nothing to wait for
   gPaint_.reset(); gIrows_.reset(); gIpic_.reset(); gTpose_.reset(); gRsv_.reset(); gRsh_.reset();
-  if (fReady_) focus_free(&f_);
+  if (fReady_) lizard_free(&f_);
 }
 
 // ai: The two inverse transforms of a picture size (gpu/encoder.mjs pipesFor): ipic holds two exchange buffers of n
@@ -89,12 +89,12 @@ std::string GpuPainter::pipes(int n) {
 }
 
 std::string GpuPainter::configure(int subch, int span, int fps, int frames, int codes, int gap, int aheadFrames, uint64_t aheadBytes, int margin, bool ringOnly) {
-  if (fReady_) { focus_free(&f_); fReady_ = false; }
-  // ai: the format's picture (src/focus.h focus_n_for) and clip ratio, 2 (SPEC 6.7)
-  const int n = focus_n_for(subch);
-  if (focus_init(&f_, n, subch, 2.0f, span, 0.f)) return "the codec refused LIZARD-" + std::to_string(subch);
+  if (fReady_) { lizard_free(&f_); fReady_ = false; }
+  // ai: the format's picture (src/lizard_phy.h lizard_n_for) and clip ratio, 2 (SPEC 6.7)
+  const int n = lizard_n_for(subch);
+  if (lizard_init(&f_, n, subch, 2.0f, span, 0.f)) return "the codec refused LIZARD-" + std::to_string(subch);
   fReady_ = true;
-  focus_fmt_fps(&f_, fps);
+  lizard_fmt_fps(&f_, fps);
   fps_ = fps;
   try {
     if (!ringOnly) {
@@ -248,10 +248,10 @@ GpuPainter::Check GpuPainter::check(const uint8_t* blocks, int count) {
     encode(blocks + f0 * perFrame, k, f0 & 3, got.data());
     for (int i = 0; i < k; i++) {
       // ai: each code against the C's paint of its own blocks, the frame's count; the gap's pixels the margin's byte
-      focus_parity(&f_, (f0 + i) & 3);
+      lizard_parity(&f_, (f0 + i) & 3);
       for (int cd = 0; cd < t.codes; cd++) {
-        focus_encode(&f_, blocks + (f0 + i) * perFrame + cd * per, drive.data());
-        focus_paint_rgba(&f_, drive.data(), rgba.data());
+        lizard_encode(&f_, blocks + (f0 + i) * perFrame + cd * per, drive.data());
+        lizard_paint_rgba(&f_, drive.data(), rgba.data());
         const int x0 = cd * (t.W + t.gap);
         for (int y = 0; y < t.W; y++) {
           const bool ra = onRun(y);
@@ -269,7 +269,7 @@ GpuPainter::Check GpuPainter::check(const uint8_t* blocks, int count) {
       }
     }
   }
-  focus_parity(&f_, 0);
+  lizard_parity(&f_, 0);
   c.ok = c.borderDiff == 0 && c.squareMax <= 1 && c.anchorDiff == 0;
   return c;
 }

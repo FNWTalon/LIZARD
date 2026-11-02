@@ -3,7 +3,7 @@
 // version takes, the decode size, the detrend's basis and twiddles (transformTables), and the FFT's stages
 // (stagesOf). Plain JS over the codec's wasm (sim/ob.mjs over liblizard/build/ob.mjs), so the sender's pages carry
 // none of the decoder's kernels.
-import { init, Focus } from "../../sim/ob.mjs";
+import { init, Lizard } from "../../sim/ob.mjs";
 import { SIZES } from "../plan/common.mjs";
 import { CHUNKS } from "../plan/back_tiers.mjs";
 
@@ -26,7 +26,7 @@ export function stagesOf(n) {
   return s;
 }
 
-// The coefficient at pos p, as (u, v): the C's half-plane block layout (src/focus.c init).
+// The coefficient at pos p, as (u, v): the C's half-plane block layout (src/lizard_phy.c init).
 export function uvOf(p, n, bw) {
   const v = Math.floor(p / (n * bw)) * bw + ((p % (n * bw)) % bw), uw = Math.floor((p % (n * bw)) / bw);
   return [uw < n / 2 ? uw : uw - n, v];
@@ -92,7 +92,7 @@ export const rowsOfVersion = (tb, v) => tb.rowsBy[Math.min(CHUNKS * v, tb.blocks
 // ai: to 3.6% more blocks.
 export const TRANSFORM_DOWN = { 256: 192, 384: 256, 512: 384, 768: 512, 1024: 768, 1152: 1024, 1280: 1024, 1536: 1024 };
 
-// ai: The detrend's basis and its transforms at m points, as src/focus.c init defines them (in double, then f32):
+// ai: The detrend's basis and its transforms at m points, as src/lizard_phy.c init defines them (in double, then f32):
 // ai: cx, qx, then x12 (x1r, x1i, x2r, x2i a u), sx2 and sq2.
 function detrendTables(m) {
   const cx = new Float32Array(m), qx = new Float32Array(m), x12 = new Float32Array(4 * m), er = new Float64Array(m), ei = new Float64Array(m);
@@ -113,16 +113,16 @@ function detrendTables(m) {
 // ai: (gpu/tables.mjs PICTURES) and null where a size is not built. A picture's tables do not depend on the ring it
 // ai: is painted in, so the codec is set up in its default ring. Besides A's own tables each entry carries what the
 // ai: soft values bind to (UV, UC) and its blocks. Read once a build; the wasm holds one configuration at a time, so
-// ai: this is not called while another Focus is in use.
+// ai: this is not called while another Lizard is in use.
 export async function transformTables(sizes) {
   await init();
   return sizes.map((z) => {
     if (!z) return null;
     const { n, subch } = z, nt = z.nt ?? n;
     if (SIZES.indexOf(n) < 0) throw new Error(`picture size ${n}`);
-    const fc = new Focus(n, subch, 1);
+    const fc = new Lizard(n, subch, 1);
     // ai: blocks here are 8-sub-channel chunks, the rows' and the soft values' unit (a version is CHUNKS of them),
-    // ai: which a profile does not change (2026-10-07: the format's rate profile, src/focus.h focus_tiers_for, gives a
+    // ai: which a profile does not change (2026-10-07: the format's rate profile, src/lizard_phy.h lizard_tiers_for, gives a
     // ai: frame fewer blocks than chunks, gpu/back/tiers.mjs)
     const shape = { ...fc.shape(), blocks: subch / 8 }, pos = fc.posTable(), tab = fc.tables();
     const disc = discLayout(shape, pos), rowsBy = rowsByCount(shape, pos);

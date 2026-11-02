@@ -30,6 +30,9 @@ struct Found { std::string id, name, detail; };
 std::vector<Found> list(std::vector<std::string>* notes);
 // ai: every USB device's place and ids, none opened: a mark that changes as devices come and go ("" with no libusb)
 std::string stamp();
+// ai: a device of any kind on the bus at id's place (phone:usb:<place>), none opened: a phone that would not open is
+// ai: still there (no driver, no access, its switch refused), not unplugged
+bool present(const std::string& id);
 // ai: the phone at id as an accessory, switched into accessory mode where it is not one yet, its accessory interface
 // ai: claimed; name its product string. Null with why where it cannot be
 std::unique_ptr<Wire> open(const std::string& id, std::string& name, std::string& why);

@@ -1,7 +1,8 @@
 // ai: cam_check's checks (2026-10-25), one file each beside the part it holds to account: check_luma.cpp (the
 // ai: conversions, TurboJPEG, the clock's sleep), check_scene.cpp (the simulated screen and camera), check_session.cpp
 // ai: (the session over the receiver, on the simulated camera), check_v4l2.cpp (V4L2 against sim/fake_v4l2's devices),
-// ai: check_mf.cpp (Media Foundation against sim/fake_mf's source), check_avf.cpp (AVFoundation). Each takes the
+// ai: check_mf.cpp (Media Foundation against sim/fake_mf's source), check_avf.cpp (AVFoundation), check_aravis.cpp
+// ai: (the GenICam backend against sim/fake_gv's GigE camera, a process of its own, 2026-11-01). Each takes the
 // ai: arguments after its name and returns the process's exit code, one rule for all (kHeld and the rest below); each
 // ai: case a line "ok <case>: ...", "FAIL <case>: ..." or "skip <case>: <why>" on stdout.
 #pragma once
@@ -31,5 +32,6 @@ int session(const Args& a);
 int v4l2(const Args& a);
 int mf(const Args& a);
 int avf(const Args& a);
+int aravis(const Args& a);
 
 }  // namespace lizard::check

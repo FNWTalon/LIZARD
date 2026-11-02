@@ -91,7 +91,7 @@ Read readFrame(liz_decoder* dec, const std::vector<uint8_t>& img, int w, int h, 
   }
   return r;
 }
-// ai: the picture count mod 4 the pilots' signs say (focus.h focus_parity: bit 0 on the even blocks, bit 1 on the odd)
+// ai: the picture count mod 4 the pilots' signs say (lizard_phy.h lizard_parity: bit 0 on the even blocks, bit 1 on the odd)
 int countOf(const liz_decoded& d) { return (d.pilot_r[0] < 0 ? 1 : 0) | (d.pilot_r[1] < 0 ? 2 : 0); }
 std::string pilots(const liz_decoded& d) {
   return fmt("pilots %+.3f (sd %.3f) even, %+.3f (sd %.3f) odd", d.pilot_r[0], d.pilot_sd[0], d.pilot_r[1], d.pilot_sd[1]);
@@ -159,7 +159,7 @@ void caseStraddle(liz_decoder* dec) {
   int held = 0;
   // ai: a clean capture first (the held word, and the channel's own reading c0: the resampled picture's distortion
   // ai: is in m2 too), then windows over the change from picture k - 1 to k, f of the window before it. The pilots'
-  // ai: theory (focus.h focus_pilot), every sample the same blend: a tail both pictures paint alike reads
+  // ai: theory (lizard_phy.h lizard_pilot), every sample the same blend: a tail both pictures paint alike reads
   // ai: 1 / sqrt(m2), one they paint opposite (1 - 2f) / sqrt(m2), m2 = 1 - 2f + 2f^2 + 1 / c0^2 - 1 (the data's rms
   // ai: lowered by the blend, the channel's distortion as it was); the even blocks' bit both neighbours flip, the odd
   // ai: blocks' bit flips from k - 1 to k where k is even; the sign k's bit

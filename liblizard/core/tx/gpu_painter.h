@@ -32,7 +32,7 @@ class GpuPainter {
   // ai: the device, for a host that presents from it (its handles are wg::Device's public fields)
   wg::Device* vk() const { return dev_.get(); }
 
-  // ai: A format (sub-channels, the ring's span, the rate the word states; the picture is the format's, focus_n_for), encodes of up to `frames` frames (halved
+  // ai: A format (sub-channels, the ring's span, the rate the word states; the picture is the format's, lizard_n_for), encodes of up to `frames` frames (halved
   // ai: while the device cannot hold them), each `codes` symbols side by side `gap` modules apart (send_tables.h), and
   // ai: the frame ring (2026-10-07): FRAME holds depth() frames, the most of `aheadFrames` and `aheadBytes` allow and at
   // ai: least 2 frames + margin + 1 (halved while the device cannot hold them, never under the floor), frame seq at slot
@@ -78,7 +78,7 @@ class GpuPainter {
   std::string name_, assets_;
   std::function<void(const std::string&)> log_;
   SendConsts k_;
-  focus_t f_{};
+  lizard_t f_{};
   bool fReady_ = false;
   SendTables t_;
   int frames_ = 0, fps_ = 0, depth_ = 0;

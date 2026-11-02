@@ -29,3 +29,12 @@ includes a Java runtime from OpenJDK (GPLv2 with the Classpath Exception; its no
 lib/runtime/legal), Compose Multiplatform and Kotlin (Apache License 2.0) and Compose's Skia (BSD 3-Clause,
 lizard-desktop/packaging/skia.LICENSE); the Android app includes AndroidX and
 Jetpack Compose (Apache License 2.0); the generators use naga (MIT or Apache License 2.0).
+
+The desktop app's Windows and macOS packages also carry, beside its native library and loaded at run time, libusb
+(LGPL 2.1 or later) and Aravis (LGPL 2.1 or later) with the libraries Aravis loads: GLib (LGPL 2.1 or later), libxml2
+(MIT), PCRE2 (BSD 3-Clause), libffi (MIT), GNU libintl and libiconv (LGPL 2.1 or later) and zlib (zlib License), as
+MSYS2 (Windows) and Homebrew (macOS) build them. The Windows package carries lizard_usb.exe
+(lizard-desktop/native/usb), which links libwdi 1.5.1 (LGPL 3.0 or later; its source at
+https://github.com/pbatard/libwdi, the build in lizard-desktop/packaging/windows-extra.sh) and holds the WinUSB
+co-installers of Microsoft's Windows Driver Frameworks 1.11 redistributable, under Microsoft's license terms for it.
+Each package's license text carries these licenses in full.

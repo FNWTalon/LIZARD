@@ -38,7 +38,7 @@
 
 #include "wg.h"
 extern "C" {
-#include "focus.h"
+#include "lizard_phy.h"
 }
 
 #define TAG "lizard"
@@ -826,9 +826,9 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_lizard_receiver_Native_txPostStats
   return e->NewStringUTF((o + ",\"error\":\"" + jsonText(t->error) + "\"}").c_str());
 }
 
-// ai: The blocks a frame of subch sub-channels carries under the format's rate profile (src/focus.h focus_blocks_for),
+// ai: The blocks a frame of subch sub-channels carries under the format's rate profile (src/lizard_phy.h lizard_blocks_for),
 // ai: for the Blocks slider's figures before a configure
-extern "C" JNIEXPORT jint JNICALL Java_dev_lizard_receiver_Native_blocksFor(JNIEnv*, jclass, jint subch) { return focus_blocks_for(subch); }
+extern "C" JNIEXPORT jint JNICALL Java_dev_lizard_receiver_Native_blocksFor(JNIEnv*, jclass, jint subch) { return lizard_blocks_for(subch); }
 
 // ai: The next frame into the surface's own queue, if it is painted: true when one was posted. On the main thread, at
 // ai: the display's pace (Send.kt's frame callback: below Android 13, or where txPost refused the vsync present); a

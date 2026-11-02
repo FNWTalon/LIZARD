@@ -65,7 +65,7 @@
 #include "axes.h"
 #include "xfer_rx_core.h"
 extern "C" {
-#include "focus.h"
+#include "lizard_phy.h"
 }
 #include <algorithm>
 #include <atomic>
@@ -801,6 +801,14 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v, bool
   std::vector<int> anchors;   // ai: the anchors each found frame read
   double gpuMs = 0, gpuFrames = 0;
   std::vector<std::pair<std::string, double>> stageSum;
+  // ai: LIZ_PRELOAD=1: every frame decoded out of the recording before the clock starts, as lizard_cpu_check holds its
+  // ai: frames, so "end to end" is the decoder's and not the recording's (a 4K half decoded in the loop took the host's
+  // ai: one thread); the frames' memory, w h bytes each, held for the run
+  std::vector<std::vector<uint8_t>> pre;
+  if (env("LIZ_PRELOAD") == "1") {
+    pre.resize((size_t)frames);
+    for (int i = 0; i < frames; i++) if (!rec->frame((size_t)i, pre[(size_t)i], why)) throw wg::Error(why);
+  }
   const double t0 = fh->now();
   // ai: LIZ_PEAKS=<file> (2026-10-31, the finder's judges and the classifier's export: scripts/gpu/native/peaks.mjs):
   // ai: each frame's kept peaks as the classifier read them, SELECT's list at the batch's end (the second round's on a
@@ -881,7 +889,8 @@ static int replay(Ctx& c, const std::string& run, int limit, std::string v, bool
       std::vector<Slot*> slots;
       for (int i = 0; i < nb; i++, next++) {
         std::vector<uint8_t> p;
-        if (!rec->frame((size_t)next, p, why)) throw wg::Error(why);
+        if (!pre.empty()) p = std::move(pre[(size_t)next]);   // ai: each frame taken once
+        else if (!rec->frame((size_t)next, p, why)) throw wg::Error(why);
         const uint32_t w = sizes[next].first, h = sizes[next].second;
         // ai: A slot comes back once the batch that took it has copied it out (front.cpp takeSlot): the batch just
         // ai: launched may not have on a slow device (the iGPU, 32 frames a batch, a ring of 36), so wait for it.

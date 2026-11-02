@@ -16,6 +16,7 @@
 #include "aoa.h"
 #include "backends.h"
 #include "clock.h"
+#include "priority.h"
 #include "lizfile.h"
 #include "stream.h"
 #include "json.hpp"
@@ -502,7 +503,7 @@ class PhoneCamera : public Camera {
     phoneOn_ = -1;
     said_ = -1;
     offAt_ = 0;
-    reader_ = std::thread([this] { read(); });
+    reader_ = std::thread([this] { sys::raiseThread(); read(); });
     back_ = std::thread([this] { back(); });
     return true;
   }
