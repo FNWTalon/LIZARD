@@ -46,6 +46,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
@@ -209,39 +210,58 @@ private fun Side(h: SendHost) {
 // ai: Folder and where the platform has one Media) in one row stretched across the box in equal cells, and under them,
 // ai: while the selection holds something, its card as wide: the count with Clear, then a tile an item (its icon, its
 // ai: name with the stem cut and the ending kept, the line under it, an x that removes it), in rows stretched across the
-// ai: card (TileRows, TILE dp the least), one row scrolling sideways in landscape; nothing changes while sending. At the
-// ai: top of its box, 16 dp from its edges; only the card scrolls. The phone draws it in Compose; the desktop paints
-// ai: the same with AWT on its heavyweight code canvas (nothing of Compose draws over that).
+// ai: card (TileRows, TILE dp the least), one row scrolling sideways in landscape; nothing changes while sending. The
+// ai: phone's at the top of its box, 16 dp from its edges, stretched across; `column` (the desktop's, 576 dp) a column
+// ai: at most that wide, centred, and the whole centred in its height where it fits, the card at least a row of items
+// ai: tall; only the card scrolls. `under`: a line 12 dp under the card while it shows (the desktop's choice, what goes).
+// ai: Both apps draw it in Compose (the desktop's with AWT on its code canvas until 2026-11-02).
 class UploadItem(val key: String, val name: String, val sub: String, val dir: Boolean)
 
 @Composable
-fun Upload(tiles: List<Act>, items: List<UploadItem>, enabled: Boolean, landscape: Boolean, onRemove: (String) -> Unit, onClear: () -> Unit) {
+fun Upload(tiles: List<Act>, items: List<UploadItem>, enabled: Boolean, landscape: Boolean, onRemove: (String) -> Unit, onClear: () -> Unit,
+           column: Dp? = null, under: (@Composable () -> Unit)? = null) {
     BoxWithConstraints(Modifier.fillMaxSize().background(Bg)) {
-        val w = maxWidth - 32.dp
-        Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        val w = if (column != null) minOf(maxWidth - 32.dp, column) else maxWidth - 32.dp
+        Column(Modifier.fillMaxSize().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = if (column != null) Arrangement.spacedBy(16.dp, Alignment.CenterVertically) else Arrangement.spacedBy(16.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 tiles.forEach { t -> Tile(t.icon ?: Icons.file, t.label, (w - 12.dp * (tiles.size - 1)) / tiles.size, enabled = enabled, onClick = t.run) }
             }
-            if (items.isNotEmpty()) Column(Modifier.width(w).weight(1f, fill = false).clip(RoundedCornerShape(12.dp)).background(Card)
-                .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 12.dp)) {
-                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("${items.size} ${if (items.size == 1) "item" else "items"}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
-                    Btn("Clear", Kind.Text, enabled = enabled) { onClear() }
-                }
-                val item: @Composable (Int, Dp) -> Unit = { i, iw ->
-                    val it = items[i]
-                    ItemTile(it.name, it.sub, if (it.dir) Icons.folder else Icons.file, iw, enabled = enabled) { onRemove(it.key) }
-                }
-                if (landscape) {
-                    // ai: one row at the columns' width (TileRows' rule), scrolling sideways past what fits
-                    val gap = 8.dp; val inner = w - 24.dp
-                    val cols = maxOf(1, ((inner + gap) / (TILE.dp + gap)).toInt())
-                    Row(Modifier.padding(top = 4.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(gap)) {
-                        items.indices.forEach { item(it, (inner - gap * (cols - 1)) / cols) }
+            // ai: the card, and under it `under`, as one: the card gives up height before the line does
+            if (items.isNotEmpty()) Column(Modifier.width(w).weight(1f, fill = false), verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(Modifier.fillMaxWidth().weight(1f, fill = false).then(if (column != null) Modifier.heightIn(min = (4 + 48 + 4 + TILE + 12).dp) else Modifier)
+                    .clip(RoundedCornerShape(12.dp)).background(Card).padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 12.dp)) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("${items.size} ${if (items.size == 1) "item" else "items"}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+                        Btn("Clear", Kind.Text, enabled = enabled) { onClear() }
                     }
-                } else Box(Modifier.padding(top = 4.dp).weight(1f, fill = false).verticalScroll(rememberScrollState())) { TileRows(items.size, w - 24.dp, 8.dp, item) }
+                    val item: @Composable (Int, Dp) -> Unit = { i, iw ->
+                        val it = items[i]
+                        ItemTile(it.name, it.sub, if (it.dir) Icons.folder else Icons.file, iw, enabled = enabled) { onRemove(it.key) }
+                    }
+                    if (landscape) {
+                        // ai: one row at the columns' width (TileRows' rule), scrolling sideways past what fits
+                        val gap = 8.dp; val inner = w - 24.dp
+                        val cols = maxOf(1, ((inner + gap) / (TILE.dp + gap)).toInt())
+                        Row(Modifier.padding(top = 4.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(gap)) {
+                            items.indices.forEach { item(it, (inner - gap * (cols - 1)) / cols) }
+                        }
+                    } else Box(Modifier.padding(top = 4.dp).weight(1f, fill = false).verticalScroll(rememberScrollState())) { TileRows(items.size, w - 24.dp, 8.dp, item) }
+                }
+                under?.invoke()
             }
         }
+    }
+}
+
+// ai: the test stream's note where the file upload would be (both apps): the file icon and "Test stream" on the soft fill
+@Composable
+fun TestStreamNote() {
+    Column(Modifier.fillMaxSize().background(Soft), verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(Icons.file, contentDescription = null, Modifier.size(24.dp), tint = Muted)
+        Text("Test stream", style = MaterialTheme.typography.bodyMedium, color = Muted, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 16.dp))
     }
 }
 
