@@ -2914,21 +2914,24 @@ void ob_map_point(const ob_layout_t *L, const ob_reg_t *reg, float mx, float my,
 // block is at (mx0 + (x0 + xx) * step, my0 + (y0 + yy) * step) and lands in out[yy * pitch + xx]. Points up to the
 // next mesh column share their four nodes and differ in mx alone, so a row is walked in such runs, four points
 // to a vector. The picture is such a grid, n samples across its span, taken a strip of columns at a time.
-// ai: relaxed (a constant where it is called): the vectors through sample4r, the decode's picture on arm64
-static inline __attribute__((always_inline)) void sample_grid_walk(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch, const int relaxed) {
-  (void)relaxed;
-  const image_t im = *pim;
-  const homo_t H = reg->H;
-  const node_t *nodes = reg->nodes;
-  // Which mesh column a point falls in depends on its column alone, so the runs are found once, not once a row,
-  // and point by point with the comparison the scalar walk makes, so no point can land in a different column.
-  int run_i[OB_MAX_NODES + 1], run_end[OB_MAX_NODES + 1], runs = 0;
+// Which mesh column a point falls in depends on its column alone, so the runs are found once, not once a row,
+// and point by point with the comparison the scalar walk makes, so no point can land in a different column.
+static inline int grid_runs(const ob_layout_t *L, float mx0, float step, int x0, int nx, int *run_i, int *run_end) {
+  int runs = 0;
   for (int xx = 0, i = 0; xx < nx; runs++) {
     while (i < L->nx - 2 && mx0 + (float)(x0 + xx) * step >= L->node_x[i + 1]) i++;
     int e = xx + 1;
     while (e < nx && !(i < L->nx - 2 && mx0 + (float)(x0 + e) * step >= L->node_x[i + 1])) e++;
     run_i[runs] = i; run_end[runs] = e; xx = e;
   }
+  return runs;
+}
+void ob_sample_grid(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
+  const image_t im = *pim;
+  const homo_t H = reg->H;
+  const node_t *nodes = reg->nodes;
+  int run_i[OB_MAX_NODES + 1], run_end[OB_MAX_NODES + 1];
+  const int runs = grid_runs(L, mx0, step, x0, nx, run_i, run_end);
   // ai: the rows go down the grid, so the mesh row a row falls in only moves on: the same comparisons as a search from 0
   int j = 0;
   for (int yy = 0; yy < ny; yy++) {
@@ -2976,11 +2979,7 @@ static inline __attribute__((always_inline)) void sample_grid_walk(const ob_layo
       const v128_t rw = wasm_f32x4_div(one, wasm_f32x4_add(wasm_f32x4_mul(h6, vmx), vkw));
       const v128_t pu = wasm_f32x4_mul(wasm_f32x4_add(wasm_f32x4_mul(h0, vmx), vku), rw), pv = wasm_f32x4_mul(wasm_f32x4_add(wasm_f32x4_mul(h3, vmx), vkv), rw);
       const v128_t dx = wasm_f32x4_add(cx4, wasm_f32x4_mul(ex4, vmx)), dy = wasm_f32x4_add(cy4, wasm_f32x4_mul(ey4, vmx));
-#ifdef OB_NEON
-      const v128_t got = relaxed ? sample4r(&im, wasm_f32x4_add(pu, dx), wasm_f32x4_add(pv, dy)) : sample4(&im, wasm_f32x4_add(pu, dx), wasm_f32x4_add(pv, dy));
-#else
       const v128_t got = sample4(&im, wasm_f32x4_add(pu, dx), wasm_f32x4_add(pv, dy));
-#endif
       if (xx + 4 <= nx) { wasm_v128_store(out + yy * pitch + xx, got); continue; }
       float t[4];   // the row's last vector, past its end: those lanes are dropped
       wasm_v128_store(t, got);
@@ -3003,10 +3002,95 @@ static inline __attribute__((always_inline)) void sample_grid_walk(const ob_layo
 #endif
   }
 }
-void ob_sample_grid(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
-  sample_grid_walk(L, pim, reg, mx0, my0, step, x0, nx, y0, ny, out, pitch, 0);
+#ifdef OB_NEON
+// ai: arm64, the decode's picture at gamma 1 (ob_sample_grid_pic), the same map in floats of its own (fused
+// ai: multiply-adds, its own order; the blocks a decode verifies are its test). Every term of a row is a line in the
+// ai: column offset g, one fused multiply-add each: the homography's numerators and denominator, and the mesh's
+// ai: displacement, which within a mesh row is D + v E at a column (D its value on mesh row j less the half pixel, E the
+// ai: step to row j + 1), tabled a column at a time once a mesh row, so a vector carries no run of the mesh. Four vectors'
+// ai: coordinates, then their four reads (sample4r), so a read's chain overlaps the next points' arithmetic. At most
+// ai: GRID_LIN columns a pass. (2026-11-02, an S26 prime core, pictures of 768 to 1536 on a 1080p frame: 0.70 to 0.76 ns
+// ai: a point against 1.35 to 1.43 for the walk above through the 16-bit gather, where the mesh's terms, rebuilt every
+// ai: row, with a run check a vector, cost 0.36 of it.)
+enum { GRID_LIN = 256 };
+static void sample_grid_lin(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
+  const uint8_t *px = pim->px;
+  const int w = pim->w, nn = L->nx;
+  const float *h = reg->H.h;
+  int run_i[OB_MAX_NODES + 1], run_end[OB_MAX_NODES + 1];
+  const int runs = grid_runs(L, mx0, step, x0, nx, run_i, run_end);
+  // ai: a column's place in its mesh column (0 to 1), and the table: D x, E x, D y, E y a column, 8 past the end so a
+  // ai: run's last vector may reach past it (the next run rewrites those columns) and the last vector reads zeros
+  enum { TW = GRID_LIN + 8 };
+  float tu[TW], T[4][TW];
+  for (int r = 0, k = 0; r < runs; r++) {
+    const int i = run_i[r];
+    const float inv = 1.0f / (L->node_x[i + 1] - L->node_x[i]);
+    for (; k < run_end[r]; k++) tu[k] = (mx0 + (float)(x0 + k) * step - L->node_x[i]) * inv;
+  }
+  for (int k = nx; k < nx + 8; k++) { tu[k] = 0; T[0][k] = T[1][k] = T[2][k] = T[3][k] = 0; }
+  const float m0 = mx0 + (float)x0 * step;
+  const float32x4_t zero = vdupq_n_f32(0), one = vdupq_n_f32(1), four = vdupq_n_f32(4), eight = vdupq_n_f32(8), lane = { 0, 1, 2, 3 };
+  const float32x4_t wm = vdupq_n_f32(w - 1.001f), hm = vdupq_n_f32(pim->h - 1.001f);
+  const float32x4_t Bw = vdupq_n_f32(h[6] * step), Bu = vdupq_n_f32(h[0] * step), Bv = vdupq_n_f32(h[3] * step);
+  int j = 0, built = -1;
+  for (int yy = 0; yy < ny; yy++) {
+    const float my = my0 + (float)(y0 + yy) * step;
+    while (j < L->ny - 2 && my >= L->node_y[j + 1]) j++;
+    if (j != built) {
+      const node_t *r0 = reg->nodes + j * nn, *r1 = r0 + nn;
+      for (int r = 0, s = 0; r < runs; s = run_end[r++]) {
+        const node_t *a = r0 + run_i[r], *b = r1 + run_i[r];
+        const float32x4_t c0x = vdupq_n_f32(a[0].dx - 0.5f), c1x = vdupq_n_f32(a[1].dx - a[0].dx), e0x = vdupq_n_f32(b[0].dx - a[0].dx), e1x = vdupq_n_f32((b[1].dx - b[0].dx) - (a[1].dx - a[0].dx));
+        const float32x4_t c0y = vdupq_n_f32(a[0].dy - 0.5f), c1y = vdupq_n_f32(a[1].dy - a[0].dy), e0y = vdupq_n_f32(b[0].dy - a[0].dy), e1y = vdupq_n_f32((b[1].dy - b[0].dy) - (a[1].dy - a[0].dy));
+        for (int k = s; k < run_end[r]; k += 4) {
+          const float32x4_t U = vld1q_f32(tu + k);
+          vst1q_f32(T[0] + k, vfmaq_f32(c0x, c1x, U)); vst1q_f32(T[1] + k, vfmaq_f32(e0x, e1x, U));
+          vst1q_f32(T[2] + k, vfmaq_f32(c0y, c1y, U)); vst1q_f32(T[3] + k, vfmaq_f32(e0y, e1y, U));
+        }
+      }
+      built = j;
+    }
+    const float32x4_t V = vdupq_n_f32((my - L->node_y[j]) / (L->node_y[j + 1] - L->node_y[j]));
+    const float32x4_t Aw = vdupq_n_f32(h[6] * m0 + (h[7] * my + 1)), Au = vdupq_n_f32(h[0] * m0 + (h[1] * my + h[2])), Av = vdupq_n_f32(h[3] * m0 + (h[4] * my + h[5]));
+    float *o = out + (size_t)yy * pitch;
+    // ai: the point's clamped coordinates less the half pixel: the half pixel is in D
+#define LIN_XY(K, G, X, Y) do { \
+      const float *tk = T[0] + (K); \
+      const float32x4_t rw_ = vdivq_f32(one, vfmaq_f32(Aw, Bw, G)); \
+      const float32x4_t ddx_ = vfmaq_f32(vld1q_f32(tk), vld1q_f32(tk + TW), V), ddy_ = vfmaq_f32(vld1q_f32(tk + 2 * TW), vld1q_f32(tk + 3 * TW), V); \
+      X = vminq_f32(vmaxq_f32(vfmaq_f32(ddx_, vfmaq_f32(Au, Bu, G), rw_), zero), wm); \
+      Y = vminq_f32(vmaxq_f32(vfmaq_f32(ddy_, vfmaq_f32(Av, Bv, G), rw_), zero), hm); \
+    } while (0)
+    float32x4_t g = lane;
+    int k = 0;
+    for (; k + 16 <= nx; k += 16, g = vaddq_f32(g, vdupq_n_f32(16))) {
+      float32x4_t xa, ya, xb, yb, xc, yc, xd, yd;
+      const float32x4_t g4 = vaddq_f32(g, four), g8 = vaddq_f32(g, eight), g12 = vaddq_f32(g4, eight);
+      LIN_XY(k, g, xa, ya); LIN_XY(k + 4, g4, xb, yb); LIN_XY(k + 8, g8, xc, yc); LIN_XY(k + 12, g12, xd, yd);
+      const float32x4_t sa = sample4r(px, w, xa, ya), sb = sample4r(px, w, xb, yb), sc = sample4r(px, w, xc, yc), sd = sample4r(px, w, xd, yd);
+      vst1q_f32(o + k, sa); vst1q_f32(o + k + 4, sb); vst1q_f32(o + k + 8, sc); vst1q_f32(o + k + 12, sd);
+    }
+    for (; k < nx; k += 4, g = vaddq_f32(g, four)) {
+      float32x4_t xa, ya;
+      LIN_XY(k, g, xa, ya);
+      const float32x4_t got = sample4r(px, w, xa, ya);
+      if (k + 4 <= nx) { vst1q_f32(o + k, got); continue; }
+      float t[4];   // the row's last vector, past its end: those lanes are dropped
+      vst1q_f32(t, got);
+      for (int l = 0; k + l < nx; l++) o[k + l] = t[l];
+    }
+#undef LIN_XY
+  }
 }
+#endif
 void ob_sample_grid_pic(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
-  sample_grid_walk(L, pim, reg, mx0, my0, step, x0, nx, y0, ny, out, pitch, 1);
+#ifdef OB_NEON
+  if (pim->lin) {
+    for (int c = 0; c < nx; c += GRID_LIN) sample_grid_lin(L, pim, reg, mx0, my0, step, x0 + c, nx - c < GRID_LIN ? nx - c : GRID_LIN, y0, ny, out + c, pitch);
+    return;
+  }
+#endif
+  ob_sample_grid(L, pim, reg, mx0, my0, step, x0, nx, y0, ny, out, pitch);
 }
 
