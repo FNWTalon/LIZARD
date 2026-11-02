@@ -962,6 +962,12 @@ int aravis(const Args& a) {
     return kHeld;
   }
   r.ok("load", fmt("Aravis %u.%u.%u from %s", api->vmajor, api->vminor, api->vmicro, api->from.c_str()));
+  // ai: LIZ_CHECK_TIMING=0: the cases held to real time (a trigger's interval, the lock's schedule) skipped, said so,
+  // ai: on a machine that is not held to it (a shared CI runner: one interval off the period, 171 of 994 triggers
+  // ai: missed at 120, 2026-11-02, where this PC keeps them within microseconds); every other case runs
+  const char* tv = std::getenv("LIZ_CHECK_TIMING");
+  const bool timing = !(tv && std::string(tv) == "0");
+  const std::string noTiming = "LIZ_CHECK_TIMING=0: a machine not held to real time";
   // ai: no USB camera enumerated or opened: GigE alone, before anything lists
   api->arv_disable_interface("USB3Vision");
   const fs::path exe = fakePath();
@@ -983,15 +989,15 @@ int aravis(const Args& a) {
         freeCase(r, *c, 60);
         freeCase(r, *c, 120);
         formatsCase(r, *c);
-        triggerCase(r, *c);
+        if (timing) triggerCase(r, *c); else r.skip("trigger", noTiming);
       } else {
         for (const char* k : {"controls", "free 60", "free 120", "formats", "trigger"}) r.fail(k, "the camera did not open");
       }
     }
   }
   sessionCase(r, exe);
-  lockCase(r, exe);
-  lock120Case(r, exe);
+  if (timing) { lockCase(r, exe); lock120Case(r, exe); }
+  else { r.skip("lock", noTiming); r.skip("lock 120", noTiming); }
   return r.code();
 }
 

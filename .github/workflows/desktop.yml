@@ -180,6 +180,8 @@ jobs:
       # conversions, TurboJPEG and the clock's sleep, the simulated screen and camera, the session on the CPU decoder,
       # V4L2 against sim/fake_v4l2's devices, Aravis against lizard_fakegv on loopback (the distro's libaravis, which
       # libaravis-dev brought; the check opens only the fake). LIZ_V4L2_NODES empty: no /dev/video* node is probed.
+      # LIZ_CHECK_TIMING=0: a shared runner is not held to real time, so Aravis's trigger and lock cases (a trigger's
+      # interval, the lock's schedule at 60 and 120) are skipped here and run on a real machine.
       # Every check runs; any one's failure (exit other than 0) fails the step after the last, and the job.
       - name: The receiver's checks
         if: ${{ !cancelled() && steps.native.outcome == 'success' }}
@@ -190,7 +192,7 @@ jobs:
           fail=0
           for c in luma scene session v4l2 aravis; do
             rc=0
-            timeout 600 lizard-desktop/build/native/cam_check "$c" > "smoke/cam_check-$c.txt" 2>&1 || rc=$?
+            LIZ_CHECK_TIMING=0 timeout 600 lizard-desktop/build/native/cam_check "$c" > "smoke/cam_check-$c.txt" 2>&1 || rc=$?
             echo "::group::cam_check $c: exit $rc"
             cat "smoke/cam_check-$c.txt"
             echo "::endgroup::"
