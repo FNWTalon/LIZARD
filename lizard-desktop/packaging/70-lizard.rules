@@ -1,0 +1,12 @@
+# LIZARD's receiver reaches these USB devices through libusb as the user at the seat (uaccess, before 73-seat-late):
+# a phone on the cable, asked into Android Open Accessory mode and read as an accessory, and a USB3 Vision camera
+# (Aravis). Installed by the .deb (packaging/deb-deps.sh) into /lib/udev/rules.d.
+
+# Google's accessory ids, which every phone takes in accessory mode
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d0[0-5]", TAG+="uaccess"
+# a phone in its own mode, by its interfaces: MTP (FF/FF/00), PTP (06/01/01), adb (FF/42/01)
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:ffff00:*", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:060101:*", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:ff4201:*", TAG+="uaccess"
+# a USB3 Vision camera: an interface of class EF, subclass 05
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:ef05??:*", TAG+="uaccess"

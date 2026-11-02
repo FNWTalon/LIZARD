@@ -16,7 +16,7 @@ let M, base;
 // ai: (sim/fountain.mjs, sim/zstd.mjs) are one module since 2026-10-25, so they share it. OB_BUILD's module (an A/B) is
 // ai: init()'s alone; the shims stay the default build's (a build from before has none).
 export function baseModule() { return (base ??= create()); }
-// The margin the codec paints round the frame, in modules (src/focus.h FOCUS_QUIET), read from the codec by init(): a
+// The margin the codec paints round the frame, in modules (src/lizard_phy.h LIZARD_QUIET), read from the codec by init(): a
 // live binding, undefined until then. Not a top-level await: a worker whose imports await loses the messages that
 // arrive meanwhile (lizard-web/recv-worker.mjs read nothing that way), and a page that only wants the arithmetic would pay
 // for a codec instance.
@@ -25,13 +25,13 @@ export async function init() {
   if (!M) {
     M = ALT ? await (await import(`../${ALT}`)).default() : await baseModule();
   }
-  QUIET ??= M._focus_quiet?.();
+  QUIET ??= M._lizard_quiet?.();
   return M;
 }
-// ai: Where the camera's axis falls in the next image decoded (src/focus.h focus_set_axis): [x, y] image px, or null
+// ai: Where the camera's axis falls in the next image decoded (src/lizard_phy.h lizard_set_axis): [x, y] image px, or null
 // ai: for the image's centre. Every decode sets it, so one frame's axis never stays for the next.
 const setAxis = (axis) => {
-  M._focus_set_axis?.(axis ? axis[0] : NaN, axis ? axis[1] : NaN);
+  M._lizard_set_axis?.(axis ? axis[0] : NaN, axis ? axis[1] : NaN);
 };
 
 // Stage times since the last call, ms, summed over the decodes in between (slots: PROF_* in src/internal.h).
@@ -51,7 +51,7 @@ export const heapTop = () => (M ? M._ob_heap_top() : 0);
 // holds one byte a pixel and one strip, not four bytes a pixel: 4.4 MB less per decoder at 1080 x 1080.
 const STRIP = 1 << 16;
 let pStrip = 0;
-// ai: The pilots the last decode read (src/focus.h focus_pilot): { r, sd, r2, sd2, blocks }, r of the even blocks (bit 0
+// ai: The pilots the last decode read (src/lizard_phy.h lizard_pilot): { r, sd, r2, sd2, blocks }, r of the even blocks (bit 0
 // ai: of the painted count: it flips picture to picture) and r2 of the odd (bit 1: every second picture) with their
 // ai: standard errors, or null where none were read or the build predates them (OB_BUILD).
 let pPilot = 0;
@@ -83,16 +83,16 @@ export function streamBlock(id, len) {
   return M.HEAPU8.subarray(pStream, pStream + len);   // afresh every call: the heap may have grown
 }
 
-// ai: A receiver told nothing (src/focus.h focus_acquire_ring, src/wasm.c focus_any_rx): it registers against the
-// ai: rings (src/focus.h FOCUS_RING), reads the word there, and finishes the frame at the picture the word names, in whichever ring it was
+// ai: A receiver told nothing (src/lizard_phy.h lizard_acquire_ring, src/wasm.c lizard_any_rx): it registers against the
+// ai: rings (src/lizard_phy.h LIZARD_RING), reads the word there, and finishes the frame at the picture the word names, in whichever ring it was
 // ai: painted (any ring may carry any picture). nmax: the largest picture it decodes (sim/phy.mjs BLIND_NMAX). Its
-// ai: codecs are the module's own, apart from Focus's, and replaced by the next FocusAny.
-export class FocusAny {
+// ai: codecs are the module's own, apart from Lizard's, and replaced by the next LizardAny.
+export class LizardAny {
   constructor(nmax = 1024) {
-    this.blockBytes = M._focus_any_setup(nmax);
-    if (this.blockBytes < 0) throw new Error(`focus any to n = ${nmax} rejected`);
+    this.blockBytes = M._lizard_any_setup(nmax);
+    if (this.blockBytes < 0) throw new Error(`lizard any to n = ${nmax} rejected`);
     this.nmax = nmax;
-    this.maxBlocks = M._focus_any_max_blocks();
+    this.maxBlocks = M._lizard_any_max_blocks();
     this.pBlocks = M._malloc(this.maxBlocks * this.blockBytes); this.pOk = M._malloc(this.maxBlocks);
     this.pImg = 0; this.imgCap = 0;
   }
@@ -101,52 +101,52 @@ export class FocusAny {
   // ai: pictureN (the picture finished, 0 for none), held (whether the held configuration stood in), fmt (the word this
   // ai: frame read, or null), builds (pictures built since the setup), ok and blocks (as many as the finished version's own codec carries,
   // ai: its rate profile's blocks), pilot (what the pilots read: { r, sd, r2, sd2, blocks }, or null). rgba: img is a
-  // ai: canvas's RGBA, made luma in wasm as Focus.decode does.
+  // ai: canvas's RGBA, made luma in wasm as Lizard.decode does.
   decode(img, iw, ih, { gamma = 1, mesh = 2, held = 0, rgba = false, axis = null } = {}) {
     setAxis(axis);
     let pLuma;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
-    const n = M._focus_any_rx(pLuma, iw, ih, gamma, mesh, this.pBlocks, this.pOk, held), r = M._ob_last();
-    const T = M._focus_any_blocks();
-    return { n, ring: M._focus_any_which(), pictureN: M._focus_any_n(), held: !!M._focus_any_held(), builds: M._focus_any_builds?.() ?? 0, found: M.HEAP32[r >> 2],
+    const n = M._lizard_any_rx(pLuma, iw, ih, gamma, mesh, this.pBlocks, this.pOk, held), r = M._ob_last();
+    const T = M._lizard_any_blocks();
+    return { n, ring: M._lizard_any_which(), pictureN: M._lizard_any_n(), held: !!M._lizard_any_held(), builds: M._lizard_any_builds?.() ?? 0, found: M.HEAP32[r >> 2],
       quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
-      fmt: Focus.fmtOf(M._focus_any_fmt()), ok: M.HEAPU8.slice(this.pOk, this.pOk + T), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + T * this.blockBytes),
-      msDetect: M.HEAPF32[(r + 52) >> 2], pilot: pilotOf(M._focus_any_pilot_get) };
+      fmt: Lizard.fmtOf(M._lizard_any_fmt()), ok: M.HEAPU8.slice(this.pOk, this.pOk + T), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + T * this.blockBytes),
+      msDetect: M.HEAPF32[(r + 52) >> 2], pilot: pilotOf(M._lizard_any_pilot_get) };
   }
-  // ai: This object's heap buffers; the codecs are the module's, replaced by the next FocusAny.
+  // ai: This object's heap buffers; the codecs are the module's, replaced by the next LizardAny.
   free() { for (const k of ["pBlocks", "pOk", "pImg"]) { if (this[k]) M._free(this[k]); this[k] = 0; } this.imgCap = 0; }
 }
 
-// The picture's codec (src/focus.c). mode: 1 (src/focus.h FOCUS_LDPC), the only code there is.
-export class Focus {
-  // tilt: dB by which the last sub-channel is sent below the first (src/focus.h). A sender's choice: a receiver need not be told.
+// The picture's codec (src/lizard_phy.c). mode: 1 (src/lizard_phy.h LIZARD_LDPC), the only code there is.
+export class Lizard {
+  // tilt: dB by which the last sub-channel is sent below the first (src/lizard_phy.h). A sender's choice: a receiver need not be told.
   // tiers: [[rate, blocks], ...] from the lowest frequencies outwards, in place of subch and rate: runs of blocks at
-  // different code rates, every block with the same payload, so one at a lower rate takes more slots (src/focus.h
-  // focus_block_slots), in the fewest sub-channels that hold them.
-  // span: modules across the picture, 0 for the default ring (src/focus.h FOCUS_RING_DEFAULT), 2 B for ring B (any other
+  // different code rates, every block with the same payload, so one at a lower rate takes more slots (src/lizard_phy.h
+  // lizard_block_slots), in the fewest sub-channels that hold them.
+  // span: modules across the picture, 0 for the default ring (src/lizard_phy.h LIZARD_RING_DEFAULT), 2 B for ring B (any other
   // span is refused).
-  // bitmap: how a block's bits lie on its coefficients, src/focus.h FOCUS_BITMAP (the only map): left out, or that
+  // bitmap: how a block's bits lie on its coefficients, src/lizard_phy.h LIZARD_BITMAP (the only map): left out, or that
   // number, which a spec may name; any other is refused. The border is always LIZARD's (ring, marks, band).
   constructor(n, subch, mode, { clip = 2, span = 0, tilt = 0, tiers = null, bitmap } = {}) {
-    if (mode !== 1) throw new Error(`focus: mode ${mode}: 1 (soft LDPC) is the only code`);
+    if (mode !== 1) throw new Error(`lizard: mode ${mode}: 1 (soft LDPC) is the only code`);
     if (tiers) {
-      // ai: four tiers a setup (src/focus.h FOCUS_TIERS), two numbers each (rate, blocks), after n, clip, span and tilt
-      if (tiers.length > 4) throw new Error(`focus: ${tiers.length} tiers, a setup takes 4`);
+      // ai: four tiers a setup (src/lizard_phy.h LIZARD_TIERS), two numbers each (rate, blocks), after n, clip, span and tilt
+      if (tiers.length > 4) throw new Error(`lizard: ${tiers.length} tiers, a setup takes 4`);
       const a = [...tiers, ...Array(4).fill([0, 0])].slice(0, 4).flatMap(([r, b]) => [r, b]);
-      this.blockBytes = M._focus_setup_tiers(n, clip, span, tilt, ...a);
+      this.blockBytes = M._lizard_setup_tiers(n, clip, span, tilt, ...a);
     }
-    else this.blockBytes = M._focus_setup(n, subch, clip, span, tilt);
-    if (this.blockBytes < 0) throw new Error(`focus ${n}/${tiers ? JSON.stringify(tiers) : subch}/${mode} rejected`);
-    this.bitmap = M._focus_bitmap_get();
+    else this.blockBytes = M._lizard_setup(n, subch, clip, span, tilt);
+    if (this.blockBytes < 0) throw new Error(`lizard ${n}/${tiers ? JSON.stringify(tiers) : subch}/${mode} rejected`);
+    this.bitmap = M._lizard_bitmap_get();
     if (bitmap !== undefined && bitmap !== this.bitmap) throw new Error(`bit map ${bitmap} rejected: the codec's is ${this.bitmap}`);
-    this.subch = M._focus_subch();
-    this.blocks = M._focus_blocks(); this.side = M._focus_side(); this.cell = M._focus_cell();   // samples a module
-    this.quiet = M._focus_quiet();   // the margin the codec paints, modules (src/focus.h FOCUS_QUIET)
+    this.subch = M._lizard_subch();
+    this.blocks = M._lizard_blocks(); this.side = M._lizard_side(); this.cell = M._lizard_cell();   // samples a module
+    this.quiet = M._lizard_quiet();   // the margin the codec paints, modules (src/lizard_phy.h LIZARD_QUIET)
     this.pBlocks = M._malloc(this.blocks * this.blockBytes); this.pOk = M._malloc(this.blocks);
     this.pDrive = M._malloc(4 * this.side * this.side); this.pImg = 0; this.imgCap = 0;
   }
-  // A frame straight to the pixels a page paints (src/focus.h focus_paint_rgba): RGBA, the codec's margin round it. The
+  // A frame straight to the pixels a page paints (src/lizard_phy.h lizard_paint_rgba): RGBA, the codec's margin round it. The
   // view is into the wasm heap and good until the next call; a caller that keeps it copies it.
   encodeRGBA(blocks) {
     this.fits(blocks);
@@ -157,27 +157,27 @@ export class Focus {
       if (!this.pRGBA) { this.rgbaCap = 0; throw new Error("frame pixels: out of wasm memory"); }
     }
     M.HEAPU8.set(blocks, this.pBlocks);
-    M._focus_tx_rgba(this.pBlocks, this.pDrive, this.pRGBA);
+    M._lizard_tx_rgba(this.pBlocks, this.pDrive, this.pRGBA);
     return { w: W, rgba: M.HEAPU8.subarray(this.pRGBA, this.pRGBA + bytes) };
   }
-  // ai: The resampler encodeRGBA paints the picture with (src/focus.h focus_resample_geom), for an encoder elsewhere
+  // ai: The resampler encodeRGBA paints the picture with (src/lizard_phy.h lizard_resample_geom), for an encoder elsewhere
   // ai: (gpu/encoder.mjs): q pixels across the picture and its guard interval from drive pixel o on either axis (the
   // ai: drive is px a side, the RGBA quiet * cell more round it), i0[x] the first of the six picture samples pixel x
   // ai: reads (unwrapped: mod n) and w[6 x + t] their weights, both passes alike. Copies, good after the next setup.
   resampleGeom() {
     const p = M._malloc(24);
     try {
-      if (M._focus_rs_geom(p)) throw new Error("focus_rs_geom: no resampler tables");
+      if (M._lizard_rs_geom(p)) throw new Error("lizard_rs_geom: no resampler tables");
       const g = M.HEAP32.slice(p >> 2, (p >> 2) + 6), q = g[0];
       return { q, o: g[1], n: g[2], px: g[3], i0: M.HEAP32.slice(g[4] >> 2, (g[4] >> 2) + q), w: M.HEAPF32.slice(g[5] >> 2, (g[5] >> 2) + 6 * q) };
     } finally { M._free(p); }
   }
-  // ai: The anchors' geometry in this configuration's symbol (src/focus.h focus_anchor_geom, SPEC 6.13), in modules: a
+  // ai: The anchors' geometry in this configuration's symbol (src/lizard_phy.h lizard_anchor_geom, SPEC 6.13), in modules: a
   // ai: square's side and the seven first modules along either axis (the drive's: the RGBA adds quiet * cell).
   anchorGeom() {
     const p = M._malloc(32);
     try {
-      if (M._focus_anchor_geom_get(p) !== 7) throw new Error("focus_anchor_geom: no setup");
+      if (M._lizard_anchor_geom_get(p) !== 7) throw new Error("lizard_anchor_geom: no setup");
       const g = M.HEAP32.slice(p >> 2, (p >> 2) + 8);
       return { side: g[0], m0: Array.from(g.slice(1)) };
     } finally { M._free(p); }
@@ -198,7 +198,7 @@ export class Focus {
   encode(blocks) {
     this.fits(blocks);
     M.HEAPU8.set(blocks, this.pBlocks);
-    M._focus_tx(this.pBlocks, this.pDrive);
+    M._lizard_tx(this.pBlocks, this.pDrive);
     return M.HEAPF32.slice(this.pDrive >> 2, (this.pDrive >> 2) + this.side * this.side);
   }
   // The word the last decode read out of the symbol's band, or null where it read none. This is all a receiver
@@ -210,21 +210,21 @@ export class Focus {
   }
   // The display rate the painted band states, whole frames a second, 0 for none (src/fmt.h). A sender may change
   // it between frames: only the word's cells move, so registration is untouched and no frame is invalidated.
-  setFps(v) { if (M._focus_fmt_fps_set(v)) throw new Error(`fps ${v} out of range for the format word`); }
+  setFps(v) { if (M._lizard_fmt_fps_set(v)) throw new Error(`fps ${v} out of range for the format word`); }
   // ai: The painted picture's count, 0 to 3 (the sender's count of painted pictures mod 4), which the next encode puts
-  // ai: into the blocks' tails, bit 0 on the even blocks and bit 1 on the odd (the pilots, src/focus.h focus_parity;
+  // ai: into the blocks' tails, bit 0 on the even blocks and bit 1 on the odd (the pilots, src/lizard_phy.h lizard_parity;
   // ai: SPEC 7.3). 0 paints what every sender did before the pilots.
-  setParity(c) { if (!M._focus_parity_set || M._focus_parity_set(c)) throw new Error(`count ${c}: 0 to 3, on a build with the signed pilots`); }
+  setParity(c) { if (!M._lizard_parity_set || M._lizard_parity_set(c)) throw new Error(`count ${c}: 0 to 3, on a build with the signed pilots`); }
   // Measurement hooks: after measure(true), sent() is the bit pair (+1 / -1 per axis) the last encode put on every
   // coefficient and read() the coefficient the last decode found there, in order of frequency, 320 to a sub-channel.
-  measure(on) { if (M._focus_dbg(on ? 1 : 0)) throw new Error("focus debug buffers"); }
-  sent() { const p = M._focus_dbg_sym(); return new Int8Array(M.HEAPU8.buffer, p, 2 * 320 * this.subch).slice(); }
+  measure(on) { if (M._lizard_dbg(on ? 1 : 0)) throw new Error("lizard debug buffers"); }
+  sent() { const p = M._lizard_dbg_sym(); return new Int8Array(M.HEAPU8.buffer, p, 2 * 320 * this.subch).slice(); }
   // Per block of the last decode: LDPC iterations (-1 never converged, -2 declined, 0 not tried) and the estimate made before decoding.
   // ai: the grid's shift the last decode read off the pilots and turned back, samples along u and v ([0, 0] where
   // ai: none was taken); read() holds the coefficients before that turn (2026-10-07, scripts/exp/rate_tiers.mjs)
-  align() { this.pAlign ??= M._malloc(8); if (!M._focus_align_get || !M._focus_align_get(this.pAlign)) return [0, 0]; return Array.from(M.HEAPF32.subarray(this.pAlign >> 2, (this.pAlign >> 2) + 2)); }
-  blockStats() { const pi = M._focus_blk_its(), pe = M._focus_blk_est() >> 2; return { its: Array.from(new Int8Array(M.HEAPU8.buffer, pi, this.blocks)), est: Array.from(M.HEAPF32.subarray(pe, pe + this.blocks)) }; }
-  read() { const p = M._focus_dbg_coef() >> 2; return M.HEAPF32.slice(p, p + 2 * 320 * this.subch); }
+  align() { this.pAlign ??= M._malloc(8); if (!M._lizard_align_get || !M._lizard_align_get(this.pAlign)) return [0, 0]; return Array.from(M.HEAPF32.subarray(this.pAlign >> 2, (this.pAlign >> 2) + 2)); }
+  blockStats() { const pi = M._lizard_blk_its(), pe = M._lizard_blk_est() >> 2; return { its: Array.from(new Int8Array(M.HEAPU8.buffer, pi, this.blocks)), est: Array.from(M.HEAPF32.subarray(pe, pe + this.blocks)) }; }
+  read() { const p = M._lizard_dbg_coef() >> 2; return M.HEAPF32.slice(p, p + 2 * 320 * this.subch); }
   // mesh: 0 the homography alone, any other the border mesh (the lens model and a Coons patch from the border's nodes,
   // research/06).
   decode(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null } = {}) {
@@ -232,22 +232,22 @@ export class Focus {
     let pLuma = 0;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
-    const n = M._focus_rx(pLuma, iw, ih, gamma, mesh, this.pBlocks, this.pOk), r = M._ob_last();
+    const n = M._lizard_rx(pLuma, iw, ih, gamma, mesh, this.pBlocks, this.pOk), r = M._ob_last();
     // quad: the lattice corners the frame finder settled on, TL TR BR BL in image pixels (src/ob.h ob_result_t). A
     // locate pass needs it to know what to crop to.
     return { n, found: M.HEAP32[r >> 2], quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
-      fmt: Focus.fmtOf(M._focus_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
+      fmt: Lizard.fmtOf(M._lizard_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
       // mark: the best corner mark the finder saw, x, y and module size (src/ob.h), or null.
       mark: markOf(r), ...msOf(r),
-      // ai: pilot: what the block tails read (src/focus.h focus_pilot), { r, sd, r2, sd2, blocks }, or null
-      pilot: pilotOf(M._focus_pilot_get) };
+      // ai: pilot: what the block tails read (src/lizard_phy.h lizard_pilot), { r, sd, r2, sd2, blocks }, or null
+      pilot: pilotOf(M._lizard_pilot_get) };
   }
-  // The same decode in two halves (src/focus.h), for a caller that samples somewhere it has to wait for.
+  // The same decode in two halves (src/lizard_phy.h), for a caller that samples somewhere it has to wait for.
   // rxAcquire registers and hands back everything the sampler reads; rxFinish takes the grid up again. Between
-  // the two this object holds one frame, so a caller with several in flight needs one Focus each, which is what
+  // the two this object holds one frame, so a caller with several in flight needs one Lizard each, which is what
   // the receiver's pool of workers already gives it.
   //
-  // The image buffer must stay put until rxFinish: src/focus.c holds a pointer to it, not a copy. Since it is
+  // The image buffer must stay put until rxFinish: src/lizard_phy.c holds a pointer to it, not a copy. Since it is
   // this object's own pImg, the only way to break that is to call rxAcquire twice.
   rxAcquire(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null } = {}) {
     setAxis(axis);
@@ -255,10 +255,10 @@ export class Focus {
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
     this.pDims ??= M._malloc(16);
-    this.pState ??= M._malloc(4 * Focus.STATE);
-    if (!M._focus_rx_acquire(pLuma, iw, ih, gamma, mesh, this.pDims, this.pState)) return null;
+    this.pState ??= M._malloc(4 * Lizard.STATE);
+    if (!M._lizard_rx_acquire(pLuma, iw, ih, gamma, mesh, this.pDims, this.pState)) return null;
     const d = M.HEAP32.subarray(this.pDims >> 2, (this.pDims >> 2) + 4), nx = d[0], ny = d[1], n = d[2];
-    const st = M.HEAPF32.subarray(this.pState >> 2, (this.pState >> 2) + Focus.STATE);
+    const st = M.HEAPF32.subarray(this.pState >> 2, (this.pState >> 2) + Lizard.STATE);
     let k = 0;
     const take = (q) => st.slice(k, k += q);
     const H = take(9), g0 = st[k++], step = st[k++];
@@ -272,12 +272,12 @@ export class Focus {
     const n = iw * ih;
     if (n > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(n); this.imgCap = n; }
     this.pDims ??= M._malloc(16);
-    this.pState ??= M._malloc(4 * Focus.STATE);
+    this.pState ??= M._malloc(4 * Lizard.STATE);
     this.pQuad ??= M._malloc(32);
     M.HEAPF32.set(quad, this.pQuad >> 2);   // a raw export takes a pointer; an Array coerces to 0 and the C runs its own finder
-    if (!M._focus_rx_acquire_quad(this.pImg, iw, ih, gamma, mesh, this.pQuad, orient, score, this.pDims, this.pState)) return null;
+    if (!M._lizard_rx_acquire_quad(this.pImg, iw, ih, gamma, mesh, this.pQuad, orient, score, this.pDims, this.pState)) return null;
     const d = M.HEAP32.subarray(this.pDims >> 2, (this.pDims >> 2) + 4), nx = d[0], ny = d[1], nn = d[2];
-    const st = M.HEAPF32.subarray(this.pState >> 2, (this.pState >> 2) + Focus.STATE);
+    const st = M.HEAPF32.subarray(this.pState >> 2, (this.pState >> 2) + Lizard.STATE);
     let k = 0;
     const take = (q) => st.slice(k, k += q);
     const H = take(9), g0 = st[k++], step = st[k++];
@@ -292,12 +292,12 @@ export class Focus {
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
     this.pDims ??= M._malloc(16);
-    this.pState ??= M._malloc(4 * Focus.STATE);
+    this.pState ??= M._malloc(4 * Lizard.STATE);
     this.pQuad ??= M._malloc(32);
     M.HEAPF32.set(quad, this.pQuad >> 2);
-    if (!M._focus_rx_acquire_quad(pLuma, iw, ih, gamma, mesh, this.pQuad, orient, score, this.pDims, this.pState)) return null;
+    if (!M._lizard_rx_acquire_quad(pLuma, iw, ih, gamma, mesh, this.pQuad, orient, score, this.pDims, this.pState)) return null;
     const d = M.HEAP32.subarray(this.pDims >> 2, (this.pDims >> 2) + 4), nx = d[0], ny = d[1], n = d[2];
-    const st = M.HEAPF32.subarray(this.pState >> 2, (this.pState >> 2) + Focus.STATE);
+    const st = M.HEAPF32.subarray(this.pState >> 2, (this.pState >> 2) + Lizard.STATE);
     let k = 0;
     const take = (q) => st.slice(k, k += q);
     const H = take(9), g0 = st[k++], step = st[k++];
@@ -315,22 +315,22 @@ export class Focus {
     return M.HEAPF32.subarray(this.pGrid >> 2, (this.pGrid >> 2) + n * n);
   }
   // What a GPU chain has to allocate for, the detrend basis it needs, and the coefficient table it indexes
-  // the spectrum with (src/focus.c). All fixed for a transfer, so a caller reads them once.
+  // the spectrum with (src/lizard_phy.c). All fixed for a transfer, so a caller reads them once.
   shape() {
     this.pShape ??= M._malloc(24);
-    M._focus_shape(this.pShape);
+    M._lizard_shape(this.pShape);
     const d = M.HEAP32.subarray(this.pShape >> 2, (this.pShape >> 2) + 6);
     return { n: d[0], bw: d[1], vblocks: d[2], subch: d[3], blocks: d[4], npos: d[5] };
   }
   tables() {
     const n = this.shape().n;
     this.pTab ??= M._malloc(4 * (6 * n + 2));
-    M._focus_tables_out(this.pTab);
+    M._lizard_tables_out(this.pTab);
     return M.HEAPF32.slice(this.pTab >> 2, (this.pTab >> 2) + 6 * n + 2);
   }
   posTable() {
     const { subch } = this.shape();
-    return new Uint32Array(M.HEAP32.buffer, M._focus_pos_ptr(), subch * 320).slice();
+    return new Uint32Array(M.HEAP32.buffer, M._lizard_pos_ptr(), subch * 320).slice();
   }
   // Where the soft values have to land, as a view on this object's heap, and the decode finished from them.
   llrView() {
@@ -343,9 +343,9 @@ export class Focus {
   // and the caller finishes it, so that arithmetic stays the C's.
   rxLdpc(est) {
     M.HEAPF32.set(est, this.pEst >> 2);
-    const n = M._focus_rx_ldpc(this.pLlr, this.pEst, this.pBlocks, this.pOk), r = M._ob_last();
+    const n = M._lizard_rx_ldpc(this.pLlr, this.pEst, this.pBlocks, this.pOk), r = M._ob_last();
     return { n, found: M.HEAP32[r >> 2], quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
-      fmt: Focus.fmtOf(M._focus_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
+      fmt: Lizard.fmtOf(M._lizard_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
       mark: markOf(r), ...msOf(r) };
   }
   // The code's own shape and its layered schedule, which gpu/back/ldpc.mjs allocates against, plus which
@@ -357,46 +357,46 @@ export class Focus {
     // it. Passing a small buffer here instead smashes the heap, because the full schedule is mb + 1 + 2 * slots
     // ints and the function has no length to check against. That cost an afternoon: the corruption does not
     // fault, it just makes every later decode return nothing, which reads exactly like a bad capture.
-    M._focus_ldpc_tables(0, pD, 0);
+    M._lizard_ldpc_tables(0, pD, 0);
     const d = M.HEAP32.subarray(pD >> 2, (pD >> 2) + 12);
     // ai: np the bits never sent (the 7/8 code's last 128 of the data, its known zeros, since 2026-11-01; gpu/back/bitmap.mjs sentBit), nt = n - np the bits a block's slots carry
     const code = { n: d[0], k: d[1], m: d[2], z: d[3], zp: d[4], mb: d[5], kb: d[6], norm: d[7],
       slotsMax: d[8], slotsTotal: d[9], slots: d[10], np: d[11], nt: d[0] - d[11] };
     const pLay = M._malloc(4 * (code.mb + 1 + 2 * code.slots));
-    M._focus_ldpc_tables(0, pD, pLay);
+    M._lizard_ldpc_tables(0, pD, pLay);
     code.lay = M.HEAP32.slice(pLay >> 2, (pLay >> 2) + code.mb + 1 + 2 * code.slots);
     const pFirst = M._malloc(4 * this.blocks), pCount = M._malloc(4 * this.blocks);
-    M._focus_block_runs(pFirst, pCount);
+    M._lizard_block_runs(pFirst, pCount);
     const first = M.HEAP32.slice(pFirst >> 2, (pFirst >> 2) + this.blocks);
     const count = M.HEAP32.slice(pCount >> 2, (pCount >> 2) + this.blocks);
     for (const q of [pD, pLay, pFirst, pCount]) M._free(q);
     return { code, first, count };
   }
-  // ai: The soft word values the last decode or rxAcquire read off the band (src/focus.h focus_fmt_soft): { cells, q }
+  // ai: The soft word values the last decode or rxAcquire read off the band (src/lizard_phy.h lizard_fmt_soft): { cells, q }
   // ai: with q 4 x cells long, side * cells + cell, > 0 dark; null where the read stopped at its contrast floor.
   fmtSoft() {
     this.pFmtS ??= M._malloc(4 * 4096);
-    const cells = M._focus_fmt_soft_out(this.pFmtS);
+    const cells = M._lizard_fmt_soft_out(this.pFmtS);
     return cells ? { cells, q: M.HEAPF32.slice(this.pFmtS >> 2, (this.pFmtS >> 2) + 4 * cells) } : null;
   }
   // ai: the word the last decode or fmtCheck took ({ version, fps }), or null
-  fmtRx() { return Focus.fmtOf(M._focus_fmt_rx_ptr()); }
+  fmtRx() { return Lizard.fmtOf(M._lizard_fmt_rx_ptr()); }
   // The format word from soft values read on the device, [ok, q0..]: feeds fmtOf and nothing in the decode.
   fmtCheck(q) {
     this.pFmtQ ??= M._malloc(4 * 4096);
     M.HEAPF32.set(q, this.pFmtQ >> 2);
-    return M._focus_fmt_check_out(this.pFmtQ);
+    return M._lizard_fmt_check_out(this.pFmtQ);
   }
   rxFinish() {
-    const n = M._focus_rx_finish(this.pGrid ?? 0, this.pBlocks, this.pOk), r = M._ob_last();
+    const n = M._lizard_rx_finish(this.pGrid ?? 0, this.pBlocks, this.pOk), r = M._ob_last();
     return { n, found: M.HEAP32[r >> 2], quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
-      fmt: Focus.fmtOf(M._focus_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
+      fmt: Lizard.fmtOf(M._lizard_fmt_rx_ptr()), ok: M.HEAPU8.slice(this.pOk, this.pOk + this.blocks), blocks: M.HEAPU8.slice(this.pBlocks, this.pBlocks + this.blocks * this.blockBytes),
       mark: markOf(r), ...msOf(r) };
   }
 }
 // ai: What ob_last holds (src/ob.h ob_result_t, its fields' offsets): the finder's best corner mark, and the stage times.
 const markOf = (r) => { const m = [64, 68, 72].map((o) => M.HEAPF32[(r + o) >> 2]); return m[2] > 0 ? m : null; };
 const msOf = (r) => ({ msDetect: M.HEAPF32[(r + 52) >> 2], msSample: M.HEAPF32[(r + 56) >> 2], msDecode: M.HEAPF32[(r + 60) >> 2] });
-// What ob_test_sample and focus_rx_acquire write: H, g0, step, the mesh nodes (OB_MAX_NODES = 40 each way) and
+// What ob_test_sample and lizard_rx_acquire write: H, g0, step, the mesh nodes (OB_MAX_NODES = 40 each way) and
 // their shifts, the decoder's gamma table, and one trailing ms the test hook uses.
-Focus.STATE = 9 + 2 + 2 * 40 + 2 * 40 * 40 + 256 + 1;
+Lizard.STATE = 9 + 2 + 2 * 40 + 2 * 40 * 40 + 256 + 1;

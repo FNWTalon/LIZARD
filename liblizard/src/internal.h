@@ -67,7 +67,7 @@ typedef struct { homo_t H; node_t *nodes; } ob_reg_t;
 // ai: a thread (any.h). The wasm build has one thread, where this is a plain global.
 #define OB_TLS _Thread_local
 double ob_now_ms(void);
-// Stage timers for the benches (scripts/exp/focus_bench.mjs). A handful of clock reads per frame, left in. The slots by
+// Stage timers for the benches (scripts/exp/lizard_bench.mjs). A handful of clock reads per frame, left in. The slots by
 // index, as the JS and the native tools read them: 0 luma, 1 binarize, 2 finders, 3 mesh; 4 to 10 the picture's decoder
 // and encoder (sample, detrend, transform, LLR, LDPC, the encoder's transform and the rest of it); 11 to 16 inside the
 // thin frame's finder (points, turn, fit, score, the mark scan, the track read that judges a quad). Since 2026-10-25:
@@ -103,7 +103,7 @@ void ob_reg_free(ob_reg_t *reg);
 void ob_map_point(const ob_layout_t *L, const ob_reg_t *reg, float mx, float my, float *u, float *v);
 // ai: The anchors (acquire.c, SPEC 6.13): a 7 x 7 grid's square side in modules (B / 32), and anchor i's first module
 // ai: along either axis; OB_ANCH_TS template points across one. OB_ANCH_PX_MIN: the drive pixels a square needs a side
-// ai: for its light middle (a quarter of the half-side) to land on a pixel, which sets a floor under pxm (focus.c init):
+// ai: for its light middle (a quarter of the half-side) to land on a pixel, which sets a floor under pxm (lizard_phy.c init):
 // ai: at 4 (the 256 picture in the 64 and 128 rings at ceil(n / span)) a square paints as a dark dot.
 // ai: OB_ANCH_MIN: the anchors found that the geometry takes, at least the lens model's most terms (acquire.c LENS_P,
 // ai: 11): their 2n readings then leave as many as the model takes, so its robust rule can judge one. Fewer, a false reading (a
@@ -119,14 +119,14 @@ int ob_anchor_m0(const ob_layout_t *L, int i);
 int ob_thin_read_fmt(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float *q, int cells);
 // A block of a regular grid in module coordinates: see acquire.c.
 void ob_sample_grid(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch);
-// What focus_acquire left for focus_finish (focus.h), for a caller that has to sample somewhere else. Valid
-// until the matching focus_finish takes it up.
-struct focus_s;
-const image_t *focus_held_image(const struct focus_s *f);
-const ob_reg_t *focus_held_reg(const struct focus_s *f);
+// What lizard_acquire left for lizard_finish (lizard_phy.h), for a caller that has to sample somewhere else. Valid
+// until the matching lizard_finish takes it up.
+struct lizard_s;
+const image_t *lizard_held_image(const struct lizard_s *f);
+const ob_reg_t *lizard_held_reg(const struct lizard_s *f);
 
-// The block CRC (test/vectors.mjs) and the decline gate (the GPU back half's is held to it), from src/focus.c.
+// The block CRC (test/vectors.mjs) and the decline gate (the GPU back half's is held to it), from src/lizard_phy.c.
 uint32_t ob_test_crc_hash(const uint8_t *p, int n);
-int ob_test_crc_gate(const struct focus_s *f, const float *est, float *blk_est, float *bar, uint8_t *declined);
+int ob_test_crc_gate(const struct lizard_s *f, const float *est, float *blk_est, float *bar, uint8_t *declined);
 
 #endif

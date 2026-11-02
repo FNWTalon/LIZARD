@@ -14,7 +14,7 @@
 #include <system_error>
 
 extern "C" {
-#include "focus.h"
+#include "lizard_phy.h"
 }
 
 namespace lizard {
@@ -136,8 +136,8 @@ int Replay::finish(const std::string& rxStats, const std::string& rows, const st
   const int v = word.is_object() && word.contains("version") && word["version"].is_number() ? word["version"].get<int>() : 0;
   if (v > 0) {
     const int ring = word.contains("ring") && word["ring"].is_number() ? word["ring"].get<int>() : -1;
-    const int r = ring >= 0 && ring < FOCUS_RINGS ? ring : FOCUS_RING_DEFAULT;
-    config = {{"from", "band"}, {"spec", {{"phy", "focus"}, {"n", focus_n_for(FOCUS_STEP * v)}, {"subch", FOCUS_STEP * v}, {"mode", 1}, {"span", 2 * FOCUS_RING[r]}, {"bitmap", 3}, {"stream", "shake256"}}}};
+    const int r = ring >= 0 && ring < LIZARD_RINGS ? ring : LIZARD_RING_DEFAULT;
+    config = {{"from", "band"}, {"spec", {{"phy", "lizard"}, {"n", lizard_n_for(LIZARD_STEP * v)}, {"subch", LIZARD_STEP * v}, {"mode", 1}, {"span", 2 * LIZARD_RING[r]}, {"bitmap", 3}, {"stream", "shake256"}}}};
   }
   const ojson extra = ojson::parse(more.empty() ? "{}" : more, nullptr, false);
   // ai: The file: the frames oldest first, each scratch frame removed once it is in, so the disk holds no more than

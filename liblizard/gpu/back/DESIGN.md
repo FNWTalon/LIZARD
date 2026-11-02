@@ -3,7 +3,7 @@
 Input: each frame of a batch (B frames, any picture size each), sampled through the front half's map by the fused
 pass 1 (section 10). Output: CRC-verified blocks with their ids, read back once a batch, with a verdict and an
 iteration count a block, each block's pilot reading and each frame's grid shift. The reference for every rule is
-`src/focus.c` `focus_finish_ext`, `src/ldpc.c`, `src/layout.c` `ob_crc32`. The decoder is judged on blocks that pass
+`src/lizard_phy.c` `lizard_finish_ext`, `src/ldpc.c`, `src/layout.c` `ob_crc32`. The decoder is judged on blocks that pass
 their CRC-32 against the truth stream, on ms a frame at batch B (the iGPU's; the 4090 counts blocks), and on a
 negative control; never on parity with the C. The tables named below come from the wasm codec (`init()` from
 `sim/ob.mjs`, section 8).
@@ -12,7 +12,7 @@ Every block is 476 payload bytes, the first 4 the block id (LE). The pictures ar
 1536 (`plan/common.mjs` `SIZES`, the sizes of `sim/lizard_pick.mjs` `PICTURE_SIZES` a format has; tops 80, 128, 320,
 560, 720, 880 and 1024 sub-channels). The code
 rate follows the
-frequency (`src/focus.h` `focus_tiers_for`): from the lowest frequencies out, 7/8 blocks of 4496 slots (n 4608, 4480
+frequency (`src/lizard_phy.h` `lizard_tiers_for`): from the lowest frequencies out, 7/8 blocks of 4496 slots (n 4608, 4480
 sent, then 16 pilot slots), 3/4 of 5152 (n 5120, k 3840, m 1280, 10 block rows of 13 or 14 data slots, then 32 pilot
 slots), 2/3 of 5760 (n 5760, 15 block rows) and 1/2 of 7680 (n 7680, 30 block rows), every code at z = 128, the blocks
 packed one after another from the frame's first slot whatever the sub-channels, the slots past the last block padded
@@ -29,7 +29,7 @@ invisible. The spectrum is carried as S = T / n^2 (T the C's unscaled transform,
 every constant of the detrend is divided the same way at the store.
 
 - **A0 reduce**, per frame. cx[i] = (2 i + 1 - n) / n, qx[i] = cx[i]^2 - mean(cx^2), sx2 = sum cx^2, sq2 = sum qx^2
-  (all from `focus_tables`). Five sums over the picture: Sx = sum z cx[x], Sy = sum z cx[y], Sxy = sum z cx[x] cx[y],
+  (all from `lizard_tables`). Five sums over the picture: Sx = sum z cx[x], Sy = sum z cx[y], Sxy = sum z cx[x] cx[y],
   Sxx = sum z qx[x], Syy = sum z qx[y]. Normalised: px = Sx / (n sx2), py = Sy / (n sx2), pxy = Sxy / sx2^2,
   pxx = Sxx / (n sq2), pyy = Syy / (n sq2). The C sums a row in four f32 chains and carries on in double; here f32
   tree reductions. Drift moves the detrend by parts in 1e-6: fine. A1 produces the partials at its load, so the
@@ -42,8 +42,8 @@ every constant of the detrend is divided the same way at the store.
 - **A2 transform along x**, per kept row v: S(u, v) = (1 / n) sum_x Z_x(v) e^(-2 pi i u x / n), stored for the disc
   only (section 3). The detrend goes in the epilogue, in f32, in the C's units T = n^2 S before the store: for every
   (u, v): T -= pxy X1[u] X1[v]; on v = 0: T(u, 0) -= n (px X1[u] + pxx X2[u]); on u = 0: T(0, v) -= n (py X1[v] +
-  pyy X2[v]). X1, X2 are the DFTs of cx and qx (`focus_tables`, complex, index (u + n) mod n). T(0, 0) carries
-  nothing and is not stored. This is the C's spectral subtraction (focus.c `focus_finish_ext`) to the letter; a
+  pyy X2[v]). X1, X2 are the DFTs of cx and qx (`lizard_tables`, complex, index (u + n) mod n). T(0, 0) carries
+  nothing and is not stored. This is the C's spectral subtraction (lizard_phy.c `lizard_finish_ext`) to the letter; a
   spatial subtraction of the same surface before A1 is identical by linearity, but it costs the picture's bytes again
   and breaks the fused sampler, which has no picture to pre-pass.
 - **B soft values**, per sub-channel j of the frame over its 320 coefficients y_s = S at pos[320 j + s]: m2 = mean |y|^2, m4 = mean |y|^4,
@@ -51,10 +51,10 @@ every constant of the detrend is divided the same way at the store.
   per axis, int8 = round half to even (WGSL `round`, the C's `nearbyintf`) of 8 LLR; out[2 s] the real axis,
   out[2 s + 1] the imaginary: slot order, the C's `ext_llr`. est_j = J(a2 / nv), J(g) = (1 - 2^(-0.3073 (2 sqrt
   g)^1.7870))^1.1064 for g > 0, else 0. blk_est = the block's sub-channels' est, each by the slots of the block it
-  holds, over the block's slots (a block's slots run across sub-channels as they fall: the C's `focus_finish_ext`). f32
+  holds, over the block's slots (a block's slots run across sub-channels as they fall: the C's `lizard_finish_ext`). f32
   throughout (the C: double). 2 m2^2 - m4 is a difference of near equals only where nv is at its floor, a block that
   declines anyway.
-- **B decline gate**: declined = blk_est < 0.2 k / nt (`FOCUS_DECLINE`; 0.15 at 3/4). A block within 1e-6 of the bar
+- **B decline gate**: declined = blk_est < 0.2 k / nt (`LIZARD_DECLINE`; 0.15 at 3/4). A block within 1e-6 of the bar
   may differ from the C. Accepted.
 - **C bit map and whitening** (`map_in`): codeword bit j of block b is slot inv[j] of the block (from the block's
   first slot), sign flipped where white[slot of the frame] = 1. perm[i] = i P mod nt (`perm_fill`, LINEAR, the format's
@@ -105,7 +105,7 @@ device (section 9).
 ## 3. The transform
 
 Coefficients needed: the half disc u^2 + v^2 <= R^2, v >= 0, without v = 0 with u <= 0, R = sqrt(640 subch / pi),
-taken in order of r^2, then v, then u, the first subch * 320 (`init` in focus.c), enumerated from `focus_pos_ptr`.
+taken in order of r^2, then v, then u, the first subch * 320 (`init` in lizard_phy.c), enumerated from `lizard_pos_ptr`.
 A frame needs the rows v < V = vmax + 1, vmax = floor(R) (umax(0) the same).
 
 S layout: row v at off[v], v = 0 holds u = 1..umax(0), v > 0 holds u = 0..umax(v) then u = -umax(v)..-1, with
@@ -213,7 +213,7 @@ L[block's first slot + inv[j]] (the block's first slot a multiple of 16, so L's 
 
 ## 5. The decline gate
 
-BLK.declined a block from blk_est under its code's bar, 0.2 k / nt (`FOCUS_DECLINE`; 0.15 at 3/4). The LDPC's
+BLK.declined a block from blk_est under its code's bar, 0.2 k / nt (`LIZARD_DECLINE`; 0.15 at 3/4). The LDPC's
 workgroup for a declined block writes verdict 2, ITS -2, and returns before touching L: a workgroup with no work,
 which the shape rules allow. The gate is a format decoder rule the C sets, measured on 78 000 blocks; on hard
 captures the iterations it saves are among the LDPC's largest costs.
@@ -231,7 +231,7 @@ iteration from a bitmap of the posteriors' signs. The three forms differ in that
 native host times them (`LDPC_FORMS`) on its first batch and keeps the fastest, leaving out a form whose kernels the
 device's workgroups cannot hold or whose module needs a feature the device lacks (a pipeline's `needs`).
 
-H is never stored. The device holds each code's block row tables from `focus_ldpc_tables`: lay_ptr, then the
+H is never stored. The device holds each code's block row tables from `lizard_ldpc_tables`: lay_ptr, then the
 (column, shift) pairs; at 3/4 each of the 10 block rows has 13 or 14 data slots and 2 staircase slots. Check (r, i)
 reads data slot e as codeword bit col_e * z + (i - shift_e + z) mod z, its own parity bit k + mb i + r, and the
 previous check's k + mb i + r - 1; for r = 0 the previous is (mb - 1, i - 1), and at i = 0 it is absent (the C models
@@ -313,28 +313,28 @@ per-frame `bad`), which must be 0; a receiver has only the CRC, which is what ma
 
 ## 8. Tables and where each comes from
 
-`M = await init()` (sim/ob.mjs), a `Focus(n, subch, 1, { span })` built first; the wasm holds one configuration at a
+`M = await init()` (sim/ob.mjs), a `Lizard(n, subch, 1, { span })` built first; the wasm holds one configuration at a
 time.
 
 | table | export (call) | shape |
 |---|---|---|
-| n, bw, vblocks, subch, blocks, npos | `M._focus_shape(p)`, `Focus.shape()` | 6 i32 |
-| pos, decoded to (u, v) | `M._focus_pos_ptr()`, `Focus.posTable()`; v = (p div (n bw)) bw + (p mod (n bw)) mod bw, uw = (p mod (n bw)) div bw, u = uw < n / 2 ? uw : uw - n | subch * 320 u32; entry 0 is (1, 0) |
-| cx, qx, X1, X2, sx2, sq2 | `M._focus_tables_out(p)`, `Focus.tables()` | 6 n + 2 f32 |
-| block first slot, count | `M._focus_block_runs(pFirst, pCount)`, `Focus.ldpcCode().first, .count` | blocks i32 each: each block's own first slot of the frame and its slots (4496, 5152, 5760 or 7680 by its code) |
-| LDPC dims and schedule | `M._focus_ldpc_tables(tier, pDims, pLay)` (pLay = 0 sizes it), `Focus.ldpcCode().code` (tier 0: the profile's innermost code) | dims at 3/4: n 5120, k 3840, m 1280, z 128, zp 128, mb 10, kb 30, norm 13, slotsMax 16, slotsTotal 152, slots 132; lay 275 i32 |
-| block bytes | the return of `M._focus_setup(...)`, `Focus.blockBytes` | 476 |
-| a version's profile | `M._focus_tiers_for(subch, pTiers)` | up to 4 tiers of (rate, blocks, slots a block) |
+| n, bw, vblocks, subch, blocks, npos | `M._lizard_shape(p)`, `Lizard.shape()` | 6 i32 |
+| pos, decoded to (u, v) | `M._lizard_pos_ptr()`, `Lizard.posTable()`; v = (p div (n bw)) bw + (p mod (n bw)) mod bw, uw = (p mod (n bw)) div bw, u = uw < n / 2 ? uw : uw - n | subch * 320 u32; entry 0 is (1, 0) |
+| cx, qx, X1, X2, sx2, sq2 | `M._lizard_tables_out(p)`, `Lizard.tables()` | 6 n + 2 f32 |
+| block first slot, count | `M._lizard_block_runs(pFirst, pCount)`, `Lizard.ldpcCode().first, .count` | blocks i32 each: each block's own first slot of the frame and its slots (4496, 5152, 5760 or 7680 by its code) |
+| LDPC dims and schedule | `M._lizard_ldpc_tables(tier, pDims, pLay)` (pLay = 0 sizes it), `Lizard.ldpcCode().code` (tier 0: the profile's innermost code) | dims at 3/4: n 5120, k 3840, m 1280, z 128, zp 128, mb 10, kb 30, norm 13, slotsMax 16, slotsTotal 152, slots 132; lay 275 i32 |
+| block bytes | the return of `M._lizard_setup(...)`, `Lizard.blockBytes` | 476 |
+| a version's profile | `M._lizard_tiers_for(subch, pTiers)` | up to 4 tiers of (rate, blocks, slots a block) |
 | perm, inv, white | not exported; regenerated in JS from section 1 (`bitmap.mjs`) and held to what the C paints by `scripts/gpu/back/check_tiers.mjs` | perm nt; white a bit a slot |
-| g0, step | `M._focus_grid_out(p)` | 2 f32 |
+| g0, step | `M._lizard_grid_out(p)` | 2 f32 |
 | CRC-32 | `M._ob_test_crc_hash(p, len)` | |
 | decline bar, verdicts | `M._ob_test_crc_gate_out(est, blkEst, bar, declined)` | blocks each |
 | truth stream | `streamBlock(id, len)` (sim/ob.mjs, `_stream_fill`); `sourceFor(spec.stream)` (sim/phy.mjs) | |
-| the C's spectrum | `Focus.measure(true)` then `read()`: 2 * 320 * subch f32, the detrended coefficients in pos order | |
-| the C's verdicts | `Focus.rxFinish().ok`; `Focus.blockStats()` its (-2 declined, -3 stall, -1 cap, > 0 iterations) and est | blocks |
+| the C's spectrum | `Lizard.measure(true)` then `read()`: 2 * 320 * subch f32, the detrended coefficients in pos order | |
+| the C's verdicts | `Lizard.rxFinish().ok`; `Lizard.blockStats()` its (-2 declined, -3 stall, -1 cap, > 0 iterations) and est | blocks |
 | a grid from the C's registration | `M._ob_test_sample(img, iw, ih, 1, 2, dims, state, grid)` | n x n f32 row major, pitch n |
-| finish from soft values, verdicts | `Focus.llrView()` + `rxLdpc(est)` | |
-| the exact symbols sent | `Focus.measure(true)`, `encode(blocks)`, `sent()` | 640 subch int8, +1 / -1 |
+| finish from soft values, verdicts | `Lizard.llrView()` + `rxLdpc(est)` | |
+| the exact symbols sent | `Lizard.measure(true)`, `encode(blocks)`, `sent()` | 640 subch int8, +1 / -1 |
 
 Not exported and not needed: the bit map and whitening tables (the JS regeneration is held to the C's paint) and
 the C's slot-order LLRs after a finish (`scripts/gpu/back/ref_soft.mjs` gives them from `read()`).
@@ -369,7 +369,7 @@ const bh = await BackHalf.build(device, { B, sizes, precision, picture, log }); 
   inside an open pass. Every dispatch after the gate is indirect from the gate's ARGS, over the frames it lists (the
   soft values a size's listed frames, the LDPC every listed frame); the gate walks every slot in one thread.
 - `BackHalf.build` reads its tables from the wasm (`transformTables`, `ruleTables`). The wasm holds one configuration at
-  a time, so build the back half while no other `Focus` is in use.
+  a time, so build the back half while no other `Lizard` is in use.
 - `precision: "f16"` keeps Y and S in f16 where the device has `shader-f16` and falls back to f32 with a log.
 - Device limits: workgroup memory at the adapter's maximum. The LDPC needs up to 31,748 B (the 1/2 code with its stop);
   pass 1 at most 18,892 B (f32, the 1536 picture; section 3). Each stage binds at most 8 storage buffers.

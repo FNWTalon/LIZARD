@@ -37,8 +37,8 @@ export const gateWords = (counts) => gateCodesAt(counts, 0) + 4 * Math.ceil(coun
 
 export const LATTICE_MAX = 36;   // node coordinates a side PIC holds (register.mjs NODES_MAX / 4 is 34)
 
-// ai: The anchors (SPEC 6.13; glsl/anchors.mjs; the C's src/acquire.c anchor_find and border_fill_anchors, src/focus.c
-// ai: focus_finish_ext's erase): ANCH_SIDE x ANCH_SIDE anchors, ANCH_K a frame. ANCH_FIT writes a frame's record,
+// ai: The anchors (SPEC 6.13; glsl/anchors.mjs; the C's src/acquire.c anchor_find and border_fill_anchors, src/lizard_phy.c
+// ai: lizard_finish_ext's erase): ANCH_SIDE x ANCH_SIDE anchors, ANCH_K a frame. ANCH_FIT writes a frame's record,
 // ai: ANCH_REC vec4f, which pass 1 reads: [0] (on, the picture's mean, 0, the anchors found);
 // ai: [1] to [3] the 9 knots of an axis in modules (the lattice's ends, the anchors' centres between) and the anchor's
 // ai: side a, the ring's span and margin, as (k0, k1, k2, k3), (k4, k5, k6, k7), (k8, a, span, margin); [4] on, the

@@ -8,7 +8,7 @@
 // ai: 1536, the sizes a format has), which only the word names (N_FOR of the version's sub-channels); the back half's tables are a picture's.
 // ai: Any ring may carry any picture, and a frame's sample grid is the pair's (gridOf).
 // ai: Everything below is in MODULE coordinates: module k spans [k, k + 1), so a cell's middle is k + 0.5.
-import { init, Focus } from "../sim/ob.mjs";
+import { init, Lizard } from "../sim/ob.mjs";
 import { RINGS, RING_DEFAULT, subchOf } from "../sim/lizard_pick.mjs";
 import { versionRange } from "./wordcode.mjs";
 import { SIZES } from "./plan/common.mjs";
@@ -23,7 +23,7 @@ export const PICTURES = SIZES.map((n) => { const [lo, hi] = versionRange(n); ret
 // ai: The picture slot a version decodes at, -1 outside the word's range (1 to 64).
 export const slotOf = (version) => PICTURES.findIndex((p) => version >= p.lo && version <= p.hi);
 // ai: Where picture sample 0 sits and how far apart samples are, in modules, for picture n in ring table t: the
-// ai: codec's margin + 0.5 / scale and 1 / scale, scale = n / span (src/wasm.c focus_grid_out).
+// ai: codec's margin + 0.5 / scale and 1 / scale, scale = n / span (src/wasm.c lizard_grid_out).
 export const gridOf = (t, n) => ({ g0: t.margin + (0.5 * t.span) / n, step: t.span / n });
 
 // ai: { rings, pictures }: rings[r] for ring r (RINGS[r] band cells a side), read from the codec at the smallest picture
@@ -32,7 +32,7 @@ export async function formatTables() {
   const M = await init();
   const f32 = (p, n) => M.HEAPF32.slice(p >> 2, (p >> 2) + n), i32 = (p, n) => M.HEAP32.slice(p >> 2, (p >> 2) + n);
   const rings = RINGS.map((cells, ring) => {
-    const N0 = PICTURES[0].n, fc = new Focus(N0, PICTURES[0].subch, 1, { span: 2 * cells });
+    const N0 = PICTURES[0].n, fc = new Lizard(N0, PICTURES[0].subch, 1, { span: 2 * cells });
     const scratch = M._malloc(4 * 64);
     // The lattice and the kind map (CELL_* per module: 1 light, 2 dark, flag 8 a format-word cell).
     // ai: The codec writes each node's mark through pM whenever it writes the lattice, so pM is allocated, not read.
@@ -60,7 +60,7 @@ export async function formatTables() {
     const word = { cells: wcells, refSteps: wmeta[0], reps: wmeta[2], mids: wmeta[3], words: wmeta[4], pts: f32(pPts, 2 * nw), widx: i32(pW, 3 * wmeta[4]) };
     // ai: The ring's span (modules across the picture) and margin (border modules before it) from the codec's grid
     // ai: at n = N0: g0 = margin + 0.5 step, step = span / N0.
-    M._focus_grid_out(scratch);
+    M._lizard_grid_out(scratch);
     const [g0, step] = f32(scratch, 2);
     // ai: both whole modules; the codec's float32 grid holds them to a few 1e-7 at n = 384 (step 1/3)
     const span = Math.round(N0 * step), margin = Math.round(g0 - 0.5 * step);

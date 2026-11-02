@@ -173,8 +173,8 @@ class ReceiveState(private val a: MainActivity) {
     private var chosen: Mode? = null   // ai: main: a mode chosen with no camera open to keep it: the next start names it
 
     // ai: Start: on the start's thread, the GPU tree in place (Assets) and the session made where none is, then asked, in
-    // ai: order, for the decoder and crop chosen, the batch size, the camera chosen (the closest-focusing back
-    // ai: camera where none is or it is gone); the open waited for (the surface's hand-over is queued behind it and
+    // ai: order, for the decoder and crop chosen, the batch size, the camera closed and the one chosen opened (the
+    // ai: closest-focusing back camera where none is or it is gone); the open waited for (the surface's hand-over is queued behind it and
     // ai: waits); its mode's preview size given to the surface (the size the camera service reads off it), the surface
     // ai: handed over (once the TextureView has made one, 2 s at most), and the stream started in the mode kept (or one
     // ai: Settings named).
@@ -199,6 +199,9 @@ class ReceiveState(private val a: MainActivity) {
         run {
             s.reconfigure(st.decoder, st.layout)
             s.batchCap(st.frames)
+            // ai: every start opens the camera afresh (2026-11-01): a stop keeps it open and the session's open keeps an
+            // ai: open camera of the same id, so a start after a stop went on in the same open; closed first, it opens again
+            s.closeCamera()
             s.open(want)
             // ai: the open done: the session's commands run in order, and the hand-over of the surface it holds waits for
             // ai: its turn (nothing changes for the camera); then the camera's answer, or none where the open refused (the
@@ -240,17 +243,24 @@ class ReceiveState(private val a: MainActivity) {
         if (running) start() else use { it.open(if (a.settings.camera.isEmpty()) "" else "android:${a.settings.camera}") }
     }
 
-    // ai: Settings' Resolution and Format: the camera's mode with that size in the format kept (else auto), or the
-    // ai: format at the size kept (a RAW format at any): kept by the session as the camera's; the surface sized to its
-    // ai: preview first, since a running stream starts again in it at once
+    // ai: Settings' Resolution, Format and Frame rate: the camera's mode with that size in the format kept (else auto),
+    // ai: the format at the size kept (a RAW format at any), or the rate at both; each at the rate kept where the lens
+    // ai: offers it, else its fastest (the modes come fastest first): kept by the session as the camera's; the surface
+    // ai: sized to its preview first, since a running stream starts again in it at once
+    private fun atRate(ms: List<Mode>) = ms.firstOrNull { kotlin.math.abs(it.fps - (mode?.fps ?: 0.0)) < 0.01 } ?: ms.firstOrNull()
     fun chooseResolution(res: String) {
         val cur = mode
-        val m = modes.firstOrNull { it.size == res && it.format == (cur?.format ?: "auto") } ?: modes.firstOrNull { it.size == res && it.format == "auto" } ?: return
+        val m = atRate(modes.filter { it.size == res && it.format == (cur?.format ?: "auto") }) ?: atRate(modes.filter { it.size == res && it.format == "auto" }) ?: return
         pickMode(m)
     }
     fun chooseFormat(fmt: String) {
         val cur = mode
-        val m = modes.firstOrNull { it.format == fmt && it.size == (cur?.size ?: "1920x1080") } ?: modes.firstOrNull { it.format == fmt } ?: return
+        val m = atRate(modes.filter { it.format == fmt && it.size == (cur?.size ?: "1920x1080") }) ?: atRate(modes.filter { it.format == fmt }) ?: return
+        pickMode(m)
+    }
+    fun chooseFps(f: Double) {
+        val cur = mode ?: return
+        val m = modes.firstOrNull { it.size == cur.size && it.format == cur.format && kotlin.math.abs(it.fps - f) < 0.01 } ?: return
         pickMode(m)
     }
     private fun pickMode(m: Mode) {

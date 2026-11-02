@@ -6,7 +6,7 @@
 // ai: IPIC, a workgroup a (quad of columns, symbol), n / 8 threads: turn_pack's packing takes two columns through one
 // ai:   complex inverse along y (Z(0) = 2 Re A(0) + 2i Re B(0), Z(v) = A + iB, Z(n - v) = conj A + i conj B, zero
 // ai:   between), the real part column a and the imaginary column b, clipped to 0.5 + clamp(v, -lim, lim) 0.5 / lim
-// ai:   (src/focus.c focus_encode, turn_pack, clip_row).
+// ai:   (src/lizard_phy.c lizard_encode, turn_pack, clip_row).
 import { stagesOf } from "../back/disc.mjs";
 
 // Complex helpers and the butterflies, on function-scope register arrays.

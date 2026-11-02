@@ -1,6 +1,6 @@
 // ai: The SPEC.md conformance vectors (5.2 through the painted cells, 6.12 P2 and P3, 7.4, 9.3) against one build,
 // ai: plus digests over the ladder (layout cells at five rates, the drive, the coefficient order) to diff between two
-// ai: builds of today's interface (focus_setup's five arguments since 2026-10-25).
+// ai: builds of today's interface (lizard_setup's five arguments since 2026-10-25).
 //   node test/vectors.mjs [path/to/ob.mjs]      from liblizard/, about 20 s; default build/ob.mjs, the codec's module
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
@@ -16,13 +16,13 @@ const want = (name, got, exp) => { const ok = got === exp; if (!ok) fails++; con
 
 // ai: span 2B names ring B, 0 the default ring (the 128 since 2026-10-01). SPEC 6.12's vectors and the ladder's digests
 // ai: are the 64 ring's, so it is named: span 128.
-const setup = (n, subch, span = 128) => M._focus_setup(n, subch, 2, span, 0);
+const setup = (n, subch, span = 128) => M._lizard_setup(n, subch, 2, span, 0);
 // ai: The tree's ladder (2^k and 3 x 2^k since 2026-09-27, 1152 and 1280 since 2026-10-29): a build from before it
 // ai: cannot build the sizes added since.
 const { N_FOR: nFor, VERSIONS } = await import(resolve("sim/lizard_pick.mjs"));
-console.log(`${path}: focus_setup takes ${M._focus_setup.length} arguments`);
+console.log(`${path}: lizard_setup takes ${M._lizard_setup.length} arguments`);
 
-// ai: (int)(v * 255 + 0.5) clamped, in float32 as focus_paint_rgba's scalar path does it (SPEC 6.8, Painting).
+// ai: (int)(v * 255 + 0.5) clamped, in float32 as lizard_paint_rgba's scalar path does it (SPEC 6.8, Painting).
 const grey = (v) => { const t = Math.fround(Math.fround(v * 255) + 0.5); const i = Math.trunc(t); return i < 0 ? 0 : i > 255 ? 255 : i; };
 
 // ai: again = false encodes on the codec already set up, whose block bytes the ladder loop holds.
@@ -30,16 +30,16 @@ let blockBytes = 0;
 function encode(n, subch, fill, again = true, span = 128) {
   const B = again ? setup(n, subch, span) : blockBytes;
   if (B < 0) throw new Error(`setup ${n}/${subch} refused`);
-  const T = M._focus_blocks(), side = M._focus_side();
-  if (M._focus_dbg(1)) throw new Error("dbg");
+  const T = M._lizard_blocks(), side = M._lizard_side();
+  if (M._lizard_dbg(1)) throw new Error("dbg");
   const pB = M._malloc(T * B), pD = M._malloc(4 * side * side);
   const blocks = new Uint8Array(T * B);
   fill(blocks, B, T);
   M.HEAPU8.set(blocks, pB);
-  M._focus_tx(pB, pD);
+  M._lizard_tx(pB, pD);
   const drive = M.HEAPF32.slice(pD >> 2, (pD >> 2) + side * side);
-  const sym = new Int8Array(M.HEAPU8.buffer, M._focus_dbg_sym(), 2 * 320 * subch).slice();
-  M._focus_dbg(0); M._free(pB); M._free(pD);
+  const sym = new Int8Array(M.HEAPU8.buffer, M._lizard_dbg_sym(), 2 * 320 * subch).slice();
+  M._lizard_dbg(0); M._free(pB); M._free(pD);
   return { B, T, side, drive, slots: Uint8Array.from(sym, (s) => (s < 0 ? 1 : 0)) };
 }
 const pack = (bits) => { const o = new Uint8Array(Math.ceil(bits.length / 8)); bits.forEach((b, i) => { if (b) o[i >> 3] |= 0x80 >> (i & 7); }); return o; };
@@ -59,7 +59,7 @@ const greySquare = (e, a, b) => { const o = new Uint8Array((b - a) * (b - a)); l
     [64, 128, 60, "4c043c7618ef9352e525c51045b722df9e8064f9f0ddad60a761d030c9963206"],
     [256, 256, 120, "4c10783d4504e4341b703313d38614a0a2d894f9ca7e94d881959561fec187689d9017a57e59ffeb675e0b2d074a080b48ab41f8c3a9c9cdc88dea6bd98c991c"],
   ]) {
-    if (setup(nFor(subch), subch, 2 * B) < 0 || M._focus_fmt_fps_set(fps)) throw new Error(`setup LIZARD-${subch} ring ${B}`);
+    if (setup(nFor(subch), subch, 2 * B) < 0 || M._lizard_fmt_fps_set(fps)) throw new Error(`setup LIZARD-${subch} ring ${B}`);
     M._ob_test_mesh_tables_out(pDims, 0, 0, 0, 0);
     const d = M.HEAP32.slice(pDims >> 2, (pDims >> 2) + 5), S = d[2];
     const pX = M._malloc(4 * d[0]), pY = M._malloc(4 * d[1]), pK = M._malloc(S * S), pMark = M._malloc(4 * d[0] * d[1]);
@@ -80,7 +80,7 @@ const greySquare = (e, a, b) => { const o = new Uint8Array((b - a) * (b - a)); l
 }
 // ai: 6.12 P2, LIZARD-64, every payload byte zero: n 384 in the 128 ring: side 572, pxm 2, the picture resampled by 4/3
 // ai: from pixel 30, the resampled square [24, 548) (modules 12 to 273: the picture and its 3-module guard,
-// ai: FOCUS_CP = 3), the anchors (SPEC 6.13) 4 modules from modules 31, 68, 104, 141, 178, 214, 251.
+// ai: LIZARD_CP = 3), the anchors (SPEC 6.13) 4 modules from modules 31, 68, 104, 141, 178, 214, 251.
 // ai: (LIZARD-32 at n 256 in the 64 ring until 2026-11-01, LIZARD-16 until 2026-10-31.)
 {
   const e = encode(384, 64, () => {}, true, 256);
@@ -154,7 +154,7 @@ const greySquare = (e, a, b) => { const o = new Uint8Array((b - a) * (b - a)); l
     const n = nFor(subch);
     if ((blockBytes = setup(n, subch)) < 0) throw new Error(`setup ${n}/${subch}`);
     for (const fps of [24, 30, 60, 240, 0]) {
-      if (M._focus_fmt_fps_set(fps)) throw new Error("fps");
+      if (M._lizard_fmt_fps_set(fps)) throw new Error("fps");
       M._ob_test_mesh_tables_out(pDims, 0, 0, 0, 0);
       const d = M.HEAP32.subarray(pDims >> 2, (pDims >> 2) + 5), w = d[2], h = d[3];
       const pK = M._malloc(w * h);
@@ -167,7 +167,7 @@ const greySquare = (e, a, b) => { const o = new Uint8Array((b - a) * (b - a)); l
     }
     const e = encode(n, subch, (blocks) => { for (let k = 0; k < blocks.length; k++) blocks[k] = (k * 37 + subch) & 255; }, false);
     drives.update(new Uint8Array(e.drive.buffer));
-    const pp = M._focus_pos_ptr();
+    const pp = M._lizard_pos_ptr();
     order.update(M.HEAPU8.subarray(pp, pp + 4 * 320 * subch));
   }
   console.log(`ladder cells ${cells.digest("hex").slice(0, 16)}  drives ${drives.digest("hex").slice(0, 16)}  order ${order.digest("hex").slice(0, 16)}`);

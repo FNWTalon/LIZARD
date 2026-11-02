@@ -109,6 +109,16 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$PWD/liblizard/cmake/mingw-w64.cmake" -DLIZ_JDK_INCLUDE="$JAVA_HOME/include"
           cmake --build lizard-desktop/build/win --target lizard_desktop cam_check lizard_receive -j"$(nproc)"
 
+      # The files the Windows package carries beside the library (packaging/windows-extra.sh, every download checked by
+      # its sha256): Aravis 0.8 and its DLLs and libusb (MSYS2's ucrt64 builds), lizard_usb.exe (WinUSB through libwdi
+      # 1.5.1, built here with the WDF redistributable's co-installers), and their license texts
+      - name: Windows' extras (Aravis, libusb, lizard_usb)
+        timeout-minutes: 15
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y -q --no-install-recommends autoconf automake libtool p7zip-full zstd
+          lizard-desktop/packaging/windows-extra.sh lizard-desktop/build/win/extra "$RUNNER_TEMP/windows-extra"
+
       # The GPU tree as the packages carry it (build.gradle.kts bundle): every setup (the painter's send.json, the
       # decoder's six), every blob, every module but the raw ones; and Windows' binaries
       - uses: actions/upload-artifact@v4
@@ -122,6 +132,7 @@ jobs:
             lizard-desktop/build/win/lizard_desktop.dll
             lizard-desktop/build/win/cam_check.exe
             lizard-desktop/build/win/lizard_receive.exe
+            lizard-desktop/build/win/extra/
 
   linux:
     needs: tree
@@ -145,7 +156,8 @@ jobs:
         run: |
           sudo rm -f /var/lib/man-db/auto-update
           sudo apt-get update -q
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libx11-dev libxrandr-dev libturbojpeg
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libx11-dev libxrandr-dev libturbojpeg \
+            libaravis-dev libusb-1.0-0-dev
           cmake -S lizard-desktop/native -B lizard-desktop/build/native -DCMAKE_BUILD_TYPE=Release
           cmake --build lizard-desktop/build/native --target lizard_desktop cam_check lizard_receive -j"$(nproc)"
 
@@ -166,8 +178,9 @@ jobs:
 
       # The receiver's checks (native/checks.h), after the package is kept and whatever packaging gave: the
       # conversions, TurboJPEG and the clock's sleep, the simulated screen and camera, the session on the CPU decoder,
-      # V4L2 against sim/fake_v4l2's devices. LIZ_V4L2_NODES empty: no /dev/video* node is probed. Every check
-      # runs; any one's failure (exit other than 0) fails the step after the last, and the job.
+      # V4L2 against sim/fake_v4l2's devices, Aravis against lizard_fakegv on loopback (the distro's libaravis, which
+      # libaravis-dev brought; the check opens only the fake). LIZ_V4L2_NODES empty: no /dev/video* node is probed.
+      # Every check runs; any one's failure (exit other than 0) fails the step after the last, and the job.
       - name: The receiver's checks
         if: ${{ !cancelled() && steps.native.outcome == 'success' }}
         timeout-minutes: 20
@@ -175,7 +188,7 @@ jobs:
           export LIZ_V4L2_NODES=
           mkdir -p smoke
           fail=0
-          for c in luma scene session v4l2; do
+          for c in luma scene session v4l2 aravis; do
             rc=0
             timeout 600 lizard-desktop/build/native/cam_check "$c" > "smoke/cam_check-$c.txt" 2>&1 || rc=$?
             echo "::group::cam_check $c: exit $rc"
@@ -214,6 +227,7 @@ jobs:
         run: |
           mkdir -p lizard-desktop/build/native
           mv lizard-desktop/build/win/lizard_desktop.dll lizard-desktop/build/native/
+          mv lizard-desktop/build/win/extra lizard-desktop/build/native/extra
 
       - name: The .msi
         working-directory: lizard-desktop
@@ -326,6 +340,13 @@ jobs:
       # TurboJPEG for the checks' MJPEG cases: Homebrew's jpeg-turbo, the first place liblizard/core/cam/jpeg.cpp looks
       - name: TurboJPEG
         run: brew install jpeg-turbo
+
+      # The files the package carries beside the library (packaging/macos-extra.sh): Homebrew's libusb and Aravis 0.8
+      # with the libraries they load, their install names on @loader_path, signed ad hoc, and their license texts
+      - name: libusb and Aravis
+        run: |
+          brew install libusb aravis
+          lizard-desktop/packaging/macos-extra.sh lizard-desktop/build/native/extra
 
       - name: The native library, the C's tools and the receiver's
         id: native

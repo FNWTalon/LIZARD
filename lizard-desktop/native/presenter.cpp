@@ -33,6 +33,7 @@
 #include "volk.h"
 
 #include "sender.h"
+#include "priority.h"
 #include "vk_present_timing.h"
 #include "wg.h"
 
@@ -174,7 +175,7 @@ struct Waiter {
       std::lock_guard<std::mutex> l(m);
       stop = false;
     }
-    if (wait) t = std::thread([this] { run(); });
+    if (wait) t = std::thread([this] { lizard::sys::raiseThread(); run(); });
   }
   void push(Shown s) {
     if (!wait) {
@@ -495,6 +496,30 @@ bool x11IsFullscreen(unsigned long top) {
   return is;
 #else
   (void)top;
+  return false;
+#endif
+}
+
+bool x11Background(unsigned long window, unsigned rgb) {
+#if LIZ_X11 && !defined(_WIN32)
+  Display* d = XOpenDisplay(nullptr);
+  if (!d) return false;
+  XWindowAttributes wa{};
+  bool ok = XGetWindowAttributes(d, static_cast<Window>(window), &wa) != 0;
+  if (ok) {
+    XColor c{};
+    c.red = static_cast<unsigned short>(((rgb >> 16) & 0xff) * 257);
+    c.green = static_cast<unsigned short>(((rgb >> 8) & 0xff) * 257);
+    c.blue = static_cast<unsigned short>((rgb & 0xff) * 257);
+    c.flags = DoRed | DoGreen | DoBlue;
+    ok = XAllocColor(d, wa.colormap, &c) != 0;
+    if (ok) XSetWindowBackground(d, static_cast<Window>(window), c.pixel);
+  }
+  XFlush(d);
+  XCloseDisplay(d);
+  return ok;
+#else
+  (void)window; (void)rgb;
   return false;
 #endif
 }
@@ -2311,6 +2336,7 @@ std::unique_ptr<Presenter> Presenter::start(const PresentTarget& target, Sender*
   Impl* raw = p.get();
   // ai: the setup on the present thread too, so every window and Vulkan call is that thread's
   raw->thread = std::thread([raw, pr = std::move(ready)]() mutable {
+    lizard::sys::raiseThread();
     try {
       raw->setup();
     } catch (const std::exception& e) {

@@ -16,8 +16,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -32,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.text.style.TextOverflow
 import dev.lizard.readout.Readout
 
 // ai: The folds of the tool screens, kept by each app under its own keys
@@ -118,7 +117,8 @@ fun ReceiveScreen(h: ReceiveHost) = BoxWithConstraints {
 private fun RailSquares(h: ReceiveHost) {
     val kept = h.kept
     val hot = h.heat
-    if (hot != null && kept == null) HeatSquare(hot)
+    val err = errorOf(h)
+    if (err != null) AlertSquare(err) else if (hot != null && kept == null) AlertSquare(hot)
     Square {
         IconBtn(if (h.running) Icons.pause else Icons.play, if (h.running) "Stop camera" else "Start camera",
             enabled = h.access == null && !h.starting) { h.toggleCamera() }
@@ -127,7 +127,7 @@ private fun RailSquares(h: ReceiveHost) {
         RateSquare(h.railRate)
         h.railPct?.let { PctSquare(it) }
     } else {
-        if (hot != null) HeatSquare(hot)
+        if (hot != null && err == null) AlertSquare(hot)
         else Square { Icon(Icons.check, contentDescription = "Received ${h.keptName}", Modifier.size(24.dp), tint = Good) }
         for (a in kept) a.icon?.let { i -> Square { IconBtn(i, "${a.label} ${h.keptName}") { a.run() } } }
     }
@@ -139,14 +139,14 @@ private fun Side(h: ReceiveHost) {
     Fold("Settings", h.folds.open(FoldKey.RecvSettings), { h.folds.toggle(FoldKey.RecvSettings) }) { Settings(h.settings) }
     if (h.experimental.isNotEmpty()) Fold("Experimental", h.folds.open(FoldKey.RecvExperimental), { h.folds.toggle(FoldKey.RecvExperimental) }) { Settings(h.experimental) }
     Fold("Developer Tools", h.folds.open(FoldKey.RecvTools), { h.folds.toggle(FoldKey.RecvTools) }) { Settings(h.tools) }
-    HorizontalDivider(color = Line)
-    ListRow("About", h.about.ifEmpty { null })
+    AboutFold(h.about)
     Spacer(Modifier.height(24.dp))
 }
 
 // ai: The transfer, the desktop's order and gaps: 12 dp under the bar the actions (once the file is kept, its actions on
 // ai: one row, Open the solid one filling it, the others their own width; Start camera or Stop camera alone under them,
-// ai: the full width; without the camera's permission the one button that gets it, why on the state line), 12 dp under
+// ai: the full width; on the desktop every button its label's width, LocalButtonsFill; without the camera's permission
+// ai: the one button that gets it, why on the state line), 12 dp under
 // ai: them the state line, the meter, the figures, then 4 dp apart the heat warning, a filing's outcome and one hint,
 // ai: 16 dp before the folds. Show statistics off: no green line once a file is in.
 @Composable
@@ -154,28 +154,49 @@ private fun TransferPanel(h: ReceiveHost) {
     Column(Modifier.fillMaxWidth().padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         val access = h.access
         val kept = h.kept
-        if (access != null) Btn(access.act.label, Kind.Primary, modifier = Modifier.widthIn(max = LocalButtonsWidest.current).fillMaxWidth()) { access.act.run() }
+        val wide = if (LocalButtonsFill.current) Modifier.fillMaxWidth() else Modifier
+        if (access != null) Btn(access.act.label, Kind.Primary, modifier = wide) { access.act.run() }
         else {
-            if (kept != null) Row(Modifier.widthIn(max = LocalButtonsWidest.current).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (kept != null) Row(wide, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 kept.forEachIndexed { i, a ->
-                    if (i == 0) Btn(a.label, Kind.Primary, modifier = Modifier.weight(1f)) { a.run() } else Btn(a.label, pad = 16.dp) { a.run() }
+                    if (i == 0) Btn(a.label, Kind.Primary, modifier = if (LocalButtonsFill.current) Modifier.weight(1f) else Modifier) { a.run() } else Btn(a.label, pad = 16.dp) { a.run() }
                 }
             }
             // ai: one solid button at a time: Start camera while nothing waits, else Open
             Btn(if (h.running) "Stop camera" else "Start camera", if (!h.running && kept == null) Kind.Primary else Kind.Tonal,
-                enabled = !h.starting, modifier = Modifier.widthIn(max = LocalButtonsWidest.current).fillMaxWidth()) { h.toggleCamera() }
+                enabled = !h.starting, modifier = wide) { h.toggleCamera() }
         }
     }
     val ln = h.line
-    val shown = ln.text.isNotEmpty() && !(ln.tone == Readout.Tone.Good && !h.showStats)
+    // ai: an error is the preview's to say (errorOf), not the column's
+    val shown = ln.text.isNotEmpty() && !(ln.tone == Readout.Tone.Good && !h.showStats) && ln.tone != Readout.Tone.Bad
     val named = ln.name
+    // ai: Within a run (Start camera until it stops) a line once shown keeps its room until the run ends, drawn clear
+    // ai: when it falls silent (2026-11-02: Receiving, its meter and figures, and the hint each moved the folds under them
+    // ai: as they came and went); none is held before it has had words, so a camera starting shows no gap (a run's whole
+    // ai: room held from Start stood empty under Stop camera). The run's file in ends it at once, the kept row and the
+    // ai: lines' going in one frame (the camera stops a poll later); a run started over a file already kept holds on.
+    // ai: Every line is one line.
+    val keptAtStart = remember(h.running) { h.kept != null }
+    val run = h.running && (h.kept == null || keptAtStart)
+    val last = remember(h.running) { arrayOf("", "", "") }   // ai: the line, the figures and the hint as last shown this run
+    val meterSeen = remember(h.running) { BooleanArray(1) }
+    if (run && ln.frac != null) meterSeen[0] = true
+    fun said(i: Int, now: String): String { if (run && now.isNotEmpty()) last[i] = now; return now }
+    val lineNow = said(0, if (shown) ln.text else "")
     if (shown && named != null) NameLine(ln.before, named, ln.after, MaterialTheme.typography.titleMedium, toneColour(ln.tone), Modifier.padding(top = 12.dp, bottom = 2.dp))
-    else if (shown) Text(ln.text, style = MaterialTheme.typography.titleMedium, color = toneColour(ln.tone), modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
-    Meter(ln.frac)
-    if (ln.nums.isNotEmpty()) Text(ln.nums, style = MaterialTheme.typography.bodyMedium, color = Muted)
+    else if (lineNow.isNotEmpty() || (run && last[0].isNotEmpty())) Text(lineNow.ifEmpty { last[0] }, style = MaterialTheme.typography.titleMedium,
+        color = if (lineNow.isEmpty()) Color.Transparent else toneColour(ln.tone), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
+    Meter(ln.frac, hold = run && meterSeen[0])
+    val numsNow = said(1, ln.nums)
+    if (numsNow.isNotEmpty() || (run && last[1].isNotEmpty())) Text(numsNow.ifEmpty { last[1] }, style = MaterialTheme.typography.bodyMedium,
+        color = if (numsNow.isEmpty()) Color.Transparent else Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
     h.heat?.let { Warning(it, Modifier.padding(top = 4.dp)) }
-    if (h.note.isNotEmpty()) Text(h.note, style = MaterialTheme.typography.bodyMedium, color = if (h.note.startsWith("Saved")) Muted else Bad, modifier = Modifier.padding(top = 4.dp))
-    if (h.hint.isNotEmpty()) Text(h.hint, style = MaterialTheme.typography.bodyMedium, color = Muted, modifier = Modifier.padding(top = 4.dp))
+    if (h.note.isNotEmpty() && errorOf(h) != h.note) Text(h.note, style = MaterialTheme.typography.bodyMedium, color = Muted, modifier = Modifier.padding(top = 4.dp))
+    // ai: the hint is the running camera's: held still while it runs (steady), its room kept as the lines' are, gone with it
+    val hint = said(2, steady(h.hint, on = 0).takeIf { run }.orEmpty())
+    if (hint.isNotEmpty() || (run && last[2].isNotEmpty())) Text(hint.ifEmpty { last[2] }, style = MaterialTheme.typography.bodyMedium,
+        color = if (hint.isEmpty()) Color.Transparent else Muted, modifier = Modifier.padding(top = 4.dp))
     Spacer(Modifier.height(16.dp))
 }
 
@@ -195,14 +216,25 @@ private fun PreviewBox(h: ReceiveHost, modifier: Modifier, portrait: Boolean) {
                 val b = if (wide) Offset(size.width / 2, size.height) else Offset(size.width, size.height / 2)
                 drawLine(Color(0xFFE53935), a, b, strokeWidth = 1.dp.toPx())
             }
-            if (h.off.isNotEmpty() || h.waiting) Column(Modifier.matchParentSize().background(Soft),
+            val err = errorOf(h)
+            if (err != null || h.off.isNotEmpty() || h.waiting) Column(Modifier.matchParentSize().background(Soft).padding(horizontal = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
-                if (h.off.isNotEmpty()) Icon(Icons.cameraOff, contentDescription = null, Modifier.size(24.dp), tint = Muted) else Spinner()
-                Text(h.off.ifEmpty { "Getting ready" }, style = MaterialTheme.typography.bodyMedium, color = Muted, textAlign = TextAlign.Center)
+                when {
+                    err != null -> Icon(Icons.alert, contentDescription = null, Modifier.size(24.dp), tint = Bad)
+                    h.off.isNotEmpty() -> Icon(Icons.cameraOff, contentDescription = null, Modifier.size(24.dp), tint = Muted)
+                    else -> Spinner()
+                }
+                Text(err ?: h.off.ifEmpty { "Getting ready" }, style = MaterialTheme.typography.bodyMedium, color = Muted, textAlign = TextAlign.Center)
             }
         }
     }
 }
+
+// ai: What went wrong (2026-11-02), said over the preview, its cover the red triangle with the words under it, never in
+// ai: the column (the collapsed rail's AlertSquare at most): the line's error (the phase's why, "Reading stopped. ...")
+// ai: or a filing's refusal (a note that is not "Saved ...")
+private fun errorOf(h: ReceiveHost): String? = h.line.takeIf { it.tone == Readout.Tone.Bad }?.text?.takeIf { it.isNotEmpty() }
+    ?: h.note.takeIf { it.isNotEmpty() && !it.startsWith("Saved") }
 
 // ai: The heat warning (the phone's): the red triangle and its line; in a rail the triangle alone, its line the
 // ai: description
@@ -214,5 +246,6 @@ fun Warning(text: String, modifier: Modifier = Modifier) {
     }
 }
 
+// ai: the red triangle in a rail's square, its words the description: the phone's heat, a receiver's error
 @Composable
-fun HeatSquare(text: String) = Square { Icon(Icons.alert, contentDescription = text, Modifier.size(24.dp), tint = Bad) }
+fun AlertSquare(text: String) = Square { Icon(Icons.alert, contentDescription = text, Modifier.size(24.dp), tint = Bad) }

@@ -1,7 +1,7 @@
 // ai: The app's sender (2026-10-01): lizard-web/send-worker.mjs natively, the C on the CPU (NEON). One thread makes each
 // ai: frame's blocks in order (a file's ids by XferTx's schedule, or the test stream's from a random first id, SHAKE256 of
-// ai: each id, as the page's); a few painters, each with its own codec (src/focus.c keeps its scratch in the codec),
-// ai: encode and paint them ahead (focus_encode, focus_paint_grey: grey with the margin, the pilots' count the
+// ai: each id, as the page's); a few painters, each with its own codec (src/lizard_phy.c keeps its scratch in the codec),
+// ai: encode and paint them ahead (lizard_encode, lizard_paint_grey: grey with the margin, the pilots' count the
 // ai: frame's number mod 4) into the GPU painter's frame ring (2026-10-07), or the GPU paints them (painter, below);
 // ai: the app takes them in order (take, takeSlot) and puts them on the screen at the display's pace.
 #pragma once
@@ -22,8 +22,8 @@
 namespace lizard {
 
 // ai: The symbol (lizard-web/send.mjs spec): subch the sub-channels (the version is subch / 16; 0 is no format, refused),
-// ai: span the ring's (2 x its cells; 0 the default ring, src/focus.h FOCUS_RING_DEFAULT), fps the display rate the word
-// ai: states; the picture is the format's (focus_n_for(subch): a receiver takes it from the version); threads the painters. painter (2026-10-02, the
+// ai: span the ring's (2 x its cells; 0 the default ring, src/lizard_phy.h LIZARD_RING_DEFAULT), fps the display rate the word
+// ai: states; the picture is the format's (lizard_n_for(subch): a receiver takes it from the version); threads the painters. painter (2026-10-02, the
 // ai: web's encoder switch): 0 the C on the CPU, 1 the GPU (gpu_painter.h; its absence an error), 2 auto: the GPU where
 // ai: it builds and its first frames are the C's (the border to the byte, the square within a grey level), else the
 // ai: CPU; assets the tree the GPU's kernels and tables come from (liblizard/out as the app ships it). codes (2026-10-03, the
@@ -70,7 +70,7 @@ class Sender {
   // ai: the frame's width (codes symbols and the gaps between them; side() with one code).
   int side() const { return side_; }
   int width() const { return width_; }
-  // ai: The format's picture, n samples a side (focus_n_for(subch)), 0 before a configure.
+  // ai: The format's picture, n samples a side (lizard_n_for(subch)), 0 before a configure.
   int n() const { return n_; }
   // ai: The next frame in order, RGBA width() x side(), into dst rows `stride` bytes apart, if it is painted: true, and
   // ai: it is the screen's now (its count advances); false and dst untouched if the painters are behind. From the host

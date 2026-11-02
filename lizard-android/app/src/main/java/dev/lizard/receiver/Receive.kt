@@ -170,7 +170,7 @@ internal class AndroidReceive(private val a: MainActivity) : ReceiveHost {
 
     // ai: Settings (2026-10-02, the web's): the decoder (auto shows what it runs on; PC only while a PC receiver is heard
     // ai: on the link), the PC link while a cable is in, the PC decoder's Compression, the GPU's Batch size, the camera
-    // ai: (the back lenses), its mode (Resolution and Format, the session's), Zoom, Crop
+    // ai: (the back lenses), its mode (Resolution, Format and Frame rate, the session's), Zoom, Crop
     override val settings: List<Setting> get() {
         val out = mutableListOf<Setting>()
         val sizes = r.modes.map { it.size }.toSet()
@@ -194,6 +194,12 @@ internal class AndroidReceive(private val a: MainActivity) : ReceiveHost {
             r.modes.any { it.format == k && (k.startsWith("raw") || it.size == res) } && !(k == "private" && (s.decoder == "cpu" || s.decoder == "pc"))
         }
         if (fmts.size > 1 || fmt != "auto") out += Choice("Format", fmt, listOf("auto" to "Auto") + fmts) { r.chooseFormat(it) }
+        // ai: the rates the lens offers at this size and format, up to 60 (cam/android.cpp ratesOf), where there is a choice
+        val rates = r.modes.filter { it.size == res && it.format == fmt }.map { it.fps }.distinct().sortedDescending()
+        val fps = r.mode?.fps ?: rates.firstOrNull() ?: 0.0
+        if (rates.size > 1) out += Choice("Frame rate", fpsText(fps), rates.map { fpsText(it) to fpsText(it) }) { v ->
+            rates.firstOrNull { fpsText(it) == v }?.let { r.chooseFps(it) }
+        }
         out += zoom(r.zoomRange)
         out += Choice("Crop", s.layout, Settings.LAYOUTS.map { it to it }) { a.change(s.copy(layout = it)) }
         return out
@@ -251,3 +257,7 @@ internal class AndroidReceive(private val a: MainActivity) : ReceiveHost {
     }
     override val about get() = a.aboutLine()
 }
+
+// ai: a rate as the Frame rate menu shows it: whole where it is, else two places (the desktop's ReceiveState.fpsText)
+private fun fpsText(v: Double) =
+    if (kotlin.math.abs(v - v.roundToInt()) < 0.01) "${v.roundToInt()}" else String.format(java.util.Locale.ROOT, "%.2f", v)

@@ -87,8 +87,9 @@ object Readout {
     // ai: files: a received bundle's count once it is unpacked (2026-10-16), named in the received line
     fun line(on: Boolean, starting: Boolean, loading: Boolean, error: String?, rx: Rx, files: Int = 0): Line = when {
         error != null -> Line(error, Tone.Bad)
-        starting -> Line("Starting the camera")
-        gettingReady(on, false, loading, rx) -> Line("Getting ready")
+        // ai: nothing while the camera starts or the receiver has not answered: the preview's cover says "Getting ready"
+        // ai: with its spinner (Receive.kt); "Starting the camera" and "Getting ready" stood beside it until 2026-11-02
+        starting || gettingReady(on, false, loading, rx) -> Line("")
         rx.state == "error" -> Line("Reading stopped. Start the camera again to go on.", Tone.Bad)
         // ai: the test stream first while the camera reads it (2026-10-05): it takes over from a file received or in
         // ai: progress, which shows again once the camera is back on its frames (receiver.cpp's state the same)

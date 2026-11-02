@@ -31,6 +31,10 @@ fun main(args: Array<String>) {
     val app = App()
     val s = app.send
     try { Native.load() } catch (e: Throwable) { app.loadError = "The native library could not be loaded: ${e.message}" }
+    // ai: the launch's priority raised (native/priority.cpp) before the window's threads start, which inherit it;
+    // ai: LIZ_PRIORITY=normal leaves it
+    if (app.loadError.isEmpty() && System.getenv("LIZ_PRIORITY") != "normal")
+        runCatching { Native.raisePriority() }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { System.err.println("priority: $it") }
     sendTest?.apply(s)
     recvTest?.apply(app)
     app.screen = when {

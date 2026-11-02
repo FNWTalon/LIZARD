@@ -174,7 +174,7 @@ export class FrontHalf {
     const store = /^(int8|f16|f32|packed)\b/.exec(fh.bankStore ?? "")?.[1] ?? null;
     fh.nets = { bank: store === "packed" ? "f32" : store, small: null, large: fh.weights?.precision ?? null };
     log(`nets: bank ${fh.nets.bank}, small ${fh.nets.small}, large ${fh.nets.large}${fh.twinForms ? " (its int8 twin measured on the first batch)" : ""}`);
-    // Its tables come from the wasm, which holds no other Focus here (formatTables frees its own).
+    // Its tables come from the wasm, which holds no other Lizard here (formatTables frees its own).
     // ai: Every picture at its top, so a frame decodes the version its word (or the held one) names out of it.
     const sizes = tables.pictures.map(({ n, subch }) => (n <= backN ? { n, subch } : null));
     // ai: picture: the rings, where each puts a picture's samples and the lattice its Coons patch runs on, which

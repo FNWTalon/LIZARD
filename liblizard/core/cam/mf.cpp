@@ -63,6 +63,7 @@
 
 #include "luma.h"
 #include "clock.h"
+#include "priority.h"
 
 namespace lizard::cam {
 
@@ -637,7 +638,7 @@ class MfCamera final : public Camera {
     done_ = false;
     sink_ = std::move(sink);
     ended_ = std::move(ended);
-    th_ = std::thread([this] { loop(); });
+    th_ = std::thread([this] { sys::raiseThread(); loop(); });
     std::unique_lock<std::mutex> a(amu_);
     acv_.wait_for(a, std::chrono::milliseconds(kFirstMs), [&] { return answered_; });
     gaveUp_ = true;

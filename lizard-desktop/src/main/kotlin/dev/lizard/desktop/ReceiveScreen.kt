@@ -1,6 +1,8 @@
 package dev.lizard.desktop
 
 import androidx.compose.foundation.Image
+import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,11 +50,14 @@ class DesktopFolds(private val app: App) : Folds {
 }
 
 // ai: The column's width on the desktop (2026-10-31: dragged as the phone's): the web's 20rem until its edge is dragged,
-// ai: kept in Prefs (sideDp), one width for Receive and Send; its rows of buttons never wider than the default's (2026-11-01)
+// ai: kept in Prefs (sideDp), one width for Receive and Send; its rows of buttons never wider than the default's (2026-11-01).
+// ai: Its edge a sash (2026-11-01): pulled under half the floor it closes to the rail, out from the rail it opens; no
+// ai: collapse button.
 class DesktopColumn : ColumnWidth {
     override var dp by mutableStateOf(Prefs.sideDp)
     override var dragging by mutableStateOf(false)
     override val stretch = false
+    override val sash = true
     override fun default(screen: Dp) = 320.dp
     override fun save() { Prefs.sideDp = dp }
 }
@@ -73,13 +78,17 @@ class DesktopReceive(private val app: App) : ReceiveHost {
     override val showStats get() = r.showStats
     override val heat: String? = null
     override val hint get() = r.hint
-    override val note get() = r.fileNote
+    override val note get() = r.driverNote.ifEmpty { r.fileNote }
     override val running get() = r.running
     override val starting get() = r.phase == RxPhase.Starting
     override fun toggleCamera() = r.toggle()
-    override val access: Access? = null
-    override val kept get() = r.kept?.let { k -> listOf(Act("Open", icon = Icons.open) { Received.open(k.file) }, Act("Show in folder") { Received.show(k.file) }) }
-    override val keptName get() = r.kept?.name.orEmpty()
+    // ai: a phone with no USB driver chosen (Windows, UsbDriver): its one action in Start camera's place
+    override val access get() = r.driverFor?.let { Access(Act(if (r.driverBusy) "Installing the USB driver" else "Install USB driver") { r.installDriver() }) }
+    // ai: the file's actions from the moment the receiver holds it, acting on its entry once filed (2026-11-02: the row
+    // ai: came a frame or more after the camera stopped, Start camera solid in between)
+    override val kept get() = if (!r.holds) null else listOf(Act("Open", icon = Icons.open) { r.kept?.let { Received.open(it.file) } },
+        Act("Show in folder") { r.kept?.let { Received.show(it.file) } })
+    override val keptName get() = r.kept?.name ?: r.rx.name
     override val keptLabels = listOf("Open", "Show in folder")
     // ai: the rate only while the figures are this stream's (ReceiveState.live), none with the camera off
     private val reading get() = r.on && ((r.rx.hasFile && !r.rx.verified) || r.testing)
@@ -92,6 +101,9 @@ class DesktopReceive(private val app: App) : ReceiveHost {
     // ai: the crop as the decoder reads it (Session.preview, grey), fitted into the box
     @Composable
     override fun Picture(modifier: Modifier, portrait: Boolean) {
+        // ai: the newest frame pulled at each frame the window draws, while the camera reads (none otherwise: the loop
+        // ai: asks for a frame every refresh)
+        LaunchedEffect(r.on) { if (r.on) while (true) { withFrameNanos { }; r.pull() } }
         r.preview?.let { Image(it, contentDescription = null, modifier, contentScale = ContentScale.Fit, filterQuality = FilterQuality.Low) }
     }
 
@@ -102,7 +114,8 @@ class DesktopReceive(private val app: App) : ReceiveHost {
         val out = mutableListOf<Setting>()
         // ai: GPU and CPU; with neither chosen the decoder is auto's and the one it runs on is shown
         out += Choice("Decoder", if (r.decoder == "auto") r.autoRan.ifEmpty { "GPU" }.lowercase() else r.decoder, listOf("gpu" to "GPU", "cpu" to "CPU")) { r.chooseDecoder(it) }
-        out += Choice("Camera", r.camera.ifEmpty { r.cameras.firstOrNull()?.id ?: "" }, r.cameraOptions, blank = "Camera", onOpen = { r.refreshCameras() }) { r.chooseCameraOption(it) }
+        out += Choice("Camera", r.driverFor?.id ?: r.camera.ifEmpty { r.cameras.firstOrNull()?.id ?: "" }, r.cameraOptions, blank = "Camera", onOpen = { r.refreshCameras() }) { r.chooseCameraOption(it) }
+        if (r.usb?.installed == true) out += Press(Act("Remove USB driver") { r.removeDriver() }, enabled = !r.driverBusy)
         // ai: a phone by its address (ReceiveState.askAddress): asked for, or the camera already one
         if (r.askAddress || r.typedPhone != null)
             out += Typed("Phone address", r.typedPhone?.removePrefix("phone:")?.removeSuffix(":${ReceiveState.PHONE_PORT}").orEmpty(), "IP address") { r.choosePhoneAddress(it) }

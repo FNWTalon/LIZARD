@@ -41,6 +41,7 @@
 #include "jpeg.h"
 #include "luma.h"
 #include "clock.h"
+#include "priority.h"
 #include "v4l2_sys.h"
 
 namespace lizard::cam {
@@ -763,6 +764,7 @@ bool V4l2Camera::start(const Mode& mode, Sink sink, Ended ended, std::string& wh
   streaming_ = true;
   running_ = true;
   th_ = std::thread([this, sink = std::move(sink), ended = std::move(ended), j = std::move(jpeg)]() mutable {
+    sys::raiseThread();
     run(std::move(sink), std::move(ended), std::move(j));
   });
   capId_ = th_.get_id();

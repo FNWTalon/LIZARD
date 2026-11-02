@@ -1,6 +1,7 @@
 // ai: cam_check luma (2026-10-25), checks.h's form: every Pix but MJPEG against a reference written out here from
-// ai: each layout's definition (the 2 x 2 window with its edges clamped for Bayer, never luma.cpp's helpers), at odd
-// ai: widths where the layout has them and at strides with padding; short frames, short strides and unknown layouts
+// ai: each layout's definition (bit by bit for the packed ones, the 2 x 2 window with its edges clamped for Bayer,
+// ai: never luma.cpp's helpers), at odd widths where the layout has them and at strides with padding; GigE Vision's
+// ai: Mono10Packed read as Mono12Packed; short frames, short strides and unknown layouts
 // ai: refused with why; camera.h pick's rule on mode lists as cameras give them; a 1920 x 1080 frame timed a layout,
 // ai: judged against that layout's definition timed beside it (lumaTiming). MJPEG through TurboJPEG: a grey picture
 // ai: (random 8 x 8 blocks of grey and two gradients) at quality 85 with and without its Huffman tables, decoded back
@@ -78,17 +79,20 @@ std::string fmt(const char* f, ...) {
 
 // ai: --- luma ---
 
-const Pix kLayouts[] = {Pix::Grey8, Pix::Grey16, Pix::YUYV, Pix::UYVY, Pix::YVYU, Pix::VYUY, Pix::NV12, Pix::NV21,
-                        Pix::I420, Pix::YV12, Pix::Bayer8, Pix::RGB24, Pix::BGR24, Pix::BGRA32};
+const Pix kLayouts[] = {Pix::Grey8, Pix::Grey16, Pix::Mono10p, Pix::Mono12p, Pix::Mono12Packed, Pix::YUYV, Pix::UYVY,
+                        Pix::YVYU, Pix::VYUY, Pix::NV12, Pix::NV21, Pix::I420, Pix::YV12, Pix::Bayer8, Pix::Bayer16,
+                        Pix::RGB24, Pix::BGR24, Pix::RGBA32, Pix::BGRA32};
 
 // ai: the bytes of a row of the layout's first plane, from its definition
 size_t refRow(Pix p, uint32_t w) {
   switch (p) {
     case Pix::Grey8: case Pix::NV12: case Pix::NV21: case Pix::I420: case Pix::YV12: case Pix::Bayer8: return w;
-    case Pix::Grey16: return 2 * size_t(w);
+    case Pix::Grey16: case Pix::Bayer16: return 2 * size_t(w);
     case Pix::YUYV: case Pix::UYVY: case Pix::YVYU: case Pix::VYUY: return 2 * size_t(w);   // ai: 4 bytes a pair
+    case Pix::Mono10p: return (size_t(w) * 10 + 7) / 8;
+    case Pix::Mono12p: case Pix::Mono12Packed: return (size_t(w) * 12 + 7) / 8;
     case Pix::RGB24: case Pix::BGR24: return 3 * size_t(w);
-    case Pix::BGRA32: return 4 * size_t(w);
+    case Pix::RGBA32: case Pix::BGRA32: return 4 * size_t(w);
     default: return 0;
   }
 }
@@ -100,6 +104,8 @@ std::vector<uint8_t> reference(Pix p, unsigned bits, const std::vector<uint8_t>&
                                uint32_t stride) {
   std::vector<uint8_t> o(size_t(w) * h);
   auto byte = [&](uint32_t y, size_t i) -> unsigned { return f[size_t(y) * stride + i]; };
+  // ai: bit k of row y, the least significant bit of each byte first (PFNC's order)
+  auto bit = [&](uint32_t y, size_t k) -> unsigned { return (byte(y, k / 8) >> (k % 8)) & 1u; };
   auto sample16 = [&](uint32_t x, uint32_t y) -> unsigned {
     const unsigned v = byte(y, 2 * size_t(x)) + 256u * byte(y, 2 * size_t(x) + 1);
     const unsigned t = v / (1u << (bits - 8));
@@ -114,11 +120,31 @@ std::vector<uint8_t> reference(Pix p, unsigned bits, const std::vector<uint8_t>&
       switch (p) {
         case Pix::Grey8: case Pix::NV12: case Pix::NV21: case Pix::I420: case Pix::YV12: v = byte(y, x); break;
         case Pix::Grey16: v = sample16(x, y); break;
+        case Pix::Mono10p: {
+          unsigned s = 0;
+          for (unsigned b = 0; b < 10; b++) s |= bit(y, size_t(x) * 10 + b) << b;
+          v = s >> 2;
+          break;
+        }
+        case Pix::Mono12p: {
+          unsigned s = 0;
+          for (unsigned b = 0; b < 12; b++) s |= bit(y, size_t(x) * 12 + b) << b;
+          v = s >> 4;
+          break;
+        }
+        case Pix::Mono12Packed: {
+          const size_t g = 3 * size_t(x / 2);
+          const unsigned s = x % 2 == 0 ? byte(y, g) << 4 | (byte(y, g + 1) & 15u) : byte(y, g + 2) << 4 | byte(y, g + 1) >> 4;
+          v = s >> 4;
+          break;
+        }
         case Pix::YUYV: case Pix::YVYU: v = byte(y, 2 * size_t(x)); break;
         case Pix::UYVY: case Pix::VYUY: v = byte(y, 2 * size_t(x) + 1); break;
         case Pix::Bayer8: v = mean4(byte(y, x), byte(y, x1), byte(y1, x), byte(y1, x1)); break;
+        case Pix::Bayer16: v = mean4(sample16(x, y), sample16(x1, y), sample16(x, y1), sample16(x1, y1)); break;
         case Pix::RGB24: v = lum(byte(y, 3 * size_t(x)), byte(y, 3 * size_t(x) + 1), byte(y, 3 * size_t(x) + 2)); break;
         case Pix::BGR24: v = lum(byte(y, 3 * size_t(x) + 2), byte(y, 3 * size_t(x) + 1), byte(y, 3 * size_t(x))); break;
+        case Pix::RGBA32: v = lum(byte(y, 4 * size_t(x)), byte(y, 4 * size_t(x) + 1), byte(y, 4 * size_t(x) + 2)); break;
         case Pix::BGRA32: v = lum(byte(y, 4 * size_t(x) + 2), byte(y, 4 * size_t(x) + 1), byte(y, 4 * size_t(x))); break;
         default: break;
       }
@@ -127,7 +153,7 @@ std::vector<uint8_t> reference(Pix p, unsigned bits, const std::vector<uint8_t>&
   return o;
 }
 
-bool is16(Pix p) { return p == Pix::Grey16; }
+bool is16(Pix p) { return p == Pix::Grey16 || p == Pix::Bayer16; }
 
 void lumaLayouts(Report& r) {
   std::mt19937 rng(20261025);
@@ -178,6 +204,29 @@ void lumaLayouts(Report& r) {
   }
 }
 
+// ai: GigE Vision's Mono10Packed handed over as Mono12Packed: each 10-bit sample's top 8 bits
+void lumaMono10Packed(Report& r) {
+  std::mt19937 rng(7);
+  const uint32_t w = 37, h = 4, stride = (w * 12 + 7) / 8 + 3;
+  std::vector<uint8_t> f(size_t(h) * stride);
+  std::vector<uint8_t> want(size_t(w) * h);
+  for (uint32_t y = 0; y < h; y++)
+    for (uint32_t x = 0; x < w; x += 2) {
+      const unsigned p0 = rng() % 1024, p1 = rng() % 1024;
+      uint8_t* b = &f[size_t(y) * stride + 3 * size_t(x / 2)];
+      b[0] = uint8_t(p0 >> 2);
+      b[1] = uint8_t((p0 & 3) | (p1 & 3) << 4);
+      want[size_t(y) * w + x] = uint8_t(p0 >> 2);
+      if (x + 1 < w) { b[2] = uint8_t(p1 >> 2); want[size_t(y) * w + x + 1] = uint8_t(p1 >> 2); }
+    }
+  std::vector<uint8_t> out;
+  std::string why;
+  const bool done = toLuma(Pix::Mono12Packed, 8, f.data(), f.size(), w, h, stride, out, &why);
+  r.say(done && out == want, "layout Mono10Packed",
+        done ? (out == want ? "read as Mono12Packed: every sample's top 8 bits" : "read as Mono12Packed: wrong bytes")
+             : "refused: " + why);
+}
+
 void lumaRefusals(Report& r) {
   std::vector<uint8_t> out;
   std::string why;
@@ -205,6 +254,7 @@ void lumaRefusals(Report& r) {
   expect(!toLuma(Pix::MJPEG, 8, f.data(), f.size(), 4, 4, 4, out, &why), "MJPEG");
   expect(!toLuma(Pix::Grey16, 7, f.data(), f.size(), 4, 4, 8, out, &why), "Grey16 at 7 bits");
   expect(!toLuma(Pix::Grey16, 17, f.data(), f.size(), 4, 4, 8, out, &why), "Grey16 at 17 bits");
+  expect(!toLuma(Pix::Bayer16, 17, f.data(), f.size(), 4, 4, 8, out, &why), "Bayer16 at 17 bits");
   r.say(bad == 0, "refusals", bad ? fmt("%d of %d not refused with why, first %s", bad, cases, first.c_str())
                                   : fmt("%d frames refused with why, as \"%s\"", cases, example.c_str()));
   const bool zero = frameBytes(Pix::MJPEG, 640, 480, 640) == 0 && frameBytes(Pix::Unknown, 640, 480, 640) == 0 &&
@@ -622,6 +672,7 @@ int luma(const Args& a) {
   }
   Report r;
   lumaLayouts(r);
+  lumaMono10Packed(r);
   lumaRefusals(r);
   lumaPick(r);
   lumaTiming(r);

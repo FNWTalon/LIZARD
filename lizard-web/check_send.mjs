@@ -67,7 +67,7 @@ import { makePhy, blindSpec } from "../liblizard/sim/phy.mjs";
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { init as initWh, Decoder } from "../liblizard/sim/fountain.mjs";
 import { XferReceiver, MemoryStore, ID_HEADER, blake3, hex } from "../liblizard/sim/xfer.mjs";
-import { N_FOR, NAME, SPAN, RING_DEFAULT, FOCUS_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor, subchOf, versionOf } from "../liblizard/sim/lizard_pick.mjs";
+import { N_FOR, NAME, SPAN, RING_DEFAULT, LIZARD_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor, subchOf, versionOf } from "../liblizard/sim/lizard_pick.mjs";
 import { tabs, open, evaluate, navigate } from "./phone.mjs";
 import { bundle } from "./tar.mjs";
 
@@ -150,12 +150,12 @@ async function readOnce(codes = 1) {
   }
   return { g, r: halves[0], halves, img: imgs[0], imgs, W, H };
 }
-// ai: A grab the blind decoder read no word on, decoded told (sim/phy.mjs makeFocus, the test stream's generator) at
+// ai: A grab the blind decoder read no word on, decoded told (sim/phy.mjs makeLizard, the test stream's generator) at
 // ai: each sub-channel count in subs, in the default ring: the first whose blocks verify, { sub, r }, or null. One told
 // ai: codec at a time (the wasm holds one; the blind receiver's are its own), freed after.
 async function readTold(x, subs) {
   for (const sub of subs) {
-    const n = N_FOR(sub), p = await makePhy({ phy: "focus", n, subch: sub, mode: 1, span: SPAN(n, RING_DEFAULT), bitmap: FOCUS_BITMAP, stream: "shake256" });
+    const n = N_FOR(sub), p = await makePhy({ phy: "lizard", n, subch: sub, mode: 1, span: SPAN(n, RING_DEFAULT), bitmap: LIZARD_BITMAP, stream: "shake256" });
     try { const r = p.decode(x.img, x.W, x.H, null)[0]; if (r.seen > 0) return { sub, r }; } finally { p.free(); }
   }
   return null;
@@ -232,7 +232,7 @@ for (const c of [{ subch: 96 }, { subch: 64 }, { subch: 496 }, { subch: 96, file
   const { g, r } = out, v = versionOf(subch), wordOk = r.fmt?.version === v && r.fmt?.fps === FPS, blocksOk = r.seen > 0 && r.bad === 0;
   // ai: a file's line carries its size, and what it was compressed to where zstd shrank it (2026-10-05): random bytes do not shrink
   // ai: its figures kept whole by no-break spaces (send.mjs sizeText, 2026-10-23), read as spaces here
-  const state = g.state.replace(/\u00a0/g, " "), stateOk = bun ? state.startsWith(`Sending ${bun.made.name}, `) : state === (c.file ? "Sending check-send.bin, 50 KB (50 KB raw)" : "Sending the test stream");
+  const state = g.state.replace(/\u00a0/g, " "), stateOk = bun ? state.startsWith(`Sending ${bun.made.name}, `) : state === (c.file ? "Sending check-send.bin, 50 KB (50 KB raw)" : "Sending");
   const want = bun ? { name: bun.made.name, type: "application/x-tar", bytes: bun.bytes } : { name: "check-send.bin", bytes: fileBytes };
   const root = hex(blake3(M, want.bytes)), headerOk = !c.file || (header && header.name === want.name && header.length === want.bytes.length && header.root === root && (!want.type || header.type === want.type));
   console.log(`${name}: canvas ${g.w} x ${g.h}, picture n = ${r.n} (want ${N_FOR(subch)}), word ${r.fmt ? `version ${r.fmt.version} at ${r.fmt.fps} fps` : "not read"}, ${r.seen} blocks verified, ${r.bad} bad${c.file ? `; ${frames} frames read, ${blocks} blocks, header ${header ? `${header.name}, ${header.length} B, root ${header.root.slice(0, 16)}...` : "not read"}` : ""}`);
@@ -345,7 +345,7 @@ async function midStream(subch0, r0) {
     if (o.bad) faults.push(`${what}: ${o.bad} bad blocks over the grabs until it`);
     if (o.strays) faults.push(`${what}: ${o.strays} grabs on the way that neither the blind decoder nor a told one reads as the old frames or the new (${o.before})`);
     if (r.n !== N_FOR(subch)) faults.push(`${what}: registered at n = ${r.n} (want ${N_FOR(subch)})`);
-    if (g.state !== "Sending the test stream") faults.push(`${what}: the state line says "${g.state}"`);
+    if (g.state !== "Sending") faults.push(`${what}: the state line says "${g.state}"`);
     if (g.which !== (GPU ? "cg" : "c")) faults.push(`${what}: read off #${g.which}`);
     if (!(lo > prior)) faults.push(`${what}: its ids start at ${lo}, not above the ${prior} read before it`);
     maxId = Math.max(prior, ...ids);
@@ -362,7 +362,7 @@ async function midStream(subch0, r0) {
     console.log(pageLine(p));
     if (!said(p)) faults.push(`${what}: 3 s after the canvas showed it the page does not say ${want}: #tx "${p.lab}", #nums "${p.nums}", #tx "${p.tx.split("\n").find((l) => l.startsWith("painted ")) ?? ""}"`);
     if (!enc.ok) faults.push(`${what}: the encoder is not the one asked for: ${enc.line}, on #${p.which}`);
-    if (p.state !== "Sending the test stream") faults.push(`${what}: the state line says "${p.state}"`);
+    if (p.state !== "Sending") faults.push(`${what}: the state line says "${p.state}"`);
   };
   // ai: The re-pick: grabbed from the resize on (the old version until the worker, and under the GPU encoder the new
   // ai: configuration, has the new code, and the frames asked for before it have painted); the first frame at the new

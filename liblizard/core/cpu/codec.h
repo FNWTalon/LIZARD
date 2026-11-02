@@ -9,11 +9,11 @@ extern "C" {
 
 typedef struct cpu_dec cpu_dec_t;
 
-// ai: What a frame's decode found. ring: the ring that registered (an index into src/focus.h FOCUS_RING), -1 none. n: the picture it was finished
+// ai: What a frame's decode found. ring: the ring that registered (an index into src/lizard_phy.h LIZARD_RING), -1 none. n: the picture it was finished
 // ai: at, 0 not finished. held: the caller's held word stood in for the frame's own. word: the frame's own word read
 // ai: (version = sub-channels / 16, fps the display rate it states). total: the blocks the version it was finished at
 // ai: carries under the rate profile (ok[] and blocks[] hold that many). quad: the symbol's corners in the image, TL
-// ai: TR BR BL. pilot_*: what the block tails read (liblizard/src/any.h focus_any_pilot: r of the even blocks and of
+// ai: TR BR BL. pilot_*: what the block tails read (liblizard/src/any.h lizard_any_pilot: r of the even blocks and of
 // ai: the odd, their standard errors, the blocks read, 0 none).
 typedef struct {
   int found, ring, n, held, word, version, fps, total;
@@ -33,7 +33,7 @@ int cpu_dec_block_bytes(const cpu_dec_t *d);
 // ai: Returns the blocks that verified; block b is good where ok[b] is 1.
 int cpu_dec_frame(cpu_dec_t *d, const uint8_t *img, int iw, int ih, int held, uint8_t *blocks, uint8_t *ok, cpu_frame_t *out);
 // ai: Where the camera's optical axis falls in the next image this thread decodes (NaN: its centre), the lens
-// ai: model's (src/focus.h focus_set_axis); it stays for the thread's later frames until set again.
+// ai: model's (src/lizard_phy.h lizard_set_axis); it stays for the thread's later frames until set again.
 void cpu_dec_set_axis(float x, float y);
 // ai: The last frame's per-block LDPC iterations and information estimates (out->total of each), for a check.
 void cpu_dec_block_stats(const cpu_dec_t *d, const int8_t **its, const float **est);

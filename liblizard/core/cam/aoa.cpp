@@ -3,9 +3,10 @@
 // ai: hands it the accessory's strings (52) and starts it (53); the phone comes back on the same port as Google's
 // ai: accessory device (18D1:2D00, 2D01 with adb), the app opens the accessory (lizard-android/.../PcLink.kt) and the
 // ai: stream's bridge (liblizard/core/rx/stream.h streamAccessory) carries the stream's messages over the accessory
-// ai: interface's two bulk endpoints. libusb-1.0 is loaded at run time (LIZ_LIBUSB: a path, or empty for none): on
-// ai: Linux the user needs access to the device (a udev rule, as adb's), on Windows a WinUSB driver bound to the
-// ai: phone's interface and to the accessory's (Zadig), on macOS nothing more.
+// ai: interface's two bulk endpoints. libusb-1.0 is loaded at run time (LIZ_LIBUSB: a path, or empty for none; else
+// ai: the one beside this library, as the Windows and macOS packages carry it, then the system's): on Linux the user
+// ai: needs access to the device (the .deb's udev rule), on Windows a WinUSB driver bound to the phone and to the
+// ai: accessory (lizard_usb, libwdi's, run from Receive), on macOS nothing more.
 #include "aoa.h"
 #include "clock.h"
 
@@ -81,7 +82,12 @@ constexpr uint8_t VENDOR_IN = 0xC0, VENDOR_OUT = 0x40;
 // ai: the strings the app's filter matches (res/xml/accessory_filter.xml, PcLink.kt): manufacturer, model,
 // ai: description, version, URI (Android offers it where no app matches), serial
 const char* const STRINGS[6] = {"LIZARD", "PC receiver", "LIZARD's PC receiver", "1", "https://github.com/FNWTalon/LIZARD", ""};
-constexpr int SWITCH_MS = 8000;   // ai: the phone's way back onto the bus as an accessory
+// ai: the phone's way back onto the bus as an accessory; Windows installs the accessory's driver on its first arrival
+#if defined(_WIN32)
+constexpr int SWITCH_MS = 15000;
+#else
+constexpr int SWITCH_MS = 8000;
+#endif
 constexpr int64_t STALL_NS = 1'500'000'000;   // ai: a send that moves nothing this long has no phone to go to
 
 struct Usb {
@@ -109,7 +115,31 @@ struct Usb {
   std::string error(int r) const { return errorName ? errorName(r) : std::to_string(r); }
 };
 
-// ai: the process's libusb, loaded once and kept: LIZ_LIBUSB alone where set (empty: none), else the system's names
+// ai: the folder holding this library (the app's native folder, where its packages put libusb), "" where unknown
+std::string ownFolder() {
+#if defined(_WIN32)
+  HMODULE m = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          reinterpret_cast<LPCWSTR>(&ownFolder), &m))
+    return "";
+  wchar_t w[MAX_PATH * 2];
+  const DWORD n = GetModuleFileNameW(m, w, MAX_PATH * 2);
+  if (!n || n >= MAX_PATH * 2) return "";
+  std::string s(static_cast<size_t>(WideCharToMultiByte(CP_UTF8, 0, w, static_cast<int>(n), nullptr, 0, nullptr, nullptr)), '\0');
+  WideCharToMultiByte(CP_UTF8, 0, w, static_cast<int>(n), s.data(), static_cast<int>(s.size()), nullptr, nullptr);
+  const size_t k = s.find_last_of("\\/");
+  return k == std::string::npos ? "" : s.substr(0, k + 1);
+#else
+  Dl_info d{};
+  if (!dladdr(reinterpret_cast<void*>(&ownFolder), &d) || !d.dli_fname) return "";
+  const std::string s = d.dli_fname;
+  const size_t k = s.rfind('/');
+  return k == std::string::npos ? "" : s.substr(0, k + 1);
+#endif
+}
+
+// ai: the process's libusb, loaded once and kept: LIZ_LIBUSB alone where set (empty: none), else the one beside this
+// ai: library, then the system's names
 const Usb* usb() {
   static const Usb u = [] {
     Usb a;
@@ -119,19 +149,25 @@ const Usb* usb() {
       names = {e};
     } else {
 #if defined(_WIN32)
+      const char* own = "libusb-1.0.dll";
       names = {"libusb-1.0.dll"};
 #elif defined(__APPLE__)
+      const char* own = "libusb-1.0.0.dylib";
       names = {"/opt/homebrew/lib/libusb-1.0.0.dylib", "/usr/local/lib/libusb-1.0.0.dylib", "libusb-1.0.0.dylib"};
 #else
+      const char* own = "libusb-1.0.so.0";
       names = {"libusb-1.0.so.0"};
 #endif
+      if (const std::string dir = ownFolder(); !dir.empty()) names.insert(names.begin(), dir + own);
     }
     std::string tried;
     for (const auto& name : names) {
 #if defined(_WIN32)
       std::wstring wide(name.size() + 1, L'\0');
       wide.resize(static_cast<size_t>(std::max(0, MultiByteToWideChar(CP_UTF8, 0, name.c_str(), -1, wide.data(), static_cast<int>(wide.size())) - 1)));
-      HMODULE h = LoadLibraryW(wide.c_str());
+      // ai: a full path loads its own folder's dependencies first (LOAD_WITH_ALTERED_SEARCH_PATH); a bare name searches
+      HMODULE h = name.find_first_of("\\/") == std::string::npos ? LoadLibraryW(wide.c_str())
+                                                                  : LoadLibraryExW(wide.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
       if (!h) { tried += (tried.empty() ? "" : "; ") + name + ": not loaded"; continue; }
       auto sym = [&](const char* s) { return reinterpret_cast<void*>(GetProcAddress(h, s)); };
 #else
@@ -217,9 +253,16 @@ int protocolOf(const Usb* u, void* h) {
   return u->controlTransfer(h, VENDOR_IN, GET_PROTOCOL, 0, 0, b, 2, 1000) == 2 ? b[0] | b[1] << 8 : 0;
 }
 
+// ai: libusb's word on a device it could not open: no access (Linux: no udev rule gives the user the device), no driver
+// ai: it can talk through (Windows: no WinUSB on the device, or on any interface of a composite one, NOT_FOUND)
+constexpr int ERR_NOT_FOUND = -5;
 std::string openHint(int r) {
-  if (r == ERR_ACCESS) return " (no access: a udev rule for its vendor, as adb's)";
-  if (r == ERR_NOT_SUPPORTED) return " (no WinUSB driver on it: Zadig binds one)";
+  if (r == ERR_ACCESS) return " (no access: the package's udev rule, or one for its vendor as adb's)";
+#if defined(_WIN32)
+  if (r == ERR_NOT_SUPPORTED || r == ERR_NOT_FOUND) return " (no WinUSB driver on it: Install USB driver binds one)";
+#else
+  if (r == ERR_NOT_SUPPORTED) return " (no driver libusb can use on it)";
+#endif
   return "";
 }
 
@@ -349,6 +392,19 @@ std::vector<Found> list(std::vector<std::string>* notes) {
   }
   if (n >= 0) u->freeDeviceList(devs, 1);
   return out;
+}
+
+bool present(const std::string& id) {
+  const Usb* u = usb();
+  const std::string prefix = "phone:usb:";
+  if (!u->ok || id.compare(0, prefix.size(), prefix) != 0) return false;
+  const std::string place = id.substr(prefix.size());
+  void** devs = nullptr;
+  const std::ptrdiff_t n = u->getDeviceList(u->ctx, &devs);
+  bool there = false;
+  for (std::ptrdiff_t i = 0; i < n && !there; i++) there = placeOf(u, devs[i]) == place;
+  if (n >= 0) u->freeDeviceList(devs, 1);
+  return there;
 }
 
 std::string stamp() {

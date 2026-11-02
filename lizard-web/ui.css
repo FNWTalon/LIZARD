@@ -85,12 +85,14 @@ pre.readout{font-size:12px;color:var(--fg)}
 /* ai: The tool pages' sidebar collapser (2026-10-02): an icon at the bar's end in landscape, where the controls are a
    column beside the code or the camera;
    collapsed (body.collapsed, ui.mjs collapser), the column is a 56 px rail holding it alone, its chevrons turned, and
-   the page's own room the rest (each page sizes its column by --side). Portrait stacks the controls: no button. */
+   the page's own room the rest (each page sizes its column by --side). Portrait stacks the controls: no button.
+   Since 2026-11-01 by the pointer: a phone's (coarse) the collapser alone, no edge and no switch in the column's bar;
+   anything else (a mouse's fine pointer, or none) no collapser in the open column's bar, the column's edge an editor's
+   sash (ui.mjs sideResizer); the rail's expander on both. */
 :root{--side:20rem}
 .side-edge{display:none}
 .bar .collapse{display:none}
 @media (orientation:landscape){
-  .bar .collapse{display:flex}
   /* ai: the tool pages' way Home is the rail's last square in landscape, not the bar (2026-10-05): expanding the column
      put the bar's back arrow where the expand button had been, and a second tap left the page */
   .bar .back{display:none}
@@ -99,11 +101,18 @@ pre.readout{font-size:12px;color:var(--fg)}
   body.collapsed .bar>:not(.collapse){display:none}
   body.collapsed .bar>.collapse{margin:0}
   body.collapsed .collapse svg{transform:rotate(180deg)}
-  /* ai: the column's edge, dragged to resize it (ui.mjs sideResizer, 2026-10-05): a 12 px strip over the hairline */
-  .side-edge{display:block;position:fixed;top:0;bottom:0;left:var(--side);width:12px;margin-left:-6px;cursor:col-resize;z-index:5;touch-action:none}
-  body.collapsed .side-edge,body.full .side-edge{display:none}
   body.resizing{cursor:col-resize;user-select:none}
   body.collapsed .rail{display:flex;flex:1 1 auto}
+}
+@media (orientation:landscape) and (pointer:coarse){
+  .bar .collapse{display:flex}
+  .bar #swap{display:none}
+}
+@media (orientation:landscape) and (pointer:fine),(orientation:landscape) and (pointer:none){
+  /* ai: the column's edge, dragged (ui.mjs sideResizer, 2026-10-05): a 12 px strip over the hairline, the rail's too */
+  .side-edge{display:block;position:fixed;top:0;bottom:0;left:var(--side);width:12px;margin-left:-6px;cursor:col-resize;z-index:5;touch-action:none}
+  body.full .side-edge{display:none}
+  body.collapsed .bar .collapse{display:flex}
 }
 /* ai: The collapsed rail's squares (2026-10-02): 56 px each under
    the bar's button; a pause that turns to play (.off), a figure over its unit (.rate), the receiver's green tick (.done). */

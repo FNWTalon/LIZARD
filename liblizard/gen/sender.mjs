@@ -2,7 +2,7 @@
 // ai: (liblizard/gpu/encoder.mjs: paint, irows and ipic a picture size, tpose, rsv, rsh and its copy form) as the WGSL
 // ai: the web builds them from, for gen.mjs to compile as it does the decoder's, and the tables no format changes,
 // ai: which the web host computes from the wasm and core/tx/gpu_painter.cpp takes from here: the paint's TAB (every
-// ai: code of the format's rate profile, src/focus.h focus_tiers_for, and the whitening: gpu/encoder.mjs sendTab, since
+// ai: code of the format's rate profile, src/lizard_phy.h lizard_tiers_for, and the whitening: gpu/encoder.mjs sendTab, since
 // ai: 2026-10-07; one code's bit map a block, PERMW, before) and the CRC's powers. What a format does change (the disc's
 // ai: rows, the resampler's taps, the border, its tiers in the paint's uniform) the painter takes from the C's codec on
 // ai: the phone (core/tx/send_tables.cpp), held to the web's by gen/send_tables_ref.mjs and `tx_check gputables`.

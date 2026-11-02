@@ -1,6 +1,6 @@
 // The sender's encoder, off the page's thread (lizard-web/send.mjs), for a LIZARD symbol. It builds each frame's
 // blocks (the test stream, or the fountain for a file), encodes them and writes the finished RGBA pixels in wasm
-// (src/focus.c focus_paint_rgba), a few frames ahead of the page, so the page only puts pixels on its canvas. At
+// (src/lizard_phy.c lizard_paint_rgba), a few frames ahead of the page, so the page only puts pixels on its canvas. At
 // LIZARD-1024 that was 13 ms here and a few on the page, where the page used to spend 45 ms a frame on both (2026-09-23,
 // n = 2048 then).
 //
@@ -26,8 +26,8 @@ import { init as initZstd, Z } from "../liblizard/sim/zstd.mjs";
 import { XferSender, isControlId } from "../liblizard/sim/xfer.mjs";
 
 let phy = null, xs = null, fps = 0, codes = 1, chain = Promise.resolve();
-// ai: The transfer made at the page's pick (2026-10-19; "prepare"): every chunk compressed and its fountain set up before
-// ai: Start, so the page can say what goes and Start begins at once. made: { pick, xs } while no run sends it; a run takes
+// ai: The transfer made at a pick's first Start ("prepare", sent just before "start"; at the pick from 2026-10-19 to
+// ai: 2026-11-01): every chunk compressed and its fountain set up. made: { pick, xs } while no run sends it; a run takes
 // ai: it (xsPick its pick) and a stop gives it back, so the next Start sends the same transfer on, with nothing made again.
 let made = null, xsPick = null;
 function dropRun() {

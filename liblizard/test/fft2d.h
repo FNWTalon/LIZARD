@@ -1,6 +1,6 @@
 // ai: n x n complex samples in place, rows then columns, over src/fft.c fft_cols: inverse = 1 divides by n * n, so
 // ai: forward then inverse is the identity. The tests' (fft_test.c, neon_check.c): the codec only ever needs half the
-// ai: plane and uses fft_cols directly (src/focus.c). In src/fft.c until 2026-10-25.
+// ai: plane and uses fft_cols directly (src/lizard_phy.c). In src/fft.c until 2026-10-25.
 #ifndef OB_TEST_FFT2D_H
 #define OB_TEST_FFT2D_H
 #include "../src/fft.h"

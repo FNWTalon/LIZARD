@@ -19,7 +19,7 @@ static float uni(void) { return (float)(rnd() >> 8) / 16777216.0f; }
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL line %d: ", __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
-// The three rings: B band cells a side, modules a side S = 2B + 30 (src/focus.h), band reserve 15
+// The three rings: B band cells a side, modules a side S = 2B + 30 (src/lizard_phy.h), band reserve 15
 // (OB_THIN_RESERVE); W word cells a side, RS(BS, 3). Any ring carries any version (SPEC 5.2).
 enum { NR = 3, NV = OB_FMT_VERSION_MAX - OB_FMT_VERSION_MIN + 1 };
 static const int RB[NR] = { 64, 128, 256 }, WS[NR] = { 32, 64, 128 }, BS[NR] = { 16, 32, 64 };

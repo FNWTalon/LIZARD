@@ -75,6 +75,13 @@ import androidx.compose.ui.unit.dp
 // ai: the phone's target size: buttons, fields and icon buttons 48 dp, the web's under a finger
 val TARGET = 48.dp
 
+// ai: About's credits for what the app carries besides the core (the repository's NOTICE)
+private val CREDITS_HERE = listOf(
+    Credit("AndroidX", "Apache License 2.0"),
+    Credit("Jetpack Compose", "Apache License 2.0"),
+    Credit("Kotlin", "Apache License 2.0"),
+)
+
 class MainActivity : ComponentActivity() {
     companion object {
         const val UNPLUG_MS = 2000L   // ai: a cable out this long is out (usb)
@@ -198,7 +205,7 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) handle(intent)
         publishShortcut()
         // ai: a mouse's pointer over a column's edge (DeX, a mouse on a tablet): Android's left-right double arrow
-        setContent { LizardTheme(TARGET, resizeIcon = PointerIcon(android.view.PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW)) { App() } }
+        setContent { LizardTheme(TARGET, resizeIcon = PointerIcon(android.view.PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW), credits = CREDITS_HERE) { App() } }
     }
 
     // ai: What a phone held before the receive session (2026-10-31), carried into its data folder at the first start, one

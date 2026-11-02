@@ -179,7 +179,7 @@ private fun FileRow(h: HomeHost, e: FileItem, last: Boolean) {
 }
 
 // ai: Home's settings (the web Home's .settings): the tips again, the received files' count and size with Delete all
-// ai: (asked first; the unfinished transfers stay), About
+// ai: (asked first; the unfinished transfers stay), About (a fold: the build line and the credits, AboutFold)
 @Composable
 private fun HomeSettings(h: HomeHost) {
     var asking by remember { mutableStateOf(false) }
@@ -187,10 +187,10 @@ private fun HomeSettings(h: HomeHost) {
     val n = files.size
     SectionLabel("Settings")
     ListRow("Show tips again", "The first-run tips, on every page", divider = true, onClick = { h.tipsAgain() })
-    ListRow("Received files", if (n == 0) "No files kept." else "${countOf(n)} kept, ${Readout.bytes(files.sumOf { it.size })}", divider = true) {
+    ListRow("Received files", if (n == 0) "No files kept." else "${countOf(n)} kept, ${Readout.bytes(files.sumOf { it.size })}") {
         if (n > 0) Btn("Delete all", Kind.Danger) { asking = true }
     }
-    ListRow("About", h.about.ifEmpty { null })
+    AboutFold(h.about)
     if (asking) AskDialog("Delete ${countOf(n)}?", "They go from this ${h.device}." + if (h.device == "phone") " Copies saved elsewhere stay." else "",
         "Delete all", { asking = false }) { h.deleteAll() }
 }

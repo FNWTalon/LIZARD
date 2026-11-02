@@ -6,8 +6,8 @@
 // codeword count) with Reed-Solomon over the rest. Neither says anything about the TRANSFER: a QR symbol's mode
 // indicator and character count live in the data stream, inside the payload's own error correction. LIZARD's do
 // the same. Sub-channels are 16 * version, the picture size is the smallest that holds them (sim/lizard_pick.mjs
-// N_FOR), the mode is always LDPC, the code rates are the rate profile the sub-channels give (focus.h
-// focus_tiers_for), and the fountain's header is payload.
+// N_FOR), the mode is always LDPC, the code rates are the rate profile the sub-channels give (lizard_phy.h
+// lizard_tiers_for), and the fountain's header is payload.
 //
 // It carries the display rate because that is the one thing about an ANIMATED symbol that no single frame shows.
 // The version is a property of the picture in front of the camera; the rate is a property of a sequence the
@@ -45,7 +45,7 @@
 // wrong word is worse than none: it would send the receiver to another picture size and cost every block of
 // every frame until it changed again. 0x4c is 'L'.
 // OB_FMT_VERSION_MIN, OB_FMT_VERSION_MAX: the versions a word may state, LIZARD-64's 4 to LIZARD-1024's 64, the version
-// being sub-channels / 16 (focus.h FOCUS_STEP; 7 blocks at version 4, 124 at 64 under the rate profile). A byte could
+// being sub-channels / 16 (lizard_phy.h LIZARD_STEP; 7 blocks at version 4, 124 at 64 under the rate profile). A byte could
 // say 0 to 255; keeping the range to the formats that exist keeps it a check on a miscorrected word, with the magic: a
 // version byte of 0 to 3 or 65 to 255 is refused. Versions 1 to 3 (LIZARD-16, -32, -48) are no formats: their odd
 // blocks' pilots are one 7/8 block's 8 coefficients or none, too few for the phase lock's second reading; the smallest

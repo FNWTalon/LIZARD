@@ -63,6 +63,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MenuDefaults
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +78,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.text.font.FontWeight
 import dev.lizard.readout.Readout
 import kotlin.math.floor
+import kotlinx.coroutines.delay
 
 // ai: The parts of both apps (2026-10-31; each app's Parts.kt before, the Android app's of 2026-10-01 and the desktop's
 // ai: port of it), the web's (lizard-web/ui.css): sizes the web's, a target LocalTarget's (48 dp under a finger, 40
@@ -120,11 +122,14 @@ fun IconBtn(icon: ImageVector, label: String, enabled: Boolean = true, turn: Flo
 fun CollapseBtn(collapsed: Boolean, onClick: () -> Unit) =
     IconBtn(Icons.collapse, if (collapsed) "Show sidebar" else "Hide sidebar", turn = if (collapsed) 180f else 0f, onClick = onClick)
 
-// ai: The collapsed column (the web's 56 px rail): the collapser at its top, a hairline under its row as the bar's, then
-// ai: the caller's squares, and `foot` at its bottom (Home: the only way home from a tool page in landscape, 2026-10-05).
+// ai: The collapsed column (the web's 56 px rail): the button that opens it at its top (`onClick`; on every platform,
+// ai: the desktop's sash beside it), a hairline under its row as the bar's, then the caller's squares, and `foot` at its
+// ai: bottom (Home: the only way home from a tool page in landscape, 2026-10-05).
+val RailWidth = 56.dp
+
 @Composable
 fun Rail(onClick: () -> Unit, foot: @Composable () -> Unit = {}, squares: @Composable () -> Unit = {}) {
-    Column(Modifier.width(56.dp).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.width(RailWidth).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) { CollapseBtn(true, onClick) }
         HorizontalDivider(color = Line)
         squares()
@@ -169,10 +174,10 @@ fun SwapBtn(label: String, onClick: () -> Unit) =
     }
 
 // ai: A file's progress (the web's .meter): a 6 dp track on the soft fill, round ends, filled in the foreground's colour
-// ai: to frac; nothing for null
+// ai: to frac; nothing for null, or its room alone where `hold` (a run's lines keep their place, 2026-11-02)
 @Composable
-fun Meter(frac: Double?) {
-    if (frac == null) return
+fun Meter(frac: Double?, hold: Boolean = false) {
+    if (frac == null) { if (hold) Spacer(Modifier.padding(vertical = 8.dp).height(6.dp)); return }
     Box(Modifier.fillMaxWidth().padding(vertical = 8.dp).height(6.dp).clip(RoundedCornerShape(3.dp)).background(Soft)) {
         if (frac > 0) Box(Modifier.fillMaxWidth(frac.toFloat().coerceIn(0f, 1f)).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(Fg))
     }
@@ -185,20 +190,35 @@ fun Spinner() = CircularProgressIndicator(Modifier.size(28.dp), color = Fg, stro
 
 // ai: A line that names a file (2026-10-23; the web's ui.mjs sayName): its head, up to the name and a comma after it,
 // ai: on one line, the name's stem cut with an ellipsis where the line is too narrow and its ending kept whole
-// ai: (Readout.nameParts); the rest after it there where it fits, else under it.
-@OptIn(ExperimentalLayoutApi::class)
+// ai: (Readout.nameParts); the rest after it on the same line, cut with an ellipsis where even the stem is gone (one
+// ai: line always, 2026-11-02: the rest wrapping under it made the line two lines tall, then one, as its figures moved).
 @Composable
 fun NameLine(before: String, name: String, after: String, style: TextStyle, color: Color, modifier: Modifier = Modifier) {
     val (stem, end) = Readout.nameParts(name)
     val comma = after.startsWith(",")
     val rest = (if (comma) after.drop(1) else after).trim()
-    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-        Row {
-            Text(before + stem, style = style, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-            Text(end + if (comma) "," else "", style = style, color = color, maxLines = 1)
-        }
-        if (rest.isNotEmpty()) Text(rest, style = style, color = color)
+    // ai: the head, the ending and the rest measured first, in that order; the stem takes what is left
+    Row(modifier) {
+        if (before.isNotEmpty()) Text(before, style = style, color = color, maxLines = 1)
+        Text(stem, style = style, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        Text(end + if (comma) "," else "", style = style, color = color, maxLines = 1)
+        if (rest.isNotEmpty()) Text(" $rest", style = style, color = color, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
+}
+
+// ai: A line that comes and goes with a poll, held still (2026-11-02): shown once it has held `on` ms, kept until it has
+// ai: been gone `off` ms; a new text over one shown takes its place at once. The receivers' hints, whose rules sit on
+// ai: a rate that wavers about the code's, came and went with each quarter-second poll (shown at once since: its room
+// ai: is kept for the run once shown, Receive.kt, so only its words would blink).
+@Composable
+fun steady(text: String, on: Long = 1000, off: Long = 2000): String {
+    var shown by remember { mutableStateOf("") }
+    LaunchedEffect(text) {
+        if (text.isNotEmpty()) { if (shown.isEmpty()) delay(on); shown = text }
+        else { delay(off); shown = "" }
+    }
+    // ai: with no wait, a text in this frame, not the next (the effect's write lands a frame later)
+    return if (on == 0L && text.isNotEmpty()) text else shown
 }
 
 // ai: A section's heading (the web's section h2): small, grey, 24 dp over it

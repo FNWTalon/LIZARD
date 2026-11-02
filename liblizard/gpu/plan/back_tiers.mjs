@@ -4,7 +4,7 @@ import { VERSION_MAX } from "../wordcode.mjs";
 import { STEP } from "../../sim/lizard_pick.mjs";
 
 // ai: The grid's shift by the pilots (2026-10-01; the format paints the pilots whatever the phone, so a decoder may
-// ai: steer by them; src/focus.c pilot_align, the same fit). A grid (dx, dy) samples off turns coefficient (u, v) by
+// ai: steer by them; src/lizard_phy.c pilot_align, the same fit). A grid (dx, dy) samples off turns coefficient (u, v) by
 // ai: 2 pi (u dx + v dy) / n. `talign` (one workgroup a frame, a thread a block, before the soft values in their pass
 // ai: and on their bind groups) reads every 7/8 and 3/4 block's 8 or 16 pilot coefficients (its tail, its last slots),
 // ai: each against its known symbol with the block's sign from its own pilots' sum, fits zi = k zr (u dx + v dy) by
@@ -42,8 +42,8 @@ export const WHITE_SLOTS = 1024 * 640;
 // ai: went 2026-10-22; the check's own values in 16-bit registers ("reg+i16+r16") was slower on both devices
 // ai: (2026-10-31).
 export const LDPC_FORMS = typeof process !== "undefined" ? ["reg", "reg+i32", "reg+i16"] : ["reg"];
-// ai: the codes TT names, in order: src/focus.c focus_tiers_for's four rates (ldpc.h index, slots a block: the code's
-// ai: sent bits and its pilots, src/focus.c focus_block_slots). Every block's slots are a multiple of 16, so every
+// ai: the codes TT names, in order: src/lizard_phy.c lizard_tiers_for's four rates (ldpc.h index, slots a block: the code's
+// ai: sent bits and its pilots, src/lizard_phy.c lizard_block_slots). Every block's slots are a multiple of 16, so every
 // ai: block's first slot is too (the blocks are packed from the frame's first slot, the remainder padded).
 export const CODES = [{ rate: 6, slots: 4496, name: "7/8" }, { rate: 4, slots: 5152, name: "3/4" }, { rate: 3, slots: 5760, name: "2/3" }, { rate: 2, slots: 7680, name: "1/2" }];
 // ai: TT's words a version: (blocks, used slots, 0, 0), then (first block, first slot, blocks, 0) a code in CODES' order.

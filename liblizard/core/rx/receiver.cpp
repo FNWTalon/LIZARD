@@ -9,6 +9,7 @@
 #include "receiver.h"
 #include "develop.h"
 #include "crops.h"
+#include "priority.h"
 #include "stream.h"
 #include "replay.h"
 #include "front.h"
@@ -273,7 +274,7 @@ bool GpuReceiver::start(std::string& why, bool software) {
   forms = std::make_unique<FormRecord>(cfg.cacheDir, *dev, log);
   if (!build(why)) return false;
   if (!xfer) xfer = std::make_shared<XferRx>(cfg.storeDir, log);
-  decoderThread = std::thread([this] { decoderLoop(); });
+  decoderThread = std::thread([this] { sys::raiseThread(); decoderLoop(); });
   releaserThread = std::thread([this] { releaserLoop(); });
   log("receiver: the GPU decoder, " + variant + (lacking.empty() ? "" : " (" + lacking + " not in the assets)") + (zeroCopy ? ", zero-copy camera" : ", camera luma uploaded"));
   return true;

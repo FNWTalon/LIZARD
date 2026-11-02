@@ -39,7 +39,7 @@ static const plan_t *plan_for(int rows) {
   if (!size_ok(rows)) return NULL;
   int slot = 0;
   for (; slot < 8 && plans[slot].rows; slot++) if (plans[slot].rows == rows) return &plans[slot];
-  if (slot == 8) slot = 7;   // more sizes than slots: the last one is rebuilt. FOCUS uses one size.
+  if (slot == 8) slot = 7;   // more sizes than slots: the last one is rebuilt. LIZARD uses one size.
   plan_t *p = &plans[slot];
   free(p->wr); free(p->wi); free(p->swp);
   p->rows = rows; p->half = rows & 1 ? rows : rows / 2;

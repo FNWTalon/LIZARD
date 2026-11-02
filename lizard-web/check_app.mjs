@@ -66,7 +66,7 @@ const stop = () => new Promise((ok) => { server.closeAllConnections?.(); server.
 // ai: LIZARD-96's test stream at 24 painted, 1920 x 1080 at 30, as check_ui.mjs clips it
 async function clip(path) {
   const CW = 1920, CH = 1080, FD = 24, FC = 30, SUBCH = 96;
-  const phy = await makePhy({ phy: "focus", stream: "shake256", n: N_FOR(SUBCH), subch: SUBCH, mode: 1, fps: FD, variants: [{ name: "rx" }] });
+  const phy = await makePhy({ phy: "lizard", stream: "shake256", n: N_FOR(SUBCH), subch: SUBCH, mode: 1, fps: FD, variants: [{ name: "rx" }] });
   const fd = openSync(path, "w"), y = Buffer.alloc(CW * CH), chroma = Buffer.alloc((CW * CH) / 2, 128);
   writeSync(fd, `YUV4MPEG2 W${CW} H${CH} F${FC}:1 Ip A1:1 C420jpeg\n`);
   let shown = -1;
@@ -135,7 +135,7 @@ await navigate(s, `${BASE}recv.html?auto&seen`);
 const read = await until(s, `document.getElementById("state").textContent === "Reading the test stream" && /LIZARD-96/.test(document.getElementById("lab").textContent)`, 40000, "offline: the test stream read").catch((e) => (console.log(`     ${e.message}`), false));
 check(read, `offline: the receiver reads the test stream off the camera (the codec, the workers, every file from the cache)`);
 await navigate(s, `${BASE}send?subch=auto&fps=24&payload=test&auto`);
-const painted = await until(s, `/painted [\\d.]+\\/s/.test(document.getElementById("tx").textContent) && document.getElementById("state").textContent === "Sending the test stream"`, 30000, "offline: the test stream painted").catch((e) => (console.log(`     ${e.message}`), false));
+const painted = await until(s, `/painted [\\d.]+\\/s/.test(document.getElementById("tx").textContent) && document.getElementById("state").textContent === "Sending"`, 30000, "offline: the test stream painted").catch((e) => (console.log(`     ${e.message}`), false));
 check(painted, `offline: the sender paints the test stream, asked for at its clean URL (send?...)`);
 
 // ai: 3. the differential install

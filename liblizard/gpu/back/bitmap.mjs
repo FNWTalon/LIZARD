@@ -1,8 +1,8 @@
-// The bit map (perm, inverse) and the whitening (PRBS-23), regenerated in JS from src/focus.c and src/ldpc.c (nothing
+// The bit map (perm, inverse) and the whitening (PRBS-23), regenerated in JS from src/lizard_phy.c and src/ldpc.c (nothing
 // here is exported by the wasm); and a block's systematic codeword and data bits (the C's encoder), which the profile
 // stage's checks paint with.
 
-// x^23 + x^18 + 1 from the all-ones state, one bit a slot of the frame in pos order (focus.c whiten_fill).
+// x^23 + x^18 + 1 from the all-ones state, one bit a slot of the frame in pos order (lizard_phy.c whiten_fill).
 export function whiten(count) {
   const w = new Uint8Array(count);
   let s = 0x7fffff;
@@ -12,9 +12,9 @@ export function whiten(count) {
 
 const gcd = (a, b) => { while (b) { const t = a % b; a = b; b = t; } return a; };
 
-// Slot i of a block carries sent bit perm[i], codeword bit sentBit(code, perm[i]) (focus.c perm_fill, sent_bit; below):
-// n is the sent length nt. The format's one bit map, LINEAR (src/focus.h
-// FOCUS_BITMAP): slot i takes bit i P mod n, P the integer nearest n over the golden ratio squared, stepped up until
+// Slot i of a block carries sent bit perm[i], codeword bit sentBit(code, perm[i]) (lizard_phy.c perm_fill, sent_bit; below):
+// n is the sent length nt. The format's one bit map, LINEAR (src/lizard_phy.h
+// LIZARD_BITMAP): slot i takes bit i P mod n, P the integer nearest n over the golden ratio squared, stepped up until
 // prime to n.
 export function perm(n) {
   const p = new Int32Array(n);
@@ -24,7 +24,7 @@ export function perm(n) {
   return p;
 }
 
-// ai: Sent bit j's codeword bit (focus.c sent_bit): every bit is sent but a code's last np data bits, the 7/8 code's 128
+// ai: Sent bit j's codeword bit (lizard_phy.c sent_bit): every bit is sent but a code's last np data bits, the 7/8 code's 128
 // ai: zeros past the block (data column 30, known to a decoder), which no slot carries (unsent); np 0 at 3/4, 2/3, 1/2.
 export const sentBit = (code, j) => (j < code.k - code.np ? j : j + code.np);
 export const unsent = (code, j) => j >= code.k - code.np && j < code.k;

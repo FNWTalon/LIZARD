@@ -1,4 +1,4 @@
-// The format's LDPC base matrices, one a rate of the rate profile (focus.h focus_tiers_for: 7/8, 3/4, 2/3 and 1/2), every
+// The format's LDPC base matrices, one a rate of the rate profile (lizard_phy.h lizard_tiers_for: 7/8, 3/4, 2/3 and 1/2), every
 // code at circulant size z = 128 (a 128-lane workgroup a block row on a GPU) and its own base-graph width: 7/8 5 block
 // rows by 31 data columns, the last never sent (np = 1: the 128 zeros past the block, codeword bits 3840 to 3967, known to
 // a decoder; a block's 4480 slots carry bits 0 to 3839 and 3968 to 4607, the first data column sent since 2026-11-01, where

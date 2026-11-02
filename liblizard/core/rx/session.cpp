@@ -34,6 +34,9 @@
 #include <utility>
 
 #include "camera.h"
+#if !defined(__ANDROID__)
+#include "aoa.h"
+#endif
 #include "crops.h"
 #include "json.hpp"
 #include "lizfile.h"
@@ -1016,16 +1019,17 @@ struct Session::Impl {
   std::string lockBar;                   // ai: lockMu: why the camera started last cannot delay a capture ("" it can)
   uint64_t lockCaps = 0;                 // ai: the camera's thread's: its results since its capture session began
 
-  // ai: the platform's switch: Android's debug.lizard.phase (track, or unset, tracks; anything else off), the tools'
-  // ai: starts from random phases; elsewhere none
+  // ai: the platform's switch: Android's debug.lizard.phase, elsewhere LIZ_PHASE (2026-11-01: a GenICam camera's
+  // ai: trigger, aravis.cpp) (track, or unset or empty, tracks; anything else off), the tools' starts from random phases
   static PhaseLock::Mode platformMode() {
 #if defined(__ANDROID__)
     char v[PROP_VALUE_MAX] = "";
     __system_property_get("debug.lizard.phase", v);
-    return !*v || std::string(v) == "track" ? PhaseLock::Mode::Track : PhaseLock::Mode::Off;
 #else
-    return PhaseLock::Mode::Track;
+    const char* e = std::getenv("LIZ_PHASE");
+    const char* v = e ? e : "";
 #endif
+    return !*v || std::string(v) == "track" ? PhaseLock::Mode::Track : PhaseLock::Mode::Off;
   }
 
   // ai: The worker's, before each start: the camera's capture results to the lock (a camera without them ignores it),
@@ -1106,7 +1110,14 @@ struct Session::Impl {
         w = e.what();
       }
     }
-    const bool typed = (id.rfind("phone:", 0) == 0 && id.rfind("phone:usb:", 0) != 0) || id.rfind("upload:", 0) == 0;
+    // ai: a phone on USB that would not open but is still on the bus (no driver, no access, its switch refused, an
+    // ai: accessory with no driver) keeps its own refusal: no camera listed stands in for it, as for one unplugged
+#if !defined(__ANDROID__)
+    const bool stuck = !first && !w.empty() && id.rfind("phone:usb:", 0) == 0 && cam::aoa::present(id);
+#else
+    const bool stuck = false;
+#endif
+    const bool typed = (id.rfind("phone:", 0) == 0 && id.rfind("phone:usb:", 0) != 0) || id.rfind("upload:", 0) == 0 || stuck;
     if (!first && !typed) {
       std::vector<std::string> notes;
       std::vector<cam::Info> listed;

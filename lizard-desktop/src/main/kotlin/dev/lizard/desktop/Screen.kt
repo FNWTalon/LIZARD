@@ -27,6 +27,7 @@ import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.ComposeWindow
@@ -112,6 +113,7 @@ class DesktopSend(private val app: App) : SendHost {
     // ai: full screen: the code alone (2026-10-23, as the web's and the app's); while a monitor is taken for the code the
     // ai: window is the control: the column as when not full
     override val codeAlone get() = s.full && !s.leased
+    override val codeAloneInPlace = true
     override val edgeTap = false
     override fun leaveCodeAlone() { s.toggleFull(); if (s.collapsed) s.toggleRail() }
     override val codePadding = 0.dp
@@ -129,7 +131,7 @@ class DesktopSend(private val app: App) : SendHost {
     @Composable
     override fun CodeArea(modifier: Modifier) {
         // ai: the code area's idle look follows the file, the payload and the run
-        LaunchedEffect(s.choice, s.reading, s.test, s.phase, s.full, s.items.size) { s.canvas.idleLook() }
+        LaunchedEffect(s.choice, s.reading, s.test, s.phase, s.full, s.items.size, s.compressed) { s.canvas.idleLook() }
         // ai: the column's edge over the canvas's left strip is the canvas's to hear (CodeCanvas.grip)
         val grip = LocalEdgeGrip.current
         DisposableEffect(grip) {
@@ -205,6 +207,8 @@ private fun TipWindow(owner: ComposeWindow, text: String, ok: String, answer: (B
     val h = 20.dp + textH + 16.dp + 40.dp + 16.dp
     val state = rememberDialogState(WindowPosition(owner.x.dp + (owner.width.dp - w) / 2, owner.y.dp + (owner.height.dp - h) / 2), DpSize(w, h))
     DialogWindow({ answer(false) }, state, title = "LIZARD", undecorated = true, resizable = false) {
+        // ai: white before Compose's first frame, as the main window (App.kt): AWT's default grey showed until Skia drew
+        remember { window.background = java.awt.Color.WHITE; window.contentPane.background = java.awt.Color.WHITE }
         Column(Modifier.fillMaxSize().background(Bg).border(1.dp, Line).padding(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 16.dp)) {
             Text(text, style = style)
             Spacer(Modifier.weight(1f))

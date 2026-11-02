@@ -80,8 +80,8 @@ endif()
 # ai: jni_util.cpp's JNI_OnLoad), the same the Kotlin binding's liblizard carries.
 set(LZ ${CMAKE_CURRENT_SOURCE_DIR}/../../liblizard)
 
-# ai: portal.cpp the file chooser; jni_util.cpp the error channel and the load
-add_library(lizard_desktop SHARED tx_jni.cpp jni_util.cpp portal.cpp ${LZ}/api/session.cpp ${LZ}/api/jni_session.cpp ${LZ}/api/jni_text.cpp)
+# ai: portal.cpp the file chooser; jni_util.cpp the error channel and the load; priority.cpp the launch's priority
+add_library(lizard_desktop SHARED tx_jni.cpp jni_util.cpp portal.cpp priority.cpp ${LZ}/api/session.cpp ${LZ}/api/jni_session.cpp ${LZ}/api/jni_text.cpp)
 target_include_directories(lizard_desktop PRIVATE ${LZ}/api)
 if(WIN32)
   set_target_properties(lizard_desktop PROPERTIES PREFIX "")   # ai: lizard_desktop.dll, the name the Gradle bundle takes
@@ -109,8 +109,8 @@ endif()
 
 # ai: lizard_receive (2026-10-25, receive.cpp): the receiver headless on every system: the cameras listed, one read into
 # ai: the session with a stats line a second, a file written out; its header has its arguments. cam_check (cam_check.cpp):
-# ai: the cameras' checks, each backend against a fake device (sim/fake_v4l2.cpp, sim/fake_mf.cpp) painting the
-# ai: simulated screen, the conversions and the clock's sleep.
+# ai: the cameras' checks, each backend against a fake device (sim/fake_v4l2.cpp, sim/fake_mf.cpp, and lizard_fakegv
+# ai: below) painting the simulated screen, the conversions and the clock's sleep.
 add_executable(lizard_receive receive.cpp)
 target_compile_options(lizard_receive PRIVATE ${LIZ_DESKTOP_WARN})
 target_compile_definitions(lizard_receive PRIVATE LIZ_ASSETS="${LZ}/out")
@@ -118,7 +118,7 @@ target_link_libraries(lizard_receive PRIVATE lizard_session)
 if(MINGW)
   target_link_options(lizard_receive PRIVATE -municode)   # ai: its wmain (receive.cpp): the arguments in UTF-16
 endif()
-set(LIZ_CHECK_SOURCES cam_check.cpp check_luma.cpp check_scene.cpp check_session.cpp check_v4l2.cpp check_mf.cpp check_avf.cpp)
+set(LIZ_CHECK_SOURCES cam_check.cpp check_luma.cpp check_scene.cpp check_session.cpp check_v4l2.cpp check_mf.cpp check_avf.cpp check_aravis.cpp)
 if(UNIX AND NOT APPLE)
   list(APPEND LIZ_CHECK_SOURCES sim/fake_v4l2.cpp)
 elseif(WIN32)
@@ -132,6 +132,45 @@ target_compile_definitions(cam_check PRIVATE LIZ_ASSETS="${LZ}/out")
 target_link_libraries(cam_check PRIVATE lizard_session)
 if(WIN32)
   target_link_libraries(cam_check PRIVATE windowscodecs)   # ai: the fake source's MJPEG frames (WIC's JPEG encoder)
+endif()
+
+# ai: lizard_fakegv (2026-10-25, sim/fake_gv.cpp): a GigE Vision camera on loopback for cam_check aravis, Aravis's own
+# ai: fake filming the simulated screen, so it builds against Aravis's headers and library (the receiver's backend
+# ai: needs neither: it loads Aravis at run time). Built only where Aravis 0.8 is found, beside cam_check, which runs it
+# ai: from its own folder: LIZ_ARAVIS_ROOT, an unpacked prefix (the lab's ../../liblizard/.tools/aravis/usr: its
+# ai: include/aravis-0.8 and lib[/<multiarch>]) with GLib's own pkg-config; else pkg-config's aravis-0.8 (a system's
+# ai: libaravis-dev, MSYS2's, Homebrew's). Not in a cross build (pkg-config would name the build machine's GLib).
+set(LIZ_ARAVIS_ROOT "" CACHE PATH "an Aravis 0.8 prefix (include/aravis-0.8, lib) for lizard_fakegv; empty: pkg-config's aravis-0.8")
+set(LIZ_FAKEGV_WITH "")
+find_package(PkgConfig QUIET)
+if(PKG_CONFIG_FOUND AND NOT CMAKE_CROSSCOMPILING)
+  if(LIZ_ARAVIS_ROOT)
+    pkg_check_modules(LIZ_GLIB QUIET IMPORTED_TARGET glib-2.0 gobject-2.0 gio-2.0)
+    find_path(LIZ_ARAVIS_INCLUDE arv.h PATHS ${LIZ_ARAVIS_ROOT}/include/aravis-0.8 NO_DEFAULT_PATH)
+    find_library(LIZ_ARAVIS_LIB NAMES aravis-0.8 PATHS ${LIZ_ARAVIS_ROOT}/lib/${CMAKE_LIBRARY_ARCHITECTURE} ${LIZ_ARAVIS_ROOT}/lib NO_DEFAULT_PATH)
+    if(LIZ_GLIB_FOUND AND LIZ_ARAVIS_INCLUDE AND LIZ_ARAVIS_LIB)
+      set(LIZ_FAKEGV_WITH ${LIZ_ARAVIS_LIB} PkgConfig::LIZ_GLIB)
+    else()
+      message(WARNING "LIZ_ARAVIS_ROOT ${LIZ_ARAVIS_ROOT} holds no arv.h or libaravis-0.8, or GLib's headers are missing: no lizard_fakegv")
+    endif()
+  else()
+    pkg_check_modules(LIZ_ARAVIS QUIET IMPORTED_TARGET aravis-0.8)
+    if(LIZ_ARAVIS_FOUND)
+      set(LIZ_FAKEGV_WITH PkgConfig::LIZ_ARAVIS)
+    endif()
+  endif()
+endif()
+if(LIZ_FAKEGV_WITH)
+  add_executable(lizard_fakegv sim/fake_gv.cpp)
+  target_include_directories(lizard_fakegv PRIVATE ${LZ}/core)   # ai: cam/scene.h, cam/clock.h
+  if(LIZ_ARAVIS_INCLUDE)
+    target_include_directories(lizard_fakegv SYSTEM PRIVATE ${LIZ_ARAVIS_INCLUDE})
+  endif()
+  target_compile_options(lizard_fakegv PRIVATE ${LIZ_DESKTOP_WARN})
+  target_link_libraries(lizard_fakegv PRIVATE lizard_cam ${LIZ_FAKEGV_WITH})
+  add_dependencies(cam_check lizard_fakegv)
+else()
+  message(STATUS "no Aravis 0.8 headers (LIZ_ARAVIS_ROOT, or pkg-config's aravis-0.8): no lizard_fakegv, cam_check aravis skips its cases")
 endif()
 
 # ai: present_check (2026-10-31, present_check.cpp): the presenter on the test stream in a window of its own (X11), no

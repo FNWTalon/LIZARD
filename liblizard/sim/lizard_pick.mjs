@@ -1,7 +1,7 @@
 // Which LIZARD code to show, from the room available and nothing else. No DOM: lizard-web/send.mjs
 // reads its controls and calls this, scripts/exp/pick_check.mjs exercises it exhaustively.
 //
-// A FORMAT IS ITS SUB-CHANNEL COUNT and nothing else, a multiple of 16 (src/focus.h FOCUS_STEP): the codec rejects any
+// A FORMAT IS ITS SUB-CHANNEL COUNT and nothing else, a multiple of 16 (src/lizard_phy.h LIZARD_STEP): the codec rejects any
 // other count. Version k is 16k sub-channels, the number its word carries; the blocks a frame are the rate profile's
 // (tiersFor below), fewer than 2k of them (7 at LIZARD-64, 124 at LIZARD-1024), each 472 B of payload.
 //
@@ -51,7 +51,7 @@
 // sit. 8 sub-channels would be one block a frame, where a single failed block is an empty frame, so 16 is the
 // floor whatever else is wanted.
 // Modules of white round the frame, part of the symbol and not a request to the page: the codec's own
-// (src/focus.h FOCUS_QUIET, why it is there and what it is worth), which its paint path puts round every symbol, read
+// (src/lizard_phy.h LIZARD_QUIET, why it is there and what it is worth), which its paint path puts round every symbol, read
 // from the codec so that no copy of it lives here. Until 2026-09-23 sim/phy.mjs passed it to the painter as SAMPLES,
 // so the rig painted half a module while the harnesses that converted it painted two; until 2026-09-24 the number
 // lived here and the codec painted whatever it was handed. Undefined until sim/ob.mjs init() has loaded the codec,
@@ -69,10 +69,10 @@ export const PAINTED_MARGIN = () => {
 // 4K capture, top-end phones and GPU decoding. The word carried the version as subch / 8 then, so these were versions 2, 4,
 // ... 128, and a version off that ladder (LIZARD-8, -24, every odd version) was the sender's to refuse (2026-09-24): a
 // receiver reads any version exactly as it reads the ladder, with no flag. Past LIZARD-1024 the codec refuses to build
-// a symbol at all (src/focus.c init), since the word cannot name its version.
+// a symbol at all (src/lizard_phy.c init), since the word cannot name its version.
 // This replaced LIZARD-16 / 64 / 128 / 192 / 256 (2026-09-21), whose reasoning is above and in STATUS.md.
 // ai: Every multiple of 16 from 64 to 1024 (LIZARD-64 to -1024, 61 formats, since 2026-11-01), the word naming
-// ai: subch / 16, versions 4 to 64 (src/focus.h FOCUS_STEP, src/fmt.h OB_FMT_VERSION_MIN, OB_FMT_VERSION_MAX); the slider
+// ai: subch / 16, versions 4 to 64 (src/lizard_phy.h LIZARD_STEP, src/fmt.h OB_FMT_VERSION_MIN, OB_FMT_VERSION_MAX); the slider
 // ai: steps 16 sub-channels. The smallest, LIZARD-64, carries seven blocks (7/8 x 4, 3/4, 2/3, 1/2), two 7/8 pilot
 // ai: blocks of each parity. LIZARD-32 and -48 left on 2026-11-01 (their odd blocks' pilots one 7/8 block's 8
 // ai: coefficients, which read past the pilots' model on mixed captures and under 0.9 on clean ones); from 2026-10-29 to
@@ -80,18 +80,18 @@ export const PAINTED_MARGIN = () => {
 // ai: few pilots for the phase lock's two readings); from 2026-10-01 to 2026-10-29 it
 // ai: stepped by 8, versions subch / 8 (LIZARD-8, one block a frame, on it until 2026-10-25; a frame of one block has
 // ai: no diversity and carries one pilot parity alone).
-// ai: STEP: the sub-channels a version (src/focus.h FOCUS_STEP); subchOf and versionOf go between the two.
+// ai: STEP: the sub-channels a version (src/lizard_phy.h LIZARD_STEP); subchOf and versionOf go between the two.
 export const STEP = 16;
 export const VERSIONS = Array.from({ length: 61 }, (_, i) => STEP * (i + 4));
 export const NAME = (subch) => `LIZARD-${subch}`;
 export const subchOf = (version) => STEP * version;
 export const versionOf = (subch) => subch / STEP;   // what the format word carries; the blocks a frame are blocksFor's
 // ai: The format's rate profile (2026-10-07, four rates since 2026-10-08, packed by slots since 2026-10-31;
-// ai: src/focus.c focus_tiers_for, the same integers and order of search): [[rate, blocks, slots], ...] inner first
+// ai: src/lizard_phy.c lizard_tiers_for, the same integers and order of search): [[rate, blocks, slots], ...] inner first
 // ai: over the frame's 640 subch slots, 7/8 blocks of 4496 slots on about TIER_IN thousandths of them, 3/4 blocks of
 // ai: 5152 filling (the remainder padded), 2/3 blocks of 5760 on about TIER_23 thousandths, 1/2 blocks of 7680 on about
 // ai: the outer TIER_OUT; the tiers with blocks only; [] for a count that is no format's. blocksFor: the blocks a frame
-// ai: carries, each 476 B. BLOCK_SLOTS: a block's slots by rate index (src/focus.c focus_block_slots: its code's sent
+// ai: carries, each 476 B. BLOCK_SLOTS: a block's slots by rate index (src/lizard_phy.c lizard_block_slots: its code's sent
 // ai: bits, then its pilots, 16 at 7/8 and 32 at 3/4).
 export const TIER_IN = 390, TIER_23 = 150, TIER_OUT = 200;
 export const BLOCK_SLOTS = { 6: 4496, 4: 5152, 3: 5760, 2: 7680 };
@@ -109,14 +109,14 @@ export function tiersFor(subch) {
   return [...(ba ? [[6, ba, BLOCK_SLOTS[6]]] : []), [4, m, BLOCK_SLOTS[4]], ...(bt ? [[3, bt, BLOCK_SLOTS[3]]] : []), ...(bc ? [[2, bc, BLOCK_SLOTS[2]]] : [])];
 }
 export const blocksFor = (subch) => tiersFor(subch).reduce((n, [, b]) => n + b, 0);
-// The border in modules a side, which src/focus.c sets as the corner mark's own size plus the guard interval,
+// The border in modules a side, which src/lizard_phy.c sets as the corner mark's own size plus the guard interval,
 // because the border grows OUTWARDS to hold its marks and nothing ever reaches into the picture.
 export const OB_MARGIN = 12 + 3;
-// ai: THE RINGS (src/focus.h FOCUS_RING: 64, 128, 256 since 2026-10-25; the 32 as well from 2026-09-27 to 2026-10-25).
+// ai: THE RINGS (src/lizard_phy.h LIZARD_RING: 64, 128, 256 since 2026-10-25; the 32 as well from 2026-09-27 to 2026-10-25).
 // ai: The dotted band holds RINGS[r] cells of 2 x 2 modules a side, so a side is 2 B + 30 modules (158 / 286 / 542) and
 // ai: the picture spans 2 B (128 / 256 / 512). The ring only locates the symbol and syncs its grid, like 5G's sync
 // ai: block; the format word says what is inside, and any ring may carry any picture. RING_DEFAULT is the sender's ring
-// ai: for every picture unless one is named (src/focus.h FOCUS_RING_DEFAULT): the 128, an index into RINGS. No ring
+// ai: for every picture unless one is named (src/lizard_phy.h LIZARD_RING_DEFAULT): the 128, an index into RINGS. No ring
 // ai: follows the version, even by default. Keep equal to the C.
 // The ring and the picture are separate grids: the ring is painted at CELL_OF whole pixels a module and the
 // picture's n samples are resampled to fill its span, so a module is n / span picture samples.
@@ -127,15 +127,15 @@ export const RING_DEFAULT = RINGS.indexOf(128);
 export const SPAN = (n, ring = RING_DEFAULT) => 2 * RINGS[ring];
 // Modules along a side, which is what a receiver finds before it knows anything else: it identifies the ring.
 export const MODULES = (n, ring = RING_DEFAULT) => SPAN(n, ring) + 2 * OB_MARGIN;
-// Whole pixels a module in the painted symbol (src/focus.c pxm): the fewest that do not shrink the picture.
+// Whole pixels a module in the painted symbol (src/lizard_phy.c pxm): the fewest that do not shrink the picture.
 // ai: and no fewer than an anchor's pattern needs, 6 px across a square of span / 64 modules (src/internal.h
 // ai: OB_ANCH_PX_MIN; SPEC 6.13): 3 in the 64 ring and 2 in the 128, which lifts their 256 picture.
 export const CELL_OF = (n, ring = RING_DEFAULT) => Math.max(Math.ceil(n / SPAN(n, ring) - 1e-4), Math.ceil((6 * 64) / SPAN(n, ring)));
 // Pixels across the painted symbol, margin not included.
 export const SAMPLES = (n, ring = RING_DEFAULT) => MODULES(n, ring) * CELL_OF(n, ring);
-// How a block's bits lie on its coefficients, src/focus.h FOCUS_BITMAP (the only map): the sender writes it into its
+// How a block's bits lie on its coefficients, src/lizard_phy.h LIZARD_BITMAP (the only map): the sender writes it into its
 // config so a recording says how it was painted. Keep the two equal.
-export const FOCUS_BITMAP = 3;   // LINEAR
+export const LIZARD_BITMAP = 3;   // LINEAR
 // Sub-channels a picture of n samples can carry. The coefficients are taken in order of increasing RADIUS, so
 // subch * 320 of them fill a half-disc of radius R(subch), and that disc has to fit inside the half-plane:
 // R <= n / 2, so subch <= pi (n/2)^2 / (2 * 320). Counting the half-plane's coefficients instead, which is what
@@ -156,7 +156,7 @@ export const SUBCH_CAP = (n) => Math.floor(Math.PI * n * n / (8 * 320));
 // word needs 16 of its own beside the track's, so it had no word.
 // The picture size, DERIVED and not chosen. n decides only how finely the same half-disc of coefficients is
 // sampled: the top ring's period is n / R samples, so the whole of what n means is the oversampling ratio
-// n / (2R). scripts/exp/focus_nfit.mjs sweeps n against the version with the symbol held at one physical size, and the
+// n / (2R). scripts/exp/lizard_nfit.mjs sweeps n against the version with the symbol held at one physical size, and the
 // answer is the same in every row: payload is flat once n >= 3R and falls off below it.
 //
 //   version  8 (R 114) at n = 256, ratio 1.12:  3465 B against 3752    -8%
@@ -167,17 +167,17 @@ export const SUBCH_CAP = (n) => Math.floor(Math.PI * n * n / (8 * 320));
 // ai: So n >= 3R, and n is the first of PICTURE_SIZES that holds it: 2^k and 3 x 2^k from 256 to 1536 (2026-09-27;
 // ai: STATUS "Picture sizes between the powers of two"). No step is more than 1.5 times the last, so n / 2R stays
 // ai: between 1.5 and 2.24, where the powers of two alone put LIZARD-144 at 1024 (2.99) and LIZARD-576 at 2048: four
-// ai: times the samples for one more block. scripts/exp/focus_nfit.mjs on the rings (simulator, told): 0.85% fewer
+// ai: times the samples for one more block. scripts/exp/lizard_nfit.mjs on the rings (simulator, told): 0.85% fewer
 // ai: blocks over eight formats at the smaller sizes, the sampler and transform 0.62 to 0.69 of their time; the "1024
 // ai: is 2 to 4% worse" above did not repeat. 1536 holds LIZARD-1024 (3R = 1370), so 2048 is no ladder size. The GPU
 // ai: decoder's picture slots are this list's indices (gpu/tables.mjs PICTURES, gpu/plan/back_transform.mjs SIZES).
-// ai: src/focus.c FOCUS_PICTURES is the same list.
+// ai: src/lizard_phy.c LIZARD_PICTURES is the same list.
 // ai: 1152 (9 x 2^7) and 1280 (5 x 2^8) since 2026-10-29: LIZARD-576 to -720 and -728 to -888 (n / 2R 1.50 to 1.68)
 // ai: paint and read 0.56 and 0.69 of 1536's samples; the GPU decoder reads both at 1024 as it did their 1536
 // ai: (gpu/back/transform.mjs TRANSFORM_DOWN).
 export const PICTURE_SIZES = [256, 384, 512, 768, 1024, 1152, 1280, 1536];
 export const N_FOR = (subch) => PICTURE_SIZES.find((n) => n >= 3 * R_RING(subch)) ?? PICTURE_SIZES.at(-1);
-// Camera px a cycle the top ring must still get, fitted by focus_sweep.mjs (SUBCH set; archive/focus-capacity/), 2026-09-20. It was
+// Camera px a cycle the top ring must still get, fitted by lizard_sweep.mjs (SUBCH set; archive/focus-capacity/), 2026-09-20. It was
 // 2.5, and two things were wrong with that: the border was counted in the application and not in the fit, and the
 // fit averaged in cells that are not resolution-limited (blur, angle, phone, lens distortion) and cells whose
 // optimum lies past the top of the sweep. On the five cells that really are resolution-limited it is 2.12, and
