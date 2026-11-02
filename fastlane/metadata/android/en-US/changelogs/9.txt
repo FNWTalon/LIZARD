@@ -1,0 +1,4 @@
+- Steadier screens: Receive's lines hold still while the camera runs, and errors show over the preview.
+- A file is compressed when you press Start, not when you pick it.
+- About opens to the version and the credits.
+- Reads and sends 0.7.1's codes.
