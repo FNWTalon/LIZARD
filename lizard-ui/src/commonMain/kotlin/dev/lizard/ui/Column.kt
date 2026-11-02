@@ -94,18 +94,19 @@ val SidePad = 12.dp
 // ai: Whether a row of buttons in the column fills its width (ColumnWidth.stretch) or each button is its label's width
 val LocalButtonsFill = staticCompositionLocalOf { true }
 
-// ai: The edge's strip: a finger's width over the main area's side of the column's hairline, taking no room of its own
-// ai: (the main area starts at the hairline, its own padding after it, as before the column was dragged)
+// ai: The sash's margin past its hairline, the column's own and drawn in nothing: the room its wide line (4 dp, the hairline
+// ai: and 3 more) grows into, so a view in the main area that Compose cannot draw over hides none of it (2026-11-02)
+val EdgeRoom = 3.dp
+
+// ai: The edge's strip: a finger's width past the column's hairline, over its margin (EdgeRoom) and the main area's
+// ai: side, taking no room of its own
 val EdgeStrip = 20.dp
 
 // ai: The column's edge as a view the main area holds takes it, where Compose can neither draw nor hear over that view
-// ai: (the desktop's code canvas, a heavyweight): the pointer within EdgeStrip of the view's left edge is over the
-// ai: edge (`hover`), and a press there dragged sideways drags it (`start`, `drag` by the pointer's move, `done` at the
+// ai: (the desktop's code canvas, a heavyweight): the pointer within EdgeStrip less EdgeRoom of the view's left edge, the
+// ai: strip's part over it, is over the edge (`hover`), and a press there dragged sideways drags it (`start`, `drag` by the pointer's move, `done` at the
 // ai: release). Given to the main area where the edge is a sash (LocalEdgeGrip), open or collapsed; null otherwise.
 interface EdgeGrip {
-    // ai: the edge drawn wide (hovered 300 ms or dragged): a view that hides what Compose draws over its side (the
-    // ai: desktop's code canvas) paints the wide line's part over it itself
-    val lit: Boolean
     fun hover(on: Boolean)
     fun start()
     fun drag(dx: Dp)
@@ -134,7 +135,6 @@ private class Edge : EdgeGrip {
     var held by mutableStateOf(false)
     var near by mutableStateOf(false)
     var hoverLit by mutableStateOf(false)   // ai: under the pointer for 300 ms
-    override val lit get() = hoverLit || held
     override fun hover(on: Boolean) { near = on }
     override fun start() { at = width; shut = collapsed; held = true; onStart() }
     override fun drag(dx: Dp) {
@@ -162,10 +162,10 @@ private fun rememberEdge(width: Dp, screen: Dp, lo: Dp, sash: Boolean, collapsed
 // ai: beside it an invisible strip wide enough for a finger, laid over what is there. Dragged sideways it sets the
 // ai: column's width; onDone on release (the app keeps it; Send re-picks). Under the pointer for 300 ms (the strip's
 // ai: or a view's that takes it, EdgeGrip), and while dragged, the hairline grows to a line 4 dp wide in a pressed
-// ai: button's grey (Pressed), widening over the main area's side, as an editor's sash (2026-11-02; over the column's
-// ai: side before, so that the desktop's heavyweight code canvas hid none of it: that canvas now paints its part itself,
-// ai: EdgeGrip.lit). The pointer over the strip the app's left-right resize cursor (LocalResizeIcon). `modifier` places
-// ai: it at the hairline's left side.
+// ai: button's grey (Pressed), widening into the column's own margin past its hairline (EdgeRoom, the main area from its
+// ai: far side; 2026-11-02: over the column's side before, so that the desktop's heavyweight code canvas, which nothing
+// ai: of Compose draws over, hid none of it), as an editor's sash. The pointer over the strip the app's left-right
+// ai: resize cursor (LocalResizeIcon). `modifier` places it at the hairline's left side.
 @Composable
 private fun SideEdge(e: Edge, modifier: Modifier) {
     val density = LocalDensity.current
@@ -174,7 +174,7 @@ private fun SideEdge(e: Edge, modifier: Modifier) {
     val hovered by hover.collectIsHoveredAsState()
     val over = hovered || e.near
     LaunchedEffect(over) { if (over) { delay(300); e.hoverLit = true } else e.hoverLit = false }
-    val on = e.lit
+    val on = e.hoverLit || e.held
     val thick by animateDpAsState(if (on) 4.dp else 1.dp, tween(120))
     val colour by animateColorAsState(if (on) Pressed else Line, tween(120))
     Box(modifier.fillMaxHeight()) {
@@ -186,7 +186,7 @@ private fun SideEdge(e: Edge, modifier: Modifier) {
 
 // ai: A tool screen in landscape (Receive and Send, the web's pages; 2026-10-02): the column on the left (the bar over the
 // ai: rest, which scrolls on its own, the platform's scrollbar at its edge), its hairline, and the main area on the right
-// ai: from the hairline, `mainPadding` inside it; collapsed, the column is the 56 dp rail (its squares, Home at its foot)
+// ai: from the hairline (as a sash from EdgeRoom past it), `mainPadding` inside it; collapsed, the column is the 56 dp rail (its squares, Home at its foot)
 // ai: beside the hairline. Its edge a sash on the desktop (ColumnWidth.sash: no collapse button in the column's bar, the
 // ai: edge at the rail's hairline too), the collapse button alone on the phone; the rail's button opens it on both.
 // ai: `bare`: the main area alone, the column, rail, hairline, padding and edge gone, the main area's content where it was
@@ -216,6 +216,8 @@ fun ToolLandscape(title: String, collapsed: Boolean, onCollapse: () -> Unit, onH
                     }
                 }
                 VerticalDivider(color = Line)
+                // ai: as a sash, the room the edge's wide line grows into: the column's, invisible, the main area past it
+                if (sash) Spacer(Modifier.width(EdgeRoom))
             }
             BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().padding(if (bare) 0.dp else mainPadding), contentAlignment = Alignment.Center) {
                 CompositionLocalProvider(LocalEdgeGrip provides if (sash && !bare) edge else null) { main() }

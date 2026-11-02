@@ -138,13 +138,14 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     }
 
     private fun chooses() = !s.sending && !s.test
-    // ai: the column's edge over the canvas's left EdgeStrip (dev.lizard.ui.EdgeGrip: Compose neither draws nor hears over
-    // ai: this heavyweight), given by the code area while the column is open, null otherwise (DesktopSend.CodeArea)
+    // ai: the column's edge over the canvas's left EdgeStrip less EdgeRoom (dev.lizard.ui.EdgeGrip: Compose neither draws
+    // ai: nor hears over this heavyweight), given by the code area while the column is open, null otherwise
+    // ai: (DesktopSend.CodeArea)
     var grip: EdgeGrip? = null
     private var pressed = false   // ai: the first button went down on the edge
     private var gripped = false   // ai: and the edge is being dragged
     private var pressX = 0
-    private fun nearEdge(e: MouseEvent) = grip != null && !s.full && e.x < EdgeStrip.value
+    private fun nearEdge(e: MouseEvent) = grip != null && !s.full && e.x < (EdgeStrip - EdgeRoom).value
     // ai: a pick being walked or the bundle made again (`reading`, which every add, remove and Clear sets) keeps the upload
     // ai: up, the column's state line saying "Reading the files" (a cover took the area for it until 2026-10-26: a flash)
     private fun uploading() = !s.test
@@ -182,9 +183,6 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         val g2 = img.createGraphics()
         try { g2.clipRect(0, 0, bw, bh); g2.scale(sx, sy); draw(g2) } finally { g2.dispose() }
         g.drawImage(img, 0, 0, width, height, 0, 0, bw, bh, null)
-        // ai: the column's edge drawn wide (EdgeGrip.lit): its 4-wide line grows from the hairline, which ends where this
-        // ai: canvas begins, over this side; Compose draws nothing over a heavyweight, so the canvas paints those 3 itself
-        if (grip?.lit == true) { g.color = PRESSED; g.fillRect(0, 0, 3, height) }
     }
     private fun draw(g2: Graphics2D) {
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
@@ -355,7 +353,6 @@ class CodeCanvas(private val s: SendState) : Canvas() {
         private val MUTED = awt(Muted)
         private val SOFT = awt(Soft)
         private val CARD = awt(Card)
-        private val PRESSED = awt(Pressed)
         // ai: Feather's file and folder (the shared Icons.file and Icons.folder) on a 24 grid
         private val FILE_ICON = Path2D.Double().apply {
             moveTo(14.0, 2.0); lineTo(6.0, 2.0); curveTo(4.9, 2.0, 4.0, 2.9, 4.0, 4.0); lineTo(4.0, 20.0); curveTo(4.0, 21.1, 4.9, 22.0, 6.0, 22.0)
