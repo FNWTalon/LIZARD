@@ -3,6 +3,7 @@
 #define OB_INTERNAL_H
 #include "ob.h"
 #include <math.h>
+#include <stddef.h>
 
 // ai: lin: the table is i / 255 (gamma 1, as both C decoders read), which the picture sampler on arm64 makes in registers
 typedef struct { const uint8_t *px; int w, h; float lut[256]; int lin; } image_t;
@@ -116,16 +117,28 @@ extern OB_TLS double ob_prof_ms[PROF_N];
 void ob_luma(const uint8_t *rgba, int n, uint8_t *out);
 void ob_image_init(image_t *im, const uint8_t *px, int w, int h, float gamma);
 
+// ai: An acquisition's buffers of 64 KB and more at 1280 x 960 (the size from which Scudo maps a fresh allocation and
+// ai: faults its pages in on first touch, about 0.2 ms a megabyte on an S26 core): BIN the binarized capture, whose
+// ai: buffer border_blur's copy takes over once the finder is done with it, CB its column bits, HALF and QUARTER the
+// ai: halved and quartered pictures, LBIN and LCB theirs binarized, MEAN binarize's block means, EDGE the line scan's
+// ai: block map (edge_ctx_init). Held by the caller's workspace (lizard_ws), grown as a frame needs and freed with it
+// ai: (ob_fbufs_free). On arm64 the acquisition takes them from here; elsewhere it allocates them a frame as before.
+// ai: Every byte is written before it is read within a frame, so nothing carries from one frame to the next; one
+// ai: acquisition at a time, as the workspace belongs to one thread at a time.
+enum { OB_FB_BIN, OB_FB_CB, OB_FB_HALF, OB_FB_QUARTER, OB_FB_LBIN, OB_FB_LCB, OB_FB_MEAN, OB_FB_EDGE, OB_FB_SLOTS };
+typedef struct { void *p[OB_FB_SLOTS]; size_t cap[OB_FB_SLOTS]; } ob_fbufs_t;
+void ob_fbufs_free(ob_fbufs_t *fb);
 // Finders, orientation, homography, then the mark mesh. mesh = 0 leaves every mark at zero
 // displacement, which is what a single global homography gives. Returns 1 when registered.
-int ob_acquire(const ob_layout_t *L, const image_t *im, int mesh, ob_reg_t *reg, ob_result_t *res);
+// ai: fb: the workspace's buffers (above), or NULL to allocate them for this call alone
+int ob_acquire(const ob_layout_t *L, const image_t *im, int mesh, ob_reg_t *reg, ob_result_t *res, ob_fbufs_t *fb);
 // The same when the symbol may be any of several layouts, which differ only in modules a side: the marks are
 // scanned once and each layout's spacing and track tried on them, the first first. *which is the one that registered.
-int ob_acquire_any(const ob_layout_t *const *Ls, int nL, const image_t *im, int mesh, ob_reg_t *reg, ob_result_t *res, int *which);
+int ob_acquire_any(const ob_layout_t *const *Ls, int nL, const image_t *im, int mesh, ob_reg_t *reg, ob_result_t *res, int *which, ob_fbufs_t *fb);
 // The same with the quad already found: the scan, the fit and the track scoring are skipped and the rest is
 // shared. quad is eight floats, image pixels, in the order find_frame reports.
 int ob_acquire_quad(const ob_layout_t *L, const image_t *im, int mesh, ob_reg_t *reg, ob_result_t *res,
-                    const float *quad, int orient, float score);
+                    const float *quad, int orient, float score, ob_fbufs_t *fb);
 int ob_test_mesh_tables(const ob_layout_t *L, int32_t *dims, float *nodeX, float *nodeY, uint8_t *kind, int32_t *mark);
 int ob_thin_fmt_plan(const ob_layout_t *L, int cells, float *pts, int32_t *meta, int32_t *widx);
 int ob_thin_score_plan(const ob_layout_t *L, float *pts, int32_t *meta, int32_t *signs);

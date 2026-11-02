@@ -95,15 +95,50 @@ static inline int bin_threshold(const int *mean, int bw, int bh, int bx, int by)
   return t < 0 ? 0 : t;   // a pixel is never below 0, so a negative threshold and 0 mark the same (nothing)
 }
 
+// ai: an acquisition's buffer slot of n bytes (internal.h ob_fbufs_t): on arm64 the workspace's, grown where it is short
+// ai: (its old bytes not kept), and frame_buf_done leaves it there; with no workspace, or elsewhere, a fresh allocation
+// ai: frame_buf_done frees
+#ifdef OB_NEON
+static void *frame_buf(ob_fbufs_t *fb, int slot, size_t n) {
+  if (!fb) return malloc(n);
+  if (fb->cap[slot] < n) { free(fb->p[slot]); fb->p[slot] = malloc(n); fb->cap[slot] = fb->p[slot] ? n : 0; }
+  return fb->p[slot];
+}
+static void frame_buf_done(ob_fbufs_t *fb, void *p) { if (!fb) free(p); }
+#else
+#define frame_buf(fb, slot, n) ((void)(fb), malloc(n))
+#define frame_buf_done(fb, p) ((void)(fb), free(p))
+#endif
+void ob_fbufs_free(ob_fbufs_t *fb) { for (int k = 0; k < OB_FB_SLOTS; k++) { free(fb->p[k]); fb->p[k] = NULL; fb->cap[k] = 0; } }
+#ifdef OB_NEON
+// ai: arm64: the binarized image's columns as bits (the corner marks' column walks, cb_run), 32 rows a word: word
+// ai: (y >> 5) w + x holds column x's rows y & ~31 on, bit y & 31 its pixel (rows past h 0). binarize makes them as it
+// ai: compares: a block row's eight rows' bytes (0 or 1) into one by shift-inserts (SLI), a band's four of those
+// ai: interleaved into words by ST4; this fills band b's words from column x0 on from the bytes, where that cannot run
+// ai: (the columns past the last sixteen, the last band where h is not a multiple of 32)
+static void col_bits_band(const uint8_t *bin, int w, int h, int b, int x0, uint32_t *cb) {
+  const int y0 = 32 * b, rows = h - y0 < 32 ? h - y0 : 32;
+  for (int x = x0; x < w; x++) {
+    uint32_t m = 0;
+    for (int r = 0; r < rows; r++) m |= (uint32_t)(bin[(size_t)(y0 + r) * w + x] != 0) << r;
+    cb[(size_t)b * w + x] = m;
+  }
+}
+#endif
 // Three passes: 8 x 8 block means, a 5 x 5 mean of those less 3 as each block's threshold, then the
 // compare. The vector paths cover whole blocks; a ragged right or bottom edge takes the scalar one.
-static void binarize(const uint8_t *img, int w, int h, uint8_t *bin) {
+// ai: cb: on arm64, the column bits made as well where not NULL ((h + 31) / 32 w words); NULL elsewhere. fb: frame_buf's
+static void binarize(const uint8_t *img, int w, int h, uint8_t *bin, uint32_t *cb, ob_fbufs_t *fb) {
   int bw = (w + BLK - 1) / BLK, bh = (h + BLK - 1) / BLK;
-  int *mean = malloc((size_t)bw * bh * sizeof(int));
+  int *mean = frame_buf(fb, OB_FB_MEAN, (size_t)bw * bh * sizeof(int));
   uint8_t *trow = malloc((size_t)bw * BLK + 16);
   uint16_t *col = malloc(((size_t)bw * BLK + 16) * sizeof(uint16_t));
 #ifdef OB_NEON
   int *vsum = malloc(((size_t)bw + 4) * sizeof(int));   // a block row's sums down five block rows
+  const int bands = h / 32;                             // the whole bands, whose words the compare makes
+  uint8_t *planes = cb ? malloc((size_t)4 * w + 16) : NULL;   // a band's four block rows' bytes of bits
+#else
+  (void)cb;
 #endif
   for (int by = 0; by < bh; by++) {
     int bx = 0;
@@ -170,6 +205,38 @@ static void binarize(const uint8_t *img, int w, int h, uint8_t *bin) {
     }
 #endif
     for (; bx < bw; bx++) memset(trow + bx * BLK, bin_threshold(mean, bw, bh, bx, by), BLK);
+#ifdef OB_NEON
+    // ai: a block row of a whole band: its eight rows compared sixteen columns at a time (the same bytes as below),
+    // ai: their bytes shifted into one plane of bits; a band's fourth block row stores the four planes as words
+    if (planes && by < 4 * bands) {
+      const uint8_t *s0 = img + (size_t)by * BLK * w;
+      uint8_t *d0 = bin + (size_t)by * BLK * w, *pl = planes + (size_t)(by & 3) * w;
+      const uint8x16_t one = vdupq_n_u8(1);
+      int x = 0;
+      for (; x + 16 <= w; x += 16) {
+        const uint8x16_t t = vld1q_u8(trow + x);
+        uint8x16_t b, v;
+#define BIN_ROW(r) b = vandq_u8(vcltq_u8(vld1q_u8(s0 + (size_t)(r) * w + x), t), one); vst1q_u8(d0 + (size_t)(r) * w + x, b);
+        BIN_ROW(0) v = b;
+        BIN_ROW(1) v = vsliq_n_u8(v, b, 1); BIN_ROW(2) v = vsliq_n_u8(v, b, 2); BIN_ROW(3) v = vsliq_n_u8(v, b, 3);
+        BIN_ROW(4) v = vsliq_n_u8(v, b, 4); BIN_ROW(5) v = vsliq_n_u8(v, b, 5); BIN_ROW(6) v = vsliq_n_u8(v, b, 6);
+        BIN_ROW(7) v = vsliq_n_u8(v, b, 7);
+#undef BIN_ROW
+        vst1q_u8(pl + x, v);
+      }
+      for (int r = 0; r < BLK; r++) for (int c = x; c < w; c++) d0[(size_t)r * w + c] = s0[(size_t)r * w + c] < trow[c];
+      if ((by & 3) == 3) {
+        uint32_t *o = cb + (size_t)(by >> 2) * w;
+        int c = 0;
+        for (; c + 16 <= w; c += 16) {
+          const uint8x16x4_t q = { { vld1q_u8(planes + c), vld1q_u8(planes + w + c), vld1q_u8(planes + 2 * (size_t)w + c), vld1q_u8(planes + 3 * (size_t)w + c) } };
+          vst4q_u8((uint8_t *)(o + c), q);
+        }
+        col_bits_band(bin, w, h, by >> 2, c, cb);
+      }
+      continue;
+    }
+#endif
     for (int y = by * BLK; y < (by + 1) * BLK && y < h; y++) {
       const uint8_t *src = img + y * w;
       uint8_t *dst = bin + y * w;
@@ -182,12 +249,14 @@ static void binarize(const uint8_t *img, int w, int h, uint8_t *bin) {
     }
   }
 #ifdef OB_NEON
-  free(vsum);
+  // ai: the last band where h is not a multiple of 32, or every band where the planes could not be had
+  if (cb) for (int b = planes ? bands : 0; b < (h + 31) / 32; b++) col_bits_band(bin, w, h, b, 0, cb);
+  free(vsum); free(planes);
 #endif
-  free(mean); free(trow); free(col);
+  frame_buf_done(fb, mean); free(trow); free(col);
 }
 
-void ob_test_binarize(const uint8_t *img, int w, int h, uint8_t *bin) { binarize(img, w, h, bin); }
+void ob_test_binarize(const uint8_t *img, int w, int h, uint8_t *bin) { binarize(img, w, h, bin, NULL, NULL); }
 
 // ai: The node templates read a blurred image (box_blur) whenever the box has a radius, r = floor(mpx / 2) pixels,
 // ai: so from a module of 2 px (2026-09-29: the threshold of 2.0 px this replaced was exactly r >= 1, the same
@@ -1591,10 +1660,11 @@ typedef struct { const uint8_t *grey, *mn, *mx, *rskip, *cskip; int w, h, bs, bw
 _Static_assert(BLK == 8, "the scans take a block for half of a sixteen-pixel compare");
 enum { MAP_PAD_X = 4, MAP_PAD_Y = 2 };
 
-static int edge_ctx_init(edge_ctx_t *c, const uint8_t *grey, int w, int h, int min_con) {
+// ai: fb: frame_buf's (the map's buffer, c->buf, given back by frame_buf_done)
+static int edge_ctx_init(edge_ctx_t *c, const uint8_t *grey, int w, int h, int min_con, ob_fbufs_t *fb) {
   int bw = (w + BLK - 1) / BLK, bh = (h + BLK - 1) / BLK, bs = bw + 24, chunks = (w + 15) / 16;
   size_t map = (size_t)bs * (bh + 2 * MAP_PAD_Y);
-  uint8_t *buf = malloc(2 * map + (size_t)bh * chunks + (size_t)bh * bw + 2 * (size_t)bs);
+  uint8_t *buf = frame_buf(fb, OB_FB_EDGE, 2 * map + (size_t)bh * chunks + (size_t)bh * bw + 2 * (size_t)bs);
   if (!buf) return -1;
   memset(buf, 255, map); memset(buf + map, 0, map);
   uint8_t *mn = buf + MAP_PAD_Y * bs + MAP_PAD_X, *mx = mn + map, *rskip = buf + 2 * map, *cskip = rskip + (size_t)bh * chunks, *tmp = cskip + (size_t)bh * bw;
@@ -2085,6 +2155,8 @@ static inline float mark_mid(const ob_layout_t *L) { return (OB_THIN_TRACK + L->
 
 // line, gap and core in pixels against the ratio OB_THIN_LINE : OB_RING_DEEP : core. `unit` comes back as the
 // module size the three of them agree on.
+// ai: arm64 takes it for 64 pairs at once, in its own operations (mark_pairs64)
+#ifndef OB_NEON
 static int mark_ratio(int line, int gap, int core_px, int core, float *unit) {
   const int total = line + gap + core_px;
   if (core_px < MARK_MIN_CORE || total < OB_THIN_LINE + OB_RING_DEEP + core) return 0;
@@ -2094,9 +2166,44 @@ static int mark_ratio(int line, int gap, int core_px, int core, float *unit) {
   *unit = u;
   return 1;
 }
+#endif
 
+#ifdef OB_NEON
+// ai: how many pixels of column x from row y on, down (dir 1) or up (-1), are want (0 light, 1 dark) before one is not
+// ai: or the image ends, at most cap: the count the byte loops below take (0 where y is outside the image)
+static inline int cb_run(const uint32_t *cb, int w, int h, int x, int y, int dir, int want, int cap) {
+  if (cap <= 0) return 0;
+  const uint32_t flip = want ? 0 : ~0u;
+  int n = 0;
+  while (n < cap && y >= 0 && y < h) {
+    const uint32_t word = cb[(size_t)(y >> 5) * w + x] ^ flip;   // ones where the pixel is want
+    int t, avail;
+    if (dir > 0) {
+      const uint32_t s = ~(word >> (y & 31));
+      t = s ? __builtin_ctz(s) : 32; avail = 32 - (y & 31); if (avail > h - y) avail = h - y;
+    } else {
+      const uint32_t s = ~(word << (31 - (y & 31)));
+      t = s ? __builtin_clz(s) : 32; avail = (y & 31) + 1;
+    }
+    if (t > avail) t = avail;
+    n += t; y += dir * t;
+    if (t < avail) break;
+  }
+  return n < cap ? n : cap;
+}
+#endif
 // A light run then a dark run, walked from `at` along `dir`: the gap and the line on one side of a core. This is
 // what tells a mark from any other dark square in the picture, and it has to hold on the corner side only.
+#ifdef OB_NEON
+// ai: mark_flank on the column bits: the same walks, the same test
+static int mark_flank_cb(const uint32_t *cb, int w, int h, int x, int at, int dir, float u) {
+  const int cap = (int)((2 + OB_THIN_LINE + OB_RING_DEEP) * u) + 4;
+  const int gap = cb_run(cb, w, h, x, at, dir, 0, cap), line = cb_run(cb, w, h, x, at + dir * gap, dir, 1, cap), i = at + dir * (gap + line);
+  if (i < 0 || i >= h || (cb[(size_t)(i >> 5) * w + x] >> (i & 31) & 1)) return 0;   // the line must end in light, not run off or run on
+  const float tol = 0.6f * u + 0.5f;
+  return fabsf(gap - OB_RING_DEEP * u) <= tol && fabsf(line - OB_THIN_LINE * u) <= tol;
+}
+#else
 static int mark_flank(const uint8_t *bin, int len, int stride, int at, int dir, float u) {
   int gap = 0, line = 0, i = at;
   const int cap = (int)((2 + OB_THIN_LINE + OB_RING_DEEP) * u) + 4;
@@ -2106,20 +2213,31 @@ static int mark_flank(const uint8_t *bin, int len, int stride, int at, int dir, 
   const float tol = 0.6f * u + 0.5f;
   return fabsf(gap - OB_RING_DEEP * u) <= tol && fabsf(line - OB_THIN_LINE * u) <= tol;
 }
+#endif
 
 // A candidate core found on a row, confirmed down the column through it: the same extent, within what
 // perspective does to a square, and the gap and line on one side of it vertically too.
-static int mark_cross(const uint8_t *bin, int w, int h, int cx, int cy, int core, float uh, float *centre, float *uv) {
+// ai: cb: the column bits (binarize's) on arm64, which its walks read; NULL elsewhere
+static int mark_cross(const uint8_t *bin, const uint32_t *cb, int w, int h, int cx, int cy, int core, float uh, float *centre, float *uv) {
   const int cap = (int)(3 * core * uh) + 8;
   int up = 0, dn = 0;
+#ifdef OB_NEON
+  up = cb_run(cb, w, h, cx, cy - 1, -1, 1, cap); dn = cb_run(cb, w, h, cx, cy + 1, 1, 1, cap);
+#else
+  (void)cb;
   while (cy - up - 1 >= 0 && bin[(cy - up - 1) * w + cx] && up < cap) up++;
   while (cy + dn + 1 < h && bin[(cy + dn + 1) * w + cx] && dn < cap) dn++;
+#endif
   const int ext = up + dn + 1;
   const float u = (float)ext / core;
   // A screen seen from the side is squeezed along one axis, so the two crossings of one mark can differ a lot.
   // 2.5 is what the finder path allows, about 65 degrees.
   if (u > 2.5f * uh || uh > 2.5f * u) return 0;
+#ifdef OB_NEON
+  if (!mark_flank_cb(cb, w, h, cx, cy - up - 1, -1, u) && !mark_flank_cb(cb, w, h, cx, cy + dn + 1, 1, u)) return 0;
+#else
   if (!mark_flank(bin + cx, h, w, cy - up - 1, -1, u) && !mark_flank(bin + cx, h, w, cy + dn + 1, 1, u)) return 0;   // + cx: the walk is down THIS column
+#endif
   // Solid, not ragged: a picture blob can cross one column correctly and still be full of holes.
   const float my = cy - up + (ext - 1) / 2.0f, r = 0.3f * ext;
   for (int k = 0; k < 4; k++) {
@@ -2139,11 +2257,16 @@ static int mark_cross(const uint8_t *bin, int w, int h, int cx, int cy, int core
 // this form a blurred symbol has no anchor at all. A solid square has no ratio inside it to be scale-free by;
 // what keeps it honest is mark_quad, where four of them have to agree on a module size and sit the known number
 // of modules apart.
-static int mark_cross_merged(const uint8_t *bin, int w, int h, int cx, int cy, int sq, float uh, float *centre, float *uv) {
+static int mark_cross_merged(const uint8_t *bin, const uint32_t *cb, int w, int h, int cx, int cy, int sq, float uh, float *centre, float *uv) {
   const int cap = (int)(3 * sq * uh) + 8;
   int up = 0, dn = 0;
+#ifdef OB_NEON
+  up = cb_run(cb, w, h, cx, cy - 1, -1, 1, cap); dn = cb_run(cb, w, h, cx, cy + 1, 1, 1, cap);
+#else
+  (void)cb;
   while (cy - up - 1 >= 0 && bin[(cy - up - 1) * w + cx] && up < cap) up++;
   while (cy + dn + 1 < h && bin[(cy + dn + 1) * w + cx] && dn < cap) dn++;
+#endif
   if (up >= cap || dn >= cap || cy - up - 1 < 0 || cy + dn + 1 >= h) return 0;   // not bounded by light: a bar, or the frame's edge
   const int ext = up + dn + 1;
   const float u = (float)ext / sq;
@@ -2197,7 +2320,25 @@ static void mark_note(cand_t *out, int *n, float fx, float fy, float u) {
 }
 // The gapped form at dark runs k - 1 and k of row y (pos as run_edges leaves it): each way round, the line then
 // the core. noted: the core this row has counted, which met second in one pair is met first in the next.
-static inline void mark_pair(const uint8_t *bin, int w, int h, int y, int core, const int *pos, int k, int *noted, cand_t *out, int *n) {
+#ifdef OB_NEON
+// ai: arm64: mark_pair with mark_ratio's answers for the pair already taken (mark_pairs64): pass bit 0 side 0's, bit
+// ai: 1 side 1's, and u the module size both sides share (line, gap and core sum to the same total either way round)
+static inline void mark_pair_v(const uint8_t *bin, const uint32_t *cb, int w, int h, int y, int core, const int *pos, int k, unsigned pass, float u, int *noted, cand_t *out, int *n) {
+  const int a0 = pos[2 * k - 2], a1 = pos[2 * k - 1], b0 = pos[2 * k], b1 = pos[2 * k + 1];
+  if (a0 == 0 || b1 >= w) return;            // a run touching either end of the row has no light outside it
+  for (int side = 0; side < 2; side++) {
+    const int cx0 = side ? a0 : b0, cx1 = side ? a1 : b1;
+    float uv, fy;
+    if (!(pass >> side & 1) || cx0 == *noted) continue;
+    const int cx = (cx0 + cx1) >> 1;
+    if (!mark_cross(bin, cb, w, h, cx, y, core, u, &fy, &uv)) continue;
+    mark_note(out, n, (cx0 + cx1) / 2.0f, fy, 0.5f * (u + uv));   // the run is [cx0, cx1) in sample()'s coordinates
+    *noted = cx0;
+    break;
+  }
+}
+#else
+static inline void mark_pair(const uint8_t *bin, const uint32_t *cb, int w, int h, int y, int core, const int *pos, int k, int *noted, cand_t *out, int *n) {
   const int a0 = pos[2 * k - 2], a1 = pos[2 * k - 1], b0 = pos[2 * k], b1 = pos[2 * k + 1];
   if (a0 == 0 || b1 >= w) return;            // a run touching either end of the row has no light outside it
   const int first = a1 - a0, gap = b0 - a1, second = b1 - b0;
@@ -2209,32 +2350,33 @@ static inline void mark_pair(const uint8_t *bin, int w, int h, int y, int core, 
     if (cx0 == *noted) continue;
     if (!mark_ratio(line, gap, cpx, core, &uh)) continue;
     const int cx = (cx0 + cx1) >> 1;
-    if (!mark_cross(bin, w, h, cx, y, core, uh, &fy, &uv)) continue;
+    if (!mark_cross(bin, cb, w, h, cx, y, core, uh, &fy, &uv)) continue;
     mark_note(out, n, (cx0 + cx1) / 2.0f, fy, 0.5f * (uh + uv));   // the run is [cx0, cx1) in sample()'s coordinates
     *noted = cx0;
     break;
   }
 }
+#endif
 // The merged form at dark run k of row y: one dark run with light at both ends that is a square of S - 2 modules
 // down its column.
-static inline void mark_square(const uint8_t *bin, int w, int h, int y, int sq, const int *pos, int k, cand_t *out, int *n) {
+static inline void mark_square(const uint8_t *bin, const uint32_t *cb, int w, int h, int y, int sq, const int *pos, int k, cand_t *out, int *n) {
   const int a0 = pos[2 * k], a1 = pos[2 * k + 1], run = a1 - a0;
   if (a0 == 0 || a1 >= w || run < 8 || run > w / 3) return;
   const float uh = (float)run / sq;
   float uv, fy;
-  if (!mark_cross_merged(bin, w, h, (a0 + a1) >> 1, y, sq, uh, &fy, &uv)) return;
+  if (!mark_cross_merged(bin, cb, w, h, (a0 + a1) >> 1, y, sq, uh, &fy, &uv)) return;
   mark_note(out, n, (a0 + a1) / 2.0f, fy, 0.5f * (uh + uv));
 }
 #ifdef OB_NEON
-// ai: arm64: of the pairs of runs k0 - 1, k0 to k0 + 62, k0 + 63 in pos (runs to nr), the bits of those mark_ratio can pass
-// ai: on either side, four pairs a step on its own float operations in its order (FABD is fabsf of the difference,
-// ai: the halving a multiply by 0.5, the same value), so the same answer: a pair it leaves out returns at its ratio
-// ai: test both ways round. Reads pos to 2 nr + 5.
-static uint64_t mark_pairs64(const int *pos, int k0, int nr, int core) {
+// ai: arm64: of the pairs of runs k0 - 1, k0 to k0 + 62, k0 + 63 in pos (runs to nr), the bits of those mark_ratio
+// ai: passes on side 0 (the return) and on side 1 (*one), and u[g] each pair's module size (g = k - k0), four pairs a
+// ai: step on mark_ratio's own float operations in its order (FABD is fabsf of the difference, the halving a multiply
+// ai: by 0.5, the same value), so its answers. Reads pos to 2 nr + 5.
+static uint64_t mark_pairs64(const int *pos, int k0, int nr, int core, uint64_t *one, float *uk) {
   const float32x4_t den = vdupq_n_f32((float)(OB_THIN_LINE + OB_RING_DEEP + core)), fl = vdupq_n_f32((float)OB_THIN_LINE), fg = vdupq_n_f32((float)OB_RING_DEEP), fc = vdupq_n_f32((float)core);
   const int32x4_t tmin = vdupq_n_s32(OB_THIN_LINE + OB_RING_DEEP + core), cmin = vdupq_n_s32(MARK_MIN_CORE);
   const uint32x4_t bit = { 1, 2, 4, 8 };
-  uint64_t m = 0;
+  uint64_t m = 0, m1 = 0;
   for (int g = 0; g < 64 && k0 + g < nr; g += 4) {
     const int32x4x2_t a = vld2q_s32(pos + 2 * (k0 + g) - 2), b = vld2q_s32(pos + 2 * (k0 + g));   // starts, ends of runs k - 1 and k
     const int32x4_t first = vsubq_s32(a.val[1], a.val[0]), gap = vsubq_s32(b.val[0], a.val[1]), second = vsubq_s32(b.val[1], b.val[0]);
@@ -2245,9 +2387,13 @@ static uint64_t mark_pairs64(const int *pos, int k0, int nr, int core) {
     const uint32x4_t both = vandq_u32(vcgeq_s32(total, tmin), vcleq_f32(vabdq_f32(gf, vmulq_f32(fg, u)), tol));
     const uint32x4_t s0 = vandq_u32(vandq_u32(vcgeq_s32(second, cmin), vcleq_f32(vabdq_f32(ff, lu), tol)), vcleq_f32(vabdq_f32(sf, cu), ctol));
     const uint32x4_t s1 = vandq_u32(vandq_u32(vcgeq_s32(first, cmin), vcleq_f32(vabdq_f32(sf, lu), tol)), vcleq_f32(vabdq_f32(ff, cu), ctol));
-    m |= (uint64_t)vaddvq_u32(vandq_u32(vandq_u32(both, vorrq_u32(s0, s1)), bit)) << g;
+    m |= (uint64_t)vaddvq_u32(vandq_u32(vandq_u32(both, s0), bit)) << g;
+    m1 |= (uint64_t)vaddvq_u32(vandq_u32(vandq_u32(both, s1), bit)) << g;
+    vst1q_f32(uk + g, u);
   }
-  return nr - k0 < 64 ? m & ((1ull << (nr - k0)) - 1) : m;
+  const uint64_t keep = nr - k0 < 64 ? (1ull << (nr - k0)) - 1 : ~0ull;
+  *one = m1 & keep;
+  return m & keep;
 }
 // ai: arm64: of runs k0 to k0 + 63 (to nr), the bits of those 8 to w / 3 pixels long, which mark_square tests
 static uint64_t mark_runs64(const int *pos, int k0, int nr, int w) {
@@ -2262,7 +2408,7 @@ static uint64_t mark_runs64(const int *pos, int k0, int nr, int w) {
   return nr - k0 < 64 ? m & ((1ull << (nr - k0)) - 1) : m;
 }
 #endif
-static int mark_candidates(const ob_layout_t *L, const uint8_t *bin, int w, int h, int merged, cand_t *out) {
+static int mark_candidates(const ob_layout_t *L, const uint8_t *bin, const uint32_t *cb, int w, int h, int merged, cand_t *out) {
   const int core = mark_core(L), sq = L->corner - 2;
   // ai: pos: run_edges' w + 2 boundaries and the vector filters' reads past them (calloc: those reads are of written memory)
   int n = 0, *pos = calloc((size_t)w + 8, sizeof(int)), minc = merged ? sq : core;
@@ -2272,13 +2418,20 @@ static int mark_candidates(const ob_layout_t *L, const uint8_t *bin, int w, int 
     int noted = -1;
 #ifdef OB_NEON
     // ai: arm64: the pairs (or runs) the vector filters keep, in the order the loops below meet them
-    for (int k0 = 1; !merged && k0 < np / 2; k0 += 64)
-      for (uint64_t m = mark_pairs64(pos, k0, np / 2, core); m; m &= m - 1) mark_pair(bin, w, h, y, core, pos, k0 + __builtin_ctzll(m), &noted, out, &n);
+    for (int k0 = 1; !merged && k0 < np / 2; k0 += 64) {
+      uint64_t m1;
+      float uk[64];
+      const uint64_t m0 = mark_pairs64(pos, k0, np / 2, core, &m1, uk);
+      for (uint64_t m = m0 | m1; m; m &= m - 1) {
+        const int g = __builtin_ctzll(m);
+        mark_pair_v(bin, cb, w, h, y, core, pos, k0 + g, (unsigned)(m0 >> g & 1) | (unsigned)(m1 >> g & 1) << 1, uk[g], &noted, out, &n);
+      }
+    }
     for (int k0 = 0; merged && k0 < np / 2; k0 += 64)
-      for (uint64_t m = mark_runs64(pos, k0, np / 2, w); m; m &= m - 1) mark_square(bin, w, h, y, sq, pos, k0 + __builtin_ctzll(m), out, &n);
+      for (uint64_t m = mark_runs64(pos, k0, np / 2, w); m; m &= m - 1) mark_square(bin, cb, w, h, y, sq, pos, k0 + __builtin_ctzll(m), out, &n);
 #else
-    for (int k = 1; !merged && 2 * k + 1 < np; k++) mark_pair(bin, w, h, y, core, pos, k, &noted, out, &n);
-    for (int k = 0; merged && 2 * k + 1 < np; k++) mark_square(bin, w, h, y, sq, pos, k, out, &n);
+    for (int k = 1; !merged && 2 * k + 1 < np; k++) mark_pair(bin, cb, w, h, y, core, pos, k, &noted, out, &n);
+    for (int k = 0; merged && 2 * k + 1 < np; k++) mark_square(bin, cb, w, h, y, sq, pos, k, out, &n);
 #endif
     // No budget. A blurred picture offers about a thousand one-row blobs, and a list that fills before the scan
     // reaches the bottom marks has not recorded them, which is the failure SIDE_K has and the reason this finder
@@ -2494,8 +2647,9 @@ int ob_test_mesh_tables(const ob_layout_t *L, int32_t *dims, float *nodeX, float
 // Every mark of one form in a binarized image at 1 / scale of the capture, in the capture's own coordinates. The
 // candidates depend on the mark's design alone, never on how many modules the symbol has, so one scan serves every
 // layout a receiver is looking for.
-static int mark_scan(const ob_layout_t *L, const uint8_t *bin, int bw, int bh, int scale, int merged, cand_t *c) {
-  const int n = mark_candidates(L, bin, bw, bh, merged, c);
+// ai: cb: the image's column bits on arm64 (binarize's), NULL elsewhere
+static int mark_scan(const ob_layout_t *L, const uint8_t *bin, const uint32_t *cb, int bw, int bh, int scale, int merged, cand_t *c) {
+  const int n = mark_candidates(L, bin, cb, bw, bh, merged, c);
   for (int k = 0; k < n; k++) { c[k].x *= scale; c[k].y *= scale; c[k].unit *= scale; }
   return n;
 }
@@ -3220,9 +3374,11 @@ int ob_thin_read_fmt(const ob_layout_t *L, const image_t *im, const ob_reg_t *re
 
 // Finds the frame and its rotation. quad: the four lattice corners in layout order, as image points.
 // The image halved, each pixel the mean of four.
-static uint8_t *shrink2(const uint8_t *src, int w, int h) {
+// ai: fb, slot: frame_buf's (OB_FB_HALF or OB_FB_QUARTER)
+static uint8_t *shrink2(const uint8_t *src, int w, int h, ob_fbufs_t *fb, int slot) {
   const int sw = w / 2, sh = h / 2;
-  uint8_t *out = malloc((size_t)sw * sh);
+  uint8_t *out = frame_buf(fb, slot, (size_t)sw * sh);
+  (void)slot;
   if (!out) return NULL;
   for (int y = 0; y < sh; y++) {
     const uint8_t *a = src + (size_t)2 * y * w, *b = a + w;
@@ -3252,7 +3408,8 @@ static inline int rotation_holds(float best, int orient) { return best >= 0.15f 
 // Ls: the layouts the symbol may be, which differ only in how many modules a side (lizard_phy.h LIZARD_RING); *which
 // comes back as the one that registered. The mark path scores every one before a hold settles it; the line path tries
 // the first (the 64 ring) first and the others only when it does not register.
-static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, const uint8_t *bin, float *quad, int *orient, float *score_out, int *which) {
+// ai: cb: the capture's column bits on arm64, made with bin (binarize); NULL elsewhere. fb: frame_buf's
+static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, const uint8_t *bin, uint32_t *cb, ob_fbufs_t *fb, float *quad, int *orient, float *score_out, int *which) {
   int w = im->w, h = im->h, big = w > h ? w : h, n[4], nl[4];
   fpt_t *pts[4] = { 0 };            // allocated only if the scan runs, which a settled mark quad skips
   fline_t line[4][SIDE_LINES];
@@ -3284,6 +3441,7 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
   mquad_t mq[MARK_QUADS];
   uint8_t *grey2 = NULL, *lbin = NULL;
   const uint8_t *grey = im->px;
+  const uint32_t *scb = cb;   // the column bits of the scale's image (arm64)
   *which = 0;
   for (int k = 0; k < 8; k++) ob_finder_info[k] = k == 5 || k == 7 ? 0 : -1;
   for (int scale = 1; mcand && scale <= 4 && !rotation_holds(best, *orient); scale *= 2) {
@@ -3291,12 +3449,19 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
     const int sw = w / scale, sh = h / scale;
     if (scale > 1) {
       if (sw < 64 || sh < 64) break;
-      uint8_t *next = shrink2(grey, w / (scale / 2), h / (scale / 2));
+      uint8_t *next = shrink2(grey, w / (scale / 2), h / (scale / 2), fb, scale == 2 ? OB_FB_HALF : OB_FB_QUARTER);
       if (!next) break;
-      free(grey2); grey2 = next; grey = next;
-      free(lbin);
-      if (!(lbin = malloc((size_t)sw * sh))) break;
-      PROF(PROF_BINARIZE, binarize(grey, sw, sh, lbin));
+      frame_buf_done(fb, grey2); grey2 = next; grey = next;
+      frame_buf_done(fb, lbin);
+      if (!(lbin = frame_buf(fb, OB_FB_LBIN, (size_t)sw * sh))) break;
+#ifdef OB_NEON
+      uint32_t *lcb = frame_buf(fb, OB_FB_LCB, (size_t)((sh + 31) / 32) * sw * sizeof(uint32_t) + 16);
+      if (!lcb) break;
+      scb = lcb;
+      PROF(PROF_BINARIZE, binarize(grey, sw, sh, lbin, lcb, fb));
+#else
+      PROF(PROF_BINARIZE, binarize(grey, sw, sh, lbin, NULL, fb));
+#endif
       sbin = lbin;
     }
     // A third form reads the merged scan's squares again, as the CORE of a sharp mark. The merged scan finds any
@@ -3311,7 +3476,7 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
     // scan: the candidates are the merged form's, their module size rescaled.
     int nmark = 0;
     for (int form = 0; form < 3 && !rotation_holds(best, *orient); form++) {
-    if (form < 2) PROF(PROF_FF_MARKS, nmark = mark_scan(Ls[0], sbin, sw, sh, scale, form, mcand));
+    if (form < 2) PROF(PROF_FF_MARKS, nmark = mark_scan(Ls[0], sbin, scb, sw, sh, scale, form, mcand));
     else {
       const int core = mark_core(Ls[0]), sq = Ls[0]->corner - 2;
       for (int k = 0; k < nmark; k++) mcand[k].unit *= (float)sq / core;
@@ -3342,7 +3507,7 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
     }
     }
   }
-  free(mcand); free(grey2); free(lbin);
+  free(mcand); frame_buf_done(fb, grey2); frame_buf_done(fb, lbin);
   ob_finder_info[5] = rotation_holds(best, *orient); ob_finder_info[6] = best;
   if (rotation_holds(best, *orient)) ok = 0;
   ob_prof_ms[PROF_FF_SCORE] += ob_now_ms() - tp; tp = ob_now_ms();
@@ -3360,12 +3525,12 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
   int min_con = (p95 - p5) / 4 < 12 ? 12 : (p95 - p5) / 4;
   for (int s = 0; s < 4; s++) pts[s] = malloc((size_t)(big / 2 + 1) * SIDE_K * sizeof(fpt_t));
   edge_ctx_t ctx;
-  if (edge_ctx_init(&ctx, im->px, w, h, min_con)) { for (int s = 0; s < 4; s++) free(pts[s]); return 0; }
+  if (edge_ctx_init(&ctx, im->px, w, h, min_con, fb)) { for (int s = 0; s < 4; s++) free(pts[s]); return 0; }
   row_points(bin, w, h, &ctx, pts[3], &n[3], pts[1], &n[1]);
   ob_prof_ms[PROF_FF_POINTS] += ob_now_ms() - tp; tp = ob_now_ms();
   col_points(bin, w, h, &ctx, pts[0], &n[0], pts[2], &n[2]);
   ob_prof_ms[PROF_FF_TURN] += ob_now_ms() - tp; tp = ob_now_ms();
-  free(ctx.buf);
+  frame_buf_done(fb, ctx.buf);
 #ifdef OB_VERIFY_POINTS
   {
     int *pos = malloc(((size_t)big + 2) * sizeof(int)), m[4];
@@ -3573,36 +3738,44 @@ void ob_reg_free(ob_reg_t *reg) { free(reg->nodes); reg->nodes = NULL; }
 // Ls: the layouts the symbol may be (find_frame); the one that registered comes back in *which and is the one the
 // registration is built on. An external quad is the first layout's.
 static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim, int mesh, ob_reg_t *reg, ob_result_t *res,
-                        const float *in_quad, int in_orient, float in_score, int *which) {
+                        const float *in_quad, int in_orient, float in_score, int *which, ob_fbufs_t *fb) {
   const ob_layout_t *L = Ls[0];
   *which = 0;
   const image_t im = *pim;
   const uint8_t *img = im.px;
   int iw = im.w, ih = im.h;
   reg->nodes = NULL;
-  uint8_t *bin = in_quad ? NULL : malloc((size_t)iw * ih);
+  uint8_t *bin = in_quad ? NULL : frame_buf(fb, OB_FB_BIN, (size_t)iw * ih);
+#ifdef OB_NEON
+  uint32_t *cb = in_quad ? NULL : frame_buf(fb, OB_FB_CB, (size_t)((ih + 31) / 32) * iw * sizeof(uint32_t) + 16);
+  if (!in_quad && !cb) { frame_buf_done(fb, bin); return 0; }
+#else
+  uint32_t *cb = NULL;
+#endif
   int got = 0, thin_orient = -1;
   float thin_quad[8], thin_sc = 0;
   if (in_quad) { memcpy(thin_quad, in_quad, sizeof thin_quad); thin_orient = in_orient; thin_sc = in_score; got = 1; }
   else {
-    PROF(PROF_BINARIZE, binarize(img, iw, ih, bin));
-    PROF(PROF_FINDERS, got = find_frame(Ls, nL, &im, bin, thin_quad, &thin_orient, &thin_sc, which));
+    PROF(PROF_BINARIZE, binarize(img, iw, ih, bin, cb, fb));
+    PROF(PROF_FINDERS, got = find_frame(Ls, nL, &im, bin, cb, fb, thin_quad, &thin_orient, &thin_sc, which));
     L = Ls[*which];
   }
-#ifndef OB_NEON
-  free(bin);
+#ifdef OB_NEON
+  frame_buf_done(fb, cb);
+#else
+  frame_buf_done(fb, bin);
   bin = NULL;
 #endif
-  if (!got) { free(bin); return 0; }
+  if (!got) { frame_buf_done(fb, bin); return 0; }
 
   double tm = ob_now_ms();
   float src[8];
   corner_coords(L, src);
   homo_t H;
   // The thin frame's finder has already settled rotation: it scores the coded track under every hypothesis.
-  if (!homography(src, thin_quad, &H)) { free(bin); return 0; }
+  if (!homography(src, thin_quad, &H)) { frame_buf_done(fb, bin); return 0; }
   memcpy(res->quad, thin_quad, sizeof thin_quad);
-  if (thin_orient < 0 || 2.0f + thin_sc < 2.0f) { free(bin); return 0; }
+  if (thin_orient < 0 || 2.0f + thin_sc < 2.0f) { frame_buf_done(fb, bin); return 0; }
   res->orient = thin_orient;
 
   // The node templates read the image under a box a module wide once a module is several pixels (border_blur). The
@@ -3615,7 +3788,8 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
     mpx += hypotf(res->quad[2 * k1] - res->quad[2 * k], res->quad[2 * k1 + 1] - res->quad[2 * k + 1]) / hypotf(src[2 * k1] - src[2 * k], src[2 * k1 + 1] - src[2 * k + 1]) / 4;
   }
   // ai: a box radius of at least one pixel, tested before the conversion (a NaN mpx blurs nothing, as before)
-  if (mpx / 2 >= 1 && (blurred = border_blur(L, &H, img, iw, ih, (int)(mpx / 2), bin))) { rim.px = blurred; bin = NULL; }
+  // ai: on arm64 the copy goes into the binarized picture's buffer (bin, the workspace's), which the finder is done with
+  if (mpx / 2 >= 1 && (blurred = border_blur(L, &H, img, iw, ih, (int)(mpx / 2), bin))) rim.px = blurred;
   // Finders first, so the homography the marks are measured against is as good as four
   // points can make it.
   int nn = L->nx * L->ny;
@@ -3657,7 +3831,9 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
       refine_node(L, &rim, &H, order[k] % L->nx, order[k] / L->nx, nodes, have_alm ? &alm : 0);
     }
   }
-  free(blurred); free(bin);
+  // ai: a blur made in bin is bin's, given back with it; one made fresh (no spare) freed here
+  if (blurred != bin) free(blurred);
+  frame_buf_done(fb, bin);
   // the border is all there is to hang the mesh on
   if (mesh) {
     if (have_alm) border_fill_anchors(L, &H, iw, ih, nodes, anchors, mpx);
@@ -3673,17 +3849,17 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
   return 1;
 }
 
-int ob_acquire(const ob_layout_t *L, const image_t *pim, int mesh, ob_reg_t *reg, ob_result_t *res) {
+int ob_acquire(const ob_layout_t *L, const image_t *pim, int mesh, ob_reg_t *reg, ob_result_t *res, ob_fbufs_t *fb) {
   int which;
-  return acquire_core(&L, 1, pim, mesh, reg, res, NULL, 0, 0, &which);
+  return acquire_core(&L, 1, pim, mesh, reg, res, NULL, 0, 0, &which, fb);
 }
-int ob_acquire_any(const ob_layout_t *const *Ls, int nL, const image_t *pim, int mesh, ob_reg_t *reg, ob_result_t *res, int *which) {
-  return acquire_core(Ls, nL, pim, mesh, reg, res, NULL, 0, 0, which);
+int ob_acquire_any(const ob_layout_t *const *Ls, int nL, const image_t *pim, int mesh, ob_reg_t *reg, ob_result_t *res, int *which, ob_fbufs_t *fb) {
+  return acquire_core(Ls, nL, pim, mesh, reg, res, NULL, 0, 0, which, fb);
 }
 int ob_acquire_quad(const ob_layout_t *L, const image_t *pim, int mesh, ob_reg_t *reg, ob_result_t *res,
-                    const float *quad, int orient, float score) {
+                    const float *quad, int orient, float score, ob_fbufs_t *fb) {
   int which;
-  return acquire_core(&L, 1, pim, mesh, reg, res, quad, orient, score, &which);
+  return acquire_core(&L, 1, pim, mesh, reg, res, quad, orient, score, &which, fb);
 }
 
 void ob_map_point(const ob_layout_t *L, const ob_reg_t *reg, float mx, float my, float *pu, float *pv) {

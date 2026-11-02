@@ -51,6 +51,8 @@ struct lizard_ws {
   // ai: [n - dkeep, n) (the most |u| in the block), and its columns, to the last v that holds one rounded up to 4
   int *dkeep, *dcols;
 #endif
+  // ai: the acquisition's buffers (internal.h ob_fbufs_t), grown as frames need, freed with the workspace
+  ob_fbufs_t fbufs;
 };
 
 extern uint32_t ob_debug_hash;   // the host's (wasm.c, core/cpu/codec.c): armed by a test, which then reads back a hash of the floats and soft values behind the decision
@@ -579,7 +581,7 @@ int lizard_anchor_geom(const lizard_t *f, int out[8]) {
 
 void lizard_free(lizard_t *f) {
   struct lizard_ws *w = f->ws;
-  if (w) { free(w->tre); free(w->wre); free(w->wim); free(w->cx); free(w->bits); free(w->data); free(w->amp); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->llrf); free(w->sub_est); free(w->sub_rms); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < LIZARD_TIERS; t++) free(w->perm[t]);
+  if (w) { ob_fbufs_free(&w->fbufs); free(w->tre); free(w->wre); free(w->wim); free(w->cx); free(w->bits); free(w->data); free(w->amp); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->llrf); free(w->sub_est); free(w->sub_rms); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < LIZARD_TIERS; t++) free(w->perm[t]);
 #ifdef OB_NEON
     free(w->dkeep);
 #endif
@@ -1106,8 +1108,8 @@ int lizard_acquire_quad(const lizard_t *f, const uint8_t *img, int iw, int ih, f
   image_t im;
   ob_image_init(&im, img, iw, ih, gamma);
   ob_reg_t reg;
-  int got = quad ? ob_acquire_quad(&f->frame, &im, mesh, &reg, res, quad, orient, score)
-                 : ob_acquire(&f->frame, &im, mesh, &reg, res);
+  int got = quad ? ob_acquire_quad(&f->frame, &im, mesh, &reg, res, quad, orient, score, &f->ws->fbufs)
+                 : ob_acquire(&f->frame, &im, mesh, &reg, res, &f->ws->fbufs);
   res->ms_detect = (float)(ob_now_ms() - t0);
   return acquire_hold(f, &im, &reg, got);
 }
@@ -1155,7 +1157,7 @@ int lizard_acquire_ring(const lizard_t *const *rings, int k, const uint8_t *img,
   ob_image_init(&im, img, iw, ih, gamma);
   ob_reg_t reg;
   int wi = 0;
-  const int got = ob_acquire_any(Ls, k, &im, mesh, &reg, res, &wi);
+  const int got = ob_acquire_any(Ls, k, &im, mesh, &reg, res, &wi, &rings[0]->ws->fbufs);   // ai: the first ring's workspace
   res->ms_detect = (float)(ob_now_ms() - t0);
   if (!got) { ob_reg_free(&reg); return 0; }
   acquire_hold(rings[wi], &im, &reg, 1);
