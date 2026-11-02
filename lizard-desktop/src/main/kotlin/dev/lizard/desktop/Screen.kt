@@ -117,6 +117,7 @@ class DesktopSend(private val app: App) : SendHost {
     override val edgeTap = false
     override fun leaveCodeAlone() { s.toggleFull(); if (s.collapsed) s.toggleRail() }
     override val codePadding = 0.dp
+    override val codeFill get() = s.canvas.fill
     override fun codeSize(maxWidth: Dp, maxHeight: Dp, portrait: Boolean): DpSize? = null
     // ai: files and folders dropped anywhere in the window are added as on the code area (SendState.dropped), the area's
     // ai: outline shown while a drag is over the window (2026-10-23)
@@ -138,7 +139,7 @@ class DesktopSend(private val app: App) : SendHost {
             s.canvas.grip = grip
             onDispose { if (s.canvas.grip === grip) { grip?.hover(false); s.canvas.grip = null } }
         }
-        SwingPanel(background = Bg, factory = { s.canvas }, modifier = modifier)
+        SwingPanel(background = s.canvas.fill, factory = { s.canvas }, modifier = modifier)
     }
 
     @Composable
