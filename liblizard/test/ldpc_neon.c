@@ -1,9 +1,10 @@
 // ai: Does arm64's LDPC (src/ldpc.c: the NEON layer kernel, the decoder's four-times columns) decide as the scalar twin
 // ai: and the 128-bit kernel do? 1. the NEON kernel on plain rows and the 128-bit one against the scalar loop on random
-// ai: layers (3 to 32 slots, posteriors over the whole range and its ends, messages over +-127), both outputs byte for
-// ai: byte; 2. whole decodes of the four codes through BI-AWGN at three levels, arm64's decode against the 128-bit
-// ai: kernel on today's layout (wide -1): iterations and every output bit; 3. each code's decodes at its middle level
-// ai: timed both ways, interleaved, the best of REPS.
+// ai: layers (3 to 32 slots, messages over +-127; posteriors over the whole range and its ends for the 128-bit kernel,
+// ai: within 8191 - 254 and its ends for the NEON one, which has no clamp: a decode's posteriors stay inside it, as
+// ai: ldpc_init holds), both outputs byte for byte; 2. whole decodes of the four codes through BI-AWGN at three levels,
+// ai: arm64's decode against the 128-bit kernel on today's layout (wide -1): iterations and every output bit; 3. each
+// ai: code's decodes at its middle level timed both ways, interleaved, the best of REPS.
 // ai: arm64 only (test/neon_kernels.sh builds it with the NDK and runs it on a phone): ldpc_neon [layers] [codewords] [reps]
 #include "../src/ldpc.c"
 #include <math.h>
@@ -39,13 +40,13 @@ static void kernel_scalar(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
   }
 }
 
-static int16_t pick16(void) {
+static int16_t pick16(int lim) {
   switch (next() % 8) {
-    case 0: return 8191;
-    case 1: return -8191;
+    case 0: return (int16_t)lim;
+    case 1: return (int16_t)-lim;
     case 2: return 0;
     case 3: return (int16_t)((int)(next() % 7) - 3);
-    default: return (int16_t)((int)(next() % 16383) - 8191);
+    default: return (int16_t)((int)(next() % (2 * lim + 1)) - lim);
   }
 }
 
@@ -73,12 +74,12 @@ int main(int argc, char **argv) {
   int fails = 0;
   for (int t = 0; t < layers; t++) {
     const int ns = 3 + (int)(next() % (NS_MAX - 2)), norm = t % 5 == 0 ? 16 : 13;
-    for (int k = 0; k < ns * zp; k++) { q0[k] = pick16(); r0[k] = (int8_t)((int)(next() % 255) - 127); }
-    memcpy(qa, q0, sizeof q0); memcpy(ra, r0, sizeof r0);
-    kernel_scalar(qa, ra, ns, zp, norm);
     for (int w = 0; w < 2; w++) {
+      for (int k = 0; k < ns * zp; k++) { q0[k] = pick16(w ? 8191 - 254 : 8191); r0[k] = (int8_t)((int)(next() % 255) - 127); }
+      memcpy(qa, q0, sizeof q0); memcpy(ra, r0, sizeof r0);
+      kernel_scalar(qa, ra, ns, zp, norm);
       memcpy(qb, q0, sizeof q0); memcpy(rb, r0, sizeof r0);
-      if (w) layer_kernel_neon(qb, rb, ns, zp, norm, rows, 0, 0); else layer_kernel(qb, rb, ns, zp, norm);
+      if (w) layer_kernel_neon(rb, ns, zp, norm, rows, 0, 0, 0); else layer_kernel(qb, rb, ns, zp, norm);
       if (memcmp(qa, qb, (size_t)ns * zp * 2) || memcmp(ra, rb, (size_t)ns * zp)) {
         if (fails < 5) printf("layer %d (ns %d, norm %d): %s apart from the scalar loop\n", t, ns, norm, w ? "NEON" : "128-bit");
         fails++;
