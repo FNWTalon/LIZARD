@@ -7,6 +7,7 @@
 // Everything a call writes, allocated once: a frame costs no malloc. Behind a pointer so a const lizard_t can use it.
 struct lizard_ws {
   float *tre, *tim;                 // the spectrum's upper half-plane: vblocks blocks of n rows (u) by bw columns (v). pos indexes it.
+                                    // ai: tim inside tre's allocation (ws_init), freed with it
   float *wre, *wim;                 // one strip of the picture, n rows by LIZARD_STRIP columns
   float *cx, *qx;                   // the detrend's basis vectors: c = (2 i + 1 - n) / n, and c^2 less its mean
   float *x1r, *x1i, *x2r, *x2i;     // their transforms
@@ -227,7 +228,13 @@ static int ws_init(lizard_t *f) {
   f->ws = w;
   int n = f->n;
   size_t tn = (size_t)f->vblocks * n * f->bw, sn = (size_t)n * LIZARD_STRIP, nb = (size_t)max_bits(f);
-  w->tre = malloc(tn * sizeof(float)); w->tim = malloc(tn * sizeof(float));
+  // ai: one allocation, the imaginary part 4 KB past a multiple of 16 KB from the real: at a multiple of 16 KB the block
+  // ai: transforms' long stages put a butterfly's real and imaginary rows in the same first-level cache sets and ran
+  // ai: 2.2 to 2.8x slower on a phone core; where the allocator happened to put two allocations decided it
+  {
+    const size_t gap = ((size_t)4096 + 16384 - (tn * sizeof(float)) % 16384) % 16384 / sizeof(float);
+    w->tre = malloc((2 * tn + gap) * sizeof(float)); w->tim = w->tre ? w->tre + tn + gap : 0;
+  }
   w->wre = malloc(sn * sizeof(float)); w->wim = malloc(sn * sizeof(float));
   float *tab = malloc((size_t)6 * n * sizeof(float));
   const size_t nc = (size_t)max_n(f) > nb ? (size_t)max_n(f) : nb;   // ai: a codeword's bits, or a block's slots, whichever is more
@@ -556,7 +563,7 @@ int lizard_anchor_geom(const lizard_t *f, int out[8]) {
 
 void lizard_free(lizard_t *f) {
   struct lizard_ws *w = f->ws;
-  if (w) { free(w->tre); free(w->tim); free(w->wre); free(w->wim); free(w->cx); free(w->bits); free(w->data); free(w->amp); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->llrf); free(w->sub_est); free(w->sub_rms); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < LIZARD_TIERS; t++) free(w->perm[t]); free(w); }
+  if (w) { free(w->tre); free(w->wre); free(w->wim); free(w->cx); free(w->bits); free(w->data); free(w->amp); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->llrf); free(w->sub_est); free(w->sub_rms); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < LIZARD_TIERS; t++) free(w->perm[t]); free(w); }
   for (int t = 0; t < LIZARD_TIERS; t++) ldpc_free(&f->code[t]);
   free(f->pos); free(f->block_tier); ob_layout_free(&f->frame); memset(f, 0, sizeof *f);
 }
