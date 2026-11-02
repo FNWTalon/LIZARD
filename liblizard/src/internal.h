@@ -24,13 +24,14 @@ static inline float sample(const image_t *im, float x, float y) {
 #include "simd.h"
 #ifdef OB_NEON
 #include <string.h>
-// ai: arm64, the decode's picture sampler alone (acquire.c ob_sample_grid_pic at gamma 1; registration keeps sample4):
-// ai: four points' bilinear reads, x and y already less the half pixel and clamped to the frame as sample() clamps them,
-// ai: on a frame of w pixels a row. A point's pixel pairs as two 32-bit words, row y's from its pixel and row y + 1's
-// ai: from two bytes before (both inside the frame at its last pixel), two words to a general register; one TBL over a
-// ai: word register and a register of 0x4B (the exponent of 2^23) makes each byte the float 2^23 + byte, so the
-// ai: differences are exact and a and c come back by one subtraction, with no conversion; blended on 0 to 255 with fused
-// ai: multiply-adds and scaled by 1/255 once. Its own floats: the blocks a decode verifies are its test.
+// ai: arm64, the finder's track reads at gamma 1 (acquire.c trk_px; the decode's picture has its own read in integers,
+// ai: acquire.c sample_grid_lin; registration keeps sample4): four points' bilinear reads, x and y already less the
+// ai: half pixel and clamped to the frame as sample() clamps them, on a frame of w pixels a row. A point's pixel pairs
+// ai: as two 32-bit words, row y's from its pixel and row y + 1's from two bytes before (both inside the frame at its
+// ai: last pixel), two words to a general register; one TBL over a word register and a register of 0x4B (the exponent
+// ai: of 2^23) makes each byte the float 2^23 + byte, so the differences are exact and a and c come back by one
+// ai: subtraction, with no conversion; blended on 0 to 255 with fused multiply-adds and scaled by 1/255 once. Its own
+// ai: floats: the blocks a decode verifies are its test.
 static inline float32x4_t sample4r(const uint8_t *px, int w, float32x4_t x, float32x4_t y) {
   const float32x4_t fx = vsubq_f32(x, vrndq_f32(x)), fy = vsubq_f32(y, vrndq_f32(y));
   const int32x4_t idx = vmlaq_s32(vcvtq_s32_f32(x), vcvtq_s32_f32(y), vdupq_n_s32(w));
