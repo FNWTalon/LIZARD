@@ -48,8 +48,9 @@ const MAIN = (() => { try { return fileURLToPath(import.meta.url) === realpathSy
 // ai: pass 1's bilinear reads by the texture unit (a layout's `sampler` entry: the device's immutable linear sampler),
 // ai: the soft and LDPC steps dispatched from the gate's ARGS (each rule step's `argsAt`); 4 the LDPC pipelines'
 // ai: `lanes`; 3 REDO's R2 args; 2 PEAKS; 1 from 2026-10-29. 6 since 2026-10-31: a pipeline's `needs` (the device
-// ai: features its module asks beyond the variant's: "int16", the LDPC's "reg+i16" forms).
-export const TREE_VERSION = 6;
+// ai: features its module asks beyond the variant's: "int16", the LDPC's "reg+i16" forms). 7 since 2026-11-02: the
+// ai: front's `trace` (TRACE, each quad's bend, in both rounds' grids) and HYP doubled (SCORE's bend bit).
+export const TREE_VERSION = 7;
 
 const NDK = process.env.ANDROID_NDK_HOME || `${process.env.ANDROID_HOME || `${homedir()}/Android/Sdk`}/ndk/27.1.12297006`;
 // ai: SPIRV-Tools' spirv-val and shaderc's glslc: the Android NDK's shader-tools where there is an NDK, else the
@@ -210,7 +211,7 @@ function exportTree(fh, v) {
     weightsPrecision: fh.weights.precision,
     front: {
       pyramid: pb(fh.pyramid), classify: pbNet(fh.classify),
-      vote: pb(fh.vote), peaks: pb(fh.peaks), gather: pb(fh.gather), complete: pb(fh.complete), score: pb(fh.score), pick: pb(fh.pick), nodesP: pb(fh.nodesP), refit: pb(fh.refit), refitPost: pb(fh.refitPost), wordP: pb(fh.wordP), select: pb(fh.select),
+      vote: pb(fh.vote), peaks: pb(fh.peaks), gather: pb(fh.gather), complete: pb(fh.complete), score: pb(fh.score), pick: pb(fh.pick), trace: pb(fh.trace), nodesP: pb(fh.nodesP), refit: pb(fh.refit), refitPost: pb(fh.refitPost), wordP: pb(fh.wordP), select: pb(fh.select),
       // ai: the finder's second round (gpu/glsl/finder.mjs REDO; gpu/bank_fcn2.mjs COARSE_FROM)
       redo: pb(fh.redo), coarseFrom: fh.bank.COARSE_FROM,
       fcn2: pb(fh.fcn2), fcn2X: pb(fh.fcn2X), fcn2Form: { TX: f.TX, TY: f.TY, XB: f.XB, walk: f.walk, xplane: f.xplane, int8: f.int8, store: f.store, name: f.name },
