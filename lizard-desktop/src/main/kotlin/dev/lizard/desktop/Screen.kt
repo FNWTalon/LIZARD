@@ -60,6 +60,9 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import dev.lizard.readout.Readout
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 
 // ai: Send on the desktop (the screen is ../lizard-ui's SendScreen): the sender's state (SendState), the desktop's
 // ai: settings (Ring, Size; Exclusive fullscreen on Linux), Fullscreen beside Start, the code area the presenter's
@@ -129,6 +132,9 @@ class DesktopSend(private val app: App) : SendHost {
     override val edgeTap = false
     override fun leaveCodeAlone() { s.toggleFull(); if (s.collapsed) s.toggleRail() }
     override val codePadding = 0.dp
+    // ai: the column's margin the edge's whole strip: the canvas begins past it, so a drag of the edge is Compose's from
+    // ai: its start (a run paused at it takes the canvas out of the window, which ended a drag it had)
+    override val edgeRoom = EdgeStrip
     override val codeFill get() = s.codeFill
     override fun codeSize(maxWidth: Dp, maxHeight: Dp, portrait: Boolean): DpSize? = null
     // ai: files and folders dropped anywhere in the window are added as on the code area (SendState.dropped), the area's
@@ -144,22 +150,22 @@ class DesktopSend(private val app: App) : SendHost {
     // ai: The code area (2026-11-02, as the phone's): idle, Compose's, the file upload in a column at most 576 dp wide,
     // ai: centred, what goes named under its card (the AWT canvas painted it until then), or the test stream's note; a
     // ai: drag's outline over it. While codes play the canvas (a window of its own, the presenter's) in its place, from
-    // ai: the presenter's start to its end. Its size, laid out here, is the room the format is picked from (SendState.areaChanged);
-    // ai: in full screen the pointer near its left edge shows the rail (the canvas hears that while shown).
+    // ai: the presenter's start to its end; paused in the window, the picture as a still (`Stamped`) until the canvas is
+    // ai: back. Its size, laid out here, is the room the format is picked from (SendState.areaChanged); in full screen
+    // ai: the pointer near its left edge shows the rail (the canvas hears that while shown). The column's edge dragged
+    // ai: pauses a run (SendState.resizing).
     @OptIn(ExperimentalComposeUiApi::class)
     @Composable
     override fun CodeArea(modifier: Modifier) {
-        // ai: the column's edge over the canvas's left strip is the canvas's to hear while it shows (CodeCanvas.grip)
-        val grip = LocalEdgeGrip.current
-        DisposableEffect(grip) {
-            s.canvas.grip = grip
-            onDispose { if (s.canvas.grip === grip) { grip?.hover(false); s.canvas.grip = null } }
-        }
+        val dragging = width.dragging
+        LaunchedEffect(dragging) { if (dragging) s.resizing() }
         val near = with(LocalDensity.current) { EDGE_NEAR.toPx() }
         Box(modifier.onSizeChanged { s.areaChanged(it.width, it.height) }.onPointerEvent(PointerEventType.Move) { e ->
             if (s.full && !s.leased && !s.edgeRail && (e.changes.firstOrNull()?.position?.x ?: near) < near) s.edgeRail = true
         }) {
+            val stamp = s.stamp
             if (s.canvas.shown) SwingPanel(background = s.codeFill, factory = { s.canvas }, modifier = Modifier.fillMaxSize())
+            else if (stamp != null) Stamped(stamp, s.size / 100f, s.edgeShare)
             else {
                 if (s.test) TestStreamNote()
                 else Upload(listOf(Act("File", icon = Icons.file) { s.chooseFile() }, Act("Folder", icon = Icons.folder) { s.chooseFolder() }),
@@ -198,6 +204,20 @@ private fun ChoiceLine(line: Pair<String, String>?) {
             Text(line.second, style = name.copy(fontWeight = FontWeight.Normal), color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
+}
+
+// ai: the picture a run was paused on in the window (SendState.stamp), placed as the presenter places it: on white,
+// ai: centred, the largest that fits with the edge's light round it (edge, a share of its height, each side), times
+// ai: the Size share, stretched linearly
+@Composable
+private fun Stamped(st: SendState.Stamp, share: Float, edge: Float) = Canvas(Modifier.fillMaxSize().background(Bg)) {
+    val e = 2 * edge * st.h
+    val scale = minOf(size.width / (st.w + e), size.height / (st.h + e)) * share.coerceIn(0.25f, 1f)
+    val dw = minOf(size.width, st.w * scale).roundToInt()
+    val dh = minOf(size.height, st.h * scale).roundToInt()
+    if (dw <= 0 || dh <= 0) return@Canvas
+    drawImage(st.image, srcSize = IntSize(st.w, st.h), dstOffset = IntOffset(((size.width - dw) / 2).toInt(), ((size.height - dh) / 2).toInt()),
+        dstSize = IntSize(dw, dh), filterQuality = FilterQuality.Low)
 }
 
 // ai: a drag over the window: the web's dashed outline, 12 dp in

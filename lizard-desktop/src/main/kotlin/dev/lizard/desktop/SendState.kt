@@ -22,7 +22,6 @@ import java.awt.dnd.DropTarget
 import java.awt.dnd.DropTargetAdapter
 import java.awt.dnd.DropTargetDropEvent
 import javax.swing.SwingUtilities
-import java.awt.Cursor
 import java.awt.EventQueue
 import java.awt.Graphics
 import java.awt.event.ComponentAdapter
@@ -38,6 +37,8 @@ import kotlin.math.floor
 import kotlin.math.min
 import kotlin.math.roundToInt
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import dev.lizard.ui.*
@@ -70,42 +71,11 @@ class CodeCanvas(private val s: SendState) : Canvas() {
             override fun ancestorMoved(e: HierarchyEvent) = s.canvasMoved()
             override fun ancestorResized(e: HierarchyEvent) = s.canvasMoved()
         })
-        addMouseListener(object : MouseAdapter() {
-            override fun mousePressed(e: MouseEvent) {
-                if (e.button == MouseEvent.BUTTON1 && nearEdge(e)) { pressX = e.xOnScreen; pressed = true }
-            }
-            override fun mouseReleased(e: MouseEvent) {
-                pressed = false
-                if (gripped) { gripped = false; grip?.done(); grip?.hover(nearEdge(e)) }
-            }
-            override fun mouseExited(e: MouseEvent) { if (!gripped) grip?.hover(false) }
-        })
-        // ai: the left-right resize cursor over the column's edge; full screen's rail near the left edge
+        // ai: full screen's rail near the left edge (the column's edge is Compose's: the canvas begins past its strip,
+        // ai: SendHost.edgeRoom)
         addMouseMotionListener(object : MouseAdapter() {
             override fun mouseMoved(e: MouseEvent) {
-                // ai: full screen: nothing here takes a click, so the arrow (a resize cursor left from the column's edge stuck
-                // ai: there, 2026-11-02), and the rail near the left edge
-                if (s.full && !s.leased) {
-                    if (cursor.type != Cursor.DEFAULT_CURSOR) cursor = Cursor.getDefaultCursor()
-                    if (e.x < EDGE_NEAR && !s.edgeRail) s.edgeRail = true
-                    return
-                }
-                val near = nearEdge(e)
-                grip?.hover(near)
-                val c = if (near) Cursor.E_RESIZE_CURSOR else Cursor.DEFAULT_CURSOR
-                if (cursor.type != c) cursor = Cursor.getPredefinedCursor(c)
-            }
-            // ai: the edge dragged by the pointer's move on the screen (the canvas moves under it as the column resizes);
-            // ai: AWT's units are the window's logical pixels, Compose's dp on the desktop. Taken at the first move, as
-            // ai: Compose's drag is, so a press and release alone neither saves the width nor re-picks.
-            override fun mouseDragged(e: MouseEvent) {
-                val g = grip ?: return
-                if (!pressed) return
-                val dx = e.xOnScreen - pressX
-                if (dx == 0) return
-                if (!gripped) { gripped = true; g.start() }
-                pressX = e.xOnScreen
-                g.drag(dx.dp)
+                if (s.full && !s.leased && e.x < EDGE_NEAR && !s.edgeRail) s.edgeRail = true
             }
         })
         // ai: Files and folders dropped are added (a run stops first, as the web's does; refused while sending until
@@ -124,15 +94,6 @@ class CodeCanvas(private val s: SendState) : Canvas() {
     // ai: put in the window for a presenter (its window made at addNotify, which begins it: SendState.canvasMade), taken
     // ai: out at the presenter's end
     fun want(on: Boolean) { shown = on }
-
-    // ai: the column's edge over the canvas's left EdgeStrip less EdgeRoom (dev.lizard.ui.EdgeGrip: Compose neither draws
-    // ai: nor hears over this heavyweight), given by the code area while the column is open, null otherwise
-    // ai: (DesktopSend.CodeArea)
-    var grip: EdgeGrip? = null
-    private var pressed = false   // ai: the first button went down on the edge
-    private var gripped = false   // ai: and the edge is being dragged
-    private var pressX = 0
-    private fun nearEdge(e: MouseEvent) = grip != null && !s.full && e.x < (EdgeStrip - EdgeRoom).value
 
     // ai: its X background the area's colour (SendState.codeFill: white round the presenter's code, which clears to
     // ai: white; the soft fill while a monitor of its own shows the code), so what X fills on a map or a resize before
@@ -335,8 +296,8 @@ class SendState {
     val presenting get() = p != 0L
     // ai: the code area's colour at its left edge (the column's margin beside it takes it, SendHost.codeFill; the canvas's
     // ai: X background): the soft fill under the test stream's note and while a monitor of its own shows the code, white
-    // ai: under the file upload and round the presenter's code (it clears to white)
-    val codeFill: Color get() = if (leased || (test && !canvas.shown)) Soft else Bg
+    // ai: under the file upload, round the presenter's code (it clears to white) and round a paused run's still
+    val codeFill: Color get() = if (leased || (test && !canvas.shown && stamp == null)) Soft else Bg
     val sending get() = phase == Phase.On || phase == Phase.Preparing
     val canStart get() = loadError.isEmpty() && !sending && (test || (choice != null && !reading))
     val railShown get() = collapsed
@@ -344,7 +305,9 @@ class SendState {
     // ai: a symbol's room in the area, device px, the Size slider's share of it (send.mjs room)
     val room get() = Room.room(areaW, areaH, codes, ringIndex, spacing, margin) * size / 100.0
     // ai: the margin past the quiet zone the presenter keeps at the area's edges, for the ring configured
-    private val edge get() = Room.edgeShare(fmt?.span ?: Pick.span(ringIndex), margin).toFloat()
+    private val edge get() = edgeShare
+    // ai: the light the presenter keeps past the frame at each edge, a share of its height (presenter.h PresentOptions::edge)
+    val edgeShare get() = Room.edgeShare(fmt?.span ?: Pick.span(ringIndex), margin).toFloat()
     // ai: what auto takes in the area now (0 while it has no size): the configured format's while sending
     val autoBlocks get() = fmt?.takeIf { blocks == 0 }?.let { it.subch / Pick.STEP } ?: if (areaW > 0 && areaH > 0) Pick.pick(room, ringIndex) / Pick.STEP else 0
     // ai: what the code offers at most, KB/s: codes x blocks a frame x 472 B x the pictures a second it can show, the
@@ -361,8 +324,10 @@ class SendState {
     val tiers: String get() = sender?.str("tiers").orEmpty()
 
     // ai: The chooser (Chooser.kt): several files, or several folders, over the sender's window
-    fun chooseFile() = Chooser.choose(canvas, "Choose files", false, true) { pick(it) }
-    fun chooseFolder() = Chooser.choose(canvas, "Choose folders", true, true) { pick(it) }
+    // ai: the window (App.kt sets it): the choosers' owner (the canvas has a window only while codes play)
+    var frame: java.awt.Component? = null
+    fun chooseFile() = frame?.let { Chooser.choose(it, "Choose files", false, true) { f -> pick(f) } }
+    fun chooseFolder() = frame?.let { Chooser.choose(it, "Choose folders", true, true) { f -> pick(f) } }
 
     // ai: Files and folders added (picked, dropped, handed in), walked off the UI thread
     fun pick(files: List<File>) {
@@ -513,6 +478,7 @@ class SendState {
         if (p != 0L) { Native.presentStop(p); p = 0L }
         if (leased) leaseEnded()
         canvas.want(false)
+        stamp = null
         if (h != 0L && h != preparing) Native.txDestroy(h)
         h = 0L
         dropTar()
@@ -536,18 +502,60 @@ class SendState {
     // ai: play and pause as a video player's (the rail's button, Space and K): Start where nothing runs (the tip first
     // ai: where it is due), else Pause or Resume
     fun playPause() { if (phase == Phase.On) pause(!paused) else if (!sending) requestStart() }
-    // ai: Paused: the last picture stays (the presenter takes no new one); a receiver holds what it has.
+    // ai: Paused: the last picture stays; a receiver holds what it has. In the window (2026-11-02) it becomes a still:
+    // ai: the picture on screen read back (`stamp`), the presenter stopped and the canvas out of the window, so the area
+    // ai: is Compose's (DesktopSend.Stamped) and a resize moves nothing native; Resume makes both again, the format picked
+    // ai: for the area as it is then. On a monitor of its own the presenter holds it there ("Paused on").
+    class Stamp(val w: Int, val h: Int, val image: ImageBitmap)
+    var stamp by mutableStateOf<Stamp?>(null)
+        private set
     fun pause(on: Boolean) {
         if (phase != Phase.On) return
         paused = on
-        if (p != 0L) Native.presentPause(p, on)
-        if (leased) canvas.repaint()
-        if (!on) takeOver()
+        if (leased) {
+            if (p != 0L) Native.presentPause(p, on)
+            canvas.repaint()
+            if (!on) takeOver()
+            return
+        }
+        if (on) {
+            if (p != 0L) {
+                Native.presentPause(p, true)
+                stamp = snapshot(p)
+                Native.presentStop(p); p = 0L
+            }
+            canvas.want(false)
+        } else {
+            begin()
+        }
     }
+    private fun snapshot(p: Long): Stamp? {
+        val wh = IntArray(2)
+        val px = Native.presentSnapshot(p, wh) ?: return null
+        val (w, h) = wh[0] to wh[1]
+        if (w <= 0 || h <= 0 || px.size < w * h) return null
+        val bm = org.jetbrains.skia.Bitmap()
+        if (!bm.installPixels(org.jetbrains.skia.ImageInfo(w, h, org.jetbrains.skia.ColorType.GRAY_8, org.jetbrains.skia.ColorAlphaType.OPAQUE), px, w)) return null
+        bm.setImmutable()
+        return Stamp(w, h, bm.asComposeImageBitmap())
+    }
+    // ai: The code area resized by hand while the codes play in the window (the column's edge dragged, the window
+    // ai: resized; 2026-11-02): paused, a still until Resume. Not a full screen's own sizes (toggleFull, the manager's
+    // ai: word, a monitor given back: `quietUntil`), nor a fold of the column to the rail (a re-pick, as before).
+    private var quietUntil = 0L
+    private fun quiet() { quietUntil = System.nanoTime() + 1_500_000_000L }
+    fun resizing() { if (phase == Phase.On && !paused && !leased && !full && System.nanoTime() > quietUntil) pause(true) }
 
     fun toggleFull() {
         edgeRail = false
-        if (leased) { if (p != 0L) { Native.presentStop(p); p = 0L }; leaseEnded(); if (sending) begin() else canvas.want(false); return }
+        quiet()
+        // ai: a monitor given back: the codes go on in the window, or, paused, the picture there a still
+        if (leased) {
+            if (p != 0L) { if (paused) stamp = snapshot(p); Native.presentStop(p); p = 0L }
+            leaseEnded()
+            if (sending && !paused) begin() else canvas.want(false)
+            return
+        }
         full = !full
         if (full && exclusiveFull && phase == Phase.On && !paused && p != 0L && lease()) return
         fullscreen?.invoke(full)
@@ -591,6 +599,7 @@ class SendState {
     // ai: the monitor given back (a key or a click to the presenter, Stop, the window closing): full screen left and
     // ai: the window where it was before
     private fun leaseEnded() {
+        quiet()
         leaseTimer.stop()
         leased = false
         full = false
@@ -601,7 +610,7 @@ class SendState {
     }
     // ai: the manager's own word on the window (its shortcut, a leave of its own, a request of ours taken): followed,
     // ai: nothing asked
-    fun fullFromManager(on: Boolean) { if (!leased && on != full) { full = on; edgeRail = false } }
+    fun fullFromManager(on: Boolean) { if (!leased && on != full) { full = on; edgeRail = false; quiet() } }
 
     fun toggleRail() { collapsed = !collapsed; Prefs.collapsed = collapsed }
     fun toggleSettings() { settingsOpen = !settingsOpen; Prefs.settingsOpen = settingsOpen }
@@ -700,14 +709,15 @@ class SendState {
     fun canvasMade() { if (phase == Phase.On && p == 0L) repick() }
 
     // ai: the presenter needs the canvas's window made (wanted first: canvasMade comes back here), not shown: a Start at
-    // ai: the launch (the hook's) comes before AWT counts the window as showing
+    // ai: the launch (the hook's) comes before AWT counts the window as showing. None while paused (a still; Resume).
     private fun begin() {
-        if (h == 0L || p != 0L || areaW <= 0 || areaH <= 0) return
+        if (h == 0L || p != 0L || paused || areaW <= 0 || areaH <= 0) return
         if (!canvas.isDisplayable) { canvas.want(true); return }
         if (!configure()) return
         val pr = Native.presentStart(canvas, h, fps, size / 100f, edge, vsync, false, canvas.place())
         if (pr == 0L) { fail("The code cannot be shown: ${Native.txError()}"); return }
         p = pr
+        stamp = null
         if (paused) Native.presentPause(p, true)
         timer.start()
         takeOver()

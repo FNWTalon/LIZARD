@@ -312,6 +312,19 @@ FN(void, presentPause)(JNIEnv*, jclass, jlong p, jboolean on) { if (p) pr(p)->se
 // ai: presenter.h stats(): the last second's window as JSON
 FN(jstring, presentStats)(JNIEnv* e, jclass, jlong p) { return jstr(e, p ? pr(p)->stats() : std::string()); }
 FN(void, presentStop)(JNIEnv*, jclass, jlong p) { delete reinterpret_cast<Pres*>(p); }
+// ai: presenter.h snapshot(): the picture on screen as grey bytes, its width and height into wh; null where there is none
+FN(jbyteArray, presentSnapshot)(JNIEnv* e, jclass, jlong p, jintArray wh) {
+  if (!p || !wh || e->GetArrayLength(wh) < 2) return nullptr;
+  std::vector<unsigned char> px;
+  int w = 0, h = 0;
+  if (!pr(p)->snapshot(&px, &w, &h)) return nullptr;
+  jbyteArray out = e->NewByteArray(static_cast<jsize>(px.size()));
+  if (!out) return nullptr;
+  e->SetByteArrayRegion(out, 0, static_cast<jsize>(px.size()), reinterpret_cast<const jbyte*>(px.data()));
+  const jint d[2] = {w, h};
+  e->SetIntArrayRegion(wh, 0, 2, d);
+  return out;
+}
 
 // ai: The desktop's file chooser (2026-10-23, portal.cpp). windowOf: the window manager's window around the canvas (the
 // ai: ancestor with WM_STATE; Windows: the canvas's root window), for the dialog's parent; 0 where there is none
