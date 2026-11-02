@@ -94,6 +94,8 @@ class DesktopSend(private val app: App) : SendHost {
         SendLine(st.before, st.name, st.after, s.phase is SendState.Phase.Error || (s.phase == SendState.Phase.Idle && s.loadError.isNotEmpty()))
     }
     override val figures get() = s.figures
+    // ai: the control window says what plays where in its area (LeasedNote): no state line in its column
+    override val lineShown get() = !s.leased
     override val heat: String? = null
     override val railCapacity get() = s.capacityKBs
     override val settings: List<Setting> get() = listOfNotNull(
@@ -152,7 +154,8 @@ class DesktopSend(private val app: App) : SendHost {
     // ai: drag's outline over it. While codes play the canvas (a window of its own, the presenter's) in its place, from
     // ai: the presenter's start to its end; paused in the window, the picture as a still (`Stamped`) until the canvas is
     // ai: back. Its size, laid out here, is the room the format is picked from (SendState.areaChanged); in full screen
-    // ai: the pointer near its left edge shows the rail (the canvas hears that while shown). The column's edge dragged
+    // ai: the pointer near its left edge shows the rail (the canvas hears that while shown). The control window while a
+    // ai: monitor of its own shows the code: "Playing on <monitor>" or "Paused on" (LeasedNote). The column's edge dragged
     // ai: pauses a run (SendState.resizing).
     @OptIn(ExperimentalComposeUiApi::class)
     @Composable
@@ -165,6 +168,7 @@ class DesktopSend(private val app: App) : SendHost {
         }) {
             val stamp = s.stamp
             if (s.canvas.shown) SwingPanel(background = s.codeFill, factory = { s.canvas }, modifier = Modifier.fillMaxSize())
+            else if (s.leased) LeasedNote("${if (s.paused) "Paused" else "Playing"} on ${s.leasedOn}")
             else if (stamp != null) Stamped(stamp, s.size / 100f, s.edgeShare)
             else {
                 if (s.test) TestStreamNote()
@@ -204,6 +208,13 @@ private fun ChoiceLine(line: Pair<String, String>?) {
             Text(line.second, style = name.copy(fontWeight = FontWeight.Normal), color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
+}
+
+// ai: the control window's area while the code plays on a monitor of its own (2026-11-02; painted on the code canvas by
+// ai: AWT until then): the line centred on the soft fill
+@Composable
+private fun LeasedNote(text: String) = Box(Modifier.fillMaxSize().background(Soft), contentAlignment = Alignment.Center) {
+    Text(text, style = MaterialTheme.typography.bodyLarge, color = Fg, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 16.dp))
 }
 
 // ai: the picture a run was paused on in the window (SendState.stamp), placed as the presenter places it: on white,

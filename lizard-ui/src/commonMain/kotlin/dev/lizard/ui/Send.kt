@@ -79,6 +79,9 @@ interface SendHost {
     fun toggleFull()
     val line: SendLine
     val figures: String
+    // ai: the state line drawn (the desktop's control window, while a monitor of its own shows the code, has none: its
+    // ai: area says it)
+    val lineShown: Boolean get() = true
     val heat: String?
     val railCapacity: Double?
     val settings: List<Setting>
@@ -191,7 +194,8 @@ private fun Side(h: SendHost) {
     // ai: from Start until Stop the state line and the figures keep a line each, empty or not (2026-11-02: Preparing,
     // ai: Sending, the first second's figures and Pause moved everything under them); idle, only what has words
     val held = h.busy
-    if (named != null) NameLine(ln.before, named, ln.after, MaterialTheme.typography.titleMedium, color, Modifier.padding(top = 12.dp))
+    if (!h.lineShown) Spacer(Modifier.height(10.dp))
+    else if (named != null) NameLine(ln.before, named, ln.after, MaterialTheme.typography.titleMedium, color, Modifier.padding(top = 12.dp))
     else if (ln.before.isNotEmpty() || held) Text(ln.before, style = MaterialTheme.typography.titleMedium, color = color,
         maxLines = if (ln.bad) Int.MAX_VALUE else 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 12.dp))
     if (h.figures.isNotEmpty() || held) Text(h.figures, style = MaterialTheme.typography.bodyMedium, color = Muted, maxLines = 1, modifier = Modifier.padding(top = 2.dp))

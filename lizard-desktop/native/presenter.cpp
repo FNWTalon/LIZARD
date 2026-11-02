@@ -867,6 +867,7 @@ void Presenter::Impl::setup() {
   }
 
 #if !(LIZ_X11 && !defined(_WIN32))
+  if (opt.directOnly) throw std::runtime_error("no direct display on this system");
   if (!opt.direct.empty()) say("presenter: the display " + opt.direct + " not taken (no direct display on this system): the window instead");
 #endif
 #if defined(_WIN32)
@@ -883,8 +884,10 @@ void Presenter::Impl::setup() {
   xq = dpy ? XOpenDisplay(nullptr) : nullptr;
   if (!dpy || !xq) throw std::runtime_error("no X display");
   xwin = static_cast<Window>(target.x11Window);
+  if (opt.directOnly && opt.direct.empty()) throw std::runtime_error("no monitor under the window to take");
   if (!opt.direct.empty()) {
     const std::string why = takeDisplay();
+    if (!why.empty() && opt.directOnly) throw std::runtime_error("the display " + opt.direct + " not taken (" + why + ")");
     if (!why.empty()) say("presenter: the display " + opt.direct + " not taken (" + why + "): the window instead");
   }
   auto createSurface = reinterpret_cast<PFN_vkCreateXlibSurfaceKHR>(vkGetInstanceProcAddr(inst, "vkCreateXlibSurfaceKHR"));
@@ -1686,6 +1689,13 @@ void Presenter::Impl::leaveDisplay(const std::string& why) {
   restoreLayout();
   disarmGuard();
   ungrabInput();
+#endif
+  // ai: the display or nothing: no window to go on in (the app stops this presenter at the stats' leaseEnded)
+  if (opt.directOnly) {
+    say("presenter: the display " + opt.direct + " given back (" + why + ")");
+    return;
+  }
+#if LIZ_X11 && !defined(_WIN32)
   auto createSurface = reinterpret_cast<PFN_vkCreateXlibSurfaceKHR>(vkGetInstanceProcAddr(inst, "vkCreateXlibSurfaceKHR"));
   VkXlibSurfaceCreateInfoKHR si{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
   si.dpy = dpy;
@@ -2215,6 +2225,12 @@ void Presenter::Impl::run() {
         lastWin = now;
       }
       if (snapAsk) takeSnapshot();
+      // ai: the display given back with no window to go on in (directOnly): idle until stopped, the stats still kept
+      if (opt.directOnly && !displayTaken) {
+        std::unique_lock<std::mutex> l(wakeMu);
+        wake.wait_for(l, std::chrono::milliseconds(100), [&] { return quit.load() || snapAsk.load(); });
+        continue;
+      }
       const bool p = paused;
       if (p) {
         // ai: paused: the last picture presented again a few times a second (a resize or an expose shows it), none taken
