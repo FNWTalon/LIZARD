@@ -462,7 +462,7 @@ either painter decodes the same; the GPU's picture is within a grey level of the
 
 ## Status
 
-A research project, not a released product, and the format still changes. Measured on one phone (Samsung S26 Ultra)
+A beta since 0.8 (0.1 to 0.7.1 were alphas), and the format may still change ([Roadmap](#roadmap)). Measured on one phone (Samsung S26 Ultra)
 and the author's 1080p office monitors, by hand:
 
 | receiver | rate |
@@ -492,6 +492,19 @@ package recommends; they run free, at any rate the camera offers, including past
 against Aravis's simulated GigE camera on loopback (60 and 120 frames a second on Linux) and have not run on a real
 camera yet. On Windows a USB3 Vision camera, like a phone on the cable, needs the WinUSB driver, which the app's
 Install USB driver binds.
+
+## Roadmap
+
+LIZARD leaves beta when the transfer's header version 4 is in (SPEC 13, item 29), the last format change planned before
+1.0:
+
+- **Compression.** Every receiver decodes zstd frames (RFC 8878); a sender compresses a chunk or not, with any
+  compressor. Today the format pins one compressor's output (zstd 1.5.7 at level 9) so that a resumed transfer's
+  symbols stay valid; instead the manifest will carry a hash of each chunk's bytes as sent.
+- **Protection, optional and in suites.** A passphrase (Argon2id, then AES-256-GCM-SIV); recipients' public keys
+  (ML-KEM-1024 with X25519, then AES-256-GCM-SIV); signing (ML-DSA-87 with Ed25519). Under encryption the file's name,
+  type and root are hidden too. A range of suite numbers is left for private use, for integrations with their own
+  needs.
 
 ## Layout
 

@@ -1908,6 +1908,19 @@ Numbers are kept so references hold; closed items are gone.
   reference's check (`scripts/exp/pilot_check.mjs`, `liblizard/test/pilot_wasm.mjs`); LIZARD-288's r2 read by the GPU
   decoder on clean captures of one paint, 0.83 to 0.86, is under the check's 0.9 where the C's is not. Whether the
   256 picture, which no format has since LIZARD-32 left, stays in the ladder of picture sizes (3.2).
+- **Item 29. The transfer's header version 4, the condition for leaving beta.**
+  - Compression: every receiver MUST decode zstd frames (RFC 8878); a sender MAY compress any chunk with any compressor.
+    The pinned compressor of 7.6 goes; the manifest carries each chunk's bytes as sent by a hash, so that a receiver
+    holding symbols of one compression knows whether the symbols on air are of the same bytes.
+  - Protection, optional, named by a suite number in the header, each suite mandatory to implement where its
+    extension is: a passphrase (Argon2id, its parameters and salt in the header, then AES-256-GCM-SIV a chunk at a
+    time, the nonce derived from the chunk's index so that a sender started again sends the same bytes); recipients'
+    public keys (ML-KEM-1024 with X25519, each recipient's wrapped content key in the light, then AES-256-GCM-SIV);
+    signing (ML-DSA-87 with Ed25519, both verified, over the header's fields, the root and the suite, the signer's
+    public key carried). Order: compression, then encryption, then the fountain.
+  - Under encryption the header's name, media type and root are encrypted or keyed, so that a recording does not
+    confirm a known file; a key check guards the passphrase. A range of suite numbers is reserved for private use.
+  - The signatures' strength is bounded by the root's: BLAKE3's chaining values give 128 bits of collision resistance.
 
 ## 14. Changes
 
