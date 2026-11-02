@@ -1,0 +1,3 @@
+- Receiving on the phone's processor is about 1.8 times as fast.
+- The graphics decoder reads codes through fisheye lenses.
+- Reads and sends 0.8's codes.
