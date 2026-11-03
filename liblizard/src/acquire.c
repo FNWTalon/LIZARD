@@ -659,9 +659,10 @@ static inline __attribute__((always_inline)) void msh_proj(float32x4_t nu, float
   const float32x4_t r = vdivq_f32(vdupq_n_f32(1), nw);
   *x = vfmaq_f32(qx, nu, r); *y = vfmaq_f32(qy, nv, r);
 }
-// ai: a lane's sums, node_ncc's; near the capture's edge its count of cells inside the capture
+// ai: a lane's sums, the squares fused (tk is +-1, so its product is exact and the fused add is node_ncc's add); near
+// ai: the capture's edge its count of cells inside the capture
 static inline __attribute__((always_inline)) void msh_sums(float32x4_t sv, float32x4_t tk, float32x4_t *s, float32x4_t *q, float32x4_t *t) {
-  *s = vaddq_f32(*s, sv); *q = vaddq_f32(*q, vmulq_f32(sv, sv)); *t = vaddq_f32(*t, vmulq_f32(tk, sv));
+  *s = vaddq_f32(*s, sv); *q = vfmaq_f32(*q, sv, sv); *t = vfmaq_f32(*t, tk, sv);
 }
 static inline __attribute__((always_inline)) void msh_count(const msh_k_t *K, float32x4_t x, float32x4_t y, float32x4_t *n) {
   *n = vaddq_f32(*n, vbslq_f32(msh_in4r(K, x, y), vdupq_n_f32(1), vdupq_n_f32(0)));
@@ -894,7 +895,17 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
     // same cells in the same order as a loop of its own would. Near the capture's edge a lane's cells inside the
     // capture are counted too (SN, from GM), in a pass of their own.
     float SS[8], SQ[8], ST[8], SN[8];
-#ifdef OB_SIMD
+#ifdef OB_NEON
+    // ai: msh_sums' lanes over the grid
+    const float *g0 = G + b * GW - 3, *m0 = GM + b * GW - 3;
+    float32x4_t s0 = vdupq_n_f32(0), s1 = s0, q0 = s0, q1 = s0, t0 = s0, t1 = s0, n0 = s0, n1 = s0;
+    for (int k = 0; k < cells; k++) {
+      const float32x4_t tk = vdupq_n_f32(tv[k]);
+      msh_sums(vld1q_f32(g0 + at[k]), tk, &s0, &q0, &t0); msh_sums(vld1q_f32(g0 + at[k] + 4), tk, &s1, &q1, &t1);
+    }
+    if (edge) for (int k = 0; k < cells; k++) { n0 = vaddq_f32(n0, vld1q_f32(m0 + at[k])); n1 = vaddq_f32(n1, vld1q_f32(m0 + at[k] + 4)); }
+    vst1q_f32(SS, s0); vst1q_f32(SS + 4, s1); vst1q_f32(SQ, q0); vst1q_f32(SQ + 4, q1); vst1q_f32(ST, t0); vst1q_f32(ST + 4, t1); vst1q_f32(SN, n0); vst1q_f32(SN + 4, n1);
+#elif defined(OB_SIMD)
     const float *g0 = G + b * GW - 3, *m0 = GM + b * GW - 3;
     v128_t s0 = wasm_f32x4_splat(0), s1 = s0, q0 = s0, q1 = s0, t0 = s0, t1 = s0, n0 = s0, n1 = s0;
     for (int k = 0; k < cells; k++) {
