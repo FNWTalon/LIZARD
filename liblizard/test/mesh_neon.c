@@ -1,18 +1,21 @@
 // ai: The registration mesh (src/acquire.c) on synthetic frames, every output hashed: refine_node with and without a lens
 // ai: model, anchor_find likewise (and again with a third of its anchors to find), border_blur at radii 1 to 7, the
 // ai: mesh's sampler at random points (NaN and points off the image among them) at gamma 1 and 2.2, lensm_fit robust and
-// ai: plain; then each part's time. The scalar twins, x86-64 with or without -msse4.1 and a build with -DOB_SCALAR print
-// ai: one hash (SCALAR_HASH); arm64's own forms (OB_NEON) read the picture in integers and are their own values, so
-// ai: theirs is NEON_HASH, and the NEON build also holds its reads to sample() at every point not NaN: within 1/250 of
-// ai: the grey range (the x fraction is a 256th of a pixel; at the frame's far edges sample() holds 0.999 of the last
-// ai: pixel, the read 255/256), the anchors' 12-bit greys within MSH_Q / 250. Exit 1 on a hash or a bound missed.
-// ai: test/neon_kernels.sh builds it both ways on a phone. It includes acquire.c and links the rest of the codec:
-// ai:   cc -O2 -ffp-contract=off -Isrc test/mesh_neon.c src/{layout,fmt,rs,ldpc,fft,lizard_phy,any,shake}.c -lm
+// ai: plain; then each part's time. The scalar twins, x86-64 without -msse4.1 and a build with -DOB_SCALAR print one
+// ai: hash (SCALAR_HASH); arm64's own forms (OB_NEON) and x86-64's ports of them (OB_X86, -msse4.1) read the picture in
+// ai: integers and are their own values, so theirs are NEON_HASH and X86_HASH, and those builds also hold their reads to
+// ai: sample() at every point not NaN: within 1/250 of the grey range (the x fraction is a 256th of a pixel; at the
+// ai: frame's far edges sample() holds 0.999 of the last pixel, the read 255/256), the anchors' 12-bit greys within
+// ai: MSH_Q / 250; and msh_blur_rect to box_blur_rect's bytes (exact) on random rectangles. Exit 1 on a hash, a bound
+// ai: or a byte missed. test/neon_kernels.sh builds it both ways on a phone. It includes acquire.c and links the rest
+// ai: of the codec:
+// ai:   cc -O2 -ffp-contract=off [-msse4.1] -Isrc test/mesh_neon.c src/{layout,fmt,rs,ldpc,fft,lizard_phy,any,shake}.c -lm
 #include "acquire.c"
 #include <stdio.h>
 uint32_t ob_debug_hash;
 #define SCALAR_HASH 0xf42c8b6f71af790eull
 #define NEON_HASH 0xba9af2ba4a56adc7ull
+#define X86_HASH 0xfbc824fc25f24382ull
 static uint64_t hs = 1469598103934665603ull;
 static void mix(const void *p, size_t n) { const uint8_t *b = p; for (size_t i = 0; i < n; i++) { hs ^= b[i]; hs *= 1099511628211ull; } }
 static uint32_t rs = 1;
@@ -28,7 +31,7 @@ int main(void) {
   uint8_t *px = malloc((size_t)iw * ih), *spare = malloc((size_t)iw * ih);   // ai: spare: border_blur's copy, as acquire_core hands it one
   int nfound = 0, ngood = 0, nnodes = 0;
   double tref = 0, tanc = 0, tblur = 0, tfit = 0;
-#if defined(OB_NEON)
+#if defined(OB_NEON) || defined(OB_X86)
   double dread = 0, dq = 0;   // ai: the reads' largest distance from sample()
 #endif
 #if defined(OB_NEON) || defined(OB_X86)
@@ -136,6 +139,15 @@ int main(void) {
         if (ref != ref) continue;
         dread = fmax(dread, fabs(o[l] - ref)); dq = fmax(dq, fabs(q[l] - ref * MSH_Q));
       }
+#elif defined(OB_X86)
+      const msh_k_t K = msh_k(&im);
+      const __m128 x = _mm_sub_ps(_mm_loadu_ps(X), _mm_set1_ps(MSH_OX)), y = _mm_sub_ps(_mm_loadu_ps(Y), _mm_set1_ps(MSH_OY));
+      _mm_storeu_ps(o, msh_read8(&im, &K, x, y, x, y).val[0]);
+      for (int l = 0; l < 4; l++) {
+        const float ref = sample(&im, X[l], Y[l]);
+        if (ref != ref) continue;
+        dread = fmax(dread, fabs(o[l] - ref));
+      }
 #elif defined(OB_SIMD)
       wasm_v128_store(o, sample4(&im, wasm_v128_load(X), wasm_v128_load(Y)));
 #else
@@ -175,8 +187,12 @@ int main(void) {
   printf("msh_blur_rect against box_blur_rect: %ld rows differ\n", nblur);
   if (nblur) return 1;
 #endif
+#if defined(OB_NEON) || defined(OB_X86)
 #if defined(OB_NEON)
   const uint64_t want = NEON_HASH;
+#else
+  const uint64_t want = X86_HASH;
+#endif
   printf("reads against sample(): %.5f of the grey range, 12-bit %.2f of %d\n", dread, dq, (int)MSH_Q);
   if (dread > 1.0 / 250 || dq > MSH_Q / 250.0) { printf("a read past its bound\n"); return 1; }
 #else
