@@ -82,10 +82,10 @@ class DesktopReceive(private val app: App) : ReceiveHost {
     override val running get() = r.running
     override val starting get() = r.phase == RxPhase.Starting
     override fun toggleCamera() = r.toggle()
-    // ai: a phone with no USB driver chosen (Windows, UsbDriver): its one action in Start camera's place
+    // ai: a phone with no USB driver chosen (Windows, UsbDriver): its one action in Start's place
     override val access get() = r.driverFor?.let { Access(Act(if (r.driverBusy) "Installing the USB driver" else "Install USB driver") { r.installDriver() }) }
     // ai: the file's actions from the moment the receiver holds it, acting on its entry once filed (2026-11-02: the row
-    // ai: came a frame or more after the camera stopped, Start camera solid in between)
+    // ai: came a frame or more after the camera stopped, Start solid in between)
     override val kept get() = if (!r.holds) null else listOf(Act("Open", icon = Icons.open) { r.kept?.let { Received.open(it.file) } },
         Act("Show in folder") { r.kept?.let { Received.show(it.file) } })
     override val keptName get() = r.kept?.name ?: r.rx.name

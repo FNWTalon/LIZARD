@@ -341,7 +341,7 @@ const SIZES = [
     await size(s, z);
     await navigate(s, `${BASE}?auto`);
     // ai: the browser's limit (#first, 2026-10-09) before the first start on a fresh profile, Home's ?auto included;
-    // ai: its Start camera starts the camera and is kept, so the later sizes' loads go straight to the camera
+    // ai: its Start starts the camera and is kept, so the later sizes' loads go straight to the camera
     if (k === 0) {
       await until(s, `document.getElementById("first").open`, 10000, "the browser's limit before the first start");
       check(!(await evaluate(s, `document.getElementById("v").videoWidth > 0`)), `${z.name}: no camera before the browser's limit is answered`);
@@ -360,7 +360,7 @@ const SIZES = [
       check(m.v.w > 100 && m.v.h > 100 && m.vDisplay !== "none" && m.vVisibility !== "hidden", `${tag}: #v ${m.v.w.toFixed(0)} x ${m.v.h.toFixed(0)}, display ${m.vDisplay}, visibility ${m.vVisibility}`);
       check(m.sw <= m.iw, `${tag}: no horizontal scroll (${m.sw} of ${m.iw})`);
       if (z.phone) check(m.goBox.top >= 0 && m.goBox.bottom <= m.ih && m.view.top >= 0 && m.view.bottom <= m.ih, `${tag}: #go and #view on screen unscrolled`);
-      // ai: the switch to the sender page (2026-09-30), in the bar since 2026-10-01, on screen with Start camera; not in a
+      // ai: the switch to the sender page (2026-09-30), in the bar since 2026-10-01, on screen with Start; not in a
       // ai: phone's landscape bar since 2026-11-01 (the collapser alone there), Home's tiles the way between the pages
       if (z.mobile && z.w > z.h) check(m.swapBox.w === 0, `${tag}: no switch in the landscape bar`);
       else check(m.swap === "Sender send.html" && m.swapBox.w > 0 && (!z.phone || (m.swapBox.top >= 0 && m.swapBox.bottom <= m.ih)), `${tag}: "${m.swap}" in the bar`);
@@ -500,20 +500,20 @@ const SIZES = [
   check(new RegExp(`^Received ${NAME.replace(".", "\\.")}, 300\\sKB in [\\d.]+\\ss(, [\\d.]+\\s[KM]B/s)?$`).test(b.state) && b.good && b.meter === "100%" && b.deliver && b.download === NAME && b.href.startsWith("blob:"), `received: green, the meter full, Save offered as ${b.download}`);
   check(b.open && !b.goSolid && !b.clear, `received: Open the one solid button, "${b.go}" outlined, no Receive again`);
   // ai: the camera off by itself once the file is in (2026-10-01, to save heat)
-  check(b.go === "Start camera" && b.nums === "" && b.why === "", `received: the camera stopped by itself ("${b.go}")`);
+  check(b.go === "Start" && b.nums === "" && b.why === "", `received: the camera stopped by itself ("${b.go}")`);
   check(got.n === LEN && got.same, `Save's file is the ${LEN} bytes sent (${got.n}, ${got.same ? "the same" : "NOT the same"})`);
   await sleep(500);
   const c = await evaluate(s, STATE);
   await screenshot(s, `${OUT}/recv-phone-portrait-received-stopped.png`);
-  check(c.state === b.state && c.deliver && c.go === "Start camera" && c.nums === "" && c.why === "", `stopped: "${c.state}", Save kept, "${c.go}"`);
+  check(c.state === b.state && c.deliver && c.go === "Start" && c.nums === "" && c.why === "", `stopped: "${c.state}", Save kept, "${c.go}"`);
   // ai: started again on the same clip: the finished file named again by the light, Save still there, and the camera left
   // ai: running (it stops itself once a file, not each time the light names one)
   await evaluate(s, `document.getElementById("go").click()`);
-  await until(s, `document.getElementById("go").textContent === "Stop camera" && /^Received/.test(document.getElementById("state").textContent)`, 30000, "Received again after a restart");
+  await until(s, `document.getElementById("go").textContent === "Stop" && /^Received/.test(document.getElementById("state").textContent)`, 30000, "Received again after a restart");
   const d = await evaluate(s, STATE);
   await sleep(1500);
   const d2 = await evaluate(s, STATE);
-  check(d.state === b.state && d.deliver && d.href === b.href && d2.go === "Stop camera", `started again: "${d.state}", the same Save, the camera still on 1.5 s later ("${d2.go}")`);
+  check(d.state === b.state && d.deliver && d.href === b.href && d2.go === "Stop", `started again: "${d.state}", the same Save, the camera still on 1.5 s later ("${d2.go}")`);
   await evaluate(s, `document.getElementById("go").click()`);
   await size(s, SIZES[2]);
   await sleep(300);
@@ -521,7 +521,7 @@ const SIZES = [
   check(!s.errors.length, `no console errors over the transfer${s.errors.length ? `: ${s.errors.join("; ")}` : ""}`);
   // ai: The actions' two forms (recv.html #top, 2026-10-06), through a saved column width: at 500 px the column holds
   // ai: one row of all four; at 180 px the floor (recv.mjs actionsFloor) lifts it to what the two columns need, Open
-  // ai: over Save beside Share over Start camera. Every button shown for the measure (a reload offers no file), none
+  // ai: over Save beside Share over Start. Every button shown for the measure (a reload offers no file), none
   // ai: wider than its box, so no label broke onto a second line or spilled past its button.
   const ACTS = `(() => { const $ = (id) => document.getElementById(id); $("deliver").hidden = false; $("share").hidden = false;
     const r = (id) => $(id).getBoundingClientRect(), o = r("open"), sh = r("share"), sa = r("save"), g = r("go"), near = (a, b) => Math.abs(a - b) < 1;
@@ -532,17 +532,17 @@ const SIZES = [
   for (const [w, form] of [[500, "row"], [180, "grid"]]) {
     await evaluate(s, `localStorage.setItem("recv:side", "${w}")`);
     await navigate(s, BASE);
-    await until(s, `document.documentElement.style.getPropertyValue("--side") !== "" && document.getElementById("go").textContent === "Start camera"`, 10000, "the column's width restored");
+    await until(s, `document.documentElement.style.getPropertyValue("--side") !== "" && document.getElementById("go").textContent === "Start"`, 10000, "the column's width restored");
     const m = await evaluate(s, ACTS);
     await screenshot(s, `${OUT}/recv-laptop-actions-${form}.png`);
-    check(m[form] && !m.spilled && (w === 180 ? m.side > 180 : m.side === 500), `the actions at a ${w} px column: ${form === "row" ? "one row" : "two columns, Open over Save beside Share over Start camera"}, the column ${m.side} px${m.spilled ? `, spilled: ${m.spilled}` : ""}`);
+    check(m[form] && !m.spilled && (w === 180 ? m.side > 180 : m.side === 500), `the actions at a ${w} px column: ${form === "row" ? "one row" : "two columns, Open over Save beside Share over Start"}, the column ${m.side} px${m.spilled ? `, spilled: ${m.spilled}` : ""}`);
   }
   await evaluate(s, `localStorage.removeItem("recv:side")`);
   // ai: The column's edge as a sash under a mouse (2026-11-01, ui.mjs sideResizer): pulled under half its floor it closes to
   // ai: the rail, pulled out from the rail it opens at the width it was dragged to; a phone has the collapser instead.
   {
     await navigate(s, BASE);
-    await until(s, `document.getElementById("go").textContent === "Start camera"`, 10000, "the receiver up");
+    await until(s, `document.getElementById("go").textContent === "Start"`, 10000, "the receiver up");
     const drag = async (from, to) => {
       const y = 300;
       await s.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: from, y });
@@ -618,7 +618,7 @@ const SIZES = [
   await sleep(200);
   const asked = await evaluate(s, `[...document.querySelectorAll("#list li .acts button")].map((x) => x.textContent).join(",")`);
   await evaluate(s, `[...document.querySelectorAll("#list li .acts button")].find((x) => x.textContent === "Delete it?").click()`);
-  await until(s, `document.querySelectorAll("#list li").length === 0 && !document.getElementById("empty").hidden`, 5000, "the list empty after Delete");
+  await until(s, `document.querySelectorAll("#list li").length === 0 && document.getElementById("files").hidden`, 5000, "the list empty after Delete");
   const left = await evaluate(s, opfsFiles("lizard-files"));
   check(/Delete it\?/.test(asked) && left === 0, `home: Delete asks on itself ("${asked}") and then empties the received files (${left} left)`);
   // ai: An unfinished transfer (2026-10-22, library.mjs unfinished): a folder under lizard-xfer as the fountain worker

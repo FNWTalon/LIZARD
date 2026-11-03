@@ -20,7 +20,7 @@ import dev.lizard.ui.*
 // ai: is set, else the first listed); mode (an index into the camera's modes, or WxH@fps); layout 1:1 or 2:1; decoder
 // ai: auto, gpu or cpu; replays 0|1 (Save replays on from the start); steps, comma separated
 // ai: <seconds>:<action> from the first answer, each as its control does it:
-// ai: start, stop (Start and Stop camera), swap (the bar's swap: to Send, or back to Receive), home (Home), receive
+// ai: start, stop (Start and Stop), swap (the bar's swap: to Send, or back to Receive), home (Home), receive
 // ai: (Home's Receive), layout=1:1|2:1, decoder=auto|gpu|cpu, res=<W>x<H>, format=<name> and fps=<rate> (Settings' menus), zoom=<v>,
 // ai: exposure=<us>|auto and gain=<v>|auto (Settings' bars, a value the camera's own units), driver (Windows: the first
 // ai: device UsbDriver lists as needing one chosen in the Camera menu and Install USB driver pressed; its outcome

@@ -197,7 +197,7 @@ export function buildInfo() { return document.querySelector('meta[name="lizard-b
 export function about(el, failed = false) {
   const b = buildInfo();
   // ai: the build's time alone, and nothing on the rig's pages (2026-10-02)
-  el.textContent = b ? `Build ${b.split(" ")[0].replace("T", " ").replace(/:\d\d(\.\d+)?Z$/, " UTC")}${failed ? ". Update failed" : ""}` : "";
+  el.textContent = b ? `Build: ${b.split(" ")[0].replace("T", " ").replace(/:\d\d(\.\d+)?Z$/, " UTC")}${failed ? ". Update failed" : ""}` : "";
 }
 
 // ai: registerApp(onFail): the installable app's worker (lizard-web/pwa/service-worker.js, a ported scheme), only on a built

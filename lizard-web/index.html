@@ -5,11 +5,9 @@
      files (lizard-web/library.mjs) and Settings. One column, the same at every size. */
   main{max-width:34rem;margin:0 auto;padding:0 16px 2rem}
   .go{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0 8px}
-  .go .btn{flex-direction:column;align-items:flex-start;justify-content:flex-start;gap:2px;min-height:120px;padding:16px;
-    border-radius:16px;text-align:left;font-size:18px}
+  .go .btn{flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:104px;padding:16px;
+    border-radius:16px;text-align:center;font-size:18px}
   .go .btn svg{margin-bottom:10px}
-  .go .btn small{font-weight:400;font-size:14px;line-height:1.35;color:var(--muted)}
-  .go .primary small{color:rgba(255,255,255,.72)}
 </style>
 <main>
   <header class="bar"><span class="brand"><img src="icon.svg" alt="" width="28" height="28"><span>LIZARD</span></span><span class="grow"></span></header>
@@ -19,17 +17,17 @@
     <p><a href="https://www.youtube.com/shorts/pjcAtQ7GcVQ">An example on video</a></p>
     <button type="button" class="text" data-got>Got it</button>
   </div></div>
-  <div class="go"><a id="send" class="btn" href="send.html"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>Send<small>Show a file as a code on this screen</small></a><a id="recv" class="btn" href="recv.html?auto"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>Receive<small>Read a code with this device's camera</small></a></div>
+  <div class="go"><a id="send" class="btn" href="send.html"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>Send</a><a id="recv" class="btn" href="recv.html?auto"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>Receive</a></div>
   <section id="partial" aria-labelledby="partial-h" hidden><h2 id="partial-h">Unfinished</h2>
     <ul id="partialList" class="list files"></ul>
   </section>
   <section id="files" aria-labelledby="files-h"><h2 id="files-h">Received files</h2>
-    <div id="empty" class="empty"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span id="emptyText">Files you receive appear here.</span></div>
+    <div id="empty" class="empty"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span>This browser keeps no files: a received file stays until its page closes.</span></div>
     <ul id="list" class="list files"></ul>
   </section>
   <section class="settings" aria-labelledby="settings-h">
     <h2 id="settings-h" tabindex="-1">Settings</h2>
-    <button id="tipsAgain" class="item" type="button"><span class="body"><span class="t">Show tips again</span><span class="s">The first-run tips, on every page</span></span></button>
+    <button id="tipsAgain" class="item" type="button"><span class="body"><span class="t">Show tips again</span></span></button>
     <div class="item"><span class="body"><span class="t">Received files</span><span id="usage" class="s"></span></span><button id="clearAll" class="text danger" type="button" hidden>Delete all</button></div>
     <div class="item"><span class="body"><span class="t">About</span><span id="about" class="s"></span></span></div>
   </section>

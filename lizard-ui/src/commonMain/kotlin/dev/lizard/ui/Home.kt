@@ -88,7 +88,6 @@ interface HomeHost {
     val tipSteps: List<String>
     fun openExample()
     val sendSolid: Boolean           // ai: the solid tile: Send on a desktop, Receive on a phone (as the web picks by pointer)
-    val receiveSub: String
     fun goSend()
     fun goReceive()
     fun refresh()                    // ai: the lists read again, as Home shows
@@ -104,8 +103,8 @@ interface HomeHost {
 
 // ai: Home (the web's index.html; both apps' since 2026-10-31): the first-run tip (its first line semibold) until it is dismissed, Send and Receive
 // ai: side by side, the unfinished transfers (shown where there are any: a press or Continue opens Receive, which
-// ai: resumes one once its file is in the light), the received files or the empty state, and Settings (the tips again,
-// ai: the received files with Delete all, About).
+// ai: resumes one once its file is in the light), the received files (shown where there are any), and Settings (the
+// ai: tips again, the received files with Delete all, About).
 @Composable
 fun HomeScreen(h: HomeHost) {
     LaunchedEffect(Unit) { h.refresh() }
@@ -117,21 +116,16 @@ fun HomeScreen(h: HomeHost) {
                 modifier = Modifier.pointerHoverIcon(PointerIcon.Hand).clickable(role = Role.Button) { h.openExample() })
         }
         Row(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            HomeTile(Icons.monitor, "Send", "Show a file as a code on this screen", solid = h.sendSolid, modifier = Modifier.weight(1f)) { h.goSend() }
-            HomeTile(Icons.camera, "Receive", h.receiveSub, solid = !h.sendSolid, modifier = Modifier.weight(1f)) { h.goReceive() }
+            HomeTile(Icons.monitor, "Send", solid = h.sendSolid, modifier = Modifier.weight(1f)) { h.goSend() }
+            HomeTile(Icons.camera, "Receive", solid = !h.sendSolid, modifier = Modifier.weight(1f)) { h.goReceive() }
         }
         val partials = h.partials
         if (partials.isNotEmpty()) {
             SectionLabel("Unfinished")
             partials.forEachIndexed { i, p -> key(p.id) { PartialRow(h, p, last = i == partials.lastIndex) } }
         }
-        SectionLabel("Received files")
         val files = h.files
-        if (files.isEmpty()) Column(Modifier.fillMaxWidth().padding(vertical = 24.dp), horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(Icons.file, contentDescription = null, Modifier.size(24.dp), tint = Muted)
-            Text("Files you receive appear here.", style = MaterialTheme.typography.bodyMedium, color = Muted)
-        }
+        if (files.isNotEmpty()) SectionLabel("Received files")
         // ai: keyed by the file, so a row's menu and its question stay with it when a file is filed above it meanwhile
         files.forEachIndexed { i, e -> key(e.key) { FileRow(h, e, last = i == files.lastIndex) } }
         h.note.let { if (it.isNotEmpty()) Text(it, style = MaterialTheme.typography.bodyMedium, color = if (it.startsWith("Saved")) Muted else Bad, modifier = Modifier.padding(top = 8.dp)) }
@@ -139,17 +133,17 @@ fun HomeScreen(h: HomeHost) {
     }
 }
 
-// ai: A card of Home's (the web's .go .btn): an icon, its title, a line under it; the whole card the action; the solid
-// ai: one the foreground's fill, its line in white at 72%
+// ai: A card of Home's (the web's .go .btn): its icon over its title, centred in the card (2026-11-02, the line under the
+// ai: title gone, the card 104 dp tall at least, 120 with it); the whole card the action; the solid one the foreground's fill
 @Composable
-private fun HomeTile(icon: ImageVector, title: String, sub: String, solid: Boolean, modifier: Modifier, onClick: () -> Unit) {
+private fun HomeTile(icon: ImageVector, title: String, solid: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val fg = if (solid) Bg else Fg
-    Column(modifier.heightIn(min = 120.dp).clip(RoundedCornerShape(16.dp)).background(if (solid) Fg else Soft)
-        .clickable(role = Role.Button, onClick = onClick).padding(16.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Column(modifier.heightIn(min = 104.dp).clip(RoundedCornerShape(16.dp)).background(if (solid) Fg else Soft)
+        .clickable(role = Role.Button, onClick = onClick).padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically)) {
         Icon(icon, contentDescription = null, Modifier.size(24.dp), tint = fg)
         Spacer(Modifier.height(8.dp))
         Text(title, style = MaterialTheme.typography.titleMedium, color = fg)
-        Text(sub, style = MaterialTheme.typography.bodyMedium, color = if (solid) Bg.copy(alpha = .72f) else Muted)
     }
 }
 
@@ -186,7 +180,7 @@ private fun HomeSettings(h: HomeHost) {
     val files = h.files
     val n = files.size
     SectionLabel("Settings")
-    ListRow("Show tips again", "The first-run tips, on every page", divider = true, onClick = { h.tipsAgain() })
+    ListRow("Show tips again", divider = true, onClick = { h.tipsAgain() })
     ListRow("Received files", if (n == 0) "No files kept." else "${countOf(n)} kept, ${Readout.bytes(files.sumOf { it.size })}") {
         if (n > 0) Btn("Delete all", Kind.Danger) { asking = true }
     }

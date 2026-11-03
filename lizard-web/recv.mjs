@@ -37,16 +37,16 @@ remember($("dev"), "recv:dev");
 remember($("logs"), "recv:logs");
 collapser($("collapse"), "recv:collapsed");   // ai: the sidebar collapser (ui.mjs); the camera box takes the width
 // ai: The column's floor (ui.mjs sideResizer, 2026-10-06): what the actions need in their two-column form (recv.html
-// ai: #top) with no word broken: Open over Save beside Share over Start camera, each label in the buttons' font plus
+// ai: #top) with no word broken: Open over Save beside Share over Start, each label in the buttons' font plus
 // ai: their padding, the gap between the columns, and the column's own padding. Every label counts whether or not a
 // ai: file is in, so the column does not move when one arrives; the labels are measured on a canvas, so a hidden
-// ai: button measures too ("Start camera" stands for #go's two, the longer).
+// ai: button measures too ("Start" stands for #go's two, the longer).
 function actionsFloor() {
   const b = getComputedStyle($("go")), side = getComputedStyle($("side")), top = getComputedStyle($("top"));
   const c = (actionsFloor.ctx ??= document.createElement("canvas").getContext("2d"));
   c.font = `${b.fontStyle} ${b.fontWeight} ${b.fontSize} ${b.fontFamily}`;
   const w = (label) => c.measureText(label).width + parseFloat(b.paddingLeft) + parseFloat(b.paddingRight);
-  return Math.ceil(Math.max(w("Open"), w("Save")) + parseFloat(top.columnGap) + Math.max(w("Share"), w("Start camera")) + parseFloat(side.paddingLeft) + parseFloat(side.paddingRight));
+  return Math.ceil(Math.max(w("Open"), w("Save")) + parseFloat(top.columnGap) + Math.max(w("Share"), w("Start")) + parseFloat(side.paddingLeft) + parseFloat(side.paddingRight));
 }
 sideResizer("recv:side", actionsFloor, "recv:collapsed");   // ai: the column's edge dragged to resize it (2026-10-05), no narrower than the actions need
 // ai: The app's shell (2026-10-01): the bar's Settings, the first-run tip, About and the installed app's worker.
@@ -169,7 +169,7 @@ function showState() {
   $("idle").hidden = on;
   $("loading").hidden = !loading;
   // ai: one solid button on the page at a time: Start while nothing waits, else Open
-  go.textContent = on ? "Stop camera" : "Start camera";
+  go.textContent = on ? "Stop" : "Start";
   go.classList.toggle("primary", !on && !ui.received);
   go.disabled = ui.starting;
   // ai: a file's actions first, the camera's button after them, in the order a keyboard tabs as well
@@ -181,7 +181,7 @@ function showState() {
   // ai: mark, no action), then Open (Feather's external-link) and Save (its download), the deliver row's own actions, in
   // ai: black (2026-10-05; the green tick opened the file until then)
   const cam = $("railCam");
-  cam.classList.toggle("off", !on); cam.title = on ? "Stop camera" : "Start camera"; cam.disabled = ui.starting;
+  cam.classList.toggle("off", !on); cam.title = on ? "Stop" : "Start"; cam.disabled = ui.starting;
   const now = (on && h && !offered) || testing ? recentKBs() : null, [v, u] = now != null ? rate(now).split(/\s/) : ["", ""];   // ai: \s takes rate()'s no-break space
   $("railRate").innerHTML = v ? `${v}<small>${u}</small>` : "";
   $("railRate").hidden = !!ui.received && !testing;   // ai: the check takes its square, except while the test stream is read
@@ -431,7 +431,7 @@ function showFile(name, data, how = "checksum ok", type = "", sent = 0) {
   ui.received = { name, n, secs: seconds, root: xferRoot, sent };   // ai: sent: the bytes the light carried, the file's where nothing shrank
   ui.err = "";   // ai: a fountain error is not fatal (fountain-worker.mjs goes on), so a file can still finish after one
   // ai: The camera off once the file is in (2026-10-01):
-  // ai: nothing is left to read, and the phone cools. Once a file (the fountain offers it once), so Start camera after
+  // ai: nothing is left to read, and the phone cools. Once a file (the fountain offers it once), so Start after
   // ai: it reads on.
   if (track) { second(); stopCamera(); }
   showState();
@@ -1122,7 +1122,7 @@ function showRates() {
   }
 }
 // ai: The browser's limit (#first, 2026-10-09), before the first camera start on this browser: shown until a start goes
-// ai: from it (its Start camera, kept as recv:limitSeen), Cancel or Escape leaving it for the next press. Home's Receive
+// ai: from it (its Start, kept as recv:limitSeen), Cancel or Escape leaving it for the next press. Home's Receive
 // ai: (?auto) shows it too, being how most starts come; ?seen (the checks') takes it as seen. A restart on a camera
 // ai: setting's change never shows it.
 const LIMIT_SEEN = "recv:limitSeen";

@@ -257,7 +257,7 @@ class ReceiveState(private val app: App) {
     // ai: a mode chosen in Settings with no session to keep it (Resolution, Format, Frame rate): the next start names it
     private var chosenMode: Mode? = null
 
-    // ai: Start camera: the session (made where none is) asked, in order, for the decoder and crop chosen (a
+    // ai: Start: the session (made where none is) asked, in order, for the decoder and crop chosen (a
     // ai: phone's or an upload's own crop is the session's), the batch size, the camera chosen (the first listed where
     // ai: it is none or gone), and its stream in its kept mode (or one the test hook or Settings named); the phase is
     // ai: the session's from the poll right after.

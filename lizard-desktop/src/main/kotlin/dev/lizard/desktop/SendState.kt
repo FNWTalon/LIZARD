@@ -792,10 +792,10 @@ class SendState {
         return l.joinToString("\n")
     }
 
-    // ai: the build's time for About (build.gradle.kts buildInfo), as the web's: "Build 2026-10-04 12:00 UTC"
+    // ai: the build's time for About (build.gradle.kts buildInfo), as the web's: "Build: 2026-10-04 12:00 UTC"
     val about: String by lazy {
         val t = javaClass.getResourceAsStream("/lizard-build.txt")?.bufferedReader()?.readText()?.trim().orEmpty()
-        if (t.isEmpty()) "" else "Build " + t.replace("T", " ").replace(Regex(":\\d\\d(\\.\\d+)?Z$"), " UTC")
+        if (t.isEmpty()) "" else "Build: " + t.replace("T", " ").replace(Regex(":\\d\\d(\\.\\d+)?Z$"), " UTC")
     }
 }
 

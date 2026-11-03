@@ -187,23 +187,23 @@ fun ApplicationScope.LizardWindow(app: App, sendTest: SenderTest?, recvTest: Rec
 // ai: UI's libraries; on Windows and macOS libusb and Aravis with what Aravis loads, beside the native library; on
 // ai: Windows libwdi in lizard_usb.exe with the driver frameworks' co-installers
 private val CREDITS_HERE = listOf(
-    Credit("Compose Multiplatform", "Apache License 2.0"),
-    Credit("Kotlin", "Apache License 2.0"),
+    Credit("Kotlin", "Apache 2.0"),
+    Credit("Compose Multiplatform", "Apache 2.0"),
     Credit("Skia", "BSD 3-Clause"),
-    Credit("an OpenJDK runtime", "GPLv2 with the Classpath Exception"),
+    Credit("OpenJDK runtime", "GPLv2 + Classpath Exception"),
 ) + (if (Native.windows || Native.mac) listOf(
-    Credit("libusb", "LGPL 2.1 or later"),
-    Credit("Aravis", "LGPL 2.1 or later"),
-    Credit("GLib", "LGPL 2.1 or later"),
-    Credit("GNU libintl", "LGPL 2.1 or later"),
-    Credit("libiconv", "LGPL 2.1 or later"),
+    Credit("libusb", "LGPLv2.1+"),
+    Credit("Aravis", "LGPLv2.1+"),
+    Credit("GLib", "LGPLv2.1+"),
+    Credit("GNU libintl", "LGPLv2.1+"),
+    Credit("libiconv", "LGPLv2.1+"),
     Credit("libxml2", "MIT"),
     Credit("libffi", "MIT"),
     Credit("PCRE2", "BSD 3-Clause"),
-    Credit("zlib", "zlib License"),
+    Credit("zlib", "zlib"),
 ) else emptyList()) + (if (Native.windows) listOf(
-    Credit("libwdi", "LGPL 3.0 or later"),
-    Credit("the Windows Driver Frameworks co-installers", "Microsoft's license terms"),
+    Credit("libwdi", "LGPLv3+"),
+    Credit("Windows Driver Frameworks co-installers", "Microsoft Software License Terms"),
 ) else emptyList())
 
 // ai: Every heavyweight under the window but the code canvas given a white X background (2026-11-02,

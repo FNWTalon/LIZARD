@@ -59,7 +59,7 @@ interface ReceiveHost {
     val hint: String
     val note: String                   // ai: a filing's or a Save's outcome, in red unless it starts "Saved"
     val running: Boolean
-    val starting: Boolean              // ai: Start camera inert while the camera opens
+    val starting: Boolean              // ai: Start inert while the camera opens
     fun toggleCamera()
     val access: Access?
     val kept: List<Act>?               // ai: the received file's actions, the first the solid Open; null while none is in
@@ -79,7 +79,7 @@ interface ReceiveHost {
 }
 
 // ai: Receive (the web's recv.html; both apps' since 2026-10-31): the camera's crop, the transfer (the actions: Open and
-// ai: the platform's others once a file is in, Start camera or Stop camera; then the state line, meter, figures, the
+// ai: the platform's others once a file is in, Start or Stop (the camera); then the state line, meter, figures, the
 // ai: heat warning, a filing's outcome, the hint: the desktop's order), Settings, Experimental, Developer Tools, About.
 // ai: Landscape: the column on the left, its edge dragged, the camera on the right as big as the rest allows; the rail
 // ai: when collapsed (play or pause, the rate, the percent, the green check and the file's actions, Home at its foot).
@@ -101,7 +101,7 @@ fun ReceiveScreen(h: ReceiveHost) = BoxWithConstraints {
         }
     } else {
         val floor = maxOf(RowFloor(h.keptLabels.mapIndexed { i, l -> listOf(l) to (if (i == 0) 20.dp else 16.dp) }),
-            RowFloor(listOf(listOf("Start camera", "Stop camera") to 20.dp)))
+            RowFloor(listOf(listOf("Start", "Stop") to 20.dp)))
         ToolLandscape("Receive", h.folds.open(FoldKey.RecvCollapsed), { h.folds.toggle(FoldKey.RecvCollapsed) }, { h.goHome() },
             if (h.swapInColumn) swap else null, h.width, floor, rail = { RailSquares(h) }, side = { Side(h) }) {
             val w = minOf(maxHeight * ratio, maxWidth)
@@ -120,7 +120,7 @@ private fun RailSquares(h: ReceiveHost) {
     val err = errorOf(h)
     if (err != null) AlertSquare(err) else if (hot != null && kept == null) AlertSquare(hot)
     Square {
-        IconBtn(if (h.running) Icons.pause else Icons.play, if (h.running) "Stop camera" else "Start camera",
+        IconBtn(if (h.running) Icons.pause else Icons.play, if (h.running) "Stop" else "Start",
             enabled = h.access == null && !h.starting) { h.toggleCamera() }
     }
     if (kept == null) {
@@ -144,7 +144,7 @@ private fun Side(h: ReceiveHost) {
 }
 
 // ai: The transfer, the desktop's order and gaps: 12 dp under the bar the actions (once the file is kept, its actions on
-// ai: one row, Open the solid one filling it, the others their own width; Start camera or Stop camera alone under them,
+// ai: one row, Open the solid one filling it, the others their own width; Start or Stop alone under them,
 // ai: the full width; on the desktop every button its label's width, LocalButtonsFill; without the camera's permission
 // ai: the one button that gets it, why on the state line), 12 dp under
 // ai: them the state line, the meter, the figures, then 4 dp apart the heat warning, a filing's outcome and one hint,
@@ -162,8 +162,8 @@ private fun TransferPanel(h: ReceiveHost) {
                     if (i == 0) Btn(a.label, Kind.Primary, modifier = if (LocalButtonsFill.current) Modifier.weight(1f) else Modifier) { a.run() } else Btn(a.label, pad = 16.dp) { a.run() }
                 }
             }
-            // ai: one solid button at a time: Start camera while nothing waits, else Open
-            Btn(if (h.running) "Stop camera" else "Start camera", if (!h.running && kept == null) Kind.Primary else Kind.Tonal,
+            // ai: one solid button at a time: Start while nothing waits, else Open
+            Btn(if (h.running) "Stop" else "Start", if (!h.running && kept == null) Kind.Primary else Kind.Tonal,
                 enabled = !h.starting, modifier = wide) { h.toggleCamera() }
         }
     }
@@ -171,10 +171,10 @@ private fun TransferPanel(h: ReceiveHost) {
     // ai: an error is the preview's to say (errorOf), not the column's
     val shown = ln.text.isNotEmpty() && !(ln.tone == Readout.Tone.Good && !h.showStats) && ln.tone != Readout.Tone.Bad
     val named = ln.name
-    // ai: Within a run (Start camera until it stops) a line once shown keeps its room until the run ends, drawn clear
+    // ai: Within a run (Start until it stops) a line once shown keeps its room until the run ends, drawn clear
     // ai: when it falls silent (2026-11-02: Receiving, its meter and figures, and the hint each moved the folds under them
     // ai: as they came and went); none is held before it has had words, so a camera starting shows no gap (a run's whole
-    // ai: room held from Start stood empty under Stop camera). The run's file in ends it at once, the kept row and the
+    // ai: room held from Start stood empty under Stop). The run's file in ends it at once, the kept row and the
     // ai: lines' going in one frame (the camera stops a poll later); a run started over a file already kept holds on.
     // ai: Every line is one line.
     val keptAtStart = remember(h.running) { h.kept != null }

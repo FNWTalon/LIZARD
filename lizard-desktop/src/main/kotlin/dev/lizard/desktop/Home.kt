@@ -23,7 +23,6 @@ class DesktopHome(private val app: App) : HomeHost {
         "Point the phone at the code until the file arrives. It is kept here.")
     override fun openExample() { Received.browse(EXAMPLE_URL) }
     override val sendSolid = true
-    override val receiveSub = "Read a code with this device's camera"
     override fun goSend() = app.go(Screen.Send)
     override fun goReceive() = app.go(Screen.Receive)
     override fun refresh() = r.refreshLists()

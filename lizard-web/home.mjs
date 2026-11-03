@@ -106,8 +106,9 @@ async function show() {
     $("list").replaceChildren(...(await Promise.all(entries.map((e) => row(e, next)))));
     for (const [key, { url }] of links) if (!next.has(key)) URL.revokeObjectURL(url);
     links = next;
-    $("empty").hidden = entries.length > 0;
-    $("emptyText").textContent = kept ? "Files you receive appear here." : "This browser keeps no files: a received file stays until its page closes.";
+    // ai: the section where there are files, or where this browser keeps none: then its warning alone
+    $("files").hidden = !entries.length && kept;
+    $("empty").hidden = entries.length > 0 || kept;
     const total = entries.reduce((s, e) => s + (e.size || 0), 0);
     $("usage").textContent = entries.length ? `${entries.length} file${entries.length > 1 ? "s" : ""} kept, ${bytes(total)}` : "No files kept.";
     $("clearAll").hidden = !entries.length;

@@ -24,7 +24,6 @@ internal class AndroidHome(private val a: MainActivity) : HomeHost {
     // ai: the example on video (the README's), a link the system opens
     override fun openExample() { try { a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(EXAMPLE_URL))) } catch (_: ActivityNotFoundException) {} }
     override val sendSolid = false
-    override val receiveSub = "Read a code with this phone's camera"
     override fun goSend() = a.go(Screen.Send)
     override fun goReceive() = a.go(Screen.Receive)
     override fun refresh() {}

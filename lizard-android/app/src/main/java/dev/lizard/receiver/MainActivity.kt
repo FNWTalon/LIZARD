@@ -68,7 +68,7 @@ import androidx.compose.ui.unit.dp
 // ai: the web's pages after their tidying. One activity, its `screen` and the system back between them, no navigation
 // ai: library. The web's pages are the same shell (lizard-web/index.html, recv.html, send.html) and the words the same
 // ai: (Readout.kt). The camera runs on Receive alone, from entering it (or a resume there) to leaving it (or a pause, or
-// ai: Stop camera); the receive session (ReceiveState, the engine's), and a transfer partly in, outlives it as it
+// ai: Stop); the receive session (ReceiveState, the engine's), and a transfer partly in, outlives it as it
 // ai: outlives Stop. The launcher opens Home; `--es screen receive` (tools/phone/live.sh, arms.sh) and the launcher
 // ai: shortcut (publishShortcut) open Receive with the camera, in this activity when it runs (singleTop, onNewIntent).
 // ai: Received files land in Downloads (Received.kt, since 2026-10-31; the app's own library before).
@@ -77,9 +77,9 @@ val TARGET = 48.dp
 
 // ai: About's credits for what the app carries besides the core (the repository's NOTICE)
 private val CREDITS_HERE = listOf(
-    Credit("AndroidX", "Apache License 2.0"),
-    Credit("Jetpack Compose", "Apache License 2.0"),
-    Credit("Kotlin", "Apache License 2.0"),
+    Credit("Kotlin", "Apache 2.0"),
+    Credit("AndroidX", "Apache 2.0"),
+    Credit("Jetpack Compose", "Apache 2.0"),
 )
 
 class MainActivity : ComponentActivity() {
@@ -106,7 +106,7 @@ class MainActivity : ComponentActivity() {
     internal val stats get() = receive.stats
     internal var settings by mutableStateOf(Settings())
     internal var screen by mutableStateOf(Screen.Home)
-    internal var stopped by mutableStateOf(false)          // ai: Receive: Stop camera pressed, the camera off until Start
+    internal var stopped by mutableStateOf(false)          // ai: Receive: Stop pressed, the camera off until Start
     internal var granted by mutableStateOf(false)
     internal var denied by mutableStateOf(false)           // ai: refused, and Android asks no more: only its settings allow it
     internal var note by mutableStateOf("")                // ai: what came of a Save a copy or an Open, or a file Downloads did not take
