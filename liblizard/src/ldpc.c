@@ -4,12 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ai: arm64's decode keeps a pointer a slot (ldpc_decode_stall): the codes with at most this many take the four-times
-// ai: columns (the format's most, the 1/2 code's, 210)
-enum { LDPC_VIEWS = 256 };
-// ai: and keeps the first iteration's hard decisions in this many bytes (2 kb z + m, ldpc_decode_stall; the 1/2 code's
-// ai: 11,520)
+// ai: arm64's decode keeps the first iteration's hard decisions in this many bytes (2 kb z + m, ldpc_decode_stall; the
+// ai: 1/2 code's 11,520)
 enum { LDPC_SIGNS = 16384 };
+#ifdef OB_NEON
+static int views_neon(ldpc_t *c);
+#endif
 
 // ai: x86-64's wider layer kernels (below) exist where the 128-bit vector path does and the compiler takes a function's
 // ai: own instruction set (not clang-cl, whose MSVC-style link may lack the runtime the processor check calls)
@@ -95,9 +95,10 @@ int ldpc_init(ldpc_t *c, int rate) {
   // ai: +-128) plus its column's messages (within +-127 each), stays inside it: the largest column degree at most 63
   int dmax = 0;
   for (int j = 0; j < kb; j++) { int d = 0; for (int r = 0; r < mb; r++) d += shift[r * kb + j] >= 0; if (d > dmax) dmax = d; }
-  if (c->z % 32 == 0 && c->zp == c->z && c->slots_max <= 64 && c->slots_total <= LDPC_VIEWS && 2 * c->k + c->m <= LDPC_SIGNS && 128 + 127 * dmax <= 8191 && c->norm >= 8) {
-    c->w4 = malloc((size_t)c->kb * 4 * c->z * sizeof(int16_t));
-    if (!c->w4) { ldpc_free(c); return -1; }
+  if (c->z % 32 == 0 && c->zp == c->z && c->slots_max <= 64 && 2 * c->k + c->m <= LDPC_SIGNS && 128 + 127 * dmax <= 8191 && c->norm >= 8) {
+    // ai: the columns, then the tables views_neon makes of them
+    c->w4 = malloc((size_t)c->kb * 4 * c->z * sizeof(int16_t) + ((size_t)c->slots_total + c->lay_ptr[mb]) * sizeof(int16_t *) + (size_t)mb * sizeof(int));
+    if (!c->w4 || views_neon(c)) { ldpc_free(c); return -1; }
   }
 #endif
   return 0;
@@ -427,18 +428,23 @@ static void layer_scatter(const ldpc_t *c, int r, const int16_t *Q) {
 // ai: place, but check 0's bit before it (the last row moved up a lane under a certain zero, as layer_gather lays it),
 // ai: which goes through Q. (The copies cost about as much as the kernel, and a row stored split at s and read back in
 // ai: 64-byte pieces across the split waited on both stores.)
-// ai: Where every slot of every layer lies, laid out as the messages are (layer r's ns slots from lay_ptr[r] + 2r):
-// ai: fixed by the code and the workspace, so made once a decode rather than once a layer.
-// ai: cp, ncp: the steps across 2z each layer copies a column down (layer r's ncp[r] from cp + lay_ptr[r]). A slot of
-// ai: shift s = 32 q + a (a > 0) writes elements 0 to 31 - a of its column past 2z in its step across, and the copy
-// ai: below 2z is stale until copied; a run of shift s' reads element t below 2z where t >= z - s', so only a slot of
-// ai: shift z - 31 + a or more in the same column (never the slot itself: s <= z - 32 + a) reads the stale part, and
-// ai: the copy is needed only where the column has one. The copy past 2z is never stale (every write of an element
-// ai: lands there, as the run or its copy), which the decoder's output reads.
-static void views_neon(const ldpc_t *c, int16_t **vw, int16_t **cp, int *ncp) {
+// ai: Where every slot of every layer lies (w4_views), laid out as the messages are (layer r's ns slots from
+// ai: lay_ptr[r] + 2r): fixed by the code and its workspace, so made by ldpc_init, in w4's allocation past the columns.
+// ai: w4_copies, w4_ncopies: the steps across 2z each layer copies a column down (layer r's w4_ncopies[r] from
+// ai: w4_copies + lay_ptr[r]). A slot of shift s = 32 q + a (a > 0) writes elements 0 to 31 - a of its column past 2z
+// ai: in its step across, and the copy below 2z is stale until copied; a run of shift s' reads element t below 2z where
+// ai: t >= z - s', so only a slot of shift z - 31 + a or more in the same column (never the slot itself: s <= z - 32 +
+// ai: a) reads the stale part, and the copy is needed only where the column has one. The copy past 2z is never stale
+// ai: (every write of an element lands there, as the run or its copy), which the decoder's output reads.
+static inline int16_t **w4_views(const ldpc_t *c) { return (int16_t **)(c->w4 + (size_t)c->kb * 4 * c->z); }
+static inline int16_t **w4_copies(const ldpc_t *c) { return w4_views(c) + c->slots_total; }
+static inline int *w4_ncopies(const ldpc_t *c) { return (int *)(w4_copies(c) + c->lay_ptr[c->mb]); }
+
+static int views_neon(ldpc_t *c) {
   const int z = c->z, ne = c->lay_ptr[c->mb];
-  int16_t *Lp = c->wl + c->k;
-  int smax[LDPC_VIEWS];   // ai: a column's largest shift
+  int16_t *Lp = c->wl + c->k, **vw = w4_views(c), **cp = w4_copies(c);
+  int *ncp = w4_ncopies(c), *smax = malloc((size_t)c->kb * sizeof(int));   // ai: a column's largest shift
+  if (!smax) return -1;
   for (int j = 0; j < c->kb; j++) smax[j] = -1;
   for (int e = 0; e < ne; e++) if (c->lay_shift[e] > smax[c->lay_col[e]]) smax[c->lay_col[e]] = c->lay_shift[e];
   for (int r = 0; r < c->mb; r++) {
@@ -454,6 +460,8 @@ static void views_neon(const ldpc_t *c, int16_t **vw, int16_t **cp, int *ncp) {
     v[nd] = r > 0 ? Lp + (r - 1) * z : c->wq + nd * c->zp;
     v[nd + 1] = Lp + r * z;
   }
+  free(smax);
+  return 0;
 }
 
 static void layer_direct(const ldpc_t *c, int r, int8_t *R, int ns, int16_t *const *view, int16_t *const *cp, int nc, int first) {
@@ -672,11 +680,10 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
   int16_t *L = c->wl, *Q = c->wq;
 #ifdef OB_NEON
   const int four = c->w4 && c->wide != -1;
-  int16_t *vw[LDPC_VIEWS], *cp[LDPC_VIEWS];
-  int ncp[LDPC_VIEWS];
+  int16_t *const *vw = four ? w4_views(c) : 0, *const *cp = four ? w4_copies(c) : 0;
+  const int *ncp = four ? w4_ncopies(c) : 0;
   uint8_t sv[LDPC_SIGNS];
   if (four) {
-    views_neon(c, vw, cp, ncp);
     // ai: each data column's z LLRs widened once and written into the middle two of its four copies, the only ones a
     // ai: run reads ([z, 3z): the outer two only take the stores either side of a run); wl's data part goes unused.
     for (int j = 0; j < c->kb; j++) {
