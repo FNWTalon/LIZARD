@@ -1382,8 +1382,8 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
 #endif
   double td = ob_now_ms(); ob_prof_ms[PROF_F_FFT] += td - ts;
   px /= n * w->sx2; py /= n * w->sx2; pxy /= w->sx2 * w->sx2; pxx /= n * w->sq2; pyy /= n * w->sq2;
-#ifdef OB_NEON
-  // ai: arm64: the xy term off only the rows and columns a block's coefficients take (ws dkeep, dcols), all that is read
+#if defined(OB_NEON) || defined(OB_X86)
+  // ai: arm64 and x86-64: the xy term off only the rows and columns a block's coefficients take (ws dkeep, dcols), all that is read
   // ai: after this; the rest keep the transform's values, which the floats hash sees and nothing else reads
   for (int b = 0; b < f->vblocks; b++) {
     const int keep = w->dkeep[b], lo = keep < n - 1 ? keep : n - 1, hi = n - keep > lo + 1 ? n - keep : lo + 1;
