@@ -96,7 +96,7 @@ int main(void) {
       tbin += ob_now_ms() - t0;
 #endif
       mix(bin, (size_t)sw * sh);
-      cand_t *c = malloc((size_t)MAX_CAND * sizeof(cand_t));
+      cand_t *c = malloc((size_t)MAX_CAND * sizeof(cand_t) + CAND_XY);
       for (int form = 0; form < 2; form++) {
         t0 = ob_now_ms();
         const int n = mark_scan(&L, bin, cb, sw, sh, scale, form, c);
