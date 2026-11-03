@@ -5,7 +5,7 @@
 // ai: to them: the border (every pixel outside the modules the picture and its guard interval are resampled over, the
 // ai: quiet margin included) and the anchors' squares byte for byte, the rest within one grey level; the largest
 // ai: difference and the pixels a level apart printed, with a hash of the native pictures (an exact change to the
-// ai: native encoder keeps it). Exit 1 on a miss. From liblizard/ (src/{layout,fmt,rs,ldpc,fft,acquire,any,shake}.c):
+// ai: native encoder keeps it). Exit 1 on a miss. From liblizard/ (src/{layout,fmt,rs,ldpc,fft,lizard_phy,acquire,any,shake}.c):
 // ai:   cc -O3 -ffp-contract=off -DOB_SCALAR -Isrc -o build/paint_ref_scalar test/paint_ref.c <the codec> -lm
 // ai:   cc -O3 -ffp-contract=off -msse4.1 -Isrc -o build/paint_ref test/paint_ref.c <the codec> -lm   (arm64: no -msse4.1)
 // ai:   build/paint_ref_scalar emit | build/paint_ref check
