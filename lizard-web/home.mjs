@@ -1,14 +1,11 @@
-// ai: Home (2026-10-01): the first-run tips, Send
-// ai: and Receive (the solid one Receive on a touch screen, Send otherwise: one solid button at a time), the received
+// ai: Home (2026-10-01): Send and Receive (the solid one Receive on a touch screen, Send otherwise: one solid button at a time), the received
 // ai: files (lizard-web/library.mjs: a row opens its file; its more menu holds Open, Save, Share where the browser shares such
-// ai: a file, and Delete) and Settings (the tips again, the files' size and Delete all, About). Receive goes to
+// ai: a file, and Delete) and Settings (the files' size and Delete all, About, Source code). Receive goes to
 // ai: recv.html?auto: the tap is the wish to start.
-import { bytes, tips, tipsAgain, about, registerApp, confirmTap, icon } from "./ui.mjs";
+import { bytes, about, registerApp, confirmTap, icon } from "./ui.mjs";
 import { list, open, remove, removeAll, watch, keeps, unfinished, forgetUnfinished } from "./library.mjs";
 
 const $ = (id) => document.getElementById(id);
-tips();
-$("tipsAgain").onclick = tipsAgain;
 about($("about"));
 registerApp(() => about($("about"), true));
 $(matchMedia("(pointer: coarse)").matches ? "recv" : "send").classList.add("primary");

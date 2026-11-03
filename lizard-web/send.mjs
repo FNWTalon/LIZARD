@@ -10,7 +10,7 @@ import { DEFAULT_LOG2, PAYLOAD } from "../liblizard/sim/xfer.mjs";
 import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, LIZARD_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor, STEP } from "../liblizard/sim/lizard_pick.mjs";
 import { GAP_MODULES } from "../liblizard/gpu/encoder.mjs";
 import { bundle } from "./tar.mjs";
-import { remember, persist, say, bytes, rate, tipsDone, about, registerApp, collapser, sideResizer, icon, sayName, nameParts } from "./ui.mjs";
+import { remember, persist, say, bytes, rate, about, registerApp, collapser, sideResizer, icon, sayName, nameParts } from "./ui.mjs";
 
 // The room a format needs holds the codec's margin (src/lizard_phy.h LIZARD_QUIET), and only the codec knows it.
 await initOb();
@@ -554,9 +554,8 @@ async function start() {
     painted++; dataSent += fr.data; dataWin += fr.data;
     if (!pump()) return;
     samples = fr.w;
-    // ai: the first frame painted: a sender has seen what the tips say (ui.mjs), so they go on every page of this origin
     // ai: the file's size and, where compression shrank it, the bytes that actually go (2026-10-05)
-    if (!live) { live = true; showChoice(true); const sz = sizeLine(); sendingLine = file ? () => sayName($("state"), "Sending ", what, sz) : () => say($("state"), "Sending"); sendingLine(); tipsDone(); }
+    if (!live) { live = true; showChoice(true); const sz = sizeLine(); sendingLine = file ? () => sayName($("state"), "Sending ", what, sz) : () => say($("state"), "Sending"); sendingLine(); }
     if (now - lastReport > 1000 && painted) {
       const g = gcfg ? genc.takeGpuMs() : null;
       gpuMs = gcfg ? g ?? gpuMs : null;
@@ -658,25 +657,9 @@ const roomChanged = () => { clearTimeout(repickSoon); repickSoon = setTimeout(()
 addEventListener("resize", roomChanged);
 new ResizeObserver(roomChanged).observe(canvas.parentElement);
 
-// ai: Start as the person presses it (Start, the rail's play): before the first send on this browser, the brightness tip
-// ai: (#first; 2026-10-04; the desktop sender's the same): the display's contrast and brightness are the channel's and
-// ai: no page sets them (the
-// ai: contrast at its maximum took 2:1 past 2.90 MB/s, STATUS "The oscillation in 2:1"). Shown until a send goes from it
-// ai: (its Start, kept as send:tipSeen; send:brightnessSeen until 2026-10-23, when the tip gained power saving and was due
-// ai: once more), Cancel or Escape leaving it for the next press; ?auto (the checks', the
-// ai: rig's), Resume and a running send's restart (the encoder changed, the GPU given up) never show it.
-const SEEN = "send:tipSeen";
-let seenHere = false;
-const brightnessSeen = () => { try { return seenHere || localStorage.getItem(SEEN) === "1"; } catch { return seenHere; } };
+// ai: Start as the person presses it (Start, the rail's play): Resume where paused, else a send
 const begin = () => start().catch((e) => { if (e !== STOPPED) fail("Could not start", e); });
-const go = () => (paused ? setPaused(false) : running || brightnessSeen() ? begin() : $("first").showModal());
-$("firstStart").onclick = () => {
-  seenHere = true;
-  try { localStorage.setItem(SEEN, "1"); } catch {}
-  $("first").close();
-  begin();
-};
-$("firstCancel").onclick = () => $("first").close();
+const go = () => (paused ? setPaused(false) : begin());
 $("go").onclick = go;
 $("stop").onclick = () => { stop(); showReady(); };
 // ai: play and pause as a video player's (the rail's button, Space and K): Start where nothing runs, else Pause or Resume

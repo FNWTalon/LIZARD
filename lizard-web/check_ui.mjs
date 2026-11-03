@@ -14,8 +14,8 @@
 // ai:      then a 300,000 B file: receiving (the meter, progress, size, speed and time left), received (Save holds the
 // ai:      file's bytes) with the camera stopped by itself, Save kept, the file named again after a restart with the
 // ai:      camera left on (Receive again, which received it anew, went 2026-10-05).
-// ai:   4. Home in the same profile at the four sizes: the received file listed, Save holding its bytes, Open, the tips
-// ai:      card shown on a fresh profile and remembered once dismissed, Settings, Delete emptying the received files.
+// ai:   4. Home in the same profile at the four sizes: the received file listed, Save holding its bytes, Open, no tips
+// ai:      card, Settings, Delete emptying the received files.
 // ai: All pages: no horizontal scroll, Settings (#dev) closed on a fresh profile and remembered over a reload, a menu's
 // ai: setting kept over a reload with a URL preset winning its own load (the sender's ring, the receiver's frame rate),
 // ai: no console error but the ones the start errors put there on purpose. The sender's blocks label before the first
@@ -323,12 +323,11 @@ const SIZES = [
     const sh = await evaluate(s, `(async () => ({ rows: [...document.querySelectorAll("#pickList .t")].map((t) => t.textContent).join(), left: (await (await caches.open("lizard-share")).keys()).length, url: location.search }))()`);
     check(sh.rows === "from app.txt" && sh.left === 0 && sh.url === "", `send: a shared file is listed, the share cache emptied and the URL plain (${JSON.stringify(sh)})`);
   }
-  // ai: Power saving (2026-10-23): a first-time tip, in the first-send dialog and the rail's "?" (the live line, which a
-  // ai: power mode cannot be told from, went the same day)
+  // ai: Power saving (2026-10-23): said in the rail's "?" alone since 2026-11-03 (no first-send question, no live line)
   {
-    const tips = await evaluate(s, `[document.getElementById("first").textContent, document.getElementById("tipDisplay").textContent]`);
-    check(tips.every((t) => /Turn off power saving/.test(t)) && !(await evaluate(s, `!!document.getElementById("power")`)),
-      `send: power saving in the first-send tip and the "?" ("${tips[1]}"), no live line`);
+    const tip = await evaluate(s, `document.getElementById("tipDisplay").textContent`);
+    const extra = await evaluate(s, `!!document.getElementById("first") || !!document.getElementById("power")`);
+    check(/Turn off power saving/.test(tip) && !extra, `send: power saving in the "?" alone ("${tip}"), no first-send question, no live line`);
   }
   check(!s.errors.length, `send: no console errors${s.errors.length ? `: ${s.errors.join("; ")}` : ""}`);
   s.close();
@@ -574,14 +573,14 @@ const SIZES = [
   }
 
   // ai: 4. Home (2026-10-01) in the same profile: the file just received is listed, its Save holds its bytes and Open opens
-  // ai: it in a tab of its own; the tips card is shown on this fresh profile, and once dismissed stays so over a reload
-  // ai: until Settings shows it again; Delete (asked on the button, then done) empties the received files.
+  // ai: it in a tab of its own; no tips card or Show tips again (2026-11-03); Delete (asked on the button, then done)
+  // ai: empties the received files.
   await s.send("Target.setDiscoverTargets", { discover: true });
   const opened = [];
   for (const ev of ["Target.targetCreated", "Target.targetInfoChanged"]) s.on(ev, ({ targetInfo: i }) => { if (i.type === "page") opened.push(i.url); });
   const HOMEM = `(() => { const $ = (id) => document.getElementById(id), rows = [...document.querySelectorAll("#list li")];
     return { iw: innerWidth, sw: document.documentElement.scrollWidth, rows: rows.map((r) => r.querySelector(".name").textContent), acts: rows[0] ? [...rows[0].querySelectorAll(".acts > *")].map((a) => a.textContent).join(",") : "",
-      href: rows[0]?.querySelector("a[download]")?.href ?? "", download: rows[0]?.querySelector("a[download]")?.download ?? "", tips: !$("tips").hidden, empty: !$("empty").hidden, usage: $("usage").textContent, solid: [...document.querySelectorAll(".primary")].map((b) => b.id).join(), bar: [...document.querySelectorAll(".bar .brand, .bar > button")].map((b) => b.textContent).join(",") }; })()`;
+      href: rows[0]?.querySelector("a[download]")?.href ?? "", download: rows[0]?.querySelector("a[download]")?.download ?? "", tips: !!$("tips") || !!$("tipsAgain"), empty: !$("empty").hidden, usage: $("usage").textContent, solid: [...document.querySelectorAll(".primary")].map((b) => b.id).join(), bar: [...document.querySelectorAll(".bar .brand, .bar > button")].map((b) => b.textContent).join(",") }; })()`;
   for (const [k, z] of SIZES.entries()) {
     await size(s, z);
     await navigate(s, HOME);
@@ -605,13 +604,7 @@ const SIZES = [
       await until(s, `!document.querySelector("#list li")?.dataset.mark`, 5000, "Home redrawn on a return to the page");
       const redrawn = await evaluate(s, HOMEM), readable = await evaluate(s, `fetch(${JSON.stringify(h.href)}).then((r) => r.ok, () => false)`);
       check(hidden === "hidden" && redrawn.href === h.href && readable, `home: back from the opened tab (Home ${hidden} meanwhile), the list redrawn with the same link (${redrawn.href === h.href}), which still reads (${readable})`);
-      check(h.tips, `home: the tips card shown on a fresh profile`);
-      await evaluate(s, `document.querySelector("#tips [data-got]").click()`);
-      await navigate(s, HOME); await sleep(400);
-      const gone = await evaluate(s, `document.getElementById("tips").hidden`);
-      await evaluate(s, `document.getElementById("tipsAgain").click()`);
-      const back = await evaluate(s, `!document.getElementById("tips").hidden`);
-      check(gone && back, `home: the tips dismissed stay so over a reload (${gone}), and Settings shows them again (${back})`);
+      check(h.tips === false, `home: no tips card and no Show tips again (2026-11-03)`);
     }
   }
   await evaluate(s, `(() => { const b = [...document.querySelectorAll("#list li .acts button")].find((x) => x.textContent === "Delete"); b.click(); return b.textContent; })()`);

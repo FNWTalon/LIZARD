@@ -175,7 +175,6 @@ const decoded = (g, r) => `canvas ${g.w} x ${g.h}, picture n = ${r.n}, word ${r.
 const pageLine = (g) => `  page: ${g.state} | ${g.nums} | ${g.tx.split("\n").slice(0, 3).join(" | ")} | ${g.tx.split("\n").find((l) => l.startsWith("painted ")) ?? "no painted line"} | ${encoderOf(g).line} (#${g.which})`;
 
 const faults = [];
-let tipSeen = false;
 // ai: 496 (version 31, an odd version, 60 blocks under the rate profile): set as the slider sets it (488, version 61 of
 // ai: the 8-sub-channel ladder, from 2026-10-01 to 2026-10-29)
 for (const c of [{ subch: 96 }, { subch: 64 }, { subch: 496 }, { subch: 96, file: true }, { subch: 96, file: true, bundle: "files" }, { subch: 96, file: true, bundle: "folder" }, { subch: "auto" }, { subch: "auto", margin: 20 }, { subch: "auto", codes: 2 }, { subch: "auto", codes: 2, spacing: 4 }, { subch: "auto", codes: 2, spacing: 44, respacing: 8 }, { subch: "auto", midStream: true }]) {
@@ -195,13 +194,8 @@ for (const c of [{ subch: 96 }, { subch: 64 }, { subch: 496 }, { subch: 96, file
     for (let t = 0; t < 50 && !ready.startsWith(wantReady); t++) { ready = await evaluate(s, `document.getElementById("state").textContent`); if (!ready.startsWith(wantReady)) await new Promise((ok) => setTimeout(ok, 100)); }
     if (!ready.startsWith(wantReady)) faults.push(`${name}: the ready line says "${ready}"`);
     await evaluate(s, `document.getElementById("go").click()`);
-    // ai: the first Start on a fresh profile asks about the display's brightness first (send.mjs go): it must, and its
-    // ai: Start sends; once seen it is not asked again
-    const tip = await evaluate(s, `document.getElementById("first").open`);
-    if (!tipSeen && !tip) faults.push(`${name}: no brightness tip before the first send`);
-    if (tipSeen && tip) faults.push(`${name}: the brightness tip again after it was seen`);
-    if (tip) await evaluate(s, `document.getElementById("firstStart").click()`);
-    tipSeen = true;
+    // ai: Start sends at once (no first-send question since 2026-11-03)
+    if (await evaluate(s, `!!document.getElementById("first")`)) faults.push(`${name}: a first-send question is back`);
   }
   if (!(await waitPainted())) { faults.push(`${name}: the page never said it painted: ${await evaluate(s, `document.getElementById("tx").textContent`)}`); continue; }
   // ai: The auto case's version: the library's pick for the room the page measured, as send.mjs room() measures it.

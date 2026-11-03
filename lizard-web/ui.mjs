@@ -115,9 +115,6 @@ export function left(secs) {
   return s < 100 ? `${s} s left` : `${Math.round(s / 60)} min left`;
 }
 
-// ai: First-run tips (2026-10-01): one flag for every page of this origin, kept once a tip's "Got it" is pressed (or the
-// ai: sender has painted a file), cleared by Settings' "Show tips again". tips(root) shows root's .tip cards while the
-// ai: flag is unset and wires their [data-got] buttons; tipsSeen() is the flag, for a page's own inline tip.
 // ai: The icons a script puts on a page (2026-10-01; Feather's, MIT): ui.css svg.i draws them on a 24 grid, 2 px strokes
 // ai: in the text's colour. The pages inline the same set in their static markup (back, gear, swap, camera, monitor,
 // ai: camera-off, info), and the Android app has them as vector drawables (res/drawable/ic_*.xml).
@@ -158,22 +155,6 @@ export function icon(name) {
   return s;
 }
 
-const TIPS = "lizard:tips";
-export function tipsSeen() { try { return localStorage.getItem(TIPS) === "seen"; } catch { return false; } }
-export function tipsDone() {
-  try { localStorage.setItem(TIPS, "seen"); } catch {}
-  for (const t of document.querySelectorAll(".tip")) t.hidden = true;
-}
-export function tips(root = document) {
-  for (const t of root.querySelectorAll(".tip")) {
-    t.hidden = tipsSeen();
-    t.querySelector("[data-got]")?.addEventListener("click", tipsDone);
-  }
-}
-export function tipsAgain() {
-  try { localStorage.removeItem(TIPS); } catch {}
-  for (const t of document.querySelectorAll(".tip")) t.hidden = false;
-}
 
 
 // ai: confirmTap(button, ask, act): a destructive button asks on itself ("Delete 3 files?") for 4 s, and a second tap
