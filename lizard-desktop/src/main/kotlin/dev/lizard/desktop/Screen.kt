@@ -11,11 +11,8 @@ import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.awtTransferable
 import java.awt.datatransfer.DataFlavor
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -27,20 +24,15 @@ import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.awt.ComposeWindow
 import androidx.compose.ui.awt.SwingPanel
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogWindow
-import androidx.compose.ui.window.WindowPosition
-import androidx.compose.ui.window.rememberDialogState
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import androidx.compose.ui.awt.ComposeDialog
@@ -67,11 +59,10 @@ import androidx.compose.ui.unit.IntSize
 // ai: Send on the desktop (the screen is ../lizard-ui's SendScreen): the sender's state (SendState), the desktop's
 // ai: settings (Ring, Size; Exclusive fullscreen on Linux), Fullscreen beside Start, the code area the presenter's
 // ai: heavyweight AWT canvas (CodeCanvas: its idle look and the upload painted by AWT, since nothing of Compose draws
-// ai: over it), drops anywhere in the window (2026-10-23), and the windows of its own: the first-send tip, Exclusive
-// ai: fullscreen's warning, full screen's edge rail
+// ai: over it), drops anywhere in the window (2026-10-23), and full screen's edge rail, a window of its own
 class DesktopSend(private val app: App) : SendHost {
     private val s get() = app.send
-    // ai: the window (LizardWindow sets it): the owner of the tips' windows and the edge rail
+    // ai: the window (LizardWindow sets it): the owner of the edge rail
     var window: ComposeWindow? = null
     override val folds = app.folds
     override val width = app.column
@@ -83,7 +74,7 @@ class DesktopSend(private val app: App) : SendHost {
     override val on get() = s.phase == SendState.Phase.On
     override val paused get() = s.paused
     override val canStart get() = s.canStart
-    override fun requestStart() = s.requestStart()
+    override fun start() = s.start()
     override fun stop() = s.stop()
     override fun pause(on: Boolean) = s.pause(on)
     override val pauseShown = true
@@ -185,8 +176,6 @@ class DesktopSend(private val app: App) : SendHost {
     override fun Windows() {
         val w = window ?: return
         if (s.full && !s.leased) EdgeRail(this, s, w)
-        if (s.askBrightness) BrightnessTip(s, w)
-        if (s.askExclusive) ExclusiveTip(s, w)
     }
 }
 
@@ -269,44 +258,6 @@ private fun EdgeRail(h: DesktopSend, s: SendState, owner: ComposeWindow) {
         Row(Modifier.fillMaxSize().background(Bg)) {
             Rail(onClick = { h.leaveCodeAlone() }) { SendRail(h) }
             VerticalDivider(color = Line)
-        }
-    }
-}
-
-// ai: power saving since 2026-10-23 (a first-time tip, not a warning: a power profile is no sure sign of dropped pictures)
-private const val TIP = "To maximize efficiency, increase the contrast and brightness of your display. Turn off power saving: it can make pictures drop."
-// ai: Exclusive fullscreen's warning (2026-10-31), once, at its first turn-on: what taking the monitor means and the way back
-private const val EXCLUSIVE_TIP = "Exclusive fullscreen gives the app full control over the monitor while playing. If you have multiple monitors, you can see a control window on another one: press Escape or Fullscreen there to leave. With one monitor, press any key or click. If the monitor stays dark afterwards, switch it off and on."
-
-// ai: The brightness tip before the first send (SendState.requestStart; send.html #first, its words): a modal window of
-// ai: its own, centred on the sender's, as tall as its text (a dialog drawn in the sender's window sits under the code
-// ai: area's canvas, a native window above Compose's). Escape cancels it (Main.kt).
-@Composable
-private fun BrightnessTip(s: SendState, owner: ComposeWindow) = TipWindow(owner, TIP, "Start") { s.answerBrightness(it) }
-
-// ai: Exclusive fullscreen's warning, the brightness tip's window: Cancel or Escape leaves the setting off
-@Composable
-private fun ExclusiveTip(s: SendState, owner: ComposeWindow) = TipWindow(owner, EXCLUSIVE_TIP, "Turn on") { s.answerExclusive(it) }
-
-// ai: A modal window of its own centred on the sender's, as tall as its text, Cancel and the answer's button
-@Composable
-private fun TipWindow(owner: ComposeWindow, text: String, ok: String, answer: (Boolean) -> Unit) {
-    val style = MaterialTheme.typography.bodyLarge
-    val measurer = rememberTextMeasurer()
-    val w = 400.dp
-    val textH = with(LocalDensity.current) { measurer.measure(text, style, constraints = Constraints(maxWidth = (w - 40.dp).roundToPx())).size.height.toDp() }
-    val h = 20.dp + textH + 16.dp + 40.dp + 16.dp
-    val state = rememberDialogState(WindowPosition(owner.x.dp + (owner.width.dp - w) / 2, owner.y.dp + (owner.height.dp - h) / 2), DpSize(w, h))
-    DialogWindow({ answer(false) }, state, title = "LIZARD", undecorated = true, resizable = false) {
-        // ai: white before Compose's first frame, as the main window (App.kt): AWT's default grey showed until Skia drew
-        remember { window.background = java.awt.Color.WHITE; window.contentPane.background = java.awt.Color.WHITE }
-        Column(Modifier.fillMaxSize().background(Bg).border(1.dp, Line).padding(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 16.dp)) {
-            Text(text, style = style)
-            Spacer(Modifier.weight(1f))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)) {
-                Btn("Cancel", Kind.Text) { answer(false) }
-                Btn(ok, Kind.Primary) { answer(true) }
-            }
         }
     }
 }

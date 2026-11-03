@@ -11,7 +11,6 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import java.io.File
 import kotlin.math.floor
-import kotlin.math.roundToInt
 
 // ai: What both apps read out of the receive session's JSON (2026-10-31; each app's own parsing before, the desktop's
 // ai: kotlinx and the Android app's org.json): the stats a quarter second (liblizard/core/rx/session.h stats(): the
@@ -86,20 +85,12 @@ fun partialsOf(listing: String): List<Partial> = runCatching {
 }.getOrDefault(emptyList())
 
 // ai: One hint, the first that holds, while the camera reads a word (2026-10-25, both apps' since 2026-10-31). A phone
-// ai: as the camera (cam/phone.cpp): its camera's rate (agreedFps) against what arrives, short where the link carries
-// ai: fewer (the phone skips evenly); its timing is the phone's, so the rules after it are not its. An upload, none. A
-// ai: camera the phase lock does not hold reads a sender at most half its rate without its captures spanning two
+// ai: as the camera (cam/phone.cpp) or an upload, none: their timing is not this camera's. A camera the phase lock does not hold reads a sender at most half its rate without its captures spanning two
 // ai: pictures (the web's rule), so its rate (the one it agreed to at start, else `modeFps`) under twice the word's
-// ai: names the most the sender should paint; then a camera whose measured rate (the session's, from its fourth frame)
-// ai: is under the word's less one misses pictures.
+// ai: names the most the sender should paint.
 fun hintOf(j: JsonObject?, on: Boolean, phone: Boolean = false, upload: Boolean = false, locked: Boolean = false, modeFps: Double = 0.0): String {
-    if (!on || j == null || upload) return ""
+    if (!on || j == null || upload || phone) return ""
     val cam = j.obj("camera")
-    if (phone) {
-        val of = cam?.num("agreedFps") ?: 0.0
-        val got = cam?.num("fps") ?: 0.0
-        return if (of > 0 && got > 0 && got < 0.95 * of) "The link to the phone carries ${got.roundToInt()} of its ${of.roundToInt()} frames a second." else ""
-    }
     val wf = j.obj("word")?.num("fps") ?: 0.0
     if (j.num("bandVersion") <= 0 || wf <= 0 || cam == null) return ""
     val camFps = cam.num("agreedFps").takeIf { it > 0 } ?: modeFps
@@ -107,7 +98,5 @@ fun hintOf(j: JsonObject?, on: Boolean, phone: Boolean = false, upload: Boolean 
         val n = floor(camFps / 2).toInt()
         if (n >= 1) return "Set the sender to at most $n fps for this camera."
     }
-    val measured = cam.num("fps")
-    if (measured > 0 && measured < wf - 1) return "This camera runs slower than the code changes, so some of it is missed."
     return ""
 }

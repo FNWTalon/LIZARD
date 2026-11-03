@@ -5,7 +5,6 @@ import dev.lizard.readout.Readout
 import android.content.Context
 import android.content.res.Configuration
 import androidx.compose.ui.unit.Dp
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.platform.LocalConfiguration
@@ -33,7 +32,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -240,7 +238,7 @@ class SendState(private val a: MainActivity) {
         val out = ArrayList<TarEntry>()
         fun time(c: android.database.Cursor) = if (c.isNull(4)) null else c.getLong(4) / 1000
         fun walk(id: String, path: String, t: Long?, depth: Int) {
-            if (depth > 64) throw java.io.IOException("$path is nested past 64 folders")
+            if (depth > 64) throw java.io.IOException("$path: too deeply nested")
             out.add(TarEntry(path, mtimeSec = t))
             val dirs = ArrayList<Triple<String, String, Long?>>()
             cr.query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, id), cols, null, null, null)?.use { c ->
@@ -331,18 +329,6 @@ class SendState(private val a: MainActivity) {
         making++; makingNow = false; startWhenMade = false
         if (made != 0L) { Native.txDestroy(made); made = 0L }
         madeFile?.delete(); madeFile = null
-    }
-
-    // ai: The first-send tip (2026-10-23; a tip, not a live warning: a power mode is no sure sign of dropped pictures, and
-    // ai: modes differ from phone to phone): Start as a hand presses it (the
-    // ai: column's, the rail's play) asks once, "Turn off power saving: it can make pictures drop.", with Cancel and
-    // ai: Start; its Start sends and it is not asked again (the "lizard" preferences' sendTipSeen). The web's and the
-    // ai: desktop's first-send tips say the same beside their brightness line; this app sets the brightness itself.
-    var askTip by mutableStateOf(false)
-    fun requestStart() { if (prefs.getBoolean("sendTipSeen", false)) start() else askTip = true }
-    fun answerTip(go: Boolean) {
-        askTip = false
-        if (go) { prefs.edit().putBoolean("sendTipSeen", true).apply(); start() }
     }
 
     fun start() {
@@ -560,7 +546,7 @@ internal class AndroidSend(private val a: MainActivity) : SendHost {
     override val busy get() = on || s.phase == SendState.Phase.Preparing
     override val paused get() = s.paused
     override val canStart get() = s.phase != SendState.Phase.Preparing && (s.test || s.ready)
-    override fun requestStart() = s.requestStart()
+    override fun start() = s.start()
     override fun stop() = s.stop()
     override fun pause(on: Boolean) = s.pause(on)
     override val pauseShown get() = s.paused
@@ -662,16 +648,6 @@ internal class AndroidSend(private val a: MainActivity) : SendHost {
                 onRemove = { s.remove(it) }, onClear = { s.clear() })
             else if (!shown) TestStreamNote()
         }
-    }
-
-    // ai: Start asks once "Turn off power saving: it can make pictures drop." (SendState.askTip)
-    @Composable
-    override fun Windows() {
-        if (s.askTip) AlertDialog(onDismissRequest = { s.answerTip(false) },
-            confirmButton = { Btn("Start", Kind.Primary) { s.answerTip(true) } },
-            dismissButton = { Btn("Cancel", Kind.Text) { s.answerTip(false) } },
-            text = { Text("Turn off power saving: it can make pictures drop.") },
-            containerColor = Bg)
     }
 
     companion object {

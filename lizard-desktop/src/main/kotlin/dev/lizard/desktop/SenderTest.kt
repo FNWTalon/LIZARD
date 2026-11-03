@@ -18,8 +18,7 @@ import dev.lizard.ui.*
 // ai: moved): comma separated <seconds>:<action>, from when the presenter first presents, each as the control does it:
 // ai: full (Fullscreen, F11), max (the window maximized), pause, resume, stop, start, size=N, spacing=N, margin=N,
 // ai: codes=N, blocks=N (0 auto, else 1 to 64) (each a slider's release), fps=N (any 1 to 60, a chip's or the
-// ai: slider's), vsync=0|1, enc=auto|gpu|cpu, rail, press (Start as the button presses it: the brightness tip first
-// ai: where it is due), confirm and cancel (the tip's buttons), and the selection's (2026-10-23):
+// ai: slider's), vsync=0|1, enc=auto|gpu|cpu, rail, and the selection's (2026-10-23):
 // ai: add=<path>[:<path>...] (as a pick adds; ';' on Windows), remove=<an item's name> (its Remove), clear (Clear),
 // ai: list (the items and the state line on stderr as "list: <name> | ... | <state line>"); a change stops the run, as
 // ai: the app's does, until a start; each logged on stderr as "step <s>: <action>" when it is taken. Each second's
@@ -151,9 +150,6 @@ class SenderTest private constructor(private val secs: Double, private val kv: M
             "resume" -> s.pause(false)
             "stop" -> { s.stop(); return true }
             "start" -> { s.start(); return stopped }
-            "press" -> { s.requestStart(); return stopped }
-            "confirm" -> { s.answerBrightness(true); return stopped }
-            "cancel" -> s.answerBrightness(false)
             "size" -> { s.chooseSize(n(25..100)); s.commitSize() }
             "spacing" -> { s.chooseSpacing(n(Room.SPACING_MIN..Room.SPACING_MAX)); s.repick() }
             "margin" -> { s.chooseMargin(n(Pick.QUIET..Room.MARGIN_MAX)); s.repick() }

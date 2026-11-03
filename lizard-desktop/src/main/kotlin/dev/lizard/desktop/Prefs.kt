@@ -10,9 +10,7 @@ import java.util.prefs.Preferences
 // ai: What the sender keeps between runs (the web's send:<id> keys): the encoder (auto, gpu, cpu), the payload (file,
 // ai: test), the format's size (0 auto, else a version 1 to 64), pictures a second, the code's size (25 to 100%), the spacing
 // ai: and the margin (modules, Pick's bounds), the ring (-1 the default, else an index into Pick.RINGS, kept as its
-// ai: cells), the codes, VSync, the folds and the rail, and whether the brightness tip was taken
-// ai: before a first send
-// ai: (SendState.requestStart); the receiver's and Home's in a node of their own (Rx, 2026-10-25). forget(): a run that
+// ai: cells), the codes, VSync, the folds and the rail; the receiver's and Home's in a node of their own (Rx, 2026-10-25). forget(): a run that
 // ai: neither reads nor keeps either node's, every setting at its default (the test hooks', SenderTest.kt and
 // ai: ReceiverTest.kt); the receiver's set in the run held in memory.
 object Prefs {
@@ -25,7 +23,7 @@ object Prefs {
 
     // ai: The receiver's (2026-10-25, the web's recv:<id> keys, the Android app's "lizard" preferences): the camera (its
     // ai: id, camera.h Info::id), the crop (1:1, 2:1), the decoder (auto, gpu, cpu), the batch size (1 to 32), the folds
-    // ai: and the rail, Show statistics; and Home's first-run tips seen. Each camera's own mode, zoom, exposure and gain
+    // ai: and the rail, Show statistics. Each camera's own mode, zoom, exposure and gain
     // ai: are the receive session's since 2026-10-31 (Native.data/cameras.json, liblizard/core/rx/session.h), taken over
     // ai: once from the keys this node held for them (camerasMoved). Under forget() the node is the run's own, in memory
     // ai: (2026-10-25): nothing kept from before is read and nothing is written, but a setting made in the run holds for
@@ -111,7 +109,6 @@ object Prefs {
         var stats: Boolean get() = bool("stats", false); set(v) { put("stats", v.toString()) }
         // ai: Save replays, kept across starts (since 2026-11-02; every start began off before)
         var replays: Boolean get() = bool("replays", false); set(v) { put("replays", v.toString()) }
-        var tipsSeen: Boolean get() = bool("tipsSeen", false); set(v) { put("tipsSeen", v.toString()) }
     }
     private fun str(k: String, d: String) = p?.get(k, d) ?: d
     private fun int(k: String, d: Int) = p?.getInt(k, d) ?: d
@@ -133,8 +130,6 @@ object Prefs {
     var codes: Int get() = int("codes", 1); set(v) { p?.putInt("codes", v) }
     // ai: Exclusive fullscreen (Send's Experimental fold, 2026-10-31): Fullscreen while sending takes the monitor (SendState.lease)
     var exclusiveFull: Boolean get() = bool("exclusiveFull", false); set(v) { p?.putBoolean("exclusiveFull", v) }
-    // ai: its warning taken (Screen.kt ExclusiveTip): shown at the first turn-on until it is accepted
-    var exclusiveSeen: Boolean get() = bool("exclusiveSeen", false); set(v) { p?.putBoolean("exclusiveSeen", v) }
     var experimentalOpen: Boolean get() = bool("experimental", false); set(v) { p?.putBoolean("experimental", v) }
     var vsync: Boolean get() = bool("vsync", true); set(v) { p?.putBoolean("vsync", v) }   // ai: on unless turned off
     var settingsOpen: Boolean get() = bool("dev", false); set(v) { p?.putBoolean("dev", v) }
@@ -142,9 +137,6 @@ object Prefs {
     var collapsed: Boolean get() = bool("collapsed", false); set(v) { p?.putBoolean("collapsed", v) }
     // ai: the tool screens' column as its edge was dragged, dp (2026-10-31; 0: the web's 20rem), Receive's and Send's
     var sideDp: Float get() = p?.getFloat("sideDp", 0f) ?: 0f; set(v) { p?.putFloat("sideDp", v) }
-    // ai: the first-send tip taken (Screen.kt BrightnessTip); "tipSeen" since 2026-10-23, when it gained power saving
-    // ai: and was due once more ("brightnessSeen" before)
-    var brightnessSeen: Boolean get() = bool("tipSeen", false); set(v) { p?.putBoolean("tipSeen", v) }
 }
 
 // ai: The sender's own figures beside Readout's (liblizard/kotlin/Readout.kt bytes and rate): digits as the web prints

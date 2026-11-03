@@ -1,7 +1,6 @@
 package dev.lizard.desktop
 
 import dev.lizard.Session
-import dev.lizard.readout.Readout
 import dev.lizard.tar.TAR_TYPE
 import dev.lizard.tar.untar
 import kotlinx.serialization.json.JsonArray
@@ -222,7 +221,7 @@ object Received {
         if (moveListed(src, dest, entryOf(dest))) return entryOf(dest)
         // ai: no copy begun that cannot end (0: the room not known)
         val room = dir.usableSpace
-        if (room in 1 until src.length()) throw IOException("${dir.path} has ${Readout.bytes(room)} free, the file is ${Readout.bytes(src.length())}")
+        if (room in 1 until src.length()) throw IOException("${dir.path}: not enough space")
         val part = File(dir, STAGING[0] + root.take(16))
         try {
             part.delete()   // ai: a copy cut short (Windows refuses to copy over a hidden file)
@@ -355,7 +354,7 @@ object Received {
         if (!ok) run(if (Native.windows) listOf("explorer", f.path) else if (Native.mac) listOf("open", f.path) else listOf("xdg-open", f.path))
     }
 
-    // ai: A web page in the desktop's browser (Home's example on video)
+    // ai: A web page in the desktop's browser (About's Source code)
     fun browse(url: String) = thread(name = "lizard-open", isDaemon = true) {
         val ok = runCatching { Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE) && run { Desktop.getDesktop().browse(java.net.URI(url)); true } }
             .getOrDefault(false)

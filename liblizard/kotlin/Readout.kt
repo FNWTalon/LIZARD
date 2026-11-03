@@ -90,7 +90,7 @@ object Readout {
         // ai: nothing while the camera starts or the receiver has not answered: the preview's cover says "Getting ready"
         // ai: with its spinner (Receive.kt); "Starting the camera" and "Getting ready" stood beside it until 2026-11-02
         starting || gettingReady(on, false, loading, rx) -> Line("")
-        rx.state == "error" -> Line("Reading stopped. Start the camera again to go on.", Tone.Bad)
+        rx.state == "error" -> Line("Reading stopped.", Tone.Bad)
         // ai: the test stream first while the camera reads it (2026-10-05): it takes over from a file received or in
         // ai: progress, which shows again once the camera is back on its frames (receiver.cpp's state the same)
         on && rx.state == "test" -> Line("Reading the test stream")

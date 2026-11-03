@@ -388,23 +388,7 @@ class SendState {
         madeTar?.delete(); madeTar = null
     }
 
-    // ai: Start as the person presses it (the column's Start, the rail's play): before the first send, the brightness tip
-    // ai: (2026-10-04; the web sender's the same): the monitor's contrast and brightness are the channel's and no app
-    // ai: sets them (2026-10-03, the S26 by hand: the contrast at its maximum took 2:1, two LIZARD-416 under one code
-    // ai: rate, past 2.90 MB/s). Shown until a send goes from it (its Start),
-    // ai: Cancel leaving it for the next press; the test hook's start() and Resume never show it.
-    var askBrightness by mutableStateOf(false)
-    // ai: taken in this run, whether or not Prefs keep it (send.mjs seenHere)
-    private var tipTaken = false
-    fun requestStart() {
-        if (!canStart) return
-        if (tipTaken || Prefs.brightnessSeen) start() else askBrightness = true
-    }
-    fun answerBrightness(go: Boolean) {
-        askBrightness = false
-        if (go) { tipTaken = true; Prefs.brightnessSeen = true; start() }
-    }
-
+    // ai: Start (the column's, the rail's play, the hook's); no tip before it since 2026-11-03
     fun start() {
         if (!canStart) return
         runTest = test
@@ -455,19 +439,19 @@ class SendState {
     // ai: the window closing: the run stopped and the made transfer let go
     fun close() { closing = true; stop(); dropMade() }
     // ai: Send left for another screen (App.go, 2026-10-25; the Android app's go()): full screen left while its canvas
-    // ai: still has a window, the tip put away, the run stopped (the presenter's canvas leaves the window with the
+    // ai: still has a window, the run stopped (the presenter's canvas leaves the window with the
     // ai: screen); the made transfer kept for a return
     fun leave() {
         if (full) toggleFull()
-        askBrightness = false; edgeRail = false
+        edgeRail = false
         if (sending) stop()
     }
 
     private fun fail(why: String) { stop(); phase = Phase.Error(why) }
 
-    // ai: play and pause as a video player's (the rail's button, Space and K): Start where nothing runs (the tip first
-    // ai: where it is due), else Pause or Resume
-    fun playPause() { if (phase == Phase.On) pause(!paused) else if (!sending) requestStart() }
+    // ai: play and pause as a video player's (the rail's button, Space and K): Start where nothing runs, else
+    // ai: Pause or Resume
+    fun playPause() { if (phase == Phase.On) pause(!paused) else if (!sending) start() }
     // ai: Paused: the last picture stays; a receiver holds what it has. In the window (2026-11-02) it becomes a still:
     // ai: the picture on screen read back (`stamp`), the presenter stopped and the canvas out of the window, so the area
     // ai: is Compose's (DesktopSend.Stamped) and a resize moves nothing native; Resume makes both again, the format picked
@@ -625,16 +609,8 @@ class SendState {
     fun chooseMargin(v: Int) { margin = v.coerceIn(Pick.QUIET, Room.MARGIN_MAX); Prefs.margin = margin }
     fun chooseRing(v: Int) { ring = if (v in Pick.RINGS.indices) v else -1; Prefs.ring = ring; repick() }
     fun chooseCodes(v: Int) { codes = if (v == 2) 2 else 1; Prefs.codes = codes; repick() }
-    // ai: Exclusive fullscreen's warning (Screen.kt ExclusiveTip), once: the first turn-on asks first; Cancel leaves it
-    // ai: off and the warning for the next turn-on
-    var askExclusive by mutableStateOf(false)
-    fun answerExclusive(go: Boolean) {
-        askExclusive = false
-        if (go) { Prefs.exclusiveSeen = true; chooseExclusiveFull(true) }
-    }
     // ai: turned on in full screen while the codes play: the monitor taken (takeOver); turned off while it is: given back
     fun chooseExclusiveFull(on: Boolean) {
-        if (on && !exclusiveFull && !Prefs.exclusiveSeen) { askExclusive = true; return }
         exclusiveFull = on; Prefs.exclusiveFull = on
         if (on) takeOver() else if (leased) toggleFull()
     }
@@ -769,9 +745,9 @@ class SendState {
         val b = sentBlocks
         val l = mutableListOf<String>()
         l += "LIZARD-${f.subch} ($b blocks${if (tiers.isNotEmpty()) ": $tiers" else ""}), picture ${sd.num("n").toInt()} samples in the ${f.span / 2}-cell ring" +
-            if (blocks > 0) ", set by hand" else ", chosen from a ${room.roundToInt()} px room and nothing else"
+            if (blocks > 0) ", manual" else ", auto for ${room.roundToInt()} px"
         if (!runTest) l += "file $fileSize B${sd.num("sentBytes").toLong().let { if (it in 1 until fileSize) ", $it B as sent (zstd)" else "" }}: ${sd.num("chunks").toInt()} chunk${if (sd.num("chunks").toInt() == 1) "" else "s"}, " +
-            "${sd.num("lap").toInt()} data blocks a pass, BLAKE3 ${sd.str("root").take(16)}..., header in the light" +
+            "${sd.num("lap").toInt()} data blocks a pass, BLAKE3 ${sd.str("root").take(16)}..." +
             (sd.num("pass").let { p -> if (p >= 1) "\npass ${floor(p).toInt()}" + (sd.num("offeredKBs").let { k -> if (k > 0 && sd.num("lap") > 0) ", ${Fmt.f1(sd.num("lap") / (k * 1000 / Pick.PAYLOAD))} s a pass" else "" }) else "" })
         l += "frame ${sd.num("width").toInt()} x ${sd.num("side").toInt()} px" + (if (f.codes > 1) ", ${f.codes} side by side $spacing modules apart" else "") + ", margin $margin modules" +
             (pr?.let { " on a ${it.str("surface").replace("x", " x ")} px surface" } ?: "")
@@ -782,7 +758,7 @@ class SendState {
                 (if (pr.num("modeFrom") > 0) ", held by VSync from ${Fmt.f1(pr.num("modeFrom"))} Hz" else "") + ", times from ${if (pr.flag("presentWait")) "present_wait" else "the acquires"}"
             val held = (pr["held"] as? JsonObject)?.entries?.sortedBy { it.key.toIntOrNull() ?: Int.MAX_VALUE }
                 ?.joinToString(", ") { "${it.key}: ${(it.value as? JsonPrimitive)?.contentOrNull ?: "?"}" }.orEmpty()
-            l += "pictures by the refreshes each held: ${held.ifEmpty { "none" }}; missed ${pr.num("missed").toInt()}, behind the painter ${pr.num("behind").toInt()}"
+            l += "refreshes a picture: ${held.ifEmpty { "none" }}; missed ${pr.num("missed").toInt()}, behind ${pr.num("behind").toInt()}"
             l += "presenter: Vulkan on ${pr.str("device")}${if (pr.flag("paused")) ", paused" else ""}"
         }
         l += (if (sd.str("painter") == "gpu") "encoder: GPU, ${sd.str("device")}, ${Fmt.f1(sd.num("paintMs"))} ms a frame"

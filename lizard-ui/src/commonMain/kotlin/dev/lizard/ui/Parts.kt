@@ -360,15 +360,13 @@ fun MoreMenu(label: String, acts: List<Act>) {
     }
 }
 
-// ai: A question before a deletion (the web's .dialog): its title, what goes, Cancel and the red action; on white, 12 dp
-// ai: corners
+// ai: A question before a deletion (the web's .dialog): its title, Cancel and the red action; on white, 12 dp corners
 @Composable
-fun AskDialog(title: String, text: String, action: String, onDismiss: () -> Unit, onConfirm: () -> Unit) =
+fun AskDialog(title: String, action: String, onDismiss: () -> Unit, onConfirm: () -> Unit) =
     AlertDialog(onDismissRequest = onDismiss,
         confirmButton = { Btn(action, Kind.Danger) { onDismiss(); onConfirm() } },
         dismissButton = { Btn("Cancel", Kind.Text, onClick = onDismiss) },
         title = { Text(title, style = MaterialTheme.typography.titleMedium, color = Fg) },
-        text = { Text(text, style = MaterialTheme.typography.bodyLarge, color = Fg) },
         shape = RoundedCornerShape(12.dp), containerColor = Bg)
 
 // ai: The buttons (the web's button, .primary, .text, .danger): pills a target tall, the sides' room `pad`; a label one
@@ -413,29 +411,6 @@ fun Chip(text: String, on: Boolean, enabled: Boolean = true, onClick: () -> Unit
 @Composable
 fun Chips(content: @Composable () -> Unit) =
     FlowRow(Modifier.selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { content() }
-
-// ai: A first-run tip (the web's .tip): a card on the card fill, an info icon, what the caller puts in it, a text "Got
-// ai: it"; shown until one is pressed (Home's Show tips again brings it back)
-@Composable
-fun TipCard(onGot: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(top = 12.dp).clip(RoundedCornerShape(12.dp)).background(Card)
-        .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Icon(Icons.info, contentDescription = null, Modifier.size(24.dp), tint = Muted)
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            content()
-            Btn("Got it", Kind.Text, modifier = Modifier.offset(x = (-12).dp), onClick = onGot)
-        }
-    }
-}
-
-// ai: The tip's numbered steps (the web's ol): the numbers in a column of their own, so every step's text starts at one edge
-@Composable
-fun Steps(steps: List<String>) = Column {
-    for ((i, step) in steps.withIndex()) Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("${i + 1}.", style = MaterialTheme.typography.bodyLarge, color = Fg, modifier = Modifier.width(18.dp))
-        Text(step, style = MaterialTheme.typography.bodyLarge, color = Fg)
-    }
-}
 
 // ai: A line of text in the select's look (2026-10-27, the phone's address): the soft fill, 8 dp corners, the
 // ai: placeholder muted while empty; done with the text at Enter, or as the focus leaves it changed

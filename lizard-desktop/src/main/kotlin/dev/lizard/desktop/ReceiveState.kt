@@ -687,7 +687,7 @@ class ReceiveState(private val app: App) {
             val word = j["word"] as? JsonObject
             val v = word?.num("version")?.toInt() ?: 0
             val named = if (v > 0) "LIZARD-${Pick.STEP * v}${word?.num("fps")?.toInt()?.takeIf { it > 0 }?.let { " at $it fps" } ?: ""}" else "no word yet"
-            val told = (j["totals"] as? JsonObject)?.let { t -> "${t.num("blocks").toLong()} blocks in ${t.num("frames").toLong()} frames all told" }
+            val told = (j["totals"] as? JsonObject)?.let { t -> "total ${t.num("blocks").toLong()} blocks in ${t.num("frames").toLong()} frames" }
             if (now) put("code", "found ${f(100 * j.num("foundShare"), 0)}%" + (if (j.num("side") > 0) ", symbol ${f(j.num("side"), 0)} px" else "") + ", $named",
                 "${Readout.rate(j.num("goodputKBs"))}, ${j.num("blocks").toInt()} blocks in ${f(j.num("windowSecs"), 2)} s" + (told?.let { "; $it" } ?: ""))
             else put("code", named, told)

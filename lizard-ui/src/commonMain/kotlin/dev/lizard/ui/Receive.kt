@@ -140,6 +140,7 @@ private fun Side(h: ReceiveHost) {
     if (h.experimental.isNotEmpty()) Fold("Experimental", h.folds.open(FoldKey.RecvExperimental), { h.folds.toggle(FoldKey.RecvExperimental) }) { Settings(h.experimental) }
     Fold("Developer Tools", h.folds.open(FoldKey.RecvTools), { h.folds.toggle(FoldKey.RecvTools) }) { Settings(h.tools) }
     AboutFold(h.about)
+    SourceRow()
     Spacer(Modifier.height(24.dp))
 }
 

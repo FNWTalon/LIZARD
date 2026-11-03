@@ -36,11 +36,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.PointerIcon
-import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import dev.lizard.readout.Readout
 import java.text.DateFormat
@@ -80,13 +76,8 @@ fun countOf(n: Int) = "$n ${if (n == 1) "file" else "files"}"
 class FileItem(val key: String, val name: String, val bundle: Boolean, val files: Int, val size: Long, val at: Long,
                val open: () -> Unit, val acts: List<Act>, val delete: () -> Unit)
 
-// ai: What Home shows and does, the app's: its files and unfinished transfers, its words where a device names itself
+// ai: What Home shows and does, the app's: its files and unfinished transfers
 interface HomeHost {
-    val tipsSeen: Boolean
-    fun tipsDone()
-    fun tipsAgain()
-    val tipSteps: List<String>
-    fun openExample()
     val sendSolid: Boolean           // ai: the solid tile: Send on a desktop, Receive on a phone (as the web picks by pointer)
     fun goSend()
     fun goReceive()
@@ -97,24 +88,17 @@ interface HomeHost {
     val files: List<FileItem>
     fun deleteAll()
     val note: String                 // ai: what came of a Save or a filing; "" none
-    val device: String               // ai: "computer", "phone": the words of a deletion
     val about: String
 }
 
-// ai: Home (the web's index.html; both apps' since 2026-10-31): the first-run tip (its first line semibold) until it is dismissed, Send and Receive
-// ai: side by side, the unfinished transfers (shown where there are any: a press or Continue opens Receive, which
-// ai: resumes one once its file is in the light), the received files (shown where there are any), and Settings (the
-// ai: tips again, the received files with Delete all, About).
+// ai: Home (the web's index.html; both apps' since 2026-10-31): Send and Receive side by side, the unfinished transfers
+// ai: (shown where there are any: a press or Continue opens Receive, which resumes one once its file is in the light),
+// ai: the received files (shown where there are any), and Settings (the received files with Delete all, About). No
+// ai: tips (2026-11-03).
 @Composable
 fun HomeScreen(h: HomeHost) {
     LaunchedEffect(Unit) { h.refresh() }
     Page(null, null) {
-        if (!h.tipsSeen) TipCard(onGot = { h.tipsDone() }) {
-            Text("Send a file from one screen to another device's camera.", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold, color = Fg)
-            Steps(h.tipSteps)
-            Text("An example on video", style = MaterialTheme.typography.bodyLarge.copy(textDecoration = TextDecoration.Underline), color = Fg,
-                modifier = Modifier.pointerHoverIcon(PointerIcon.Hand).clickable(role = Role.Button) { h.openExample() })
-        }
         Row(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             HomeTile(Icons.monitor, "Send", solid = h.sendSolid, modifier = Modifier.weight(1f)) { h.goSend() }
             HomeTile(Icons.camera, "Receive", solid = !h.sendSolid, modifier = Modifier.weight(1f)) { h.goReceive() }
@@ -158,7 +142,7 @@ private fun PartialRow(h: HomeHost, p: Partial, last: Boolean) {
         lead = Icons.file, divider = !last, onClick = { h.goReceive() }) {
         MoreMenu("More for $name", listOf(Act("Continue") { h.goReceive() }, Act("Delete", danger = true) { asking = true }))
     }
-    if (asking) AskDialog("Delete $name?", "The part received goes from this ${h.device}.", "Delete", { asking = false }) { h.deletePartial(p) }
+    if (asking) AskDialog("Delete $name?", "Delete", { asking = false }) { h.deletePartial(p) }
 }
 
 @Composable
@@ -168,11 +152,10 @@ private fun FileRow(h: HomeHost, e: FileItem, last: Boolean) {
         lead = if (e.bundle) Icons.folder else Icons.file, divider = !last, onClick = e.open) {
         MoreMenu("More for ${e.name}", e.acts + Act("Delete", danger = true) { asking = true })
     }
-    if (asking) AskDialog("Delete ${e.name}?", "It goes from this ${h.device}." + if (h.device == "phone") " A copy saved elsewhere stays." else "",
-        "Delete", { asking = false }) { e.delete() }
+    if (asking) AskDialog("Delete ${e.name}?", "Delete", { asking = false }) { e.delete() }
 }
 
-// ai: Home's settings (the web Home's .settings): the tips again, the received files' count and size with Delete all
+// ai: Home's settings (the web Home's .settings): the received files' count and size with Delete all
 // ai: (asked first; the unfinished transfers stay), About (a fold: the build line and the credits, AboutFold)
 @Composable
 private fun HomeSettings(h: HomeHost) {
@@ -180,13 +163,12 @@ private fun HomeSettings(h: HomeHost) {
     val files = h.files
     val n = files.size
     SectionLabel("Settings")
-    ListRow("Show tips again", divider = true, onClick = { h.tipsAgain() })
-    ListRow("Received files", if (n == 0) "No files kept." else "${countOf(n)} kept, ${Readout.bytes(files.sumOf { it.size })}") {
+    ListRow("Received files", if (n == 0) "None" else "${countOf(n)} · ${Readout.bytes(files.sumOf { it.size })}") {
         if (n > 0) Btn("Delete all", Kind.Danger) { asking = true }
     }
     AboutFold(h.about)
-    if (asking) AskDialog("Delete ${countOf(n)}?", "They go from this ${h.device}." + if (h.device == "phone") " Copies saved elsewhere stay." else "",
-        "Delete all", { asking = false }) { h.deleteAll() }
+    SourceRow()
+    if (asking) AskDialog("Delete ${countOf(n)}?", "Delete all", { asking = false }) { h.deleteAll() }
 }
 
 // ai: A bundle's files (2026-10-16; where a platform opens a bundle in the app, the phone): its count and size, its

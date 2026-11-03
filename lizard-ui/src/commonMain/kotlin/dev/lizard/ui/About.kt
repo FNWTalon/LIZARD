@@ -3,6 +3,7 @@ package dev.lizard.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -34,6 +35,20 @@ val CREDITS = listOf(
 // ai: what an app's own build carries besides (LizardTheme's `credits`: the desktop's runtime and the libraries its
 // ai: packages bring, the phone's AndroidX)
 val LocalCredits = staticCompositionLocalOf { emptyList<Credit>() }
+
+// ai: The repository, opened in the platform's browser (LizardTheme's `browse`: Android's ACTION_VIEW, the desktop's
+// ai: browser)
+const val SOURCE_URL = "https://github.com/FNWTalon/LIZARD"
+val LocalBrowse = staticCompositionLocalOf<(String) -> Unit> { {} }
+
+// ai: Source code (2026-11-03; the web's #source): a row after About on Home, Send and Receive, drawn as a fold's row (a
+// ai: hairline over it, 56 dp), opening the repository
+@Composable
+fun SourceRow() {
+    val browse = LocalBrowse.current
+    HorizontalDivider(color = Line)
+    ListRow("Source code", onClick = { browse(SOURCE_URL) })
+}
 
 // ai: About's list, a line a license: "MIT: volk, JSON for Modern C++", the licenses in the order they first come, each
 // ai: line's works in theirs

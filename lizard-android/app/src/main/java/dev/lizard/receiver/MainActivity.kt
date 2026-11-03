@@ -63,7 +63,7 @@ import dev.lizard.ui.*
 import androidx.compose.ui.unit.dp
 
 // ai: The app (2026-10-01): three screens, Home (Send and Receive, the received files, and at the bottom Settings: the
-// ai: tips again, the received files' size, About), Receive (the camera and the transfer, then Settings and Developer
+// ai: received files' size, About), Receive (the camera and the transfer, then Settings and Developer
 // ai: Tools, rows that open, and About) and Send (a file, Start, Settings, Developer Tools, About); since 2026-10-02 as
 // ai: the web's pages after their tidying. One activity, its `screen` and the system back between them, no navigation
 // ai: library. The web's pages are the same shell (lizard-web/index.html, recv.html, send.html) and the words the same
@@ -113,7 +113,6 @@ class MainActivity : ComponentActivity() {
     internal var files by mutableStateOf(listOf<Received.Entry>())
     // ai: transfers begun and not finished (2026-10-22, the session's store): Home lists them to continue or delete
     internal var partials by mutableStateOf(listOf<Partial>())
-    internal var tipsSeen by mutableStateOf(false)
     // ai: The landscape column's width on Receive and Send, dp (2026-10-05): 0 the default (SideWidth), else what its edge
     // ai: was dragged to (SideEdge), kept as `sideDp`; sideDragging while a finger is on the edge (Send re-picks after).
     internal var sideDp by mutableStateOf(0f)
@@ -188,7 +187,6 @@ class MainActivity : ComponentActivity() {
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) { setShowWhenLocked(true); setTurnScreenOn(true) }
         prefs = getSharedPreferences(Settings.PREFS, MODE_PRIVATE)
         sideDp = prefs.getFloat("sideDp", 0f)
-        tipsSeen = prefs.getBoolean("tipsSeen", false)
         for (k in FOLDS) folds[k] = prefs.getBoolean(k, false)
         settings = Settings.load(this)
         val data = File(filesDir, "session")
@@ -205,7 +203,8 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) handle(intent)
         publishShortcut()
         // ai: a mouse's pointer over a column's edge (DeX, a mouse on a tablet): Android's left-right double arrow
-        setContent { LizardTheme(TARGET, resizeIcon = PointerIcon(android.view.PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW), credits = CREDITS_HERE) { App() } }
+        setContent { LizardTheme(TARGET, resizeIcon = PointerIcon(android.view.PointerIcon.TYPE_HORIZONTAL_DOUBLE_ARROW), credits = CREDITS_HERE,
+            browse = { url -> try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } catch (_: ActivityNotFoundException) {} }) { App() } }
     }
 
     // ai: What a phone held before the receive session (2026-10-31), carried into its data folder at the first start, one
@@ -393,8 +392,6 @@ class MainActivity : ComponentActivity() {
         val on = settings.replays == "on" && settings.decoder != "pc"
         if (on != replaysOn) { replaysOn = on; receive.replays(on) }
     }
-    internal fun tipsDone() { tipsSeen = true; prefs.edit().putBoolean("tipsSeen", true).apply() }
-    internal fun tipsAgain() { tipsSeen = false; prefs.edit().putBoolean("tipsSeen", false).apply() }
     internal fun isOpen(k: String) = folds[k] == true
     internal fun toggle(k: String) { val v = !isOpen(k); folds[k] = v; prefs.edit().putBoolean(k, v).apply() }
 
@@ -405,7 +402,7 @@ class MainActivity : ComponentActivity() {
     internal fun open(e: Received.Entry) { if (e.bundle) openBundle(e) else openUri(received.uriOf(e.uri.ifEmpty { e.local }), e.mime) }
     internal fun openUri(u: Uri, mime: String) {
         val i = Intent(Intent.ACTION_VIEW).setDataAndType(u, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        try { startActivity(i) } catch (_: ActivityNotFoundException) { note = "No app on this phone opens $mime files: share it, or save a copy." }
+        try { startActivity(i) } catch (_: ActivityNotFoundException) { note = "No app opens $mime files." }
     }
     internal fun openBundle(e: Received.Entry) { shownBundle = e; go(Screen.Files) }
     internal fun share(e: Received.Entry) { if (e.bundle) shareAll(e) else shareUri(received.uriOf(e.uri.ifEmpty { e.local }), e.name, e.mime) }
@@ -417,14 +414,14 @@ class MainActivity : ComponentActivity() {
     // ai: every file of a bundle in one share, the type they have in common ("image/*", else any); a share too large
     // ai: for Android's binder (thousands of files) is said, and Save does it
     private fun shareAll(e: Received.Entry) {
-        if (e.items.isEmpty()) { note = "${e.name} holds no files."; return }
+        if (e.items.isEmpty()) { note = "${e.name} is empty."; return }
         val uris = ArrayList(e.items.map { received.uriOf(it.uri) })
         val types = e.items.map { Received.mimeOf(it.path) }.distinct()
         val kinds = types.map { it.substringBefore('/') }.distinct()
         val type = types.singleOrNull() ?: kinds.singleOrNull()?.let { "$it/*" } ?: "*/*"
         val i = Intent(Intent.ACTION_SEND_MULTIPLE).setType(type).putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         i.clipData = ClipData.newRawUri(e.name, uris[0]).apply { for (u in uris.drop(1)) addItem(ClipData.Item(u)) }
-        try { startActivity(Intent.createChooser(i, null)) } catch (_: ActivityNotFoundException) {} catch (_: RuntimeException) { note = "Too many files to share at once: save the folder instead." }
+        try { startActivity(Intent.createChooser(i, null)) } catch (_: ActivityNotFoundException) {} catch (_: RuntimeException) { note = "Too many files to share." }
     }
     internal fun saveCopy(e: Received.Entry) {   // ai: the Save buttons (a copy where the user picks; a bundle's folder into a folder picked)
         note = ""
@@ -543,9 +540,9 @@ class MainActivity : ComponentActivity() {
                     val values = ContentValues().apply {
                         put(MediaStore.Downloads.DISPLAY_NAME, name); put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream"); put(MediaStore.Downloads.IS_PENDING, 1)
                     }
-                    val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Downloads refused $name")
+                    val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("$name could not be written")
                     try {
-                        val n = (resolver.openOutputStream(uri) ?: throw IOException("Downloads refused $name")).use { out -> r.file.inputStream().use { it.copyTo(out) } }
+                        val n = (resolver.openOutputStream(uri) ?: throw IOException("$name could not be written")).use { out -> r.file.inputStream().use { it.copyTo(out) } }
                         resolver.update(uri, ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }, null, null)
                         n
                     } catch (e: Throwable) {
@@ -556,8 +553,7 @@ class MainActivity : ComponentActivity() {
             }
             main.post {
                 exporting = ""
-                replayNote = res.fold({ "$name in Downloads, ${"%.0f".format(Locale.ROOT, it / 1e6)} MB\nthen: adb pull " +
-                    "/sdcard/Download/$name research/replays/" }, { "${r.run}: ${it.message}" })
+                replayNote = res.fold({ "$name in Downloads, ${"%.0f".format(Locale.ROOT, it / 1e6)} MB" }, { "${r.run}: ${it.message}" })
                 Log.i(TAG, "replay: ${r.run} ${res.fold({ "downloaded" }, { "not downloaded: ${it.message}" })}")
             }
         }, "lizard-download").start()

@@ -104,8 +104,8 @@ fun ApplicationScope.LizardWindow(app: App, sendTest: SenderTest?, recvTest: Rec
         // ai: Keys wherever the focus is (the canvas takes none), as video players have them (2026-10-23; F11 and Escape
         // ai: before): Space or K play and pause (SendState.playPause), F or F11 full screen and back, Escape out of it,
         // ai: Ctrl+O (Command+O on macOS) add files where files are sent. A key held down acts once; the keys taken are taken whole (press,
-        // ai: typed, release), so Space on a focused button is the hotkey and not that button's press. While the
-        // ai: brightness tip is open, Escape alone (its Cancel). Send's alone (2026-10-25): Home and Receive take no key.
+        // ai: typed, release), so Space on a focused button is the hotkey and not that button's press. Send's alone
+        // ai: (2026-10-25): Home and Receive take no key.
         DisposableEffect(Unit) {
             val held = HashSet<Int>()
             val taken = HashSet<Int>()
@@ -119,8 +119,6 @@ fun ApplicationScope.LizardWindow(app: App, sendTest: SenderTest?, recvTest: Rec
                         val m = e.modifiersEx and mods
                         val act: (() -> Unit)? = when {
                             app.screen != Screen.Send -> null
-                            s.askBrightness -> if (e.keyCode == KeyEvent.VK_ESCAPE) ({ s.answerBrightness(false) }) else null
-                            s.askExclusive -> if (e.keyCode == KeyEvent.VK_ESCAPE) ({ s.answerExclusive(false) }) else null
                             e.keyCode == KeyEvent.VK_F11 -> ({ s.toggleFull() })
                             e.keyCode == KeyEvent.VK_ESCAPE && s.full -> ({ s.toggleFull() })
                             m == 0 && (e.keyCode == KeyEvent.VK_SPACE || e.keyCode == KeyEvent.VK_K) -> ({ s.playPause() })
@@ -175,7 +173,8 @@ fun ApplicationScope.LizardWindow(app: App, sendTest: SenderTest?, recvTest: Rec
             window.addComponentListener(resized)
             onDispose { window.removeComponentListener(resized) }
         }
-        LizardTheme(TARGET, scrollbar = { s, m -> FadingScrollbar(s, m) }, resizeIcon = RESIZE, credits = CREDITS_HERE) {
+        LizardTheme(TARGET, scrollbar = { s, m -> FadingScrollbar(s, m) }, resizeIcon = RESIZE, credits = CREDITS_HERE,
+            browse = { Received.browse(it) }) {
             Screens(app.screen, app.home, app.sendUi, app.receive)
         }
         if (sendTest != null) LaunchedEffect(Unit) { sendTest.run(s) }

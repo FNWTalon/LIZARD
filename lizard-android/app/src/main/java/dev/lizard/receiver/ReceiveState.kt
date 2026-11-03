@@ -136,7 +136,7 @@ class ReceiveState(private val a: MainActivity) {
             made++
         }.onFailure { e ->
             Log.e(TAG, "session: ${e.message}")
-            main.post { phaseTo(RxPhase.Error("The camera could not start: ${e.message}")) }
+            main.post { phaseTo(RxPhase.Error("The camera did not start: ${e.message}")) }
         }.getOrNull()
     }
     // ai: the start's thread: the session let go (the calls under way waited for, then its close: the camera stopped and

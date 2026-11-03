@@ -71,7 +71,7 @@ interface SendHost {
     val on: Boolean                    // ai: a send runs
     val paused: Boolean
     val canStart: Boolean
-    fun requestStart()
+    fun start()
     fun stop()
     fun pause(on: Boolean)
     val pauseShown: Boolean            // ai: Pause or Resume beside Stop (the desktop's while sending; the phone's paused)
@@ -102,7 +102,7 @@ interface SendHost {
     fun codeSize(maxWidth: Dp, maxHeight: Dp, portrait: Boolean): DpSize?   // ai: the code area's size in its room, null to fill it
     val rootModifier: Modifier         // ai: the platform's on the whole screen (the desktop's drops)
     @Composable fun CodeArea(modifier: Modifier)
-    @Composable fun Windows()          // ai: what the platform shows apart: the desktop's tips and edge rail, the phone's question
+    @Composable fun Windows() {}       // ai: what the platform shows apart: the desktop's edge rail in full screen
 }
 
 // ai: Send (the web's send.html; both apps' since 2026-10-31): a column (Start, or Stop and Pause or Resume while sending,
@@ -167,7 +167,7 @@ fun SendRail(h: SendHost) {
     h.heat?.let { AlertSquare(it) }
     Square {
         IconBtn(if (h.on && !h.paused) Icons.pause else Icons.play, if (!h.on) "Start" else if (h.paused) "Resume" else "Pause",
-            enabled = h.on || h.canStart) { if (h.on) h.pause(!h.paused) else h.requestStart() }
+            enabled = h.on || h.canStart) { if (h.on) h.pause(!h.paused) else h.start() }
     }
     RateSquare(h.railCapacity)
 }
@@ -178,7 +178,7 @@ private fun Side(h: SendHost) {
     val fill = LocalButtonsFill.current
     Row(if (fill) Modifier.fillMaxWidth() else Modifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         val grow = if (fill) Modifier.weight(1f) else Modifier
-        if (!h.busy) Btn("Start", Kind.Primary, enabled = h.canStart, modifier = grow) { h.requestStart() }
+        if (!h.busy) Btn("Start", Kind.Primary, enabled = h.canStart, modifier = grow) { h.start() }
         else {
             Btn("Stop", modifier = grow, pad = 16.dp) { h.stop() }
             if (h.pauseShown) {
@@ -208,6 +208,7 @@ private fun Side(h: SendHost) {
         h.readout?.let { CodeBlock(it.text, it.size) }
     }
     AboutFold(h.about)
+    SourceRow()
     Spacer(Modifier.height(24.dp))
 }
 

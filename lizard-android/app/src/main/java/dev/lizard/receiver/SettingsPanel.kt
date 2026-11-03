@@ -12,7 +12,7 @@ import dev.lizard.ui.*
 // ai: Settings, as the web's pages hold them since 2026-10-02. Receive: under the transfer, Settings (the decoder and
 // ai: its batch size, the camera: lens, resolution, format, zoom, crop), Developer Tools (Save replays, the lab line, the
 // ai: readout: the decoder, camera, code, file, lock and heat a line each) and About,
-// ai: the camera running beside them. Home: the tips again, the received files with Delete all, About. The Settings screen, reached by a gear on
+// ai: the camera running beside them. Home: the received files with Delete all, About. The Settings screen, reached by a gear on
 // ai: Home and Receive, went with them. Options bare, no descriptions.
 
 // ai: The readout, a labelled line or two a part, from the session's stats JSON (the receiver's, its camera's report:
@@ -55,7 +55,7 @@ internal fun MainActivity.devReadout(): String {
         put("code", "found ${f(100 * j.num("foundShare"), 0)}%" + (if (j.num("side") > 0) ", symbol ${f(j.num("side"), 0)} px" else "") +
                 (if (v > 0) ", LIZARD-${Pick.STEP * v}${word?.int("fps")?.takeIf { it > 0 }?.let { " at $it fps" } ?: ""}" else ", no word yet"),
             "${Readout.rate(j.num("goodputKBs"))}, ${j.int("blocks")} blocks in ${f(j.num("windowSecs"), 2)} s" +
-                (j.obj("totals")?.let { t -> "; ${t.int("blocks")} blocks in ${t.int("frames")} frames all told" } ?: ""))
+                (j.obj("totals")?.let { t -> "; total ${t.int("blocks")} blocks in ${t.int("frames")} frames" } ?: ""))
         val file = j.obj("file")
         put("file", when {
             j.flag("test") -> "the test stream"

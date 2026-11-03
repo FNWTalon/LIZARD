@@ -75,7 +75,7 @@ internal class AndroidReceive(private val a: MainActivity) : ReceiveHost {
     override fun goSend() = a.go(Screen.Send)
     private val on get() = a.phase == RxPhase.On
     override val line: Readout.Line get() =
-        if (!a.granted) Readout.Line(if (a.denied) "The camera is off for LIZARD. Allow it in Android's settings to receive." else "LIZARD needs the camera to read the code on the other screen.")
+        if (!a.granted) Readout.Line(if (a.denied) "Camera access is off." else "")
         else Readout.line(on, a.phase == RxPhase.Starting, a.phase == RxPhase.Loading, (a.phase as? RxPhase.Error)?.why, a.rx,
             a.files.firstOrNull { it.root == a.root && it.bundle }?.files ?: 0)
     override val showStats get() = s.stats == "on"

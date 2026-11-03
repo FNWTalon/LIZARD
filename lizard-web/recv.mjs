@@ -740,7 +740,7 @@ function second() {
   // ai: while the word is live; the sender's own control for it is Settings' FPS slider ("Receiving with" went
   // ai: 2026-10-02).
   const fast = live && band.fps > WEB_FPS ? `${band.fps} pictures a second is too fast for a browser: use the LIZARD app, or send at ${WEB_FPS}.` : "";
-  ui.why = [lead, clipping && "The picture is washed out: avoid glare, or turn the other screen's brightness down.", live && slow ? "This camera runs slower than the code changes, so some of it is missed." : "", fast].filter(Boolean).join("\n");
+  ui.why = [lead, clipping && "The picture is washed out: avoid glare, or turn the other screen's brightness down.", fast].filter(Boolean).join("\n");
   showState();
   // ai: The frame path's diagnostics go to the console (read over adb DevTools) and the stats row, not the page, which
   // ai: keeps what a user aims and judges by (2026-09-25).

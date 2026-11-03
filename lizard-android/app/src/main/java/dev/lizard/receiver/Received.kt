@@ -225,9 +225,9 @@ class Received(private val ctx: Context, private val data: File) {
             put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/" + sub)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v) ?: throw IOException("Downloads refused $name")
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v) ?: throw IOException("$name could not be written")
         try {
-            val fd = resolver.openFileDescriptor(uri, "w") ?: throw IOException("Downloads refused $name")
+            val fd = resolver.openFileDescriptor(uri, "w") ?: throw IOException("$name could not be written")
             ParcelFileDescriptor.AutoCloseOutputStream(fd).use { o -> src.inputStream().use { it.copyTo(o, 1 shl 16) }; o.fd.sync() }
             if (pending == null) resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
             else pending += uri
@@ -308,7 +308,7 @@ class Received(private val ctx: Context, private val data: File) {
                 if (lib?.parentFile?.absolutePath == oldLibrary.absolutePath) lib.deleteRecursively()
             }
         }
-        if (left > 0) throw IOException("${e.name}: $left of its files not deleted")
+        if (left > 0) throw IOException(e.name)
         synchronized(mu) { write(read().filter { it.id != e.id || it.local != e.local }) }
     }
 
