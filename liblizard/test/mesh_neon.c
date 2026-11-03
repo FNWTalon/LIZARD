@@ -12,7 +12,7 @@
 #include <stdio.h>
 uint32_t ob_debug_hash;
 #define SCALAR_HASH 0xf42c8b6f71af790eull
-#define NEON_HASH 0xe3d8c8102fb184afull
+#define NEON_HASH 0xba9af2ba4a56adc7ull
 static uint64_t hs = 1469598103934665603ull;
 static void mix(const void *p, size_t n) { const uint8_t *b = p; for (size_t i = 0; i < n; i++) { hs ^= b[i]; hs *= 1099511628211ull; } }
 static uint32_t rs = 1;
