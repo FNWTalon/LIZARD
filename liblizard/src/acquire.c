@@ -133,8 +133,10 @@ static void binarize(const uint8_t *img, int w, int h, uint8_t *bin, uint32_t *c
   int *mean = frame_buf(fb, OB_FB_MEAN, (size_t)bw * bh * sizeof(int));
   uint8_t *trow = malloc((size_t)bw * BLK + 16);
   uint16_t *col = malloc(((size_t)bw * BLK + 16) * sizeof(uint16_t));
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   int *vsum = malloc(((size_t)bw + 4) * sizeof(int));   // a block row's sums down five block rows
+#endif
+#ifdef OB_NEON
   const int bands = h / 32;                             // the whole bands, whose words the compare makes
   uint8_t *planes = cb ? malloc((size_t)4 * w + 16) : NULL;   // a band's four block rows' bytes of bits
 #else
@@ -152,6 +154,22 @@ static void binarize(const uint8_t *img, int w, int h, uint8_t *bin, uint32_t *c
         uint16x8_t a = vdupq_n_u16(0), b = a;
         for (int r = 0; r < BLK; r++) { a = vpadalq_u8(a, vld1q_u8(p + (size_t)r * w + bx * BLK)); b = vpadalq_u8(b, vld1q_u8(p + (size_t)r * w + bx * BLK + 16)); }
         vst1q_s32(mean + by * bw + bx, vreinterpretq_s32_u32(vshrq_n_u32(vpaddlq_u16(vpaddq_u16(a, b)), 6)));
+      }
+    }
+#elif defined(OB_X86)
+    // ai: x86-64: four whole blocks a step: each image row's eight-pixel groups summed by PSADBW (2,040 at most), the
+    // ai: eight rows' added in 32-bit lanes, two blocks' to a vector: the integer sums of the loop below, so the same means
+    if (by < h / BLK) {
+      const uint8_t *p = img + (size_t)by * BLK * w;
+      const __m128i z = _mm_setzero_si128();
+      for (; (bx + 4) * BLK <= w; bx += 4) {
+        __m128i a = z, b = z;
+        for (int r = 0; r < BLK; r++) {
+          const uint8_t *q = p + (size_t)r * w + bx * BLK;
+          a = _mm_add_epi32(a, _mm_sad_epu8(_mm_loadu_si128((const __m128i *)q), z)); b = _mm_add_epi32(b, _mm_sad_epu8(_mm_loadu_si128((const __m128i *)(q + 16)), z));
+        }
+        const __m128i s4 = _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(a), _mm_castsi128_ps(b), _MM_SHUFFLE(2, 0, 2, 0)));
+        _mm_storeu_si128((__m128i *)(mean + by * bw + bx), _mm_srli_epi32(s4, 6));
       }
     }
 #elif defined(OB_SIMD)
@@ -203,6 +221,30 @@ static void binarize(const uint8_t *img, int w, int h, uint8_t *bin, uint32_t *c
       }
       for (int e = 0; e < 2; e++) memset(trow + e * BLK, bin_threshold(mean, bw, bh, e, by), BLK);
     }
+#elif defined(OB_X86)
+    // ai: x86-64: arm64's form (above): the five rows' sums, then five of those, s / 25 as (s * 5243) >> 17, the
+    // ai: thresholds packed to bytes and each spread over its block's 8 by PSHUFB
+    if (by >= 2 && by + 2 < bh && vsum) {
+      const int *m0 = mean + (by - 2) * bw;
+      int x = 0;
+      for (; x + 4 <= bw; x += 4) {
+        __m128i s4 = _mm_loadu_si128((const __m128i *)(m0 + x));
+        for (int d = 1; d < 5; d++) s4 = _mm_add_epi32(s4, _mm_loadu_si128((const __m128i *)(m0 + d * bw + x)));
+        _mm_storeu_si128((__m128i *)(vsum + x), s4);
+      }
+      for (; x < bw; x++) { int s = 0; for (int d = 0; d < 5; d++) s += m0[d * bw + x]; vsum[x] = s; }
+      const __m128i lo = _mm_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1), hi = _mm_setr_epi8(2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3);
+#define VSUM(o) _mm_loadu_si128((const __m128i *)(vsum + bx + (o)))
+      for (bx = 2; bx + 4 <= bw - 2; bx += 4) {
+        const __m128i s4 = _mm_add_epi32(_mm_add_epi32(_mm_add_epi32(VSUM(-2), VSUM(-1)), _mm_add_epi32(VSUM(0), VSUM(1))), VSUM(2));
+        const __m128i q = _mm_srli_epi32(_mm_mullo_epi32(s4, _mm_set1_epi32(5243)), 17);
+        const __m128i t = _mm_max_epi32(_mm_sub_epi32(q, _mm_set1_epi32(3)), _mm_setzero_si128());
+        const __m128i t8 = _mm_packus_epi16(_mm_packus_epi32(t, t), _mm_setzero_si128());
+        _mm_storeu_si128((__m128i *)(trow + bx * BLK), _mm_shuffle_epi8(t8, lo)); _mm_storeu_si128((__m128i *)(trow + bx * BLK + 16), _mm_shuffle_epi8(t8, hi));
+      }
+#undef VSUM
+      for (int e = 0; e < 2; e++) memset(trow + e * BLK, bin_threshold(mean, bw, bh, e, by), BLK);
+    }
 #endif
     for (; bx < bw; bx++) memset(trow + bx * BLK, bin_threshold(mean, bw, bh, bx, by), BLK);
 #ifdef OB_NEON
@@ -251,7 +293,10 @@ static void binarize(const uint8_t *img, int w, int h, uint8_t *bin, uint32_t *c
 #ifdef OB_NEON
   // ai: the last band where h is not a multiple of 32, or every band where the planes could not be had
   if (cb) for (int b = planes ? bands : 0; b < (h + 31) / 32; b++) col_bits_band(bin, w, h, b, 0, cb);
-  free(vsum); free(planes);
+  free(planes);
+#endif
+#if defined(OB_NEON) || defined(OB_X86)
+  free(vsum);
 #endif
   frame_buf_done(fb, mean); free(trow); free(col);
 }
