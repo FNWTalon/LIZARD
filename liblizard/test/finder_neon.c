@@ -1,8 +1,8 @@
 // ai: The finder's front (src/acquire.c) on synthetic captures, every output hashed: binarize, shrink2 and the corner
 // ai: marks' scan (both forms, scales 1, 1/2 and 1/4), on codes of the three rings painted through a homography with
 // ai: a little perspective, sharp and blurred, over noise, at sizes whose rows and columns end ragged. arm64's forms
-// ai: (OB_NEON) are exact, so a build with -DOB_SCALAR prints the same hash, as does x86-64 with or without -msse4.1.
-// ai: On arm64 the column bits' walk (cb_run) is also held to the byte loop at every row, both ways, both colours and
+// ai: (OB_NEON) and x86-64's (OB_X86, -msse4.1) are exact, so a build with -DOB_SCALAR prints the same hash. On arm64
+// ai: and x86-64 the column bits' walk (cb_run) is also held to the byte loop at every row, both ways, both colours and
 // ai: every cap to 40. test/neon_kernels.sh builds it both ways on a phone and compares. It includes acquire.c and links
 // ai: the rest of the codec:
 // ai:   cc -O2 -ffp-contract=off -Isrc test/finder_neon.c src/{layout,fmt,rs,ldpc,fft,lizard_phy,any,shake}.c -lm
@@ -14,7 +14,7 @@ static void mix(const void *p, size_t n) { const uint8_t *b = p; for (size_t i =
 static uint32_t rs = 7;
 static uint32_t rnd(void) { rs = rs * 1664525u + 1013904223u; return rs >> 8; }
 static float frand(void) { return (float)(rnd() & 0xffff) / 65536.0f; }
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
 // ai: the walk check's own stream, so the captures are the same in every build
 static uint32_t ws = 11;
 static uint32_t wrnd(void) { ws = ws * 1664525u + 1013904223u; return ws >> 8; }
@@ -78,7 +78,7 @@ int main(void) {
         mix(next, (size_t)sw * sh);
         frame_buf_done(NULL, g2); g2 = next; grey = next;
       }
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
       // ai: the column bits as binarize makes them, and once more as it makes them without its planes (every band
       // ai: from the bytes): the same words
       const size_t nw = (size_t)((sh + 31) / 32) * sw;
@@ -104,7 +104,7 @@ int main(void) {
         ncand += n;
         mix(&n, sizeof n); mix(c, (size_t)n * sizeof(cand_t));
       }
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
       // ai: every row of 48 columns (the last among them), both ways, both colours, caps 0 to 40
       for (int k = 0; k < 48; k++) {
         const int x = k == 47 ? sw - 1 : (int)(wrnd() % (unsigned)sw);

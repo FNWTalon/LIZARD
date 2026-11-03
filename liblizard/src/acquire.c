@@ -110,8 +110,8 @@ static void frame_buf_done(ob_fbufs_t *fb, void *p) { if (!fb) free(p); }
 #define frame_buf_done(fb, p) ((void)(fb), free(p))
 #endif
 void ob_fbufs_free(ob_fbufs_t *fb) { for (int k = 0; k < OB_FB_SLOTS; k++) { free(fb->p[k]); fb->p[k] = NULL; fb->cap[k] = 0; } }
-#ifdef OB_NEON
-// ai: arm64: the binarized image's columns as bits (the corner marks' column walks, cb_run), 32 rows a word: word
+#if defined(OB_NEON) || defined(OB_X86)
+// ai: arm64 and x86-64: the binarized image's columns as bits (the corner marks' column walks, cb_run), 32 rows a word: word
 // ai: (y >> 5) w + x holds column x's rows y & ~31 on, bit y & 31 its pixel (rows past h 0). binarize makes them as it
 // ai: compares: a block row's eight rows' bytes (0 or 1) into one by shift-inserts (SLI), a band's four of those
 // ai: interleaved into words by ST4; this fills band b's words from column x0 on from the bytes, where that cannot run
@@ -127,7 +127,8 @@ static void col_bits_band(const uint8_t *bin, int w, int h, int b, int x0, uint3
 #endif
 // Three passes: 8 x 8 block means, a 5 x 5 mean of those less 3 as each block's threshold, then the
 // compare. The vector paths cover whole blocks; a ragged right or bottom edge takes the scalar one.
-// ai: cb: on arm64, the column bits made as well where not NULL ((h + 31) / 32 w words); NULL elsewhere. fb: frame_buf's
+// ai: cb: on arm64 and x86-64, the column bits made as well where not NULL ((h + 31) / 32 w words); NULL elsewhere. fb:
+// ai: frame_buf's
 static void binarize(const uint8_t *img, int w, int h, uint8_t *bin, uint32_t *cb, ob_fbufs_t *fb) {
   int bw = (w + BLK - 1) / BLK, bh = (h + BLK - 1) / BLK;
   int *mean = frame_buf(fb, OB_FB_MEAN, (size_t)bw * bh * sizeof(int));
@@ -135,8 +136,6 @@ static void binarize(const uint8_t *img, int w, int h, uint8_t *bin, uint32_t *c
   uint16_t *col = malloc(((size_t)bw * BLK + 16) * sizeof(uint16_t));
 #if defined(OB_NEON) || defined(OB_X86)
   int *vsum = malloc(((size_t)bw + 4) * sizeof(int));   // a block row's sums down five block rows
-#endif
-#ifdef OB_NEON
   const int bands = h / 32;                             // the whole bands, whose words the compare makes
   uint8_t *planes = cb ? malloc((size_t)4 * w + 16) : NULL;   // a band's four block rows' bytes of bits
 #else
@@ -278,6 +277,40 @@ static void binarize(const uint8_t *img, int w, int h, uint8_t *bin, uint32_t *c
       }
       continue;
     }
+#elif defined(OB_X86)
+    // ai: x86-64: arm64's form (above): a block row of a whole band compared sixteen columns at a time (the bytes'
+    // ai: order made signed by flipping their top bits), each row's mask kept to its own bit of the plane's byte; a
+    // ai: band's fourth block row interleaves the four planes into words by two rounds of unpacks
+    if (planes && by < 4 * bands) {
+      const uint8_t *s0 = img + (size_t)by * BLK * w;
+      uint8_t *d0 = bin + (size_t)by * BLK * w, *pl = planes + (size_t)(by & 3) * w;
+      const __m128i one = _mm_set1_epi8(1), flip = _mm_set1_epi8((char)0x80);
+      int x = 0;
+      for (; x + 16 <= w; x += 16) {
+        const __m128i t = _mm_xor_si128(_mm_loadu_si128((const __m128i *)(trow + x)), flip);
+        __m128i v = _mm_setzero_si128();
+        for (int r = 0; r < BLK; r++) {
+          const __m128i lt = _mm_cmplt_epi8(_mm_xor_si128(_mm_loadu_si128((const __m128i *)(s0 + (size_t)r * w + x)), flip), t);
+          _mm_storeu_si128((__m128i *)(d0 + (size_t)r * w + x), _mm_and_si128(lt, one));
+          v = _mm_or_si128(v, _mm_and_si128(lt, _mm_set1_epi8((char)(1 << r))));
+        }
+        _mm_storeu_si128((__m128i *)(pl + x), v);
+      }
+      for (int r = 0; r < BLK; r++) for (int c = x; c < w; c++) d0[(size_t)r * w + c] = s0[(size_t)r * w + c] < trow[c];
+      if ((by & 3) == 3) {
+        uint32_t *o = cb + (size_t)(by >> 2) * w;
+        int c = 0;
+        for (; c + 16 <= w; c += 16) {
+          const __m128i p0 = _mm_loadu_si128((const __m128i *)(planes + c)), p1 = _mm_loadu_si128((const __m128i *)(planes + w + c));
+          const __m128i p2 = _mm_loadu_si128((const __m128i *)(planes + 2 * (size_t)w + c)), p3 = _mm_loadu_si128((const __m128i *)(planes + 3 * (size_t)w + c));
+          const __m128i l01 = _mm_unpacklo_epi8(p0, p1), h01 = _mm_unpackhi_epi8(p0, p1), l23 = _mm_unpacklo_epi8(p2, p3), h23 = _mm_unpackhi_epi8(p2, p3);
+          _mm_storeu_si128((__m128i *)(o + c), _mm_unpacklo_epi16(l01, l23)); _mm_storeu_si128((__m128i *)(o + c + 4), _mm_unpackhi_epi16(l01, l23));
+          _mm_storeu_si128((__m128i *)(o + c + 8), _mm_unpacklo_epi16(h01, h23)); _mm_storeu_si128((__m128i *)(o + c + 12), _mm_unpackhi_epi16(h01, h23));
+        }
+        col_bits_band(bin, w, h, by >> 2, c, cb);
+      }
+      continue;
+    }
 #endif
     for (int y = by * BLK; y < (by + 1) * BLK && y < h; y++) {
       const uint8_t *src = img + y * w;
@@ -290,13 +323,10 @@ static void binarize(const uint8_t *img, int w, int h, uint8_t *bin, uint32_t *c
       for (; x < w; x++) dst[x] = src[x] < trow[x];
     }
   }
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   // ai: the last band where h is not a multiple of 32, or every band where the planes could not be had
   if (cb) for (int b = planes ? bands : 0; b < (h + 31) / 32; b++) col_bits_band(bin, w, h, b, 0, cb);
-  free(planes);
-#endif
-#if defined(OB_NEON) || defined(OB_X86)
-  free(vsum);
+  free(vsum); free(planes);
 #endif
   frame_buf_done(fb, mean); free(trow); free(col);
 }
@@ -2415,7 +2445,7 @@ static int mark_ratio(int line, int gap, int core_px, int core, float *unit) {
 }
 #endif
 
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
 // ai: how many pixels of column x from row y on, down (dir 1) or up (-1), are want (0 light, 1 dark) before one is not
 // ai: or the image ends, at most cap: the count the byte loops below take (0 where y is outside the image)
 static inline int cb_run(const uint32_t *cb, int w, int h, int x, int y, int dir, int want, int cap) {
@@ -2441,7 +2471,7 @@ static inline int cb_run(const uint32_t *cb, int w, int h, int x, int y, int dir
 #endif
 // A light run then a dark run, walked from `at` along `dir`: the gap and the line on one side of a core. This is
 // what tells a mark from any other dark square in the picture, and it has to hold on the corner side only.
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
 // ai: mark_flank on the column bits: the same walks, the same test
 static int mark_flank_cb(const uint32_t *cb, int w, int h, int x, int at, int dir, float u) {
   const int cap = (int)((2 + OB_THIN_LINE + OB_RING_DEEP) * u) + 4;
@@ -2464,11 +2494,11 @@ static int mark_flank(const uint8_t *bin, int len, int stride, int at, int dir, 
 
 // A candidate core found on a row, confirmed down the column through it: the same extent, within what
 // perspective does to a square, and the gap and line on one side of it vertically too.
-// ai: cb: the column bits (binarize's) on arm64, which its walks read; NULL elsewhere
+// ai: cb: the column bits (binarize's) on arm64 and x86-64, which its walks read; NULL elsewhere
 static int mark_cross(const uint8_t *bin, const uint32_t *cb, int w, int h, int cx, int cy, int core, float uh, float *centre, float *uv) {
   const int cap = (int)(3 * core * uh) + 8;
   int up = 0, dn = 0;
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   up = cb_run(cb, w, h, cx, cy - 1, -1, 1, cap); dn = cb_run(cb, w, h, cx, cy + 1, 1, 1, cap);
 #else
   (void)cb;
@@ -2480,7 +2510,7 @@ static int mark_cross(const uint8_t *bin, const uint32_t *cb, int w, int h, int 
   // A screen seen from the side is squeezed along one axis, so the two crossings of one mark can differ a lot.
   // 2.5 is what the finder path allows, about 65 degrees.
   if (u > 2.5f * uh || uh > 2.5f * u) return 0;
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   if (!mark_flank_cb(cb, w, h, cx, cy - up - 1, -1, u) && !mark_flank_cb(cb, w, h, cx, cy + dn + 1, 1, u)) return 0;
 #else
   if (!mark_flank(bin + cx, h, w, cy - up - 1, -1, u) && !mark_flank(bin + cx, h, w, cy + dn + 1, 1, u)) return 0;   // + cx: the walk is down THIS column
@@ -2507,7 +2537,7 @@ static int mark_cross(const uint8_t *bin, const uint32_t *cb, int w, int h, int 
 static int mark_cross_merged(const uint8_t *bin, const uint32_t *cb, int w, int h, int cx, int cy, int sq, float uh, float *centre, float *uv) {
   const int cap = (int)(3 * sq * uh) + 8;
   int up = 0, dn = 0;
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   up = cb_run(cb, w, h, cx, cy - 1, -1, 1, cap); dn = cb_run(cb, w, h, cx, cy + 1, 1, 1, cap);
 #else
   (void)cb;
@@ -2923,7 +2953,7 @@ int ob_test_mesh_tables(const ob_layout_t *L, int32_t *dims, float *nodeX, float
 // Every mark of one form in a binarized image at 1 / scale of the capture, in the capture's own coordinates. The
 // candidates depend on the mark's design alone, never on how many modules the symbol has, so one scan serves every
 // layout a receiver is looking for.
-// ai: cb: the image's column bits on arm64 (binarize's), NULL elsewhere
+// ai: cb: the image's column bits on arm64 and x86-64 (binarize's), NULL elsewhere
 static int mark_scan(const ob_layout_t *L, const uint8_t *bin, const uint32_t *cb, int bw, int bh, int scale, int merged, cand_t *c) {
   const int n = mark_candidates(L, bin, cb, bw, bh, merged, c);
   for (int k = 0; k < n; k++) { c[k].x *= scale; c[k].y *= scale; c[k].unit *= scale; }
@@ -3684,7 +3714,7 @@ static inline int rotation_holds(float best, int orient) { return best >= 0.15f 
 // Ls: the layouts the symbol may be, which differ only in how many modules a side (lizard_phy.h LIZARD_RING); *which
 // comes back as the one that registered. The mark path scores every one before a hold settles it; the line path tries
 // the first (the 64 ring) first and the others only when it does not register.
-// ai: cb: the capture's column bits on arm64, made with bin (binarize); NULL elsewhere. fb: frame_buf's
+// ai: cb: the capture's column bits on arm64 and x86-64, made with bin (binarize); NULL elsewhere. fb: frame_buf's
 static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, const uint8_t *bin, uint32_t *cb, ob_fbufs_t *fb, float *quad, int *orient, float *score_out, int *which) {
   int w = im->w, h = im->h, big = w > h ? w : h, n[4], nl[4];
   fpt_t *pts[4] = { 0 };            // allocated only if the scan runs, which a settled mark quad skips
@@ -3717,7 +3747,7 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
   mquad_t mq[MARK_QUADS];
   uint8_t *grey2 = NULL, *lbin = NULL;
   const uint8_t *grey = im->px;
-  const uint32_t *scb = cb;   // the column bits of the scale's image (arm64)
+  const uint32_t *scb = cb;   // the column bits of the scale's image (arm64, x86-64)
   *which = 0;
   for (int k = 0; k < 8; k++) ob_finder_info[k] = k == 5 || k == 7 ? 0 : -1;
   for (int scale = 1; mcand && scale <= 4 && !rotation_holds(best, *orient); scale *= 2) {
@@ -3730,7 +3760,7 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
       frame_buf_done(fb, grey2); grey2 = next; grey = next;
       frame_buf_done(fb, lbin);
       if (!(lbin = frame_buf(fb, OB_FB_LBIN, (size_t)sw * sh))) break;
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
       uint32_t *lcb = frame_buf(fb, OB_FB_LCB, (size_t)((sh + 31) / 32) * sw * sizeof(uint32_t) + 16);
       if (!lcb) break;
       scb = lcb;
@@ -4024,7 +4054,7 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
   int iw = im.w, ih = im.h;
   reg->nodes = NULL;
   uint8_t *bin = in_quad ? NULL : frame_buf(fb, OB_FB_BIN, (size_t)iw * ih);
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   uint32_t *cb = in_quad ? NULL : frame_buf(fb, OB_FB_CB, (size_t)((ih + 31) / 32) * iw * sizeof(uint32_t) + 16);
   if (!in_quad && !cb) { frame_buf_done(fb, bin); return 0; }
 #else
