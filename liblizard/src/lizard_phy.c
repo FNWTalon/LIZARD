@@ -111,7 +111,33 @@ static void map_out(const lizard_t *f, const struct lizard_ws *w, int t, int b, 
   const int nt = c->nt, *perm = w->perm[t];
   const uint8_t q = (uint8_t)((f->parity >> (b & 1)) & 1);
   const uint8_t *wh = w->white + 2 * (size_t)first;
-  for (int i = 0; i < nb; i++) slot[i] = (uint8_t)((i < nt ? cw[perm[i]] : q) ^ wh[i]);
+  int i = 0;
+#ifdef OB_NEON
+  // ai: arm64: map_in's mirror, sixteen slots a step: the indices read as four vectors, the codeword's bytes gathered
+  // ai: into one vector lane by lane (LD1 to a lane), the whitening XORed on at once: the same bytes
+  for (; i + 16 <= nt; i += 16) {
+    const int32x4_t q0 = vld1q_s32(perm + i), q1 = vld1q_s32(perm + i + 4), q2 = vld1q_s32(perm + i + 8), q3 = vld1q_s32(perm + i + 12);
+    uint8x16_t g = vdupq_n_u8(0);
+#define MO_LD(q, t) g = vld1q_lane_u8(cw + vgetq_lane_s32(q, 0), g, 4 * (t)); g = vld1q_lane_u8(cw + vgetq_lane_s32(q, 1), g, 4 * (t) + 1); \
+                    g = vld1q_lane_u8(cw + vgetq_lane_s32(q, 2), g, 4 * (t) + 2); g = vld1q_lane_u8(cw + vgetq_lane_s32(q, 3), g, 4 * (t) + 3);
+    MO_LD(q0, 0) MO_LD(q1, 1) MO_LD(q2, 2) MO_LD(q3, 3)
+#undef MO_LD
+    vst1q_u8(slot + i, veorq_u8(g, vld1q_u8(wh + i)));
+  }
+#elif defined(OB_X86)
+  // ai: x86-64: the same, the bytes gathered by PINSRB
+  for (; i + 16 <= nt; i += 16) {
+    const __m128i q0 = _mm_loadu_si128((const __m128i *)(const void *)(perm + i)), q1 = _mm_loadu_si128((const __m128i *)(const void *)(perm + i + 4));
+    const __m128i q2 = _mm_loadu_si128((const __m128i *)(const void *)(perm + i + 8)), q3 = _mm_loadu_si128((const __m128i *)(const void *)(perm + i + 12));
+    __m128i g = _mm_setzero_si128();
+#define MO_LD(q, t) g = _mm_insert_epi8(g, cw[_mm_extract_epi32(q, 0)], 4 * (t)); g = _mm_insert_epi8(g, cw[_mm_extract_epi32(q, 1)], 4 * (t) + 1); \
+                    g = _mm_insert_epi8(g, cw[_mm_extract_epi32(q, 2)], 4 * (t) + 2); g = _mm_insert_epi8(g, cw[_mm_extract_epi32(q, 3)], 4 * (t) + 3);
+    MO_LD(q0, 0) MO_LD(q1, 1) MO_LD(q2, 2) MO_LD(q3, 3)
+#undef MO_LD
+    _mm_storeu_si128((__m128i *)(void *)(slot + i), _mm_xor_si128(g, _mm_loadu_si128((const __m128i *)(const void *)(wh + i))));
+  }
+#endif
+  for (; i < nb; i++) slot[i] = (uint8_t)((i < nt ? cw[perm[i]] : q) ^ wh[i]);
 }
 // The soft values the other way: slot order in, codeword order out, the whitening taken back off by sign; the bits
 // never sent come in as 0 here (the 7/8 code's known zeros, which the caller then sets known with the block's others).
