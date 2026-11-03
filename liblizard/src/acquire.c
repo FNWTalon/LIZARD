@@ -1210,45 +1210,37 @@ static void anchor_map(const homo_t *H, const lensm_t *lm, float X, float Y, flo
 enum { ANCH_ROUNDS = 6, ANCH_CORNER = 3, ANCH_REACH = 3 };
 static const float ANCH_PEAK = 0.6f;
 #ifdef OB_NEON
-// ai: lensm_at's displacement added to four points (u, v), two lanes of doubles at a time: lens_rows' entries and the
-// ai: sum over them in its order, a constant entry's product (t[a] times 0 or 1) taken once as the scalar takes it
-static inline void msh_lens4(const struct lensm *m, float32x4_t *u, float32x4_t *v) {
-  const double *t = m->t;
-  const float64x2_t ax = vdupq_n_f64(m->ax), ay = vdupq_n_f64(m->ay), R = vdupq_n_f64(m->R), zero = vdupq_n_f64(0);
-  const float64x2_t t0 = vdupq_n_f64(t[0]), t1 = vdupq_n_f64(t[1]), t2 = vdupq_n_f64(t[2]), t3 = vdupq_n_f64(t[3]), t6 = vdupq_n_f64(t[6]), t7 = vdupq_n_f64(t[7]);
-  const float64x2_t x2 = vdupq_n_f64(t[2] * 0.0), x3 = vdupq_n_f64(t[3] * 0.0), x4 = vdupq_n_f64(t[4] * 1.0), x5 = vdupq_n_f64(t[5] * 0.0);
-  const float64x2_t y0 = vdupq_n_f64(t[0] * 0.0), y1 = vdupq_n_f64(t[1] * 0.0), y4 = vdupq_n_f64(t[4] * 0.0), y5 = vdupq_n_f64(t[5] * 1.0);
-  float32x2_t dx[2], dy[2];
-  for (int hf = 0; hf < 2; hf++) {
-    const float64x2_t uu = hf ? vcvt_high_f64_f32(*u) : vcvt_f64_f32(vget_low_f32(*u)), vv = hf ? vcvt_high_f64_f32(*v) : vcvt_f64_f32(vget_low_f32(*v));
-    const float64x2_t x = vdivq_f64(vsubq_f64(uu, ax), R), y = vdivq_f64(vsubq_f64(vv, ay), R), nx = vnegq_f64(x), ny = vnegq_f64(y);
-    float64x2_t fx = vaddq_f64(zero, vmulq_f64(t0, x)), fy = vaddq_f64(zero, y0);
-    fx = vaddq_f64(fx, vmulq_f64(t1, y)); fy = vaddq_f64(fy, y1);
-    fx = vaddq_f64(fx, x2); fy = vaddq_f64(fy, vmulq_f64(t2, x));
-    fx = vaddq_f64(fx, x3); fy = vaddq_f64(fy, vmulq_f64(t3, y));
-    fx = vaddq_f64(fx, x4); fy = vaddq_f64(fy, y4);
-    fx = vaddq_f64(fx, x5); fy = vaddq_f64(fy, y5);
-    fx = vaddq_f64(fx, vmulq_f64(t6, vmulq_f64(nx, x))); fy = vaddq_f64(fy, vmulq_f64(t6, vmulq_f64(nx, y)));
-    fx = vaddq_f64(fx, vmulq_f64(t7, vmulq_f64(nx, y))); fy = vaddq_f64(fy, vmulq_f64(t7, vmulq_f64(ny, y)));
-    const float64x2_t s = vaddq_f64(vmulq_f64(x, x), vmulq_f64(y, y));
-    float64x2_t sk = s;
-    for (int k = 0; k < m->K; k++, sk = vmulq_f64(sk, s)) {
-      const float64x2_t tk = vdupq_n_f64(t[8 + k]);
-      fx = vaddq_f64(fx, vmulq_f64(tk, vmulq_f64(sk, x))); fy = vaddq_f64(fy, vmulq_f64(tk, vmulq_f64(sk, y)));
-    }
-    dx[hf] = vcvt_f32_f64(fx); dy[hf] = vcvt_f32_f64(fy);
-  }
-  *u = vaddq_f32(*u, vcombine_f32(dx[0], dx[1])); *v = vaddq_f32(*v, vcombine_f32(dy[0], dy[1]));
+// ai: lensm_at's displacement added to four points (u, v), in floats: with x, y the point about the axis over R and s
+// ai: their squared radius, lens_rows' sum regrouped as dx = t4 + t1 y + (t0 + c) x, dy = t5 + t2 x + (t3 + c) y, c =
+// ai: s (t8 + s (t9 + s t10)) (Horner, K terms) - t6 x - t7 y, fused. x and y lie in [-1, 1] and the terms are pixels,
+// ai: so the floats keep it within 1e-5 px of the doubles (lensm_at, the statement); the coefficients are made floats
+// ai: once a window (msh_lens).
+typedef struct { float a, b, iR, t[8], tk[LENS_TERMS]; int K; } msh_lens_t;   // a, b: -ax / R, -ay / R
+static inline msh_lens_t msh_lens(const struct lensm *m) {
+  msh_lens_t f = { (float)(-m->ax / m->R), (float)(-m->ay / m->R), (float)(1 / m->R), { 0 }, { 0 }, m->K };
+  for (int a = 0; a < 8; a++) f.t[a] = (float)m->t[a];
+  for (int k = 0; k < m->K; k++) f.tk[k] = (float)m->t[8 + k];
+  return f;
+}
+static inline __attribute__((always_inline)) void msh_lens4(const msh_lens_t *f, float32x4_t *u, float32x4_t *v) {
+  const float32x4_t x = vfmaq_n_f32(vdupq_n_f32(f->a), *u, f->iR), y = vfmaq_n_f32(vdupq_n_f32(f->b), *v, f->iR);
+  const float32x4_t s = vfmaq_f32(vmulq_f32(x, x), y, y);
+  float32x4_t p = vdupq_n_f32(0);
+  for (int k = f->K - 1; k >= 0; k--) p = vmulq_f32(vaddq_f32(p, vdupq_n_f32(f->tk[k])), s);
+  const float32x4_t c = vfmsq_n_f32(vfmsq_n_f32(p, x, f->t[6]), y, f->t[7]);
+  *u = vaddq_f32(*u, vfmaq_f32(vfmaq_n_f32(vdupq_n_f32(f->t[4]), y, f->t[1]), vaddq_f32(c, vdupq_n_f32(f->t[0])), x));
+  *v = vaddq_f32(*v, vfmaq_f32(vfmaq_n_f32(vdupq_n_f32(f->t[5]), x, f->t[2]), vaddq_f32(c, vdupq_n_f32(f->t[3])), y));
 }
 // ai: anchor_find's window, eight points a read (W is 28, 40 or 64: whole reads, then a half), each placed as
 // ai: anchor_map places it and read by msh_read8
 static void msh_anchor_window(const image_t *im, const homo_t *H, const struct lensm *lm, float x0, float y0, float h, int r, int W, float *win) {
   const msh_k_t K = msh_k(im);
+  const msh_lens_t lf = lm ? msh_lens(lm) : (msh_lens_t){ 0 };
   const float *hh = H->h;
   const float32x4_t lane = { 0, 1, 2, 3 }, half = vdupq_n_f32(0.5f), vh = vdupq_n_f32(h), vx0 = vdupq_n_f32(x0), ox = vdupq_n_f32(MSH_OX), oy = vdupq_n_f32(MSH_OY), z = vdupq_n_f32(0);
 #define MSH_WPT(wx_, u_, v_) do { const float32x4_t X_ = vaddq_f32(vx0, vmulq_f32(vaddq_f32(vaddq_f32(vdupq_n_f32((float)((wx_) - r)), lane), half), vh)); \
                                   msh_proj(vfmaq_n_f32(ru, X_, hh[0]), vfmaq_n_f32(rv, X_, hh[3]), vfmaq_n_f32(rw, X_, hh[6]), z, z, &u_, &v_); \
-                                  if (lm) msh_lens4(lm, &u_, &v_); u_ = vsubq_f32(u_, ox); v_ = vsubq_f32(v_, oy); } while (0)
+                                  if (lm) msh_lens4(&lf, &u_, &v_); u_ = vsubq_f32(u_, ox); v_ = vsubq_f32(v_, oy); } while (0)
   for (int wy = 0; wy < W; wy++) {
     const float Y = y0 + (wy - r + 0.5f) * h;
     const float32x4_t ru = vdupq_n_f32(hh[1] * Y + hh[2]), rv = vdupq_n_f32(hh[4] * Y + hh[5]), rw = vdupq_n_f32(hh[7] * Y + 1);
