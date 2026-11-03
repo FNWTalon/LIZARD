@@ -188,13 +188,16 @@ static void layer_kernel(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
 // ai: together: pass 2 of step i (messages and posteriors out, the stores) beside pass 1 of step i + 32 (extrinsics,
 // ai: their minima and signs, the arithmetic), so the stores of one and the operations of the other share the core;
 // ai: one pass alone was bound by either. Pass 1: a message widened and taken off in one instruction (SSUBW), the
-// ai: extrinsics kept for pass 2 (vb) with their magnitudes as bytes saturated at 255 (ab), the minima on those bytes
-// ai: (UMIN, UMAX), the signs as the XOR of the high bytes. Pass 2: the scaled minima carry the check's sign; a message
-// ai: is min1's or min2's (by the byte against min1) under the extrinsic's sign, as bytes, stored as they are and added
-// ai: to the extrinsic (SADDW). No index of the least magnitude: an edge whose magnitude is min1 takes min2, which
-// ai: decides as the index does (a second edge at min1 leaves min2 equal to min1), so every form decides alike; on the
-// ai: saturated bytes alike, as min1 and min2 then scale to 127 both. No clamp at +-8191: a decode's posteriors stay
-// ai: inside it (ldpc_init).
+// ai: extrinsics kept for pass 2 (vb) and narrowed to signed bytes saturated at -128 and 127 (SQXTN; ab), whose XOR is
+// ai: the check's sign and whose magnitudes (SQABS, at most 127) take the minima (UMIN, UMAX). Pass 2: the scaled minima
+// ai: carry the check's sign; a message is min1's or min2's (by the byte's magnitude against min1) under the byte's
+// ai: sign, as bytes, stored as they are and added to the extrinsic (SADDW). No index of the least magnitude: an edge
+// ai: whose magnitude is min1 takes min2, which decides as the index does (a second edge at min1 leaves min2 equal to
+// ai: min1). The magnitudes held at 127 (the 128-bit kernel's and the scalar loop's reach 2047) change a message only
+// ai: where a check's two least reach 128: 103 at most ((127 x 13) >> 4) where theirs reach 127 (from 157 at norm 13).
+// ai: Such a check is settled, its signs and its edges' signs alike either way; every decision measured is the 128-bit
+// ai: kernel's (test/ldpc_neon.c's 4,000 decodes; the 16 phone runs' digests). No clamp at +-8191: a decode's
+// ai: posteriors stay inside it (ldpc_init).
 // ai: view: where each of the ns slots is read from and written to: slots 0 to nd - 1 in the decoder's four-times
 // ai: columns (w4, run at 2z - sh[e]: a step's new posteriors written at the run and a column up below 2z, a column
 // ai: down from 2z, the step across 2z a column down too once the layer is done where the nc pointers of cp list it),
@@ -216,11 +219,11 @@ static inline __attribute__((always_inline)) void p1_slot(p1_acc *x, const int8_
     v.val[2] = vsubw_s8(v.val[2], vget_low_s8(r.val[1])); v.val[3] = vsubw_high_s8(v.val[3], r.val[1]);
     vst1q_s16_x4(vbp, v);
   }
-  const uint8x16x2_t m = { { vqmovn_high_u16(vqmovn_u16(vreinterpretq_u16_s16(vabsq_s16(v.val[0]))), vreinterpretq_u16_s16(vabsq_s16(v.val[1]))),
-                             vqmovn_high_u16(vqmovn_u16(vreinterpretq_u16_s16(vabsq_s16(v.val[2]))), vreinterpretq_u16_s16(vabsq_s16(v.val[3]))) } };
-  vst1q_u8_x2(abp, m);
-  x->sa = veorq_s8(x->sa, vuzp2q_s8(vreinterpretq_s8_s16(v.val[0]), vreinterpretq_s8_s16(v.val[1])));
-  x->sb = veorq_s8(x->sb, vuzp2q_s8(vreinterpretq_s8_s16(v.val[2]), vreinterpretq_s8_s16(v.val[3])));
+  const int8x16x2_t n = { { vqmovn_high_s16(vqmovn_s16(v.val[0]), v.val[1]), vqmovn_high_s16(vqmovn_s16(v.val[2]), v.val[3]) } };
+  vst1q_s8_x2((int8_t *)abp, n);
+  const uint8x16x2_t m = { { vreinterpretq_u8_s8(vqabsq_s8(n.val[0])), vreinterpretq_u8_s8(vqabsq_s8(n.val[1])) } };
+  x->sa = veorq_s8(x->sa, n.val[0]);
+  x->sb = veorq_s8(x->sb, n.val[1]);
   x->a2 = vminq_u8(x->a2, vmaxq_u8(x->a1, m.val[0])); x->b2 = vminq_u8(x->b2, vmaxq_u8(x->b1, m.val[1]));
   x->a1 = vminq_u8(x->a1, m.val[0]); x->b1 = vminq_u8(x->b1, m.val[1]);
 }
@@ -228,10 +231,10 @@ static inline __attribute__((always_inline)) void p1_slot(p1_acc *x, const int8_
 // ai: a slot's new messages from its extrinsics, stored; the new posteriors returned
 static inline __attribute__((always_inline)) int16x8x4_t p2_slot(const p2_msg *g, int8_t *Rp, const int16_t *vbp, const uint8_t *abp) {
   int16x8x4_t v = vld1q_s16_x4(vbp);
-  const uint8x16x2_t m = vld1q_u8_x2(abp);
-  const int8x16_t ta = vbslq_s8(vceqq_u8(m.val[0], g->a1), g->am, g->an), tb = vbslq_s8(vceqq_u8(m.val[1], g->b1), g->bm, g->bn);
-  const int8x16_t ga = vcltzq_s8(vuzp2q_s8(vreinterpretq_s8_s16(v.val[0]), vreinterpretq_s8_s16(v.val[1])));
-  const int8x16_t gb = vcltzq_s8(vuzp2q_s8(vreinterpretq_s8_s16(v.val[2]), vreinterpretq_s8_s16(v.val[3])));
+  const int8x16x2_t n = vld1q_s8_x2((const int8_t *)abp);
+  const uint8x16_t ma = vreinterpretq_u8_s8(vqabsq_s8(n.val[0])), mb = vreinterpretq_u8_s8(vqabsq_s8(n.val[1]));
+  const int8x16_t ta = vbslq_s8(vceqq_u8(ma, g->a1), g->am, g->an), tb = vbslq_s8(vceqq_u8(mb, g->b1), g->bm, g->bn);
+  const int8x16_t ga = vcltzq_s8(n.val[0]), gb = vcltzq_s8(n.val[1]);
   const int8x16x2_t ro = { { vsubq_s8(veorq_s8(ta, ga), ga), vsubq_s8(veorq_s8(tb, gb), gb) } };
   vst1q_s8_x2(Rp, ro);
   v.val[0] = vaddw_s8(v.val[0], vget_low_s8(ro.val[0])); v.val[1] = vaddw_high_s8(v.val[1], ro.val[0]);
@@ -244,7 +247,7 @@ static inline __attribute__((always_inline)) void p1_reset(p1_acc *x) {
   x->sa = x->sb = vdupq_n_s8(0);
 }
 
-// ai: (x * norm) >> 4 capped at 127, on the saturated bytes (alike from x = 157 up at norm 13), the check's sign folded in
+// ai: (x * norm) >> 4 capped at 127 (x at most 127 here: 103 at most at norm 13), the check's sign folded in
 static inline __attribute__((always_inline)) p2_msg p2_from(const p1_acc *x, int norm) {
   const uint8x16_t n = vdupq_n_u8((uint8_t)norm), top = vdupq_n_u8(127);
 #define OB_SCALE(v) vminq_u8(vshrn_high_n_u16(vshrn_n_u16(vmull_u8(vget_low_u8(v), vget_low_u8(n)), 4), vmull_high_u8((v), n), 4), top)
@@ -260,7 +263,7 @@ static inline __attribute__((always_inline)) p2_msg p2_from(const p1_acc *x, int
 
 static inline __attribute__((always_inline)) void layer_neon(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, int16_t *const *cp, int nc, const int first) {
   int16_t vb[2][64 * 32];   // ai: a step's extrinsics, slot by slot, this step's and the next's
-  uint8_t ab[2][64 * 32];   // ai: their magnitudes as bytes, saturated at 255
+  uint8_t ab[2][64 * 32];   // ai: them as signed bytes, saturated at -128 and 127
   p1_acc x;
   p1_reset(&x);
   for (int e = 0; e < ns; e++) p1_slot(&x, R + e * zp, view[e], vb[0] + e * 32, ab[0] + e * 32, first);
