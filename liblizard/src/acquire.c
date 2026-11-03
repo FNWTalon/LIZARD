@@ -491,9 +491,9 @@ enum { CAND_XY = 0 };
 
 static float cross2(const cand_t *a, const cand_t *b, const cand_t *c) { return (b->x - a->x) * (c->y - a->y) - (b->y - a->y) * (c->x - a->x); }
 
-#ifdef OB_NEON
-// ai: arm64: a four-pixel group's boundaries, as the bits of its lanes (bit i: lane i differs from the pixel before
-// ai: it), packed to the front, and how many there are
+#if defined(OB_NEON) || defined(OB_X86)
+// ai: arm64 and x86-64: a four-pixel group's boundaries, as the bits of its lanes (bit i: lane i differs from the pixel
+// ai: before it), packed to the front, and how many there are
 static const int32_t RUN_PACK[16][4] = {
   { 0, 0, 0, 0 }, { 0, 0, 0, 0 }, { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 2, 0, 0, 0 }, { 0, 2, 0, 0 }, { 1, 2, 0, 0 }, { 0, 1, 2, 0 },
   { 3, 0, 0, 0 }, { 0, 3, 0, 0 }, { 1, 3, 0, 0 }, { 0, 1, 3, 0 }, { 2, 3, 0, 0 }, { 0, 2, 3, 0 }, { 1, 2, 3, 0 }, { 0, 1, 2, 3 } };
@@ -518,6 +518,18 @@ static int run_edges(const uint8_t *row, int w, int *pos) {
     for (int q = 0; q < 4; q++) {
       const unsigned k = (g >> 8 * q) & 15;
       vst1q_s32(pos + np, vaddq_s32(vld1q_s32(RUN_PACK[k]), vdupq_n_s32(x + 4 * q)));
+      np += RUN_COUNT[k];
+    }
+  }
+#elif defined(OB_X86)
+  // ai: x86-64: arm64's form (above), the chunk's sixteen boundaries as PMOVMSKB's bits, four to a group: each group's
+  // ai: positions one table row plus x and one store of four, np moved on by the group's count
+  for (; x + 16 <= w; x += 16) {
+    const unsigned g = (unsigned)_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_loadu_si128((const __m128i *)(row + x)), _mm_loadu_si128((const __m128i *)(row + x - 1)))) ^ 0xffffu;
+    if (!g) continue;
+    for (int q = 0; q < 4; q++) {
+      const unsigned k = (g >> 4 * q) & 15;
+      _mm_storeu_si128((__m128i *)(pos + np), _mm_add_epi32(_mm_loadu_si128((const __m128i *)RUN_PACK[k]), _mm_set1_epi32(x + 4 * q)));
       np += RUN_COUNT[k];
     }
   }
