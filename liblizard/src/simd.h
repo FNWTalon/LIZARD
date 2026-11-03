@@ -157,6 +157,10 @@ OB_VFN uint32_t wasm_i8x16_bitmask(v128_t a) {
 #include <smmintrin.h>
 #include <stdint.h>
 #define OB_SIMD 1
+// ai: OB_X86: x86-64 with SSE4.1, where a site may also carry a kernel of its own beside the wrappers' form (arm64's
+// ai: OB_NEON kernels, ported); a wider form only inside a function compiled for its own instruction set and chosen at
+// ai: run time from the processor
+#define OB_X86 1
 
 // ai: x86-64 with SSE4.1 (and the SSSE3 and SSE2 it implies): the same wrappers over SSE's instructions. One type
 // ai: for every lane view, as on NEON; the float operations reinterpret it.
