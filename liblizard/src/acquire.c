@@ -546,7 +546,8 @@ static inline __attribute__((always_inline)) lin_pts_t lin_pts(const lin_k_t *k,
   return (lin_pts_t){ vmlal_laneq_u16(vmovl_u16(vget_low_u16(xi)), vget_low_u16(yi), kw, 0), vmlal_high_laneq_u16(vmovl_high_u16(xi), yi, kw, 0),
                       vqtbl2q_u8(xq, k->kf), vreinterpretq_s16_u16(vshrq_n_u16(vuzp1q_u16(vreinterpretq_u16_u32(yq0), vreinterpretq_u16_u32(yq1)), 1)) };
 }
-static inline __attribute__((always_inline)) float32x4x2_t lin_get(const uint8_t *r0, const uint8_t *r1, const lin_k_t *k, lin_pts_t p) {
+// ai: eight points' grey, 128 times over (0 to 32640, -1 where the blend's halves round so), on 16-bit lanes
+static inline __attribute__((always_inline)) int16x8_t lin_grey(const uint8_t *r0, const uint8_t *r1, const lin_k_t *k, lin_pts_t p) {
   const uint64_t p01 = vgetq_lane_u64(vreinterpretq_u64_u32(p.i0), 0), p23 = vgetq_lane_u64(vreinterpretq_u64_u32(p.i0), 1);
   const uint64_t p45 = vgetq_lane_u64(vreinterpretq_u64_u32(p.i1), 0), p67 = vgetq_lane_u64(vreinterpretq_u64_u32(p.i1), 1);
   const uint8x16x2_t m = { { vreinterpretq_u8_u64(vcombine_u64(vcreate_u64(lin_word_lo(r0, r1, p01) | lin_word(r0, r1, p01 >> 32) << 32), vcreate_u64(lin_word_lo(r0, r1, p23) | lin_word(r0, r1, p23 >> 32) << 32))),
@@ -556,7 +557,11 @@ static inline __attribute__((always_inline)) float32x4x2_t lin_get(const uint8_t
   const uint16x8_t top = vmlsl_u8(vmlal_high_u8(vshll_n_u8(vget_low_u8(ab), 8), ab, p.fx), vget_low_u8(ab), fx);   // modulo 2^16 on the way
   const uint16x8_t bot = vmlsl_u8(vmlal_high_u8(vshll_n_u8(vget_low_u8(cd), 8), cd, p.fx), vget_low_u8(cd), fx);
   // ai: top / 2 + (bot - top) / 2 fy: 0 to 32640, or -1 where top is 1 and bot 0 (the 16-bit lane read as signed)
-  const int16x8_t r = vreinterpretq_s16_u16(vsraq_n_u16(vreinterpretq_u16_s16(vqrdmulhq_s16(vreinterpretq_s16_u16(vhsubq_u16(bot, top)), p.fy)), top, 1));
+  return vreinterpretq_s16_u16(vsraq_n_u16(vreinterpretq_u16_s16(vqrdmulhq_s16(vreinterpretq_s16_u16(vhsubq_u16(bot, top)), p.fy)), top, 1));
+}
+// ai: the grey as floats: 257 r by SMULL, by 2^-23 in the conversion
+static inline __attribute__((always_inline)) float32x4x2_t lin_get(const uint8_t *r0, const uint8_t *r1, const lin_k_t *k, lin_pts_t p) {
+  const int16x8_t r = lin_grey(r0, r1, k, p);
   return (float32x4x2_t){ { vcvtq_n_f32_s32(vmull_laneq_s16(vget_low_s16(r), k->kc, 1), 23), vcvtq_n_f32_s32(vmull_high_laneq_s16(r, k->kc, 1), 23) } };
 }
 static inline __attribute__((always_inline)) void lin_read(const uint8_t *r0, const uint8_t *r1, const lin_k_t *k, lin_pts_t p, float *o) {
@@ -630,6 +635,18 @@ static inline __attribute__((always_inline)) float32x4x2_t msh_read8(const image
                               vreinterpretq_f32_s32(sample4(im, vreinterpretq_s32_f32(vaddq_f32(x1, ox)), vreinterpretq_s32_f32(vaddq_f32(y1, oy)))) } };
   }
   return lin_get(im->px, im->px + im->w - 2, &K->k, lin_pts(&K->k, vminq_f32(x0, K->xm), vminq_f32(y0, K->ym), vminq_f32(x1, K->xm), vminq_f32(y1, K->ym)));
+}
+// ai: msh_read8's points as 12-bit greys, 0 to MSH_Q (the anchors' window, summed in integers): at gamma 1 the
+// ai: integer read's 128 times the grey over 8, else the table's float times MSH_Q, rounded
+enum { MSH_Q = 4080 };
+static inline __attribute__((always_inline)) uint16x8_t msh_read8q(const image_t *im, const msh_k_t *K, float32x4_t x0, float32x4_t y0, float32x4_t x1, float32x4_t y1) {
+  if (!im->lin) {
+    const float32x4x2_t v = msh_read8(im, K, x0, y0, x1, y1);
+    const float32x4_t q = vdupq_n_f32((float)MSH_Q);
+    return vcombine_u16(vmovn_u32(vcvtnq_u32_f32(vmulq_f32(v.val[0], q))), vmovn_u32(vcvtnq_u32_f32(vmulq_f32(v.val[1], q))));
+  }
+  const int16x8_t r = lin_grey(im->px, im->px + im->w - 2, &K->k, lin_pts(&K->k, vminq_f32(x0, K->xm), vminq_f32(y0, K->ym), vminq_f32(x1, K->xm), vminq_f32(y1, K->ym)));
+  return vshrq_n_u16(vreinterpretq_u16_s16(vmaxq_s16(r, vdupq_n_s16(0))), 3);
 }
 static inline __attribute__((always_inline)) uint32x4_t msh_in4r(const msh_k_t *K, float32x4_t x, float32x4_t y) {
   return vandq_u32(vandq_u32(vcleq_f32(K->xl, x), vcleq_f32(x, K->xh)), vandq_u32(vcgeq_f32(y, vdupq_n_f32(0)), vcleq_f32(y, K->yh)));
@@ -1232,8 +1249,8 @@ static inline __attribute__((always_inline)) void msh_lens4(const msh_lens_t *f,
   *v = vaddq_f32(*v, vfmaq_f32(vfmaq_n_f32(vdupq_n_f32(f->t[5]), x, f->t[2]), vaddq_f32(c, vdupq_n_f32(f->t[3])), y));
 }
 // ai: anchor_find's window, eight points a read (W is 28, 40 or 64: whole reads, then a half), each placed as
-// ai: anchor_map places it and read by msh_read8
-static void msh_anchor_window(const image_t *im, const homo_t *H, const struct lensm *lm, float x0, float y0, float h, int r, int W, float *win) {
+// ai: anchor_map places it, read as 12-bit greys (msh_read8q)
+static void msh_anchor_window(const image_t *im, const homo_t *H, const struct lensm *lm, float x0, float y0, float h, int r, int W, uint16_t *win) {
   const msh_k_t K = msh_k(im);
   const msh_lens_t lf = lm ? msh_lens(lm) : (msh_lens_t){ 0 };
   const float *hh = H->h;
@@ -1248,66 +1265,49 @@ static void msh_anchor_window(const image_t *im, const homo_t *H, const struct l
     for (; wx + 8 <= W; wx += 8) {
       float32x4_t u0, v0, u1, v1;
       MSH_WPT(wx, u0, v0); MSH_WPT(wx + 4, u1, v1);
-      const float32x4x2_t sv = msh_read8(im, &K, u0, v0, u1, v1);
-      vst1q_f32(win + wy * W + wx, sv.val[0]); vst1q_f32(win + wy * W + wx + 4, sv.val[1]);
+      vst1q_u16(win + wy * W + wx, msh_read8q(im, &K, u0, v0, u1, v1));
     }
     if (wx + 4 <= W) {
       float32x4_t u0, v0;
       MSH_WPT(wx, u0, v0);
-      vst1q_f32(win + wy * W + wx, msh_read8(im, &K, u0, v0, u0, v0).val[0]);
+      vst1_u16(win + wy * W + wx, vget_low_u16(msh_read8q(im, &K, u0, v0, u0, v0)));
       wx += 4;
     }
     for (; wx < W; wx++) {
       float u, v;
       anchor_map(H, lm, x0 + (wx - r + 0.5f) * h, y0 + (wy - r + 0.5f) * h, &u, &v);
-      win[wy * W + wx] = sample(im, u, v);
+      win[wy * W + wx] = (uint16_t)lrintf(sample(im, u, v) * MSH_Q);
     }
   }
 #undef MSH_WPT
 }
-// ai: the window's integral images (anchor_find's, its sums in its order): four rows at a time, a row's running sums
-// ai: in a lane of doubles (a 4 x 4 block of the window turned so a vector holds a column), each row's entries its
-// ai: running sum plus the row above's, as the scalar loop adds them
-static void msh_integral(const float *win, int W, double *I1, double *I2) {
+// ai: The window's integral images in 32-bit integers, of the greys and of their squares: I[(y + 1) W1 + x + 1] the
+// ai: sum over rows to y and columns to x. Sums of integers in any order are the same sums, so a row's prefix runs four
+// ai: lanes a vector (two shifted adds, the last lane carried on) over the running column sums. The squares' image wraps
+// ai: past 2^32 on a large window, but every box anchor_find takes is at most OB_ANCH_TS^2 greys of at most MSH_Q (256 x
+// ai: 4080^2 < 2^32), so its box sums, taken modulo 2^32, are exact.
+_Static_assert((unsigned long long)OB_ANCH_TS * OB_ANCH_TS * MSH_Q * MSH_Q < (1ull << 32), "the anchors' box sums of squared greys fit 32 bits");
+static void msh_integral(const uint16_t *win, int W, uint32_t *I1, uint32_t *I2) {
   const int W1 = W + 1;
+  uint32_t c1[64], c2[64];   // ai: the column sums down to the current row (W <= 64, a multiple of 4)
+  for (int x = 0; x < W; x++) c1[x] = c2[x] = 0;
   for (int x = 0; x < W1; x++) I1[x] = I2[x] = 0;
-  int wy = 0;
-  if (!(W & 3) && W <= 64) {
-    double P[4 * 64], Q[4 * 64];   // ai: a row's running sums, row wy + k at [4 wx + k]
-    for (; wy + 4 <= W; wy += 4) {
-      float64x2_t s01 = vdupq_n_f64(0), s23 = s01, q01 = s01, q23 = s01;
-      for (int wx = 0; wx < W; wx += 4) {
-        const float32x4_t r0 = vld1q_f32(win + wy * W + wx), r1 = vld1q_f32(win + (wy + 1) * W + wx), r2 = vld1q_f32(win + (wy + 2) * W + wx), r3 = vld1q_f32(win + (wy + 3) * W + wx);
-        const float32x4x2_t a = vtrnq_f32(r0, r1), b = vtrnq_f32(r2, r3);
-        float32x4_t col[4];   // ai: col[c] = the four rows at wx + c
-        col[0] = vcombine_f32(vget_low_f32(a.val[0]), vget_low_f32(b.val[0])); col[1] = vcombine_f32(vget_low_f32(a.val[1]), vget_low_f32(b.val[1]));
-        col[2] = vcombine_f32(vget_high_f32(a.val[0]), vget_high_f32(b.val[0])); col[3] = vcombine_f32(vget_high_f32(a.val[1]), vget_high_f32(b.val[1]));
-        for (int c = 0; c < 4; c++) {
-          const float64x2_t v01 = vcvt_f64_f32(vget_low_f32(col[c])), v23 = vcvt_high_f64_f32(col[c]);
-          s01 = vaddq_f64(s01, v01); s23 = vaddq_f64(s23, v23); q01 = vaddq_f64(q01, vmulq_f64(v01, v01)); q23 = vaddq_f64(q23, vmulq_f64(v23, v23));
-          vst1q_f64(P + 4 * (wx + c), s01); vst1q_f64(P + 4 * (wx + c) + 2, s23); vst1q_f64(Q + 4 * (wx + c), q01); vst1q_f64(Q + 4 * (wx + c) + 2, q23);
-        }
-      }
-      for (int k = 0; k < 4; k++) {
-        double *i1 = I1 + (wy + k + 1) * W1, *i2 = I2 + (wy + k + 1) * W1;
-        const double *u1 = i1 - W1, *u2 = i2 - W1;
-        i1[0] = i2[0] = 0;
-        for (int wx = 0; wx < W; wx += 2) {
-          vst1q_f64(i1 + wx + 1, vaddq_f64(vld1q_f64(u1 + wx + 1), (float64x2_t){ P[4 * wx + k], P[4 * wx + 4 + k] }));
-          vst1q_f64(i2 + wx + 1, vaddq_f64(vld1q_f64(u2 + wx + 1), (float64x2_t){ Q[4 * wx + k], Q[4 * wx + 4 + k] }));
-        }
-      }
+  const uint32x4_t z = vdupq_n_u32(0);
+  for (int y = 0; y < W; y++) {
+    uint32_t *i1 = I1 + (y + 1) * W1, *i2 = I2 + (y + 1) * W1;
+    i1[0] = i2[0] = 0;
+    uint32x4_t k1 = z, k2 = z;
+    for (int x = 0; x < W; x += 4) {
+      const uint16x4_t q = vld1_u16(win + y * W + x);
+      uint32x4_t a = vaddw_u16(vld1q_u32(c1 + x), q), b = vmlal_u16(vld1q_u32(c2 + x), q, q);
+      vst1q_u32(c1 + x, a); vst1q_u32(c2 + x, b);
+      a = vaddq_u32(a, vextq_u32(z, a, 3)); a = vaddq_u32(a, vextq_u32(z, a, 2)); a = vaddq_u32(a, k1);
+      b = vaddq_u32(b, vextq_u32(z, b, 3)); b = vaddq_u32(b, vextq_u32(z, b, 2)); b = vaddq_u32(b, k2);
+      vst1q_u32(i1 + x + 1, a); vst1q_u32(i2 + x + 1, b);
+      k1 = vdupq_laneq_u32(a, 3); k2 = vdupq_laneq_u32(b, 3);
     }
   }
-  for (; wy < W; wy++) {
-    double s = 0, q = 0;
-    I1[(wy + 1) * W1] = I2[(wy + 1) * W1] = 0;
-    for (int wx = 0; wx < W; wx++) {
-      const double v = win[wy * W + wx];
-      s += v; q += v * v;
-      I1[(wy + 1) * W1 + wx + 1] = I1[wy * W1 + wx + 1] + s; I2[(wy + 1) * W1 + wx + 1] = I2[wy * W1 + wx + 1] + q;
-    }
-  }
+  for (int k = 0; k < 4; k++) I1[W1 * W1 + k] = I2[W1 * W1 + k] = 0;   // ai: the spare entries the last vector of offsets reads
 }
 #endif
 static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H, const lensm_t *lm, anchor_t *A) {
@@ -1315,8 +1315,16 @@ static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H,
   if (a < 1) return 0;
   const float h = (float)a / TS;
   const int r = (int)ceilf((float)ANCH_REACH / h), W = TS + 2 * r, O = 2 * r + 1;
-  float *win = malloc((size_t)W * W * sizeof(float)), *C = malloc((size_t)O * O * sizeof(float)), T[OB_ANCH_TS * OB_ANCH_TS];
+  float *C = malloc((size_t)(O * O + 4) * sizeof(float)), T[OB_ANCH_TS * OB_ANCH_TS];   // ai: + 4: arm64's last row of offsets four a vector
+#ifdef OB_NEON
+  // ai: arm64's window in 12-bit greys and its integral images in integers (msh_integral; + 4: the last vector of
+  // ai: offsets reads three entries past a row's end)
+  uint16_t *win = malloc((size_t)W * W * sizeof(uint16_t));
+  uint32_t *I1 = malloc(((size_t)(W + 1) * (W + 1) + 4) * sizeof(uint32_t)), *I2 = malloc(((size_t)(W + 1) * (W + 1) + 4) * sizeof(uint32_t));
+#else
+  float *win = malloc((size_t)W * W * sizeof(float));
   double *I1 = malloc((size_t)(W + 1) * (W + 1) * sizeof(double)), *I2 = malloc((size_t)(W + 1) * (W + 1) * sizeof(double));
+#endif
   float tm = 0, tn = 0;
   for (int y = 0; y < TS; y++) for (int x = 0; x < TS; x++) {
     const float u = (x + 0.5f) * h - a * 0.5f, v = (y + 0.5f) * h - a * 0.5f, dc = fmaxf(fabsf(u), fabsf(v)) / (a * 0.5f);
@@ -1329,8 +1337,9 @@ static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H,
   // ai: The pattern is two levels in concentric squares (dc is the larger of the two axes' distances, so dc under 0.25
   // ai: or 0.6 is a square, [i25, j25] or [i6, j6] along each axis), and the window's sum against it at an offset is
   // ai: 2 (S25 - S6) + S (1 - tm), S the sum over the template's box and S25, S6 over the squares': box sums of the
-  // ai: window's integral images (in double, its squares' too), a few reads an offset where the whole template was
-  // ai: summed (16 x 16 a step, 169 steps an anchor in the 256 ring at three modules, 625 in the 128, 2,401 in the 64)
+  // ai: window's integral images (in double, its squares' too; on arm64 in integers of its 12-bit greys, exact:
+  // ai: msh_integral), a few reads an offset where the whole template was summed (16 x 16 a step, 169 steps an anchor
+  // ai: in the 256 ring at three modules, 625 in the 128, 2,401 in the 64)
   int i25 = TS, j25 = -1, i6 = TS, j6 = -1;
   for (int x = 0; x < TS; x++) {
     const float d = fabsf((x + 0.5f) * h - a * 0.5f) / (a * 0.5f);
@@ -1351,31 +1360,29 @@ static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H,
     float best = -2;
     int bx = 0, by = 0;
     {
-      // ai: the correlations two offsets a vector of doubles, each lane the scalar's operations; the peak then taken
-      // ai: in the scalar's order (the division by 256 as a multiply by 2^-8, the same doubles, measured no faster)
-      const float64x2_t k256 = vdupq_n_f64(TS * TS), ktm = vdupq_n_f64(1 - (double)tm), two = vdupq_n_f64(2), tnd = vdupq_n_f64(tn), vmin = vdupq_n_f64(1e-12), zero = vdupq_n_f64(0);
+      // ai: The correlations four offsets a vector from the integer box sums (exact): the template's sum against the
+      // ai: window st = 2 (S25 - S6) + S (1 - tm) in floats from them; the window's variance n times over, n S2 - S^2
+      // ai: (n = TS^2), exact in 64-bit lanes, so the correlation st / (sqrt(var) tn) is st / (sqrt(n S2 - S^2) tn / TS);
+      // ai: a flat box (n S2 = S^2) reads 0, as the scalar's var <= 1e-12 does. A row's last vector runs past O into the
+      // ai: next row's first offsets, which that row writes again (the last row's into C's four spare floats).
       const int l25 = j25 - i25 + 1, l6 = j6 - i6 + 1;
-#define MBOX(I, x, y, s) vaddq_f64(vsubq_f64(vsubq_f64(vld1q_f64((I) + ((y) + (s)) * W1 + (x) + (s)), vld1q_f64((I) + (y) * W1 + (x) + (s))), vld1q_f64((I) + ((y) + (s)) * W1 + (x))), vld1q_f64((I) + (y) * W1 + (x)))
+      const float32x4_t ktm = vdupq_n_f32(1 - tm), ktn = vdupq_n_f32(tn / (float)TS), z = vdupq_n_f32(0);
+#define QBOX(I, x, y, s) vaddq_u32(vsubq_u32(vsubq_u32(vld1q_u32((I) + ((y) + (s)) * W1 + (x) + (s)), vld1q_u32((I) + (y) * W1 + (x) + (s))), vld1q_u32((I) + ((y) + (s)) * W1 + (x))), vld1q_u32((I) + (y) * W1 + (x)))
       for (int oy = -r; oy <= r; oy++) {
         const int py = r + oy;
-        int ox = -r;
-        for (; ox + 1 <= r; ox += 2) {
+        for (int ox = -r; ox <= r; ox += 4) {
           const int px = r + ox;
-          const float64x2_t s1 = MBOX(I1, px, py, TS), s2 = MBOX(I2, px, py, TS), var = vsubq_f64(s2, vdivq_f64(vmulq_f64(s1, s1), k256));
-          const float64x2_t s25 = j25 >= i25 ? MBOX(I1, px + i25, py + i25, l25) : zero, s6 = j6 >= i6 ? MBOX(I1, px + i6, py + i6, l6) : zero;
-          const float64x2_t st = vaddq_f64(vmulq_f64(two, vsubq_f64(s25, s6)), vmulq_f64(s1, ktm));
-          const float32x2_t c = vcvt_f32_f64(vdivq_f64(st, vmulq_f64(vsqrtq_f64(var), tnd)));
-          vst1_f32(C + (oy + r) * O + ox + r, vbsl_f32(vmovn_u64(vcgtq_f64(var, vmin)), c, vdup_n_f32(0)));
-        }
-        for (; ox <= r; ox++) {
-          const int px = r + ox;
-          const double s1 = ABOX(I1, px, py, TS), s2 = ABOX(I2, px, py, TS), var = s2 - s1 * s1 / (TS * TS);
-          const double s25 = j25 >= i25 ? ABOX(I1, px + i25, py + i25, j25 - i25 + 1) : 0, s6 = j6 >= i6 ? ABOX(I1, px + i6, py + i6, j6 - i6 + 1) : 0;
-          const double st = 2 * (s25 - s6) + s1 * (1 - (double)tm);
-          C[(oy + r) * O + ox + r] = var > 1e-12 ? (float)(st / (sqrt(var) * tn)) : 0;
+          const uint32x4_t s1 = QBOX(I1, px, py, TS), s2 = QBOX(I2, px, py, TS);
+          const uint32x4_t s25 = j25 >= i25 ? QBOX(I1, px + i25, py + i25, l25) : vdupq_n_u32(0), s6 = j6 >= i6 ? QBOX(I1, px + i6, py + i6, l6) : vdupq_n_u32(0);
+          const float32x4_t st = vfmaq_f32(vmulq_n_f32(vcvtq_f32_s32(vreinterpretq_s32_u32(vsubq_u32(s25, s6))), 2), vcvtq_f32_u32(s1), ktm);
+          const uint64x2_t vl = vsubq_u64(vmull_n_u32(vget_low_u32(s2), TS * TS), vmull_u32(vget_low_u32(s1), vget_low_u32(s1)));
+          const uint64x2_t vh = vsubq_u64(vmull_high_n_u32(s2, TS * TS), vmull_high_u32(s1, s1));
+          const float32x4_t var = vcvt_high_f32_f64(vcvt_f32_f64(vcvtq_f64_u64(vl)), vcvtq_f64_u64(vh));
+          const float32x4_t c = vdivq_f32(st, vmulq_f32(vsqrtq_f32(var), ktn));
+          vst1q_f32(C + (oy + r) * O + ox + r, vbslq_f32(vcgtq_f32(var, z), c, z));
         }
       }
-#undef MBOX
+#undef QBOX
     }
     for (int oy = -r; oy <= r; oy++) for (int ox = -r; ox <= r; ox++) {
       const float c = C[(oy + r) * O + ox + r];

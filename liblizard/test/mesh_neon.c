@@ -5,14 +5,14 @@
 // ai: one hash (SCALAR_HASH); arm64's own forms (OB_NEON) read the picture in integers and are their own values, so
 // ai: theirs is NEON_HASH, and the NEON build also holds its reads to sample() at every point not NaN: within 1/250 of
 // ai: the grey range (the x fraction is a 256th of a pixel; at the frame's far edges sample() holds 0.999 of the last
-// ai: pixel, the read 255/256). Exit 1 on a hash or the bound missed.
+// ai: pixel, the read 255/256), the anchors' 12-bit greys within MSH_Q / 250. Exit 1 on a hash or a bound missed.
 // ai: test/neon_kernels.sh builds it both ways on a phone. It includes acquire.c and links the rest of the codec:
 // ai:   cc -O2 -ffp-contract=off -Isrc test/mesh_neon.c src/{layout,fmt,rs,ldpc,fft,lizard_phy,any,shake}.c -lm
 #include "acquire.c"
 #include <stdio.h>
 uint32_t ob_debug_hash;
 #define SCALAR_HASH 0xf42c8b6f71af790eull
-#define NEON_HASH 0xff511a59c9bc7854ull
+#define NEON_HASH 0xe3d8c8102fb184afull
 static uint64_t hs = 1469598103934665603ull;
 static void mix(const void *p, size_t n) { const uint8_t *b = p; for (size_t i = 0; i < n; i++) { hs ^= b[i]; hs *= 1099511628211ull; } }
 static uint32_t rs = 1;
@@ -24,7 +24,7 @@ int main(void) {
   int nfound = 0, ngood = 0, nnodes = 0;
   double tref = 0, tanc = 0, tblur = 0, tfit = 0;
 #if defined(OB_NEON)
-  double dread = 0;   // ai: the reads' largest distance from sample()
+  double dread = 0, dq = 0;   // ai: the reads' largest distance from sample()
 #endif
   for (int t = 0; t < 36; t++) {
     ob_layout_t L;
@@ -103,10 +103,12 @@ int main(void) {
       const msh_k_t K = msh_k(&im);
       const float32x4_t x = vsubq_f32(vld1q_f32(X), vdupq_n_f32(MSH_OX)), y = vsubq_f32(vld1q_f32(Y), vdupq_n_f32(MSH_OY));
       vst1q_f32(o, msh_read8(&im, &K, x, y, x, y).val[0]);
+      uint16_t q[8];
+      vst1q_u16(q, msh_read8q(&im, &K, x, y, x, y));
       for (int l = 0; l < 4; l++) {
         const float ref = sample(&im, X[l], Y[l]);
         if (ref != ref) continue;
-        dread = fmax(dread, fabs(o[l] - ref));
+        dread = fmax(dread, fabs(o[l] - ref)); dq = fmax(dq, fabs(q[l] - ref * MSH_Q));
       }
 #elif defined(OB_SIMD)
       wasm_v128_store(o, sample4(&im, wasm_v128_load(X), wasm_v128_load(Y)));
@@ -144,8 +146,8 @@ int main(void) {
   printf("ms: nodes %.2f, anchors %.2f, blur %.2f, lens fits %.2f\n", tref, tanc, tblur, tfit);
 #if defined(OB_NEON)
   const uint64_t want = NEON_HASH;
-  printf("reads against sample(): %.5f of the grey range\n", dread);
-  if (dread > 1.0 / 250) { printf("a read past its bound\n"); return 1; }
+  printf("reads against sample(): %.5f of the grey range, 12-bit %.2f of %d\n", dread, dq, (int)MSH_Q);
+  if (dread > 1.0 / 250 || dq > MSH_Q / 250.0) { printf("a read past its bound\n"); return 1; }
 #else
   const uint64_t want = SCALAR_HASH;
 #endif
