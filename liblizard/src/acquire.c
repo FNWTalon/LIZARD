@@ -634,12 +634,13 @@ static inline __attribute__((always_inline)) float32x4x2_t msh_read8(const image
 static inline __attribute__((always_inline)) uint32x4_t msh_in4r(const msh_k_t *K, float32x4_t x, float32x4_t y) {
   return vandq_u32(vandq_u32(vcleq_f32(K->xl, x), vcleq_f32(x, K->xh)), vandq_u32(vcgeq_f32(y, vdupq_n_f32(0)), vcleq_f32(y, K->yh)));
 }
-// ai: project() at four points, its operations in its order
-static inline void msh_project4(const homo_t *H, float32x4_t x, float32x4_t y, float32x4_t *u, float32x4_t *v) {
-  const float *h = H->h;
-  const float32x4_t w = vaddq_f32(vaddq_f32(vmulq_f32(vdupq_n_f32(h[6]), x), vmulq_f32(vdupq_n_f32(h[7]), y)), vdupq_n_f32(1));
-  *u = vdivq_f32(vaddq_f32(vaddq_f32(vmulq_f32(vdupq_n_f32(h[0]), x), vmulq_f32(vdupq_n_f32(h[1]), y)), vdupq_n_f32(h[2])), w);
-  *v = vdivq_f32(vaddq_f32(vaddq_f32(vmulq_f32(vdupq_n_f32(h[3]), x), vmulq_f32(vdupq_n_f32(h[4]), y)), vdupq_n_f32(h[5])), w);
+// ai: The homography at four points from its lines' values there (nu, nv, nw: h0 x + h1 y + h2, h3 x + h4 y + h5,
+// ai: h6 x + h7 y + 1), which each caller makes from its points' lattice (a row's terms stepped along it, a cell's
+// ai: tabled once a node): one reciprocal of nw for both coordinates where project() divides each, the offset (qx, qy)
+// ai: added in the same fused multiply-add. (The reciprocal by FRECPE and two Newton steps measured 4 to 9% slower.)
+static inline __attribute__((always_inline)) void msh_proj(float32x4_t nu, float32x4_t nv, float32x4_t nw, float32x4_t qx, float32x4_t qy, float32x4_t *x, float32x4_t *y) {
+  const float32x4_t r = vdivq_f32(vdupq_n_f32(1), nw);
+  *x = vfmaq_f32(qx, nu, r); *y = vfmaq_f32(qy, nv, r);
 }
 // ai: a lane's sums, node_ncc's; near the capture's edge its count of cells inside the capture
 static inline __attribute__((always_inline)) void msh_sums(float32x4_t sv, float32x4_t tk, float32x4_t *s, float32x4_t *q, float32x4_t *t) {
@@ -649,26 +650,28 @@ static inline __attribute__((always_inline)) void msh_count(const msh_k_t *K, fl
   *n = vaddq_f32(*n, vbslq_f32(msh_in4r(K, x, y), vdupq_n_f32(1), vdupq_n_f32(0)));
 }
 // ai: node_ncc at G (4 or 8) offsets (ox[l], oy[l]) at once, a lane each: a lane places, samples and sums the node's
-// ai: kept cells (a cell's middle cmx, cmy in modules, its sign tv) with node_ncc's operations; st and vt are the
-// ai: template's sums over those cells (refine_node's, the same). Only the cells node_ncc keeps are read. (qx, qy): the
-// ai: neighbours' offset (pdx, pdy) less (MSH_OX, MSH_OY). Eight points a read: at G 2 a cell's eight offsets, at G 1
+// ai: kept cells with node_ncc's operations; st and vt are the template's sums over those cells (refine_node's, the
+// ai: same). Only the cells node_ncc keeps are read. A kept cell k comes as its sign tv[k] and its middle's three lines
+// ai: (cu, cv, cw: refine_node's table), so a point's lines are the cell's plus the offset's (du, dv, dw, a lane each);
+// ai: (qx, qy): the neighbours' offset (pdx, pdy) less (MSH_OX, MSH_OY). Eight points a read: at G 2 a cell's eight offsets, at G 1
 // ai: two cells' four, the second cell's sums kept apart and added at the end (an odd last cell read twice, once summed).
 // ai: edge (a constant of each call): the move's positions may read past the capture (node_inside), so each lane also
 // ai: counts its cells inside it and is no candidate under nmin of them.
-static inline __attribute__((always_inline)) void msh_cell(const homo_t *H, float cx, float cy, float32x4_t ox, float32x4_t oy, float32x4_t qx, float32x4_t qy, float32x4_t *x, float32x4_t *y) {
-  float32x4_t u, v;
-  msh_project4(H, vaddq_f32(vdupq_n_f32(cx), ox), vaddq_f32(vdupq_n_f32(cy), oy), &u, &v);
-  *x = vaddq_f32(u, qx); *y = vaddq_f32(v, qy);
-}
-static inline __attribute__((always_inline)) void msh_ncc_g(const image_t *im, const homo_t *H, int cells, const float *cmx, const float *cmy, const float *tv, float st, float vt, float qx, float qy, const float *ox, const float *oy, float *out, const int G, const int edge, int nmin) {
+static inline __attribute__((always_inline)) void msh_ncc_g(const image_t *im, const homo_t *H, int cells, const float *cu, const float *cv, const float *cw, const float *tv, float st, float vt, float qx, float qy, const float *ox, const float *oy, float *out, const int G, const int edge, int nmin) {
   const msh_k_t K = msh_k(im);
+  const float *h = H->h;
   const float32x4_t px = vdupq_n_f32(qx), py = vdupq_n_f32(qy), z = vdupq_n_f32(0);
-  const float32x4_t ox0 = vld1q_f32(ox), oy0 = vld1q_f32(oy), ox1 = G == 2 ? vld1q_f32(ox + 4) : ox0, oy1 = G == 2 ? vld1q_f32(oy + 4) : oy0;
+  float32x4_t du[2], dv[2], dw[2];
+  for (int g = 0; g < 2; g++) {
+    const float32x4_t a = vld1q_f32(ox + 4 * g), b = vld1q_f32(oy + 4 * g);
+    du[g] = vfmaq_n_f32(vmulq_n_f32(a, h[0]), b, h[1]); dv[g] = vfmaq_n_f32(vmulq_n_f32(a, h[3]), b, h[4]); dw[g] = vfmaq_n_f32(vmulq_n_f32(a, h[6]), b, h[7]);
+  }
+#define MSH_CELL(k_, g_, X, Y) msh_proj(vaddq_f32(vdupq_n_f32(cu[k_]), du[g_]), vaddq_f32(vdupq_n_f32(cv[k_]), dv[g_]), vaddq_f32(vdupq_n_f32(cw[k_]), dw[g_]), px, py, &X, &Y)
   float32x4_t s[2] = { z, z }, q[2] = { z, z }, t[2] = { z, z }, nn[2] = { z, z }, xa, ya, xb, yb;
   int k = 0;
   if (G == 2) {
     for (; k < cells; k++) {
-      msh_cell(H, cmx[k], cmy[k], ox0, oy0, px, py, &xa, &ya); msh_cell(H, cmx[k], cmy[k], ox1, oy1, px, py, &xb, &yb);
+      MSH_CELL(k, 0, xa, ya); MSH_CELL(k, 1, xb, yb);
       const float32x4x2_t sv = msh_read8(im, &K, xa, ya, xb, yb);
       const float32x4_t tk = vdupq_n_f32(tv[k]);
       if (edge) { msh_count(&K, xa, ya, &nn[0]); msh_count(&K, xb, yb, &nn[1]); }
@@ -676,20 +679,21 @@ static inline __attribute__((always_inline)) void msh_ncc_g(const image_t *im, c
     }
   } else {
     for (; k + 1 < cells; k += 2) {
-      msh_cell(H, cmx[k], cmy[k], ox0, oy0, px, py, &xa, &ya); msh_cell(H, cmx[k + 1], cmy[k + 1], ox0, oy0, px, py, &xb, &yb);
+      MSH_CELL(k, 0, xa, ya); MSH_CELL(k + 1, 0, xb, yb);
       const float32x4x2_t sv = msh_read8(im, &K, xa, ya, xb, yb);
       const float32x4_t ta = vdupq_n_f32(tv[k]), tb = vdupq_n_f32(tv[k + 1]);
       if (edge) { msh_count(&K, xa, ya, &nn[0]); msh_count(&K, xb, yb, &nn[1]); }
       msh_sums(sv.val[0], ta, &s[0], &q[0], &t[0]); msh_sums(sv.val[1], tb, &s[1], &q[1], &t[1]);
     }
     if (k < cells) {
-      msh_cell(H, cmx[k], cmy[k], ox0, oy0, px, py, &xa, &ya);
+      MSH_CELL(k, 0, xa, ya);
       const float32x4_t ta = vdupq_n_f32(tv[k]);
       if (edge) msh_count(&K, xa, ya, &nn[0]);
       msh_sums(msh_read8(im, &K, xa, ya, xa, ya).val[0], ta, &s[0], &q[0], &t[0]);
     }
     s[0] = vaddq_f32(s[0], s[1]); q[0] = vaddq_f32(q[0], q[1]); t[0] = vaddq_f32(t[0], t[1]); nn[0] = vaddq_f32(nn[0], nn[1]);
   }
+#undef MSH_CELL
   const float32x4_t n = vdupq_n_f32((float)cells), vst = vdupq_n_f32(st), vvt = vdupq_n_f32(vt);
   for (int g = 0; g < G; g++) {
     const float32x4_t vs = vsubq_f32(q[g], vdivq_f32(vmulq_f32(s[g], s[g]), n));
@@ -699,12 +703,12 @@ static inline __attribute__((always_inline)) void msh_ncc_g(const image_t *im, c
     vst1q_f32(out + 4 * g, r);
   }
 }
-static void msh_ncc(const image_t *im, const homo_t *H, int cells, const float *cmx, const float *cmy, const float *tv, float st, float vt, float qx, float qy, const float *ox, const float *oy, float *out, int lanes, int edge, int nmin) {
+static void msh_ncc(const image_t *im, const homo_t *H, int cells, const float *cu, const float *cv, const float *cw, const float *tv, float st, float vt, float qx, float qy, const float *ox, const float *oy, float *out, int lanes, int edge, int nmin) {
   if (edge) {
-    if (lanes > 4) msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, qx, qy, ox, oy, out, 2, 1, nmin);
-    else msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, qx, qy, ox, oy, out, 1, 1, nmin);
-  } else if (lanes > 4) msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, qx, qy, ox, oy, out, 2, 0, nmin);
-  else msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, qx, qy, ox, oy, out, 1, 0, nmin);
+    if (lanes > 4) msh_ncc_g(im, H, cells, cu, cv, cw, tv, st, vt, qx, qy, ox, oy, out, 2, 1, nmin);
+    else msh_ncc_g(im, H, cells, cu, cv, cw, tv, st, vt, qx, qy, ox, oy, out, 1, 1, nmin);
+  } else if (lanes > 4) msh_ncc_g(im, H, cells, cu, cv, cw, tv, st, vt, qx, qy, ox, oy, out, 2, 0, nmin);
+  else msh_ncc_g(im, H, cells, cu, cv, cw, tv, st, vt, qx, qy, ox, oy, out, 1, 0, nmin);
 }
 #endif
 
@@ -808,13 +812,15 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
   // ai: again (the last row's into G's spare floats, zeroed below); near the capture's edge GM marks the points inside
   const msh_k_t K = msh_k(im);
   const float32x4_t qx = vdupq_n_f32(pdx - MSH_OX), qy = vdupq_n_f32(pdy - MSH_OY), z = vdupq_n_f32(0), one = vdupq_n_f32(1);
+  const float *hh = H->h;
   for (int gy = 0; gy < GH; gy++) {
-    const float32x4_t vy = vdupq_n_f32((float)(2 * (cy0 + ylo) + gy - 2) * 0.5f), lane = { 0, 1, 2, 3 };
+    const float my = (float)(2 * (cy0 + ylo) + gy - 2) * 0.5f;
+    const float32x4_t ru = vdupq_n_f32(hh[1] * my + hh[2]), rv = vdupq_n_f32(hh[4] * my + hh[5]), rw = vdupq_n_f32(hh[7] * my + 1), lane = { 0, 1, 2, 3 };
     for (int gx = 0; gx < GW; gx += 8) {
-      const float32x4_t mx = vmulq_f32(vaddq_f32(vdupq_n_f32((float)(2 * (cx0 + lo) + gx - 2)), lane), vdupq_n_f32(0.5f));
-      float32x4_t u0, v0, u1, v1;
-      msh_project4(H, mx, vy, &u0, &v0); msh_project4(H, vaddq_f32(mx, vdupq_n_f32(2)), vy, &u1, &v1);
-      const float32x4_t xa = vaddq_f32(u0, qx), ya = vaddq_f32(v0, qy), xb = vaddq_f32(u1, qx), yb = vaddq_f32(v1, qy);
+      const float32x4_t ma = vmulq_f32(vaddq_f32(vdupq_n_f32((float)(2 * (cx0 + lo) + gx - 2)), lane), vdupq_n_f32(0.5f)), mb = vaddq_f32(ma, vdupq_n_f32(2));
+      float32x4_t xa, ya, xb, yb;
+      msh_proj(vfmaq_n_f32(ru, ma, hh[0]), vfmaq_n_f32(rv, ma, hh[3]), vfmaq_n_f32(rw, ma, hh[6]), qx, qy, &xa, &ya);
+      msh_proj(vfmaq_n_f32(ru, mb, hh[0]), vfmaq_n_f32(rv, mb, hh[3]), vfmaq_n_f32(rw, mb, hh[6]), qx, qy, &xb, &yb);
       const float32x4x2_t sv = msh_read8(im, &K, xa, ya, xb, yb);
       if (edge) { vst1q_f32(GM + gy * GW + gx, vbslq_f32(msh_in4r(&K, xa, ya), one, z)); vst1q_f32(GM + gy * GW + gx + 4, vbslq_f32(msh_in4r(&K, xb, yb), one, z)); }
       vst1q_f32(G + gy * GW + gx, sv.val[0]); vst1q_f32(G + gy * GW + gx + 4, sv.val[1]);
@@ -849,7 +855,7 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
 #endif
   float st = 0, stt = 0;
 #ifdef OB_NEON
-  float cmx[OB_FB * OB_FB], cmy[OB_FB * OB_FB];   // ai: a kept cell's middle in modules, node_ncc's cx0 + dx + 0.5f
+  float cu[OB_FB * OB_FB], cv[OB_FB * OB_FB], cw[OB_FB * OB_FB];   // ai: a kept cell's middle (node_ncc's cx0 + dx + 0.5f) through H's three lines
 #endif
   for (int dy = 0; dy < tall; dy++) for (int dx = 0; dx < side; dx++) {
     int kind = L->kind[(cy0 + ylo + dy) * L->w + cx0 + lo + dx];
@@ -857,7 +863,8 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
     if (kind & CELL_WORD) continue;               // nor the format word, whose bits this end did not choose (layout.h)
     tv[cells] = (kind & 3) == CELL_DARK ? -1.0f : 1.0f; at[cells] = (2 * dy + 3) * GW + 2 * dx + 3;
 #ifdef OB_NEON
-    cmx[cells] = cx0 + lo + dx + 0.5f; cmy[cells] = cy0 + ylo + dy + 0.5f;
+    const float mx = cx0 + lo + dx + 0.5f, my = cy0 + ylo + dy + 0.5f;
+    cu[cells] = H->h[0] * mx + H->h[1] * my + H->h[2]; cv[cells] = H->h[3] * mx + H->h[4] * my + H->h[5]; cw[cells] = H->h[6] * mx + H->h[7] * my + 1;
 #endif
     st += tv[cells]; stt += tv[cells] * tv[cells]; cells++;
   }
@@ -918,7 +925,7 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
         for (int b2 = -1; b2 <= 1; b2++) for (int a2 = -1; a2 <= 1; a2++) if (!have[b2 + 1][a2 + 1]) { ox[m] = box + a2 * step; oy[m] = boy + b2 * step; cell[m++] = (b2 + 1) * 3 + a2 + 1; }
         if (m) {
           for (int l = m; l < 8; l++) { ox[l] = ox[0]; oy[l] = oy[0]; }
-          msh_ncc(im, H, cells, cmx, cmy, tv, st, vt, pdx - MSH_OX, pdy - MSH_OY, ox, oy, got, m, ce, nmin);
+          msh_ncc(im, H, cells, cu, cv, cw, tv, st, vt, pdx - MSH_OX, pdy - MSH_OY, ox, oy, got, m, ce, nmin);
           for (int l = 0; l < m; l++) { g[cell[l] / 3][cell[l] % 3] = got[l]; have[cell[l] / 3][cell[l] % 3] = 1; }
         }
       }
@@ -1237,11 +1244,14 @@ static inline void msh_lens4(const struct lensm *m, float32x4_t *u, float32x4_t 
 // ai: anchor_map places it and read by msh_read8
 static void msh_anchor_window(const image_t *im, const homo_t *H, const struct lensm *lm, float x0, float y0, float h, int r, int W, float *win) {
   const msh_k_t K = msh_k(im);
-  const float32x4_t lane = { 0, 1, 2, 3 }, half = vdupq_n_f32(0.5f), vh = vdupq_n_f32(h), vx0 = vdupq_n_f32(x0), ox = vdupq_n_f32(MSH_OX), oy = vdupq_n_f32(MSH_OY);
-#define MSH_WPT(wx_, u_, v_) do { msh_project4(H, vaddq_f32(vx0, vmulq_f32(vaddq_f32(vaddq_f32(vdupq_n_f32((float)((wx_) - r)), lane), half), vh)), Y, &u_, &v_); \
+  const float *hh = H->h;
+  const float32x4_t lane = { 0, 1, 2, 3 }, half = vdupq_n_f32(0.5f), vh = vdupq_n_f32(h), vx0 = vdupq_n_f32(x0), ox = vdupq_n_f32(MSH_OX), oy = vdupq_n_f32(MSH_OY), z = vdupq_n_f32(0);
+#define MSH_WPT(wx_, u_, v_) do { const float32x4_t X_ = vaddq_f32(vx0, vmulq_f32(vaddq_f32(vaddq_f32(vdupq_n_f32((float)((wx_) - r)), lane), half), vh)); \
+                                  msh_proj(vfmaq_n_f32(ru, X_, hh[0]), vfmaq_n_f32(rv, X_, hh[3]), vfmaq_n_f32(rw, X_, hh[6]), z, z, &u_, &v_); \
                                   if (lm) msh_lens4(lm, &u_, &v_); u_ = vsubq_f32(u_, ox); v_ = vsubq_f32(v_, oy); } while (0)
   for (int wy = 0; wy < W; wy++) {
-    const float32x4_t Y = vdupq_n_f32(y0 + (wy - r + 0.5f) * h);
+    const float Y = y0 + (wy - r + 0.5f) * h;
+    const float32x4_t ru = vdupq_n_f32(hh[1] * Y + hh[2]), rv = vdupq_n_f32(hh[4] * Y + hh[5]), rw = vdupq_n_f32(hh[7] * Y + 1);
     int wx = 0;
     for (; wx + 8 <= W; wx += 8) {
       float32x4_t u0, v0, u1, v1;
