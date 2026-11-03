@@ -46,9 +46,9 @@ struct lizard_ws {
   // lizard_acquire's answer, waiting for lizard_finish. The image is held by pointer, so the caller's pixels must
   // outlive the pair; the rig's do, since a worker owns the frame for the whole decode.
   image_t hold_im; ob_reg_t hold_reg; int hold_valid;
-#ifdef OB_NEON
-  // ai: arm64's block transforms (fft_dec_dit), a block at a time: the rows its coefficients take, [0, dkeep] and
-  // ai: [n - dkeep, n) (the most |u| in the block), and its columns, to the last v that holds one rounded up to 4
+#if defined(OB_NEON) || defined(OB_X86)
+  // ai: arm64's and x86-64's block transforms (fft_dec_dit), a block at a time: the rows its coefficients take, [0, dkeep]
+  // ai: and [n - dkeep, n) (the most |u| in the block), and its columns, to the last v that holds one rounded up to 4
   int *dkeep, *dcols;
 #endif
   // ai: the acquisition's buffers (internal.h ob_fbufs_t), grown as frames need, freed with the workspace
@@ -279,7 +279,7 @@ static int ws_init(lizard_t *f) {
   double *e = malloc((size_t)2 * n * sizeof(double));
   if (!w->tre || !w->tim || !w->wre || !w->wim || !tab || !w->bits || !w->data || !e || !w->amp || !w->blk_its || !w->blk_est || !w->blk_pilot || (w->fmt_cells && !w->fmt_q) || !w->slot || !w->llr2 || !w->white || !w->llrf || !w->sub_est || !w->sub_rms) { free(tab); free(e); return -1; }
   whiten_fill(w->white, f->subch * LIZARD_SUB * 2);
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   w->dkeep = calloc((size_t)2 * f->vblocks, sizeof(int));
   if (!w->dkeep) { free(tab); free(e); return -1; }
   w->dcols = w->dkeep + f->vblocks;
@@ -606,7 +606,7 @@ int lizard_anchor_geom(const lizard_t *f, int out[8]) {
 void lizard_free(lizard_t *f) {
   struct lizard_ws *w = f->ws;
   if (w) { ob_fbufs_free(&w->fbufs); free(w->tre); free(w->wre); free(w->wim); free(w->cx); free(w->bits); free(w->data); free(w->amp); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->llrf); free(w->sub_est); free(w->sub_rms); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < LIZARD_TIERS; t++) free(w->perm[t]);
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
     free(w->dkeep);
 #endif
     free(w); }
@@ -687,7 +687,7 @@ static inline void store_turned4(float *base, const int *rows, size_t pitch, flo
   vst1q_f32(base + rows[2] * pitch, vreinterpretq_f32_f64(vtrn2q_f64(t0, t2))); vst1q_f32(base + rows[3] * pitch, vreinterpretq_f32_f64(vtrn2q_f64(t1, t3)));
 }
 #endif
-// ai: Rows go through the decoder transforms' place (fft.h fft_dec_place; NULL, rows in order, off arm64): the strip's
+// ai: Rows go through the decoder transforms' place (fft.h fft_dec_place; NULL, rows in order, off arm64 and x86-64): the strip's
 // ai: frequency v is read from its row place[v], and picture column x written to the block's row place[x], where the
 // ai: block's transform takes it.
 static void unpack_turn(const lizard_t *f, int x0, const float *z0) {
@@ -724,6 +724,8 @@ static void unpack_turn(const lizard_t *f, int x0, const float *z0) {
     }
     return;
   }
+#elif defined(OB_X86)
+  const int *P = fft_dec_place(n);
 #else
   const int *const P = 0;
 #endif
@@ -1341,8 +1343,8 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
   px = vaddvq_f64(vpx); py = vaddvq_f64(vpy); pxy = vaddvq_f64(vpxy); pxx = vaddvq_f64(vpxx); pyy = vaddvq_f64(vpyy);
 #endif
   double ts = ob_now_ms();
-  // ai: arm64: each block's transform makes only the rows and columns its coefficients take (ws dkeep, dcols)
-#ifdef OB_NEON
+  // ai: arm64 and x86-64: each block's transform makes only the rows and columns its coefficients take (ws dkeep, dcols)
+#if defined(OB_NEON) || defined(OB_X86)
   for (int b = 0; b < f->vblocks; b++) fft_dec_dit(w->tre + (size_t)b * n * bw, w->tim + (size_t)b * n * bw, n, w->dcols[b], bw, w->dkeep[b]);
 #else
   for (int b = 0; b < f->vblocks; b++) fft_dec_dit(w->tre + (size_t)b * n * bw, w->tim + (size_t)b * n * bw, n, bw, bw, n);

@@ -1,11 +1,13 @@
-// ai: arm64's decoder transforms (src/fft.c fft_dec_dif and fft_dec_dit: their own kernels, fused multiply-adds) against
+// ai: arm64's decoder transforms (src/fft.c fft_dec_dif and fft_dec_dit: their own kernels, fused multiply-adds; on x86-64
+// ai: the same kernels in SSE4.1, -msse4.1) against
 // ai: the format's (fft_cols): at every picture size from 384 to 1536 and strips of 30, 32 and 64 columns (pitch 64) on
 // ai: random input, each against a double-precision DFT of the same input over 4 columns (two first, two last: the
 // ai: vector loops and the tail), the worst error over the output's rms. Rows are read and written through
 // ai: fft_dec_place: dif's output and dit's input are in its order; dit is also checked with keep n / 3 on the rows it
 // ai: then writes, [0, keep] and [n - keep, n). Then each timed against fft_cols, interleaved, the best of REPS. Fails
 // ai: where an error passes twice the format's.
-// ai: arm64 (test/neon_kernels.sh); elsewhere both are fft_cols and place NULL: fft_dec [reps]
+// ai: arm64 (test/neon_kernels.sh) and x86-64 with SSE4.1; elsewhere (and -DOB_SCALAR) both are fft_cols and place NULL:
+// ai: fft_dec [reps]
 #include "../src/fft.c"
 #include <stdint.h>
 #include <stdio.h>
@@ -41,7 +43,6 @@ int main(int argc, char **argv) {
   int bad = 0;
   for (int ni = 0; ni < 7; ni++) for (int ci = 0; ci < 3; ci++) {
     const int n = NS[ni], cols = CW[ci], pitch = 64, keep = n / 3; const size_t sz = (size_t)n * pitch * 4;
-    const int *place = fft_dec_place(n);
     float *r0 = malloc(sz), *i0 = malloc(sz), *ra = malloc(sz), *ia = malloc(sz), *rb = malloc(sz), *ib = malloc(sz), *rc = malloc(sz), *ic = malloc(sz);
     for (int i = 0; i < n * pitch; i++) { z = z * 1664525u + 1013904223u; r0[i] = (float)(z >> 8) / 16777216.0f - 0.5f; z = z * 1664525u + 1013904223u; i0[i] = (float)(z >> 8) / 16777216.0f - 0.5f; }
     double ta = 1e30, tb = 1e30, tc = 1e30;
@@ -50,6 +51,9 @@ int main(int argc, char **argv) {
       memcpy(rb, r0, sz); memcpy(ib, i0, sz); t0 = now_us(); fft_dec_dif(rb, ib, n, cols, pitch); t = now_us() - t0; if (t < tb) tb = t;
       memcpy(rc, r0, sz); memcpy(ic, i0, sz); t0 = now_us(); fft_dec_dit(rc, ic, n, cols, pitch, n); t = now_us() - t0; if (t < tc) tc = t;
     }
+    // ai: place after the decoder's last transform: fft_cols' plan of the same size may have taken the decoder's slot
+    // ai: (seven sizes, two plans each, eight slots), freeing the place taken before
+    const int *place = fft_dec_place(n);
     const double ea = err_of(ra, ia, r0, i0, n, cols, pitch, 0, 0, n), eb = err_of(rb, ib, r0, i0, n, cols, pitch, 0, place, n);
     const double ec = err_of(rc, ic, r0, i0, n, cols, pitch, place, 0, n);
     // ai: keep: the rows past it hold what the stage before left; those within it are checked

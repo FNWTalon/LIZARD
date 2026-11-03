@@ -12,10 +12,11 @@
 // ai: rows: 2^a 3^b 5^c. A power of two is radix 2 alone; 384, 768 and 1536 add one radix-3 stage, 1152 two (fft.c
 // ai: rows3) and 1280 one radix-5 stage (rows5); any other size is not transformed. Radix 2 is the CPU transform (2026-09-23: radix 4 was 4 to 15% slower on the desktop and
 // ai: a third slower on the S26 at a strip of 64, research/10 s12, wasm both; it left the code on 2026-10-25). The
-// ai: format's: the encoder paints with it, and the decoder off arm64.
+// ai: format's: the encoder paints with it, and the decoder off arm64 and x86-64.
 void fft_cols(float *re, float *im, int rows, int cols, int pitch, int inverse);
 // ai: The decoder's forward transforms, every column of a rows x cols block. On arm64 (OB_NEON) their own kernels (radix
-// ai: 12, 6, 5, 4, 3 and 2, fused multiply-adds, each stage's twiddles tabled), which round otherwise than the format's
+// ai: 12, 6, 5, 4, 3 and 2, fused multiply-adds, each stage's twiddles tabled), and on x86-64 (OB_X86) the same kernels
+// ai: and plans in SSE4.1 (a multiply and an add where NEON fuses), which round otherwise than the format's
 // ai: transform, the encoder's (test/fft_dec.c holds them to the definition), and keep rows in the digit-reversed order
 // ai: of their own plan, so no row is moved for it: fft_dec_dif leaves frequency k in row place[k]; fft_dec_dit takes
 // ai: sample t from row place[t] and leaves the frequencies in order; where keep < rows / 2 its last stage writes only
