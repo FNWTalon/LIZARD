@@ -1227,6 +1227,10 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
   // live in the column v = 0, y and y^2 in the row u = 0, xy is an outer product, and the constant is DC, which
   // carries nothing.
   double px = 0, py = 0, pxy = 0, pxx = 0, pyy = 0;
+#ifdef OB_NEON
+  // ai: arm64: the projections' sums two rows a lane pair (the strip loop's row sums), added up after the last strip
+  float64x2_t vpx = vdupq_n_f64(0), vpy = vpx, vpxy = vpx, vpxx = vpx, vpyy = vpx;
+#endif
   const float g0 = f->margin + 0.5f / f->scale, step = 1.0f / f->scale;
   // A caller that brings its own soft values brings the spectrum's whole product with them, so none of this
   // runs. The registration still has to be let go, which is why the free below is outside the guard.
@@ -1247,7 +1251,9 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
     }
     // ai: the mean of a caller's grid over every sample; of one sampled here, over every eighth sample each way (a
     // ai: whole grid sampled for its mean alone was 9.4 MB at 1536, faulted in every frame), its c rows of c taken in
-    // ai: one call into the strip's buffer (n / 8 squared, within its n by LIZARD_STRIP), summed in the same order
+    // ai: one call into the strip's buffer (n / 8 squared, within its n by LIZARD_STRIP), summed in the same order (on
+    // ai: arm64 in four double pairs, samples k mod 8, added at the end: other roundings of the same double sum, where
+    // ai: one chain of c^2 dependent adds waited on each other; the same float mean on all 16 runs)
     double mean = 0;
     if (grid) {
       for (size_t k = 0; k < (size_t)n * n; k++) mean += grid[k];
@@ -1255,7 +1261,17 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
     } else {
       const int c = n / 8;
       ob_sample_grid_pic(&f->frame, &im, &reg, g0, g0, 8 * step, 0, c, 0, c, w->wre, c);
-      for (size_t k = 0; k < (size_t)c * c; k++) mean += w->wre[k];
+      size_t k = 0;
+#ifdef OB_NEON
+      float64x2_t s0 = vdupq_n_f64(0), s1 = s0, s2 = s0, s3 = s0;
+      for (; k + 8 <= (size_t)c * c; k += 8) {
+        const float32x4_t a = vld1q_f32(w->wre + k), b = vld1q_f32(w->wre + k + 4);
+        s0 = vaddq_f64(s0, vcvt_f64_f32(vget_low_f32(a))); s1 = vaddq_f64(s1, vcvt_high_f64_f32(a));
+        s2 = vaddq_f64(s2, vcvt_f64_f32(vget_low_f32(b))); s3 = vaddq_f64(s3, vcvt_high_f64_f32(b));
+      }
+      mean = vaddvq_f64(vaddq_f64(vaddq_f64(s0, s1), vaddq_f64(s2, s3)));
+#endif
+      for (; k < (size_t)c * c; k++) mean += w->wre[k];
       mean /= (double)c * c;
     }
     mv = (float)mean;
@@ -1277,11 +1293,17 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
     }
     double tb = ob_now_ms(); ob_prof_ms[PROF_F_SAMPLE] += tb - ta;
 #ifdef OB_NEON
-    // ai: four rows a call (every picture size a multiple of four), each row then taken in turn as below
+    // ai: four rows a call (every picture size a multiple of four), each row's sums taken into the projections as
+    // ai: below, rows y, y + 2 in one lane and y + 1, y + 3 in the other, the products fused: other roundings of the
+    // ai: same double sums (the scalar loop's five chains of one add a row waited on each other; on the 16 runs the
+    // ai: same soft values and blocks, the spectrum's floats moved on two where a projection's last bit reached them)
     for (int y = 0; y < n; y += 4) {
       double rs[4], rx[4], rq[4];
       row_sums4(z + (size_t)y * sw, sw, w->cx + x0, w->qx + x0, sw, rs, rx, rq);
-      for (int k = 0; k < 4; k++) { px += rx[k]; py += rs[k] * w->cx[y + k]; pxy += rx[k] * w->cx[y + k]; pxx += rq[k]; pyy += rs[k] * w->qx[y + k]; }
+      const float64x2_t s0 = vld1q_f64(rs), s1 = vld1q_f64(rs + 2), x0v = vld1q_f64(rx), x1v = vld1q_f64(rx + 2), q0 = vld1q_f64(rq), q1 = vld1q_f64(rq + 2);
+      const float64x2_t c0 = vcvt_f64_f32(vld1_f32(w->cx + y)), c1 = vcvt_f64_f32(vld1_f32(w->cx + y + 2)), d0 = vcvt_f64_f32(vld1_f32(w->qx + y)), d1 = vcvt_f64_f32(vld1_f32(w->qx + y + 2));
+      vpx = vaddq_f64(vpx, vaddq_f64(x0v, x1v)); vpxx = vaddq_f64(vpxx, vaddq_f64(q0, q1));
+      vpy = vfmaq_f64(vfmaq_f64(vpy, s0, c0), s1, c1); vpxy = vfmaq_f64(vfmaq_f64(vpxy, x0v, c0), x1v, c1); vpyy = vfmaq_f64(vfmaq_f64(vpyy, s0, d0), s1, d1);
     }
 #else
     for (int y = 0; y < n; y++) {
@@ -1297,6 +1319,9 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
     ob_prof_ms[PROF_F_FFT] += ob_now_ms() - tc;
   }
   ob_reg_free(&reg);
+#ifdef OB_NEON
+  px = vaddvq_f64(vpx); py = vaddvq_f64(vpy); pxy = vaddvq_f64(vpxy); pxx = vaddvq_f64(vpxx); pyy = vaddvq_f64(vpyy);
+#endif
   double ts = ob_now_ms();
   // ai: arm64: each block's transform makes only the rows and columns its coefficients take (ws dkeep, dcols)
 #ifdef OB_NEON
