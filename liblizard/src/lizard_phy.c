@@ -211,6 +211,33 @@ static inline __attribute__((always_inline)) void turn4(const turn4_t *t, const 
   m = vld1q_lane_f32(tim + p1, m, 1); m = vld1q_lane_f32(tim + p2, m, 2); m = vld1q_lane_f32(tim + p3, m, 3);
   *yr = vaddq_f32(vmulq_f32(r, c), vmulq_f32(m, sn)); *yi = vsubq_f32(vmulq_f32(m, c), vmulq_f32(r, sn));
 }
+#elif defined(OB_X86)
+// ai: x86-64: arm64's turn4 in SSE4.1: the block row q m / 2^31 (q and m >= 0, the product under 2^63) by PMULDQ on
+// ai: lanes 0 and 2 and on lanes 1 and 3 moved down, each shifted right 31 (under 2^32, so the high halves are 0) and
+// ai: the odd ones moved back up; the turn's index by CVTPS2DQ (to nearest even under the default rounding, as
+// ai: nearbyintf); then turned()'s floats, exact
+typedef struct { __m128 dx, dy, sc; __m128i n, half, low, turns, inv; } turn4_t;
+static inline turn4_t turn4_at(const lizard_t *f, const float d[2]) {
+  const turn4_t t = { _mm_set1_ps(d[0]), _mm_set1_ps(d[1]), _mm_set1_ps((float)ALIGN_TURNS / (float)f->n),
+                      _mm_set1_epi32(f->n), _mm_set1_epi32(f->n / 2), _mm_set1_epi32(63), _mm_set1_epi32(ALIGN_TURNS - 1),
+                      _mm_set1_epi32((int32_t)(((1ll << 31) + f->n - 1) / f->n)) };
+  return t;
+}
+static inline __attribute__((always_inline)) void turn4(const turn4_t *t, const float *tre, const float *tim, const float *rot, __m128i p, __m128 *yr, __m128 *yi) {
+  const __m128i q = _mm_srai_epi32(p, 6);
+  const __m128i be = _mm_srli_epi64(_mm_mul_epi32(q, t->inv), 31), bo = _mm_slli_epi64(_mm_srli_epi64(_mm_mul_epi32(_mm_srli_epi64(q, 32), t->inv), 31), 32);
+  const __m128i blk = _mm_or_si128(be, bo);
+  const __m128i uw = _mm_sub_epi32(q, _mm_mullo_epi32(blk, t->n)), vv = _mm_add_epi32(_mm_slli_epi32(blk, 6), _mm_and_si128(p, t->low));
+  const __m128i uu = _mm_blendv_epi8(_mm_sub_epi32(uw, t->n), uw, _mm_cmplt_epi32(uw, t->half));
+  const __m128 a = _mm_mul_ps(_mm_add_ps(_mm_mul_ps(_mm_cvtepi32_ps(uu), t->dx), _mm_mul_ps(_mm_cvtepi32_ps(vv), t->dy)), t->sc);
+  const __m128i k = _mm_and_si128(_mm_cvtps_epi32(a), t->turns);
+  const int p0 = _mm_cvtsi128_si32(p), p1 = _mm_extract_epi32(p, 1), p2 = _mm_extract_epi32(p, 2), p3 = _mm_extract_epi32(p, 3);
+  const __m128 cs01 = _mm_loadh_pi(_mm_loadl_pi(_mm_setzero_ps(), (const __m64 *)(const void *)(rot + 2 * _mm_cvtsi128_si32(k))), (const __m64 *)(const void *)(rot + 2 * _mm_extract_epi32(k, 1)));
+  const __m128 cs23 = _mm_loadh_pi(_mm_loadl_pi(_mm_setzero_ps(), (const __m64 *)(const void *)(rot + 2 * _mm_extract_epi32(k, 2))), (const __m64 *)(const void *)(rot + 2 * _mm_extract_epi32(k, 3)));
+  const __m128 c = _mm_shuffle_ps(cs01, cs23, _MM_SHUFFLE(2, 0, 2, 0)), sn = _mm_shuffle_ps(cs01, cs23, _MM_SHUFFLE(3, 1, 3, 1));
+  const __m128 r = _mm_setr_ps(tre[p0], tre[p1], tre[p2], tre[p3]), m = _mm_setr_ps(tim[p0], tim[p1], tim[p2], tim[p3]);
+  *yr = _mm_add_ps(_mm_mul_ps(r, c), _mm_mul_ps(m, sn)); *yi = _mm_sub_ps(_mm_mul_ps(m, c), _mm_mul_ps(r, sn));
+}
 #endif
 static int pilot_align(const lizard_t *f, struct lizard_ws *w, float d[2]) {
   const int n = f->n;
@@ -1159,6 +1186,66 @@ static void soft4(const lizard_t *f, struct lizard_ws *w, int j, const float *d)
     }
   }
 }
+#elif defined(OB_X86)
+// ai: x86-64: arm64's soft_q and soft4 in SSE4.1. soft_q: the 8 folded into the scale, a NaN made 0 (as FCVTNS and the
+// ai: loop's conversion give it) and the clamp at +-80 taken in float before the conversion, where arm64 clamps the
+// ai: 16-bit lanes (CVTPS2DQ gives INT_MIN past int32's range, either sign; rounding is monotone and 80 whole, so the same
+// ai: bytes as the loop's), then packed to eight bytes, a's four then b's, in the low half
+static inline __m128i soft_q(__m128 k8, __m128 a, __m128 b) {
+  const __m128 lo = _mm_set1_ps(-80.0f), hi = _mm_set1_ps(80.0f);
+  __m128 x = _mm_mul_ps(k8, a), y = _mm_mul_ps(k8, b);
+  x = _mm_min_ps(_mm_max_ps(_mm_and_ps(x, _mm_cmpord_ps(x, x)), lo), hi); y = _mm_min_ps(_mm_max_ps(_mm_and_ps(y, _mm_cmpord_ps(y, y)), lo), hi);
+  const __m128i q = _mm_packs_epi32(_mm_cvtps_epi32(x), _mm_cvtps_epi32(y));
+  return _mm_packs_epi16(q, q);
+}
+// ai: soft4: sub-channels j to j + 3 as arm64's: the coefficients gathered side by side (sub-channel j + l's s-th at 4 s +
+// ai: l), turned by turn4 where d is given; the moments in float, a sub-channel a lane, four chains (s mod 4) added at the
+// ai: end, |y|^2 a multiply and an add (arm64 fuses them): their own floats; the soft values a vector at a time, four
+// ai: gathered rows turned over into a sub-channel's run, stored interleaved (soft_q's r and i bytes by PUNPCKLBW)
+#define T4I(a0, a1, a2, a3, q) { const __m128i t0_ = _mm_unpacklo_epi32(a0, a1), t1_ = _mm_unpackhi_epi32(a0, a1), t2_ = _mm_unpacklo_epi32(a2, a3), t3_ = _mm_unpackhi_epi32(a2, a3); \
+  q[0] = _mm_unpacklo_epi64(t0_, t2_); q[1] = _mm_unpackhi_epi64(t0_, t2_); q[2] = _mm_unpacklo_epi64(t1_, t3_); q[3] = _mm_unpackhi_epi64(t1_, t3_); }
+static void soft4(const lizard_t *f, struct lizard_ws *w, int j, const float *d) {
+  const float *re = w->tre, *imag = w->tim;
+  const int *p0 = f->pos + j * LIZARD_SUB, *p1 = p0 + LIZARD_SUB, *p2 = p1 + LIZARD_SUB, *p3 = p2 + LIZARD_SUB;
+  float gr[4 * LIZARD_SUB], gi[4 * LIZARD_SUB];
+  if (d) {
+    const turn4_t t = turn4_at(f, d);
+    for (int s = 0; s < LIZARD_SUB; s += 4) {
+      __m128i q[4];
+      T4I(_mm_loadu_si128((const __m128i *)(const void *)(p0 + s)), _mm_loadu_si128((const __m128i *)(const void *)(p1 + s)),
+          _mm_loadu_si128((const __m128i *)(const void *)(p2 + s)), _mm_loadu_si128((const __m128i *)(const void *)(p3 + s)), q)
+      for (int u = 0; u < 4; u++) {
+        __m128 yr, yi;
+        turn4(&t, w->tre, w->tim, w->rot, q[u], &yr, &yi);
+        _mm_storeu_ps(gr + 4 * (s + u), yr); _mm_storeu_ps(gi + 4 * (s + u), yi);
+      }
+    }
+  } else for (int s = 0; s < LIZARD_SUB; s++) {
+    _mm_storeu_ps(gr + 4 * s, _mm_setr_ps(re[p0[s]], re[p1[s]], re[p2[s]], re[p3[s]]));
+    _mm_storeu_ps(gi + 4 * s, _mm_setr_ps(imag[p0[s]], imag[p1[s]], imag[p2[s]], imag[p3[s]]));
+  }
+  __m128 m2v[4], m4v[4];
+  for (int q = 0; q < 4; q++) m2v[q] = m4v[q] = _mm_setzero_ps();
+  for (int s = 0; s < LIZARD_SUB; s += 4) for (int q = 0; q < 4; q++) {
+    const __m128 r = _mm_loadu_ps(gr + 4 * (s + q)), i = _mm_loadu_ps(gi + 4 * (s + q)), e = _mm_add_ps(_mm_mul_ps(r, r), _mm_mul_ps(i, i));
+    m2v[q] = _mm_add_ps(m2v[q], e); m4v[q] = _mm_add_ps(m4v[q], _mm_mul_ps(e, e));
+  }
+  float m2[4], m4[4];
+  _mm_storeu_ps(m2, _mm_add_ps(_mm_add_ps(m2v[0], m2v[1]), _mm_add_ps(m2v[2], m2v[3]))); _mm_storeu_ps(m4, _mm_add_ps(_mm_add_ps(m4v[0], m4v[1]), _mm_add_ps(m4v[2], m4v[3])));
+  __m128 k8[4];
+  for (int l = 0; l < 4; l++) k8[l] = _mm_set1_ps(8 * sub_scale(w, j + l, m2[l], m4[l]));
+  int8_t *out = w->llrf + 2 * (size_t)j * LIZARD_SUB;
+  for (int s = 0; s < LIZARD_SUB; s += 8) {
+    // ai: ra[l]: sub-channel j + l at s to s + 3, rb[l] at s + 4 to s + 7 (gr's four rows of a step turned over)
+    __m128 ra[4], rb[4], ia[4], ib[4];
+    for (int l = 0; l < 4; l++) { ra[l] = _mm_loadu_ps(gr + 4 * s + 4 * l); rb[l] = _mm_loadu_ps(gr + 4 * s + 16 + 4 * l); ia[l] = _mm_loadu_ps(gi + 4 * s + 4 * l); ib[l] = _mm_loadu_ps(gi + 4 * s + 16 + 4 * l); }
+    _MM_TRANSPOSE4_PS(ra[0], ra[1], ra[2], ra[3]); _MM_TRANSPOSE4_PS(rb[0], rb[1], rb[2], rb[3]);
+    _MM_TRANSPOSE4_PS(ia[0], ia[1], ia[2], ia[3]); _MM_TRANSPOSE4_PS(ib[0], ib[1], ib[2], ib[3]);
+    for (int l = 0; l < 4; l++)
+      _mm_storeu_si128((__m128i *)(void *)(out + 2 * (size_t)l * LIZARD_SUB + 2 * s), _mm_unpacklo_epi8(soft_q(k8[l], ra[l], rb[l]), soft_q(k8[l], ia[l], ib[l])));
+  }
+}
+#undef T4I
 #endif
 
 // The decode is split at the sampling boundary so the sampler can live somewhere else: on a GPU a fence costs more
@@ -1430,8 +1517,8 @@ have_llr:
   // ai: the grid's shift by the pilots, turned back on every coefficient the frame carries before any is read
   // ai: (a turn leaves each |y| as it was, so the moments, the estimate and the decline verdict read the same)
   w->align[0] = w->align[1] = 0;
-#ifdef OB_NEON
-  // ai: arm64, where the sub-channels come in fours (every format's): soft4 below. With bw 64 (every picture size's)
+#if defined(OB_NEON) || defined(OB_X86)
+  // ai: arm64 and x86-64, where the sub-channels come in fours (every format's): soft4 below. With bw 64 (every picture size's)
   // ai: there is no pass over the frame: soft4 turns each coefficient as it gathers it (turn4) and the pilots' read each
   // ai: of its own, the spectrum left unturned
   const int four = f->subch % 4 == 0;
@@ -1439,7 +1526,7 @@ have_llr:
 #endif
   if (!ext_llr && w->rot && pilot_align(f, w, w->align) && (w->align[0] != 0 || w->align[1] != 0)) {
     const int all = f->subch * LIZARD_SUB;
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
     if (four && bw == 64) turn = w->align; else
 #endif
     for (int i = 0; i < all; i++) { const int p = f->pos[i]; turned(f, w, p, w->align[0], w->align[1], &w->tre[p], &w->tim[p]); }
@@ -1455,7 +1542,7 @@ have_llr:
       memcpy(w->llrf, ext_llr, (size_t)f->subch * 2 * LIZARD_SUB);
       for (int j = 0; j < f->subch; j++) { w->sub_est[j] = ext_est[j]; w->sub_rms[j] = 0; }
     } else for (int j = 0; j < f->subch; j++) {
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
       if (four) { soft4(f, w, j, turn); j += 3; continue; }
 #endif
       const int *pp = f->pos + j * LIZARD_SUB;
@@ -1500,7 +1587,7 @@ have_llr:
           const float rms = w->sub_rms[gs / (2 * LIZARD_SUB)];
           if (!(rms > 0)) continue;
           float y = (i & 1) ? imag[p] : re[p];
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
           if (turn) { float yr, yi; turned(f, w, p, turn[0], turn[1], &yr, &yi); y = (i & 1) ? yi : yr; }
 #endif
           cs += (wh[i] ? -1.0 : 1.0) * y / rms;
