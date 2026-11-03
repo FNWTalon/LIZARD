@@ -7,11 +7,40 @@
 // ai: the four codes through BI-AWGN at three levels, arm64's decode against the 128-bit kernel on today's layout (wide
 // ai: -1): the decodes apart counted (iterations or any output bit), and a failure where both converged to other words;
 // ai: 3. each code's decodes at its middle level timed both ways, interleaved, the best of REPS.
-// ai: arm64 only (test/neon_kernels.sh builds it with the NDK and runs it on a phone): ldpc_neon [layers] [codewords] [reps]
+// ai: On x86-64 the same checks for each form of its port (the SSE4.1 one, wide 0, and the AVX2 one, wide 1, where the
+// ai: processor has it), in the NEON kernel's place.
+// ai: arm64 (test/neon_kernels.sh builds it with the NDK and runs it on a phone) and x86-64 (from liblizard/: gcc -O3
+// ai: -ffp-contract=off -DNDEBUG -msse4.1 -Wall -Wextra -Isrc -o build/ldpc_neon test/ldpc_neon.c -lm):
+// ai: ldpc_neon [layers] [codewords] [reps]
 #include "../src/ldpc.c"
 #include <math.h>
 #include <stdio.h>
 #include <time.h>
+
+// ai: the four-times kernels, form f the one ldpc_t wide f picks
+typedef void (*four_fn)(int8_t *, int, int, int, int16_t *const *, int, int, const int *, int16_t *const *, int, int);
+#if defined(OB_NEON)
+static const four_fn FOUR[] = { layer_kernel_neon };
+static const char *const FOUR_NAME[] = { "NEON" };
+static int four_forms(void) { return 1; }
+#elif defined(OB_X86)
+static const four_fn FOUR[] = {
+  layer_kernel_four_sse41,
+#ifdef OB_LDPC_WIDE
+  layer_kernel_four_avx2,
+#endif
+};
+static const char *const FOUR_NAME[] = { "SSE4.1", "AVX2" };
+static int four_forms(void) {
+#ifdef OB_LDPC_WIDE
+  __builtin_cpu_init();
+  if (__builtin_cpu_supports("avx2")) return 2;
+#endif
+  return 1;
+}
+#else
+#error "ldpc_neon: the four-times decode is arm64's (NEON) and x86-64's (SSE4.1)"
+#endif
 
 static uint64_t rng = 88172645463325252ULL;
 static uint64_t next(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng; }
@@ -73,8 +102,9 @@ int main(int argc, char **argv) {
   enum { NS_MAX = 32 };
   static int16_t q0[NS_MAX * 128], qa[NS_MAX * 128], qb[NS_MAX * 128];
   static int8_t r0[NS_MAX * 128], ra[NS_MAX * 128], rb[NS_MAX * 128];
-  int16_t *rows[NS_MAX];   // ai: the NEON kernel's view: every slot Q's own row
+  int16_t *rows[NS_MAX];   // ai: the four-times kernel's view: every slot Q's own row
   for (int e = 0; e < NS_MAX; e++) rows[e] = qb + e * zp;
+  const int nf = four_forms();
   int fails = 0;
   for (int t = 0; t < layers; t++) {
     const int ns = 3 + (int)(next() % (NS_MAX - 2)), norm = t % 5 == 0 ? 16 : 13;
@@ -83,17 +113,19 @@ int main(int argc, char **argv) {
       for (int k = 0; k < ns * zp; k++) { q0[k] = pick16(w ? 8191 - 254 : 8191); r0[k] = first ? 0 : (int8_t)((int)(next() % 255) - 127); }
       memcpy(qa, q0, sizeof q0); memcpy(ra, r0, sizeof r0);
       kernel_scalar(qa, ra, ns, zp, norm, w);
-      memcpy(qb, q0, sizeof q0); memcpy(rb, r0, sizeof r0);
-      // ai: the first iteration's form reads no messages: they are made garbage, which it must not see
-      if (first) memset(rb, 0x5a, sizeof rb);
-      if (w) layer_kernel_neon(rb, ns, zp, norm, rows, 0, 0, 0, 0, 0, first); else layer_kernel(qb, rb, ns, zp, norm);
-      if (memcmp(qa, qb, (size_t)ns * zp * 2) || memcmp(ra, rb, (size_t)ns * zp)) {
-        if (fails < 5) printf("layer %d (ns %d, norm %d): %s apart from the scalar loop\n", t, ns, norm, w ? first ? "NEON, first iteration" : "NEON" : "128-bit");
-        fails++;
+      for (int f = 0; f < (w ? nf : 1); f++) {
+        memcpy(qb, q0, sizeof q0); memcpy(rb, r0, sizeof r0);
+        // ai: the first iteration's form reads no messages: they are made garbage, which it must not see
+        if (first) memset(rb, 0x5a, sizeof rb);
+        if (w) FOUR[f](rb, ns, zp, norm, rows, 0, 0, 0, 0, 0, first); else layer_kernel(qb, rb, ns, zp, norm);
+        if (memcmp(qa, qb, (size_t)ns * zp * 2) || memcmp(ra, rb, (size_t)ns * zp)) {
+          if (fails < 5) printf("layer %d (ns %d, norm %d): %s%s apart from the scalar loop\n", t, ns, norm, w ? FOUR_NAME[f] : "128-bit", first ? ", first iteration" : "");
+          fails++;
+        }
       }
     }
   }
-  printf("layers: %d a kernel (128-bit, NEON) against the scalar loop, %d apart\n", layers, fails);
+  printf("layers: %d a kernel (128-bit, %s%s) against the scalar loop, %d apart\n", layers, FOUR_NAME[0], nf > 1 ? ", AVX2" : "", fails);
 
   static const int RATES[4] = { 6, 4, 3, 2 };
   static const double DB[4][3] = { { 5.4, 5.9, 7.0 }, { 3.8, 4.3, 5.5 }, { 2.7, 3.2, 4.5 }, { 0.8, 1.3, 2.5 } };
@@ -109,25 +141,28 @@ int main(int argc, char **argv) {
     for (int wi = 0; wi < words; wi++) {
       make_word(&c, DB[ci][wi % 3], data, cw, llr);
       c.wide = -1; const int its0 = ldpc_decode_stall(&c, llr, ref, 30, 9, 0.95f);
-      c.wide = 0; const int its1 = ldpc_decode_stall(&c, llr, out, 30, 9, 0.95f);
-      decodes += 2;
-      if (its0 != its1 || memcmp(out, ref, (size_t)c.n)) {
-        dapart++;
-        if (its0 > 0 && its1 > 0 && memcmp(out, ref, (size_t)c.n)) {
-          if (dfails < 5) printf("rate %d word %d: NEON converged to another word (iterations %d against %d)\n", RATES[ci], wi, its1, its0);
-          dfails++;
+      decodes++;
+      for (int f = 0; f < nf; f++) {
+        c.wide = f; const int its1 = ldpc_decode_stall(&c, llr, out, 30, 9, 0.95f);
+        decodes++;
+        if (its0 != its1 || memcmp(out, ref, (size_t)c.n)) {
+          dapart++;
+          if (its0 > 0 && its1 > 0 && memcmp(out, ref, (size_t)c.n)) {
+            if (dfails < 5) printf("rate %d word %d: %s converged to another word (iterations %d against %d)\n", RATES[ci], wi, FOUR_NAME[f], its1, its0);
+            dfails++;
+          }
+          conv_n += its1 > 0 && its0 <= 0; conv_r += its0 > 0 && its1 <= 0;
         }
-        conv_n += its1 > 0 && its0 <= 0; conv_r += its0 > 0 && its1 <= 0;
       }
     }
     // time: the middle level's words, made once, decoded by each kernel in turn, the best sweep of each
     enum { TW = 64 };
     int8_t *L = malloc((size_t)TW * c.n);
     for (int wi = 0; wi < TW; wi++) make_word(&c, DB[ci][1], data, cw, L + (size_t)wi * c.n);
-    double best[2] = { 1e30, 1e30 };
-    long its[2] = { 0, 0 };
-    for (int rep = 0; rep < reps; rep++) for (int w = 0; w < 2; w++) {
-      c.wide = w ? 0 : -1;
+    double best[3] = { 1e30, 1e30, 1e30 };
+    long its[3] = { 0, 0, 0 };
+    for (int rep = 0; rep < reps; rep++) for (int w = 0; w <= nf; w++) {
+      c.wide = w - 1;
       long it = 0;
       const double t0 = now_ms();
       for (int wi = 0; wi < TW; wi++) { const int u = ldpc_decode_stall(&c, L + (size_t)wi * c.n, out, 30, 9, 0.95f); it += u > 0 ? u : u == -3 ? 9 : 30; }
@@ -135,12 +170,13 @@ int main(int argc, char **argv) {
       if (t < best[w]) best[w] = t;
       its[w] = it;
     }
-    printf("rate %d (%s) at %.1f dB: a decode %.1f us (128-bit) against %.1f us (NEON), %.2fx; %.1f iterations a decode; a layer %.2f against %.2f us\n",
-           RATES[ci], ldpc_rate_name[RATES[ci]], DB[ci][1], 1e3 * best[0] / TW, 1e3 * best[1] / TW, best[0] / best[1], (double)its[1] / TW,
-           1e3 * best[0] / its[0] / c.mb, 1e3 * best[1] / its[1] / c.mb);
+    for (int w = 1; w <= nf; w++)
+      printf("rate %d (%s) at %.1f dB: a decode %.1f us (128-bit) against %.1f us (%s), %.2fx; %.1f iterations a decode; a layer %.2f against %.2f us\n",
+             RATES[ci], ldpc_rate_name[RATES[ci]], DB[ci][1], 1e3 * best[0] / TW, 1e3 * best[w] / TW, FOUR_NAME[w - 1], best[0] / best[w], (double)its[w] / TW,
+             1e3 * best[0] / its[0] / c.mb, 1e3 * best[w] / its[w] / c.mb);
     free(L); free(data); free(cw); free(out); free(ref); free(llr);
     ldpc_free(&c);
   }
-  printf("decodes: %ld, %d apart (%d converged in NEON alone, %d in the 128-bit kernel alone), %d converged to other words\n", decodes, dapart, conv_n, conv_r, dfails);
+  printf("decodes: %ld, %d apart (%d converged in the four-times form alone, %d in the 128-bit kernel alone), %d converged to other words\n", decodes, dapart, conv_n, conv_r, dfails);
   return fails || dfails ? 1 : 0;
 }

@@ -102,6 +102,10 @@ int main(int argc, char **argv) {
     uint8_t *data = calloc((size_t)c.k, 1), *cw = calloc((size_t)c.n, 1), *out = calloc((size_t)c.n, 1), *ref = calloc((size_t)c.n, 1);
     int8_t *llr = calloc((size_t)c.n, 1);
     const int chosen = c.wide;
+    // ai: the four-times columns (w4, where ldpc_init gives them; test/ldpc_neon.c holds that decode) set aside, so
+    // ai: each forced kernel decodes on today's layout
+    int16_t *const w4 = c.w4;
+    c.w4 = 0;
     for (int wi = 0; wi < words; wi++) {
       for (int v = 0; v < c.k; v++) data[v] = v < 3840 ? (uint8_t)(next() & 1) : 0;
       ldpc_encode(&c, data, cw);
@@ -126,7 +130,9 @@ int main(int argc, char **argv) {
         }
       }
     }
-    printf("rate %d (%s): %d codewords decoded by each kernel the processor has, init chose kernel %d\n", RATES[ci], ldpc_rate_name[RATES[ci]], words, chosen);
+    printf("rate %d (%s): %d codewords decoded by each kernel the processor has, init chose kernel %d%s\n", RATES[ci], ldpc_rate_name[RATES[ci]], words, chosen,
+           w4 ? " (the four-times columns' form)" : "");
+    c.w4 = w4;
     free(data); free(cw); free(out); free(ref); free(llr);
     ldpc_free(&c);
   }

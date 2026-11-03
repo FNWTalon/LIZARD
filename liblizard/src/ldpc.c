@@ -7,7 +7,10 @@
 // ai: arm64's decode keeps the first iteration's hard decisions in this many bytes (2 kb z + m, ldpc_decode_stall; the
 // ai: 1/2 code's 11,520)
 enum { LDPC_SIGNS = 16384 };
-#ifdef OB_NEON
+// ai: OB_LDPC_W4: the decode on the data columns held four times over (ldpc_t w4): arm64's, in NEON's own instructions,
+// ai: and x86-64's port of it (SSE4.1, and AVX2 where the processor has it)
+#if defined(OB_NEON) || defined(OB_X86)
+#define OB_LDPC_W4 1
 static int views_neon(ldpc_t *c);
 #endif
 
@@ -90,15 +93,21 @@ int ldpc_init(ldpc_t *c, int rate) {
   c->wq = calloc((size_t)c->slots_max * c->zp, sizeof(int16_t));
   c->wr = malloc((size_t)c->slots_total * c->zp);
   if (!c->wl || !c->wq || !c->wr) { ldpc_free(c); return -1; }
-#ifdef OB_NEON
-  // ai: arm64's kernel leaves out the posteriors' clamp at 8191, which never acts while a posterior, its LLR (within
-  // ai: +-128) plus its column's messages (within +-127 each), stays inside it: the largest column degree at most 63
+#ifdef OB_LDPC_W4
+  // ai: arm64's kernel (and x86-64's port) leaves out the posteriors' clamp at 8191, which never acts while a posterior,
+  // ai: its LLR (within +-128) plus its column's messages (within +-127 each), stays inside it: the largest column
+  // ai: degree at most 63
   int dmax = 0;
   for (int j = 0; j < kb; j++) { int d = 0; for (int r = 0; r < mb; r++) d += shift[r * kb + j] >= 0; if (d > dmax) dmax = d; }
   if (c->z % 32 == 0 && c->zp == c->z && c->slots_max <= 64 && 2 * c->k + c->m <= LDPC_SIGNS && 128 + 127 * dmax <= 8191 && c->norm >= 8) {
     // ai: the columns, then the tables views_neon makes of them
     c->w4 = malloc((size_t)c->kb * 4 * c->z * sizeof(int16_t) + ((size_t)c->slots_total + c->lay_ptr[mb]) * sizeof(int16_t *) + (size_t)mb * sizeof(int));
     if (!c->w4 || views_neon(c)) { ldpc_free(c); return -1; }
+#ifdef OB_LDPC_WIDE
+    // ai: x86-64: wide is then the four-times kernel's form: 0 SSE4.1, 1 AVX2 (where wide_for took AVX2 or AVX-512;
+    // ai: the kernel has no wider form)
+    if (c->wide) c->wide = __builtin_cpu_supports("avx2") ? 1 : 0;
+#endif
   }
 #endif
   return 0;
@@ -305,15 +314,232 @@ static void layer_kernel_neon(int8_t *R, int ns, int zp, int norm, int16_t *cons
   if (first) layer_neon(R, ns, zp, norm, view, nd, z, sh, cp, nc, 1);
   else layer_neon(R, ns, zp, norm, view, nd, z, sh, cp, nc, 0);
 }
+#elif defined(OB_X86)
+// ai: x86-64: arm64's layer kernel above, ported: steps of 32 checks, pass 2 of step i fused with pass 1 of step i + 32,
+// ai: the extrinsics double-buffered and narrowed once to signed bytes, minima by unsigned byte min and max, messages
+// ai: as signed bytes, two column stores a step, no clamp at +-8191, the same views and first-iteration form; every
+// ai: value NEON's (test/ldpc_neon.c). Two forms: SSE4.1, the baseline (32 checks four registers of eight, their bytes
+// ai: two of sixteen), and AVX2 (two of sixteen, the bytes one register; compiled for AVX2 alone, ldpc_t wide 1).
+// ai: Where the instructions differ, each gives NEON's values: PACKSSWB saturates as SQXTN, and the bytes are then held
+// ai: at -127 (PMAXSB), so PABSB gives SQABS's magnitudes (at most 127; the sign and magnitude, all pass 2 reads of a
+// ai: byte, unchanged); a message takes its byte's sign by PSIGNB against the byte with its low bit set (never zero,
+// ai: the same sign), as NEON's XOR and subtract of the sign mask; the minima are scaled on 16-bit lanes and packed back
+// ai: with unsigned saturation, NEON's narrowing while (127 norm) >> 4 fits a byte (norm at most 32; 13 at every rate).
+typedef struct { __m128i a1, b1, a2, b2, sa, sb; } p1_acc_sse41;
+typedef struct { __m128i a1, b1, an, am, bn, bm; } p2_msg_sse41;
+typedef struct { __m128i v[4]; } q32_sse41;   // ai: 32 posteriors
+
+static inline __attribute__((always_inline)) q32_sse41 ld32_sse41(const int16_t *p) {
+  const q32_sse41 v = { { _mm_loadu_si128((const __m128i *)p), _mm_loadu_si128((const __m128i *)(p + 8)), _mm_loadu_si128((const __m128i *)(p + 16)), _mm_loadu_si128((const __m128i *)(p + 24)) } };
+  return v;
+}
+static inline __attribute__((always_inline)) void st32_sse41(int16_t *p, const q32_sse41 v) {
+  _mm_storeu_si128((__m128i *)p, v.v[0]); _mm_storeu_si128((__m128i *)(p + 8), v.v[1]);
+  _mm_storeu_si128((__m128i *)(p + 16), v.v[2]); _mm_storeu_si128((__m128i *)(p + 24), v.v[3]);
+}
+
+static inline __attribute__((always_inline)) void p1_slot_sse41(p1_acc_sse41 *x, const int8_t *Rp, const int16_t *src, int16_t *vbp, uint8_t *abp, const int first) {
+  q32_sse41 v = ld32_sse41(src);
+  if (!first) {
+    for (int u = 0; u < 4; u++) v.v[u] = _mm_sub_epi16(v.v[u], _mm_cvtepi8_epi16(_mm_loadl_epi64((const __m128i *)(Rp + 8 * u))));
+    st32_sse41(vbp, v);
+  }
+  const __m128i lo = _mm_set1_epi8(-127);
+  const __m128i na = _mm_max_epi8(_mm_packs_epi16(v.v[0], v.v[1]), lo), nb = _mm_max_epi8(_mm_packs_epi16(v.v[2], v.v[3]), lo);
+  _mm_storeu_si128((__m128i *)abp, na); _mm_storeu_si128((__m128i *)(abp + 16), nb);
+  const __m128i ma = _mm_abs_epi8(na), mb = _mm_abs_epi8(nb);
+  x->sa = _mm_xor_si128(x->sa, na);
+  x->sb = _mm_xor_si128(x->sb, nb);
+  x->a2 = _mm_min_epu8(x->a2, _mm_max_epu8(x->a1, ma)); x->b2 = _mm_min_epu8(x->b2, _mm_max_epu8(x->b1, mb));
+  x->a1 = _mm_min_epu8(x->a1, ma); x->b1 = _mm_min_epu8(x->b1, mb);
+}
+
+// ai: a slot's new messages from its extrinsics, stored; the new posteriors returned
+static inline __attribute__((always_inline)) q32_sse41 p2_slot_sse41(const p2_msg_sse41 *g, int8_t *Rp, const int16_t *vbp, const uint8_t *abp) {
+  q32_sse41 v = ld32_sse41(vbp);
+  const __m128i na = _mm_loadu_si128((const __m128i *)abp), nb = _mm_loadu_si128((const __m128i *)(abp + 16)), one = _mm_set1_epi8(1);
+  const __m128i ta = _mm_blendv_epi8(g->an, g->am, _mm_cmpeq_epi8(_mm_abs_epi8(na), g->a1));
+  const __m128i tb = _mm_blendv_epi8(g->bn, g->bm, _mm_cmpeq_epi8(_mm_abs_epi8(nb), g->b1));
+  const __m128i ra = _mm_sign_epi8(ta, _mm_or_si128(na, one)), rb = _mm_sign_epi8(tb, _mm_or_si128(nb, one));
+  _mm_storeu_si128((__m128i *)Rp, ra); _mm_storeu_si128((__m128i *)(Rp + 16), rb);
+  v.v[0] = _mm_add_epi16(v.v[0], _mm_cvtepi8_epi16(ra)); v.v[1] = _mm_add_epi16(v.v[1], _mm_cvtepi8_epi16(_mm_srli_si128(ra, 8)));
+  v.v[2] = _mm_add_epi16(v.v[2], _mm_cvtepi8_epi16(rb)); v.v[3] = _mm_add_epi16(v.v[3], _mm_cvtepi8_epi16(_mm_srli_si128(rb, 8)));
+  return v;
+}
+
+static inline __attribute__((always_inline)) void p1_reset_sse41(p1_acc_sse41 *x) {
+  x->a1 = x->b1 = x->a2 = x->b2 = _mm_set1_epi8(-1);
+  x->sa = x->sb = _mm_setzero_si128();
+}
+
+// ai: (x * norm) >> 4 capped at 127, the check's sign folded in
+static inline __attribute__((always_inline)) p2_msg_sse41 p2_from_sse41(const p1_acc_sse41 *x, int norm) {
+  const __m128i zero = _mm_setzero_si128(), n = _mm_set1_epi16((int16_t)norm), top = _mm_set1_epi8(127), one = _mm_set1_epi8(1);
+#define OB_SCALE(v) _mm_min_epu8(_mm_packus_epi16(_mm_srli_epi16(_mm_mullo_epi16(_mm_unpacklo_epi8((v), zero), n), 4), _mm_srli_epi16(_mm_mullo_epi16(_mm_unpackhi_epi8((v), zero), n), 4)), top)
+  const __m128i sa = _mm_or_si128(x->sa, one), sb = _mm_or_si128(x->sb, one);
+  p2_msg_sse41 g = { x->a1, x->b1, _mm_sign_epi8(OB_SCALE(x->a1), sa), _mm_sign_epi8(OB_SCALE(x->a2), sa), _mm_sign_epi8(OB_SCALE(x->b1), sb), _mm_sign_epi8(OB_SCALE(x->b2), sb) };
+#undef OB_SCALE
+  // ai: opaque to the compiler, as on arm64, so the fold stays out of the slots
+  __asm__("" : "+x"(g.an), "+x"(g.am), "+x"(g.bn), "+x"(g.bm));
+  return g;
+}
+
+static inline __attribute__((always_inline)) void layer_sse41(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, int16_t *const *cp, int nc, const int first) {
+  int16_t vb[2][64 * 32];   // ai: a step's extrinsics, slot by slot, this step's and the next's
+  uint8_t ab[2][64 * 32];   // ai: them as signed bytes, saturated at -128 and 127, then held at -127
+  p1_acc_sse41 x;
+  p1_reset_sse41(&x);
+  for (int e = 0; e < ns; e++) p1_slot_sse41(&x, R + e * zp, view[e], vb[0] + e * 32, ab[0] + e * 32, first);
+  for (int i = 0, b = 0; i < zp; i += 32, b ^= 1) {
+    const p2_msg_sse41 g = p2_from_sse41(&x, norm);
+    const int16_t *vc = vb[b];
+    const uint8_t *ac = ab[b];
+    int8_t *Rp = R + i;
+    if (i + 32 < zp) {
+      int16_t *vn = vb[b ^ 1];
+      uint8_t *an = ab[b ^ 1];
+      p1_reset_sse41(&x);
+      for (int e = 0; e < nd; e++, Rp += zp, vc += 32, ac += 32, vn += 32, an += 32) {
+        int16_t *d = view[e] + i;
+        const q32_sse41 v = p2_slot_sse41(&g, Rp, first ? d : vc, ac);
+        p1_slot_sse41(&x, Rp + 32, d + 32, vn, an, first);
+        st32_sse41(d, v); st32_sse41(d + (i < sh[e] ? z : -z), v);
+      }
+      for (int e = nd; e < ns; e++, Rp += zp, vc += 32, ac += 32, vn += 32, an += 32) {
+        int16_t *d = view[e] + i;
+        st32_sse41(d, p2_slot_sse41(&g, Rp, first ? d : vc, ac));
+        p1_slot_sse41(&x, Rp + 32, d + 32, vn, an, first);
+      }
+    } else {
+      for (int e = 0; e < nd; e++, Rp += zp, vc += 32, ac += 32) {
+        int16_t *d = view[e] + i;
+        const q32_sse41 v = p2_slot_sse41(&g, Rp, first ? d : vc, ac);
+        st32_sse41(d, v); st32_sse41(d + (i < sh[e] ? z : -z), v);
+      }
+      for (int e = nd; e < ns; e++, Rp += zp, vc += 32, ac += 32) { int16_t *d = view[e] + i; st32_sse41(d, p2_slot_sse41(&g, Rp, first ? d : vc, ac)); }
+    }
+  }
+  // ai: the runs past 2z copied a column down where read from there, as on arm64
+  for (int k = 0; k < nc; k++) st32_sse41(cp[k] - z, ld32_sse41(cp[k]));
+}
+
+static void layer_kernel_four_sse41(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, int16_t *const *cp, int nc, int first) {
+  if (first) layer_sse41(R, ns, zp, norm, view, nd, z, sh, cp, nc, 1);
+  else layer_sse41(R, ns, zp, norm, view, nd, z, sh, cp, nc, 0);
+}
+
+#ifdef OB_LDPC_WIDE
+#include <immintrin.h>
+// ai: The AVX2 form: a step's 32 bytes one register. PACKSSWB packs within each 128-bit half, so the bytes come in the
+// ai: order of checks 0-7, 16-23, 8-15, 24-31, which the accumulators, the extrinsics' bytes and the scaled minima
+// ai: keep (byte for byte, lane for lane); the messages alone are put back in order (VPERMQ), for their store and to
+// ai: be widened onto the posteriors.
+#define OB_AVX2 static inline __attribute__((always_inline, target("avx2")))
+typedef struct { __m256i a1, a2, s; } p1_acc_avx2;
+typedef struct { __m256i a1, n, m; } p2_msg_avx2;
+typedef struct { __m256i v[2]; } q32_avx2;
+
+OB_AVX2 q32_avx2 ld32_avx2(const int16_t *p) {
+  const q32_avx2 v = { { _mm256_loadu_si256((const __m256i *)p), _mm256_loadu_si256((const __m256i *)(p + 16)) } };
+  return v;
+}
+OB_AVX2 void st32_avx2(int16_t *p, const q32_avx2 v) { _mm256_storeu_si256((__m256i *)p, v.v[0]); _mm256_storeu_si256((__m256i *)(p + 16), v.v[1]); }
+
+OB_AVX2 void p1_slot_avx2(p1_acc_avx2 *x, const int8_t *Rp, const int16_t *src, int16_t *vbp, uint8_t *abp, const int first) {
+  q32_avx2 v = ld32_avx2(src);
+  if (!first) {
+    v.v[0] = _mm256_sub_epi16(v.v[0], _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i *)Rp)));
+    v.v[1] = _mm256_sub_epi16(v.v[1], _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i *)(Rp + 16))));
+    st32_avx2(vbp, v);
+  }
+  const __m256i n = _mm256_max_epi8(_mm256_packs_epi16(v.v[0], v.v[1]), _mm256_set1_epi8(-127));
+  _mm256_storeu_si256((__m256i *)abp, n);
+  const __m256i m = _mm256_abs_epi8(n);
+  x->s = _mm256_xor_si256(x->s, n);
+  x->a2 = _mm256_min_epu8(x->a2, _mm256_max_epu8(x->a1, m));
+  x->a1 = _mm256_min_epu8(x->a1, m);
+}
+
+OB_AVX2 q32_avx2 p2_slot_avx2(const p2_msg_avx2 *g, int8_t *Rp, const int16_t *vbp, const uint8_t *abp) {
+  q32_avx2 v = ld32_avx2(vbp);
+  const __m256i n = _mm256_loadu_si256((const __m256i *)abp);
+  const __m256i t = _mm256_blendv_epi8(g->n, g->m, _mm256_cmpeq_epi8(_mm256_abs_epi8(n), g->a1));
+  const __m256i r = _mm256_permute4x64_epi64(_mm256_sign_epi8(t, _mm256_or_si256(n, _mm256_set1_epi8(1))), 0xD8);
+  _mm256_storeu_si256((__m256i *)Rp, r);
+  v.v[0] = _mm256_add_epi16(v.v[0], _mm256_cvtepi8_epi16(_mm256_castsi256_si128(r)));
+  v.v[1] = _mm256_add_epi16(v.v[1], _mm256_cvtepi8_epi16(_mm256_extracti128_si256(r, 1)));
+  return v;
+}
+
+OB_AVX2 void p1_reset_avx2(p1_acc_avx2 *x) {
+  x->a1 = x->a2 = _mm256_set1_epi8(-1);
+  x->s = _mm256_setzero_si256();
+}
+
+// ai: the scaling's unpacks and pack work within each half, so the bytes keep their order
+OB_AVX2 p2_msg_avx2 p2_from_avx2(const p1_acc_avx2 *x, int norm) {
+  const __m256i zero = _mm256_setzero_si256(), n = _mm256_set1_epi16((int16_t)norm), top = _mm256_set1_epi8(127);
+#define OB_SCALE(v) _mm256_min_epu8(_mm256_packus_epi16(_mm256_srli_epi16(_mm256_mullo_epi16(_mm256_unpacklo_epi8((v), zero), n), 4), _mm256_srli_epi16(_mm256_mullo_epi16(_mm256_unpackhi_epi8((v), zero), n), 4)), top)
+  const __m256i s = _mm256_or_si256(x->s, _mm256_set1_epi8(1));
+  p2_msg_avx2 g = { x->a1, _mm256_sign_epi8(OB_SCALE(x->a1), s), _mm256_sign_epi8(OB_SCALE(x->a2), s) };
+#undef OB_SCALE
+  __asm__("" : "+x"(g.n), "+x"(g.m));
+  return g;
+}
+
+OB_AVX2 void layer_avx2(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, int16_t *const *cp, int nc, const int first) {
+  int16_t vb[2][64 * 32];
+  uint8_t ab[2][64 * 32];
+  p1_acc_avx2 x;
+  p1_reset_avx2(&x);
+  for (int e = 0; e < ns; e++) p1_slot_avx2(&x, R + e * zp, view[e], vb[0] + e * 32, ab[0] + e * 32, first);
+  for (int i = 0, b = 0; i < zp; i += 32, b ^= 1) {
+    const p2_msg_avx2 g = p2_from_avx2(&x, norm);
+    const int16_t *vc = vb[b];
+    const uint8_t *ac = ab[b];
+    int8_t *Rp = R + i;
+    if (i + 32 < zp) {
+      int16_t *vn = vb[b ^ 1];
+      uint8_t *an = ab[b ^ 1];
+      p1_reset_avx2(&x);
+      for (int e = 0; e < nd; e++, Rp += zp, vc += 32, ac += 32, vn += 32, an += 32) {
+        int16_t *d = view[e] + i;
+        const q32_avx2 v = p2_slot_avx2(&g, Rp, first ? d : vc, ac);
+        p1_slot_avx2(&x, Rp + 32, d + 32, vn, an, first);
+        st32_avx2(d, v); st32_avx2(d + (i < sh[e] ? z : -z), v);
+      }
+      for (int e = nd; e < ns; e++, Rp += zp, vc += 32, ac += 32, vn += 32, an += 32) {
+        int16_t *d = view[e] + i;
+        st32_avx2(d, p2_slot_avx2(&g, Rp, first ? d : vc, ac));
+        p1_slot_avx2(&x, Rp + 32, d + 32, vn, an, first);
+      }
+    } else {
+      for (int e = 0; e < nd; e++, Rp += zp, vc += 32, ac += 32) {
+        int16_t *d = view[e] + i;
+        const q32_avx2 v = p2_slot_avx2(&g, Rp, first ? d : vc, ac);
+        st32_avx2(d, v); st32_avx2(d + (i < sh[e] ? z : -z), v);
+      }
+      for (int e = nd; e < ns; e++, Rp += zp, vc += 32, ac += 32) { int16_t *d = view[e] + i; st32_avx2(d, p2_slot_avx2(&g, Rp, first ? d : vc, ac)); }
+    }
+  }
+  for (int k = 0; k < nc; k++) st32_avx2(cp[k] - z, ld32_avx2(cp[k]));
+}
+
+__attribute__((target("avx2"))) static void layer_kernel_four_avx2(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, int16_t *const *cp, int nc, int first) {
+  if (first) layer_avx2(R, ns, zp, norm, view, nd, z, sh, cp, nc, 1);
+  else layer_avx2(R, ns, zp, norm, view, nd, z, sh, cp, nc, 0);
+}
+#endif
 #endif
 
 // x86-64: the same layer, 16 and 32 checks a vector (AVX2, AVX-512 with its byte and word lanes), each compiled for
 // its own instruction set and taken by ldpc_init where the processor has it; lane for lane the 128-bit kernel's
 // operations, so every form decides alike (test/ldpc_wide.c holds them to the scalar twin).
+// ai: A code ldpc_init gives w4 runs on the four-times columns (x86-64's port above); these run a code it gives none.
 #ifdef OB_LDPC_WIDE
 #include <immintrin.h>
 #ifndef OB_LDPC_WIDE_MAX
-#define OB_LDPC_WIDE_MAX 2   // ai: a lab build caps it (1: AVX2 at most, 0: the 128-bit kernel), for an A/B
+#define OB_LDPC_WIDE_MAX 2   // ai: a lab build caps it (1: AVX2 at most, 0: the 128-bit kernel or the four-times SSE4.1 form), for an A/B
 #endif
 __attribute__((target("avx2"))) static void layer_kernel_avx2(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
   const __m256i big = _mm256_set1_epi16(32767), cap = _mm256_set1_epi16(2047), top = _mm256_set1_epi16(127), vn = _mm256_set1_epi16((int16_t)norm);
@@ -425,12 +651,12 @@ static void layer_scatter(const ldpc_t *c, int r, const int16_t *Q) {
   memcpy(Lp + r * z, Q + (nd + 1) * zp, (size_t)z * 2);
 }
 
-#ifdef OB_NEON
-// ai: arm64: the layer read from and written to the columns where they lie (w4), so no slot is copied into check order
-// ai: and back: slot e's rotation by its shift s is the run of z at 2z - s; the two staircase slots are wl's rows in
-// ai: place, but check 0's bit before it (the last row moved up a lane under a certain zero, as layer_gather lays it),
-// ai: which goes through Q. (The copies cost about as much as the kernel, and a row stored split at s and read back in
-// ai: 64-byte pieces across the split waited on both stores.)
+#ifdef OB_LDPC_W4
+// ai: arm64 (and x86-64's port, on the same views): the layer read from and written to the columns where they lie
+// ai: (w4), so no slot is copied into check order and back: slot e's rotation by its shift s is the run of z at 2z - s;
+// ai: the two staircase slots are wl's rows in place, but check 0's bit before it (the last row moved up a lane under
+// ai: a certain zero, as layer_gather lays it), which goes through Q. (The copies cost about as much as the kernel, and
+// ai: a row stored split at s and read back in 64-byte pieces across the split waited on both stores.)
 // ai: Where every slot of every layer lies (w4_views), laid out as the messages are (layer r's ns slots from
 // ai: lay_ptr[r] + 2r): fixed by the code and its workspace, so made by ldpc_init, in w4's allocation past the columns.
 // ai: w4_copies, w4_ncopies: the steps across 2z each layer copies a column down (layer r's w4_ncopies[r] from
@@ -471,7 +697,16 @@ static void layer_direct(const ldpc_t *c, int r, int8_t *R, int ns, int16_t *con
   const int z = c->z, nd = ns - 2;
   int16_t *Lp = c->wl + c->k;
   if (r == 0) { view[nd][0] = 8191; memcpy(view[nd] + 1, Lp + (c->mb - 1) * z, (size_t)(z - 1) * 2); }
+#ifdef OB_NEON
   layer_kernel_neon(R, ns, c->zp, c->norm, view, nd, z, c->lay_shift + c->lay_ptr[r], cp, nc, first);
+#else
+  // ai: x86-64: the form ldpc_init chose (wide 1 AVX2, else SSE4.1)
+#ifdef OB_LDPC_WIDE
+  if (c->wide >= 1) layer_kernel_four_avx2(R, ns, c->zp, c->norm, view, nd, z, c->lay_shift + c->lay_ptr[r], cp, nc, first);
+  else
+#endif
+    layer_kernel_four_sse41(R, ns, c->zp, c->norm, view, nd, z, c->lay_shift + c->lay_ptr[r], cp, nc, first);
+#endif
   if (r == 0) memcpy(Lp + (c->mb - 1) * z, view[nd] + 1, (size_t)(z - 1) * 2);
 }
 #endif
@@ -670,6 +905,205 @@ static int signs_unsat(const ldpc_t *c, const uint8_t *sv) {
   }
   return bad;
 }
+#elif defined(OB_X86)
+// ai: x86-64: arm64's parity test, transposes and first-iteration signs above, ported; all exact (integers and sign
+// ai: bits). The parity test in both forms (SSE4.1; AVX2 for ldpc_t wide 1), the rest once a decode, SSE4.1 alone.
+// ai: parity_groups_sse41: g groups of 32 checks from i (2, or 1 for a row's last group short of 64: eight registers
+// ai: of x86-64's sixteen, as arm64 holds 128 checks in sixteen of its 32), the row before moved up a lane for block
+// ai: row 0 (PALIGNR, NEON's EXT), the sign bits of the XOR of every slot as a count a lane (PSRLW and PADDW, NEON's
+// ai: USRA).
+static inline __attribute__((always_inline)) __m128i parity_groups_sse41(int16_t *const *view, int nd, const int16_t *own, const int16_t *prev, int i, int row0, __m128i *carry, const int g) {
+  __m128i x[8];
+  for (int u = 0; u < 4 * g; u++) {
+    const __m128i o = _mm_loadu_si128((const __m128i *)(own + i + 8 * u)), p = _mm_loadu_si128((const __m128i *)(prev + i + 8 * u));
+    if (!row0) x[u] = _mm_xor_si128(o, p);
+    else { x[u] = _mm_xor_si128(o, _mm_alignr_epi8(p, *carry, 14)); *carry = p; }
+  }
+  for (int e = 0; e < nd; e++) {
+    const int16_t *v = view[e] + i;
+    for (int u = 0; u < 4 * g; u++) x[u] = _mm_xor_si128(x[u], _mm_loadu_si128((const __m128i *)(v + 8 * u)));
+  }
+  __m128i acc = _mm_setzero_si128();
+  for (int u = 0; u < 4 * g; u++) acc = _mm_add_epi16(acc, _mm_srli_epi16(x[u], 15));
+  return acc;
+}
+
+// ai: the eight 16-bit counts of a vector summed
+static inline int sum16_sse41(__m128i a) {
+  a = _mm_add_epi16(a, _mm_srli_si128(a, 8)); a = _mm_add_epi16(a, _mm_srli_si128(a, 4)); a = _mm_add_epi16(a, _mm_srli_si128(a, 2));
+  return _mm_extract_epi16(a, 0);
+}
+
+// ai: count and rev as layers_parity_neon's
+static int layers_parity_sse41(const ldpc_t *c, int16_t *const *vw, int count, int rev) {
+  const int z = c->z, mb = c->mb;
+  const int16_t *Lp = c->wl + c->k;
+  int bad = 0;
+  for (int k = 0, r = rev ? mb - 1 : 0, dr = rev ? -1 : 1; k < mb; k++, r += dr) {
+    const int p0 = c->lay_ptr[r], nd = c->lay_ptr[r + 1] - p0;
+    int16_t *const *view = vw + p0 + 2 * r;
+    const int16_t *own = Lp + r * z, *prev = Lp + (r > 0 ? r - 1 : mb - 1) * z;
+    __m128i acc = _mm_setzero_si128(), carry = _mm_setzero_si128();
+    int i = 0;
+    for (; i + 64 <= z; i += 64) acc = _mm_add_epi16(acc, parity_groups_sse41(view, nd, own, prev, i, r == 0, &carry, 2));
+    for (; i < z; i += 32) acc = _mm_add_epi16(acc, parity_groups_sse41(view, nd, own, prev, i, r == 0, &carry, 1));
+    const int b = sum16_sse41(acc);
+    if (!count && b) return 0;
+    bad += b;
+  }
+  return count ? bad : 1;
+}
+
+#ifdef OB_LDPC_WIDE
+// ai: The AVX2 form: arm64's 128 checks in eight registers; the row before moved up a lane across the halves by
+// ai: VPERM2I128 and VPALIGNR.
+OB_AVX2 __m256i parity_groups_avx2(int16_t *const *view, int nd, const int16_t *own, const int16_t *prev, int i, int row0, __m256i *carry, const int g) {
+  __m256i x[8];
+  for (int u = 0; u < 2 * g; u++) {
+    const __m256i o = _mm256_loadu_si256((const __m256i *)(own + i + 16 * u)), p = _mm256_loadu_si256((const __m256i *)(prev + i + 16 * u));
+    if (!row0) x[u] = _mm256_xor_si256(o, p);
+    else { x[u] = _mm256_xor_si256(o, _mm256_alignr_epi8(p, _mm256_permute2x128_si256(*carry, p, 0x21), 14)); *carry = p; }
+  }
+  for (int e = 0; e < nd; e++) {
+    const int16_t *v = view[e] + i;
+    for (int u = 0; u < 2 * g; u++) x[u] = _mm256_xor_si256(x[u], _mm256_loadu_si256((const __m256i *)(v + 16 * u)));
+  }
+  __m256i acc = _mm256_setzero_si256();
+  for (int u = 0; u < 2 * g; u++) acc = _mm256_add_epi16(acc, _mm256_srli_epi16(x[u], 15));
+  return acc;
+}
+
+__attribute__((target("avx2"))) static int layers_parity_avx2(const ldpc_t *c, int16_t *const *vw, int count, int rev) {
+  const int z = c->z, mb = c->mb;
+  const int16_t *Lp = c->wl + c->k;
+  int bad = 0;
+  for (int k = 0, r = rev ? mb - 1 : 0, dr = rev ? -1 : 1; k < mb; k++, r += dr) {
+    const int p0 = c->lay_ptr[r], nd = c->lay_ptr[r + 1] - p0;
+    int16_t *const *view = vw + p0 + 2 * r;
+    const int16_t *own = Lp + r * z, *prev = Lp + (r > 0 ? r - 1 : mb - 1) * z;
+    __m256i acc = _mm256_setzero_si256(), carry = _mm256_setzero_si256();
+    int i = 0;
+    for (; i + 128 <= z; i += 128) acc = _mm256_add_epi16(acc, parity_groups_avx2(view, nd, own, prev, i, r == 0, &carry, 4));
+    for (; i < z; i += 32) acc = _mm256_add_epi16(acc, parity_groups_avx2(view, nd, own, prev, i, r == 0, &carry, 1));
+    const int b = sum16_sse41(_mm_add_epi16(_mm256_castsi256_si128(acc), _mm256_extracti128_si256(acc, 1)));
+    if (!count && b) return 0;
+    bad += b;
+  }
+  return count ? bad : 1;
+}
+#endif
+
+// ai: 16 rows of 16 bytes transposed: four rounds of PUNPCKLBW and PUNPCKHBW on rows t and t + 8, each taking the byte
+// ai: at (row r, column c) to row (2r + c / 8) mod 16, column (2c + r / 8) mod 16, so the four take it to (c, r)
+static inline void transpose16(__m128i x[16]) {
+  for (int k = 0; k < 4; k++) {
+    __m128i y[16];
+    for (int t = 0; t < 8; t++) { y[2 * t] = _mm_unpacklo_epi8(x[t], x[t + 8]); y[2 * t + 1] = _mm_unpackhi_epi8(x[t], x[t + 8]); }
+    memcpy(x, y, sizeof y);
+  }
+}
+
+// ai: parity_in, parity_out: as arm64's, the same blocks, reads and writes
+static void parity_in(const int8_t *src, int16_t *dst, int z, int mb) {
+  uint8_t tail[16 * 16 + 16] = { 0 };
+  for (int i0 = 0; i0 < z; i0 += 16) {
+    const uint8_t *s = (const uint8_t *)src + i0 * mb;
+    if (mb < 16 && i0 + 16 == z) { memcpy(tail, s, (size_t)16 * mb); s = tail; }
+    for (int r0 = 0; r0 < mb; r0 += 16) {
+      const int c0 = r0 + 16 <= mb ? r0 : mb >= 16 ? mb - 16 : 0, nc = mb - c0 < 16 ? mb - c0 : 16;
+      __m128i x[16];
+      for (int t = 0; t < 16; t++) x[t] = _mm_loadu_si128((const __m128i *)(s + t * mb + c0));
+      transpose16(x);
+      for (int r = 0; r < nc; r++) {
+        int16_t *d = dst + (c0 + r) * z + i0;
+        _mm_storeu_si128((__m128i *)d, _mm_cvtepi8_epi16(x[r]));
+        _mm_storeu_si128((__m128i *)(d + 8), _mm_cvtepi8_epi16(_mm_srli_si128(x[r], 8)));
+      }
+    }
+  }
+}
+
+static void parity_out(const int16_t *src, uint8_t *dst, int z, int mb) {
+  uint8_t tail[16 * 16 + 16];
+  for (int i0 = 0; i0 < z; i0 += 16) {
+    const int last = mb < 16 && i0 + 16 == z;
+    uint8_t *d = last ? tail : dst + i0 * mb;
+    for (int r0 = 0; r0 < mb; r0 += 16) {
+      const int c0 = r0 + 16 <= mb ? r0 : mb >= 16 ? mb - 16 : 0, nc = mb - c0 < 16 ? mb - c0 : 16;
+      __m128i x[16];
+      for (int r = 0; r < 16; r++) {
+        if (r >= nc) { x[r] = _mm_setzero_si128(); continue; }
+        const int16_t *q = src + (c0 + r) * z + i0;
+        x[r] = _mm_packs_epi16(_mm_srli_epi16(_mm_loadu_si128((const __m128i *)q), 15), _mm_srli_epi16(_mm_loadu_si128((const __m128i *)(q + 8)), 15));
+      }
+      transpose16(x);
+      for (int t = 0; t < 16; t++) _mm_storeu_si128((__m128i *)(d + t * mb + c0), x[t]);
+    }
+    if (last) memcpy(dst + i0 * mb, tail, (size_t)16 * mb);
+  }
+}
+
+// ai: signs_keep, signs_unsat: as arm64's, a byte a posterior; PACKSSWB's byte where NEON keeps the high one, the same
+// ai: sign bit, the only one counted (PCMPGTB against zero, the -1s taken off a count a byte, summed by PSADBW)
+static void signs_keep(const ldpc_t *c, uint8_t *sv) {
+  const int z = c->z;
+  for (int j = 0; j < c->kb; j++, sv += 2 * z) {
+    const int16_t *col = c->w4 + (size_t)j * 4 * z + 2 * z;
+    for (int t = 0; t < z; t += 32) {
+      const q32_sse41 v = ld32_sse41(col + t);
+      const __m128i a = _mm_packs_epi16(v.v[0], v.v[1]), b = _mm_packs_epi16(v.v[2], v.v[3]);
+      _mm_storeu_si128((__m128i *)(sv + t), a); _mm_storeu_si128((__m128i *)(sv + t + 16), b);
+      _mm_storeu_si128((__m128i *)(sv + z + t), a); _mm_storeu_si128((__m128i *)(sv + z + t + 16), b);
+    }
+  }
+  const int16_t *Lp = c->wl + c->k;
+  for (int t = 0; t < c->mb * z; t += 32, sv += 32) {
+    const q32_sse41 v = ld32_sse41(Lp + t);
+    _mm_storeu_si128((__m128i *)sv, _mm_packs_epi16(v.v[0], v.v[1])); _mm_storeu_si128((__m128i *)(sv + 16), _mm_packs_epi16(v.v[2], v.v[3]));
+  }
+}
+
+static int signs_unsat(const ldpc_t *c, const uint8_t *sv) {
+  const int z = c->z, mb = c->mb;
+  const uint8_t *Lp = sv + (size_t)c->kb * 2 * z;
+  const __m128i zero = _mm_setzero_si128();
+  int bad = 0;
+  for (int r = 0; r < mb; r++) {
+    const int p0 = c->lay_ptr[r], nd = c->lay_ptr[r + 1] - p0;
+    const uint8_t *own = Lp + r * z, *prev = Lp + (r > 0 ? r - 1 : mb - 1) * z;
+    __m128i carry = zero;
+    for (int i = 0; i < z; i += 64) {
+      __m128i x[4];
+      for (int u = 0; u < 4; u++) {
+        const __m128i p = _mm_loadu_si128((const __m128i *)(prev + i + 16 * u));
+        x[u] = _mm_loadu_si128((const __m128i *)(own + i + 16 * u));
+        if (r > 0) x[u] = _mm_xor_si128(x[u], p);
+        else { x[u] = _mm_xor_si128(x[u], _mm_alignr_epi8(p, carry, 15)); carry = p; }
+      }
+      for (int e = 0; e < nd; e++) {
+        const uint8_t *v = sv + (size_t)c->lay_col[p0 + e] * 2 * z + z - c->lay_shift[p0 + e] + i;
+        for (int u = 0; u < 4; u++) x[u] = _mm_xor_si128(x[u], _mm_loadu_si128((const __m128i *)(v + 16 * u)));
+      }
+      __m128i s = zero;
+      for (int u = 0; u < 4; u++) s = _mm_sub_epi8(s, _mm_cmpgt_epi8(zero, x[u]));
+      s = _mm_sad_epu8(s, zero);
+      bad += _mm_cvtsi128_si32(s) + _mm_extract_epi16(s, 4);
+    }
+  }
+  return bad;
+}
+#endif
+
+// ai: the parity test on the four-times columns: arm64's, or x86-64's form for the kernel ldpc_init chose
+#ifdef OB_NEON
+#define layers_parity_w4 layers_parity_neon
+#elif defined(OB_X86)
+static int layers_parity_w4(const ldpc_t *c, int16_t *const *vw, int count, int rev) {
+#ifdef OB_LDPC_WIDE
+  if (c->wide >= 1) return layers_parity_avx2(c, vw, count, rev);
+#endif
+  return layers_parity_sse41(c, vw, count, rev);
+}
 #endif
 
 int ldpc_decode(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_iter) { return ldpc_decode_stall(c, llr, out, max_iter, 0, 0); }
@@ -681,7 +1115,7 @@ int ldpc_decode(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_iter) 
 int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_iter, int stall_it, float stall_ratio) {
   int z = c->z, zp = c->zp, mb = c->mb, used = -1, first = 0;
   int16_t *L = c->wl, *Q = c->wq;
-#ifdef OB_NEON
+#ifdef OB_LDPC_W4
   const int four = c->w4 && c->wide != -1;
   int16_t *const *vw = four ? w4_views(c) : 0, *const *cp = four ? w4_copies(c) : 0;
   const int *ncp = four ? w4_ncopies(c) : 0;
@@ -692,9 +1126,15 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
     for (int j = 0; j < c->kb; j++) {
       int16_t *d = c->w4 + (size_t)j * 4 * z + z;
       for (int t = 0; t < z; t += 16) {
+#ifdef OB_NEON
         const int8x16_t b = vld1q_s8(llr + j * z + t);
         const int16x8x2_t v = { { vmovl_s8(vget_low_s8(b)), vmovl_high_s8(b) } };
         vst1q_s16_x2(d + t, v); vst1q_s16_x2(d + z + t, v);
+#else
+        const __m128i b = _mm_loadu_si128((const __m128i *)(llr + j * z + t)), lo = _mm_cvtepi8_epi16(b), hi = _mm_cvtepi8_epi16(_mm_srli_si128(b, 8));
+        _mm_storeu_si128((__m128i *)(d + t), lo); _mm_storeu_si128((__m128i *)(d + t + 8), hi);
+        _mm_storeu_si128((__m128i *)(d + z + t), lo); _mm_storeu_si128((__m128i *)(d + z + t + 8), hi);
+#endif
       }
     }
     parity_in(llr + c->k, L + c->k, z, mb);
@@ -704,7 +1144,7 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
     for (int v = 0; v < c->k; v++) L[v] = llr[v];
     for (int chk = 0; chk < c->m; chk++) L[c->k + (chk % mb) * z + chk / mb] = llr[c->k + chk];
   }
-#ifdef OB_NEON
+#ifdef OB_LDPC_W4
   if (!four)
 #endif
   memset(c->wr, 0, (size_t)c->slots_total * zp);
@@ -713,24 +1153,24 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
       int r = (it & 1) ? mb - 1 - step : step, ns = c->lay_ptr[r + 1] - c->lay_ptr[r] + 2;
       int8_t *R = c->wr + (size_t)(c->lay_ptr[r] + 2 * r) * zp;
       if (r == 0) R[(ns - 2) * zp] = 0;
-#ifdef OB_NEON
+#ifdef OB_LDPC_W4
       if (four) { layer_direct(c, r, R, ns, vw + c->lay_ptr[r] + 2 * r, cp + c->lay_ptr[r], ncp[r], it == 0); continue; }
 #endif
       layer_gather(c, r, Q);
       layer_kernel_for(c, Q, R, ns);
       layer_scatter(c, r, Q);
     }
-#ifdef OB_NEON
+#ifdef OB_LDPC_W4
     if (four) {
       // ai: The stop, as the scalar path's below: the checks tested after every iteration (the layers in the order the
       // ai: iteration updated them), a word whose every check holds stops there; at stall_it the violated checks are
       // ai: counted, and the block given up while still above stall_ratio of the count after the first iteration, which
       // ai: is taken then from that iteration's hard decisions, kept as they stood (signs_keep, signs_unsat).
       if (stall_it > 1 && it == stall_it - 1) {
-        const int bad = layers_parity_neon(c, vw, 1, 0);
+        const int bad = layers_parity_w4(c, vw, 1, 0);
         if (!bad) { used = it + 1; break; }
         if ((float)bad > stall_ratio * (float)signs_unsat(c, sv)) { used = -3; break; }
-      } else if (layers_parity_neon(c, vw, 0, it & 1)) { used = it + 1; break; }
+      } else if (layers_parity_w4(c, vw, 0, it & 1)) { used = it + 1; break; }
       else if (it == 0 && stall_it > 1) signs_keep(c, sv);
       continue;
     }
@@ -742,14 +1182,19 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
       else if ((float)bad > stall_ratio * (float)first) { used = -3; break; }
     } else if (layers_clear(c, Q)) { used = it + 1; break; }
   }
-#ifdef OB_NEON
+#ifdef OB_LDPC_W4
   if (four) {
     // ai: the data from w4's third copy (past 2z, never stale), a sign bit to a byte
     for (int j = 0; j < c->kb; j++) {
       const int16_t *col = c->w4 + (size_t)j * 4 * z + 2 * z;
       for (int t = 0; t < z; t += 16) {
+#ifdef OB_NEON
         const uint8x16x2_t b = vld2q_u8((const uint8_t *)(col + t));
         vst1q_u8(out + j * z + t, vshrq_n_u8(b.val[1], 7));
+#else
+        const __m128i lo = _mm_srli_epi16(_mm_loadu_si128((const __m128i *)(col + t)), 15), hi = _mm_srli_epi16(_mm_loadu_si128((const __m128i *)(col + t + 8)), 15);
+        _mm_storeu_si128((__m128i *)(out + j * z + t), _mm_packs_epi16(lo, hi));
+#endif
       }
     }
     parity_out(L + c->k, out + c->k, z, mb);
