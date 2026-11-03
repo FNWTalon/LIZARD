@@ -508,6 +508,63 @@ static void corner_coords(const ob_layout_t *L, float *src) {
   memcpy(src, s, sizeof s);
 }
 
+#ifdef OB_NEON
+// ai: arm64's bilinear read in integers at gamma 1 (image_t lin), eight points a call (lin_pts, then lin_get): the
+// ai: decode's picture sampler's (sample_grid_lin, which describes it) and the registration mesh's (msh_read8). A point
+// ai: comes as sample()'s coordinates less the half pixel, x a 512th of a pixel on (its fraction's top byte is then the
+// ai: rounded one); the word reads stay inside the frame only through lin_pts' integer clamps to w - 2 and h - 2.
+
+// ai: a point's word: row y's at r0 + off and row y + 1's at r1 + off, row y's low half into row y + 1's (a b c d), the
+// ai: offset the low 32 bits of off (uxtw: no AND) or all of it. In asm: in C the compiler narrows the loads to halves
+// ai: and adds an address for each, four instructions more a point. The frame is not written while it is read, so the
+// ai: asm takes no memory operand.
+static inline __attribute__((always_inline)) uint64_t lin_word_lo(const uint8_t *r0, const uint8_t *r1, uint64_t off) {
+  uint64_t t, m;
+  __asm__("ldr %w0, [%2, %w4, uxtw]\n\tldr %w1, [%3, %w4, uxtw]\n\tbfxil %w1, %w0, #0, #16" : "=&r"(t), "=&r"(m) : "r"(r0), "r"(r1), "r"(off));
+  return m;
+}
+static inline __attribute__((always_inline)) uint64_t lin_word(const uint8_t *r0, const uint8_t *r1, uint64_t off) {
+  uint64_t t, m;
+  __asm__("ldr %w0, [%2, %4]\n\tldr %w1, [%3, %4]\n\tbfxil %w1, %w0, #0, #16" : "=&r"(t), "=&r"(m) : "r"(r0), "r"(r1), "r"(off));
+  return m;
+}
+// ai: eight points' offsets (two vectors), fx twice (bytes), fy (Q15)
+typedef struct { uint32x4_t i0, i1; uint8x16_t fx; int16x8_t fy; } lin_pts_t;
+typedef struct { uint16x8_t wm, hm; uint8x16_t kab, kcd, kf; int16x8_t kc; } lin_k_t;   // kc: w, 257 (lanes 0, 1)
+// ai: a frame's constants: the clamps, the TBL indices (a | b, c | d, the fraction bytes), w and 257
+static inline lin_k_t lin_k(int w, int h) {
+  return (lin_k_t){ vdupq_n_u16((uint16_t)(w - 2)), vdupq_n_u16((uint16_t)(h - 2)),
+                    { 0, 4, 8, 12, 16, 20, 24, 28, 1, 5, 9, 13, 17, 21, 25, 29 }, { 2, 6, 10, 14, 18, 22, 26, 30, 3, 7, 11, 15, 19, 23, 27, 31 },
+                    { 1, 5, 9, 13, 17, 21, 25, 29, 1, 5, 9, 13, 17, 21, 25, 29 }, { (int16_t)w, 257, 0, 0, 0, 0, 0, 0 } };
+}
+static inline __attribute__((always_inline)) lin_pts_t lin_pts(const lin_k_t *k, float32x4_t x0, float32x4_t y0, float32x4_t x1, float32x4_t y1) {
+  const uint32x4_t xq0 = vcvtq_n_u32_f32(x0, 16), xq1 = vcvtq_n_u32_f32(x1, 16), yq0 = vcvtq_n_u32_f32(y0, 16), yq1 = vcvtq_n_u32_f32(y1, 16);
+  const uint16x8_t xi = vminq_u16(vuzp2q_u16(vreinterpretq_u16_u32(xq0), vreinterpretq_u16_u32(xq1)), k->wm);
+  const uint16x8_t yi = vminq_u16(vuzp2q_u16(vreinterpretq_u16_u32(yq0), vreinterpretq_u16_u32(yq1)), k->hm);
+  const uint16x8_t kw = vreinterpretq_u16_s16(k->kc);
+  const uint8x16x2_t xq = { { vreinterpretq_u8_u32(xq0), vreinterpretq_u8_u32(xq1) } };
+  return (lin_pts_t){ vmlal_laneq_u16(vmovl_u16(vget_low_u16(xi)), vget_low_u16(yi), kw, 0), vmlal_high_laneq_u16(vmovl_high_u16(xi), yi, kw, 0),
+                      vqtbl2q_u8(xq, k->kf), vreinterpretq_s16_u16(vshrq_n_u16(vuzp1q_u16(vreinterpretq_u16_u32(yq0), vreinterpretq_u16_u32(yq1)), 1)) };
+}
+static inline __attribute__((always_inline)) float32x4x2_t lin_get(const uint8_t *r0, const uint8_t *r1, const lin_k_t *k, lin_pts_t p) {
+  const uint64_t p01 = vgetq_lane_u64(vreinterpretq_u64_u32(p.i0), 0), p23 = vgetq_lane_u64(vreinterpretq_u64_u32(p.i0), 1);
+  const uint64_t p45 = vgetq_lane_u64(vreinterpretq_u64_u32(p.i1), 0), p67 = vgetq_lane_u64(vreinterpretq_u64_u32(p.i1), 1);
+  const uint8x16x2_t m = { { vreinterpretq_u8_u64(vcombine_u64(vcreate_u64(lin_word_lo(r0, r1, p01) | lin_word(r0, r1, p01 >> 32) << 32), vcreate_u64(lin_word_lo(r0, r1, p23) | lin_word(r0, r1, p23 >> 32) << 32))),
+                             vreinterpretq_u8_u64(vcombine_u64(vcreate_u64(lin_word_lo(r0, r1, p45) | lin_word(r0, r1, p45 >> 32) << 32), vcreate_u64(lin_word_lo(r0, r1, p67) | lin_word(r0, r1, p67 >> 32) << 32))) } };
+  const uint8x16_t ab = vqtbl2q_u8(m, k->kab), cd = vqtbl2q_u8(m, k->kcd);   // a | b, c | d: eight points each
+  const uint8x8_t fx = vget_low_u8(p.fx);
+  const uint16x8_t top = vmlsl_u8(vmlal_high_u8(vshll_n_u8(vget_low_u8(ab), 8), ab, p.fx), vget_low_u8(ab), fx);   // modulo 2^16 on the way
+  const uint16x8_t bot = vmlsl_u8(vmlal_high_u8(vshll_n_u8(vget_low_u8(cd), 8), cd, p.fx), vget_low_u8(cd), fx);
+  // ai: top / 2 + (bot - top) / 2 fy: 0 to 32640, or -1 where top is 1 and bot 0 (the 16-bit lane read as signed)
+  const int16x8_t r = vreinterpretq_s16_u16(vsraq_n_u16(vreinterpretq_u16_s16(vqrdmulhq_s16(vreinterpretq_s16_u16(vhsubq_u16(bot, top)), p.fy)), top, 1));
+  return (float32x4x2_t){ { vcvtq_n_f32_s32(vmull_laneq_s16(vget_low_s16(r), k->kc, 1), 23), vcvtq_n_f32_s32(vmull_high_laneq_s16(r, k->kc, 1), 23) } };
+}
+static inline __attribute__((always_inline)) void lin_read(const uint8_t *r0, const uint8_t *r1, const lin_k_t *k, lin_pts_t p, float *o) {
+  const float32x4x2_t g = lin_get(r0, r1, k, p);
+  vst1q_f32(o, g.val[0]); vst1q_f32(o + 4, g.val[1]);
+}
+#endif
+
 // ---------------------------------------------------------------- registration mesh
 
 // A node's search judges a position only where the capture holds most of its template. A cell whose sample point (u, v),
@@ -525,7 +582,7 @@ static void corner_coords(const ob_layout_t *L, float *src) {
 // ai: of the sums as well lost 16 with half the template judged and 384 with 65 cells (a side node's whole template)
 // ai: judged: the masked rim and quiet zone just past the edge moved corners of codes filling the frame by 0.05 px.
 static const float NODE_NONE = -2.0f;
-#ifndef OB_NEON   // ai: arm64's is msh_in4, four points at a time
+#ifndef OB_NEON   // ai: arm64's is msh_in4r, four points at a time on its read's coordinates
 static inline int in_capture(const image_t *im, float u, float v) { return u >= 0.5f && u <= im->w - 0.5f && v >= 0.5f && v <= im->h - 0.5f; }
 #endif
 // Whether every point a stage of a node's search reads is inside the capture with a pixel to spare: the template's cell
@@ -547,43 +604,35 @@ static int node_inside(const image_t *im, const homo_t *H, int cx0, int cy0, con
 }
 
 #ifdef OB_NEON
-// ai: arm64's registration mesh (refine_node, anchor_find) in NEON's own instructions, each float its scalar twin's:
-// ai: the same operations in the same order, lane for lane, none fused. msh_sample4 is sample() at four points: at
-// ai: gamma 1 (image_t lin) a byte's table entry is the byte over 255 in one IEEE division (ob_image_init), so a
-// ai: point's four pixels are read as two 16-bit pairs through general registers and divided in lanes where sample4
-// ai: reads sixteen bytes and sixteen table entries; the clamps, the truncation and the blend are sample()'s. On an
-// ai: S26 prime core 1.19x sample4 alone and 1.54x behind a homography's divisions, as the mesh reads it (a double
-// ai: multiply by 1/255, the same floats over all 256 bytes, and lane loads of the pairs were slower). The clamps are
-// ai: FMAX and FMIN (a NaN passes both, as it passes sample()'s compares; x - 0.5 is never -0), the bytes made floats
-// ai: by TBX under 0x4B (2^23 + byte, less 2^23): each about 3% of refine_node's time. Slower and gone: the division
-// ai: by 255 as a product and one fused correction step (the same floats over all 256 bytes, 5% slower: the divider
-// ai: is not the bound).
-static inline __attribute__((always_inline)) float32x4_t msh_sample4(const image_t *im, float32x4_t x, float32x4_t y) {
-  if (!im->lin) return vreinterpretq_f32_s32(sample4(im, vreinterpretq_s32_f32(x), vreinterpretq_s32_f32(y)));
-  const float32x4_t half = vdupq_n_f32(0.5f), zero = vdupq_n_f32(0), one = vdupq_n_f32(1), k255 = vdupq_n_f32(255.0f);
-  const float32x4_t wm = vdupq_n_f32(im->w - 1.001f), hm = vdupq_n_f32(im->h - 1.001f);
-  x = vsubq_f32(x, half); y = vsubq_f32(y, half);
-  x = vminq_f32(vmaxq_f32(x, zero), wm); y = vminq_f32(vmaxq_f32(y, zero), hm);
-  const int32x4_t xi = vcvtq_s32_f32(x), yi = vcvtq_s32_f32(y);
-  const float32x4_t fx = vsubq_f32(x, vcvtq_f32_s32(xi)), fy = vsubq_f32(y, vcvtq_f32_s32(yi));
-  const int32x4_t idx = vmlaq_s32(xi, yi, vdupq_n_s32(im->w));
-  const uint8_t *p0 = im->px + vgetq_lane_s32(idx, 0), *p1 = im->px + vgetq_lane_s32(idx, 1), *p2 = im->px + vgetq_lane_s32(idx, 2), *p3 = im->px + vgetq_lane_s32(idx, 3);
-  const int w = im->w;
-  uint16_t hp[8];
-  memcpy(hp + 0, p0, 2); memcpy(hp + 1, p1, 2); memcpy(hp + 2, p2, 2); memcpy(hp + 3, p3, 2);
-  memcpy(hp + 4, p0 + w, 2); memcpy(hp + 5, p1 + w, 2); memcpy(hp + 6, p2 + w, 2); memcpy(hp + 7, p3 + w, 2);
-  const uint64_t ab = (uint64_t)hp[0] | (uint64_t)hp[1] << 16 | (uint64_t)hp[2] << 32 | (uint64_t)hp[3] << 48;
-  const uint64_t cd = (uint64_t)hp[4] | (uint64_t)hp[5] << 16 | (uint64_t)hp[6] << 32 | (uint64_t)hp[7] << 48;
-  const uint8x16_t v = vreinterpretq_u8_u64(vcombine_u64(vcreate_u64(ab), vcreate_u64(cd)));
-  // ai: a point's pixel bytes (a, b at y; c, d at y + 1) moved under 0x4B by TBX: 2^23 + byte as a float, less 2^23
-  static const uint8_t IA[16] = { 0, 0xf0, 0xf0, 0xf0, 2, 0xf0, 0xf0, 0xf0, 4, 0xf0, 0xf0, 0xf0, 6, 0xf0, 0xf0, 0xf0 };   // ai: 0xf0 + 9 still past the table
-  const uint8x16_t k4b = vreinterpretq_u8_u32(vdupq_n_u32(0x4B000000u)), ia = vld1q_u8(IA);
-  const float32x4_t k23 = vdupq_n_f32(8388608.0f);
-#define MSH_BYTE(o) vsubq_f32(vreinterpretq_f32_u8(vqtbx1q_u8(k4b, v, vaddq_u8(ia, vdupq_n_u8(o)))), k23)
-  const float32x4_t a = vdivq_f32(MSH_BYTE(0), k255), b = vdivq_f32(MSH_BYTE(1), k255), c = vdivq_f32(MSH_BYTE(8), k255), d = vdivq_f32(MSH_BYTE(9), k255);
-#undef MSH_BYTE
-  const float32x4_t top = vaddq_f32(a, vmulq_f32(vsubq_f32(b, a), fx)), bot = vaddq_f32(c, vmulq_f32(vsubq_f32(d, c), fx));
-  return vaddq_f32(vmulq_f32(top, vsubq_f32(one, fy)), vmulq_f32(bot, fy));
+// ai: arm64's registration mesh (refine_node, anchor_find) in NEON's own instructions and its own values: each form
+// ai: says what it computes and where its floats part from the scalar twins' (node_ncc, the plain loops), which are the
+// ai: statement of what each stage computes; verified blocks are its test. msh_read8 is sample() at eight points whose
+// ai: coordinates come less (MSH_OX, MSH_OY), the half pixel and the x fraction's rounding (lin_pts), which every caller
+// ai: folds into the offset it adds to its points anyway: at gamma 1 the integer read (lin_get: weights on bytes, the
+// ai: grey 128 times over on 16-bit lanes, one conversion), otherwise sample4 through the table at the points put back.
+// ai: It is sample()'s blend with x's fraction a rounded 256th of a pixel and the value within 2e-5 of the grey range
+// ai: (at random points in and past the frame, within 0.0018 of the range of sample()'s, test/mesh_neon.c), past the
+// ai: frame's edges too: a point beyond the last column or row is first held a fraction short of it (xm, ym: FMIN), as
+// ai: sample() clamps it, where the integer clamps alone (lin_pts') would blend the last two pixels by the point's own
+// ai: fraction (it moved corners of a code filling the frame up to 2.4 px and lost three frames of 79 blocks on
+// ai: run-2026-11-02T00-15-17-920Z); below 0 FCVTZU holds pixel 0 as sample() does. msh_in4r is in_capture on the
+// ai: read's coordinates: 1/512 <= x <= w - 1 + 1/512, 0 <= y <= h - 1 (xl, xh, yh; a NaN fails each compare).
+typedef struct { lin_k_t k; float32x4_t xm, ym, xl, xh, yh; } msh_k_t;
+static const float MSH_OX = 0.5f - 1.0f / 512, MSH_OY = 0.5f;
+static inline msh_k_t msh_k(const image_t *im) {
+  return (msh_k_t){ lin_k(im->w, im->h), vdupq_n_f32((float)(im->w - 2) + 0.998f), vdupq_n_f32((float)(im->h - 2) + 0.9999f),
+                    vdupq_n_f32(0.5f - MSH_OX), vdupq_n_f32(im->w - 0.5f - MSH_OX), vdupq_n_f32(im->h - 0.5f - MSH_OY) };
+}
+static inline __attribute__((always_inline)) float32x4x2_t msh_read8(const image_t *im, const msh_k_t *K, float32x4_t x0, float32x4_t y0, float32x4_t x1, float32x4_t y1) {
+  if (!im->lin) {
+    const float32x4_t ox = vdupq_n_f32(MSH_OX), oy = vdupq_n_f32(MSH_OY);
+    return (float32x4x2_t){ { vreinterpretq_f32_s32(sample4(im, vreinterpretq_s32_f32(vaddq_f32(x0, ox)), vreinterpretq_s32_f32(vaddq_f32(y0, oy)))),
+                              vreinterpretq_f32_s32(sample4(im, vreinterpretq_s32_f32(vaddq_f32(x1, ox)), vreinterpretq_s32_f32(vaddq_f32(y1, oy)))) } };
+  }
+  return lin_get(im->px, im->px + im->w - 2, &K->k, lin_pts(&K->k, vminq_f32(x0, K->xm), vminq_f32(y0, K->ym), vminq_f32(x1, K->xm), vminq_f32(y1, K->ym)));
+}
+static inline __attribute__((always_inline)) uint32x4_t msh_in4r(const msh_k_t *K, float32x4_t x, float32x4_t y) {
+  return vandq_u32(vandq_u32(vcleq_f32(K->xl, x), vcleq_f32(x, K->xh)), vandq_u32(vcgeq_f32(y, vdupq_n_f32(0)), vcleq_f32(y, K->yh)));
 }
 // ai: project() at four points, its operations in its order
 static inline void msh_project4(const homo_t *H, float32x4_t x, float32x4_t y, float32x4_t *u, float32x4_t *v) {
@@ -592,30 +641,54 @@ static inline void msh_project4(const homo_t *H, float32x4_t x, float32x4_t y, f
   *u = vdivq_f32(vaddq_f32(vaddq_f32(vmulq_f32(vdupq_n_f32(h[0]), x), vmulq_f32(vdupq_n_f32(h[1]), y)), vdupq_n_f32(h[2])), w);
   *v = vdivq_f32(vaddq_f32(vaddq_f32(vmulq_f32(vdupq_n_f32(h[3]), x), vmulq_f32(vdupq_n_f32(h[4]), y)), vdupq_n_f32(h[5])), w);
 }
-// ai: node_ncc at G (4 or 8) offsets (ox[l], oy[l]) at once, a lane each: a lane places, samples and sums the node's
-// ai: kept cells (a cell's middle cmx, cmy in modules, its sign tv) in node_ncc's order with node_ncc's operations, so
-// ai: its correlation is node_ncc's float; st and vt are the template's sums over those cells (refine_node's, the
-// ai: same). Only the cells node_ncc keeps are read. edge (a constant of each call): the move's positions may read past
-// ai: the capture (node_inside), so each lane also counts its cells inside it and is no candidate under nmin of them.
-// ai: in_capture at four points: 0.5 <= x <= w - 0.5 and likewise y (a NaN fails each compare)
-static inline uint32x4_t msh_in4(const image_t *im, float32x4_t x, float32x4_t y) {
-  const float32x4_t lo = vdupq_n_f32(0.5f);
-  return vandq_u32(vandq_u32(vcleq_f32(lo, x), vcleq_f32(x, vdupq_n_f32(im->w - 0.5f))), vandq_u32(vcleq_f32(lo, y), vcleq_f32(y, vdupq_n_f32(im->h - 0.5f))));
+// ai: a lane's sums, node_ncc's; near the capture's edge its count of cells inside the capture
+static inline __attribute__((always_inline)) void msh_sums(float32x4_t sv, float32x4_t tk, float32x4_t *s, float32x4_t *q, float32x4_t *t) {
+  *s = vaddq_f32(*s, sv); *q = vaddq_f32(*q, vmulq_f32(sv, sv)); *t = vaddq_f32(*t, vmulq_f32(tk, sv));
 }
-static inline __attribute__((always_inline)) void msh_ncc_g(const image_t *im, const homo_t *H, int cells, const float *cmx, const float *cmy, const float *tv, float st, float vt, float pdx, float pdy, const float *ox, const float *oy, float *out, const int G, const int edge, int nmin) {
-  const float32x4_t px = vdupq_n_f32(pdx), py = vdupq_n_f32(pdy), z = vdupq_n_f32(0), one = vdupq_n_f32(1);
-  float32x4_t ox4[2], oy4[2], s[2] = { z, z }, q[2] = { z, z }, t[2] = { z, z }, nn[2] = { z, z };
-  for (int g = 0; g < G; g++) { ox4[g] = vld1q_f32(ox + 4 * g); oy4[g] = vld1q_f32(oy + 4 * g); }
-  for (int k = 0; k < cells; k++) {
-    const float32x4_t cx = vdupq_n_f32(cmx[k]), cy = vdupq_n_f32(cmy[k]), tk = vdupq_n_f32(tv[k]);
-    for (int g = 0; g < G; g++) {
-      float32x4_t u, v;
-      msh_project4(H, vaddq_f32(cx, ox4[g]), vaddq_f32(cy, oy4[g]), &u, &v);
-      const float32x4_t x = vaddq_f32(u, px), y = vaddq_f32(v, py);
-      const float32x4_t sv = msh_sample4(im, x, y);
-      if (edge) nn[g] = vaddq_f32(nn[g], vbslq_f32(msh_in4(im, x, y), one, z));
-      s[g] = vaddq_f32(s[g], sv); q[g] = vaddq_f32(q[g], vmulq_f32(sv, sv)); t[g] = vaddq_f32(t[g], vmulq_f32(tk, sv));
+static inline __attribute__((always_inline)) void msh_count(const msh_k_t *K, float32x4_t x, float32x4_t y, float32x4_t *n) {
+  *n = vaddq_f32(*n, vbslq_f32(msh_in4r(K, x, y), vdupq_n_f32(1), vdupq_n_f32(0)));
+}
+// ai: node_ncc at G (4 or 8) offsets (ox[l], oy[l]) at once, a lane each: a lane places, samples and sums the node's
+// ai: kept cells (a cell's middle cmx, cmy in modules, its sign tv) with node_ncc's operations; st and vt are the
+// ai: template's sums over those cells (refine_node's, the same). Only the cells node_ncc keeps are read. (qx, qy): the
+// ai: neighbours' offset (pdx, pdy) less (MSH_OX, MSH_OY). Eight points a read: at G 2 a cell's eight offsets, at G 1
+// ai: two cells' four, the second cell's sums kept apart and added at the end (an odd last cell read twice, once summed).
+// ai: edge (a constant of each call): the move's positions may read past the capture (node_inside), so each lane also
+// ai: counts its cells inside it and is no candidate under nmin of them.
+static inline __attribute__((always_inline)) void msh_cell(const homo_t *H, float cx, float cy, float32x4_t ox, float32x4_t oy, float32x4_t qx, float32x4_t qy, float32x4_t *x, float32x4_t *y) {
+  float32x4_t u, v;
+  msh_project4(H, vaddq_f32(vdupq_n_f32(cx), ox), vaddq_f32(vdupq_n_f32(cy), oy), &u, &v);
+  *x = vaddq_f32(u, qx); *y = vaddq_f32(v, qy);
+}
+static inline __attribute__((always_inline)) void msh_ncc_g(const image_t *im, const homo_t *H, int cells, const float *cmx, const float *cmy, const float *tv, float st, float vt, float qx, float qy, const float *ox, const float *oy, float *out, const int G, const int edge, int nmin) {
+  const msh_k_t K = msh_k(im);
+  const float32x4_t px = vdupq_n_f32(qx), py = vdupq_n_f32(qy), z = vdupq_n_f32(0);
+  const float32x4_t ox0 = vld1q_f32(ox), oy0 = vld1q_f32(oy), ox1 = G == 2 ? vld1q_f32(ox + 4) : ox0, oy1 = G == 2 ? vld1q_f32(oy + 4) : oy0;
+  float32x4_t s[2] = { z, z }, q[2] = { z, z }, t[2] = { z, z }, nn[2] = { z, z }, xa, ya, xb, yb;
+  int k = 0;
+  if (G == 2) {
+    for (; k < cells; k++) {
+      msh_cell(H, cmx[k], cmy[k], ox0, oy0, px, py, &xa, &ya); msh_cell(H, cmx[k], cmy[k], ox1, oy1, px, py, &xb, &yb);
+      const float32x4x2_t sv = msh_read8(im, &K, xa, ya, xb, yb);
+      const float32x4_t tk = vdupq_n_f32(tv[k]);
+      if (edge) { msh_count(&K, xa, ya, &nn[0]); msh_count(&K, xb, yb, &nn[1]); }
+      msh_sums(sv.val[0], tk, &s[0], &q[0], &t[0]); msh_sums(sv.val[1], tk, &s[1], &q[1], &t[1]);
     }
+  } else {
+    for (; k + 1 < cells; k += 2) {
+      msh_cell(H, cmx[k], cmy[k], ox0, oy0, px, py, &xa, &ya); msh_cell(H, cmx[k + 1], cmy[k + 1], ox0, oy0, px, py, &xb, &yb);
+      const float32x4x2_t sv = msh_read8(im, &K, xa, ya, xb, yb);
+      const float32x4_t ta = vdupq_n_f32(tv[k]), tb = vdupq_n_f32(tv[k + 1]);
+      if (edge) { msh_count(&K, xa, ya, &nn[0]); msh_count(&K, xb, yb, &nn[1]); }
+      msh_sums(sv.val[0], ta, &s[0], &q[0], &t[0]); msh_sums(sv.val[1], tb, &s[1], &q[1], &t[1]);
+    }
+    if (k < cells) {
+      msh_cell(H, cmx[k], cmy[k], ox0, oy0, px, py, &xa, &ya);
+      const float32x4_t ta = vdupq_n_f32(tv[k]);
+      if (edge) msh_count(&K, xa, ya, &nn[0]);
+      msh_sums(msh_read8(im, &K, xa, ya, xa, ya).val[0], ta, &s[0], &q[0], &t[0]);
+    }
+    s[0] = vaddq_f32(s[0], s[1]); q[0] = vaddq_f32(q[0], q[1]); t[0] = vaddq_f32(t[0], t[1]); nn[0] = vaddq_f32(nn[0], nn[1]);
   }
   const float32x4_t n = vdupq_n_f32((float)cells), vst = vdupq_n_f32(st), vvt = vdupq_n_f32(vt);
   for (int g = 0; g < G; g++) {
@@ -626,12 +699,12 @@ static inline __attribute__((always_inline)) void msh_ncc_g(const image_t *im, c
     vst1q_f32(out + 4 * g, r);
   }
 }
-static void msh_ncc(const image_t *im, const homo_t *H, int cells, const float *cmx, const float *cmy, const float *tv, float st, float vt, float pdx, float pdy, const float *ox, const float *oy, float *out, int lanes, int edge, int nmin) {
+static void msh_ncc(const image_t *im, const homo_t *H, int cells, const float *cmx, const float *cmy, const float *tv, float st, float vt, float qx, float qy, const float *ox, const float *oy, float *out, int lanes, int edge, int nmin) {
   if (edge) {
-    if (lanes > 4) msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, out, 2, 1, nmin);
-    else msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, out, 1, 1, nmin);
-  } else if (lanes > 4) msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, out, 2, 0, nmin);
-  else msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, out, 1, 0, nmin);
+    if (lanes > 4) msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, qx, qy, ox, oy, out, 2, 1, nmin);
+    else msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, qx, qy, ox, oy, out, 1, 1, nmin);
+  } else if (lanes > 4) msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, qx, qy, ox, oy, out, 2, 0, nmin);
+  else msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, qx, qy, ox, oy, out, 1, 0, nmin);
 }
 #endif
 
@@ -726,22 +799,25 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
   // half-module grid, and each correlation picks its cells out of it: the same floats summed in the same order
   // as node_ncc would, for about a seventh of the reads.
   enum { GMAX = 2 * OB_FB + 5 };
-  float G[GMAX * GMAX + 4], GM[GMAX * GMAX + 4], tv[OB_FB * OB_FB];   // + 4: the eighth lane of the last row's sums reads one float past the grid
+  float G[GMAX * GMAX + 8], GM[GMAX * GMAX + 8], tv[OB_FB * OB_FB];   // + 8: arm64's last row written eight floats at a time; the eighth lane of its sums reads one float past the grid
   int at[OB_FB * OB_FB], cells = 0;
   const int lo = rect[0], ylo = rect[2], side = rect[1] - rect[0], tall = rect[3] - rect[2], GW = 2 * side + 5, GH = 2 * tall + 5;
   // Placed through the homography, as node_ncc does and for the same reason.
 #ifdef OB_NEON
-  // ai: a row in whole vectors: its last one runs on into the next row's first floats, which that row writes again
-  // ai: (the last row's into G's four spare floats, zeroed below)
+  // ai: a row eight points a read: its last read runs on into the next row's first floats, which that row writes
+  // ai: again (the last row's into G's spare floats, zeroed below); near the capture's edge GM marks the points inside
+  const msh_k_t K = msh_k(im);
+  const float32x4_t qx = vdupq_n_f32(pdx - MSH_OX), qy = vdupq_n_f32(pdy - MSH_OY), z = vdupq_n_f32(0), one = vdupq_n_f32(1);
   for (int gy = 0; gy < GH; gy++) {
     const float32x4_t vy = vdupq_n_f32((float)(2 * (cy0 + ylo) + gy - 2) * 0.5f), lane = { 0, 1, 2, 3 };
-    for (int gx = 0; gx < GW; gx += 4) {
+    for (int gx = 0; gx < GW; gx += 8) {
       const float32x4_t mx = vmulq_f32(vaddq_f32(vdupq_n_f32((float)(2 * (cx0 + lo) + gx - 2)), lane), vdupq_n_f32(0.5f));
-      float32x4_t u, v;
-      msh_project4(H, mx, vy, &u, &v);
-      const float32x4_t x = vaddq_f32(u, vdupq_n_f32(pdx)), y = vaddq_f32(v, vdupq_n_f32(pdy));
-      vst1q_f32(G + gy * GW + gx, msh_sample4(im, x, y));
-      if (edge) vst1q_f32(GM + gy * GW + gx, vbslq_f32(msh_in4(im, x, y), vdupq_n_f32(1), vdupq_n_f32(0)));
+      float32x4_t u0, v0, u1, v1;
+      msh_project4(H, mx, vy, &u0, &v0); msh_project4(H, vaddq_f32(mx, vdupq_n_f32(2)), vy, &u1, &v1);
+      const float32x4_t xa = vaddq_f32(u0, qx), ya = vaddq_f32(v0, qy), xb = vaddq_f32(u1, qx), yb = vaddq_f32(v1, qy);
+      const float32x4x2_t sv = msh_read8(im, &K, xa, ya, xb, yb);
+      if (edge) { vst1q_f32(GM + gy * GW + gx, vbslq_f32(msh_in4r(&K, xa, ya), one, z)); vst1q_f32(GM + gy * GW + gx + 4, vbslq_f32(msh_in4r(&K, xb, yb), one, z)); }
+      vst1q_f32(G + gy * GW + gx, sv.val[0]); vst1q_f32(G + gy * GW + gx + 4, sv.val[1]);
     }
   }
 #else
@@ -842,7 +918,7 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
         for (int b2 = -1; b2 <= 1; b2++) for (int a2 = -1; a2 <= 1; a2++) if (!have[b2 + 1][a2 + 1]) { ox[m] = box + a2 * step; oy[m] = boy + b2 * step; cell[m++] = (b2 + 1) * 3 + a2 + 1; }
         if (m) {
           for (int l = m; l < 8; l++) { ox[l] = ox[0]; oy[l] = oy[0]; }
-          msh_ncc(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, got, m, ce, nmin);
+          msh_ncc(im, H, cells, cmx, cmy, tv, st, vt, pdx - MSH_OX, pdy - MSH_OY, ox, oy, got, m, ce, nmin);
           for (int l = 0; l < m; l++) { g[cell[l] / 3][cell[l] % 3] = got[l]; have[cell[l] / 3][cell[l] % 3] = 1; }
         }
       }
@@ -1157,18 +1233,27 @@ static inline void msh_lens4(const struct lensm *m, float32x4_t *u, float32x4_t 
   }
   *u = vaddq_f32(*u, vcombine_f32(dx[0], dx[1])); *v = vaddq_f32(*v, vcombine_f32(dy[0], dy[1]));
 }
-// ai: anchor_find's window, four points a vector (W is 28, 40 or 64: whole vectors), each placed as anchor_map places
-// ai: it and sampled as sample() samples it
+// ai: anchor_find's window, eight points a read (W is 28, 40 or 64: whole reads, then a half), each placed as
+// ai: anchor_map places it and read by msh_read8
 static void msh_anchor_window(const image_t *im, const homo_t *H, const struct lensm *lm, float x0, float y0, float h, int r, int W, float *win) {
-  const float32x4_t lane = { 0, 1, 2, 3 }, half = vdupq_n_f32(0.5f), vh = vdupq_n_f32(h), vx0 = vdupq_n_f32(x0);
+  const msh_k_t K = msh_k(im);
+  const float32x4_t lane = { 0, 1, 2, 3 }, half = vdupq_n_f32(0.5f), vh = vdupq_n_f32(h), vx0 = vdupq_n_f32(x0), ox = vdupq_n_f32(MSH_OX), oy = vdupq_n_f32(MSH_OY);
+#define MSH_WPT(wx_, u_, v_) do { msh_project4(H, vaddq_f32(vx0, vmulq_f32(vaddq_f32(vaddq_f32(vdupq_n_f32((float)((wx_) - r)), lane), half), vh)), Y, &u_, &v_); \
+                                  if (lm) msh_lens4(lm, &u_, &v_); u_ = vsubq_f32(u_, ox); v_ = vsubq_f32(v_, oy); } while (0)
   for (int wy = 0; wy < W; wy++) {
     const float32x4_t Y = vdupq_n_f32(y0 + (wy - r + 0.5f) * h);
     int wx = 0;
-    for (; wx + 4 <= W; wx += 4) {
-      float32x4_t u, v;
-      msh_project4(H, vaddq_f32(vx0, vmulq_f32(vaddq_f32(vaddq_f32(vdupq_n_f32((float)(wx - r)), lane), half), vh)), Y, &u, &v);
-      if (lm) msh_lens4(lm, &u, &v);
-      vst1q_f32(win + wy * W + wx, msh_sample4(im, u, v));
+    for (; wx + 8 <= W; wx += 8) {
+      float32x4_t u0, v0, u1, v1;
+      MSH_WPT(wx, u0, v0); MSH_WPT(wx + 4, u1, v1);
+      const float32x4x2_t sv = msh_read8(im, &K, u0, v0, u1, v1);
+      vst1q_f32(win + wy * W + wx, sv.val[0]); vst1q_f32(win + wy * W + wx + 4, sv.val[1]);
+    }
+    if (wx + 4 <= W) {
+      float32x4_t u0, v0;
+      MSH_WPT(wx, u0, v0);
+      vst1q_f32(win + wy * W + wx, msh_read8(im, &K, u0, v0, u0, v0).val[0]);
+      wx += 4;
     }
     for (; wx < W; wx++) {
       float u, v;
@@ -1176,6 +1261,7 @@ static void msh_anchor_window(const image_t *im, const homo_t *H, const struct l
       win[wy * W + wx] = sample(im, u, v);
     }
   }
+#undef MSH_WPT
 }
 // ai: the window's integral images (anchor_find's, its sums in its order): four rows at a time, a row's running sums
 // ai: in a lane of doubles (a 4 x 4 block of the window turned so a vector holds a column), each row's entries its
@@ -4120,46 +4206,6 @@ void ob_sample_grid(const ob_layout_t *L, const image_t *pim, const ob_reg_t *re
 // ai: where a shift of the float form's points by 4e-6 pixels moves them -2 to +8 a run. Weights summing to 255, the
 // ai: fraction cut: -19.)
 enum { GRID_LIN = 256 };
-// ai: a point's word: row y's at r0 + off and row y + 1's at r1 + off, row y's low half into row y + 1's (a b c d), the
-// ai: offset the low 32 bits of off (uxtw: no AND) or all of it. In asm: in C the compiler narrows the loads to halves
-// ai: and adds an address for each, four instructions more a point. The frame is not written while it is read, so the
-// ai: asm takes no memory operand.
-static inline __attribute__((always_inline)) uint64_t lin_word_lo(const uint8_t *r0, const uint8_t *r1, uint64_t off) {
-  uint64_t t, m;
-  __asm__("ldr %w0, [%2, %w4, uxtw]\n\tldr %w1, [%3, %w4, uxtw]\n\tbfxil %w1, %w0, #0, #16" : "=&r"(t), "=&r"(m) : "r"(r0), "r"(r1), "r"(off));
-  return m;
-}
-static inline __attribute__((always_inline)) uint64_t lin_word(const uint8_t *r0, const uint8_t *r1, uint64_t off) {
-  uint64_t t, m;
-  __asm__("ldr %w0, [%2, %4]\n\tldr %w1, [%3, %4]\n\tbfxil %w1, %w0, #0, #16" : "=&r"(t), "=&r"(m) : "r"(r0), "r"(r1), "r"(off));
-  return m;
-}
-// ai: eight points' offsets (two vectors), fx twice (bytes), fy (Q15)
-typedef struct { uint32x4_t i0, i1; uint8x16_t fx; int16x8_t fy; } lin_pts_t;
-typedef struct { uint16x8_t wm, hm; uint8x16_t kab, kcd, kf; int16x8_t kc; } lin_k_t;   // kc: w, 257 (lanes 0, 1)
-static inline __attribute__((always_inline)) lin_pts_t lin_pts(const lin_k_t *k, float32x4_t x0, float32x4_t y0, float32x4_t x1, float32x4_t y1) {
-  const uint32x4_t xq0 = vcvtq_n_u32_f32(x0, 16), xq1 = vcvtq_n_u32_f32(x1, 16), yq0 = vcvtq_n_u32_f32(y0, 16), yq1 = vcvtq_n_u32_f32(y1, 16);
-  const uint16x8_t xi = vminq_u16(vuzp2q_u16(vreinterpretq_u16_u32(xq0), vreinterpretq_u16_u32(xq1)), k->wm);
-  const uint16x8_t yi = vminq_u16(vuzp2q_u16(vreinterpretq_u16_u32(yq0), vreinterpretq_u16_u32(yq1)), k->hm);
-  const uint16x8_t kw = vreinterpretq_u16_s16(k->kc);
-  const uint8x16x2_t xq = { { vreinterpretq_u8_u32(xq0), vreinterpretq_u8_u32(xq1) } };
-  return (lin_pts_t){ vmlal_laneq_u16(vmovl_u16(vget_low_u16(xi)), vget_low_u16(yi), kw, 0), vmlal_high_laneq_u16(vmovl_high_u16(xi), yi, kw, 0),
-                      vqtbl2q_u8(xq, k->kf), vreinterpretq_s16_u16(vshrq_n_u16(vuzp1q_u16(vreinterpretq_u16_u32(yq0), vreinterpretq_u16_u32(yq1)), 1)) };
-}
-static inline __attribute__((always_inline)) void lin_read(const uint8_t *r0, const uint8_t *r1, const lin_k_t *k, lin_pts_t p, float *o) {
-  const uint64_t p01 = vgetq_lane_u64(vreinterpretq_u64_u32(p.i0), 0), p23 = vgetq_lane_u64(vreinterpretq_u64_u32(p.i0), 1);
-  const uint64_t p45 = vgetq_lane_u64(vreinterpretq_u64_u32(p.i1), 0), p67 = vgetq_lane_u64(vreinterpretq_u64_u32(p.i1), 1);
-  const uint8x16x2_t m = { { vreinterpretq_u8_u64(vcombine_u64(vcreate_u64(lin_word_lo(r0, r1, p01) | lin_word(r0, r1, p01 >> 32) << 32), vcreate_u64(lin_word_lo(r0, r1, p23) | lin_word(r0, r1, p23 >> 32) << 32))),
-                             vreinterpretq_u8_u64(vcombine_u64(vcreate_u64(lin_word_lo(r0, r1, p45) | lin_word(r0, r1, p45 >> 32) << 32), vcreate_u64(lin_word_lo(r0, r1, p67) | lin_word(r0, r1, p67 >> 32) << 32))) } };
-  const uint8x16_t ab = vqtbl2q_u8(m, k->kab), cd = vqtbl2q_u8(m, k->kcd);   // a | b, c | d: eight points each
-  const uint8x8_t fx = vget_low_u8(p.fx);
-  const uint16x8_t top = vmlsl_u8(vmlal_high_u8(vshll_n_u8(vget_low_u8(ab), 8), ab, p.fx), vget_low_u8(ab), fx);   // modulo 2^16 on the way
-  const uint16x8_t bot = vmlsl_u8(vmlal_high_u8(vshll_n_u8(vget_low_u8(cd), 8), cd, p.fx), vget_low_u8(cd), fx);
-  // ai: top / 2 + (bot - top) / 2 fy: 0 to 32640, or -1 where top is 1 and bot 0 (the 16-bit lane read as signed)
-  const int16x8_t r = vreinterpretq_s16_u16(vsraq_n_u16(vreinterpretq_u16_s16(vqrdmulhq_s16(vreinterpretq_s16_u16(vhsubq_u16(bot, top)), p.fy)), top, 1));
-  vst1q_f32(o, vcvtq_n_f32_s32(vmull_laneq_s16(vget_low_s16(r), k->kc, 1), 23));
-  vst1q_f32(o + 4, vcvtq_n_f32_s32(vmull_high_laneq_s16(r, k->kc, 1), 23));
-}
 static void sample_grid_lin(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
   const int w = pim->w, nn = L->nx;
   const float *h = reg->H.h;
@@ -4181,9 +4227,7 @@ static void sample_grid_lin(const ob_layout_t *L, const image_t *pim, const ob_r
   const float32x4_t BwL = vmulq_n_f32(lane, h[6] * step), BuL = vmulq_n_f32(lane, h[0] * step), BvL = vmulq_n_f32(lane, h[3] * step);
   // ai: the three lines' steps over four columns, and v (lane 3, a row's)
   float32x4_t C = { 4 * (h[6] * step), 4 * (h[0] * step), 4 * (h[3] * step), 0 };
-  const lin_k_t K = { vdupq_n_u16(w - 2), vdupq_n_u16(pim->h - 2),
-                      { 0, 4, 8, 12, 16, 20, 24, 28, 1, 5, 9, 13, 17, 21, 25, 29 }, { 2, 6, 10, 14, 18, 22, 26, 30, 3, 7, 11, 15, 19, 23, 27, 31 },
-                      { 1, 5, 9, 13, 17, 21, 25, 29, 1, 5, 9, 13, 17, 21, 25, 29 }, { (int16_t)w, 257, 0, 0, 0, 0, 0, 0 } };
+  const lin_k_t K = lin_k(w, pim->h);
   const uint8_t *r0 = pim->px, *r1 = pim->px + w - 2;
   int j = 0, built = -1;
   for (int yy = 0; yy < ny; yy++) {

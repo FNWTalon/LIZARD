@@ -1,7 +1,8 @@
 #!/bin/bash
 # ai: arm64's own kernels on a phone: ldpc_neon.c (the LDPC against the scalar loop and the 128-bit kernel), fft_dec.c
 # ai: (the decoder's transform against the definition), crc_check.c (the CRC instructions against the bit loop),
-# ai: mesh_neon.c (the registration mesh, built with its NEON forms and with the scalar twins: the same hash),
+# ai: mesh_neon.c (the registration mesh, built with its NEON forms and with the scalar twins: each its own hash, the
+# ai: NEON reads within their bound of sample()),
 # ai: finder_neon.c (binarize, shrink2 and the corner marks' scan, likewise; the column walks against the byte loop), built
 # ai: with the NDK, pushed to /data/local/tmp/lizard_kernels/, run pinned to cpu7 (a prime core on the S26) under the
 # ai: phone lock, the screen woken first (a dozing phone parks its cores). Exit 1 on any failure.
@@ -30,9 +31,9 @@ for t in "ldpc_neon 20000 500 5" "fft_dec 30" "crc_check"; do
   adb shell "input keyevent KEYCODE_WAKEUP; taskset $CORE $P/$t; echo exit \$?" | tee -a /dev/stderr | tail -1 | grep -q 'exit 0' || fail=1
 done 2>&1
 echo "== mesh_neon, mesh_scalar"
-hv=$(adb shell "input keyevent KEYCODE_WAKEUP; taskset $CORE $P/mesh_neon" | tee -a /dev/stderr | grep 'mesh hash')
-hs=$(adb shell "taskset $CORE $P/mesh_scalar" | tee -a /dev/stderr | grep 'mesh hash')
-[ -n "$hv" ] && [ "$hv" = "$hs" ] || { echo "the mesh's NEON forms and scalar twins differ"; fail=1; }
+for t in mesh_neon mesh_scalar; do
+  adb shell "input keyevent KEYCODE_WAKEUP; taskset $CORE $P/$t; echo exit \$?" | tee -a /dev/stderr | tail -1 | grep -q 'exit 0' || { echo "$t: its hash or a read's bound missed"; fail=1; }
+done 2>&1
 echo "== finder_neon, finder_scalar"
 fv=$(adb shell "input keyevent KEYCODE_WAKEUP; taskset $CORE $P/finder_neon; echo exit \$?" | tee -a /dev/stderr)
 fs=$(adb shell "taskset $CORE $P/finder_scalar" | tee -a /dev/stderr | grep 'finder hash')
