@@ -193,9 +193,9 @@ static void layer_kernel(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
 // ai: inside it (ldpc_init).
 // ai: view: where each of the ns slots is read from and written to: slots 0 to nd - 1 in the decoder's four-times
 // ai: columns (w4, run at 2z - sh[e]: a step's new posteriors written at the run and a column up below 2z, a column
-// ai: down from 2z, the step across 2z a column down too once the layer is done), the rest once where they lie (the
-// ai: staircase's rows of wl). A view of Q's own rows with nd 0 is the layer as layer_kernel takes it
-// ai: (test/ldpc_neon.c holds the two alike, on posteriors where no clamp acts).
+// ai: down from 2z, the step across 2z a column down too once the layer is done where the nc pointers of cp list it),
+// ai: the rest once where they lie (the staircase's rows of wl). A view of Q's own rows with nd 0 is the layer as
+// ai: layer_kernel takes it (test/ldpc_neon.c holds the two alike, on posteriors where no clamp acts).
 // ai: first: the decode's first iteration, whose messages are all zero (none sent yet), so an extrinsic is its posterior
 // ai: as it lies: pass 1 neither reads the messages nor keeps the extrinsics aside, and pass 2 reads them from the slot
 // ai: itself, which nothing in the layer writes before pass 2 does (a layer's slots are distinct columns and rows, and
@@ -254,7 +254,7 @@ static inline __attribute__((always_inline)) p2_msg p2_from(const p1_acc *x, int
   return g;
 }
 
-static inline __attribute__((always_inline)) void layer_neon(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, const int first) {
+static inline __attribute__((always_inline)) void layer_neon(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, int16_t *const *cp, int nc, const int first) {
   int16_t vb[2][64 * 32];   // ai: a step's extrinsics, slot by slot, this step's and the next's
   uint8_t ab[2][64 * 32];   // ai: their magnitudes as bytes, saturated at 255
   p1_acc x;
@@ -289,13 +289,14 @@ static inline __attribute__((always_inline)) void layer_neon(int8_t *R, int ns, 
       for (int e = nd; e < ns; e++, Rp += zp, vc += 32, ac += 32) { int16_t *d = view[e] + i; vst1q_s16_x4(d, p2_slot(&g, Rp, first ? d : vc, ac)); }
     }
   }
-  // ai: the run that crosses 2z (s not a multiple of 32) was stored a column up; its part past 2z also a column down
-  for (int e = 0; e < nd; e++) if (sh[e] & 31) { int16_t *d = view[e] + (sh[e] & ~31); vst1q_s16_x4(d - z, vld1q_s16_x4(d)); }
+  // ai: the runs that cross 2z (s not a multiple of 32) were stored a column up; the part past 2z also a column down
+  // ai: where it is read from there (cp: the steps across 2z the layer copies, views_neon)
+  for (int k = 0; k < nc; k++) vst1q_s16_x4(cp[k] - z, vld1q_s16_x4(cp[k]));
 }
 
-static void layer_kernel_neon(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, int first) {
-  if (first) layer_neon(R, ns, zp, norm, view, nd, z, sh, 1);
-  else layer_neon(R, ns, zp, norm, view, nd, z, sh, 0);
+static void layer_kernel_neon(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, int16_t *const *cp, int nc, int first) {
+  if (first) layer_neon(R, ns, zp, norm, view, nd, z, sh, cp, nc, 1);
+  else layer_neon(R, ns, zp, norm, view, nd, z, sh, cp, nc, 0);
 }
 #endif
 
@@ -425,23 +426,38 @@ static void layer_scatter(const ldpc_t *c, int r, const int16_t *Q) {
 // ai: 64-byte pieces across the split waited on both stores.)
 // ai: Where every slot of every layer lies, laid out as the messages are (layer r's ns slots from lay_ptr[r] + 2r):
 // ai: fixed by the code and the workspace, so made once a decode rather than once a layer.
-static void views_neon(const ldpc_t *c, int16_t **vw) {
-  const int z = c->z;
+// ai: cp, ncp: the steps across 2z each layer copies a column down (layer r's ncp[r] from cp + lay_ptr[r]). A slot of
+// ai: shift s = 32 q + a (a > 0) writes elements 0 to 31 - a of its column past 2z in its step across, and the copy
+// ai: below 2z is stale until copied; a run of shift s' reads element t below 2z where t >= z - s', so only a slot of
+// ai: shift z - 31 + a or more in the same column (never the slot itself: s <= z - 32 + a) reads the stale part, and
+// ai: the copy is needed only where the column has one. The copy past 2z is never stale (every write of an element
+// ai: lands there, as the run or its copy), which the decoder's output reads.
+static void views_neon(const ldpc_t *c, int16_t **vw, int16_t **cp, int *ncp) {
+  const int z = c->z, ne = c->lay_ptr[c->mb];
   int16_t *Lp = c->wl + c->k;
+  int smax[LDPC_VIEWS];   // ai: a column's largest shift
+  for (int j = 0; j < c->kb; j++) smax[j] = -1;
+  for (int e = 0; e < ne; e++) if (c->lay_shift[e] > smax[c->lay_col[e]]) smax[c->lay_col[e]] = c->lay_shift[e];
   for (int r = 0; r < c->mb; r++) {
     const int p0 = c->lay_ptr[r], nd = c->lay_ptr[r + 1] - p0;
     int16_t **v = vw + p0 + 2 * r;
-    for (int e = 0; e < nd; e++) v[e] = c->w4 + (size_t)c->lay_col[p0 + e] * 4 * z + 2 * z - c->lay_shift[p0 + e];
+    int n = 0;
+    for (int e = 0; e < nd; e++) {
+      const int s = c->lay_shift[p0 + e], a = s & 31;
+      v[e] = c->w4 + (size_t)c->lay_col[p0 + e] * 4 * z + 2 * z - s;
+      if (a && smax[c->lay_col[p0 + e]] >= z - 31 + a) cp[p0 + n++] = v[e] + (s & ~31);
+    }
+    ncp[r] = n;
     v[nd] = r > 0 ? Lp + (r - 1) * z : c->wq + nd * c->zp;
     v[nd + 1] = Lp + r * z;
   }
 }
 
-static void layer_direct(const ldpc_t *c, int r, int8_t *R, int ns, int16_t *const *view, int first) {
+static void layer_direct(const ldpc_t *c, int r, int8_t *R, int ns, int16_t *const *view, int16_t *const *cp, int nc, int first) {
   const int z = c->z, nd = ns - 2;
   int16_t *Lp = c->wl + c->k;
   if (r == 0) { view[nd][0] = 8191; memcpy(view[nd] + 1, Lp + (c->mb - 1) * z, (size_t)(z - 1) * 2); }
-  layer_kernel_neon(R, ns, c->zp, c->norm, view, nd, z, c->lay_shift + c->lay_ptr[r], first);
+  layer_kernel_neon(R, ns, c->zp, c->norm, view, nd, z, c->lay_shift + c->lay_ptr[r], cp, nc, first);
   if (r == 0) memcpy(Lp + (c->mb - 1) * z, view[nd] + 1, (size_t)(z - 1) * 2);
 }
 #endif
@@ -588,9 +604,10 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
   int16_t *L = c->wl, *Q = c->wq;
 #ifdef OB_NEON
   const int four = c->w4 && c->wide != -1;
-  int16_t *vw[LDPC_VIEWS];
+  int16_t *vw[LDPC_VIEWS], *cp[LDPC_VIEWS];
+  int ncp[LDPC_VIEWS];
   if (four) {
-    views_neon(c, vw);
+    views_neon(c, vw, cp, ncp);
     // ai: each data column's z LLRs widened once and written into the middle two of its four copies, the only ones a
     // ai: run reads ([z, 3z): the outer two only take the stores either side of a run); wl's data part goes unused.
     for (int j = 0; j < c->kb; j++) {
@@ -618,7 +635,7 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
       int8_t *R = c->wr + (size_t)(c->lay_ptr[r] + 2 * r) * zp;
       if (r == 0) R[(ns - 2) * zp] = 0;
 #ifdef OB_NEON
-      if (four) { layer_direct(c, r, R, ns, vw + c->lay_ptr[r] + 2 * r, it == 0); continue; }
+      if (four) { layer_direct(c, r, R, ns, vw + c->lay_ptr[r] + 2 * r, cp + c->lay_ptr[r], ncp[r], it == 0); continue; }
 #endif
       layer_gather(c, r, Q);
       layer_kernel_for(c, Q, R, ns);
@@ -644,9 +661,9 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
   }
 #ifdef OB_NEON
   if (four) {
-    // ai: the data from w4's second copy, a sign bit to a byte
+    // ai: the data from w4's third copy (past 2z, never stale), a sign bit to a byte
     for (int j = 0; j < c->kb; j++) {
-      const int16_t *col = c->w4 + (size_t)j * 4 * z + z;
+      const int16_t *col = c->w4 + (size_t)j * 4 * z + 2 * z;
       for (int t = 0; t < z; t += 16) {
         const uint8x16x2_t b = vld2q_u8((const uint8_t *)(col + t));
         vst1q_u8(out + j * z + t, vshrq_n_u8(b.val[1], 7));
