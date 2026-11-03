@@ -403,6 +403,16 @@ static void msh_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r,
 
 typedef struct { float x, y, unit; int hits; } cand_t;
 enum { MAX_CAND = 1024 };
+#ifdef OB_NEON
+// ai: arm64: a candidate list's x and y side by side past its MAX_CAND entries (x at mark_xy(c)[k], y at
+// ai: mark_xy(c)[MAX_CAND + k]), which mark_note's scan reads as plain vectors (LD4 over the entries read twice the
+// ai: bytes, in more operations: the marks 4 to 18% faster on the S26); kept in step with the entries by mark_note and
+// ai: mark_candidates' prune, and read nowhere else. A list is allocated MAX_CAND entries and CAND_XY bytes.
+enum { CAND_XY = 2 * MAX_CAND * sizeof(float) };
+static inline float *mark_xy(cand_t *c) { return (float *)(c + MAX_CAND); }
+#else
+enum { CAND_XY = 0 };
+#endif
 
 static float cross2(const cand_t *a, const cand_t *b, const cand_t *c) { return (b->x - a->x) * (c->y - a->y) - (b->y - a->y) * (c->x - a->x); }
 
@@ -2298,16 +2308,15 @@ static int mark_cross_merged(const uint8_t *bin, const uint32_t *cb, int w, int 
 static void mark_note(cand_t *out, int *n, float fx, float fy, float u) {
   int c = 0;
 #ifdef OB_NEON
-  // ai: arm64: eight candidates a step, their x and y deinterleaved by LD4 (cand_t is four floats' width), the same
-  // ai: compares (FABD is fabsf of the difference); the step holding the first that is near stops it, and the loop
-  // ai: below finds that one
-  _Static_assert(sizeof(cand_t) == 4 * sizeof(float), "LD4 reads a candidate as four lanes");
+  // ai: arm64: eight candidates a step from the list's x and y side by side (mark_xy), the same compares (FABD is
+  // ai: fabsf of the difference; both under the limit is their larger under it, and a NaN fails either way); the step
+  // ai: holding the first that is near stops it, and the loop below finds that one
   const float32x4_t vx = vdupq_n_f32(fx), vy = vdupq_n_f32(fy), lim = vdupq_n_f32(u * 2);
+  const float *const sx = mark_xy(out), *const sy = sx + MAX_CAND;
   for (; c + 8 <= *n; c += 8) {
-    const float32x4x4_t p = vld4q_f32(&out[c].x), q = vld4q_f32(&out[c + 4].x);
-    const uint32x4_t hp = vandq_u32(vcltq_f32(vabdq_f32(p.val[0], vx), lim), vcltq_f32(vabdq_f32(p.val[1], vy), lim));
-    const uint32x4_t hq = vandq_u32(vcltq_f32(vabdq_f32(q.val[0], vx), lim), vcltq_f32(vabdq_f32(q.val[1], vy), lim));
-    if (vmaxvq_u32(vorrq_u32(hp, hq))) break;
+    const float32x4_t dp = vmaxq_f32(vabdq_f32(vld1q_f32(sx + c), vx), vabdq_f32(vld1q_f32(sy + c), vy));
+    const float32x4_t dq = vmaxq_f32(vabdq_f32(vld1q_f32(sx + c + 4), vx), vabdq_f32(vld1q_f32(sy + c + 4), vy));
+    if (vmaxvq_u32(vorrq_u32(vcltq_f32(dp, lim), vcltq_f32(dq, lim)))) break;
   }
 #endif
   for (; c < *n; c++) if (fabsf(out[c].x - fx) < u * 2 && fabsf(out[c].y - fy) < u * 2) break;
@@ -2316,7 +2325,15 @@ static void mark_note(cand_t *out, int *n, float fx, float fy, float u) {
     out[c].y = (out[c].y * out[c].hits + fy) / (out[c].hits + 1);
     out[c].unit = (out[c].unit * out[c].hits + u) / (out[c].hits + 1);
     out[c].hits++;
-  } else if (*n < MAX_CAND) out[(*n)++] = (cand_t){ fx, fy, u, 1 };
+#ifdef OB_NEON
+    mark_xy(out)[c] = out[c].x; mark_xy(out)[MAX_CAND + c] = out[c].y;
+#endif
+  } else if (*n < MAX_CAND) {
+#ifdef OB_NEON
+    mark_xy(out)[*n] = fx; mark_xy(out)[MAX_CAND + *n] = fy;
+#endif
+    out[(*n)++] = (cand_t){ fx, fy, u, 1 };
+  }
 }
 // The gapped form at dark runs k - 1 and k of row y (pos as run_edges leaves it): each way round, the line then
 // the core. noted: the core this row has counted, which met second in one pair is met first in the next.
@@ -2443,7 +2460,12 @@ static int mark_candidates(const ob_layout_t *L, const uint8_t *bin, const uint3
         // Rows that must cross the smallest mark this call accepts, at this candidate's size: three, or fewer for a small core.
         int need = (int)(minc * out[c].unit) / 2;
         need = need > 3 ? 3 : need < 1 ? 1 : need;
-        if (out[c].hits >= need || out[c].y + L->corner * out[c].unit > y) out[m++] = out[c];
+        if (out[c].hits >= need || out[c].y + L->corner * out[c].unit > y) {
+#ifdef OB_NEON
+          mark_xy(out)[m] = mark_xy(out)[c]; mark_xy(out)[MAX_CAND + m] = mark_xy(out)[MAX_CAND + c];
+#endif
+          out[m++] = out[c];
+        }
       }
       n = m;
     }
@@ -2555,10 +2577,12 @@ typedef struct { cand_t q[4]; float score; } mquad_t;
 // the term that makes a square photograph as a trapezium is exactly what the fourth measured point supplies.
 // The edge marks were meant to pay that back, and they are found in the captures where the map was already
 // right and missed in the ones where it is not. fill 0.3 fell from 2990 B on 16 of 16 frames to 352 B on 7.
-static int mark_quads(const ob_layout_t *L, const cand_t *all, int nall, int merged, mquad_t *out) {
-  const float want = L->w - 2 * mark_form_mid(L, merged);
-  cand_t c[MARK_POOL];
-  int n = 0, nq = 0;
+// ai: The pool, and every pair's distance in module sizes, once a form: they hold for every layout a receiver looks
+// ai: for (only the spacing the layout asks for, want, differs), so mark_quads takes them for each of the rings.
+typedef struct { cand_t c[MARK_POOL]; int n; float mods[MARK_POOL][MARK_POOL]; } mpool_t;
+static void mark_pool(const cand_t *all, int nall, mpool_t *P) {
+  cand_t *c = P->c;
+  int n = 0;
   #define RANK(k) ((k).hits * (k).unit)
   for (int i = 0; i < nall; i++) {
     int j;
@@ -2568,6 +2592,17 @@ static int mark_quads(const ob_layout_t *L, const cand_t *all, int nall, int mer
     c[j] = all[i];
   }
   #undef RANK
+  P->n = n;
+  for (int a = 0; a < n; a++) for (int b = a; b < n; b++) {
+    const float dx = c[b].x - c[a].x, dy = c[b].y - c[a].y;
+    P->mods[a][b] = sqrtf(dx * dx + dy * dy) / (0.5f * (c[a].unit + c[b].unit));
+  }
+}
+static int mark_quads(const ob_layout_t *L, const mpool_t *P, int merged, mquad_t *out) {
+  const float want = L->w - 2 * mark_form_mid(L, merged);
+  const cand_t *c = P->c;
+  const int n = P->n;
+  int nq = 0;
   // Whether two candidates can be ADJACENT marks, and how far off the known spacing they are if so. Most pairs
   // cannot, so walking four-cycles of this table visits a few hundred quads where every four of the pool is
   // 10626, each of which used to be sorted round its centroid by atan2 before it could be refused.
@@ -2578,7 +2613,7 @@ static int mark_quads(const ob_layout_t *L, const cand_t *all, int nall, int mer
   uint32_t adj[MARK_POOL] = { 0 };
   _Static_assert(MARK_POOL <= 32, "a corner's neighbours are the bits of one word");
   for (int a = 0; a < n; a++) for (int b = a; b < n; b++) {
-    const float dx = c[b].x - c[a].x, dy = c[b].y - c[a].y, mods = sqrtf(dx * dx + dy * dy) / (0.5f * (c[a].unit + c[b].unit));
+    const float mods = P->mods[a][b];
     const int can = a != b && mods >= 0.6f * want && mods <= 1.5f * want;   // unit shrinks with the same tilt, so a squeezed side reads 2cos / (1 + cos): 0.6 is about 65 degrees
     rat[a][b] = rat[b][a] = can ? mods / want : -1;
     if (can) { adj[a] |= 1u << b; adj[b] |= 1u << a; }
@@ -2591,14 +2626,6 @@ static int mark_quads(const ob_layout_t *L, const cand_t *all, int nall, int mer
       const int d = __builtin_ctz(md);
       for (uint32_t me = adj[d] & adj[a] & (~1u << b); me; me &= me - 1) {
         const int e = __builtin_ctz(me);
-        int id[4] = { a, b, d, e };
-        float umin = 1e9f, umax = 0;
-        for (int k = 0; k < 4; k++) { umin = fminf(umin, c[id[k]].unit); umax = fmaxf(umax, c[id[k]].unit); }
-        if (umax > 2 * umin) continue;   // one symbol, one module size, within what perspective does to it
-        int pos = 0, neg = 0;
-        for (int k = 0; k < 4; k++) { const float x = cross2(&c[id[k]], &c[id[(k + 1) & 3]], &c[id[(k + 2) & 3]]); pos += x > 0; neg += x < 0; }
-        if (pos != 4 && neg != 4) continue;   // convex
-        if (neg) { id[1] = e; id[3] = b; }
         // The gapped form reads its module size from a ratio of line, gap and core, which a threshold that shaves
         // dark runs leaves alone, so its sides are scored on their distance from the count. The two square forms
         // read it from a dark square alone, and the binarizer shaves every one of them alike, by 10 to 25% on a
@@ -2607,9 +2634,21 @@ static int mark_quads(const ob_layout_t *L, const cand_t *all, int nall, int mer
         // for those the score is the sides' spread about their own mean plus half the mean's distance from the
         // count, which still keeps a wrong count out. Not for the gapped form: under perspective its four real
         // sides legitimately disagree, and blobs that happen to agree then outrank it (30 degrees of yaw).
+        // ai: The score first: it reads the cycle's four sides, the same whichever way round the cycle is taken, so a
+        // ai: quad that could not enter the best MARK_QUADS is refused before the module-size and convexity tests (the
+        // ai: same quads kept; 0.17 to 0.44 M instructions a frame fewer on the S26 runs).
         const float r4[4] = { rat[a][b], rat[b][d], rat[d][e], rat[e][a] }, k = 0.25f * (r4[0] + r4[1] + r4[2] + r4[3]);
         const float score = merged ? fabsf(r4[0] - k) + fabsf(r4[1] - k) + fabsf(r4[2] - k) + fabsf(r4[3] - k) + 0.5f * fabsf(k - 1)
                                    : fabsf(r4[0] - 1) + fabsf(r4[1] - 1) + fabsf(r4[2] - 1) + fabsf(r4[3] - 1);
+        if (nq == MARK_QUADS && out[MARK_QUADS - 1].score <= score) continue;
+        int id[4] = { a, b, d, e };
+        float umin = 1e9f, umax = 0;
+        for (int k = 0; k < 4; k++) { umin = fminf(umin, c[id[k]].unit); umax = fmaxf(umax, c[id[k]].unit); }
+        if (umax > 2 * umin) continue;   // one symbol, one module size, within what perspective does to it
+        int pos = 0, neg = 0;
+        for (int k = 0; k < 4; k++) { const float x = cross2(&c[id[k]], &c[id[(k + 1) & 3]], &c[id[(k + 2) & 3]]); pos += x > 0; neg += x < 0; }
+        if (pos != 4 && neg != 4) continue;   // convex
+        if (neg) { id[1] = e; id[3] = b; }
         int j;
         if (nq < MARK_QUADS) j = nq++;
         else { if (out[MARK_QUADS - 1].score <= score) continue; j = MARK_QUADS - 1; }
@@ -2655,11 +2694,11 @@ static int mark_scan(const ob_layout_t *L, const uint8_t *bin, const uint32_t *c
 }
 
 // The mark centres of one form as quads, best spacing first, and the rectangle they make in layout modules.
-static int mark_rect(const ob_layout_t *L, const cand_t *c, int n, int iw, int ih, int merged, float *src, mquad_t *quads) {
+static int mark_rect(const ob_layout_t *L, const mpool_t *P, int n, int iw, int ih, int merged, float *src, mquad_t *quads) {
   if (n < 4) return 0;
   const float m = mark_form_mid(L, merged), s4[8] = { m, m, L->w - m, m, L->w - m, L->h - m, m, L->h - m };
   memcpy(src, s4, sizeof s4);
-  int nq = mark_quads(L, c, n, merged, quads), keep = 0;
+  int nq = mark_quads(L, P, merged, quads), keep = 0;
   for (int i = 0; i < nq; i++) {
     const cand_t *q = quads[i].q;
     float x0 = q[0].x, x1 = x0, y0 = q[0].y, y1 = y0;
@@ -3437,7 +3476,7 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
   // near marks were not found at all. A full-scale scan alone had sufficed for the 286-module side, where a core
   // only reaches the window at very close range.
   float msrc[8];
-  cand_t *mcand = malloc((size_t)MAX_CAND * sizeof(cand_t));
+  cand_t *mcand = malloc((size_t)MAX_CAND * sizeof(cand_t) + CAND_XY);
   mquad_t mq[MARK_QUADS];
   uint8_t *grey2 = NULL, *lbin = NULL;
   const uint8_t *grey = im->px;
@@ -3481,9 +3520,11 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
       const int core = mark_core(Ls[0]), sq = Ls[0]->corner - 2;
       for (int k = 0; k < nmark; k++) mcand[k].unit *= (float)sq / core;
     }
+    mpool_t pool;
+    mark_pool(mcand, nmark, &pool);
     for (int li = 0; li < nL; li++) {
     const ob_layout_t *L = Ls[li];
-    const int nq = mark_rect(L, mcand, nmark, w, h, form, msrc, mq);
+    const int nq = mark_rect(L, &pool, nmark, w, h, form, msrc, mq);
     if (form == 0 && scale == 1 && li == 0) ob_finder_info[7] = (float)nq;
     for (int h0 = 0; h0 < 8 && !(h0 == 4 && rotation_holds(best, *orient)); h0 += 4)
     for (int qi = 0; qi < nq; qi++) for (int hyp = h0; hyp < h0 + 4; hyp++) {
