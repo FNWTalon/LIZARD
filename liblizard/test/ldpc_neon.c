@@ -2,7 +2,8 @@
 // ai: and the 128-bit kernel do? 1. the NEON kernel on plain rows and the 128-bit one against the scalar loop on random
 // ai: layers (3 to 32 slots, messages over +-127; posteriors over the whole range and its ends for the 128-bit kernel,
 // ai: within 8191 - 254 and its ends for the NEON one, which has no clamp: a decode's posteriors stay inside it, as
-// ai: ldpc_init holds), both outputs byte for byte; 2. whole decodes of the four codes through BI-AWGN at three levels,
+// ai: ldpc_init holds; every third NEON layer the first iteration's form, on zero messages), both outputs byte for
+// ai: byte; 2. whole decodes of the four codes through BI-AWGN at three levels,
 // ai: arm64's decode against the 128-bit kernel on today's layout (wide -1): iterations and every output bit; 3. each
 // ai: code's decodes at its middle level timed both ways, interleaved, the best of REPS.
 // ai: arm64 only (test/neon_kernels.sh builds it with the NDK and runs it on a phone): ldpc_neon [layers] [codewords] [reps]
@@ -75,13 +76,16 @@ int main(int argc, char **argv) {
   for (int t = 0; t < layers; t++) {
     const int ns = 3 + (int)(next() % (NS_MAX - 2)), norm = t % 5 == 0 ? 16 : 13;
     for (int w = 0; w < 2; w++) {
-      for (int k = 0; k < ns * zp; k++) { q0[k] = pick16(w ? 8191 - 254 : 8191); r0[k] = (int8_t)((int)(next() % 255) - 127); }
+      const int first = w && t % 3 == 0;
+      for (int k = 0; k < ns * zp; k++) { q0[k] = pick16(w ? 8191 - 254 : 8191); r0[k] = first ? 0 : (int8_t)((int)(next() % 255) - 127); }
       memcpy(qa, q0, sizeof q0); memcpy(ra, r0, sizeof r0);
       kernel_scalar(qa, ra, ns, zp, norm);
       memcpy(qb, q0, sizeof q0); memcpy(rb, r0, sizeof r0);
-      if (w) layer_kernel_neon(rb, ns, zp, norm, rows, 0, 0, 0); else layer_kernel(qb, rb, ns, zp, norm);
+      // ai: the first iteration's form reads no messages: they are made garbage, which it must not see
+      if (first) memset(rb, 0x5a, sizeof rb);
+      if (w) layer_kernel_neon(rb, ns, zp, norm, rows, 0, 0, 0, first); else layer_kernel(qb, rb, ns, zp, norm);
       if (memcmp(qa, qb, (size_t)ns * zp * 2) || memcmp(ra, rb, (size_t)ns * zp)) {
-        if (fails < 5) printf("layer %d (ns %d, norm %d): %s apart from the scalar loop\n", t, ns, norm, w ? "NEON" : "128-bit");
+        if (fails < 5) printf("layer %d (ns %d, norm %d): %s apart from the scalar loop\n", t, ns, norm, w ? first ? "NEON, first iteration" : "NEON" : "128-bit");
         fails++;
       }
     }

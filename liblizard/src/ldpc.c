@@ -196,15 +196,22 @@ static void layer_kernel(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
 // ai: down from 2z, the step across 2z a column down too once the layer is done), the rest once where they lie (the
 // ai: staircase's rows of wl). A view of Q's own rows with nd 0 is the layer as layer_kernel takes it
 // ai: (test/ldpc_neon.c holds the two alike, on posteriors where no clamp acts).
+// ai: first: the decode's first iteration, whose messages are all zero (none sent yet), so an extrinsic is its posterior
+// ai: as it lies: pass 1 neither reads the messages nor keeps the extrinsics aside, and pass 2 reads them from the slot
+// ai: itself, which nothing in the layer writes before pass 2 does (a layer's slots are distinct columns and rows, and
+// ai: a step's second store lands a column away, outside the run); the messages are written whole by pass 2, so the
+// ai: decode clears none. The same values as with zero messages.
 typedef struct { uint8x16_t a1, b1, a2, b2; int8x16_t sa, sb; } p1_acc;
 typedef struct { uint8x16_t a1, b1; int8x16_t an, am, bn, bm; } p2_msg;
 
-static inline __attribute__((always_inline)) void p1_slot(p1_acc *x, const int8_t *Rp, const int16_t *src, int16_t *vbp, uint8_t *abp) {
-  const int8x16x2_t r = vld1q_s8_x2(Rp);
+static inline __attribute__((always_inline)) void p1_slot(p1_acc *x, const int8_t *Rp, const int16_t *src, int16_t *vbp, uint8_t *abp, const int first) {
   int16x8x4_t v = vld1q_s16_x4(src);
-  v.val[0] = vsubw_s8(v.val[0], vget_low_s8(r.val[0])); v.val[1] = vsubw_high_s8(v.val[1], r.val[0]);
-  v.val[2] = vsubw_s8(v.val[2], vget_low_s8(r.val[1])); v.val[3] = vsubw_high_s8(v.val[3], r.val[1]);
-  vst1q_s16_x4(vbp, v);
+  if (!first) {
+    const int8x16x2_t r = vld1q_s8_x2(Rp);
+    v.val[0] = vsubw_s8(v.val[0], vget_low_s8(r.val[0])); v.val[1] = vsubw_high_s8(v.val[1], r.val[0]);
+    v.val[2] = vsubw_s8(v.val[2], vget_low_s8(r.val[1])); v.val[3] = vsubw_high_s8(v.val[3], r.val[1]);
+    vst1q_s16_x4(vbp, v);
+  }
   const uint8x16x2_t m = { { vqmovn_high_u16(vqmovn_u16(vreinterpretq_u16_s16(vabsq_s16(v.val[0]))), vreinterpretq_u16_s16(vabsq_s16(v.val[1]))),
                              vqmovn_high_u16(vqmovn_u16(vreinterpretq_u16_s16(vabsq_s16(v.val[2]))), vreinterpretq_u16_s16(vabsq_s16(v.val[3]))) } };
   vst1q_u8_x2(abp, m);
@@ -247,12 +254,12 @@ static inline __attribute__((always_inline)) p2_msg p2_from(const p1_acc *x, int
   return g;
 }
 
-static void layer_kernel_neon(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh) {
+static inline __attribute__((always_inline)) void layer_neon(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, const int first) {
   int16_t vb[2][64 * 32];   // ai: a step's extrinsics, slot by slot, this step's and the next's
   uint8_t ab[2][64 * 32];   // ai: their magnitudes as bytes, saturated at 255
   p1_acc x;
   p1_reset(&x);
-  for (int e = 0; e < ns; e++) p1_slot(&x, R + e * zp, view[e], vb[0] + e * 32, ab[0] + e * 32);
+  for (int e = 0; e < ns; e++) p1_slot(&x, R + e * zp, view[e], vb[0] + e * 32, ab[0] + e * 32, first);
   for (int i = 0, b = 0; i < zp; i += 32, b ^= 1) {
     const p2_msg g = p2_from(&x, norm);
     const int16_t *vc = vb[b];
@@ -264,26 +271,31 @@ static void layer_kernel_neon(int8_t *R, int ns, int zp, int norm, int16_t *cons
       p1_reset(&x);
       for (int e = 0; e < nd; e++, Rp += zp, vc += 32, ac += 32, vn += 32, an += 32) {
         int16_t *d = view[e] + i;
-        const int16x8x4_t v = p2_slot(&g, Rp, vc, ac);
-        p1_slot(&x, Rp + 32, d + 32, vn, an);
+        const int16x8x4_t v = p2_slot(&g, Rp, first ? d : vc, ac);
+        p1_slot(&x, Rp + 32, d + 32, vn, an, first);
         vst1q_s16_x4(d, v); vst1q_s16_x4(d + (i < sh[e] ? z : -z), v);
       }
       for (int e = nd; e < ns; e++, Rp += zp, vc += 32, ac += 32, vn += 32, an += 32) {
         int16_t *d = view[e] + i;
-        vst1q_s16_x4(d, p2_slot(&g, Rp, vc, ac));
-        p1_slot(&x, Rp + 32, d + 32, vn, an);
+        vst1q_s16_x4(d, p2_slot(&g, Rp, first ? d : vc, ac));
+        p1_slot(&x, Rp + 32, d + 32, vn, an, first);
       }
     } else {
       for (int e = 0; e < nd; e++, Rp += zp, vc += 32, ac += 32) {
         int16_t *d = view[e] + i;
-        const int16x8x4_t v = p2_slot(&g, Rp, vc, ac);
+        const int16x8x4_t v = p2_slot(&g, Rp, first ? d : vc, ac);
         vst1q_s16_x4(d, v); vst1q_s16_x4(d + (i < sh[e] ? z : -z), v);
       }
-      for (int e = nd; e < ns; e++, Rp += zp, vc += 32, ac += 32) vst1q_s16_x4(view[e] + i, p2_slot(&g, Rp, vc, ac));
+      for (int e = nd; e < ns; e++, Rp += zp, vc += 32, ac += 32) { int16_t *d = view[e] + i; vst1q_s16_x4(d, p2_slot(&g, Rp, first ? d : vc, ac)); }
     }
   }
   // ai: the run that crosses 2z (s not a multiple of 32) was stored a column up; its part past 2z also a column down
   for (int e = 0; e < nd; e++) if (sh[e] & 31) { int16_t *d = view[e] + (sh[e] & ~31); vst1q_s16_x4(d - z, vld1q_s16_x4(d)); }
+}
+
+static void layer_kernel_neon(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, int first) {
+  if (first) layer_neon(R, ns, zp, norm, view, nd, z, sh, 1);
+  else layer_neon(R, ns, zp, norm, view, nd, z, sh, 0);
 }
 #endif
 
@@ -425,11 +437,11 @@ static void views_neon(const ldpc_t *c, int16_t **vw) {
   }
 }
 
-static void layer_direct(const ldpc_t *c, int r, int8_t *R, int ns, int16_t *const *view) {
+static void layer_direct(const ldpc_t *c, int r, int8_t *R, int ns, int16_t *const *view, int first) {
   const int z = c->z, nd = ns - 2;
   int16_t *Lp = c->wl + c->k;
   if (r == 0) { view[nd][0] = 8191; memcpy(view[nd] + 1, Lp + (c->mb - 1) * z, (size_t)(z - 1) * 2); }
-  layer_kernel_neon(R, ns, c->zp, c->norm, view, nd, z, c->lay_shift + c->lay_ptr[r]);
+  layer_kernel_neon(R, ns, c->zp, c->norm, view, nd, z, c->lay_shift + c->lay_ptr[r], first);
   if (r == 0) memcpy(Lp + (c->mb - 1) * z, view[nd] + 1, (size_t)(z - 1) * 2);
 }
 #endif
@@ -596,6 +608,9 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
     for (int v = 0; v < c->k; v++) L[v] = llr[v];
     for (int chk = 0; chk < c->m; chk++) L[c->k + (chk % mb) * z + chk / mb] = llr[c->k + chk];
   }
+#ifdef OB_NEON
+  if (!four)
+#endif
   memset(c->wr, 0, (size_t)c->slots_total * zp);
   for (int it = 0; it < max_iter; it++) {
     for (int step = 0; step < mb; step++) {
@@ -603,7 +618,7 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
       int8_t *R = c->wr + (size_t)(c->lay_ptr[r] + 2 * r) * zp;
       if (r == 0) R[(ns - 2) * zp] = 0;
 #ifdef OB_NEON
-      if (four) { layer_direct(c, r, R, ns, vw + c->lay_ptr[r] + 2 * r); continue; }
+      if (four) { layer_direct(c, r, R, ns, vw + c->lay_ptr[r] + 2 * r, it == 0); continue; }
 #endif
       layer_gather(c, r, Q);
       layer_kernel_for(c, Q, R, ns);
