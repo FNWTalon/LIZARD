@@ -664,34 +664,7 @@ void lizard_free(lizard_t *f) {
 //   H(0) = 2 Re S(0), H(v) = S(v), H(n - v) = conj(S(v)), zero where nothing was sent.
 // Row v and row n - v are written from the one source row, so this replaces both the copy and the memset that used
 // to zero everything above the half-plane, and writes HALF what they did: the packed strip is half as wide.
-#if defined(OB_NEON) || defined(OB_X86)
-// ai: arm64 and x86-64, where the encoder runs the decoder's transforms as its inverses (lizard_encode): the same values
-// ai: as the form below, the rows through fft_dec_place: picture column x read from the blocks' row place[x], where
-// ai: fft_dec_dif leaves it, and the strip's row v written to its row place[v], where fft_dec_dit takes it
-static void turn_pack(const lizard_t *f, int x0) {
-  struct lizard_ws *w = f->ws;
-  const int n = f->n, bw = f->bw, sw = LIZARD_STRIP, hw = STRIP_HALF, rows = f->vblocks * bw;
-  const int *P = fft_dec_place(n);
-  if (!P) return;
-  for (int j = 0; j < hw; j++) {
-    w->wre[(size_t)P[0] * sw + j] = 2.0f * w->tre[(size_t)P[x0 + j] * bw]; w->wim[(size_t)P[0] * sw + j] = 2.0f * w->tre[(size_t)P[x0 + hw + j] * bw];
-  }
-  for (int b = 0; b < f->vblocks; b++) for (int j = 0; j < hw; j++) {
-    const size_t o = ((size_t)b * n + P[x0 + j]) * bw, p = ((size_t)b * n + P[x0 + hw + j]) * bw;
-    const float *ar = w->tre + o, *ai = w->tim + o, *br = w->tre + p, *bi = w->tim + p;
-    float *zr = w->wre + j, *zi = w->wim + j;
-    for (int c = (b ? 0 : 1); c < bw; c++) {
-      const int v = b * bw + c;
-      zr[(size_t)P[v] * sw] = ar[c] - bi[c]; zi[(size_t)P[v] * sw] = ai[c] + br[c];
-      zr[(size_t)P[n - v] * sw] = ar[c] + bi[c]; zi[(size_t)P[n - v] * sw] = br[c] - ai[c];
-    }
-  }
-  for (int v = rows; v <= n - rows; v++) {
-    memset(w->wre + (size_t)P[v] * sw, 0, (size_t)hw * sizeof(float));
-    memset(w->wim + (size_t)P[v] * sw, 0, (size_t)hw * sizeof(float));
-  }
-}
-#else
+#if !defined(OB_NEON) && !defined(OB_X86)
 static void turn_pack(const lizard_t *f, int x0) {
   struct lizard_ws *w = f->ws;
   const int n = f->n, bw = f->bw, sw = LIZARD_STRIP, hw = STRIP_HALF, rows = f->vblocks * bw;
@@ -762,6 +735,71 @@ static inline void store_turned4(float *base, const int *rows, size_t pitch, __m
   _MM_TRANSPOSE4_PS(r0, r1, r2, r3);
   _mm_storeu_ps(base + rows[0] * pitch, r0); _mm_storeu_ps(base + rows[1] * pitch, r1);
   _mm_storeu_ps(base + rows[2] * pitch, r2); _mm_storeu_ps(base + rows[3] * pitch, r3);
+}
+#endif
+#if defined(OB_NEON) || defined(OB_X86)
+// ai: arm64 and x86-64, where the encoder runs the decoder's transforms as its inverses (lizard_encode): turn_pack (above,
+// ai: the format's) with the rows through fft_dec_place: picture column x read from the blocks' row place[x], where
+// ai: fft_dec_dif leaves it, and the strip's row v written to its row place[v], where fft_dec_dit takes it. Where bw is a
+// ai: multiple of 4 (every picture size's), unpack_turn's mirror: four block rows (columns j to j + 3 of the strip) by
+// ai: four columns c a step, the same sums, turned over in registers (store_turned4) so each store is four neighbouring
+// ai: floats of a strip row; block 0's columns 0 to 3, which hold v = 0 (its own mirror), one at a time
+static void turn_pack(const lizard_t *f, int x0) {
+  struct lizard_ws *w = f->ws;
+  const int n = f->n, bw = f->bw, sw = LIZARD_STRIP, hw = STRIP_HALF, rows = f->vblocks * bw;
+  const int *P = fft_dec_place(n);
+  if (!P) return;
+  for (int j = 0; j < hw; j++) {
+    w->wre[(size_t)P[0] * sw + j] = 2.0f * w->tre[(size_t)P[x0 + j] * bw]; w->wim[(size_t)P[0] * sw + j] = 2.0f * w->tre[(size_t)P[x0 + hw + j] * bw];
+  }
+  const int c4 = bw % 4 == 0 ? 4 : bw;   // ai: block 0's columns below c4 one at a time, and every block's where bw is not a multiple of 4
+  if (bw % 4 == 0) {
+#ifdef OB_NEON
+#define TP_LD(p) vld1q_f32(p)
+#define TP_ADD vaddq_f32
+#define TP_SUB vsubq_f32
+    typedef float32x4_t tp_v;
+#else
+#define TP_LD(p) _mm_loadu_ps(p)
+#define TP_ADD _mm_add_ps
+#define TP_SUB _mm_sub_ps
+    typedef __m128 tp_v;
+#endif
+    for (int b = 0; b < f->vblocks; b++) for (int j = 0; j < hw; j += 4) {
+      const float *ar[4], *ai[4], *br[4], *bi[4];
+      for (int l = 0; l < 4; l++) {
+        const size_t o = ((size_t)b * n + P[x0 + j + l]) * bw, p = ((size_t)b * n + P[x0 + hw + j + l]) * bw;
+        ar[l] = w->tre + o; ai[l] = w->tim + o; br[l] = w->tre + p; bi[l] = w->tim + p;
+      }
+      for (int c = b ? 0 : c4; c < bw; c += 4) {
+        const int v = b * bw + c, m[4] = { P[n - v], P[n - v - 1], P[n - v - 2], P[n - v - 3] };
+        tp_v zr[4], zi[4], yr[4], yi[4];
+        for (int l = 0; l < 4; l++) {
+          const tp_v xr = TP_LD(ar[l] + c), xi = TP_LD(ai[l] + c), qr = TP_LD(br[l] + c), qi = TP_LD(bi[l] + c);
+          zr[l] = TP_SUB(xr, qi); zi[l] = TP_ADD(xi, qr); yr[l] = TP_ADD(xr, qi); yi[l] = TP_SUB(qr, xi);
+        }
+        store_turned4(w->wre + j, P + v, sw, zr[0], zr[1], zr[2], zr[3]); store_turned4(w->wim + j, P + v, sw, zi[0], zi[1], zi[2], zi[3]);
+        store_turned4(w->wre + j, m, sw, yr[0], yr[1], yr[2], yr[3]); store_turned4(w->wim + j, m, sw, yi[0], yi[1], yi[2], yi[3]);
+      }
+    }
+#undef TP_LD
+#undef TP_ADD
+#undef TP_SUB
+  }
+  for (int b = 0; b < (bw % 4 == 0 ? 1 : f->vblocks); b++) for (int j = 0; j < hw; j++) {
+    const size_t o = ((size_t)b * n + P[x0 + j]) * bw, p = ((size_t)b * n + P[x0 + hw + j]) * bw;
+    const float *ar = w->tre + o, *ai = w->tim + o, *br = w->tre + p, *bi = w->tim + p;
+    float *zr = w->wre + j, *zi = w->wim + j;
+    for (int c = (b ? 0 : 1); c < c4; c++) {
+      const int v = b * bw + c;
+      zr[(size_t)P[v] * sw] = ar[c] - bi[c]; zi[(size_t)P[v] * sw] = ai[c] + br[c];
+      zr[(size_t)P[n - v] * sw] = ar[c] + bi[c]; zi[(size_t)P[n - v] * sw] = br[c] - ai[c];
+    }
+  }
+  for (int v = rows; v <= n - rows; v++) {
+    memset(w->wre + (size_t)P[v] * sw, 0, (size_t)hw * sizeof(float));
+    memset(w->wim + (size_t)P[v] * sw, 0, (size_t)hw * sizeof(float));
+  }
 }
 #endif
 // ai: Rows go through the decoder transforms' place (fft.h fft_dec_place; NULL, rows in order, off arm64 and x86-64): the strip's
