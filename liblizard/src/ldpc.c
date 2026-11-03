@@ -467,12 +467,15 @@ static int layers_clear(const ldpc_t *c, int16_t *Q) {
 // ai: the four-times columns (w4), the staircase slots wl's rows (check 0's bit before it the last row moved up a lane,
 // ai: a zero in front, as layer_gather lays it); one XOR a slot over 32 checks at a time, only the signs counted.
 // ai: count 0: 1 when every check holds, else 0 at the first layer holding a violated one (layers_clear);
-// ai: count 1: how many of the m checks are violated (layers_unsat).
-static int layers_parity_neon(const ldpc_t *c, int16_t *const *vw, int count) {
+// ai: count 1: how many of the m checks are violated (layers_unsat). rev: the layers from the last down. The answer is
+// ai: the same in either order; the decoder tests them in the order its iteration updated them, so the layer longest
+// ai: under the later layers' changes, the likeliest to hold a violated check, comes first and a failing test ends
+// ai: sooner.
+static int layers_parity_neon(const ldpc_t *c, int16_t *const *vw, int count, int rev) {
   const int z = c->z, mb = c->mb;
   const int16_t *Lp = c->wl + c->k;
   int bad = 0;
-  for (int r = 0; r < mb; r++) {
+  for (int k = 0, r = rev ? mb - 1 : 0, dr = rev ? -1 : 1; k < mb; k++, r += dr) {
     const int p0 = c->lay_ptr[r], nd = c->lay_ptr[r + 1] - p0;
     int16_t *const *view = vw + p0 + 2 * r;
     const int16_t *own = Lp + r * z, *prev = Lp + (r > 0 ? r - 1 : mb - 1) * z;
@@ -609,11 +612,11 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
 #ifdef OB_NEON
     if (four) {
       if (stall_it > 0 && (it == 0 || it == stall_it - 1)) {
-        const int bad = layers_parity_neon(c, vw, 1);
+        const int bad = layers_parity_neon(c, vw, 1, 0);
         if (!bad) { used = it + 1; break; }
         if (it == 0) first = bad;
         else if ((float)bad > stall_ratio * (float)first) { used = -3; break; }
-      } else if (layers_parity_neon(c, vw, 0)) { used = it + 1; break; }
+      } else if (layers_parity_neon(c, vw, 0, it & 1)) { used = it + 1; break; }
       continue;
     }
 #endif
