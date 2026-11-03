@@ -1079,6 +1079,27 @@ static void row_sums4(const float *z, size_t pitch, const float *cx, const float
   }
   lane_sums4(a0, a1, a2, a3, rs); lane_sums4(b0, b1, b2, b3, rx); lane_sums4(c0, c1, c2, c3, rq);
 }
+#elif defined(OB_X86)
+// ai: x86-64: arm64's lane_sums4 and row_sums4 in SSE4.1, the products a multiply and an add (no fusing): each row's
+// ai: chains are row_sums' float operations, in its order, and its doubles summed as row_sums sums them
+static inline void lane_sums4(__m128 r0, __m128 r1, __m128 r2, __m128 r3, double out[4]) {
+  _MM_TRANSPOSE4_PS(r0, r1, r2, r3);   // ai: r0 now lane 0 of the four rows, r1 lane 1, ...
+  _mm_storeu_pd(out, _mm_add_pd(_mm_add_pd(_mm_add_pd(_mm_cvtps_pd(r0), _mm_cvtps_pd(r1)), _mm_cvtps_pd(r2)), _mm_cvtps_pd(r3)));
+  _mm_storeu_pd(out + 2, _mm_add_pd(_mm_add_pd(_mm_add_pd(_mm_cvtps_pd(_mm_movehl_ps(r0, r0)), _mm_cvtps_pd(_mm_movehl_ps(r1, r1))), _mm_cvtps_pd(_mm_movehl_ps(r2, r2))), _mm_cvtps_pd(_mm_movehl_ps(r3, r3))));
+}
+static void row_sums4(const float *z, size_t pitch, const float *cx, const float *qx, int cols, double rs[4], double rx[4], double rq[4]) {
+  const float *z1 = z + pitch, *z2 = z1 + pitch, *z3 = z2 + pitch;
+  __m128 a0 = _mm_setzero_ps(), a1 = a0, a2 = a0, a3 = a0, b0 = a0, b1 = a0, b2 = a0, b3 = a0, c0 = a0, c1 = a0, c2 = a0, c3 = a0;
+  for (int x = 0; x < cols; x += 4) {
+    const __m128 vc = _mm_loadu_ps(cx + x), vq = _mm_loadu_ps(qx + x);
+    const __m128 v0 = _mm_loadu_ps(z + x), v1 = _mm_loadu_ps(z1 + x), v2 = _mm_loadu_ps(z2 + x), v3 = _mm_loadu_ps(z3 + x);
+    a0 = _mm_add_ps(a0, v0); b0 = _mm_add_ps(b0, _mm_mul_ps(v0, vc)); c0 = _mm_add_ps(c0, _mm_mul_ps(v0, vq));
+    a1 = _mm_add_ps(a1, v1); b1 = _mm_add_ps(b1, _mm_mul_ps(v1, vc)); c1 = _mm_add_ps(c1, _mm_mul_ps(v1, vq));
+    a2 = _mm_add_ps(a2, v2); b2 = _mm_add_ps(b2, _mm_mul_ps(v2, vc)); c2 = _mm_add_ps(c2, _mm_mul_ps(v2, vq));
+    a3 = _mm_add_ps(a3, v3); b3 = _mm_add_ps(b3, _mm_mul_ps(v3, vc)); c3 = _mm_add_ps(c3, _mm_mul_ps(v3, vq));
+  }
+  lane_sums4(a0, a1, a2, a3, rs); lane_sums4(b0, b1, b2, b3, rx); lane_sums4(c0, c1, c2, c3, rq);
+}
 #else
 // Sums over one row of a strip for the detrend's projections: z, z c, z q. Four chains in float, as the vector path
 // keeps them, so both paths round alike; the caller carries on in double.
@@ -1382,6 +1403,9 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
 #ifdef OB_NEON
   // ai: arm64: the projections' sums two rows a lane pair (the strip loop's row sums), added up after the last strip
   float64x2_t vpx = vdupq_n_f64(0), vpy = vpx, vpxy = vpx, vpxx = vpx, vpyy = vpx;
+#elif defined(OB_X86)
+  // ai: x86-64: the same in SSE2's double pairs
+  __m128d vpx = _mm_setzero_pd(), vpy = vpx, vpxy = vpx, vpxx = vpx, vpyy = vpx;
 #endif
   const float g0 = f->margin + 0.5f / f->scale, step = 1.0f / f->scale;
   // A caller that brings its own soft values brings the spectrum's whole product with them, so none of this
@@ -1422,6 +1446,16 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
         s2 = vaddq_f64(s2, vcvt_f64_f32(vget_low_f32(b))); s3 = vaddq_f64(s3, vcvt_high_f64_f32(b));
       }
       mean = vaddvq_f64(vaddq_f64(vaddq_f64(s0, s1), vaddq_f64(s2, s3)));
+#elif defined(OB_X86)
+      // ai: x86-64: arm64's four double pairs, the same sums in the same order
+      __m128d s0 = _mm_setzero_pd(), s1 = s0, s2 = s0, s3 = s0;
+      for (; k + 8 <= (size_t)c * c; k += 8) {
+        const __m128 a = _mm_loadu_ps(w->wre + k), b = _mm_loadu_ps(w->wre + k + 4);
+        s0 = _mm_add_pd(s0, _mm_cvtps_pd(a)); s1 = _mm_add_pd(s1, _mm_cvtps_pd(_mm_movehl_ps(a, a)));
+        s2 = _mm_add_pd(s2, _mm_cvtps_pd(b)); s3 = _mm_add_pd(s3, _mm_cvtps_pd(_mm_movehl_ps(b, b)));
+      }
+      const __m128d sm = _mm_add_pd(_mm_add_pd(s0, s1), _mm_add_pd(s2, s3));
+      mean = _mm_cvtsd_f64(sm) + _mm_cvtsd_f64(_mm_unpackhi_pd(sm, sm));
 #endif
       for (; k < (size_t)c * c; k++) mean += w->wre[k];
       mean /= (double)c * c;
@@ -1457,6 +1491,19 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
       vpx = vaddq_f64(vpx, vaddq_f64(x0v, x1v)); vpxx = vaddq_f64(vpxx, vaddq_f64(q0, q1));
       vpy = vfmaq_f64(vfmaq_f64(vpy, s0, c0), s1, c1); vpxy = vfmaq_f64(vfmaq_f64(vpxy, x0v, c0), x1v, c1); vpyy = vfmaq_f64(vfmaq_f64(vpyy, s0, d0), s1, d1);
     }
+#elif defined(OB_X86)
+    // ai: x86-64: arm64's four rows a call and the projections in double pairs, each product a multiply then an add
+    for (int y = 0; y < n; y += 4) {
+      double rs[4], rx[4], rq[4];
+      row_sums4(z + (size_t)y * sw, sw, w->cx + x0, w->qx + x0, sw, rs, rx, rq);
+      const __m128d s0 = _mm_loadu_pd(rs), s1 = _mm_loadu_pd(rs + 2), x0v = _mm_loadu_pd(rx), x1v = _mm_loadu_pd(rx + 2), q0 = _mm_loadu_pd(rq), q1 = _mm_loadu_pd(rq + 2);
+#define F2(p) _mm_cvtps_pd(_mm_loadl_pi(_mm_setzero_ps(), (const __m64 *)(const void *)(p)))
+      const __m128d c0 = F2(w->cx + y), c1 = F2(w->cx + y + 2), d0 = F2(w->qx + y), d1 = F2(w->qx + y + 2);
+#undef F2
+      vpx = _mm_add_pd(vpx, _mm_add_pd(x0v, x1v)); vpxx = _mm_add_pd(vpxx, _mm_add_pd(q0, q1));
+      vpy = _mm_add_pd(_mm_add_pd(vpy, _mm_mul_pd(s0, c0)), _mm_mul_pd(s1, c1)); vpxy = _mm_add_pd(_mm_add_pd(vpxy, _mm_mul_pd(x0v, c0)), _mm_mul_pd(x1v, c1));
+      vpyy = _mm_add_pd(_mm_add_pd(vpyy, _mm_mul_pd(s0, d0)), _mm_mul_pd(s1, d1));
+    }
 #else
     for (int y = 0; y < n; y++) {
       double rs, rx, rq;
@@ -1473,6 +1520,10 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
   ob_reg_free(&reg);
 #ifdef OB_NEON
   px = vaddvq_f64(vpx); py = vaddvq_f64(vpy); pxy = vaddvq_f64(vpxy); pxx = vaddvq_f64(vpxx); pyy = vaddvq_f64(vpyy);
+#elif defined(OB_X86)
+#define HSUM(v) (_mm_cvtsd_f64(v) + _mm_cvtsd_f64(_mm_unpackhi_pd(v, v)))
+  px = HSUM(vpx); py = HSUM(vpy); pxy = HSUM(vpxy); pxx = HSUM(vpxx); pyy = HSUM(vpyy);
+#undef HSUM
 #endif
   double ts = ob_now_ms();
   // ai: arm64 and x86-64: each block's transform makes only the rows and columns its coefficients take (ws dkeep, dcols)
