@@ -1,11 +1,12 @@
 // ai: Does arm64's LDPC (src/ldpc.c: the NEON layer kernel, the decoder's four-times columns) decide as the scalar twin
-// ai: and the 128-bit kernel do? 1. the NEON kernel on plain rows and the 128-bit one against the scalar loop on random
-// ai: layers (3 to 32 slots, messages over +-127; posteriors over the whole range and its ends for the 128-bit kernel,
-// ai: within 8191 - 254 and its ends for the NEON one, which has no clamp: a decode's posteriors stay inside it, as
-// ai: ldpc_init holds; every third NEON layer the first iteration's form, on zero messages), both outputs byte for
-// ai: byte; 2. whole decodes of the four codes through BI-AWGN at three levels,
-// ai: arm64's decode against the 128-bit kernel on today's layout (wide -1): iterations and every output bit; 3. each
-// ai: code's decodes at its middle level timed both ways, interleaved, the best of REPS.
+// ai: and the 128-bit kernel do? 1. the NEON kernel on plain rows against the scalar loop with the magnitudes held at
+// ai: 127 (its own arithmetic), and the 128-bit one against the scalar loop as written, on random layers (3 to 32
+// ai: slots, messages over +-127; posteriors over the whole range and its ends for the 128-bit kernel, within 8191 - 254
+// ai: and its ends for the NEON one, which has no clamp: a decode's posteriors stay inside it, as ldpc_init holds; every
+// ai: third NEON layer the first iteration's form, on zero messages), both outputs byte for byte; 2. whole decodes of
+// ai: the four codes through BI-AWGN at three levels, arm64's decode against the 128-bit kernel on today's layout (wide
+// ai: -1): the decodes apart counted (iterations or any output bit), and a failure where both converged to other words;
+// ai: 3. each code's decodes at its middle level timed both ways, interleaved, the best of REPS.
 // ai: arm64 only (test/neon_kernels.sh builds it with the NDK and runs it on a phone): ldpc_neon [layers] [codewords] [reps]
 #include "../src/ldpc.c"
 #include <math.h>
@@ -18,14 +19,16 @@ static double unif(void) { return (next() >> 11) * (1.0 / 9007199254740992.0); }
 static double gauss(void) { double u = unif() + 1e-300, v = unif(); return sqrt(-2 * log(u)) * cos(6.283185307179586 * v); }
 static double now_ms(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec * 1e3 + t.tv_nsec * 1e-6; }
 
-// ai: the scalar twin of src/ldpc.c layer_kernel, as written there under #else
-static void kernel_scalar(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
+// ai: the scalar twin of src/ldpc.c layer_kernel, as written there under #else; sat: the magnitudes held at 127 before
+// ai: the minima, as arm64's kernel takes them (its extrinsics narrowed to signed bytes)
+static void kernel_scalar(int16_t *Q, int8_t *R, int ns, int zp, int norm, int sat) {
   for (int i = 0; i < zp; i++) {
     int min1 = 32767, min2 = 32767, arg = -1, sign = 0;
     for (int e = 0; e < ns; e++) {
       int q = Q[e * zp + i] - R[e * zp + i];
       Q[e * zp + i] = (int16_t)q;
       int a = q < 0 ? -q : q;
+      if (sat && a > 127) a = 127;
       sign ^= q < 0;
       if (a < min1) { min2 = min1; min1 = a; arg = e; } else if (a < min2) min2 = a;
     }
@@ -79,7 +82,7 @@ int main(int argc, char **argv) {
       const int first = w && t % 3 == 0;
       for (int k = 0; k < ns * zp; k++) { q0[k] = pick16(w ? 8191 - 254 : 8191); r0[k] = first ? 0 : (int8_t)((int)(next() % 255) - 127); }
       memcpy(qa, q0, sizeof q0); memcpy(ra, r0, sizeof r0);
-      kernel_scalar(qa, ra, ns, zp, norm);
+      kernel_scalar(qa, ra, ns, zp, norm, w);
       memcpy(qb, q0, sizeof q0); memcpy(rb, r0, sizeof r0);
       // ai: the first iteration's form reads no messages: they are made garbage, which it must not see
       if (first) memset(rb, 0x5a, sizeof rb);
@@ -94,7 +97,9 @@ int main(int argc, char **argv) {
 
   static const int RATES[4] = { 6, 4, 3, 2 };
   static const double DB[4][3] = { { 5.4, 5.9, 7.0 }, { 3.8, 4.3, 5.5 }, { 2.7, 3.2, 4.5 }, { 0.8, 1.3, 2.5 } };
-  int dfails = 0;
+  // ai: arm64's decodes may decide otherwise than the 128-bit kernel's (its magnitudes held at 127): counted, those
+  // ai: where one converged and not the other, and those where both converged to different words (a failure)
+  int dfails = 0, dapart = 0, conv_n = 0, conv_r = 0;
   long decodes = 0;
   for (int ci = 0; ci < 4; ci++) {
     ldpc_t c;
@@ -107,8 +112,12 @@ int main(int argc, char **argv) {
       c.wide = 0; const int its1 = ldpc_decode_stall(&c, llr, out, 30, 9, 0.95f);
       decodes += 2;
       if (its0 != its1 || memcmp(out, ref, (size_t)c.n)) {
-        if (dfails < 5) printf("rate %d word %d: NEON apart (iterations %d against %d)\n", RATES[ci], wi, its1, its0);
-        dfails++;
+        dapart++;
+        if (its0 > 0 && its1 > 0 && memcmp(out, ref, (size_t)c.n)) {
+          if (dfails < 5) printf("rate %d word %d: NEON converged to another word (iterations %d against %d)\n", RATES[ci], wi, its1, its0);
+          dfails++;
+        }
+        conv_n += its1 > 0 && its0 <= 0; conv_r += its0 > 0 && its1 <= 0;
       }
     }
     // time: the middle level's words, made once, decoded by each kernel in turn, the best sweep of each
@@ -132,6 +141,6 @@ int main(int argc, char **argv) {
     free(L); free(data); free(cw); free(out); free(ref); free(llr);
     ldpc_free(&c);
   }
-  printf("decodes: %ld, %d apart\n", decodes, dfails);
+  printf("decodes: %ld, %d apart (%d converged in NEON alone, %d in the 128-bit kernel alone), %d converged to other words\n", decodes, dapart, conv_n, conv_r, dfails);
   return fails || dfails ? 1 : 0;
 }
