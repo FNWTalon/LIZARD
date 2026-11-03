@@ -3765,6 +3765,16 @@ static uint8_t *shrink2(const uint8_t *src, int w, int h, ob_fbufs_t *fb, int sl
       const uint16x8_t s1 = vpadalq_u8(vpaddlq_u8(vld1q_u8(a + 2 * x + 16)), vld1q_u8(b + 2 * x + 16));
       vst1q_u8(o + x, vcombine_u8(vrshrn_n_u16(s0, 2), vrshrn_n_u16(s1, 2)));
     }
+#elif defined(OB_X86)
+    // ai: x86-64: sixteen a step, each row's pixel pairs summed by PMADDUBSW against ones (510 at most), the two rows'
+    // ai: added and (s + 2) >> 2 packed back to bytes: the same integers
+    const __m128i one = _mm_set1_epi8(1), two = _mm_set1_epi16(2);
+#define PAIRS(p) _mm_maddubs_epi16(_mm_loadu_si128((const __m128i *)(p)), one)
+    for (; x + 16 <= sw; x += 16) {
+      const __m128i s0 = _mm_add_epi16(PAIRS(a + 2 * x), PAIRS(b + 2 * x)), s1 = _mm_add_epi16(PAIRS(a + 2 * x + 16), PAIRS(b + 2 * x + 16));
+      _mm_storeu_si128((__m128i *)(o + x), _mm_packus_epi16(_mm_srli_epi16(_mm_add_epi16(s0, two), 2), _mm_srli_epi16(_mm_add_epi16(s1, two), 2)));
+    }
+#undef PAIRS
 #endif
     for (; x < sw; x++) o[x] = (uint8_t)((a[2 * x] + a[2 * x + 1] + b[2 * x] + b[2 * x + 1] + 2) >> 2);
   }
