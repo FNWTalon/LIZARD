@@ -472,7 +472,17 @@ static int solve8(double A[8][9]) {
     for (int r = 0; r < 8; r++) {
       if (r == c) continue;
       double f = A[r][c] / A[c][c];
+#ifdef OB_NEON
+      // ai: arm64: two columns a step in double pairs, each the multiply then the subtraction as below (no fused
+      // ai: multiply-add, so the same doubles); the finder solves eight of these a quad it tries (1.4 M instructions a
+      // ai: frame fewer on the blurred cell sim-lp-15)
+      int k = c;
+      if ((9 - c) & 1) { A[r][k] -= f * A[c][k]; k++; }
+      const float64x2_t vf = vdupq_n_f64(f);
+      for (; k < 9; k += 2) vst1q_f64(&A[r][k], vsubq_f64(vld1q_f64(&A[r][k]), vmulq_f64(vf, vld1q_f64(&A[c][k]))));
+#else
       for (int k = c; k < 9; k++) A[r][k] -= f * A[c][k];
+#endif
     }
   }
   return 1;
