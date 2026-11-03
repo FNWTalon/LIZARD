@@ -6,16 +6,16 @@
 // ai: integers and are their own values, so theirs are NEON_HASH and X86_HASH, and those builds also hold their reads to
 // ai: sample() at every point not NaN: within 1/250 of the grey range (the x fraction is a 256th of a pixel; at the
 // ai: frame's far edges sample() holds 0.999 of the last pixel, the read 255/256), the anchors' 12-bit greys within
-// ai: MSH_Q / 250; and msh_blur_rect to box_blur_rect's bytes (exact) on random rectangles. Exit 1 on a hash, a bound
-// ai: or a byte missed. test/neon_kernels.sh builds it both ways on a phone. It includes acquire.c and links the rest
-// ai: of the codec:
+// ai: MSH_Q / 250; and msh_blur_rect to box_blur_rect's bytes and msh_integral to a plain loop's sums (both exact) on
+// ai: random rectangles and windows. Exit 1 on a hash, a bound or a byte missed. test/neon_kernels.sh builds it both
+// ai: ways on a phone. It includes acquire.c and links the rest of the codec:
 // ai:   cc -O2 -ffp-contract=off [-msse4.1] -Isrc test/mesh_neon.c src/{layout,fmt,rs,ldpc,fft,lizard_phy,any,shake}.c -lm
 #include "acquire.c"
 #include <stdio.h>
 uint32_t ob_debug_hash;
 #define SCALAR_HASH 0xf42c8b6f71af790eull
 #define NEON_HASH 0xba9af2ba4a56adc7ull
-#define X86_HASH 0xfbc824fc25f24382ull
+#define X86_HASH 0x79e76f9d730624feull
 static uint64_t hs = 1469598103934665603ull;
 static void mix(const void *p, size_t n) { const uint8_t *b = p; for (size_t i = 0; i < n; i++) { hs ^= b[i]; hs *= 1099511628211ull; } }
 static uint32_t rs = 1;
@@ -36,7 +36,7 @@ int main(void) {
 #endif
 #if defined(OB_NEON) || defined(OB_X86)
   uint8_t *b1 = malloc((size_t)iw * ih), *b2 = malloc((size_t)iw * ih);   // ai: msh_blur_rect's and box_blur_rect's rectangles
-  long nblur = 0;   // ai: rows where the two differ
+  long nblur = 0, nint = 0;   // ai: rows where the two blurs differ, windows where the integral images do
 #endif
   for (int t = 0; t < 36; t++) {
     ob_layout_t L;
@@ -97,6 +97,28 @@ int main(void) {
     const int f1 = anchor_find(&L, &im, &H0, lmp, A);
     tanc += ob_now_ms() - t0;
     nfound += f1; mix(&f1, sizeof f1); mix(A, sizeof A);
+#if defined(OB_NEON) || defined(OB_X86)
+    // ai: msh_integral held to a plain loop's 32-bit sums (exact, the squares' image modulo 2^32) on random windows of
+    // ai: 12-bit greys, at the three widths anchor_find takes
+    {
+      enum { WM = 64 };
+      static uint16_t win[WM * WM];
+      static uint32_t I1[(WM + 1) * (WM + 1) + 4], I2[(WM + 1) * (WM + 1) + 4], R1[(WM + 1) * (WM + 1)], R2[(WM + 1) * (WM + 1)];
+      const int W = (const int[]){ 28, 40, 64 }[t % 3], W1 = W + 1;
+      for (int k = 0; k < W * W; k++) win[k] = (uint16_t)(rnd2() % 8 ? rnd2() % (MSH_Q + 1) : (rnd2() & 1) * MSH_Q);
+      msh_integral(win, W, I1, I2);
+      for (int x = 0; x < W1; x++) R1[x] = R2[x] = 0;
+      for (int y = 0; y < W; y++) {
+        uint32_t s1 = 0, s2 = 0;
+        R1[(y + 1) * W1] = R2[(y + 1) * W1] = 0;
+        for (int x = 0; x < W; x++) {
+          s1 += win[y * W + x]; s2 += (uint32_t)win[y * W + x] * win[y * W + x];
+          R1[(y + 1) * W1 + x + 1] = R1[y * W1 + x + 1] + s1; R2[(y + 1) * W1 + x + 1] = R2[y * W1 + x + 1] + s2;
+        }
+      }
+      nint += memcmp(I1, R1, (size_t)W1 * W1 * sizeof(uint32_t)) != 0 || memcmp(I2, R2, (size_t)W1 * W1 * sizeof(uint32_t)) != 0;
+    }
+#endif
     for (int k = 0; k < OB_ANCH_K * OB_ANCH_K; k += 3) A[k].ok = 0;
     const int f2 = anchor_find(&L, &im, &H0, &lm, A);
     mix(&f2, sizeof f2); mix(A, sizeof A);
@@ -143,10 +165,12 @@ int main(void) {
       const msh_k_t K = msh_k(&im);
       const __m128 x = _mm_sub_ps(_mm_loadu_ps(X), _mm_set1_ps(MSH_OX)), y = _mm_sub_ps(_mm_loadu_ps(Y), _mm_set1_ps(MSH_OY));
       _mm_storeu_ps(o, msh_read8(&im, &K, x, y, x, y).val[0]);
+      uint16_t q[8];
+      _mm_storeu_si128((__m128i *)q, msh_read8q(&im, &K, x, y, x, y));
       for (int l = 0; l < 4; l++) {
         const float ref = sample(&im, X[l], Y[l]);
         if (ref != ref) continue;
-        dread = fmax(dread, fabs(o[l] - ref));
+        dread = fmax(dread, fabs(o[l] - ref)); dq = fmax(dq, fabs(q[l] - ref * MSH_Q));
       }
 #elif defined(OB_SIMD)
       wasm_v128_store(o, sample4(&im, wasm_v128_load(X), wasm_v128_load(Y)));
@@ -184,8 +208,8 @@ int main(void) {
   printf("ms: nodes %.2f, anchors %.2f, blur %.2f, lens fits %.2f\n", tref, tanc, tblur, tfit);
 #if defined(OB_NEON) || defined(OB_X86)
   free(b1); free(b2);
-  printf("msh_blur_rect against box_blur_rect: %ld rows differ\n", nblur);
-  if (nblur) return 1;
+  printf("msh_blur_rect against box_blur_rect: %ld rows differ; msh_integral against the plain sums: %ld windows differ\n", nblur, nint);
+  if (nblur || nint) return 1;
 #endif
 #if defined(OB_NEON) || defined(OB_X86)
 #if defined(OB_NEON)

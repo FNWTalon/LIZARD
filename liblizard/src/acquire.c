@@ -951,7 +951,19 @@ static inline __attribute__((always_inline)) lin_f8_t msh_read8(const image_t *i
   }
   return lin_get(im->px, im->px + im->w - 2, &K->k, lin_pts(&K->k, _mm_min_ps(K->xm, x0), _mm_min_ps(K->ym, y0), _mm_min_ps(K->xm, x1), _mm_min_ps(K->ym, y1)));
 }
-enum { MSH_Q = 4080 };   // ai: the anchors' 12-bit greys (msh_read8q)
+// ai: msh_read8's points as 12-bit greys, 0 to MSH_Q (the anchors' window, summed in integers): at gamma 1 the
+// ai: integer read's 128 times the grey over 8, else the table's float times MSH_Q, rounded to even (CVTPS2DQ; a NaN's
+// ai: INT_MIN and anything below 0 packed to 0, as FCVTNU gives)
+enum { MSH_Q = 4080 };
+static inline __attribute__((always_inline)) __m128i msh_read8q(const image_t *im, const msh_k_t *K, __m128 x0, __m128 y0, __m128 x1, __m128 y1) {
+  if (!im->lin) {
+    const lin_f8_t v = msh_read8(im, K, x0, y0, x1, y1);
+    const __m128 q = _mm_set1_ps((float)MSH_Q);
+    return _mm_packus_epi32(_mm_cvtps_epi32(_mm_mul_ps(v.val[0], q)), _mm_cvtps_epi32(_mm_mul_ps(v.val[1], q)));
+  }
+  const __m128i r = lin_grey(im->px, im->px + im->w - 2, &K->k, lin_pts(&K->k, _mm_min_ps(K->xm, x0), _mm_min_ps(K->ym, y0), _mm_min_ps(K->xm, x1), _mm_min_ps(K->ym, y1)));
+  return _mm_srli_epi16(_mm_max_epi16(r, _mm_setzero_si128()), 3);
+}
 static inline __attribute__((always_inline)) __m128 msh_in4r(const msh_k_t *K, __m128 x, __m128 y) {
   return _mm_and_ps(_mm_and_ps(_mm_cmple_ps(K->xl, x), _mm_cmple_ps(x, K->xh)), _mm_and_ps(_mm_cmpge_ps(y, _mm_setzero_ps()), _mm_cmple_ps(y, K->yh)));
 }
@@ -1629,6 +1641,80 @@ static void msh_integral(const uint16_t *win, int W, uint32_t *I1, uint32_t *I2)
   }
   for (int k = 0; k < 4; k++) I1[W1 * W1 + k] = I2[W1 * W1 + k] = 0;   // ai: the spare entries the last vector of offsets reads
 }
+#elif defined(OB_X86)
+// ai: x86-64's anchor_find forms, arm64's above in SSE4.1: msh_lens4 (lensm_at's displacement in floats, the same
+// ai: regrouping, no fused multiply-adds), msh_anchor_window (eight points a read as 12-bit greys), msh_integral (the
+// ai: same integer sums: the squares by PMULLD, a row's prefix by two shifted adds and the last lane carried on).
+typedef struct { float a, b, iR, t[8], tk[LENS_TERMS]; int K; } msh_lens_t;   // a, b: -ax / R, -ay / R
+static inline msh_lens_t msh_lens(const struct lensm *m) {
+  msh_lens_t f = { (float)(-m->ax / m->R), (float)(-m->ay / m->R), (float)(1 / m->R), { 0 }, { 0 }, m->K };
+  for (int a = 0; a < 8; a++) f.t[a] = (float)m->t[a];
+  for (int k = 0; k < m->K; k++) f.tk[k] = (float)m->t[8 + k];
+  return f;
+}
+static inline __attribute__((always_inline)) void msh_lens4(const msh_lens_t *f, __m128 *u, __m128 *v) {
+  const __m128 iR = _mm_set1_ps(f->iR), x = MSH_MA(_mm_set1_ps(f->a), *u, iR), y = MSH_MA(_mm_set1_ps(f->b), *v, iR);
+  const __m128 s = MSH_MA(_mm_mul_ps(x, x), y, y);
+  __m128 p = _mm_setzero_ps();
+  for (int k = f->K - 1; k >= 0; k--) p = _mm_mul_ps(_mm_add_ps(p, _mm_set1_ps(f->tk[k])), s);
+  const __m128 c = _mm_sub_ps(_mm_sub_ps(p, _mm_mul_ps(x, _mm_set1_ps(f->t[6]))), _mm_mul_ps(y, _mm_set1_ps(f->t[7])));
+  *u = _mm_add_ps(*u, MSH_MA(MSH_MA(_mm_set1_ps(f->t[4]), y, _mm_set1_ps(f->t[1])), _mm_add_ps(c, _mm_set1_ps(f->t[0])), x));
+  *v = _mm_add_ps(*v, MSH_MA(MSH_MA(_mm_set1_ps(f->t[5]), x, _mm_set1_ps(f->t[2])), _mm_add_ps(c, _mm_set1_ps(f->t[3])), y));
+}
+static void msh_anchor_window(const image_t *im, const homo_t *H, const struct lensm *lm, float x0, float y0, float h, int r, int W, uint16_t *win) {
+  const msh_k_t K = msh_k(im);
+  const msh_lens_t lf = lm ? msh_lens(lm) : (msh_lens_t){ 0 };
+  const float *hh = H->h;
+  const __m128 lane = _mm_setr_ps(0, 1, 2, 3), half = _mm_set1_ps(0.5f), vh = _mm_set1_ps(h), vx0 = _mm_set1_ps(x0), ox = _mm_set1_ps(MSH_OX), oy = _mm_set1_ps(MSH_OY), z = _mm_setzero_ps();
+  const __m128 h0 = _mm_set1_ps(hh[0]), h3 = _mm_set1_ps(hh[3]), h6 = _mm_set1_ps(hh[6]);
+#define MSH_WPT(wx_, u_, v_) do { const __m128 X_ = _mm_add_ps(vx0, _mm_mul_ps(_mm_add_ps(_mm_add_ps(_mm_set1_ps((float)((wx_) - r)), lane), half), vh)); \
+                                  msh_proj(MSH_MA(ru, X_, h0), MSH_MA(rv, X_, h3), MSH_MA(rw, X_, h6), z, z, &u_, &v_); \
+                                  if (lm) { msh_lens4(&lf, &u_, &v_); } u_ = _mm_sub_ps(u_, ox); v_ = _mm_sub_ps(v_, oy); } while (0)
+  for (int wy = 0; wy < W; wy++) {
+    const float Y = y0 + (wy - r + 0.5f) * h;
+    const __m128 ru = _mm_set1_ps(hh[1] * Y + hh[2]), rv = _mm_set1_ps(hh[4] * Y + hh[5]), rw = _mm_set1_ps(hh[7] * Y + 1);
+    int wx = 0;
+    for (; wx + 8 <= W; wx += 8) {
+      __m128 u0, v0, u1, v1;
+      MSH_WPT(wx, u0, v0); MSH_WPT(wx + 4, u1, v1);
+      _mm_storeu_si128((__m128i *)(win + wy * W + wx), msh_read8q(im, &K, u0, v0, u1, v1));
+    }
+    if (wx + 4 <= W) {
+      __m128 u0, v0;
+      MSH_WPT(wx, u0, v0);
+      _mm_storel_epi64((__m128i *)(win + wy * W + wx), msh_read8q(im, &K, u0, v0, u0, v0));
+      wx += 4;
+    }
+    for (; wx < W; wx++) {
+      float u, v;
+      anchor_map(H, lm, x0 + (wx - r + 0.5f) * h, y0 + (wy - r + 0.5f) * h, &u, &v);
+      win[wy * W + wx] = (uint16_t)lrintf(sample(im, u, v) * MSH_Q);
+    }
+  }
+#undef MSH_WPT
+}
+_Static_assert((unsigned long long)OB_ANCH_TS * OB_ANCH_TS * MSH_Q * MSH_Q < (1ull << 32), "the anchors' box sums of squared greys fit 32 bits");
+static void msh_integral(const uint16_t *win, int W, uint32_t *I1, uint32_t *I2) {
+  const int W1 = W + 1;
+  uint32_t c1[64], c2[64];   // ai: the column sums down to the current row (W <= 64, a multiple of 4)
+  for (int x = 0; x < W; x++) c1[x] = c2[x] = 0;
+  for (int x = 0; x < W1; x++) I1[x] = I2[x] = 0;
+  for (int y = 0; y < W; y++) {
+    uint32_t *i1 = I1 + (y + 1) * W1, *i2 = I2 + (y + 1) * W1;
+    i1[0] = i2[0] = 0;
+    __m128i k1 = _mm_setzero_si128(), k2 = k1;
+    for (int x = 0; x < W; x += 4) {
+      const __m128i q = _mm_cvtepu16_epi32(_mm_loadl_epi64((const __m128i *)(win + y * W + x)));
+      __m128i a = _mm_add_epi32(_mm_loadu_si128((const __m128i *)(c1 + x)), q), b = _mm_add_epi32(_mm_loadu_si128((const __m128i *)(c2 + x)), _mm_mullo_epi32(q, q));
+      _mm_storeu_si128((__m128i *)(c1 + x), a); _mm_storeu_si128((__m128i *)(c2 + x), b);
+      a = _mm_add_epi32(a, _mm_slli_si128(a, 4)); a = _mm_add_epi32(a, _mm_slli_si128(a, 8)); a = _mm_add_epi32(a, k1);
+      b = _mm_add_epi32(b, _mm_slli_si128(b, 4)); b = _mm_add_epi32(b, _mm_slli_si128(b, 8)); b = _mm_add_epi32(b, k2);
+      _mm_storeu_si128((__m128i *)(i1 + x + 1), a); _mm_storeu_si128((__m128i *)(i2 + x + 1), b);
+      k1 = _mm_shuffle_epi32(a, 0xff); k2 = _mm_shuffle_epi32(b, 0xff);
+    }
+  }
+  for (int k = 0; k < 4; k++) I1[W1 * W1 + k] = I2[W1 * W1 + k] = 0;   // ai: the spare entries the last vector of offsets reads
+}
 #endif
 static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H, const lensm_t *lm, anchor_t *A) {
   const int a = ob_anchor_side(L), TS = OB_ANCH_TS;
@@ -1636,7 +1722,7 @@ static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H,
   const float h = (float)a / TS;
   const int r = (int)ceilf((float)ANCH_REACH / h), W = TS + 2 * r, O = 2 * r + 1;
   float *C = malloc((size_t)(O * O + 4) * sizeof(float)), T[OB_ANCH_TS * OB_ANCH_TS];   // ai: + 4: arm64's last row of offsets four a vector
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   // ai: arm64's window in 12-bit greys and its integral images in integers (msh_integral; + 4: the last vector of
   // ai: offsets reads three entries past a row's end)
   uint16_t *win = malloc((size_t)W * W * sizeof(uint16_t));
@@ -1703,6 +1789,44 @@ static int anchor_find(const ob_layout_t *L, const image_t *im, const homo_t *H,
         }
       }
 #undef QBOX
+    }
+    for (int oy = -r; oy <= r; oy++) for (int ox = -r; ox <= r; ox++) {
+      const float c = C[(oy + r) * O + ox + r];
+      if (c > best) { best = c; bx = ox; by = oy; }
+    }
+#elif defined(OB_X86)
+    msh_anchor_window(im, H, lm, x0, y0, h, r, W, win);
+    msh_integral(win, W, I1, I2);
+    float best = -2;
+    int bx = 0, by = 0;
+    {
+      // ai: arm64's correlations above in SSE4.1: the box sums in 32-bit integers; n S2 - S^2 in 64-bit lanes by
+      // ai: PMULUDQ on the even and the odd lanes (exact, under 2^41), to doubles by the 2^52 bias (exact under 2^52)
+      // ai: and to floats as FCVTN rounds, so the same variance from the same window; st without the fused add
+      const int l25 = j25 - i25 + 1, l6 = j6 - i6 + 1;
+      const __m128 ktm = _mm_set1_ps(1 - tm), ktn = _mm_set1_ps(tn / (float)TS), two = _mm_set1_ps(2), z = _mm_setzero_ps();
+      const __m128i n2 = _mm_set1_epi32(TS * TS), bias = _mm_set1_epi64x(0x4330000000000000ll);
+      const __m128d b52 = _mm_set1_pd(4503599627370496.0);
+#define QLD(I, o) _mm_loadu_si128((const __m128i *)((I) + (o)))
+#define QBOX(I, x, y, s) _mm_add_epi32(_mm_sub_epi32(_mm_sub_epi32(QLD(I, ((y) + (s)) * W1 + (x) + (s)), QLD(I, (y) * W1 + (x) + (s))), QLD(I, ((y) + (s)) * W1 + (x))), QLD(I, (y) * W1 + (x)))
+#define QVAR(e) _mm_sub_pd(_mm_castsi128_pd(_mm_or_si128((e), bias)), b52)
+      for (int oy = -r; oy <= r; oy++) {
+        const int py = r + oy;
+        for (int ox = -r; ox <= r; ox += 4) {
+          const int px = r + ox;
+          const __m128i s1 = QBOX(I1, px, py, TS), s2 = QBOX(I2, px, py, TS);
+          const __m128i s25 = j25 >= i25 ? QBOX(I1, px + i25, py + i25, l25) : _mm_setzero_si128(), s6 = j6 >= i6 ? QBOX(I1, px + i6, py + i6, l6) : _mm_setzero_si128();
+          const __m128 st = MSH_MA(_mm_mul_ps(_mm_cvtepi32_ps(_mm_sub_epi32(s25, s6)), two), _mm_cvtepi32_ps(s1), ktm);
+          const __m128i s1o = _mm_srli_epi64(s1, 32);
+          const __m128i ve = _mm_sub_epi64(_mm_mul_epu32(s2, n2), _mm_mul_epu32(s1, s1)), vo = _mm_sub_epi64(_mm_mul_epu32(_mm_srli_epi64(s2, 32), n2), _mm_mul_epu32(s1o, s1o));
+          const __m128 var = _mm_unpacklo_ps(_mm_cvtpd_ps(QVAR(ve)), _mm_cvtpd_ps(QVAR(vo)));
+          const __m128 c = _mm_div_ps(st, _mm_mul_ps(_mm_sqrt_ps(var), ktn));
+          _mm_storeu_ps(C + (oy + r) * O + ox + r, _mm_and_ps(_mm_cmpgt_ps(var, z), c));
+        }
+      }
+#undef QVAR
+#undef QBOX
+#undef QLD
     }
     for (int oy = -r; oy <= r; oy++) for (int ox = -r; ox <= r; ox++) {
       const float c = C[(oy + r) * O + ox + r];
