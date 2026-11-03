@@ -664,6 +664,34 @@ void lizard_free(lizard_t *f) {
 //   H(0) = 2 Re S(0), H(v) = S(v), H(n - v) = conj(S(v)), zero where nothing was sent.
 // Row v and row n - v are written from the one source row, so this replaces both the copy and the memset that used
 // to zero everything above the half-plane, and writes HALF what they did: the packed strip is half as wide.
+#if defined(OB_NEON) || defined(OB_X86)
+// ai: arm64 and x86-64, where the encoder runs the decoder's transforms as its inverses (lizard_encode): the same values
+// ai: as the form below, the rows through fft_dec_place: picture column x read from the blocks' row place[x], where
+// ai: fft_dec_dif leaves it, and the strip's row v written to its row place[v], where fft_dec_dit takes it
+static void turn_pack(const lizard_t *f, int x0) {
+  struct lizard_ws *w = f->ws;
+  const int n = f->n, bw = f->bw, sw = LIZARD_STRIP, hw = STRIP_HALF, rows = f->vblocks * bw;
+  const int *P = fft_dec_place(n);
+  if (!P) return;
+  for (int j = 0; j < hw; j++) {
+    w->wre[(size_t)P[0] * sw + j] = 2.0f * w->tre[(size_t)P[x0 + j] * bw]; w->wim[(size_t)P[0] * sw + j] = 2.0f * w->tre[(size_t)P[x0 + hw + j] * bw];
+  }
+  for (int b = 0; b < f->vblocks; b++) for (int j = 0; j < hw; j++) {
+    const size_t o = ((size_t)b * n + P[x0 + j]) * bw, p = ((size_t)b * n + P[x0 + hw + j]) * bw;
+    const float *ar = w->tre + o, *ai = w->tim + o, *br = w->tre + p, *bi = w->tim + p;
+    float *zr = w->wre + j, *zi = w->wim + j;
+    for (int c = (b ? 0 : 1); c < bw; c++) {
+      const int v = b * bw + c;
+      zr[(size_t)P[v] * sw] = ar[c] - bi[c]; zi[(size_t)P[v] * sw] = ai[c] + br[c];
+      zr[(size_t)P[n - v] * sw] = ar[c] + bi[c]; zi[(size_t)P[n - v] * sw] = br[c] - ai[c];
+    }
+  }
+  for (int v = rows; v <= n - rows; v++) {
+    memset(w->wre + (size_t)P[v] * sw, 0, (size_t)hw * sizeof(float));
+    memset(w->wim + (size_t)P[v] * sw, 0, (size_t)hw * sizeof(float));
+  }
+}
+#else
 static void turn_pack(const lizard_t *f, int x0) {
   struct lizard_ws *w = f->ws;
   const int n = f->n, bw = f->bw, sw = LIZARD_STRIP, hw = STRIP_HALF, rows = f->vblocks * bw;
@@ -690,6 +718,7 @@ static void turn_pack(const lizard_t *f, int x0) {
     memset(w->wim + (size_t)v * sw, 0, (size_t)hw * sizeof(float));
   }
 }
+#endif
 
 // One row of the picture out of the inverse: clip at the ratio the power was set for, and map to 0..1.
 static void clip_row(const float *src, float *dst, int cols, float lim, float sc) {
@@ -995,7 +1024,16 @@ void lizard_encode(const lizard_t *f, const uint8_t *blocks, float *drive) {
     }
   }
   double te = ob_now_ms();
+#if defined(OB_NEON) || defined(OB_X86)
+  // ai: arm64 and x86-64: the decoder's forward transforms (fft.h) run as the inverses, re and im swapped (the inverse of
+  // ai: x is swap(DFT(swap(x))), swap(a + i b) = b + i a), their own floats where fft_cols is the format's (the wasm and
+  // ai: -DOB_SCALAR keep it; test/paint_ref.c holds the paint to it): the blocks' left with picture column x in row
+  // ai: place[x] (turn_pack reads them so), each only to its last column holding a coefficient (ws dcols: past it every
+  // ai: column is zero, and so its transform)
+  for (int b = 0; b < f->vblocks; b++) fft_dec_dif(w->tim + (size_t)b * n * bw, w->tre + (size_t)b * n * bw, n, w->dcols[b], bw);
+#else
   for (int b = 0; b < f->vblocks; b++) fft_cols(w->tre + (size_t)b * n * bw, w->tim + (size_t)b * n * bw, n, bw, bw, 1);
+#endif
   ob_prof_ms[PROF_F_ENC_FFT] += ob_now_ms() - te;
   // Parseval gives the picture's rms without a pass over it: every used coefficient has magnitude 1, the transform is
   // unscaled, and the real part holds half the power. So a strip can be clipped and written as soon as it exists.
@@ -1006,7 +1044,12 @@ void lizard_encode(const lizard_t *f, const uint8_t *blocks, float *drive) {
   for (int x0 = 0; x0 < n; x0 += sw) {
     te = ob_now_ms();
     turn_pack(f, x0);
+#if defined(OB_NEON) || defined(OB_X86)
+    // ai: the strip's rows v in fft_dec_place order (turn_pack), its picture rows out in order
+    fft_dec_dit(w->wim, w->wre, n, STRIP_HALF, sw, n);
+#else
     fft_cols(w->wre, w->wim, n, STRIP_HALF, sw, 1);
+#endif
     ob_prof_ms[PROF_F_ENC_FFT] += ob_now_ms() - te;
     // The real part is the left half of the strip's columns and the imaginary part the right half.
     for (int y = 0; y < n; y++) {
