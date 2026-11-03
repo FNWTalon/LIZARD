@@ -109,6 +109,8 @@ object Prefs {
         var toolsOpen: Boolean get() = bool("recvTools", false); set(v) { put("recvTools", v.toString()) }
         var collapsed: Boolean get() = bool("recvCollapsed", false); set(v) { put("recvCollapsed", v.toString()) }
         var stats: Boolean get() = bool("stats", false); set(v) { put("stats", v.toString()) }
+        // ai: Save replays, kept across starts (since 2026-11-02; every start began off before)
+        var replays: Boolean get() = bool("replays", false); set(v) { put("replays", v.toString()) }
         var tipsSeen: Boolean get() = bool("tipsSeen", false); set(v) { put("tipsSeen", v.toString()) }
     }
     private fun str(k: String, d: String) = p?.get(k, d) ?: d

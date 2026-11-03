@@ -87,8 +87,8 @@ class ReceiveState(private val app: App) {
     var experimentalOpen by mutableStateOf(Prefs.Rx.experimentalOpen)
     var collapsed by mutableStateOf(Prefs.Rx.collapsed)
     var showStats by mutableStateOf(Prefs.Rx.stats)
-    // ai: Save replays: never kept, as the Android app's (Settings.replays): a recording left on costs every later run its lag
-    var replays by mutableStateOf(false)
+    // ai: Save replays: kept across starts, as the Android app's (Settings.replays)
+    var replays by mutableStateOf(Prefs.Rx.replays)
     var files by mutableStateOf<List<Received.Entry>>(emptyList())
     // ai: why the newest file is not in Downloads (Received.Filed's why; it is in the app's own folder then, listed from
     // ai: there), "" where it is; shown under the state line until a later filing of it puts it there
@@ -382,7 +382,7 @@ class ReceiveState(private val app: App) {
     fun toggleExperimental() { experimentalOpen = !experimentalOpen; Prefs.Rx.experimentalOpen = experimentalOpen }
     fun toggleRail() { collapsed = !collapsed; Prefs.Rx.collapsed = collapsed }
     fun chooseStats(on: Boolean) { showStats = on; Prefs.Rx.stats = on }
-    fun chooseReplays(on: Boolean) { replays = on; session?.replays(on, replayMeta()) }
+    fun chooseReplays(on: Boolean) { replays = on; Prefs.Rx.replays = on; session?.replays(on, replayMeta()) }
 
     // ai: the cameras read again (the Camera menu opening, the camera watch's stamp moved), off the UI thread: a backend's
     // ai: listing opens each device (V4L2's nodes, Media Foundation's sources)

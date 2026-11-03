@@ -15,8 +15,8 @@ import org.json.JSONObject
 // ai:               launch goes as soon as a frame waits and takes every frame then waiting up to this); 32 by default
 // ai:               (receiver.h batchCap); set live
 // ai:   replays     off | on: Save replays (Developer Tools, 2026-10-03; the session's): the newest frames the decoder is
-// ai:               handed kept while the camera runs; never saved (a recording left on costs every later run its lag):
-// ai:               every start begins off
+// ai:               handed kept while the camera runs; kept across starts like the rest (since 2026-11-02; every start
+// ai:               began off before)
 // ai:   stats       on | off: Show statistics (Developer Tools, 2026-10-10): off hides Receive's green line once a file
 // ai:               is in and Developer Tools' lab line and readout; off by default, kept
 // ai:   pcPack      on | off: the PC decoder's frames packed as .lizard frames (the default) or sent raw (a phone too weak
@@ -38,7 +38,7 @@ data class Settings(
     fun save(ctx: Context) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("decoder", decoder).putString("layout", layout).putString("camera", camera)
-            .putString("batch", batch).putString("stats", stats).putString("pcPack", pcPack).apply()
+            .putString("batch", batch).putString("replays", replays).putString("stats", stats).putString("pcPack", pcPack).apply()
     }
 
     companion object {
@@ -52,7 +52,7 @@ data class Settings(
             val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val d = Settings()
             return Settings(p.getString("decoder", d.decoder)!!, p.getString("layout", d.layout)!!, p.getString("camera", d.camera)!!,
-                p.getString("batch", d.batch)!!, d.replays, p.getString("stats", d.stats)!!, p.getString("pcPack", d.pcPack)!!)
+                p.getString("batch", d.batch)!!, p.getString("replays", d.replays)!!, p.getString("stats", d.stats)!!, p.getString("pcPack", d.pcPack)!!)
         }
 
         // ai: The cameras' settings the app kept before the session kept them, as cameras.json (session.h's header):
