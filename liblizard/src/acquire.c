@@ -2376,7 +2376,7 @@ static inline float line_at(const fline_t *l, float along) { float d = along - l
 
 // The fits test the same points against curve after curve, so the points are kept as two plain arrays and tested
 // four at a time. in4: which of four points lie within tol of the curve, as a bit each.
-#if defined(OB_SIMD) && !defined(OB_NEON)
+#if defined(OB_SIMD) && !defined(OB_NEON) && !defined(OB_X86)
 static inline v128_t curve_in4(const fline_t *l, v128_t al, v128_t ac, v128_t tol) {
   const v128_t d = wasm_f32x4_sub(al, wasm_f32x4_splat(l->mid));
   const v128_t at = wasm_f32x4_add(wasm_f32x4_add(wasm_f32x4_mul(wasm_f32x4_mul(wasm_f32x4_splat(l->c), d), d), wasm_f32x4_mul(wasm_f32x4_splat(l->a), al)), wasm_f32x4_splat(l->b));
@@ -2394,6 +2394,18 @@ static inline uint32x4_t curve_in4n(const curve4_t *k, float32x4_t al, float32x4
   const float32x4_t d = vsubq_f32(al, k->mid);
   const float32x4_t at = vaddq_f32(vaddq_f32(vmulq_f32(vmulq_f32(k->c, d), d), vmulq_f32(k->a, al)), k->b);
   return vcleq_f32(vabdq_f32(ac, at), k->tol);
+}
+#elif defined(OB_X86)
+// ai: x86-64: the same test with the curve's terms splatted once (curve4_t), the same float operations in the same
+// ai: order (the difference made positive by clearing its sign): a lane all ones where the point is within tol
+typedef struct { __m128 mid, c, a, b, tol; } curve4_t;
+static inline curve4_t curve4_of(const fline_t *l, float tol) {
+  return (curve4_t){ _mm_set1_ps(l->mid), _mm_set1_ps(l->c), _mm_set1_ps(l->a), _mm_set1_ps(l->b), _mm_set1_ps(tol) };
+}
+static inline __m128 curve_in4x(const curve4_t *k, __m128 al, __m128 ac) {
+  const __m128 d = _mm_sub_ps(al, k->mid);
+  const __m128 at = _mm_add_ps(_mm_add_ps(_mm_mul_ps(_mm_mul_ps(k->c, d), d), _mm_mul_ps(k->a, al)), k->b);
+  return _mm_cmple_ps(_mm_and_ps(_mm_sub_ps(ac, at), _mm_castsi128_ps(_mm_set1_epi32(0x7fffffff))), k->tol);
 }
 #endif
 // How many of m points lie within tol of the curve, and the stretch of `along` they cover (lo > hi when none do).
@@ -2423,6 +2435,33 @@ static int curve_support(const fline_t *l, const float *al, const float *ac, int
       lo0 = vminq_f32(lo0, vbslq_f32(in0, a0, big)); hi0 = vmaxq_f32(hi0, vbslq_f32(in0, a0, small));
     }
     n = (int)vaddvq_u32(vaddq_u32(c0, c1)); lo = vminvq_f32(vminq_f32(lo0, lo1)); hi = vmaxvq_f32(vmaxq_f32(hi0, hi1));
+  }
+#elif defined(OB_X86)
+  // ai: x86-64: arm64's form (above): eight points a step, the count in lanes, the stretch by MINPS / MAXPS over the
+  // ai: passing lanes' along (BLENDVPS; whole and positive, so no NaN or signed zero), each order-free: the same n, lo, hi
+  {
+    const curve4_t K = curve4_of(l, tol);
+    const __m128 big = _mm_set1_ps(lo), small = _mm_set1_ps(hi);
+    __m128i c0 = _mm_setzero_si128(), c1 = c0;
+    __m128 lo0 = big, lo1 = big, hi0 = small, hi1 = small;
+    for (; k + 8 <= m; k += 8) {
+      const __m128 a0 = _mm_loadu_ps(al + k), a1 = _mm_loadu_ps(al + k + 4);
+      const __m128 in0 = curve_in4x(&K, a0, _mm_loadu_ps(ac + k)), in1 = curve_in4x(&K, a1, _mm_loadu_ps(ac + k + 4));
+      c0 = _mm_sub_epi32(c0, _mm_castps_si128(in0)); c1 = _mm_sub_epi32(c1, _mm_castps_si128(in1));
+      lo0 = _mm_min_ps(lo0, _mm_blendv_ps(big, a0, in0)); lo1 = _mm_min_ps(lo1, _mm_blendv_ps(big, a1, in1));
+      hi0 = _mm_max_ps(hi0, _mm_blendv_ps(small, a0, in0)); hi1 = _mm_max_ps(hi1, _mm_blendv_ps(small, a1, in1));
+    }
+    for (; k + 4 <= m; k += 4) {
+      const __m128 a0 = _mm_loadu_ps(al + k), in0 = curve_in4x(&K, a0, _mm_loadu_ps(ac + k));
+      c0 = _mm_sub_epi32(c0, _mm_castps_si128(in0));
+      lo0 = _mm_min_ps(lo0, _mm_blendv_ps(big, a0, in0)); hi0 = _mm_max_ps(hi0, _mm_blendv_ps(small, a0, in0));
+    }
+    __m128i c = _mm_add_epi32(c0, c1);
+    __m128 l4 = _mm_min_ps(lo0, lo1), h4 = _mm_max_ps(hi0, hi1);
+    c = _mm_add_epi32(c, _mm_shuffle_epi32(c, _MM_SHUFFLE(1, 0, 3, 2))); c = _mm_add_epi32(c, _mm_shuffle_epi32(c, _MM_SHUFFLE(2, 3, 0, 1)));
+    l4 = _mm_min_ps(l4, _mm_shuffle_ps(l4, l4, _MM_SHUFFLE(1, 0, 3, 2))); l4 = _mm_min_ps(l4, _mm_shuffle_ps(l4, l4, _MM_SHUFFLE(2, 3, 0, 1)));
+    h4 = _mm_max_ps(h4, _mm_shuffle_ps(h4, h4, _MM_SHUFFLE(1, 0, 3, 2))); h4 = _mm_max_ps(h4, _mm_shuffle_ps(h4, h4, _MM_SHUFFLE(2, 3, 0, 1)));
+    n = _mm_cvtsi128_si32(c); lo = _mm_cvtss_f32(l4); hi = _mm_cvtss_f32(h4);
   }
 #elif defined(OB_SIMD)
   v128_t vlo = wasm_f32x4_splat(lo), vhi = wasm_f32x4_splat(hi);
@@ -2483,6 +2522,32 @@ static void refit_curve(const float *al, const float *ac, int n, float tol, flin
       const double f0 = vgetq_lane_f64(s02, 0), f1 = vgetq_lane_f64(s02, 1);
       const double T[3][4] = { { vgetq_lane_f64(s01, 0), vgetq_lane_f64(s01, 1), f0, vgetq_lane_f64(s03, 0) },
                                { vgetq_lane_f64(s01, 1), f0, f1, vgetq_lane_f64(s03, 1) }, { f0, f1, (double)m, s23 } };
+      memcpy(S, T, sizeof S);
+    }
+#elif defined(OB_X86)
+    // ai: x86-64: arm64's form (above): the test eight points a step (its bits by MOVMSKPS), u four a step (DIVPS, the
+    // ai: same float division), the distinct sums in pairs of double lanes (SSE2, a multiply then an add), in order: the
+    // ai: same addends in the same order, so the same sums
+    {
+      const curve4_t K = curve4_of(l, tol);
+      const __m128 vmid = _mm_set1_ps(l->mid), vhalf = _mm_set1_ps(half);
+      __m128d s01 = _mm_setzero_pd(), s02 = s01, s03 = s01;
+      double s23 = 0;
+      float u4[8];
+      #define TAKE2(u, acv) { const double u_ = (u), ac_ = (acv), f0_ = u_ * u_; const __m128d f_ = _mm_setr_pd(f0_, u_); \
+        s01 = _mm_add_pd(s01, _mm_mul_pd(f_, _mm_set1_pd(f0_))); s02 = _mm_add_pd(s02, f_); s03 = _mm_add_pd(s03, _mm_mul_pd(f_, _mm_set1_pd(ac_))); s23 += ac_; m++; }
+      for (; i + 8 <= n; i += 8) {
+        const __m128 a0 = _mm_loadu_ps(al + i), a1 = _mm_loadu_ps(al + i + 4);
+        unsigned bits = (unsigned)_mm_movemask_ps(curve_in4x(&K, a0, _mm_loadu_ps(ac + i))) | (unsigned)_mm_movemask_ps(curve_in4x(&K, a1, _mm_loadu_ps(ac + i + 4))) << 4;
+        if (!bits) continue;
+        _mm_storeu_ps(u4, _mm_div_ps(_mm_sub_ps(a0, vmid), vhalf)); _mm_storeu_ps(u4 + 4, _mm_div_ps(_mm_sub_ps(a1, vmid), vhalf));
+        for (; bits; bits &= bits - 1) { const int j = __builtin_ctz(bits); TAKE2(u4[j], ac[i + j]); }
+      }
+      for (; i < n; i++) if (fabsf(ac[i] - line_at(l, al[i])) <= tol) TAKE2((al[i] - l->mid) / half, ac[i]);
+      #undef TAKE2
+      const double a00 = _mm_cvtsd_f64(s01), a01 = _mm_cvtsd_f64(_mm_unpackhi_pd(s01, s01)), f0 = _mm_cvtsd_f64(s02), f1 = _mm_cvtsd_f64(_mm_unpackhi_pd(s02, s02));
+      const double a03 = _mm_cvtsd_f64(s03), a13 = _mm_cvtsd_f64(_mm_unpackhi_pd(s03, s03));
+      const double T[3][4] = { { a00, a01, f0, a03 }, { a01, f0, f1, a13 }, { f0, f1, (double)m, s23 } };
       memcpy(S, T, sizeof S);
     }
 #elif defined(OB_SIMD)
@@ -3158,15 +3223,15 @@ static int fit_lines(const fpt_t *p, int n, float tol, float min_span, fline_t *
   for (int k = 0; k < n; k++) { al[k] = p[k].along; ac[k] = p[k].across; al3[k % 3][m3[k % 3]] = p[k].along; ac3[k % 3][m3[k % 3]++] = p[k].across; }
   uint32_t s = 12345u;
   #define RND(m) (s = s * 1664525u + 1013904223u, (int)((s >> 8) % (uint32_t)(m)))
-#ifdef OB_NEON
-  // ai: arm64: every rank's points in one pass, each rank's indices in their order (a counting sort on rank)
+#if defined(OB_NEON) || defined(OB_X86)
+  // ai: arm64 and x86-64: every rank's points in one pass, each rank's indices in their order (a counting sort on rank)
   int rank_at[SIDE_K + 1] = { 0 };
   for (int k = 0; k < n; k++) rank_at[p[k].rank + 1]++;
   for (int r = 0; r < SIDE_K; r++) rank_at[r + 1] += rank_at[r];
   { int fill[SIDE_K]; memcpy(fill, rank_at, sizeof fill); for (int k = 0; k < n; k++) idx[fill[p[k].rank]++] = k; }
 #endif
   for (int rank = 0; rank < SIDE_K; rank++) {
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
     const int *ix = idx + rank_at[rank], m = rank_at[rank + 1] - rank_at[rank];
 #else
     int m = 0;
