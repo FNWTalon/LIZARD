@@ -192,7 +192,7 @@ int ob_anchor_m0(const ob_layout_t *L, int i);
 int ob_thin_read_fmt(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float *q, int cells);
 // A block of a regular grid in module coordinates: see acquire.c.
 void ob_sample_grid(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch);
-// ai: the decode's picture: on arm64 at gamma 1 a walk of its own and its own floats (acquire.c), else ob_sample_grid's
+// ai: the decode's picture: on arm64 and x86-64 at gamma 1 a walk of its own and its own floats (acquire.c), else ob_sample_grid's
 void ob_sample_grid_pic(const ob_layout_t *L, const image_t *im, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch);
 // What lizard_acquire left for lizard_finish (lizard_phy.h), for a caller that has to sample somewhere else. Valid
 // until the matching lizard_finish takes it up.

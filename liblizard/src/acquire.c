@@ -713,6 +713,63 @@ static inline __attribute__((always_inline)) void lin_read(const uint8_t *r0, co
   const float32x4x2_t g = lin_get(r0, r1, k, p);
   vst1q_f32(o, g.val[0]); vst1q_f32(o + 4, g.val[1]);
 }
+#elif defined(OB_X86)
+// ai: x86-64's bilinear read in integers at gamma 1, arm64's above in SSE4.1 (lin_pts, then lin_get), for the same
+// ai: callers and on the same coordinates (sample()'s less the half pixel, x a 512th of a pixel on); from the same
+// ai: coordinates the same integers and floats as arm64's. 16.16 by CVTTPS2DQ after a MAXPS with 0 (below 0, and NaN,
+// ai: pixel 0, as FCVTZU) and a hold under 2^15 pixels (the signed conversion's range); the integer parts packed to
+// ai: 16-bit lanes and clamped there to w - 2 and h - 2 (so every read stays in the frame), the offsets y w + x from
+// ai: the 16-bit products' two halves; fx the fraction's top byte, fy its top 15 bits. A point's two pixel pairs read
+// ai: as 16-bit words (row y's at the pixel, row y + 1's a row on), four points' to a 64-bit general register, so a
+// ai: vector holds eight points' a | b (or c | d) a lane; each row's pair blended as 256 a + (b - a) fx (PMULLW, modulo
+// ai: 2^16 on the way), the rows' halved difference (arm64's UHSUB: PAVGW with the complement, less 2^15) times fy by
+// ai: PMULHRSW (SQRDMULH's rounding, fy never negative), the grey 128 times over; to floats by one conversion and a
+// ai: multiply by 257 / 2^23 (exact).
+typedef struct { __m128 val[2]; } lin_f8_t;
+typedef struct { __m128i i0, i1, fx, fy; } lin_pts_t;   // ai: eight points' offsets (two vectors), fx and fy (16-bit lanes)
+typedef struct { __m128i wm, hm, kw; } lin_k_t;   // ai: the clamps, and w on 16-bit lanes
+static inline lin_k_t lin_k(int w, int h) { return (lin_k_t){ _mm_set1_epi16((short)(w - 2)), _mm_set1_epi16((short)(h - 2)), _mm_set1_epi16((short)w) }; }
+static inline __attribute__((always_inline)) __m128i lin_q16(__m128 v) {
+  return _mm_cvttps_epi32(_mm_mul_ps(_mm_min_ps(_mm_max_ps(v, _mm_setzero_ps()), _mm_set1_ps(32767.0f)), _mm_set1_ps(65536.0f)));
+}
+static inline __attribute__((always_inline)) lin_pts_t lin_pts(const lin_k_t *k, __m128 x0, __m128 y0, __m128 x1, __m128 y1) {
+  const __m128i xq0 = lin_q16(x0), xq1 = lin_q16(x1), yq0 = lin_q16(y0), yq1 = lin_q16(y1), z = _mm_setzero_si128();
+  const __m128i xi = _mm_min_epu16(_mm_packus_epi32(_mm_srli_epi32(xq0, 16), _mm_srli_epi32(xq1, 16)), k->wm);
+  const __m128i yi = _mm_min_epu16(_mm_packus_epi32(_mm_srli_epi32(yq0, 16), _mm_srli_epi32(yq1, 16)), k->hm);
+  const __m128i ml = _mm_mullo_epi16(yi, k->kw), mh = _mm_mulhi_epu16(yi, k->kw), b8 = _mm_set1_epi32(0xff), f16 = _mm_set1_epi32(0xffff);
+  return (lin_pts_t){ _mm_add_epi32(_mm_unpacklo_epi16(ml, mh), _mm_unpacklo_epi16(xi, z)), _mm_add_epi32(_mm_unpackhi_epi16(ml, mh), _mm_unpackhi_epi16(xi, z)),
+                      _mm_packus_epi32(_mm_and_si128(_mm_srli_epi32(xq0, 8), b8), _mm_and_si128(_mm_srli_epi32(xq1, 8), b8)),
+                      _mm_srli_epi16(_mm_packus_epi32(_mm_and_si128(yq0, f16), _mm_and_si128(yq1, f16)), 1) };
+}
+static inline __attribute__((always_inline)) uint64_t lin_u16(const uint8_t *p) { uint16_t v; memcpy(&v, p, 2); return v; }
+// ai: four points' pairs at r + offset, the offsets two to a 64-bit word
+static inline __attribute__((always_inline)) uint64_t lin_pairs(const uint8_t *r, uint64_t p01, uint64_t p23) {
+  return lin_u16(r + (uint32_t)p01) | lin_u16(r + (p01 >> 32)) << 16 | lin_u16(r + (uint32_t)p23) << 32 | lin_u16(r + (p23 >> 32)) << 48;
+}
+// ai: eight points' grey, 128 times over (0 to 32640, -1 where the blend's halves round so), on 16-bit lanes; r1 is
+// ai: arm64's (the frame less two bytes a row on), row y + 1's pair two bytes past it
+static inline __attribute__((always_inline)) __m128i lin_grey(const uint8_t *r0, const uint8_t *r1, const lin_k_t *k, lin_pts_t p) {
+  (void)k;
+  const uint64_t p01 = (uint64_t)_mm_cvtsi128_si64(p.i0), p23 = (uint64_t)_mm_extract_epi64(p.i0, 1);
+  const uint64_t p45 = (uint64_t)_mm_cvtsi128_si64(p.i1), p67 = (uint64_t)_mm_extract_epi64(p.i1, 1);
+  const __m128i ab = _mm_set_epi64x((long long)lin_pairs(r0, p45, p67), (long long)lin_pairs(r0, p01, p23));
+  const __m128i cd = _mm_set_epi64x((long long)lin_pairs(r1 + 2, p45, p67), (long long)lin_pairs(r1 + 2, p01, p23));
+  const __m128i m8 = _mm_set1_epi16(0xff);
+  const __m128i a = _mm_and_si128(ab, m8), c = _mm_and_si128(cd, m8);
+  const __m128i top = _mm_add_epi16(_mm_slli_epi16(ab, 8), _mm_mullo_epi16(_mm_sub_epi16(_mm_srli_epi16(ab, 8), a), p.fx));
+  const __m128i bot = _mm_add_epi16(_mm_slli_epi16(cd, 8), _mm_mullo_epi16(_mm_sub_epi16(_mm_srli_epi16(cd, 8), c), p.fx));
+  const __m128i hd = _mm_xor_si128(_mm_avg_epu16(bot, _mm_xor_si128(top, _mm_set1_epi16(-1))), _mm_set1_epi16((short)0x8000));
+  return _mm_add_epi16(_mm_mulhrs_epi16(hd, p.fy), _mm_srli_epi16(top, 1));
+}
+static inline __attribute__((always_inline)) lin_f8_t lin_get(const uint8_t *r0, const uint8_t *r1, const lin_k_t *k, lin_pts_t p) {
+  const __m128i r = lin_grey(r0, r1, k, p);
+  const __m128 s = _mm_set1_ps(257.0f / 8388608.0f);
+  return (lin_f8_t){ { _mm_mul_ps(_mm_cvtepi32_ps(_mm_cvtepi16_epi32(r)), s), _mm_mul_ps(_mm_cvtepi32_ps(_mm_srai_epi32(_mm_unpackhi_epi16(r, r), 16)), s) } };
+}
+static inline __attribute__((always_inline)) void lin_read(const uint8_t *r0, const uint8_t *r1, const lin_k_t *k, lin_pts_t p, float *o) {
+  const lin_f8_t g = lin_get(r0, r1, k, p);
+  _mm_storeu_ps(o, g.val[0]); _mm_storeu_ps(o + 4, g.val[1]);
+}
 #endif
 
 // ---------------------------------------------------------------- registration mesh
@@ -4828,9 +4885,94 @@ static void sample_grid_lin(const ob_layout_t *L, const image_t *pim, const ob_r
     for (int l = 0; k + l < nx; l++) o[k + l] = t[l];
   }
 }
+#elif defined(OB_X86)
+// ai: x86-64, the decode's picture at gamma 1: arm64's walk above in SSE4.1 (the lines in the column stepped by four
+// ai: columns a vector, the mesh tabled per column as D + v E once a mesh row, one division a vector, 16 points a step,
+// ai: the next step's offsets and weights before this step's reads), its read in integers (lin_pts, lin_read: from the
+// ai: same coordinates the same values). Its own values: no fused multiply-adds, so its coordinates round apart from
+// ai: arm64's; the blocks a decode verifies are its test, and test/sample_grid.c holds it to ob_sample_grid.
+enum { GRID_LIN = 256 };
+static void sample_grid_lin(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
+  const int w = pim->w, nn = L->nx;
+  const float *h = reg->H.h;
+  int run_i[OB_MAX_NODES + 1], run_end[OB_MAX_NODES + 1];
+  const int runs = grid_runs(L, mx0, step, x0, nx, run_i, run_end);
+  // ai: a column's place in its mesh column (0 to 1), and the table, 24 columns past the end (zeros) for the step that
+  // ai: works out points past the row
+  enum { TW = GRID_LIN + 24 };
+  float tu[TW], T[4 * TW];
+  for (int r = 0, k = 0; r < runs; r++) {
+    const int i = run_i[r];
+    const float inv = 1.0f / (L->node_x[i + 1] - L->node_x[i]);
+    for (; k < run_end[r]; k++) tu[k] = (mx0 + (float)(x0 + k) * step - L->node_x[i]) * inv;
+  }
+  for (int k = nx; k < nx + 4; k++) tu[k] = 0;
+  for (int i = 4 * ((nx + 3) & ~3); i < 4 * (nx + 24); i++) T[i] = 0;
+  const float m0 = mx0 + (float)x0 * step;
+  const __m128 lane = _mm_setr_ps(0, 1, 2, 3), one = _mm_set1_ps(1);
+  const __m128 BwL = _mm_mul_ps(lane, _mm_set1_ps(h[6] * step)), BuL = _mm_mul_ps(lane, _mm_set1_ps(h[0] * step)), BvL = _mm_mul_ps(lane, _mm_set1_ps(h[3] * step));
+  // ai: the three lines' steps over four columns
+  const __m128 Cw = _mm_set1_ps(4 * (h[6] * step)), Cu = _mm_set1_ps(4 * (h[0] * step)), Cv = _mm_set1_ps(4 * (h[3] * step));
+  const lin_k_t K = lin_k(w, pim->h);
+  const uint8_t *r0 = pim->px, *r1 = pim->px + w - 2;
+  int j = 0, built = -1;
+#define LIN_MA(a, b, c) _mm_add_ps((a), _mm_mul_ps((b), (c)))
+  for (int yy = 0; yy < ny; yy++) {
+    const float my = my0 + (float)(y0 + yy) * step;
+    while (j < L->ny - 2 && my >= L->node_y[j + 1]) j++;
+    if (j != built) {
+      const node_t *n0 = reg->nodes + j * nn, *n1 = n0 + nn;
+      for (int r = 0, s = 0; r < runs; s = run_end[r++]) {
+        const node_t *a = n0 + run_i[r], *b = n1 + run_i[r];
+        const __m128 c0x = _mm_set1_ps(a[0].dx - (0.5f - 1.0f / 512)), c1x = _mm_set1_ps(a[1].dx - a[0].dx), e0x = _mm_set1_ps(b[0].dx - a[0].dx), e1x = _mm_set1_ps((b[1].dx - b[0].dx) - (a[1].dx - a[0].dx));
+        const __m128 c0y = _mm_set1_ps(a[0].dy - 0.5f), c1y = _mm_set1_ps(a[1].dy - a[0].dy), e0y = _mm_set1_ps(b[0].dy - a[0].dy), e1y = _mm_set1_ps((b[1].dy - b[0].dy) - (a[1].dy - a[0].dy));
+        // ai: four columns a vector from the one holding the run's first; its lanes before the run are the last run's
+        // ai: (kept), and a vector past the run's end is rewritten by the next run
+        for (int k = s & ~3; k < run_end[r]; k += 4) {
+          const __m128 U = _mm_loadu_ps(tu + k);
+          __m128 dx = LIN_MA(c0x, c1x, U), ex = LIN_MA(e0x, e1x, U), dy = LIN_MA(c0y, c1y, U), ey = LIN_MA(e0y, e1y, U);
+          if (k < s) {
+            const __m128 keep = _mm_cmplt_ps(_mm_add_ps(_mm_set1_ps((float)k), lane), _mm_set1_ps((float)s));
+            dx = _mm_blendv_ps(dx, _mm_loadu_ps(T + 4 * k), keep); ex = _mm_blendv_ps(ex, _mm_loadu_ps(T + 4 * k + 4), keep);
+            dy = _mm_blendv_ps(dy, _mm_loadu_ps(T + 4 * k + 8), keep); ey = _mm_blendv_ps(ey, _mm_loadu_ps(T + 4 * k + 12), keep);
+          }
+          _mm_storeu_ps(T + 4 * k, dx); _mm_storeu_ps(T + 4 * k + 4, ex); _mm_storeu_ps(T + 4 * k + 8, dy); _mm_storeu_ps(T + 4 * k + 12, ey);
+        }
+      }
+      built = j;
+    }
+    const __m128 vv = _mm_set1_ps((my - L->node_y[j]) / (L->node_y[j + 1] - L->node_y[j]));
+    __m128 nw = _mm_add_ps(BwL, _mm_set1_ps(h[6] * m0 + (h[7] * my + 1))), nu = _mm_add_ps(BuL, _mm_set1_ps(h[0] * m0 + (h[1] * my + h[2]))), nv = _mm_add_ps(BvL, _mm_set1_ps(h[3] * m0 + (h[4] * my + h[5])));
+    // ai: the point's coordinates less the half pixel (in D)
+#define LIN_XY(K_, X, Y) do { \
+      const float *tk = T + 4 * (K_); \
+      const __m128 rw_ = _mm_div_ps(one, nw); \
+      X = LIN_MA(LIN_MA(_mm_loadu_ps(tk), _mm_loadu_ps(tk + 4), vv), nu, rw_); \
+      Y = LIN_MA(LIN_MA(_mm_loadu_ps(tk + 8), _mm_loadu_ps(tk + 12), vv), nv, rw_); \
+      nw = _mm_add_ps(nw, Cw); nu = _mm_add_ps(nu, Cu); nv = _mm_add_ps(nv, Cv); \
+    } while (0)
+    float *o = out + (size_t)yy * pitch;
+    __m128 xa, ya, xb, yb, xc, yc, xd, yd;
+    LIN_XY(0, xa, ya); LIN_XY(4, xb, yb); LIN_XY(8, xc, yc); LIN_XY(12, xd, yd);
+    lin_pts_t pa = lin_pts(&K, xa, ya, xb, yb), pb = lin_pts(&K, xc, yc, xd, yd);
+    int k = 0;
+    for (; k + 16 < nx; k += 16) {
+      LIN_XY(k + 16, xa, ya); LIN_XY(k + 20, xb, yb); LIN_XY(k + 24, xc, yc); LIN_XY(k + 28, xd, yd);
+      const lin_pts_t na = lin_pts(&K, xa, ya, xb, yb), nb = lin_pts(&K, xc, yc, xd, yd);
+      lin_read(r0, r1, &K, pa, o + k); lin_read(r0, r1, &K, pb, o + k + 8);
+      pa = na; pb = nb;
+    }
+#undef LIN_XY
+    if (k + 16 <= nx) { lin_read(r0, r1, &K, pa, o + k); lin_read(r0, r1, &K, pb, o + k + 8); continue; }
+    float t[16];   // the row's last points, past its end: those are dropped
+    lin_read(r0, r1, &K, pa, t); lin_read(r0, r1, &K, pb, t + 8);
+    for (int l = 0; k + l < nx; l++) o[k + l] = t[l];
+  }
+#undef LIN_MA
+}
 #endif
 void ob_sample_grid_pic(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   if (pim->lin) {
     for (int c = 0; c < nx; c += GRID_LIN) sample_grid_lin(L, pim, reg, mx0, my0, step, x0 + c, nx - c < GRID_LIN ? nx - c : GRID_LIN, y0, ny, out + c, pitch);
     return;
