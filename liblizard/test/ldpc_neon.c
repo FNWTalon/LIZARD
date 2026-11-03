@@ -83,7 +83,7 @@ int main(int argc, char **argv) {
       memcpy(qb, q0, sizeof q0); memcpy(rb, r0, sizeof r0);
       // ai: the first iteration's form reads no messages: they are made garbage, which it must not see
       if (first) memset(rb, 0x5a, sizeof rb);
-      if (w) layer_kernel_neon(rb, ns, zp, norm, rows, 0, 0, 0, first); else layer_kernel(qb, rb, ns, zp, norm);
+      if (w) layer_kernel_neon(rb, ns, zp, norm, rows, 0, 0, 0, 0, 0, first); else layer_kernel(qb, rb, ns, zp, norm);
       if (memcmp(qa, qb, (size_t)ns * zp * 2) || memcmp(ra, rb, (size_t)ns * zp)) {
         if (fails < 5) printf("layer %d (ns %d, norm %d): %s apart from the scalar loop\n", t, ns, norm, w ? first ? "NEON, first iteration" : "NEON" : "128-bit");
         fails++;
