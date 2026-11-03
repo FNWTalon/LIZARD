@@ -474,6 +474,64 @@ static void msh_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r,
     uint16_t *sw = ca; ca = cb; cb = sw;
   }
 }
+#elif defined(OB_X86)
+// ai: x86-64's msh_blur_rect, arm64's above in SSE4.1: the same ring of row sums and the same integer sums, so the same
+// ai: bytes. A row's sums sixteen columns a step (bytes widened by PMOVZXBW and PUNPCKHBW); the rounded division by kk
+// ai: as (c + kk / 2) M >> 32, the 64-bit products' high halves by PMULUDQ on the even and the odd lanes, packed back
+// ai: to bytes (every quotient at most 255).
+static inline __attribute__((always_inline)) void msh_row_sums(const uint8_t *src, int w, int h, int r, int x0, int rw, int sy, uint16_t *t, uint8_t *buf) {
+  const int lo = x0 - r, n = rw + 2 * r;
+  const uint8_t *srow = src + (size_t)(sy < 0 ? 0 : sy >= h ? h - 1 : sy) * w, *p = srow + lo;
+  if (lo < 0 || lo + n > w) {
+    const int a0 = lo < 0 ? -lo : 0, a1 = (lo + n <= w ? lo + n : w) - lo;
+    memset(buf, srow[0], (size_t)a0); memcpy(buf + a0, srow + lo + a0, (size_t)(a1 - a0)); memset(buf + a1, srow[w - 1], (size_t)(n - a1));
+    p = buf;
+  }
+  const __m128i z = _mm_setzero_si128();
+  for (int x = 0;; x += 16) {
+    if (x + 16 > rw) x = rw - 16;
+    __m128i s0 = z, s1 = z;
+    for (int sft = 0; sft <= 2 * r; sft++) {
+      const __m128i b = _mm_loadu_si128((const __m128i *)(p + x + sft));
+      s0 = _mm_add_epi16(s0, _mm_cvtepu8_epi16(b)); s1 = _mm_add_epi16(s1, _mm_unpackhi_epi8(b, z));
+    }
+    _mm_storeu_si128((__m128i *)(t + x), s0); _mm_storeu_si128((__m128i *)(t + x + 8), s1);
+    if (x + 16 >= rw) break;
+  }
+}
+static void msh_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r, int x0, int y0, int x1, int y1, uint16_t *ring, uint16_t *col, uint8_t *buf) {
+  const int rw = x1 - x0, R = 2 * r + 2, kk = (2 * r + 1) * (2 * r + 1);
+  for (int j = 0; j <= 2 * r; j++) msh_row_sums(src, w, h, r, x0, rw, y0 - r + j, ring + (size_t)j * rw, buf);
+  uint16_t *ca = col, *cb = col + rw;
+  for (int x = 0;; x += 8) {
+    if (x + 8 > rw) x = rw - 8;
+    __m128i c = _mm_loadu_si128((const __m128i *)(ring + x));
+    for (int j = 1; j <= 2 * r; j++) c = _mm_add_epi16(c, _mm_loadu_si128((const __m128i *)(ring + (size_t)j * rw + x)));
+    _mm_storeu_si128((__m128i *)(ca + x), c);
+    if (x + 8 >= rw) break;
+  }
+  const uint64_t M = ((uint64_t)1 << 32) / (uint64_t)kk + 1;
+  const __m128i vh = _mm_set1_epi32(kk / 2), vm = _mm_set1_epi32((int)(uint32_t)M), z = _mm_setzero_si128();
+#define MSH_DIVK(v) _mm_blend_epi16(_mm_srli_epi64(_mm_mul_epu32((v), vm), 32), _mm_mul_epu32(_mm_srli_epi64((v), 32), vm), 0xCC)
+  for (int y = y0; y < y1; y++) {
+    uint8_t *o = out + (size_t)y * w + x0;
+    const int last = y + 1 == y1, ja = y - y0 + 2 * r + 1;
+    uint16_t *ta = ring + (size_t)(ja % R) * rw;
+    const uint16_t *ts = ring + (size_t)((y - y0) % R) * rw;
+    if (!last) msh_row_sums(src, w, h, r, x0, rw, y0 - r + ja, ta, buf);
+    for (int x = 0;; x += 8) {
+      if (x + 8 > rw) x = rw - 8;
+      const __m128i c = _mm_loadu_si128((const __m128i *)(ca + x));
+      const __m128i lo = _mm_add_epi32(vh, _mm_cvtepu16_epi32(c)), hi = _mm_add_epi32(vh, _mm_unpackhi_epi16(c, z));
+      const __m128i q = _mm_packus_epi32(MSH_DIVK(lo), MSH_DIVK(hi));
+      _mm_storel_epi64((__m128i *)(o + x), _mm_packus_epi16(q, q));
+      if (!last) _mm_storeu_si128((__m128i *)(cb + x), _mm_add_epi16(_mm_sub_epi16(c, _mm_loadu_si128((const __m128i *)(ts + x))), _mm_loadu_si128((const __m128i *)(ta + x))));
+      if (x + 8 >= rw) break;
+    }
+    uint16_t *sw = ca; ca = cb; cb = sw;
+  }
+#undef MSH_DIVK
+}
 #endif
 
 typedef struct { float x, y, unit; int hits; } cand_t;
@@ -4395,7 +4453,7 @@ static uint8_t *border_blur(const ob_layout_t *L, const homo_t *H, const uint8_t
   memcpy(out, img, (size_t)iw * ih);
   const float D = 16, Mo = 3, W = (float)L->w, Hh = (float)L->h;
   const float band[4][4] = { { -Mo, -Mo, W + Mo, D }, { -Mo, Hh - D, W + Mo, Hh + Mo }, { -Mo, -Mo, D, Hh + Mo }, { W - D, -Mo, W + Mo, Hh + Mo } };
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   // ai: msh_blur_rect's ring, column sums and row copy, for rectangles up to the image's width
   uint16_t *ring = r <= 7 ? malloc(((size_t)(2 * r + 4) * iw) * sizeof(uint16_t) + (size_t)iw + 2 * r) : NULL;
 #endif
@@ -4413,7 +4471,7 @@ static uint8_t *border_blur(const ob_layout_t *L, const homo_t *H, const uint8_t
     if (x1 > iw) x1 = iw;
     if (y1 > ih) y1 = ih;
     if (x1 <= x0 || y1 <= y0) continue;
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
     if (ring && x1 - x0 >= 16) {
       msh_blur_rect(img, out, iw, ih, r, x0, y0, x1, y1, ring, ring + (size_t)(2 * r + 2) * iw, (uint8_t *)(ring + (size_t)(2 * r + 4) * iw));
       continue;
@@ -4424,7 +4482,7 @@ static uint8_t *border_blur(const ob_layout_t *L, const homo_t *H, const uint8_t
     if (tmp && acc) box_blur_rect(img, out, iw, ih, r, x0, y0, x1, y1, tmp, acc);
     free(tmp); free(acc);
   }
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   free(ring);
 #endif
   return out;

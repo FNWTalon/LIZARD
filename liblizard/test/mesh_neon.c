@@ -17,6 +17,11 @@ static uint64_t hs = 1469598103934665603ull;
 static void mix(const void *p, size_t n) { const uint8_t *b = p; for (size_t i = 0; i < n; i++) { hs ^= b[i]; hs *= 1099511628211ull; } }
 static uint32_t rs = 1;
 static uint32_t rnd(void) { rs = rs * 1664525u + 1013904223u; return rs >> 8; }
+#if defined(OB_NEON) || defined(OB_X86)
+// ai: the exact checks' own stream, so the hashed stream is the same with them or without
+static uint32_t rs2 = 7;
+static uint32_t rnd2(void) { rs2 = rs2 * 1664525u + 1013904223u; return rs2 >> 8; }
+#endif
 static float frand(void) { return (float)(rnd() & 0xffff) / 65536.0f; }
 int main(void) {
   const int iw = 1280, ih = 960, sides[3] = { 158, 286, 542 };
@@ -25,6 +30,10 @@ int main(void) {
   double tref = 0, tanc = 0, tblur = 0, tfit = 0;
 #if defined(OB_NEON)
   double dread = 0, dq = 0;   // ai: the reads' largest distance from sample()
+#endif
+#if defined(OB_NEON) || defined(OB_X86)
+  uint8_t *b1 = malloc((size_t)iw * ih), *b2 = malloc((size_t)iw * ih);   // ai: msh_blur_rect's and box_blur_rect's rectangles
+  long nblur = 0;   // ai: rows where the two differ
 #endif
   for (int t = 0; t < 36; t++) {
     ob_layout_t L;
@@ -92,6 +101,23 @@ int main(void) {
     uint8_t *bl = border_blur(&L, &H0, px, iw, ih, 1 + t % 7, spare);
     tblur += ob_now_ms() - t0;
     mix(bl, (size_t)iw * ih);
+#if defined(OB_NEON) || defined(OB_X86)
+    // ai: msh_blur_rect held to box_blur_rect's bytes on random rectangles 16 to 315 wide, some against the frame's edges
+    {
+      const int r = 1 + t % 7;
+      uint16_t *ring = malloc(((size_t)(2 * r + 4) * iw) * sizeof(uint16_t) + (size_t)iw + 2 * r), *tmp = malloc((size_t)iw * (ih + 2 * r) * sizeof(uint16_t));
+      int *acc = malloc((size_t)iw * sizeof(int));
+      for (int q = 0; q < 16; q++) {
+        const int rw = 16 + (int)(rnd2() % 300), rh = 1 + (int)(rnd2() % 80);
+        int x0 = q & 1 ? 0 : (int)(rnd2() % (unsigned)(iw - rw + 1)), y0 = q & 2 ? ih - rh : (int)(rnd2() % (unsigned)(ih - rh + 1));
+        if (q & 4) x0 = iw - rw;
+        msh_blur_rect(px, b1, iw, ih, r, x0, y0, x0 + rw, y0 + rh, ring, ring + (size_t)(2 * r + 2) * iw, (uint8_t *)(ring + (size_t)(2 * r + 4) * iw));
+        box_blur_rect(px, b2, iw, ih, r, x0, y0, x0 + rw, y0 + rh, tmp, acc);
+        for (int y = y0; y < y0 + rh; y++) nblur += memcmp(b1 + (size_t)y * iw + x0, b2 + (size_t)y * iw + x0, (size_t)rw) != 0;
+      }
+      free(ring); free(tmp); free(acc);
+    }
+#endif
     for (int k = 0; k < 4096; k += 4) {
       float X[4], Y[4], o[4];
       for (int l = 0; l < 4; l++) {
@@ -144,6 +170,11 @@ int main(void) {
   free(px); free(spare);
   printf("mesh hash %016llx (nodes %d, trusted %d, anchors found %d of %d)\n", (unsigned long long)hs, nnodes, ngood, nfound, 36 * OB_ANCH_K * OB_ANCH_K);
   printf("ms: nodes %.2f, anchors %.2f, blur %.2f, lens fits %.2f\n", tref, tanc, tblur, tfit);
+#if defined(OB_NEON) || defined(OB_X86)
+  free(b1); free(b2);
+  printf("msh_blur_rect against box_blur_rect: %ld rows differ\n", nblur);
+  if (nblur) return 1;
+#endif
 #if defined(OB_NEON)
   const uint64_t want = NEON_HASH;
   printf("reads against sample(): %.5f of the grey range, 12-bit %.2f of %d\n", dread, dq, (int)MSH_Q);
