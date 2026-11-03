@@ -625,6 +625,12 @@ static int solve8(double A[8][9]) {
       if ((9 - c) & 1) { A[r][k] -= f * A[c][k]; k++; }
       const float64x2_t vf = vdupq_n_f64(f);
       for (; k < 9; k += 2) vst1q_f64(&A[r][k], vsubq_f64(vld1q_f64(&A[r][k]), vmulq_f64(vf, vld1q_f64(&A[c][k]))));
+#elif defined(OB_X86)
+      // ai: x86-64: arm64's double pairs in SSE2's, the multiply then the subtraction (the same doubles)
+      int k = c;
+      if ((9 - c) & 1) { A[r][k] -= f * A[c][k]; k++; }
+      const __m128d vf = _mm_set1_pd(f);
+      for (; k < 9; k += 2) _mm_storeu_pd(&A[r][k], _mm_sub_pd(_mm_loadu_pd(&A[r][k]), _mm_mul_pd(vf, _mm_loadu_pd(&A[c][k]))));
 #else
       for (int k = c; k < 9; k++) A[r][k] -= f * A[c][k];
 #endif
