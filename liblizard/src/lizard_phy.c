@@ -1545,6 +1545,20 @@ have_llr:
           vst1q_u8(dst + j0, vpaddq_u8(vpaddq_u8(a0, a1), vpaddq_u8(a2, a3)));
         }
       }
+#elif defined(OB_X86)
+      // ai: x86-64: sixteen bytes a step as arm64's: each byte's eight bits reversed in order by PSHUFB, each lane's bit
+      // ai: moved to its top by a shift (the bits are 0 or 1, so nothing crosses into the next lane's top) and gathered by
+      // ai: PMOVMSKB, two bytes a vector, the first in the low half: the same bytes
+      {
+        const __m128i rev = _mm_setr_epi8(7, 6, 5, 4, 3, 2, 1, 0, 15, 14, 13, 12, 11, 10, 9, 8);
+        for (; j0 + 16 <= B; j0 += 16) {
+          const uint8_t *q = bits + 8 * j0;
+          for (int t = 0; t < 8; t++) {
+            const unsigned m = (unsigned)_mm_movemask_epi8(_mm_slli_epi16(_mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(const void *)(q + 16 * t)), rev), 7));
+            dst[j0 + 2 * t] = (uint8_t)m; dst[j0 + 2 * t + 1] = (uint8_t)(m >> 8);
+          }
+        }
+      }
 #endif
       for (int j = j0; j < B; j++) {
         const uint8_t *q = bits + 8 * j;
