@@ -1,0 +1,3 @@
+- Home and Receive show bare labels: Send and Receive alone, Start and Stop.
+- About lists the third-party software a line a license.
+- Save replays stays as set across starts.
