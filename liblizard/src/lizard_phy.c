@@ -215,8 +215,8 @@ static inline __attribute__((always_inline)) void turn4(const turn4_t *t, const 
 static int pilot_align(const lizard_t *f, struct lizard_ws *w, float d[2]) {
   const int n = f->n;
   const double k = 2.0 * 3.14159265358979323846 / n;
-#ifdef OB_NEON
-  // ai: arm64 with bw 64 (every picture size's): a pilot's (u, v) by shifts, its block row q / n by a multiply-high by
+#if defined(OB_NEON) || defined(OB_X86)
+  // ai: arm64 and x86-64 with bw 64 (every picture size's): a pilot's (u, v) by shifts, its block row q / n by a multiply-high by
   // ai: m = ceil(2^31 / n), turn4's division (exact for every block row), where coef_uv takes two divisions
   const int fast = f->bw == 64;
   const int64_t m = ((1ll << 31) + n - 1) / n;
@@ -237,7 +237,7 @@ static int pilot_align(const lizard_t *f, struct lizard_ws *w, float d[2]) {
       for (int s = code->nt / 2; s < nb / 2; s++) {
         const int pp = f->pos[first + s];
         int uu, vv;
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
         if (fast) { const int qr = pp >> 6, br = (int)((qr * m) >> 31), uw = qr - br * n; uu = uw < n / 2 ? uw : uw - n; vv = br * 64 + (pp & 63); } else
 #endif
         coef_uv(f, pp, &uu, &vv);
