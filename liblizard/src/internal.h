@@ -56,6 +56,30 @@ static inline float32x4_t sample4r(const uint8_t *px, int w, float32x4_t x, floa
   const float32x4_t top = vfmaq_f32(a, vsubq_f32(bm, am), fx), bot = vfmaq_f32(c, vsubq_f32(dm, cm), fx);
   return vmulq_f32(vfmaq_f32(top, vsubq_f32(bot, top), fy), vdupq_n_f32(1.0f / 255.0f));
 }
+#elif defined(OB_X86)
+#include <string.h>
+// ai: x86-64: arm64's sample4r (above) in SSE4.1, for the same track reads: the same word reads, each byte made the
+// ai: float 2^23 + byte by PSHUFB over the words with 0x4B ORed in as the top byte, the blends a multiply and an add
+// ai: each (no fused multiply-add): its own floats.
+static inline __m128 sample4r(const uint8_t *px, int w, __m128 x, __m128 y) {
+  const __m128 fx = _mm_sub_ps(x, _mm_round_ps(x, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC)), fy = _mm_sub_ps(y, _mm_round_ps(y, _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
+  const __m128i idx = _mm_add_epi32(_mm_cvttps_epi32(x), _mm_mullo_epi32(_mm_cvttps_epi32(y), _mm_set1_epi32(w)));
+  const size_t o0 = (uint32_t)_mm_cvtsi128_si32(idx), o1 = (uint32_t)_mm_extract_epi32(idx, 1), o2 = (uint32_t)_mm_extract_epi32(idx, 2), o3 = (uint32_t)_mm_extract_epi32(idx, 3);
+  const uint8_t *r0 = px, *r1 = px + w - 2;
+  uint32_t t0, t1, t2, t3, u0, u1, u2, u3;
+  memcpy(&t0, r0 + o0, 4); memcpy(&t1, r0 + o1, 4); memcpy(&t2, r0 + o2, 4); memcpy(&t3, r0 + o3, 4);
+  memcpy(&u0, r1 + o0, 4); memcpy(&u1, r1 + o1, 4); memcpy(&u2, r1 + o2, 4); memcpy(&u3, r1 + o3, 4);
+  const __m128i T = _mm_setr_epi32((int)t0, (int)t1, (int)t2, (int)t3), U = _mm_setr_epi32((int)u0, (int)u1, (int)u2, (int)u3);
+  const __m128i k23 = _mm_set1_epi32(0x4b000000);
+  // ai: a word's bytes: row y's a b (and two past them), row y + 1's (two before) c d; -1 a zero
+  const __m128i ka = _mm_setr_epi8(0, -1, -1, -1, 4, -1, -1, -1, 8, -1, -1, -1, 12, -1, -1, -1), kb = _mm_setr_epi8(1, -1, -1, -1, 5, -1, -1, -1, 9, -1, -1, -1, 13, -1, -1, -1);
+  const __m128i kc = _mm_setr_epi8(2, -1, -1, -1, 6, -1, -1, -1, 10, -1, -1, -1, 14, -1, -1, -1), kd = _mm_setr_epi8(3, -1, -1, -1, 7, -1, -1, -1, 11, -1, -1, -1, 15, -1, -1, -1);
+  const __m128 am = _mm_castsi128_ps(_mm_or_si128(_mm_shuffle_epi8(T, ka), k23)), bm = _mm_castsi128_ps(_mm_or_si128(_mm_shuffle_epi8(T, kb), k23));
+  const __m128 cm = _mm_castsi128_ps(_mm_or_si128(_mm_shuffle_epi8(U, kc), k23)), dm = _mm_castsi128_ps(_mm_or_si128(_mm_shuffle_epi8(U, kd), k23));
+  const __m128 a = _mm_sub_ps(am, _mm_set1_ps(8388608.0f)), c = _mm_sub_ps(cm, _mm_set1_ps(8388608.0f));
+  const __m128 top = _mm_add_ps(a, _mm_mul_ps(_mm_sub_ps(bm, am), fx)), bot = _mm_add_ps(c, _mm_mul_ps(_mm_sub_ps(dm, cm), fx));
+  return _mm_mul_ps(_mm_add_ps(top, _mm_mul_ps(_mm_sub_ps(bot, top), fy)), _mm_set1_ps(1.0f / 255.0f));
+}
 #endif
 #ifdef OB_SIMD
 // sample() for four points at once: the same operations in the same order, so the same floats.

@@ -3293,7 +3293,7 @@ static OB_TLS float thin_edge_depth = 1 + OB_THIN_LINE;
 // side says where the solid line really runs, so the point is moved across the side by the distance
 // between the curve and where H puts the solid line at the same place along the side.
 // cv[0..3]: the image's top, right, bottom and left curves. m: which of them this layout side lies on.
-#ifndef OB_NEON   // ai: arm64's track readers have their own (trk_side, trk_bend)
+#if !defined(OB_NEON) && !defined(OB_X86)   // ai: arm64's and x86-64's track readers have their own (trk_side, trk_bend)
 static void thin_point(const homo_t *H, const fline_t *const *cv, int m, float x, float y, float xs, float ys, float *u, float *v) {
   float lu, lv;
   project(H, x, y, u, v);
@@ -3319,24 +3319,33 @@ static void side_xy(const ob_layout_t *L, int side, float t, float d, float *x, 
                                         (float)((L)->reserve + OB_TRACK_AT((j) + 1)) + OB_CELL_MID, \
                                         (float)((L)->reserve + OB_TRACK_AT((j) + 2)) + OB_CELL_MID, \
                                         (float)((L)->reserve + OB_TRACK_AT((j) + 3)) + OB_CELL_MID)
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
 // ai: arm64's track reads (thin_levels, thin_score, thin_read_both, each its own form), their own floats: a
 // ai: side's map at one depth folded to u = (hu t + ku) / w, v = (hv t + kv) / w, w = hw t + kw in the module t along
 // ai: it, fused, one division for both; the bow's curve fused; the read sample4r (internal.h) at gamma 1, sample4
 // ai: otherwise. Each side's maps, curve and frame are taken into locals before its loop (through the pointers, a store
 // ai: to the reading reloaded them every step), and the bow and the side's parity are constants of the loop. Every
-// ai: layout's track cells a side, B / 2, are a multiple of 4: none of these loops has a tail.
+// ai: layout's track cells a side, B / 2, are a multiple of 4: none of these loops has a tail. x86-64 has the same forms
+// ai: in SSE4.1, each multiply-add a multiply and an add: its own floats again.
 typedef struct { float hu, ku, hv, kv, hw, kw; } trk_map_t;
 static inline trk_map_t trk_map(const ob_layout_t *L, const homo_t *H, int side, float d) {
   const float *h = H->h, f = side == 0 || side == 3 ? d : side == 2 ? L->h - d : L->w - d;
   const int a = side & 1;   // t is x on sides 0 and 2, y on 1 and 3
   return (trk_map_t){ h[a], h[1 - a] * f + h[2], h[3 + a], h[4 - a] * f + h[5], h[6 + a], h[7 - a] * f + 1 };
 }
+#ifdef OB_NEON
 static inline __attribute__((always_inline)) float32x4_t trk_w(const trk_map_t *p, float32x4_t t) { return vfmaq_n_f32(vdupq_n_f32(p->kw), t, p->hw); }
 static inline __attribute__((always_inline)) void trk_uv(const trk_map_t *p, float32x4_t t, float32x4_t r, float32x4_t *u, float32x4_t *v) {
   *u = vmulq_f32(vfmaq_n_f32(vdupq_n_f32(p->ku), t, p->hu), r);
   *v = vmulq_f32(vfmaq_n_f32(vdupq_n_f32(p->kv), t, p->hv), r);
 }
+#else
+static inline __attribute__((always_inline)) __m128 trk_w(const trk_map_t *p, __m128 t) { return _mm_add_ps(_mm_set1_ps(p->kw), _mm_mul_ps(t, _mm_set1_ps(p->hw))); }
+static inline __attribute__((always_inline)) void trk_uv(const trk_map_t *p, __m128 t, __m128 r, __m128 *u, __m128 *v) {
+  *u = _mm_mul_ps(_mm_add_ps(_mm_set1_ps(p->ku), _mm_mul_ps(t, _mm_set1_ps(p->hu))), r);
+  *v = _mm_mul_ps(_mm_add_ps(_mm_set1_ps(p->kv), _mm_mul_ps(t, _mm_set1_ps(p->hv))), r);
+}
+#endif
 // a side as one depth reads it: its point's map, and the bow (thin_point): the map at the curves' depth, the curve
 // of image side m, odd where m is (the curve gives u from v)
 typedef struct { trk_map_t pt, bw; float c, a, b, mid; int odd, bow; } trk_side_t;
@@ -3348,6 +3357,7 @@ static inline trk_side_t trk_side(const ob_layout_t *L, const homo_t *H, const f
 // the frame as sample() reads it
 typedef struct { const image_t *im; const uint8_t *px; int w, lin; float wm, hm; } trk_img_t;
 static inline trk_img_t trk_img(const image_t *im) { return (trk_img_t){ im, im->px, im->w, im->lin, im->w - 1.001f, im->h - 1.001f }; }
+#ifdef OB_NEON
 static inline __attribute__((always_inline)) float32x4_t trk_px(const trk_img_t *g, float32x4_t u, float32x4_t v) {
   if (!g->lin) return vreinterpretq_f32_s32(sample4(g->im, vreinterpretq_s32_f32(u), vreinterpretq_s32_f32(v)));
   const float32x4_t half = vdupq_n_f32(0.5f), zero = vdupq_n_f32(0);
@@ -3377,6 +3387,39 @@ static inline __attribute__((always_inline)) float32x4_t trk_get_any(const trk_s
 static inline __attribute__((always_inline)) void trk_row(const trk_side_t *s, const trk_img_t *g, const float *pos, int npts, float32x4_t w0, float32x4_t sg, float *out, const int bow, const int odd) {
   for (int i = 0; i < npts; i += 4) vst1q_f32(out + i, trk_get(s, g, vfmaq_f32(w0, vld1q_f32(pos + i), sg), bow, odd));
 }
+#else
+// ai: x86-64: the same helpers in SSE4.1. A NaN coordinate reads pixel 0 at gamma 1 (MAXPS gives its second operand
+// ai: back on a NaN, so the clamp makes it 0).
+static inline __attribute__((always_inline)) __m128 trk_px(const trk_img_t *g, __m128 u, __m128 v) {
+  if (!g->lin) return _mm_castsi128_ps(sample4(g->im, _mm_castps_si128(u), _mm_castps_si128(v)));
+  const __m128 half = _mm_set1_ps(0.5f), zero = _mm_setzero_ps();
+  const __m128 x = _mm_min_ps(_mm_max_ps(_mm_sub_ps(u, half), zero), _mm_set1_ps(g->wm));
+  const __m128 y = _mm_min_ps(_mm_max_ps(_mm_sub_ps(v, half), zero), _mm_set1_ps(g->hm));
+  return sample4r(g->px, g->w, x, y);
+}
+static inline __attribute__((always_inline)) __m128 trk_bend(const trk_side_t *s, __m128 t, __m128 r, const int odd) {
+  __m128 lu, lv;
+  trk_uv(&s->bw, t, r, &lu, &lv);
+  const __m128 at = odd ? lv : lu, dd = _mm_sub_ps(at, _mm_set1_ps(s->mid));
+  return _mm_sub_ps(_mm_add_ps(_mm_add_ps(_mm_set1_ps(s->b), _mm_mul_ps(at, _mm_set1_ps(s->a))), _mm_mul_ps(_mm_mul_ps(dd, _mm_set1_ps(s->c)), dd)), odd ? lu : lv);
+}
+static inline __attribute__((always_inline)) __m128 trk_get(const trk_side_t *s, const trk_img_t *g, __m128 t, const int bow, const int odd) {
+  const __m128 one = _mm_set1_ps(1);
+  __m128 u, v;
+  trk_uv(&s->pt, t, _mm_div_ps(one, trk_w(&s->pt, t)), &u, &v);
+  if (bow) { const __m128 e = trk_bend(s, t, _mm_div_ps(one, trk_w(&s->bw, t)), odd); if (odd) u = _mm_add_ps(u, e); else v = _mm_add_ps(v, e); }
+  return trk_px(g, u, v);
+}
+static inline __attribute__((always_inline)) __m128 trk_get_any(const trk_side_t *s, const trk_img_t *g, __m128 t) {
+  return !s->bow ? trk_get(s, g, t, 0, 0) : s->odd ? trk_get(s, g, t, 1, 1) : trk_get(s, g, t, 1, 0);
+}
+// ai: w0 + pos sg: the product exact (sg is 1 or -1), so one rounding, as arm64's fused form
+static inline __attribute__((always_inline)) void trk_row(const trk_side_t *s, const trk_img_t *g, const float *pos, int npts, __m128 w0, __m128 sg, float *out, const int bow, const int odd) {
+  for (int i = 0; i < npts; i += 4) _mm_storeu_ps(out + i, trk_get(s, g, _mm_add_ps(w0, _mm_mul_ps(_mm_loadu_ps(pos + i), sg)), bow, odd));
+}
+// ai: the four lanes' sum as arm64's FADDP pair takes it, (0 + 1) + (2 + 3)
+static inline float trk_sum4(__m128 a) { const __m128 t = _mm_add_ps(a, _mm_shuffle_ps(a, a, _MM_SHUFFLE(2, 3, 0, 1))); return _mm_cvtss_f32(_mm_add_ss(t, _mm_movehl_ps(t, t))); }
+#endif
 // ai: the track's signs (ob_thin_track) as the sign bit a cell's -q takes, 0 where the cell is dark, side by side,
 // ai: made once a thread; TRK_SIGNS cells a side reach the 512 ring (the 256, the largest, has 128)
 enum { TRK_SIGNS = 256 };
@@ -3438,6 +3481,31 @@ static int thin_levels(const ob_layout_t *L, const image_t *im, const homo_t *H,
       float D[4], G[4], A[4], B[4];
       vst1q_f32(D, trk_get_any(&sl, &g, at)); vst1q_f32(G, trk_get_any(&sp, &g, at));
       vst1q_f32(A, trk_get_any(&st, &g, ca)); vst1q_f32(B, trk_get_any(&st, &g, cb));
+      for (int l = 0; l < 4 && t + 16 * l < end; l++, nref++) { dark += D[l]; light += G[l]; trk += A[l]; trk += B[l]; }
+    }
+  }
+  *ref = 0.5f * trk / nref; *con = (light - dark) / nref;
+  return *con >= 0.08f;
+}
+#elif defined(OB_X86)
+// ai: x86-64: arm64's form (above), its own floats
+static int thin_levels(const ob_layout_t *L, const image_t *im, const homo_t *H, const fline_t *const *cv, const int *map, float *ref, float *con) {
+  const float dl = 1 + OB_THIN_LINE / 2.0f;
+  const trk_img_t g = trk_img(im);
+  float dark = 0, light = 0, trk = 0;
+  int nref = 0;
+  for (int side = 0; side < 4; side++) {
+    const int end = (side & 1 ? L->h : L->w) - L->reserve;
+    const fline_t *c = cv ? cv[map[side]] : NULL;
+    const trk_side_t sl = trk_side(L, H, c, map[side], side, dl), sp = trk_side(L, H, c, map[side], side, OB_GAP_MID), st = trk_side(L, H, c, map[side], side, OB_TRACK_MID);
+    for (int t = L->reserve; t < end; t += 64) {
+      const __m128 at = _mm_setr_ps(t + 0.5f, t + 16 + 0.5f, t + 32 + 0.5f, t + 48 + 0.5f);
+      #define PAIR_AT(k, w) ((float)(L->reserve + OB_TRACK_AT(OB_PAIR_J(t + 16 * (k) - L->reserve) + (w))) + OB_CELL_MID)
+      const __m128 ca = _mm_setr_ps(PAIR_AT(0, 0), PAIR_AT(1, 0), PAIR_AT(2, 0), PAIR_AT(3, 0)), cb = _mm_setr_ps(PAIR_AT(0, 1), PAIR_AT(1, 1), PAIR_AT(2, 1), PAIR_AT(3, 1));
+      #undef PAIR_AT
+      float D[4], G[4], A[4], B[4];
+      _mm_storeu_ps(D, trk_get_any(&sl, &g, at)); _mm_storeu_ps(G, trk_get_any(&sp, &g, at));
+      _mm_storeu_ps(A, trk_get_any(&st, &g, ca)); _mm_storeu_ps(B, trk_get_any(&st, &g, cb));
       for (int l = 0; l < 4 && t + 16 * l < end; l++, nref++) { dark += D[l]; light += G[l]; trk += A[l]; trk += B[l]; }
     }
   }
@@ -3516,6 +3584,27 @@ static float thin_score(const ob_layout_t *L, const image_t *im, const homo_t *H
     }
   }
   return vaddvq_f32(acc) / n;
+}
+#elif defined(OB_X86)
+// ai: x86-64: arm64's form (above), its own floats
+static float thin_score(const ob_layout_t *L, const image_t *im, const homo_t *H, const fline_t *const *cv, const int *map, float ref, float con, float beat) {
+  int n = 0, total = 0;
+  for (int side = 0; side < 4; side++) total += ob_track_cells(side & 1 ? L->h : L->w, L->reserve);
+  const float need = (beat - 0.001f) * total;
+  const __m128 rf = _mm_set1_ps(ref), rc = _mm_set1_ps(1 / con), hi = _mm_set1_ps(0.5f), lo = _mm_set1_ps(-0.5f);
+  const trk_img_t g = trk_img(im);
+  __m128 acc = _mm_setzero_ps();
+  for (int side = 0; side < 4; side++) {
+    const int nj = ob_track_cells(side & 1 ? L->h : L->w, L->reserve);
+    const trk_side_t st = trk_side(L, H, cv ? cv[map[side]] : NULL, map[side], side, OB_TRACK_MID);
+    const uint32_t *fl = trk_signs(side);
+    for (int j = 0; j < nj; j += 4) {
+      const __m128 q = _mm_mul_ps(_mm_sub_ps(rf, trk_get_any(&st, &g, _mm_castsi128_ps(TRACK_AT4(L, j)))), rc);
+      acc = _mm_add_ps(acc, _mm_xor_ps(_mm_max_ps(_mm_min_ps(q, hi), lo), _mm_castsi128_ps(_mm_loadu_si128((const __m128i *)(fl + j)))));
+      if (!((n += 4) & 7) && trk_sum4(acc) + 0.5f * (total - n) < need) return beat;
+    }
+  }
+  return trk_sum4(acc) / n;
 }
 #else
 static float thin_score(const ob_layout_t *L, const image_t *im, const homo_t *H, const fline_t *const *cv, const int *map, float ref, float con, float beat) {
@@ -3602,6 +3691,50 @@ static float thin_read_both(const ob_layout_t *L, const image_t *im, const homo_
       // ai: against the side, the cell at W - ct: W + ct * -1, rounded once as the subtraction is
       float *out = s + (dir * 4 + side) * npts;
       const float32x4_t w0 = vdupq_n_f32(dir ? (float)W : 0), sg = vdupq_n_f32(dir ? -1.0f : 1.0f);
+      if (!st.bow) trk_row(&st, &g, pos, npts, w0, sg, out, 0, 0);
+      else if (st.odd) trk_row(&st, &g, pos, npts, w0, sg, out, 1, 1);
+      else trk_row(&st, &g, pos, npts, w0, sg, out, 1, 0);
+      float sum = 0;
+      for (int t = L->reserve; t < end; t += 16) { const int j = OB_PAIR_J(t - L->reserve); sum += out[j]; sum += out[j + 1]; }
+      pair[dir * 4 + side] = sum;
+    }
+  }
+  return con;
+}
+#elif defined(OB_X86)
+// ai: x86-64: arm64's form (above), its own floats
+static float thin_read_both(const ob_layout_t *L, const image_t *im, const homo_t *H, const fline_t *const *cv, float *s, float *pair, int npts, int *nref) {
+  const int W = L->w, end = W - L->reserve;
+  const float dl = 1 + OB_THIN_LINE / 2.0f;
+  const trk_img_t g = trk_img(im);
+  const __m128 one = _mm_set1_ps(1);
+  float dark = 0, light = 0;
+  int nr = 0;
+  for (int side = 0; side < 4; side++) {
+    const trk_side_t sl = trk_side(L, H, cv ? cv[side] : NULL, side, side, dl);
+    const trk_map_t gp = trk_map(L, H, side, OB_GAP_MID);
+    for (int t = L->reserve; t < end; t += 64) {
+      const __m128 at = _mm_setr_ps(t + 0.5f, t + 16 + 0.5f, t + 32 + 0.5f, t + 48 + 0.5f);
+      const __m128 e = !sl.bow ? _mm_setzero_ps() : trk_bend(&sl, at, _mm_div_ps(one, trk_w(&sl.bw, at)), sl.odd);
+      __m128 u, v, x, y;
+      trk_uv(&sl.pt, at, _mm_div_ps(one, trk_w(&sl.pt, at)), &u, &v);
+      trk_uv(&gp, at, _mm_div_ps(one, trk_w(&gp, at)), &x, &y);
+      if (sl.odd) { u = _mm_add_ps(u, e); x = _mm_add_ps(x, e); } else { v = _mm_add_ps(v, e); y = _mm_add_ps(y, e); }
+      float D[4], G[4];
+      _mm_storeu_ps(D, trk_px(&g, u, v));
+      _mm_storeu_ps(G, trk_px(&g, x, y));
+      for (int l = 0; l < 4 && t + 16 * l < end; l++, nr++) { dark += D[l]; light += G[l]; }
+    }
+  }
+  *nref = nr;
+  const float con = (light - dark) / nr;
+  if (con < 0.08f) return 0;
+  const float *pos = s + 8 * npts;
+  for (int side = 0; side < 4; side++) {
+    const trk_side_t st = trk_side(L, H, cv ? cv[side] : NULL, side, side, OB_TRACK_MID);
+    for (int dir = 0; dir < 2; dir++) {
+      float *out = s + (dir * 4 + side) * npts;
+      const __m128 w0 = _mm_set1_ps(dir ? (float)W : 0), sg = _mm_set1_ps(dir ? -1.0f : 1.0f);
       if (!st.bow) trk_row(&st, &g, pos, npts, w0, sg, out, 0, 0);
       else if (st.odd) trk_row(&st, &g, pos, npts, w0, sg, out, 1, 1);
       else trk_row(&st, &g, pos, npts, w0, sg, out, 1, 0);
@@ -3707,6 +3840,37 @@ static inline __attribute__((always_inline)) void trk_scores_g(const float *s, i
   for (int h = 0; h < 4 * G; h++) sc[h] = vaddvq_f32(acc[h]) / (float)(4 * npts);
 }
 // ai: hypotheses h0 to h0 + 4 G - 1 into sc[h0 ...], each threshold as the scalar loop makes it; returns h0 + 4 G
+static int trk_scores(const float *s, int npts, int (*row)[4], const float *pair, int nref, float con, int h0, int G, float *sc) {
+  float ref[8];
+  for (int h = 0; h < 4 * G; h++) {
+    float trk = 0;
+    for (int sd = 0; sd < 4; sd++) trk += pair[row[h0 + h][sd]];
+    ref[h] = 0.5f * trk / nref;
+  }
+  if (G == 2) trk_scores_g(s, npts, row + h0, ref, con, sc + h0, 2);
+  else trk_scores_g(s, npts, row + h0, ref, con, sc + h0, 1);
+  return h0 + 4 * G;
+}
+#elif defined(OB_X86)
+// ai: x86-64: arm64's trk_scores_g and trk_scores (above), its own floats
+static inline __attribute__((always_inline)) void trk_scores_g(const float *s, int npts, int (*row)[4], const float *ref, float con, float *sc, const int G) {
+  const __m128 rc = _mm_set1_ps(1 / con), hi = _mm_set1_ps(0.5f), lo = _mm_set1_ps(-0.5f);
+  __m128 acc[8], rf[8];
+  for (int h = 0; h < 4 * G; h++) { acc[h] = _mm_setzero_ps(); rf[h] = _mm_set1_ps(ref[h]); }
+  for (int sd = 0; sd < 4; sd++) {
+    const float *p[8];
+    for (int h = 0; h < 4 * G; h++) p[h] = s + row[h][sd] * npts;
+    const uint32_t *fl = trk_signs(sd);
+    for (int i = 0; i < npts; i += 4) {
+      const __m128 f = _mm_castsi128_ps(_mm_loadu_si128((const __m128i *)(fl + i)));
+      for (int h = 0; h < 4 * G; h++) {
+        const __m128 q = _mm_mul_ps(_mm_sub_ps(rf[h], _mm_loadu_ps(p[h] + i)), rc);
+        acc[h] = _mm_add_ps(acc[h], _mm_xor_ps(_mm_max_ps(_mm_min_ps(q, hi), lo), f));
+      }
+    }
+  }
+  for (int h = 0; h < 4 * G; h++) sc[h] = trk_sum4(acc[h]) / (float)(4 * npts);
+}
 static int trk_scores(const float *s, int npts, int (*row)[4], const float *pair, int nref, float con, int h0, int G, float *sc) {
   float ref[8];
   for (int h = 0; h < 4 * G; h++) {
@@ -4098,8 +4262,8 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
   const ob_layout_t *L = Ls[li];
   // One reading serves every way round on a square, where a turn or a flip lands each side on another's.
   const int npts = ob_track_cells(L->w, L->reserve);
-#ifdef OB_NEON
-  // ai: arm64: past the reading's eight rows, the track cells' modules along a side (TRACK_AT4's) for thin_read_both;
+#if defined(OB_NEON) || defined(OB_X86)
+  // ai: arm64 and x86-64: past the reading's eight rows, the track cells' modules along a side (TRACK_AT4's) for thin_read_both;
   // ai: the signs are trk_signs'; each hypothesis's rows of track_s, 4 rev + map a layout side, as the loop finds them
   float *track_s = malloc((size_t)9 * npts * sizeof(float));
   if (!track_s) break;
@@ -4148,12 +4312,12 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
     // hypothesis takes its sides from that reading with its own threshold and signs: the score its own map gives,
     // without eight reads. The one that wins gets its own homography for the corners it hands back.
     if (!homography(src, dst, &H0) || !(con = thin_read_both(L, im, &H0, cv, track_s, pair, npts, &nref))) continue;
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
     float hsc[8];
     int scored = 0;
 #endif
     for (int hyp = 0; hyp < 8 && !(hyp == 4 && rotation_holds(best, *orient)); hyp++) {
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
       const int rot = hyp & 3, mir = hyp >> 2;
       float d2[8];
       homo_t H;
@@ -4202,7 +4366,7 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
     }
   }
   }
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   free(track_s);
 #else
   free(track_s); free(track_sign);
