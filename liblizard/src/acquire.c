@@ -2444,8 +2444,8 @@ static inline float mark_mid(const ob_layout_t *L) { return (OB_THIN_TRACK + L->
 
 // line, gap and core in pixels against the ratio OB_THIN_LINE : OB_RING_DEEP : core. `unit` comes back as the
 // module size the three of them agree on.
-// ai: arm64 takes it for 64 pairs at once, in its own operations (mark_pairs64)
-#ifndef OB_NEON
+// ai: arm64 and x86-64 take it for 64 pairs at once, in their own operations (mark_pairs64)
+#if !defined(OB_NEON) && !defined(OB_X86)
 static int mark_ratio(int line, int gap, int core_px, int core, float *unit) {
   const int total = line + gap + core_px;
   if (core_px < MARK_MIN_CORE || total < OB_THIN_LINE + OB_RING_DEEP + core) return 0;
@@ -2616,8 +2616,8 @@ static void mark_note(cand_t *out, int *n, float fx, float fy, float u) {
 }
 // The gapped form at dark runs k - 1 and k of row y (pos as run_edges leaves it): each way round, the line then
 // the core. noted: the core this row has counted, which met second in one pair is met first in the next.
-#ifdef OB_NEON
-// ai: arm64: mark_pair with mark_ratio's answers for the pair already taken (mark_pairs64): pass bit 0 side 0's, bit
+#if defined(OB_NEON) || defined(OB_X86)
+// ai: arm64 and x86-64: mark_pair with mark_ratio's answers for the pair already taken (mark_pairs64): pass bit 0 side 0's, bit
 // ai: 1 side 1's, and u the module size both sides share (line, gap and core sum to the same total either way round)
 static inline void mark_pair_v(const uint8_t *bin, const uint32_t *cb, int w, int h, int y, int core, const int *pos, int k, unsigned pass, float u, int *noted, cand_t *out, int *n) {
   const int a0 = pos[2 * k - 2], a1 = pos[2 * k - 1], b0 = pos[2 * k], b1 = pos[2 * k + 1];
@@ -2703,6 +2703,53 @@ static uint64_t mark_runs64(const int *pos, int k0, int nr, int w) {
   }
   return nr - k0 < 64 ? m & ((1ull << (nr - k0)) - 1) : m;
 }
+#elif defined(OB_X86)
+// ai: x86-64: arm64's mark_pairs64 and mark_runs64 (above) in SSE4.1. The runs' starts and ends taken apart by SHUFPS;
+// ai: four pairs a step on mark_ratio's own float operations in its order (a difference made positive by clearing its
+// ai: sign, the halving a multiply by 0.5, the same values), so its answers, each test's four bits by MOVMSKPS. Reads
+// ai: pos to 2 nr + 5, as arm64's.
+static uint64_t mark_pairs64(const int *pos, int k0, int nr, int core, uint64_t *one, float *uk) {
+  const __m128 den = _mm_set1_ps((float)(OB_THIN_LINE + OB_RING_DEEP + core)), fl = _mm_set1_ps((float)OB_THIN_LINE), fg = _mm_set1_ps((float)OB_RING_DEEP), fc = _mm_set1_ps((float)core);
+  const __m128 sgn = _mm_castsi128_ps(_mm_set1_epi32(0x7fffffff)), k06 = _mm_set1_ps(0.6f), half = _mm_set1_ps(0.5f), k15 = _mm_set1_ps(1.5f);
+  const __m128i tmin = _mm_set1_epi32(OB_THIN_LINE + OB_RING_DEEP + core - 1), cmin = _mm_set1_epi32(MARK_MIN_CORE - 1);
+#define ABD(a, b) _mm_and_ps(_mm_sub_ps(a, b), sgn)
+#define EVEN(lo, hi) _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(lo), _mm_castsi128_ps(hi), _MM_SHUFFLE(2, 0, 2, 0)))
+#define ODD(lo, hi) _mm_castps_si128(_mm_shuffle_ps(_mm_castsi128_ps(lo), _mm_castsi128_ps(hi), _MM_SHUFFLE(3, 1, 3, 1)))
+  uint64_t m = 0, m1 = 0;
+  for (int g = 0; g < 64 && k0 + g < nr; g += 4) {
+    const int *p = pos + 2 * (k0 + g);   // starts and ends of runs k - 1 from p - 2, of runs k from p
+    const __m128i a0 = _mm_loadu_si128((const __m128i *)(p - 2)), a1 = _mm_loadu_si128((const __m128i *)(p + 2));
+    const __m128i b0 = _mm_loadu_si128((const __m128i *)p), b1 = _mm_loadu_si128((const __m128i *)(p + 4));
+    const __m128i as = EVEN(a0, a1), ae = ODD(a0, a1), bs = EVEN(b0, b1), be = ODD(b0, b1);
+    const __m128i first = _mm_sub_epi32(ae, as), gap = _mm_sub_epi32(bs, ae), second = _mm_sub_epi32(be, bs);
+    const __m128i total = _mm_add_epi32(_mm_add_epi32(first, gap), second);
+    const __m128 ff = _mm_cvtepi32_ps(first), gf = _mm_cvtepi32_ps(gap), sf = _mm_cvtepi32_ps(second);
+    const __m128 u = _mm_div_ps(_mm_cvtepi32_ps(total), den), tol = _mm_add_ps(_mm_mul_ps(k06, u), half);
+    const __m128 lu = _mm_mul_ps(fl, u), cu = _mm_mul_ps(fc, u), ctol = _mm_mul_ps(_mm_mul_ps(_mm_mul_ps(k15, tol), fc), half);
+    const __m128 both = _mm_and_ps(_mm_castsi128_ps(_mm_cmpgt_epi32(total, tmin)), _mm_cmple_ps(ABD(gf, _mm_mul_ps(fg, u)), tol));
+    const __m128 s0 = _mm_and_ps(_mm_and_ps(_mm_castsi128_ps(_mm_cmpgt_epi32(second, cmin)), _mm_cmple_ps(ABD(ff, lu), tol)), _mm_cmple_ps(ABD(sf, cu), ctol));
+    const __m128 s1 = _mm_and_ps(_mm_and_ps(_mm_castsi128_ps(_mm_cmpgt_epi32(first, cmin)), _mm_cmple_ps(ABD(sf, lu), tol)), _mm_cmple_ps(ABD(ff, cu), ctol));
+    m |= (uint64_t)_mm_movemask_ps(_mm_and_ps(both, s0)) << g;
+    m1 |= (uint64_t)_mm_movemask_ps(_mm_and_ps(both, s1)) << g;
+    _mm_storeu_ps(uk + g, u);
+  }
+  const uint64_t keep = nr - k0 < 64 ? (1ull << (nr - k0)) - 1 : ~0ull;
+  *one = m1 & keep;
+  return m & keep;
+}
+static uint64_t mark_runs64(const int *pos, int k0, int nr, int w) {
+  const __m128i lo = _mm_set1_epi32(7), hi = _mm_set1_epi32(w / 3);
+  uint64_t m = 0;
+  for (int g = 0; g < 64 && k0 + g < nr; g += 4) {
+    const __m128i r0 = _mm_loadu_si128((const __m128i *)(pos + 2 * (k0 + g))), r1 = _mm_loadu_si128((const __m128i *)(pos + 2 * (k0 + g) + 4));
+    const __m128i run = _mm_sub_epi32(ODD(r0, r1), EVEN(r0, r1));
+    m |= (uint64_t)_mm_movemask_ps(_mm_castsi128_ps(_mm_andnot_si128(_mm_cmpgt_epi32(run, hi), _mm_cmpgt_epi32(run, lo)))) << g;
+  }
+  return nr - k0 < 64 ? m & ((1ull << (nr - k0)) - 1) : m;
+}
+#undef ABD
+#undef EVEN
+#undef ODD
 #endif
 static int mark_candidates(const ob_layout_t *L, const uint8_t *bin, const uint32_t *cb, int w, int h, int merged, cand_t *out) {
   const int core = mark_core(L), sq = L->corner - 2;
@@ -2712,8 +2759,8 @@ static int mark_candidates(const ob_layout_t *L, const uint8_t *bin, const uint3
   for (int y = 1; y < h; y += 2) {
     const int np = run_edges(bin + y * w, w, pos);
     int noted = -1;
-#ifdef OB_NEON
-    // ai: arm64: the pairs (or runs) the vector filters keep, in the order the loops below meet them
+#if defined(OB_NEON) || defined(OB_X86)
+    // ai: arm64 and x86-64: the pairs (or runs) the vector filters keep, in the order the loops below meet them
     for (int k0 = 1; !merged && k0 < np / 2; k0 += 64) {
       uint64_t m1;
       float uk[64];
