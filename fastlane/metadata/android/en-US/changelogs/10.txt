@@ -1,3 +1,4 @@
-- Receiving on the phone's processor is about 1.8 times as fast.
+- Receiving on the phone's processor is about 2.9 times as fast.
+- Codes with a corner just out of view register better.
 - The graphics decoder reads codes through fisheye lenses.
 - Reads and sends 0.8's codes.
