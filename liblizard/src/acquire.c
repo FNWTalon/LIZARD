@@ -3903,10 +3903,15 @@ int ob_acquire_quad(const ob_layout_t *L, const image_t *pim, int mesh, ob_reg_t
   return acquire_core(&L, 1, pim, mesh, reg, res, quad, orient, score, &which, fb);
 }
 
+// ai: the mesh cell m falls in along one axis (node ascending, nn of them): the last k of 0 to nn - 2 with k = 0 or
+// ai: m >= node[k], by halving (the walk from 0 it replaces gave the same k, NaN included: 0)
+static inline int node_cell(const float *node, int nn, float m) {
+  int lo = 0, hi = nn - 2;
+  while (lo < hi) { const int mid = (lo + hi + 1) >> 1; if (m >= node[mid]) lo = mid; else hi = mid - 1; }
+  return lo;
+}
 void ob_map_point(const ob_layout_t *L, const ob_reg_t *reg, float mx, float my, float *pu, float *pv) {
-  int i = 0, j = 0;
-  while (j < L->ny - 2 && my >= L->node_y[j + 1]) j++;
-  while (i < L->nx - 2 && mx >= L->node_x[i + 1]) i++;
+  const int j = node_cell(L->node_y, L->ny, my), i = node_cell(L->node_x, L->nx, mx);
   float v = (my - L->node_y[j]) / (L->node_y[j + 1] - L->node_y[j]), u = (mx - L->node_x[i]) / (L->node_x[i + 1] - L->node_x[i]);
   const node_t *n00 = &reg->nodes[j * L->nx + i], *n10 = n00 + 1, *n01 = n00 + L->nx, *n11 = n01 + 1;
   float dx = (n00->dx * (1 - u) + n10->dx * u) * (1 - v) + (n01->dx * (1 - u) + n11->dx * u) * v;
