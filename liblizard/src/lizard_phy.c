@@ -1024,7 +1024,31 @@ void lizard_encode(const lizard_t *f, const uint8_t *blocks, float *drive) {
     int B = f->block_bytes;
     uint32_t crc = ob_crc32(src, B);
     memset(data, 0, (size_t)code->k);         // past the payload and its CRC a roomier code carries zeros
-    for (int i = 0; i < B * 8; i++) data[i] = (src[i >> 3] >> (7 - (i & 7))) & 1;
+    int i0 = 0;
+#if defined(OB_NEON) || defined(OB_X86)
+    // ai: arm64 and x86-64: the mirror of the decoder's packing, sixteen bytes a step: two source bytes spread over eight
+    // ai: lanes each (TBL, PSHUFB), each lane's bit picked by its mask (128 >> lane) and made 0 or 1 by an unsigned
+    // ai: minimum with 1, most significant first: the same bits
+    {
+#ifdef OB_NEON
+      const uint8x16_t msk = { 128, 64, 32, 16, 8, 4, 2, 1, 128, 64, 32, 16, 8, 4, 2, 1 }, one = vdupq_n_u8(1);
+      const uint8x16_t pair = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1 };
+      for (; i0 + 16 <= B; i0 += 16) {
+        const uint8x16_t v = vld1q_u8(src + i0);
+        for (int t = 0; t < 8; t++) vst1q_u8(data + 8 * i0 + 16 * t, vminq_u8(vandq_u8(vqtbl1q_u8(v, vaddq_u8(pair, vdupq_n_u8((uint8_t)(2 * t)))), msk), one));
+      }
+#else
+      const __m128i msk = _mm_setr_epi8(-128, 64, 32, 16, 8, 4, 2, 1, -128, 64, 32, 16, 8, 4, 2, 1), one = _mm_set1_epi8(1);
+      const __m128i pair = _mm_setr_epi8(0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1);
+      for (; i0 + 16 <= B; i0 += 16) {
+        const __m128i v = _mm_loadu_si128((const __m128i *)(const void *)(src + i0));
+        for (int t = 0; t < 8; t++)
+          _mm_storeu_si128((__m128i *)(void *)(data + 8 * i0 + 16 * t), _mm_min_epu8(_mm_and_si128(_mm_shuffle_epi8(v, _mm_add_epi8(pair, _mm_set1_epi8((char)(2 * t)))), msk), one));
+      }
+#endif
+    }
+#endif
+    for (int i = 8 * i0; i < B * 8; i++) data[i] = (src[i >> 3] >> (7 - (i & 7))) & 1;
     for (int i = 0; i < 32; i++) data[B * 8 + i] = (crc >> (31 - i)) & 1;
     ldpc_encode(code, data, bits);            // code.nt <= nb; the tail stays zero
     map_out(f, w, f->block_tier[b], b, first, nb, bits, w->slot); memcpy(bits, w->slot, (size_t)nb);
