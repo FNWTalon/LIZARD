@@ -686,6 +686,13 @@ static inline void store_turned4(float *base, const int *rows, size_t pitch, flo
   vst1q_f32(base + rows[0] * pitch, vreinterpretq_f32_f64(vtrn1q_f64(t0, t2))); vst1q_f32(base + rows[1] * pitch, vreinterpretq_f32_f64(vtrn1q_f64(t1, t3)));
   vst1q_f32(base + rows[2] * pitch, vreinterpretq_f32_f64(vtrn2q_f64(t0, t2))); vst1q_f32(base + rows[3] * pitch, vreinterpretq_f32_f64(vtrn2q_f64(t1, t3)));
 }
+#elif defined(OB_X86)
+// ai: x86-64: arm64's store_turned4, the four vectors turned over by unpacks (_MM_TRANSPOSE4_PS)
+static inline void store_turned4(float *base, const int *rows, size_t pitch, __m128 r0, __m128 r1, __m128 r2, __m128 r3) {
+  _MM_TRANSPOSE4_PS(r0, r1, r2, r3);
+  _mm_storeu_ps(base + rows[0] * pitch, r0); _mm_storeu_ps(base + rows[1] * pitch, r1);
+  _mm_storeu_ps(base + rows[2] * pitch, r2); _mm_storeu_ps(base + rows[3] * pitch, r3);
+}
 #endif
 // ai: Rows go through the decoder transforms' place (fft.h fft_dec_place; NULL, rows in order, off arm64 and x86-64): the strip's
 // ai: frequency v is read from its row place[v], and picture column x written to the block's row place[x], where the
@@ -726,6 +733,30 @@ static void unpack_turn(const lizard_t *f, int x0, const float *z0) {
   }
 #elif defined(OB_X86)
   const int *P = fft_dec_place(n);
+  // ai: x86-64: arm64's four rows v by four columns j above, in SSE4.1: the same arithmetic and stores
+  if (bw % 4 == 0 && P) {
+    const __m128 h = _mm_set1_ps(0.5f), nh = _mm_set1_ps(-0.5f);
+    for (int b = 0; b < f->vblocks; b++) {
+      float *const lo = w->tre + (size_t)b * n * bw, *const loi = w->tim + (size_t)b * n * bw;
+      for (int j = 0; j < hw; j += 4) {
+        const int *pl = P + x0 + j, *ph = pl + hw;
+        for (int c = 0; c < bw; c += 4) {
+          const int v = b * bw + c;
+          const float *zr0 = z0 + (size_t)P[v] * sw + j, *zr1 = z0 + (size_t)P[v + 1] * sw + j, *zr2 = z0 + (size_t)P[v + 2] * sw + j, *zr3 = z0 + (size_t)P[v + 3] * sw + j;
+          const float *mr0 = z0 + (size_t)P[v ? n - v : 0] * sw + j, *mr1 = z0 + (size_t)P[n - v - 1] * sw + j, *mr2 = z0 + (size_t)P[n - v - 2] * sw + j, *mr3 = z0 + (size_t)P[n - v - 3] * sw + j;
+#define UT_ROW(k) \
+          const __m128 ar##k = _mm_loadu_ps(zr##k), ai##k = _mm_loadu_ps(zr##k + hw), br##k = _mm_loadu_ps(mr##k), bi##k = _mm_loadu_ps(mr##k + hw); \
+          const __m128 L##k = _mm_mul_ps(h, _mm_add_ps(ar##k, br##k)), Li##k = _mm_mul_ps(h, _mm_sub_ps(ai##k, bi##k)); \
+          const __m128 H##k = _mm_mul_ps(h, _mm_add_ps(ai##k, bi##k)), Hi##k = _mm_mul_ps(nh, _mm_sub_ps(ar##k, br##k));
+          UT_ROW(0) UT_ROW(1) UT_ROW(2) UT_ROW(3)
+#undef UT_ROW
+          store_turned4(lo + c, pl, bw, L0, L1, L2, L3); store_turned4(loi + c, pl, bw, Li0, Li1, Li2, Li3);
+          store_turned4(lo + c, ph, bw, H0, H1, H2, H3); store_turned4(loi + c, ph, bw, Hi0, Hi1, Hi2, Hi3);
+        }
+      }
+    }
+    return;
+  }
 #else
   const int *const P = 0;
 #endif
