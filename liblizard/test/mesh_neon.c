@@ -1,13 +1,18 @@
 // ai: The registration mesh (src/acquire.c) on synthetic frames, every output hashed: refine_node with and without a lens
 // ai: model, anchor_find likewise (and again with a third of its anchors to find), border_blur at radii 1 to 7, the
 // ai: mesh's sampler at random points (NaN and points off the image among them) at gamma 1 and 2.2, lensm_fit robust and
-// ai: plain. arm64's own forms (OB_NEON) are the scalar twins' floats, so a build with -DOB_SCALAR prints the same hash,
-// ai: as does x86-64 with or without -msse4.1; then each part's time. test/neon_kernels.sh builds it both ways on a
-// ai: phone and compares. It includes acquire.c and links the rest of the codec:
+// ai: plain; then each part's time. The scalar twins, x86-64 with or without -msse4.1 and a build with -DOB_SCALAR print
+// ai: one hash (SCALAR_HASH); arm64's own forms (OB_NEON) read the picture in integers and are their own values, so
+// ai: theirs is NEON_HASH, and the NEON build also holds its reads to sample() at every point not NaN: within 1/250 of
+// ai: the grey range (the x fraction is a 256th of a pixel; at the frame's far edges sample() holds 0.999 of the last
+// ai: pixel, the read 255/256). Exit 1 on a hash or the bound missed.
+// ai: test/neon_kernels.sh builds it both ways on a phone. It includes acquire.c and links the rest of the codec:
 // ai:   cc -O2 -ffp-contract=off -Isrc test/mesh_neon.c src/{layout,fmt,rs,ldpc,fft,lizard_phy,any,shake}.c -lm
 #include "acquire.c"
 #include <stdio.h>
 uint32_t ob_debug_hash;
+#define SCALAR_HASH 0xf42c8b6f71af790eull
+#define NEON_HASH 0xc3162eae273018deull
 static uint64_t hs = 1469598103934665603ull;
 static void mix(const void *p, size_t n) { const uint8_t *b = p; for (size_t i = 0; i < n; i++) { hs ^= b[i]; hs *= 1099511628211ull; } }
 static uint32_t rs = 1;
@@ -18,6 +23,9 @@ int main(void) {
   uint8_t *px = malloc((size_t)iw * ih), *spare = malloc((size_t)iw * ih);   // ai: spare: border_blur's copy, as acquire_core hands it one
   int nfound = 0, ngood = 0, nnodes = 0;
   double tref = 0, tanc = 0, tblur = 0, tfit = 0;
+#if defined(OB_NEON)
+  double dread = 0;   // ai: the reads' largest distance from sample()
+#endif
   for (int t = 0; t < 36; t++) {
     ob_layout_t L;
     ob_layout_init(&L, sides[t % 3]);
@@ -92,7 +100,14 @@ int main(void) {
         if (rnd() % 97 == 0) Y[l] = -INFINITY;
       }
 #if defined(OB_NEON)
-      vst1q_f32(o, msh_sample4(&im, vld1q_f32(X), vld1q_f32(Y)));
+      const msh_k_t K = msh_k(&im);
+      const float32x4_t x = vsubq_f32(vld1q_f32(X), vdupq_n_f32(MSH_OX)), y = vsubq_f32(vld1q_f32(Y), vdupq_n_f32(MSH_OY));
+      vst1q_f32(o, msh_read8(&im, &K, x, y, x, y).val[0]);
+      for (int l = 0; l < 4; l++) {
+        const float ref = sample(&im, X[l], Y[l]);
+        if (ref != ref) continue;
+        dread = fmax(dread, fabs(o[l] - ref));
+      }
 #elif defined(OB_SIMD)
       wasm_v128_store(o, sample4(&im, wasm_v128_load(X), wasm_v128_load(Y)));
 #else
@@ -127,5 +142,13 @@ int main(void) {
   free(px); free(spare);
   printf("mesh hash %016llx (nodes %d, trusted %d, anchors found %d of %d)\n", (unsigned long long)hs, nnodes, ngood, nfound, 36 * OB_ANCH_K * OB_ANCH_K);
   printf("ms: nodes %.2f, anchors %.2f, blur %.2f, lens fits %.2f\n", tref, tanc, tblur, tfit);
+#if defined(OB_NEON)
+  const uint64_t want = NEON_HASH;
+  printf("reads against sample(): %.5f of the grey range\n", dread);
+  if (dread > 1.0 / 250) { printf("a read past its bound\n"); return 1; }
+#else
+  const uint64_t want = SCALAR_HASH;
+#endif
+  if (hs != want) { printf("mesh hash differs from %016llx\n", (unsigned long long)want); return 1; }
   return 0;
 }
