@@ -1,5 +1,6 @@
 #include "layout.h"
 #include "fmt.h"
+#include "simd.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,12 +28,46 @@ __attribute__((target("crc"))) static uint32_t crc32_arm(const uint8_t *p, int n
   return ~c;
 }
 #endif
+#elif defined(OB_X86) && (defined(__GNUC__) || defined(__clang__)) && !defined(_MSC_VER)
+// ai: x86-64: the same CRC-32 by carry-less multiplication (PCLMULQDQ; x86's crc32 instruction is CRC-32C, another
+// ai: polynomial), 16 bytes a fold. In the reflected domain a 128-bit remainder D bits before the block it lands on is
+// ai: folded onto it as its low half times x^(D + 32) mod P and its high half times x^(D - 32) mod P, each constant
+// ai: bit-reflected and shifted up one: four remainders 64 bytes apart while 64 bytes remain, then folded into one, then
+// ai: one block at a time; the last 128 bits to 64 by x^64 mod P and to 32 by Barrett's reduction (P and x^64 / P,
+// ai: reflected). n a multiple of 16, 64 or more; c the register as it stands, returned as it ends (neither inverted).
+// ai: The same value for every input (test/crc_check.c); taken where cpuid has PCLMULQDQ, the bytes past the last whole
+// ai: 16 by the loop below.
+#include <wmmintrin.h>
+#define OB_HAVE_CLMUL() (__builtin_cpu_supports("pclmul") && __builtin_cpu_supports("sse4.1"))
+__attribute__((target("pclmul,sse4.1"))) static uint32_t crc32_clmul(const uint8_t *p, int n, uint32_t c) {
+  const __m128i k512 = _mm_set_epi64x(0x1c6e41596, 0x154442bd4), k128 = _mm_set_epi64x(0x0ccaa009e, 0x1751997d0);
+  const __m128i k64 = _mm_set_epi64x(0, 0x163cd6124), bar = _mm_set_epi64x(0x1f7011641, 0x1db710641), lo32 = _mm_setr_epi32(-1, 0, -1, 0);
+#define OB_FOLD(a, k, b) _mm_xor_si128(_mm_xor_si128(_mm_clmulepi64_si128((a), (k), 0x00), _mm_clmulepi64_si128((a), (k), 0x11)), (b))
+  __m128i x[4];
+  for (int u = 0; u < 4; u++) x[u] = _mm_loadu_si128((const __m128i *)(p + 16 * u));
+  x[0] = _mm_xor_si128(x[0], _mm_cvtsi32_si128((int)c));
+  int i = 64;
+  for (; i + 64 <= n; i += 64)
+    for (int u = 0; u < 4; u++) x[u] = OB_FOLD(x[u], k512, _mm_loadu_si128((const __m128i *)(p + i + 16 * u)));
+  __m128i a = x[0];
+  for (int u = 1; u < 4; u++) a = OB_FOLD(a, k128, x[u]);
+  for (; i < n; i += 16) a = OB_FOLD(a, k128, _mm_loadu_si128((const __m128i *)(p + i)));
+#undef OB_FOLD
+  a = _mm_xor_si128(_mm_srli_si128(a, 8), _mm_clmulepi64_si128(a, k128, 0x10));
+  a = _mm_xor_si128(_mm_srli_si128(a, 4), _mm_clmulepi64_si128(_mm_and_si128(a, lo32), k64, 0x00));
+  __m128i t = _mm_clmulepi64_si128(_mm_and_si128(a, lo32), bar, 0x10);
+  t = _mm_clmulepi64_si128(_mm_and_si128(t, lo32), bar, 0x00);
+  return (uint32_t)_mm_extract_epi32(_mm_xor_si128(a, t), 1);
+}
 #endif
 uint32_t ob_crc32(const uint8_t *p, int n) {
 #ifdef OB_HAVE_CRC32
   if (OB_HAVE_CRC32()) return crc32_arm(p, n);
 #endif
   uint32_t c = 0xffffffffu;
+#ifdef OB_HAVE_CLMUL
+  if (n >= 64 && OB_HAVE_CLMUL()) { const int m = n & ~15; c = crc32_clmul(p, m, c); p += m; n -= m; }
+#endif
   for (int i = 0; i < n; i++) {
     c ^= p[i];
     for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1)));

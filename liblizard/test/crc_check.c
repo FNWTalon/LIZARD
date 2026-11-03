@@ -1,6 +1,9 @@
-// ai: ob_crc32 (src/layout.c; ARMv8's CRC32 instructions where arm64 has them) against the bit loop: 200,000 random
-// ai: buffers of 0 to 600 bytes at random offsets, every value compared, and the standard check value; then a 476-byte
-// ai: block's time each way. Any platform; test/neon_kernels.sh runs it on a phone: crc_check
+// ai: ob_crc32 (src/layout.c; ARMv8's CRC32 instructions where arm64 has them, x86-64's carry-less multiply folding where
+// ai: the processor has PCLMULQDQ) against the bit loop: 200,000 random buffers of 0 to 600 bytes at random offsets (the
+// ai: folding's 64 bytes and more, every tail short of 16), every value compared, and the standard check value; then a
+// ai: 476-byte block's time each way. Any platform; test/neon_kernels.sh runs it on a phone; on x86-64, from liblizard/:
+// ai: gcc -O3 -ffp-contract=off -DNDEBUG -msse4.1 -Wall -Wextra -Isrc -o build/crc_check test/crc_check.c src/layout.c
+// ai: src/fmt.c src/rs.c && build/crc_check
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -21,6 +24,6 @@ int main(void) {
     double t0 = now_ns(); for (int k = 0; k < 100; k++) sink += loop(buf, 476); double t = now_ns() - t0; if (t < ta) ta = t;
     t0 = now_ns(); for (int k = 0; k < 100; k++) sink += ob_crc32(buf, 476); t = now_ns() - t0; if (t < tb) tb = t;
   }
-  printf("a 476-byte block: the bit loop %.0f ns, the CRC32 instructions %.0f ns (%.0fx)\n", ta / 100, tb / 100, ta / tb);
+  printf("a 476-byte block: the bit loop %.0f ns, ob_crc32 %.0f ns (%.0fx)\n", ta / 100, tb / 100, ta / tb);
   return bad != 0;
 }
