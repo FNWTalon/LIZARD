@@ -493,7 +493,36 @@ static int layers_clear(const ldpc_t *c, int16_t *Q) {
 #ifdef OB_NEON
 // ai: arm64: the checks' parities read where the posteriors lie, nothing gathered: a data slot's rotation is its run in
 // ai: the four-times columns (w4), the staircase slots wl's rows (check 0's bit before it the last row moved up a lane,
-// ai: a zero in front, as layer_gather lays it); one XOR a slot over 32 checks at a time, only the signs counted.
+// ai: a zero in front, as layer_gather lays it); one XOR a slot, only the signs counted.
+// ai: parity_groups: g groups of 32 checks from i (4, or 1 for a row's last groups short of 128), the sign bits of the
+// ai: XOR of every slot as a count a lane (USRA); the groups' XORs held in registers while each slot's pointer is read
+// ai: once for all g.
+static inline __attribute__((always_inline)) uint16x8_t parity_groups(int16_t *const *view, int nd, const int16_t *own, const int16_t *prev, int i, int row0, int16x8_t *carry, const int g) {
+  int16x8_t x[16];
+  for (int q = 0; q < g; q++) {
+    const int16x8x4_t o = vld1q_s16_x4(own + i + 32 * q), p = vld1q_s16_x4(prev + i + 32 * q);
+    if (!row0) {
+      x[4 * q] = veorq_s16(o.val[0], p.val[0]); x[4 * q + 1] = veorq_s16(o.val[1], p.val[1]);
+      x[4 * q + 2] = veorq_s16(o.val[2], p.val[2]); x[4 * q + 3] = veorq_s16(o.val[3], p.val[3]);
+    } else {
+      x[4 * q] = veorq_s16(o.val[0], vextq_s16(*carry, p.val[0], 7)); x[4 * q + 1] = veorq_s16(o.val[1], vextq_s16(p.val[0], p.val[1], 7));
+      x[4 * q + 2] = veorq_s16(o.val[2], vextq_s16(p.val[1], p.val[2], 7)); x[4 * q + 3] = veorq_s16(o.val[3], vextq_s16(p.val[2], p.val[3], 7));
+      *carry = p.val[3];
+    }
+  }
+  for (int e = 0; e < nd; e++) {
+    const int16_t *v = view[e] + i;
+    for (int q = 0; q < g; q++) {
+      const int16x8x4_t w = vld1q_s16_x4(v + 32 * q);
+      x[4 * q] = veorq_s16(x[4 * q], w.val[0]); x[4 * q + 1] = veorq_s16(x[4 * q + 1], w.val[1]);
+      x[4 * q + 2] = veorq_s16(x[4 * q + 2], w.val[2]); x[4 * q + 3] = veorq_s16(x[4 * q + 3], w.val[3]);
+    }
+  }
+  uint16x8_t acc = vdupq_n_u16(0);
+  for (int u = 0; u < 4 * g; u++) acc = vsraq_n_u16(acc, vreinterpretq_u16_s16(x[u]), 15);
+  return acc;
+}
+
 // ai: count 0: 1 when every check holds, else 0 at the first layer holding a violated one (layers_clear);
 // ai: count 1: how many of the m checks are violated (layers_unsat). rev: the layers from the last down. The answer is
 // ai: the same in either order; the decoder tests them in the order its iteration updated them, so the layer longest
@@ -509,26 +538,9 @@ static int layers_parity_neon(const ldpc_t *c, int16_t *const *vw, int count, in
     const int16_t *own = Lp + r * z, *prev = Lp + (r > 0 ? r - 1 : mb - 1) * z;
     uint16x8_t acc = vdupq_n_u16(0);
     int16x8_t carry = vdupq_n_s16(0);
-    for (int i = 0; i < z; i += 32) {
-      int16x8x4_t x = vld1q_s16_x4(own + i);
-      const int16x8x4_t p = vld1q_s16_x4(prev + i);
-      if (r > 0) {
-        x.val[0] = veorq_s16(x.val[0], p.val[0]); x.val[1] = veorq_s16(x.val[1], p.val[1]);
-        x.val[2] = veorq_s16(x.val[2], p.val[2]); x.val[3] = veorq_s16(x.val[3], p.val[3]);
-      } else {
-        x.val[0] = veorq_s16(x.val[0], vextq_s16(carry, p.val[0], 7)); x.val[1] = veorq_s16(x.val[1], vextq_s16(p.val[0], p.val[1], 7));
-        x.val[2] = veorq_s16(x.val[2], vextq_s16(p.val[1], p.val[2], 7)); x.val[3] = veorq_s16(x.val[3], vextq_s16(p.val[2], p.val[3], 7));
-        carry = p.val[3];
-      }
-      for (int e = 0; e < nd; e++) {
-        const int16x8x4_t v = vld1q_s16_x4(view[e] + i);
-        x.val[0] = veorq_s16(x.val[0], v.val[0]); x.val[1] = veorq_s16(x.val[1], v.val[1]);
-        x.val[2] = veorq_s16(x.val[2], v.val[2]); x.val[3] = veorq_s16(x.val[3], v.val[3]);
-      }
-      const uint16x8_t s0 = vshrq_n_u16(vreinterpretq_u16_s16(x.val[0]), 15), s1 = vshrq_n_u16(vreinterpretq_u16_s16(x.val[1]), 15);
-      const uint16x8_t s2 = vshrq_n_u16(vreinterpretq_u16_s16(x.val[2]), 15), s3 = vshrq_n_u16(vreinterpretq_u16_s16(x.val[3]), 15);
-      acc = vaddq_u16(acc, vaddq_u16(vaddq_u16(s0, s1), vaddq_u16(s2, s3)));
-    }
+    int i = 0;
+    for (; i + 128 <= z; i += 128) acc = vaddq_u16(acc, parity_groups(view, nd, own, prev, i, r == 0, &carry, 4));
+    for (; i < z; i += 32) acc = vaddq_u16(acc, parity_groups(view, nd, own, prev, i, r == 0, &carry, 1));
     const int b = (int)vaddvq_u16(acc);
     if (!count && b) return 0;
     bad += b;
