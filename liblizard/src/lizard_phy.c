@@ -1479,7 +1479,23 @@ have_llr:
       uint8_t *dst = blocks + (size_t)b * B;
       // ai: a byte at a time from its eight bits (each 0 or 1), most significant first; or-ing each bit into its byte
       // ai: in memory chained eight stores and loads a byte (2026-11-01: 18% of this function on the S26)
-      for (int j = 0; j < B; j++) {
+      int j0 = 0;
+#ifdef OB_NEON
+      // ai: arm64: sixteen bytes a step, each lane's bit shifted to its place in its byte (USHL by 7 to 0) and the
+      // ai: eight lanes of a byte added by three rounds of pairwise adds (ADDP), the bytes coming out in order: the same
+      // ai: bytes, eight loads, eight shifts, seven adds and a store for sixteen where the loop takes about fifteen a byte
+      {
+        const int8x16_t sh = { 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2, 1, 0 };
+        for (; j0 + 16 <= B; j0 += 16) {
+          const uint8_t *q = bits + 8 * j0;
+          uint8x16_t v[8];
+          for (int t = 0; t < 8; t++) v[t] = vshlq_u8(vld1q_u8(q + 16 * t), sh);
+          const uint8x16_t a0 = vpaddq_u8(v[0], v[1]), a1 = vpaddq_u8(v[2], v[3]), a2 = vpaddq_u8(v[4], v[5]), a3 = vpaddq_u8(v[6], v[7]);
+          vst1q_u8(dst + j0, vpaddq_u8(vpaddq_u8(a0, a1), vpaddq_u8(a2, a3)));
+        }
+      }
+#endif
+      for (int j = j0; j < B; j++) {
         const uint8_t *q = bits + 8 * j;
         dst[j] = (uint8_t)(q[0] << 7 | q[1] << 6 | q[2] << 5 | q[3] << 4 | q[4] << 3 | q[5] << 2 | q[6] << 1 | q[7]);
       }
