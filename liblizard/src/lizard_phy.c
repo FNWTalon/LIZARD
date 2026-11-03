@@ -135,6 +135,20 @@ static void map_in(const lizard_t *f, const struct lizard_ws *w, int t, int firs
     MAP_ST(0) MAP_ST(1) MAP_ST(2) MAP_ST(3) MAP_ST(4) MAP_ST(5) MAP_ST(6) MAP_ST(7)
 #undef MAP_ST
   }
+#elif defined(OB_X86)
+  // ai: x86-64: arm64's sixteen slots a step, (x ^ m) - m with m = -bit, each byte stored by PEXTRB; the sixteen indices
+  // ai: read as four vectors before the stores, so no byte store (which may alias them) makes the compiler read one again
+  for (; i + 16 <= nt; i += 16) {
+    const __m128i m = _mm_sub_epi8(_mm_setzero_si128(), _mm_loadu_si128((const __m128i *)(const void *)(wh + i)));
+    const __m128i v = _mm_sub_epi8(_mm_xor_si128(_mm_loadu_si128((const __m128i *)(const void *)(slot + i)), m), m);
+    const __m128i q0 = _mm_loadu_si128((const __m128i *)(const void *)(perm + i)), q1 = _mm_loadu_si128((const __m128i *)(const void *)(perm + i + 4));
+    const __m128i q2 = _mm_loadu_si128((const __m128i *)(const void *)(perm + i + 8)), q3 = _mm_loadu_si128((const __m128i *)(const void *)(perm + i + 12));
+    uint8_t *const o = (uint8_t *)cw;
+#define MAP_ST(q, t) o[_mm_extract_epi32(q, 0)] = (uint8_t)_mm_extract_epi8(v, 4 * (t)); o[_mm_extract_epi32(q, 1)] = (uint8_t)_mm_extract_epi8(v, 4 * (t) + 1); \
+                     o[_mm_extract_epi32(q, 2)] = (uint8_t)_mm_extract_epi8(v, 4 * (t) + 2); o[_mm_extract_epi32(q, 3)] = (uint8_t)_mm_extract_epi8(v, 4 * (t) + 3);
+    MAP_ST(q0, 0) MAP_ST(q1, 1) MAP_ST(q2, 2) MAP_ST(q3, 3)
+#undef MAP_ST
+  }
 #endif
   for (; i < nt; i++) cw[perm[i]] = wh[i] ? (int8_t)-slot[i] : slot[i];
 }
