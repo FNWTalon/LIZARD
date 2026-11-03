@@ -4,6 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+// ai: arm64's decode keeps a pointer a slot (ldpc_decode_stall): the codes with at most this many take the four-times
+// ai: columns (the format's most, the 1/2 code's, 210)
+enum { LDPC_VIEWS = 256 };
+
 // ai: x86-64's wider layer kernels (below) exist where the 128-bit vector path does and the compiler takes a function's
 // ai: own instruction set (not clang-cl, whose MSVC-style link may lack the runtime the processor check calls)
 #if defined(OB_SIMD) && (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__)) && !defined(_MSC_VER)
@@ -88,7 +92,7 @@ int ldpc_init(ldpc_t *c, int rate) {
   // ai: +-128) plus its column's messages (within +-127 each), stays inside it: the largest column degree at most 63
   int dmax = 0;
   for (int j = 0; j < kb; j++) { int d = 0; for (int r = 0; r < mb; r++) d += shift[r * kb + j] >= 0; if (d > dmax) dmax = d; }
-  if (c->z % 32 == 0 && c->zp == c->z && c->slots_max <= 64 && 128 + 127 * dmax <= 8191 && c->norm >= 8) {
+  if (c->z % 32 == 0 && c->zp == c->z && c->slots_max <= 64 && c->slots_total <= LDPC_VIEWS && 128 + 127 * dmax <= 8191 && c->norm >= 8) {
     c->w4 = malloc((size_t)c->kb * 4 * c->z * sizeof(int16_t));
     if (!c->w4) { ldpc_free(c); return -1; }
   }
@@ -407,16 +411,26 @@ static void layer_scatter(const ldpc_t *c, int r, const int16_t *Q) {
 // ai: place, but check 0's bit before it (the last row moved up a lane under a certain zero, as layer_gather lays it),
 // ai: which goes through Q. (The copies cost about as much as the kernel, and a row stored split at s and read back in
 // ai: 64-byte pieces across the split waited on both stores.)
-static void layer_direct(const ldpc_t *c, int r, int16_t *Q, int8_t *R, int ns) {
-  const int z = c->z, zp = c->zp, nd = ns - 2;
-  int16_t *Lp = c->wl + c->k, *prev = Q + nd * zp;
-  int16_t *view[64];
-  for (int e = 0; e < nd; e++) view[e] = c->w4 + (size_t)c->lay_col[c->lay_ptr[r] + e] * 4 * z + 2 * z - c->lay_shift[c->lay_ptr[r] + e];
-  if (r == 0) { prev[0] = 8191; memcpy(prev + 1, Lp + (c->mb - 1) * z, (size_t)(z - 1) * 2); }
-  view[nd] = r > 0 ? Lp + (r - 1) * z : prev;
-  view[nd + 1] = Lp + r * z;
-  layer_kernel_neon(R, ns, zp, c->norm, view, nd, z, c->lay_shift + c->lay_ptr[r]);
-  if (r == 0) memcpy(Lp + (c->mb - 1) * z, prev + 1, (size_t)(z - 1) * 2);
+// ai: Where every slot of every layer lies, laid out as the messages are (layer r's ns slots from lay_ptr[r] + 2r):
+// ai: fixed by the code and the workspace, so made once a decode rather than once a layer.
+static void views_neon(const ldpc_t *c, int16_t **vw) {
+  const int z = c->z;
+  int16_t *Lp = c->wl + c->k;
+  for (int r = 0; r < c->mb; r++) {
+    const int p0 = c->lay_ptr[r], nd = c->lay_ptr[r + 1] - p0;
+    int16_t **v = vw + p0 + 2 * r;
+    for (int e = 0; e < nd; e++) v[e] = c->w4 + (size_t)c->lay_col[p0 + e] * 4 * z + 2 * z - c->lay_shift[p0 + e];
+    v[nd] = r > 0 ? Lp + (r - 1) * z : c->wq + nd * c->zp;
+    v[nd + 1] = Lp + r * z;
+  }
+}
+
+static void layer_direct(const ldpc_t *c, int r, int8_t *R, int ns, int16_t *const *view) {
+  const int z = c->z, nd = ns - 2;
+  int16_t *Lp = c->wl + c->k;
+  if (r == 0) { view[nd][0] = 8191; memcpy(view[nd] + 1, Lp + (c->mb - 1) * z, (size_t)(z - 1) * 2); }
+  layer_kernel_neon(R, ns, c->zp, c->norm, view, nd, z, c->lay_shift + c->lay_ptr[r]);
+  if (r == 0) memcpy(Lp + (c->mb - 1) * z, view[nd] + 1, (size_t)(z - 1) * 2);
 }
 #endif
 
@@ -454,14 +468,13 @@ static int layers_clear(const ldpc_t *c, int16_t *Q) {
 // ai: a zero in front, as layer_gather lays it); one XOR a slot over 32 checks at a time, only the signs counted.
 // ai: count 0: 1 when every check holds, else 0 at the first layer holding a violated one (layers_clear);
 // ai: count 1: how many of the m checks are violated (layers_unsat).
-static int layers_parity_neon(const ldpc_t *c, int count) {
+static int layers_parity_neon(const ldpc_t *c, int16_t *const *vw, int count) {
   const int z = c->z, mb = c->mb;
   const int16_t *Lp = c->wl + c->k;
   int bad = 0;
   for (int r = 0; r < mb; r++) {
     const int p0 = c->lay_ptr[r], nd = c->lay_ptr[r + 1] - p0;
-    const int16_t *view[64];
-    for (int e = 0; e < nd; e++) view[e] = c->w4 + (size_t)c->lay_col[p0 + e] * 4 * z + 2 * z - c->lay_shift[p0 + e];
+    int16_t *const *view = vw + p0 + 2 * r;
     const int16_t *own = Lp + r * z, *prev = Lp + (r > 0 ? r - 1 : mb - 1) * z;
     uint16x8_t acc = vdupq_n_u16(0);
     int16x8_t carry = vdupq_n_s16(0);
@@ -560,7 +573,9 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
   int16_t *L = c->wl, *Q = c->wq;
 #ifdef OB_NEON
   const int four = c->w4 && c->wide != -1;
+  int16_t *vw[LDPC_VIEWS];
   if (four) {
+    views_neon(c, vw);
     // ai: each data column's z LLRs widened once and written into the middle two of its four copies, the only ones a
     // ai: run reads ([z, 3z): the outer two only take the stores either side of a run); wl's data part goes unused.
     for (int j = 0; j < c->kb; j++) {
@@ -585,7 +600,7 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
       int8_t *R = c->wr + (size_t)(c->lay_ptr[r] + 2 * r) * zp;
       if (r == 0) R[(ns - 2) * zp] = 0;
 #ifdef OB_NEON
-      if (four) { layer_direct(c, r, Q, R, ns); continue; }
+      if (four) { layer_direct(c, r, R, ns, vw + c->lay_ptr[r] + 2 * r); continue; }
 #endif
       layer_gather(c, r, Q);
       layer_kernel_for(c, Q, R, ns);
@@ -594,11 +609,11 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
 #ifdef OB_NEON
     if (four) {
       if (stall_it > 0 && (it == 0 || it == stall_it - 1)) {
-        const int bad = layers_parity_neon(c, 1);
+        const int bad = layers_parity_neon(c, vw, 1);
         if (!bad) { used = it + 1; break; }
         if (it == 0) first = bad;
         else if ((float)bad > stall_ratio * (float)first) { used = -3; break; }
-      } else if (layers_parity_neon(c, 0)) { used = it + 1; break; }
+      } else if (layers_parity_neon(c, vw, 0)) { used = it + 1; break; }
       continue;
     }
 #endif
