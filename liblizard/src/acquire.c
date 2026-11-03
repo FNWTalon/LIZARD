@@ -95,10 +95,10 @@ static inline int bin_threshold(const int *mean, int bw, int bh, int bx, int by)
   return t < 0 ? 0 : t;   // a pixel is never below 0, so a negative threshold and 0 mark the same (nothing)
 }
 
-// ai: an acquisition's buffer slot of n bytes (internal.h ob_fbufs_t): on arm64 the workspace's, grown where it is short
-// ai: (its old bytes not kept), and frame_buf_done leaves it there; with no workspace, or elsewhere, a fresh allocation
-// ai: frame_buf_done frees
-#ifdef OB_NEON
+// ai: an acquisition's buffer slot of n bytes (internal.h ob_fbufs_t): on arm64 and x86-64 the workspace's, grown where it
+// ai: is short (its old bytes not kept), and frame_buf_done leaves it there; with no workspace, or elsewhere, a fresh
+// ai: allocation frame_buf_done frees
+#if defined(OB_NEON) || defined(OB_X86)
 static void *frame_buf(ob_fbufs_t *fb, int slot, size_t n) {
   if (!fb) return malloc(n);
   if (fb->cap[slot] < n) { free(fb->p[slot]); fb->p[slot] = malloc(n); fb->cap[slot] = fb->p[slot] ? n : 0; }
@@ -3993,7 +3993,7 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
     PROF(PROF_FINDERS, got = find_frame(Ls, nL, &im, bin, cb, fb, thin_quad, &thin_orient, &thin_sc, which));
     L = Ls[*which];
   }
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
   frame_buf_done(fb, cb);
 #else
   frame_buf_done(fb, bin);
@@ -4021,7 +4021,8 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
     mpx += hypotf(res->quad[2 * k1] - res->quad[2 * k], res->quad[2 * k1 + 1] - res->quad[2 * k + 1]) / hypotf(src[2 * k1] - src[2 * k], src[2 * k1 + 1] - src[2 * k + 1]) / 4;
   }
   // ai: a box radius of at least one pixel, tested before the conversion (a NaN mpx blurs nothing, as before)
-  // ai: on arm64 the copy goes into the binarized picture's buffer (bin, the workspace's), which the finder is done with
+  // ai: on arm64 and x86-64 the copy goes into the binarized picture's buffer (bin, the workspace's), which the finder is
+  // ai: done with
   if (mpx / 2 >= 1 && (blurred = border_blur(L, &H, img, iw, ih, (int)(mpx / 2), bin))) rim.px = blurred;
   // Finders first, so the homography the marks are measured against is as good as four
   // points can make it.

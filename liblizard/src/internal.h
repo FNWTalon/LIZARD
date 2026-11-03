@@ -122,7 +122,8 @@ void ob_image_init(image_t *im, const uint8_t *px, int w, int h, float gamma);
 // ai: buffer border_blur's copy takes over once the finder is done with it, CB its column bits, HALF and QUARTER the
 // ai: halved and quartered pictures, LBIN and LCB theirs binarized, MEAN binarize's block means, EDGE the line scan's
 // ai: block map (edge_ctx_init). Held by the caller's workspace (lizard_ws), grown as a frame needs and freed with it
-// ai: (ob_fbufs_free). On arm64 the acquisition takes them from here; elsewhere it allocates them a frame as before.
+// ai: (ob_fbufs_free). On arm64 and x86-64 the acquisition takes them from here; elsewhere it allocates them a frame as
+// ai: before.
 // ai: Every byte is written before it is read within a frame, so nothing carries from one frame to the next; one
 // ai: acquisition at a time, as the workspace belongs to one thread at a time.
 enum { OB_FB_BIN, OB_FB_CB, OB_FB_HALF, OB_FB_QUARTER, OB_FB_LBIN, OB_FB_LCB, OB_FB_MEAN, OB_FB_EDGE, OB_FB_SLOTS };
