@@ -510,6 +510,42 @@ static void corner_coords(const ob_layout_t *L, float *src) {
 
 // ---------------------------------------------------------------- registration mesh
 
+// A node's search judges a position only where the capture holds most of its template. A cell whose sample point (u, v),
+// in pixels as sample() takes it, falls outside the capture (u under 0.5 or over w - 0.5, likewise v, or NaN) reads the
+// edge's pixels repeated (sample()'s clamp): a little way past the edge they carry on the code's border and its quiet
+// light, but they are no measurement, and a template mostly outside correlates with the repeated edge alone. So a
+// position with fewer than half its template's cells inside is no candidate (NODE_NONE, under any correlation, and no
+// point of the parabola either), and a node none of whose positions is judged keeps the place the neighbours and the
+// model give it, as one judged under 0.35 does. Half: the correlation is then mostly of the capture's own pixels.
+// ai: The case (run-2026-11-02T00-18-12-969Z frame 287, 2026-11-02): a corner searched again from the anchors' model
+// ai: 55 px left of a 1920 x 1920 capture, every cell reading column 0 repeated; its correlations along x differed by
+// ai: 1e-5, and a sampler rounding its own way took a spurious 0.55 three modules off where the exact one's path ended
+// ai: under 0.35 (78 blocks to 2). Measured on the 11 S26 replays and 5 cells against 977469a: this rule +129 blocks
+// ai: (+128 on that replay, +1 on run-2026-11-01T22-40-56-684Z), every other run the same; the cells outside masked out
+// ai: of the sums as well lost 16 with half the template judged and 384 with 65 cells (a side node's whole template)
+// ai: judged: the masked rim and quiet zone just past the edge moved corners of codes filling the frame by 0.05 px.
+static const float NODE_NONE = -2.0f;
+#ifndef OB_NEON   // ai: arm64's is msh_in4, four points at a time
+static inline int in_capture(const image_t *im, float u, float v) { return u >= 0.5f && u <= im->w - 0.5f && v >= 0.5f && v <= im->h - 0.5f; }
+#endif
+// Whether every point a stage of a node's search reads is inside the capture with a pixel to spare: the template's cell
+// middles (rect r about (cx0, cy0)) moved by offsets in [ax, bx] x [ay, by] modules (the coarse grid's +-1.5, a climb's
+// move one step about its centre), through H, then by (pdx, pdy). w positive at the region's four corners holds it on
+// the region (w is linear), so the region's image is the convex quad of the corners' images. Inside, every position is
+// judged and the stage counts no cells: the same floats as with no rule.
+static int node_inside(const image_t *im, const homo_t *H, int cx0, int cy0, const int *r, float pdx, float pdy, float ax, float bx, float ay, float by) {
+  const float x0 = cx0 + r[0] + 0.5f + ax, x1 = cx0 + r[1] - 0.5f + bx, y0 = cy0 + r[2] + 0.5f + ay, y1 = cy0 + r[3] - 0.5f + by;
+  const float *h = H->h;
+  for (int c = 0; c < 4; c++) {
+    const float x = c & 1 ? x1 : x0, y = c & 2 ? y1 : y0;
+    float u, v;
+    if (!(h[6] * x + h[7] * y + 1 > 0)) return 0;
+    project(H, x, y, &u, &v);
+    if (!(u + pdx >= 1.5f && u + pdx <= im->w - 1.5f && v + pdy >= 1.5f && v + pdy <= im->h - 1.5f)) return 0;
+  }
+  return 1;
+}
+
 #ifdef OB_NEON
 // ai: arm64's registration mesh (refine_node, anchor_find) in NEON's own instructions, each float its scalar twin's:
 // ai: the same operations in the same order, lane for lane, none fused. msh_sample4 is sample() at four points: at
@@ -559,17 +595,25 @@ static inline void msh_project4(const homo_t *H, float32x4_t x, float32x4_t y, f
 // ai: node_ncc at G (4 or 8) offsets (ox[l], oy[l]) at once, a lane each: a lane places, samples and sums the node's
 // ai: kept cells (a cell's middle cmx, cmy in modules, its sign tv) in node_ncc's order with node_ncc's operations, so
 // ai: its correlation is node_ncc's float; st and vt are the template's sums over those cells (refine_node's, the
-// ai: same). Only the cells node_ncc keeps are read.
-static inline __attribute__((always_inline)) void msh_ncc_g(const image_t *im, const homo_t *H, int cells, const float *cmx, const float *cmy, const float *tv, float st, float vt, float pdx, float pdy, const float *ox, const float *oy, float *out, const int G) {
-  const float32x4_t px = vdupq_n_f32(pdx), py = vdupq_n_f32(pdy), z = vdupq_n_f32(0);
-  float32x4_t ox4[2], oy4[2], s[2] = { z, z }, q[2] = { z, z }, t[2] = { z, z };
+// ai: same). Only the cells node_ncc keeps are read. edge (a constant of each call): the move's positions may read past
+// ai: the capture (node_inside), so each lane also counts its cells inside it and is no candidate under nmin of them.
+// ai: in_capture at four points: 0.5 <= x <= w - 0.5 and likewise y (a NaN fails each compare)
+static inline uint32x4_t msh_in4(const image_t *im, float32x4_t x, float32x4_t y) {
+  const float32x4_t lo = vdupq_n_f32(0.5f);
+  return vandq_u32(vandq_u32(vcleq_f32(lo, x), vcleq_f32(x, vdupq_n_f32(im->w - 0.5f))), vandq_u32(vcleq_f32(lo, y), vcleq_f32(y, vdupq_n_f32(im->h - 0.5f))));
+}
+static inline __attribute__((always_inline)) void msh_ncc_g(const image_t *im, const homo_t *H, int cells, const float *cmx, const float *cmy, const float *tv, float st, float vt, float pdx, float pdy, const float *ox, const float *oy, float *out, const int G, const int edge, int nmin) {
+  const float32x4_t px = vdupq_n_f32(pdx), py = vdupq_n_f32(pdy), z = vdupq_n_f32(0), one = vdupq_n_f32(1);
+  float32x4_t ox4[2], oy4[2], s[2] = { z, z }, q[2] = { z, z }, t[2] = { z, z }, nn[2] = { z, z };
   for (int g = 0; g < G; g++) { ox4[g] = vld1q_f32(ox + 4 * g); oy4[g] = vld1q_f32(oy + 4 * g); }
   for (int k = 0; k < cells; k++) {
     const float32x4_t cx = vdupq_n_f32(cmx[k]), cy = vdupq_n_f32(cmy[k]), tk = vdupq_n_f32(tv[k]);
     for (int g = 0; g < G; g++) {
       float32x4_t u, v;
       msh_project4(H, vaddq_f32(cx, ox4[g]), vaddq_f32(cy, oy4[g]), &u, &v);
-      const float32x4_t sv = msh_sample4(im, vaddq_f32(u, px), vaddq_f32(v, py));
+      const float32x4_t x = vaddq_f32(u, px), y = vaddq_f32(v, py);
+      const float32x4_t sv = msh_sample4(im, x, y);
+      if (edge) nn[g] = vaddq_f32(nn[g], vbslq_f32(msh_in4(im, x, y), one, z));
       s[g] = vaddq_f32(s[g], sv); q[g] = vaddq_f32(q[g], vmulq_f32(sv, sv)); t[g] = vaddq_f32(t[g], vmulq_f32(tk, sv));
     }
   }
@@ -577,12 +621,17 @@ static inline __attribute__((always_inline)) void msh_ncc_g(const image_t *im, c
   for (int g = 0; g < G; g++) {
     const float32x4_t vs = vsubq_f32(q[g], vdivq_f32(vmulq_f32(s[g], s[g]), n));
     const float32x4_t c = vdivq_f32(vsubq_f32(t[g], vdivq_f32(vmulq_f32(vst, s[g]), n)), vsqrtq_f32(vmulq_f32(vvt, vs)));
-    vst1q_f32(out + 4 * g, vt <= 0 ? z : vbslq_f32(vcleq_f32(vs, vdupq_n_f32(1e-9f)), z, c));
+    float32x4_t r = vt <= 0 ? z : vbslq_f32(vcleq_f32(vs, vdupq_n_f32(1e-9f)), z, c);
+    if (edge) r = vbslq_f32(vcltq_f32(nn[g], vdupq_n_f32((float)nmin)), vdupq_n_f32(NODE_NONE), r);
+    vst1q_f32(out + 4 * g, r);
   }
 }
-static void msh_ncc(const image_t *im, const homo_t *H, int cells, const float *cmx, const float *cmy, const float *tv, float st, float vt, float pdx, float pdy, const float *ox, const float *oy, float *out, int lanes) {
-  if (lanes > 4) msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, out, 2);
-  else msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, out, 1);
+static void msh_ncc(const image_t *im, const homo_t *H, int cells, const float *cmx, const float *cmy, const float *tv, float st, float vt, float pdx, float pdy, const float *ox, const float *oy, float *out, int lanes, int edge, int nmin) {
+  if (edge) {
+    if (lanes > 4) msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, out, 2, 1, nmin);
+    else msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, out, 1, 1, nmin);
+  } else if (lanes > 4) msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, out, 2, 0, nmin);
+  else msh_ncc_g(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, out, 1, 0, nmin);
 }
 #endif
 
@@ -596,9 +645,11 @@ static void msh_ncc(const image_t *im, const homo_t *H, int cells, const float *
 // at 30 degrees this camera's perspective changes scale by about 6% across 96 px, which misplaces the template's
 // far cells by over a pixel. Measured: the refined corners of LIZARD-16 at 94 modules came out 1.7 px off the
 // truth where the unrefined mark quad was 0.6.
-static float node_ncc(const ob_layout_t *L, const image_t *im, int cx0, int cy0, const int *r, const homo_t *H, float pdx, float pdy, float ox, float oy) {
+// edge: the position may read past the capture (node_inside), so each cell's point is placed again (project, the same
+// floats as the read's) and those inside counted; nmin: the cells inside a judged position needs.
+static float node_ncc(const ob_layout_t *L, const image_t *im, int cx0, int cy0, const int *r, const homo_t *H, float pdx, float pdy, float ox, float oy, int edge, int nmin) {
   float st = 0, ss = 0, stt = 0, sss = 0, sts = 0;
-  int n = 0, lo = r[0], hi = r[1], ylo = r[2], yhi = r[3], side = hi - lo;
+  int n = 0, nin = 0, lo = r[0], hi = r[1], ylo = r[2], yhi = r[3], side = hi - lo;
   // Image reads first, four to a vector along each row of the patch; the sums then run over them
   // in the original order, so the correlation comes out the same float.
   float S[OB_FB * OB_FB];
@@ -621,9 +672,11 @@ static float node_ncc(const ob_layout_t *L, const image_t *im, int cx0, int cy0,
     int kind = L->kind[(cy0 + dy) * L->w + cx0 + dx];
     if (kind == CELL_DATA) continue;   // the picture inside the border: not the border's to know
     if (kind & CELL_WORD) continue;               // nor the format word, whose bits this end did not choose (layout.h)
+    if (edge) { float u, v; project(H, cx0 + dx + 0.5f + ox, cy0 + dy + 0.5f + oy, &u, &v); nin += in_capture(im, u + pdx, v + pdy); }
     float t = (kind & 3) == CELL_DARK ? -1.0f : 1.0f, s = S[(dy - ylo) * side + dx - lo];
     st += t; ss += s; stt += t * t; sss += s * s; sts += t * s; n++;
   }
+  if (edge && nin < nmin) return NODE_NONE;
   float vt = stt - st * st / n, vs = sss - ss * ss / n;
   if (vt <= 0 || vs <= 1e-9f) return 0;
   return (sts - st * ss / n) / sqrtf(vt * vs);
@@ -661,6 +714,9 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
   }
   if (pn) { pdx /= pn; pdy /= pn; }
   if (lm) { float u, v, mx, my; project(H, L->node_x[i], L->node_y[j], &u, &v); lensm_at(lm, u, v, &mx, &my); pdx += mx; pdy += my; }
+  // ai: near the capture's edge a position judged where most of its template is inside it (the rule above); GM marks
+  // ai: the coarse grid's points inside
+  const int edge = !node_inside(im, H, cx0, cy0, rect, pdx, pdy, -1.5f, 1.5f, -1.5f, 1.5f);
   float px, py, ax, ay, bx, by;
   project(H, mcx, mcy, &px, &py); project(H, mcx + 1, mcy, &ax, &ay); project(H, mcx, mcy + 1, &bx, &by);
   // The node's local Jacobian, only to turn the offset found in modules into pixels at the end.
@@ -670,7 +726,7 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
   // half-module grid, and each correlation picks its cells out of it: the same floats summed in the same order
   // as node_ncc would, for about a seventh of the reads.
   enum { GMAX = 2 * OB_FB + 5 };
-  float G[GMAX * GMAX + 4], tv[OB_FB * OB_FB];   // + 4: the eighth lane of the last row's sums reads one float past the grid
+  float G[GMAX * GMAX + 4], GM[GMAX * GMAX + 4], tv[OB_FB * OB_FB];   // + 4: the eighth lane of the last row's sums reads one float past the grid
   int at[OB_FB * OB_FB], cells = 0;
   const int lo = rect[0], ylo = rect[2], side = rect[1] - rect[0], tall = rect[3] - rect[2], GW = 2 * side + 5, GH = 2 * tall + 5;
   // Placed through the homography, as node_ncc does and for the same reason.
@@ -683,7 +739,9 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
       const float32x4_t mx = vmulq_f32(vaddq_f32(vdupq_n_f32((float)(2 * (cx0 + lo) + gx - 2)), lane), vdupq_n_f32(0.5f));
       float32x4_t u, v;
       msh_project4(H, mx, vy, &u, &v);
-      vst1q_f32(G + gy * GW + gx, msh_sample4(im, vaddq_f32(u, vdupq_n_f32(pdx)), vaddq_f32(v, vdupq_n_f32(pdy))));
+      const float32x4_t x = vaddq_f32(u, vdupq_n_f32(pdx)), y = vaddq_f32(v, vdupq_n_f32(pdy));
+      vst1q_f32(G + gy * GW + gx, msh_sample4(im, x, y));
+      if (edge) vst1q_f32(GM + gy * GW + gx, vbslq_f32(msh_in4(im, x, y), vdupq_n_f32(1), vdupq_n_f32(0)));
     }
   }
 #else
@@ -697,10 +755,20 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
       const v128_t mx = wasm_f32x4_mul(wasm_f32x4_make((float)k, (float)(k + 1), (float)(k + 2), (float)(k + 3)), wasm_f32x4_splat(0.5f));
       v128_t u, v;
       project4(H, mx, vy, &u, &v);
-      wasm_v128_store(G + gy * GW + gx, sample4(im, wasm_f32x4_add(u, wasm_f32x4_splat(pdx)), wasm_f32x4_add(v, wasm_f32x4_splat(pdy))));
+      const v128_t x = wasm_f32x4_add(u, wasm_f32x4_splat(pdx)), y = wasm_f32x4_add(v, wasm_f32x4_splat(pdy)), lo5 = wasm_f32x4_splat(0.5f);
+      wasm_v128_store(G + gy * GW + gx, sample4(im, x, y));
+      if (edge) {
+        const v128_t in = wasm_v128_and(wasm_v128_and(wasm_f32x4_le(lo5, x), wasm_f32x4_le(x, wasm_f32x4_splat(im->w - 0.5f))), wasm_v128_and(wasm_f32x4_le(lo5, y), wasm_f32x4_le(y, wasm_f32x4_splat(im->h - 0.5f))));
+        wasm_v128_store(GM + gy * GW + gx, wasm_v128_and(wasm_f32x4_splat(1), in));
+      }
     }
 #endif
-    for (; gx < GW; gx++) { const float mx = (float)(2 * (cx0 + lo) + gx - 2) * 0.5f; float u, v; project(H, mx, my, &u, &v); G[gy * GW + gx] = sample(im, u + pdx, v + pdy); }
+    for (; gx < GW; gx++) {
+      const float mx = (float)(2 * (cx0 + lo) + gx - 2) * 0.5f;
+      float u, v;
+      project(H, mx, my, &u, &v);
+      G[gy * GW + gx] = sample(im, u + pdx, v + pdy); GM[gy * GW + gx] = !edge || in_capture(im, u + pdx, v + pdy) ? 1.0f : 0;
+    }
   }
 #endif
   float st = 0, stt = 0;
@@ -718,31 +786,37 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
     st += tv[cells]; stt += tv[cells] * tv[cells]; cells++;
   }
   const float vt = stt - st * st / cells;
-  float best = -2, box = 0, boy = 0;
-  for (int k = 0; k < 4; k++) G[GW * GH + k] = 0;
+  const int nmin = (cells + 1) / 2;
+  float best = NODE_NONE, box = 0, boy = 0;
+  for (int k = 0; k < 4; k++) G[GW * GH + k] = GM[GW * GH + k] = 0;
   for (int b = -3; b <= 3; b++) {
     // The seven offsets a of one b sit side by side in the grid, so their sums run as lanes: each lane adds the
-    // same cells in the same order as a loop of its own would.
-    float SS[8], SQ[8], ST[8];
+    // same cells in the same order as a loop of its own would. Near the capture's edge a lane's cells inside the
+    // capture are counted too (SN, from GM), in a pass of their own.
+    float SS[8], SQ[8], ST[8], SN[8];
 #ifdef OB_SIMD
-    const float *g0 = G + b * GW - 3;
-    v128_t s0 = wasm_f32x4_splat(0), s1 = s0, q0 = s0, q1 = s0, t0 = s0, t1 = s0;
+    const float *g0 = G + b * GW - 3, *m0 = GM + b * GW - 3;
+    v128_t s0 = wasm_f32x4_splat(0), s1 = s0, q0 = s0, q1 = s0, t0 = s0, t1 = s0, n0 = s0, n1 = s0;
     for (int k = 0; k < cells; k++) {
       const v128_t v0 = wasm_v128_load(g0 + at[k]), v1 = wasm_v128_load(g0 + at[k] + 4), t = wasm_f32x4_splat(tv[k]);
       s0 = wasm_f32x4_add(s0, v0); s1 = wasm_f32x4_add(s1, v1); q0 = wasm_f32x4_add(q0, wasm_f32x4_mul(v0, v0)); q1 = wasm_f32x4_add(q1, wasm_f32x4_mul(v1, v1));
       t0 = wasm_f32x4_add(t0, wasm_f32x4_mul(t, v0)); t1 = wasm_f32x4_add(t1, wasm_f32x4_mul(t, v1));
     }
+    if (edge) for (int k = 0; k < cells; k++) { n0 = wasm_f32x4_add(n0, wasm_v128_load(m0 + at[k])); n1 = wasm_f32x4_add(n1, wasm_v128_load(m0 + at[k] + 4)); }
     wasm_v128_store(SS, s0); wasm_v128_store(SS + 4, s1); wasm_v128_store(SQ, q0); wasm_v128_store(SQ + 4, q1); wasm_v128_store(ST, t0); wasm_v128_store(ST + 4, t1);
+    wasm_v128_store(SN, n0); wasm_v128_store(SN + 4, n1);
 #else
     for (int a = -3; a <= 3; a++) {
-      const float *g0 = G + b * GW + a;
-      float ss = 0, sss = 0, sts = 0;
+      const float *g0 = G + b * GW + a, *m0 = GM + b * GW + a;
+      float ss = 0, sss = 0, sts = 0, sn = 0;
       for (int k = 0; k < cells; k++) { const float v = g0[at[k]]; ss += v; sss += v * v; sts += tv[k] * v; }
-      SS[a + 3] = ss; SQ[a + 3] = sss; ST[a + 3] = sts;
+      if (edge) for (int k = 0; k < cells; k++) sn += m0[at[k]];
+      SS[a + 3] = ss; SQ[a + 3] = sss; ST[a + 3] = sts; SN[a + 3] = sn;
     }
 #endif
     for (int a = -3; a <= 3; a++) {
-      const float ss = SS[a + 3], vs = SQ[a + 3] - ss * ss / cells, sc = vt <= 0 || vs <= 1e-9f ? 0 : (ST[a + 3] - st * ss / cells) / sqrtf(vt * vs);
+      const float ss = SS[a + 3], vs = SQ[a + 3] - ss * ss / cells;
+      const float sc = edge && SN[a + 3] < nmin ? NODE_NONE : vt <= 0 || vs <= 1e-9f ? 0 : (ST[a + 3] - st * ss / cells) / sqrtf(vt * vs);
       if (sc > best) { best = sc; box = a * 0.5f; boy = b * 0.5f; }
     }
   }
@@ -758,6 +832,8 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
         for (int b2 = 0; b2 < 3; b2++) for (int a2 = 0; a2 < 3; a2++) { int sb = b2 + mb - 1, sa = a2 + ma - 1, in = sb >= 0 && sb < 3 && sa >= 0 && sa < 3; nh[b2][a2] = in && have[sb][sa]; ng[b2][a2] = in ? g[sb][sa] : 0; }
         memcpy(g, ng, sizeof g); memcpy(have, nh, sizeof have); ma = mb = 1;
       }
+      // ai: whether this move's positions may read past the capture (the climb's edge)
+      const int ce = !node_inside(im, H, cx0, cy0, rect, pdx, pdy, box - step, box + step, boy - step, boy + step);
 #ifdef OB_NEON
       {
         // ai: the correlations this move lacks, a lane each (lanes past them repeat the first and are dropped)
@@ -766,12 +842,12 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
         for (int b2 = -1; b2 <= 1; b2++) for (int a2 = -1; a2 <= 1; a2++) if (!have[b2 + 1][a2 + 1]) { ox[m] = box + a2 * step; oy[m] = boy + b2 * step; cell[m++] = (b2 + 1) * 3 + a2 + 1; }
         if (m) {
           for (int l = m; l < 8; l++) { ox[l] = ox[0]; oy[l] = oy[0]; }
-          msh_ncc(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, got, m);
+          msh_ncc(im, H, cells, cmx, cmy, tv, st, vt, pdx, pdy, ox, oy, got, m, ce, nmin);
           for (int l = 0; l < m; l++) { g[cell[l] / 3][cell[l] % 3] = got[l]; have[cell[l] / 3][cell[l] % 3] = 1; }
         }
       }
 #else
-      for (int b2 = -1; b2 <= 1; b2++) for (int a2 = -1; a2 <= 1; a2++) if (!have[b2 + 1][a2 + 1]) { g[b2 + 1][a2 + 1] = node_ncc(L, im, cx0, cy0, rect, H, pdx, pdy, box + a2 * step, boy + b2 * step); have[b2 + 1][a2 + 1] = 1; }
+      for (int b2 = -1; b2 <= 1; b2++) for (int a2 = -1; a2 <= 1; a2++) if (!have[b2 + 1][a2 + 1]) { g[b2 + 1][a2 + 1] = node_ncc(L, im, cx0, cy0, rect, H, pdx, pdy, box + a2 * step, boy + b2 * step, ce, nmin); have[b2 + 1][a2 + 1] = 1; }
 #endif
       int ba = 1, bb = 1;
       for (int b2 = 0; b2 < 3; b2++) for (int a2 = 0; a2 < 3; a2++) if (g[b2][a2] > g[bb][ba]) { ba = a2; bb = b2; }
@@ -786,8 +862,8 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
   }
   best = g[1][1];
   float dxx = g[1][0] - 2 * g[1][1] + g[1][2], dyy = g[0][1] - 2 * g[1][1] + g[2][1];
-  if (dxx < -1e-6f) box += 0.125f * 0.5f * (g[1][0] - g[1][2]) / dxx;
-  if (dyy < -1e-6f) boy += 0.125f * 0.5f * (g[0][1] - g[2][1]) / dyy;
+  if (dxx < -1e-6f && g[1][0] > NODE_NONE && g[1][2] > NODE_NONE) box += 0.125f * 0.5f * (g[1][0] - g[1][2]) / dxx;
+  if (dyy < -1e-6f && g[0][1] > NODE_NONE && g[2][1] > NODE_NONE) boy += 0.125f * 0.5f * (g[0][1] - g[2][1]) / dyy;
   node_t *nd = &nodes[j * L->nx + i];
   nd->done = 1; nd->score = best;
   if (best < 0.35f) { nd->dx = pdx; nd->dy = pdy; return; }
