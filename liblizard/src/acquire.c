@@ -478,8 +478,8 @@ static void msh_blur_rect(const uint8_t *src, uint8_t *out, int w, int h, int r,
 
 typedef struct { float x, y, unit; int hits; } cand_t;
 enum { MAX_CAND = 1024 };
-#ifdef OB_NEON
-// ai: arm64: a candidate list's x and y side by side past its MAX_CAND entries (x at mark_xy(c)[k], y at
+#if defined(OB_NEON) || defined(OB_X86)
+// ai: arm64 and x86-64: a candidate list's x and y side by side past its MAX_CAND entries (x at mark_xy(c)[k], y at
 // ai: mark_xy(c)[MAX_CAND + k]), which mark_note's scan reads as plain vectors (LD4 over the entries read twice the
 // ai: bytes, in more operations: the marks 4 to 18% faster on the S26); kept in step with the entries by mark_note and
 // ai: mark_candidates' prune, and read nowhere else. A list is allocated MAX_CAND entries and CAND_XY bytes.
@@ -2597,6 +2597,14 @@ static void mark_note(cand_t *out, int *n, float fx, float fy, float u) {
     const float32x4_t dq = vmaxq_f32(vabdq_f32(vld1q_f32(sx + c + 4), vx), vabdq_f32(vld1q_f32(sy + c + 4), vy));
     if (vmaxvq_u32(vorrq_u32(vcltq_f32(dp, lim), vcltq_f32(dq, lim)))) break;
   }
+#elif defined(OB_X86)
+  // ai: x86-64: arm64's scan (above), each coordinate's distance (the difference with its sign cleared) under the limit
+  // ai: by a compare of its own (MAXPS would give its other operand back on a NaN, where the loop below fails)
+  const __m128 vx = _mm_set1_ps(fx), vy = _mm_set1_ps(fy), lim = _mm_set1_ps(u * 2), sgn = _mm_castsi128_ps(_mm_set1_epi32(0x7fffffff));
+  const float *const sx = mark_xy(out), *const sy = sx + MAX_CAND;
+#define NEAR4(k) _mm_and_ps(_mm_cmplt_ps(_mm_and_ps(_mm_sub_ps(_mm_loadu_ps(sx + (k)), vx), sgn), lim), _mm_cmplt_ps(_mm_and_ps(_mm_sub_ps(_mm_loadu_ps(sy + (k)), vy), sgn), lim))
+  for (; c + 8 <= *n; c += 8) if (_mm_movemask_ps(_mm_or_ps(NEAR4(c), NEAR4(c + 4)))) break;
+#undef NEAR4
 #endif
   for (; c < *n; c++) if (fabsf(out[c].x - fx) < u * 2 && fabsf(out[c].y - fy) < u * 2) break;
   if (c < *n) {
@@ -2604,11 +2612,11 @@ static void mark_note(cand_t *out, int *n, float fx, float fy, float u) {
     out[c].y = (out[c].y * out[c].hits + fy) / (out[c].hits + 1);
     out[c].unit = (out[c].unit * out[c].hits + u) / (out[c].hits + 1);
     out[c].hits++;
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
     mark_xy(out)[c] = out[c].x; mark_xy(out)[MAX_CAND + c] = out[c].y;
 #endif
   } else if (*n < MAX_CAND) {
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
     mark_xy(out)[*n] = fx; mark_xy(out)[MAX_CAND + *n] = fy;
 #endif
     out[(*n)++] = (cand_t){ fx, fy, u, 1 };
@@ -2787,7 +2795,7 @@ static int mark_candidates(const ob_layout_t *L, const uint8_t *bin, const uint3
         int need = (int)(minc * out[c].unit) / 2;
         need = need > 3 ? 3 : need < 1 ? 1 : need;
         if (out[c].hits >= need || out[c].y + L->corner * out[c].unit > y) {
-#ifdef OB_NEON
+#if defined(OB_NEON) || defined(OB_X86)
           mark_xy(out)[m] = mark_xy(out)[c]; mark_xy(out)[MAX_CAND + m] = mark_xy(out)[MAX_CAND + c];
 #endif
           out[m++] = out[c];
