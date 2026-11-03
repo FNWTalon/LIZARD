@@ -7,6 +7,9 @@
 // ai: arm64's decode keeps a pointer a slot (ldpc_decode_stall): the codes with at most this many take the four-times
 // ai: columns (the format's most, the 1/2 code's, 210)
 enum { LDPC_VIEWS = 256 };
+// ai: and keeps the first iteration's hard decisions in this many bytes (2 kb z + m, ldpc_decode_stall; the 1/2 code's
+// ai: 11,520)
+enum { LDPC_SIGNS = 16384 };
 
 // ai: x86-64's wider layer kernels (below) exist where the 128-bit vector path does and the compiler takes a function's
 // ai: own instruction set (not clang-cl, whose MSVC-style link may lack the runtime the processor check calls)
@@ -92,7 +95,7 @@ int ldpc_init(ldpc_t *c, int rate) {
   // ai: +-128) plus its column's messages (within +-127 each), stays inside it: the largest column degree at most 63
   int dmax = 0;
   for (int j = 0; j < kb; j++) { int d = 0; for (int r = 0; r < mb; r++) d += shift[r * kb + j] >= 0; if (d > dmax) dmax = d; }
-  if (c->z % 32 == 0 && c->zp == c->z && c->slots_max <= 64 && c->slots_total <= LDPC_VIEWS && 128 + 127 * dmax <= 8191 && c->norm >= 8) {
+  if (c->z % 32 == 0 && c->zp == c->z && c->slots_max <= 64 && c->slots_total <= LDPC_VIEWS && 2 * c->k + c->m <= LDPC_SIGNS && 128 + 127 * dmax <= 8191 && c->norm >= 8) {
     c->w4 = malloc((size_t)c->kb * 4 * c->z * sizeof(int16_t));
     if (!c->w4) { ldpc_free(c); return -1; }
   }
@@ -603,6 +606,59 @@ static void parity_out(const int16_t *src, uint8_t *dst, int z, int mb) {
     if (last) memcpy(dst + i0 * mb, tail, (size_t)16 * mb);
   }
 }
+
+// ai: The stall rule's first count (the checks violated after the first iteration) is wanted only by a block still
+// ai: unsolved at stall_it, so the decode keeps the first iteration's hard decisions and counts them there. Kept as
+// ai: sign bytes (a posterior's high byte): each data column twice over (2z, so the rotation by s is the run at z - s,
+// ai: as w4's at 2z - s), then the staircase rows; the count is layers_parity_neon's on the bytes, the same number.
+static void signs_keep(const ldpc_t *c, uint8_t *sv) {
+  const int z = c->z;
+  for (int j = 0; j < c->kb; j++, sv += 2 * z) {
+    const int16_t *col = c->w4 + (size_t)j * 4 * z + 2 * z;
+    for (int t = 0; t < z; t += 32) {
+      const int16x8x4_t v = vld1q_s16_x4(col + t);
+      const uint8x16x2_t b = { { vuzp2q_u8(vreinterpretq_u8_s16(v.val[0]), vreinterpretq_u8_s16(v.val[1])), vuzp2q_u8(vreinterpretq_u8_s16(v.val[2]), vreinterpretq_u8_s16(v.val[3])) } };
+      vst1q_u8_x2(sv + t, b); vst1q_u8_x2(sv + z + t, b);
+    }
+  }
+  const int16_t *Lp = c->wl + c->k;
+  for (int t = 0; t < c->mb * z; t += 32, sv += 32) {
+    const int16x8x4_t v = vld1q_s16_x4(Lp + t);
+    const uint8x16x2_t b = { { vuzp2q_u8(vreinterpretq_u8_s16(v.val[0]), vreinterpretq_u8_s16(v.val[1])), vuzp2q_u8(vreinterpretq_u8_s16(v.val[2]), vreinterpretq_u8_s16(v.val[3])) } };
+    vst1q_u8_x2(sv, b);
+  }
+}
+
+static int signs_unsat(const ldpc_t *c, const uint8_t *sv) {
+  const int z = c->z, mb = c->mb;
+  const uint8_t *Lp = sv + (size_t)c->kb * 2 * z;
+  int bad = 0;
+  for (int r = 0; r < mb; r++) {
+    const int p0 = c->lay_ptr[r], nd = c->lay_ptr[r + 1] - p0;
+    const uint8_t *own = Lp + r * z, *prev = Lp + (r > 0 ? r - 1 : mb - 1) * z;
+    uint8x16_t carry = vdupq_n_u8(0);
+    for (int i = 0; i < z; i += 64) {
+      uint8x16x4_t x = vld1q_u8_x4(own + i);
+      const uint8x16x4_t p = vld1q_u8_x4(prev + i);
+      if (r > 0) {
+        x.val[0] = veorq_u8(x.val[0], p.val[0]); x.val[1] = veorq_u8(x.val[1], p.val[1]);
+        x.val[2] = veorq_u8(x.val[2], p.val[2]); x.val[3] = veorq_u8(x.val[3], p.val[3]);
+      } else {
+        x.val[0] = veorq_u8(x.val[0], vextq_u8(carry, p.val[0], 15)); x.val[1] = veorq_u8(x.val[1], vextq_u8(p.val[0], p.val[1], 15));
+        x.val[2] = veorq_u8(x.val[2], vextq_u8(p.val[1], p.val[2], 15)); x.val[3] = veorq_u8(x.val[3], vextq_u8(p.val[2], p.val[3], 15));
+        carry = p.val[3];
+      }
+      for (int e = 0; e < nd; e++) {
+        const uint8x16x4_t v = vld1q_u8_x4(sv + (size_t)c->lay_col[p0 + e] * 2 * z + z - c->lay_shift[p0 + e] + i);
+        x.val[0] = veorq_u8(x.val[0], v.val[0]); x.val[1] = veorq_u8(x.val[1], v.val[1]);
+        x.val[2] = veorq_u8(x.val[2], v.val[2]); x.val[3] = veorq_u8(x.val[3], v.val[3]);
+      }
+      const uint8x16_t s = vaddq_u8(vaddq_u8(vshrq_n_u8(x.val[0], 7), vshrq_n_u8(x.val[1], 7)), vaddq_u8(vshrq_n_u8(x.val[2], 7), vshrq_n_u8(x.val[3], 7)));
+      bad += (int)vaddlvq_u8(s);
+    }
+  }
+  return bad;
+}
 #endif
 
 int ldpc_decode(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_iter) { return ldpc_decode_stall(c, llr, out, max_iter, 0, 0); }
@@ -618,6 +674,7 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
   const int four = c->w4 && c->wide != -1;
   int16_t *vw[LDPC_VIEWS], *cp[LDPC_VIEWS];
   int ncp[LDPC_VIEWS];
+  uint8_t sv[LDPC_SIGNS];
   if (four) {
     views_neon(c, vw, cp, ncp);
     // ai: each data column's z LLRs widened once and written into the middle two of its four copies, the only ones a
@@ -655,12 +712,16 @@ int ldpc_decode_stall(const ldpc_t *c, const int8_t *llr, uint8_t *out, int max_
     }
 #ifdef OB_NEON
     if (four) {
-      if (stall_it > 0 && (it == 0 || it == stall_it - 1)) {
+      // ai: The stop, as the scalar path's below: the checks tested after every iteration (the layers in the order the
+      // ai: iteration updated them), a word whose every check holds stops there; at stall_it the violated checks are
+      // ai: counted, and the block given up while still above stall_ratio of the count after the first iteration, which
+      // ai: is taken then from that iteration's hard decisions, kept as they stood (signs_keep, signs_unsat).
+      if (stall_it > 1 && it == stall_it - 1) {
         const int bad = layers_parity_neon(c, vw, 1, 0);
         if (!bad) { used = it + 1; break; }
-        if (it == 0) first = bad;
-        else if ((float)bad > stall_ratio * (float)first) { used = -3; break; }
+        if ((float)bad > stall_ratio * (float)signs_unsat(c, sv)) { used = -3; break; }
       } else if (layers_parity_neon(c, vw, 0, it & 1)) { used = it + 1; break; }
+      else if (it == 0 && stall_it > 1) signs_keep(c, sv);
       continue;
     }
 #endif
