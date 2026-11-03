@@ -140,8 +140,8 @@ static void map_in(const lizard_t *f, const struct lizard_ws *w, int t, int firs
 // ai: 2 pi (u dx + v dy) / n, which costs the outer sub-channels their soft values (0.2 of a sample is 0.3 rad at
 // ai: a radius of n / 4). A 3/4 block's tail holds 16 coefficients (a 7/8 block's 8) whose symbols are known up to
 // ai: one sign, the block's bit of the painted count (SPEC 7.3), its last slots, so over a frame's inner tiers they
-// ai: sit at every radius the 7/8 and 3/4 blocks do. For each, z is what was read times the conjugate of what was sent,
-// ai: with the block's sign taken from its own pilots' sum: its imaginary part over its real one is the turn. The
+// ai: sit at every radius the 7/8 and 3/4 blocks do. For each, z is what was read times the conjugate of what was sent
+// ai: (known up to the block's sign, which the fit cancels: below): its imaginary part over its real one is the turn. The
 // ai: shift is the least squares fit of zi = k zr (u dx + v dy), k = 2 pi / n (each coefficient weighted by its own
 // ai: zr, so one that noise turned far counts little), fitted twice, the second time about the first's answer.
 // ai: It is taken only where the pilots tell it from no shift at all: d' M d over the fit's residual variance (M
@@ -149,13 +149,21 @@ static void map_in(const lizard_t *f, const struct lizard_ws *w, int t, int firs
 // ai: few blocks, whose pilots say little, is left as it was read. Returns the pilots it used; d the shift or 0, 0.
 #define ALIGN_TURNS 4096
 #define ALIGN_CHI 13.8
-static inline void turned(const lizard_t *f, const struct lizard_ws *w, int p, float dx, float dy, float *yr, float *yi) {
-  const int n = f->n, bw = f->bw, half = n / 2, nbw = n * bw;
-  // (u, v) back out of the packed index init() built: pos = (v / bw) n bw + ((u + n) % n) bw + v % bw.
-  const int rem = p % nbw, vv = (p / nbw) * bw + rem % bw, uw = rem / bw, uu = uw < half ? uw : uw - n;
-  const unsigned k = (unsigned)(int)nearbyintf(((float)uu * dx + (float)vv * dy) * ((float)ALIGN_TURNS / (float)n)) & (ALIGN_TURNS - 1);
+// (u, v) back out of the packed index init() built: pos = (v / bw) n bw + ((u + n) % n) bw + v % bw.
+static inline void coef_uv(const lizard_t *f, int p, int *uu, int *vv) {
+  const int n = f->n, bw = f->bw, nbw = n * bw, rem = p % nbw, uw = rem / bw;
+  *vv = (p / nbw) * bw + rem % bw; *uu = uw < n / 2 ? uw : uw - n;
+}
+// ai: coefficient p, at (u, v), turned back by the shift (dx, dy)
+static inline void turned_uv(const lizard_t *f, const struct lizard_ws *w, int p, int uu, int vv, float dx, float dy, float *yr, float *yi) {
+  const unsigned k = (unsigned)(int)nearbyintf(((float)uu * dx + (float)vv * dy) * ((float)ALIGN_TURNS / (float)f->n)) & (ALIGN_TURNS - 1);
   const float c = w->rot[2 * k], sn = w->rot[2 * k + 1], r = w->tre[p], i = w->tim[p];
   *yr = r * c + i * sn; *yi = i * c - r * sn;
+}
+static inline void turned(const lizard_t *f, const struct lizard_ws *w, int p, float dx, float dy, float *yr, float *yi) {
+  int uu, vv;
+  coef_uv(f, p, &uu, &vv);
+  turned_uv(f, w, p, uu, vv, dx, dy, yr, yi);
 }
 #ifdef OB_NEON
 // ai: arm64: turned() on four coefficients p at once, the turned values returned and the spectrum left as it is: (u, v)
@@ -187,8 +195,14 @@ static inline __attribute__((always_inline)) void turn4(const turn4_t *t, const 
 }
 #endif
 static int pilot_align(const lizard_t *f, struct lizard_ws *w, float d[2]) {
-  const int n = f->n, bw = f->bw, half = n / 2, nbw = n * bw;
+  const int n = f->n;
   const double k = 2.0 * 3.14159265358979323846 / n;
+#ifdef OB_NEON
+  // ai: arm64 with bw 64 (every picture size's): a pilot's (u, v) by shifts, its block row q / n by a multiply-high by
+  // ai: m = ceil(2^31 / n), turn4's division (exact for every block row), where coef_uv takes two divisions
+  const int fast = f->bw == 64;
+  const int64_t m = ((1ll << 31) + n - 1) / n;
+#endif
   double dx = 0, dy = 0, a = 0, b = 0, c = 0, p = 0, q = 0, yy = 0;
   int used = 0;
   for (int it = 0; it < 2; it++) {
@@ -198,20 +212,20 @@ static int pilot_align(const lizard_t *f, struct lizard_ws *w, float d[2]) {
       const int nb = block_bits(f, blk), first = f->block_slot[blk] / 2;
       const uint8_t *wh = w->white + 2 * (size_t)first;
       if (code->nt >= nb) continue;
-      // ai: the block's sign: its pilots' own sum, read at the shift so far
-      double sum = 0;
-      for (int s = code->nt / 2; s < nb / 2; s++) {
-        float yr, yi;
-        turned(f, w, f->pos[first + s], (float)dx, (float)dy, &yr, &yi);
-        sum += (wh[2 * s] ? -1.0 : 1.0) * yr + (wh[2 * s + 1] ? -1.0 : 1.0) * yi;
-      }
-      const double sg = sum < 0 ? -1.0 : 1.0;
+      // ai: x, what was sent, is the whitening's signs times the block's own sign, which needs no reading: every term
+      // ai: the fit sums (cu cu, cu cv, cv cv, cu zi, cv zi, zi zi) is a product of two of z's parts, so the sign
+      // ai: cancels, exactly (a negation is exact in each operation here); the pass that took it from the pilots' sum
+      // ai: went (the same doubles)
       for (int s = code->nt / 2; s < nb / 2; s++) {
         const int pp = f->pos[first + s];
-        const int rem = pp % nbw, vv = (pp / nbw) * bw + rem % bw, uw = rem / bw, uu = uw < half ? uw : uw - n;
+        int uu, vv;
+#ifdef OB_NEON
+        if (fast) { const int qr = pp >> 6, br = (int)((qr * m) >> 31), uw = qr - br * n; uu = uw < n / 2 ? uw : uw - n; vv = br * 64 + (pp & 63); } else
+#endif
+        coef_uv(f, pp, &uu, &vv);
         float yr, yi;
-        turned(f, w, pp, (float)dx, (float)dy, &yr, &yi);
-        const double xr = wh[2 * s] ? -sg : sg, xi = wh[2 * s + 1] ? -sg : sg;
+        turned_uv(f, w, pp, uu, vv, (float)dx, (float)dy, &yr, &yi);
+        const double xr = wh[2 * s] ? -1.0 : 1.0, xi = wh[2 * s + 1] ? -1.0 : 1.0;
         const double zr = yr * xr + yi * xi, zi = yi * xr - yr * xi;
         const double cu = k * zr * uu, cv = k * zr * vv;
         a += cu * cu; b += cu * cv; c += cv * cv; p += cu * zi; q += cv * zi; yy += zi * zi;
