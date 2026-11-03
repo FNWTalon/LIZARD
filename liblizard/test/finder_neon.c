@@ -3,14 +3,19 @@
 // ai: a little perspective, sharp and blurred, over noise, at sizes whose rows and columns end ragged. arm64's forms
 // ai: (OB_NEON) and x86-64's (OB_X86, -msse4.1) are exact, so a build with -DOB_SCALAR prints the same hash. On arm64
 // ai: and x86-64 the column bits' walk (cb_run) is also held to the byte loop at every row, both ways, both colours and
-// ai: every cap to 40. test/neon_kernels.sh builds it both ways on a phone and compares. It includes acquire.c and links
-// ai: the rest of the codec:
+// ai: every cap to 40, and the edge test's window read (edge_contrast_n) to edge_contrast on random rows and columns,
+// ai: every length to past EDGE_REACH. The line fit (the block map, both scans' candidates and fit_lines' curves, at full scale) has
+// ai: a hash of its own, exact on every target and pinned (LINE_HASH): the test fails where it differs. test/neon_kernels.sh
+// ai: builds it both ways on a phone and compares. It includes acquire.c and links the rest of the codec:
 // ai:   cc -O2 -ffp-contract=off -Isrc test/finder_neon.c src/{layout,fmt,rs,ldpc,fft,lizard_phy,any,shake}.c -lm
 #include "acquire.c"
 #include <stdio.h>
 uint32_t ob_debug_hash;
-static uint64_t hs = 1469598103934665603ull;
+static uint64_t hs = 1469598103934665603ull, hl = 1469598103934665603ull;
 static void mix(const void *p, size_t n) { const uint8_t *b = p; for (size_t i = 0; i < n; i++) { hs ^= b[i]; hs *= 1099511628211ull; } }
+static void lmix(const void *p, size_t n) { const uint8_t *b = p; for (size_t i = 0; i < n; i++) { hl ^= b[i]; hl *= 1099511628211ull; } }
+// ai: the line fit's hash as the scalar twins give it (07807d8)
+#define LINE_HASH 0x84ca16fdf20490d8ull
 static uint32_t rs = 7;
 static uint32_t rnd(void) { rs = rs * 1664525u + 1013904223u; return rs >> 8; }
 static float frand(void) { return (float)(rnd() & 0xffff) / 65536.0f; }
@@ -28,8 +33,8 @@ static int byte_run(const uint8_t *bin, int w, int h, int x, int y, int dir, int
 int main(void) {
   static const int SIZE[6][2] = { { 1280, 960 }, { 1277, 957 }, { 640, 480 }, { 1920, 1080 }, { 803, 1203 }, { 1500, 1001 } };
   static const int sides[3] = { 158, 286, 542 };
-  long ncand = 0, nwalk = 0, bad = 0;
-  double tbin = 0, tmark = 0;
+  long ncand = 0, nwalk = 0, bad = 0, nlines = 0;
+  double tbin = 0, tmark = 0, tline = 0, tfit = 0;
   for (int t = 0; t < 24; t++) {
     const int iw = SIZE[t % 6][0], ih = SIZE[t % 6][1];
     uint8_t *px = malloc((size_t)iw * ih), *tmp = malloc((size_t)iw * ih), *bin = malloc((size_t)iw * ih);
@@ -96,6 +101,33 @@ int main(void) {
       tbin += ob_now_ms() - t0;
 #endif
       mix(bin, (size_t)sw * sh);
+      if (scale == 1) {
+        // ai: the line fit as find_frame runs it: its contrast floor, the block map, the four sides' candidates, the curves
+        int hist[256] = { 0 }, cnt = 0, p5 = 0, p95 = 255, acc = 0, n[4], nl;
+        for (int y = 4; y < sh; y += 8) for (int x = 4; x < sw; x += 8) { hist[grey[y * sw + x]]++; cnt++; }
+        for (int v = 0; v < 256; v++) { acc += hist[v]; if (acc * 20 < cnt) p5 = v; if (acc * 20 < cnt * 19) p95 = v; }
+        const int min_con = (p95 - p5) / 4 < 12 ? 12 : (p95 - p5) / 4, big = sw > sh ? sw : sh;
+        fpt_t *pts[4];
+        fline_t line[SIDE_LINES];
+        edge_ctx_t ctx;
+        for (int k = 0; k < 4; k++) pts[k] = malloc((size_t)(big / 2 + 1) * SIDE_K * sizeof(fpt_t));
+        edge_ctx_init(&ctx, grey, sw, sh, min_con, NULL);
+        for (int by = 0; by < (sh + BLK - 1) / BLK; by++) { lmix(ctx.mn + by * ctx.bs, (size_t)ctx.bw); lmix(ctx.mx + by * ctx.bs, (size_t)ctx.bw); }
+        double t1 = ob_now_ms();
+        row_points(bin, sw, sh, &ctx, pts[3], &n[3], pts[1], &n[1]);
+        col_points(bin, sw, sh, &ctx, pts[0], &n[0], pts[2], &n[2]);
+        tline += ob_now_ms() - t1;
+        frame_buf_done(NULL, ctx.buf);
+        for (int k = 0; k < 4; k++) {
+          lmix(&n[k], sizeof n[k]); lmix(pts[k], (size_t)n[k] * sizeof(fpt_t));
+          t1 = ob_now_ms();
+          nl = fit_lines(pts[k], n[k], 1.5f, 0.12f * (k & 1 ? sh : sw), line);
+          tfit += ob_now_ms() - t1;
+          nlines += nl;
+          lmix(&nl, sizeof nl); lmix(line, (size_t)nl * sizeof(fline_t));
+          free(pts[k]);
+        }
+      }
       cand_t *c = malloc((size_t)MAX_CAND * sizeof(cand_t) + CAND_XY);
       for (int form = 0; form < 2; form++) {
         t0 = ob_now_ms();
@@ -124,8 +156,26 @@ int main(void) {
     frame_buf_done(NULL, g2); free(px); free(tmp); free(bin);
     ob_layout_free(&L);
   }
+  long ncon = 0;
+#if defined(OB_NEON) || defined(OB_X86)
+  {
+    // ai: a line of 40 pixels as a row and as a column of a 7-wide picture, each edge with its window inside it
+    uint8_t g[40 * 7];
+    for (int t = 0; t < 20000; t++) {
+      for (int i = 0; i < 40 * 7; i++) g[i] = (uint8_t)(wrnd() & 255);
+      for (int e = EDGE_REACH; e + EDGE_REACH + 4 <= 40; e++) {
+        const int inner = wrnd() & 1 ? 1 : -1, dl = (int)(wrnd() % 10) - 1, ll = (int)(wrnd() % 10) - 1;
+        ncon += 2;
+        if (edge_contrast_n(g, 1, e, inner, dl, ll) != edge_contrast(g, 1, e, inner, dl, ll) || edge_contrast_n(g + 3, 7, e, inner, dl, ll) != edge_contrast(g + 3, 7, e, inner, dl, ll)) {
+          if (bad++ < 5) printf("edge_contrast_n differs: edge %d inner %d lengths %d %d\n", e, inner, dl, ll);
+        }
+      }
+    }
+  }
+#endif
   printf("finder hash %016llx (candidates %ld)\n", (unsigned long long)hs, ncand);
-  if (nwalk) printf("column walks %ld, %ld apart\n", nwalk, bad);
-  printf("ms: binarize %.2f, marks %.2f\n", tbin, tmark);
-  return bad != 0;
+  printf("line fit hash %016llx (curves %ld)%s\n", (unsigned long long)hl, nlines, hl == LINE_HASH ? "" : ", not the pinned one");
+  if (nwalk) printf("column walks %ld and edge windows %ld, %ld apart\n", nwalk, ncon, bad);
+  printf("ms: binarize %.2f, marks %.2f, points %.2f, fit %.2f\n", tbin, tmark, tline, tfit);
+  return bad != 0 || hl != LINE_HASH;
 }

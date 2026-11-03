@@ -1901,6 +1901,18 @@ static int edge_contrast(const uint8_t *g, int sx, int edge, int inner, int dark
 
 // Darkest and brightest pixel of every BLK x BLK block, at mn[by * bs + bx]. What lets the scans below pass over
 // a flat surround: it binarizes into specks by the ten thousand, every one of them a dark run to be refused.
+#ifdef OB_X86
+// ai: x86-64: arm64's pairwise minimum and maximum of bytes (UMINP, UMAXP): a's pairs (2k, 2k + 1) to bytes 0 to 7,
+// ai: b's to 8 to 15, as the even bytes against the odd ones packed side by side
+static inline __m128i x86_pmin_u8(__m128i a, __m128i b) {
+  const __m128i lo = _mm_set1_epi16(0xff);
+  return _mm_min_epu8(_mm_packus_epi16(_mm_and_si128(a, lo), _mm_and_si128(b, lo)), _mm_packus_epi16(_mm_srli_epi16(a, 8), _mm_srli_epi16(b, 8)));
+}
+static inline __m128i x86_pmax_u8(__m128i a, __m128i b) {
+  const __m128i lo = _mm_set1_epi16(0xff);
+  return _mm_max_epu8(_mm_packus_epi16(_mm_and_si128(a, lo), _mm_and_si128(b, lo)), _mm_packus_epi16(_mm_srli_epi16(a, 8), _mm_srli_epi16(b, 8)));
+}
+#endif
 static void block_range(const uint8_t *img, int w, int h, uint8_t *mn, uint8_t *mx, int bs) {
   int bw = (w + BLK - 1) / BLK, bh = (h + BLK - 1) / BLK;
   for (int by = 0; by < bh; by++) {
@@ -1919,6 +1931,20 @@ static void block_range(const uint8_t *img, int w, int h, uint8_t *mn, uint8_t *
       const uint8x16_t lq = vpminq_u8(vpminq_u8(l0, l1), vpminq_u8(l2, l3)), hq = vpmaxq_u8(vpmaxq_u8(h0, h1), vpmaxq_u8(h2, h3));
       vst1_u8(mn + by * bs + bx, vpmin_u8(vget_low_u8(lq), vget_high_u8(lq)));
       vst1_u8(mx + by * bs + bx, vpmax_u8(vget_low_u8(hq), vget_high_u8(hq)));
+    }
+#elif defined(OB_X86)
+    // ai: x86-64: arm64's form (above), the pairwise steps by x86_pmin_u8 and x86_pmax_u8: the same bytes
+    for (; (bx + 8) * BLK <= w; bx += 8) {
+      __m128i l0 = _mm_set1_epi8(-1), l1 = l0, l2 = l0, l3 = l0, h0 = _mm_setzero_si128(), h1 = h0, h2 = h0, h3 = h0;
+      for (int y = y0; y < y1; y++) {
+        const uint8_t *q = img + (size_t)y * w + bx * BLK;
+        const __m128i a = _mm_loadu_si128((const __m128i *)q), b = _mm_loadu_si128((const __m128i *)(q + 16)), c = _mm_loadu_si128((const __m128i *)(q + 32)), d = _mm_loadu_si128((const __m128i *)(q + 48));
+        l0 = _mm_min_epu8(l0, a); l1 = _mm_min_epu8(l1, b); l2 = _mm_min_epu8(l2, c); l3 = _mm_min_epu8(l3, d);
+        h0 = _mm_max_epu8(h0, a); h1 = _mm_max_epu8(h1, b); h2 = _mm_max_epu8(h2, c); h3 = _mm_max_epu8(h3, d);
+      }
+      const __m128i lq = x86_pmin_u8(x86_pmin_u8(l0, l1), x86_pmin_u8(l2, l3)), hq = x86_pmax_u8(x86_pmax_u8(h0, h1), x86_pmax_u8(h2, h3));
+      _mm_storel_epi64((__m128i *)(mn + by * bs + bx), x86_pmin_u8(lq, lq));
+      _mm_storel_epi64((__m128i *)(mx + by * bs + bx), x86_pmax_u8(hq, hq));
     }
 #endif
 #ifdef OB_SIMD
@@ -2016,14 +2042,39 @@ static inline int edge_contrast_n(const uint8_t *g, int sx, int edge, int inner,
   const uint8x16_t dm = inner > 0 ? lo : hi, lm = inner > 0 ? hi : lo;
   return (int)vmaxvq_u8(vandq_u8(v, lm)) - (int)vminvq_u8(vornq_u8(v, dm));
 }
+#elif defined(OB_X86)
+// ai: x86-64: arm64's edge_contrast_n (above) in SSE4.1: a column's twelve pixels by PINSRB, the masks by signed compares
+// ai: on the lane number, the darkest pixel by PHMINPOSUW over the pairs' minima and the brightest as 255 less the
+// ai: complement's darkest: the same darkest and brightest pixel
+static inline int x86_hmin_u8(__m128i v) { return _mm_cvtsi128_si32(_mm_minpos_epu16(_mm_min_epu8(v, _mm_srli_epi16(v, 8)))) & 0xffff; }
+static inline int edge_contrast_n(const uint8_t *g, int sx, int edge, int inner, int dark_len, int light_len) {
+  dark_len = dark_len < 0 ? 0 : dark_len > EDGE_REACH ? EDGE_REACH : dark_len;
+  light_len = light_len < 0 ? 0 : light_len > EDGE_REACH ? EDGE_REACH : light_len;
+  const uint8_t *b = g + (ptrdiff_t)(edge - EDGE_REACH) * sx;
+  __m128i v;
+  if (sx == 1) v = _mm_loadu_si128((const __m128i *)b);
+  else {
+    v = _mm_setzero_si128();
+    v = _mm_insert_epi8(v, b[0], 0); v = _mm_insert_epi8(v, b[sx], 1); v = _mm_insert_epi8(v, b[2 * sx], 2); v = _mm_insert_epi8(v, b[3 * sx], 3);
+    v = _mm_insert_epi8(v, b[4 * sx], 4); v = _mm_insert_epi8(v, b[5 * sx], 5); v = _mm_insert_epi8(v, b[6 * sx], 6); v = _mm_insert_epi8(v, b[7 * sx], 7);
+    v = _mm_insert_epi8(v, b[8 * sx], 8); v = _mm_insert_epi8(v, b[9 * sx], 9); v = _mm_insert_epi8(v, b[10 * sx], 10); v = _mm_insert_epi8(v, b[11 * sx], 11);
+  }
+  const int below = inner > 0 ? dark_len : light_len, above = inner > 0 ? light_len : dark_len;
+  const __m128i lane = _mm_setr_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15), mid = _mm_set1_epi8(EDGE_REACH);
+  // ai: lane >= k is not k > lane
+  const __m128i lo = _mm_andnot_si128(_mm_cmpgt_epi8(_mm_set1_epi8((char)(EDGE_REACH - below)), lane), _mm_cmpgt_epi8(mid, lane));
+  const __m128i hi = _mm_andnot_si128(_mm_cmpgt_epi8(mid, lane), _mm_cmpgt_epi8(_mm_set1_epi8((char)(EDGE_REACH + above)), lane));
+  const __m128i dm = inner > 0 ? lo : hi, lm = inner > 0 ? hi : lo, ones = _mm_set1_epi8(-1);
+  return (255 - x86_hmin_u8(_mm_xor_si128(_mm_and_si128(v, lm), ones))) - x86_hmin_u8(_mm_or_si128(v, _mm_xor_si128(dm, ones)));
+}
 #endif
 
 // edge_contrast(...) >= min_con for an edge of scan line `line` (a row, or with axis 1 a column). The test reads
 // pixels edge - EDGE_REACH .. edge + EDGE_REACH - 1 of the line at most, so where the blocks under those hold no
 // such contrast between them the answer is no, and no pixel is read.
 static inline int edge_passes(const edge_ctx_t *c, int axis, int line, int edge, int inner, int dark_len, int light_len) {
-#ifdef OB_NEON
-  // ai: arm64: where the window lies inside the line its pixels are read at once; the blocks' test below is only a
+#if defined(OB_NEON) || defined(OB_X86)
+  // ai: arm64 and x86-64: where the window lies inside the line its pixels are read at once; the blocks' test below is only a
   // ai: shortcut to the same no (light - dark is never more than the blocks' range), so the answer is the same
   if (edge >= EDGE_REACH && edge + (axis ? EDGE_REACH : 16 - EDGE_REACH) <= (axis ? c->h : c->w))
     return edge_contrast_n(axis ? c->grey + line : c->grey + (size_t)line * c->w, axis ? c->w : 1, edge, inner, dark_len, light_len) >= c->min_con;
@@ -2075,6 +2126,12 @@ static inline uint64_t bounds16(const uint8_t *p, const uint8_t *q) {
   const uint8x16_t eq = vceqq_u8(vld1q_u8(p), vld1q_u8(q));
   return ~vget_lane_u64(vreinterpret_u64_u8(vshrn_n_u16(vreinterpretq_u16_u8(eq), 4)), 0) & 0x1111111111111111ull;
 }
+#elif defined(OB_X86)
+// ai: x86-64: which of the sixteen pixels at p differ from those at q, as bit i for pixel i (the equal bytes' PMOVMSKB,
+// ai: inverted)
+static inline unsigned bounds16(const uint8_t *p, const uint8_t *q) {
+  return ~(unsigned)_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_loadu_si128((const __m128i *)p), _mm_loadu_si128((const __m128i *)q))) & 0xffffu;
+}
 #endif
 
 // Candidates of the left border (near) and the right (far) from every second row: the first SIDE_K from each end.
@@ -2098,6 +2155,11 @@ static void row_points(const uint8_t *bin, int w, int h, const edge_ctx_t *c, fp
       // ai: arm64: the sixteen boundaries as a nibble each (SHRN), bit 4 i for pixel u0 + i
       if (u0 && u1 == u0 + 16) {
         for (uint64_t m = bounds16(row + u0, row + u0 - 1); m && s.got < SIDE_K; m &= m - 1) { int p = u0 + (__builtin_ctzll(m) >> 2); near_edge(&s, p, row[p], c, 0, y, out); }
+        continue;
+      }
+#elif defined(OB_X86)
+      if (u0 && u1 == u0 + 16) {
+        for (unsigned m = bounds16(row + u0, row + u0 - 1); m && s.got < SIDE_K; m &= m - 1) { int p = u0 + __builtin_ctz(m); near_edge(&s, p, row[p], c, 0, y, out); }
         continue;
       }
 #elif defined(OB_SIMD)
@@ -2124,6 +2186,11 @@ static void row_points(const uint8_t *bin, int w, int h, const edge_ctx_t *c, fp
         for (uint64_t m = bounds16(row + u0, row + u0 - 1); m && s.got < SIDE_K; ) { int b = 63 - __builtin_clzll(m), p = u0 + (b >> 2); m ^= 1ull << b; far_edge(&s, p, row[p], c, 0, y, out); }
         continue;
       }
+#elif defined(OB_X86)
+      if (u0 && u1 == u0 + 16) {
+        for (unsigned m = bounds16(row + u0, row + u0 - 1); m && s.got < SIDE_K; ) { int i = 31 - __builtin_clz(m), p = u0 + i; m &= ~(1u << i); far_edge(&s, p, row[p], c, 0, y, out); }
+        continue;
+      }
 #elif defined(OB_SIMD)
       if (u0 && u1 == u0 + 16) {
         for (unsigned m = (unsigned)wasm_i8x16_bitmask(wasm_i8x16_ne(wasm_v128_load(row + u0), wasm_v128_load(row + u0 - 1))); m && s.got < SIDE_K; ) { int i = 31 - __builtin_clz(m), p = u0 + i; m &= ~(1u << i); far_edge(&s, p, row[p], c, 0, y, out); }
@@ -2137,8 +2204,8 @@ static void row_points(const uint8_t *bin, int w, int h, const edge_ctx_t *c, fp
   }
 }
 
-#ifdef OB_NEON
-// ai: arm64: col_points' boundaries m of row y in chunk c (bit i: column 16 c + i), in column order
+#if defined(OB_NEON) || defined(OB_X86)
+// ai: arm64 and x86-64: col_points' boundaries m of row y in chunk c (bit i: column 16 c + i), in column order
 static inline void col_bounds(scan_t *st, fpt_t *slot, const edge_ctx_t *ctx, int dir, int y, const uint8_t *r1, int c, unsigned m, uint16_t *active, int *live) {
   for (; m; m &= m - 1) {
     int i = __builtin_ctz(m), x = 16 * c + i;
@@ -2159,8 +2226,9 @@ static void col_points(const uint8_t *bin, int w, int h, const edge_ctx_t *ctx, 
   int nc = w / 2, chunks = ctx->chunks;
   scan_t *st = malloc((size_t)nc * sizeof(scan_t));
   fpt_t *slot = malloc((size_t)nc * SIDE_K * sizeof(fpt_t));
-#ifdef OB_NEON
-  // ai: arm64: the masks padded to whole groups of eight chunks, the padding never active, for the group test below
+#if defined(OB_NEON) || defined(OB_X86)
+  // ai: arm64 and x86-64: the masks padded to whole groups of eight chunks, the padding never active, for the group test
+  // ai: below
   const int cpad = (chunks + 7) & ~7;
   uint16_t *active = calloc((size_t)cpad * 2, sizeof(uint16_t)), *asleep = active + cpad;
 #else
@@ -2227,6 +2295,24 @@ static void col_points(const uint8_t *bin, int w, int h, const edge_ctx_t *ctx, 
           if (16 * c + 16 <= w) m = (unsigned)wasm_i8x16_bitmask(wasm_i8x16_ne(wasm_v128_load(r1 + 16 * c), wasm_v128_load(r0 + 16 * c))) & awake;
           else for (unsigned a = awake; a; a &= a - 1) { int i = __builtin_ctz(a); m |= (unsigned)(r1[16 * c + i] != r0[16 * c + i]) << i; }
           col_bounds(st, slot, ctx, dir, y, r1, c, m, active, &live);
+        }
+      }
+#elif defined(OB_X86)
+      // ai: x86-64: arm64's groups of eight chunks (above): a group with no column awake passed over whole (PTEST); in a
+      // ai: group each chunk's boundary mask by PMOVMSKB where the chunk is whole, masked by the columns the group's test
+      // ai: found awake (a chunk's own boundaries change only its own mask), each chunk in order as the plain loop takes it
+      for (int c0 = 0; c0 < chunks; c0 += 8) {
+        const __m128i aw = _mm_andnot_si128(_mm_loadu_si128((const __m128i *)(asleep + c0)), _mm_loadu_si128((const __m128i *)(active + c0)));
+        if (_mm_testz_si128(aw, aw)) continue;
+        uint16_t a8[8];
+        _mm_storeu_si128((__m128i *)a8, aw);
+        for (int k = 0; k < 8 && c0 + k < chunks; k++) {
+          const int c = c0 + k;
+          if (!a8[k]) continue;
+          unsigned m = 0;
+          if (16 * c + 16 <= w) m = ~(unsigned)_mm_movemask_epi8(_mm_cmpeq_epi8(_mm_loadu_si128((const __m128i *)(r1 + 16 * c)), _mm_loadu_si128((const __m128i *)(r0 + 16 * c)))) & a8[k];
+          else for (unsigned a = a8[k]; a; a &= a - 1) { int i = __builtin_ctz(a); m |= (unsigned)(r1[16 * c + i] != r0[16 * c + i]) << i; }
+          if (m) col_bounds(st, slot, ctx, dir, y, r1, c, m, active, &live);
         }
       }
 #else
