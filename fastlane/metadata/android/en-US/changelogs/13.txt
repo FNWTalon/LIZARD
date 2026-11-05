@@ -1,0 +1,2 @@
+- The block's check is CRC-32C: this release and 0.8.3 or earlier do not read each other's codes.
+- The GPU decoder reads about 1% more data, in a little less time.
