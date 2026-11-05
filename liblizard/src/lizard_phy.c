@@ -12,6 +12,11 @@ struct lizard_ws {
   float *cx, *qx;                   // the detrend's basis vectors: c = (2 i + 1 - n) / n, and c^2 less its mean
   float *x1r, *x1i, *x2r, *x2i;     // their transforms
   double sx2, sq2;                  // their squared norms
+  // ai: the anchors' squares as a receiver erases them (SPEC 6.13): the samples [elo[i], ehi[i]] on either axis, the
+  // ai: 49 products of the 7 ranges; and the inverse of the normal matrix of the shading their samples are set to
+  // ai: (hole_basis over every eighth sample each way outside the squares): fixed by the format, made once (ws_init)
+  int elo[OB_ANCH_K], ehi[OB_ANCH_K];
+  double hole_inv[6][6];
   float *amp;                       // per sub-channel, the magnitude its coefficients are sent at (lizard_phy.h, tilt)
   double power;                     // the sum of their squares over every coefficient
   uint8_t *bits, *data;
@@ -316,6 +321,23 @@ static int pilot_align(const lizard_t *f, struct lizard_ws *w, float d[2]) {
   return used;
 }
 
+// ai: a sample index inside one of the anchors' squares on its axis (the same seven ranges on both)
+static int in_square(const struct lizard_ws *w, int t) {
+  for (int i = 0; i < OB_ANCH_K; i++) if (t >= w->elo[i] && t <= w->ehi[i]) return 1;
+  return 0;
+}
+// ai: the shading's basis at picture sample (x, y), x the column: 1 and the detrend's five functions (6.10)
+static void hole_basis(const struct lizard_ws *w, int x, int y, double b[6]) {
+  const double cx = w->cx[x], cy = w->cx[y];
+  b[0] = 1; b[1] = cx; b[2] = w->qx[x]; b[3] = cy; b[4] = w->qx[y]; b[5] = cx * cy;
+}
+static float hole_value(const struct lizard_ws *w, const double beta[6], int x, int y) {
+  double b[6], v = 0;
+  hole_basis(w, x, y, b);
+  for (int r = 0; r < 6; r++) v += beta[r] * b[r];
+  return (float)v;
+}
+
 static int ws_init(lizard_t *f) {
   struct lizard_ws *w = calloc(1, sizeof *w);
   if (!w) return -1;
@@ -370,6 +392,32 @@ static int ws_init(lizard_t *f) {
     w->x1r[u] = (float)ar; w->x1i[u] = (float)ai; w->x2r[u] = (float)br; w->x2i[u] = (float)bi;
   }
   free(e);
+  // ai: the anchors' squares as erased (SPEC 6.13), and the normal matrix of the shading fit their fill takes over the
+  // ai: samples on every eighth row and column outside them, inverted (Gauss-Jordan, partial pivots)
+  const int a = ob_anchor_side(&f->frame);
+  for (int i = 0; i < OB_ANCH_K; i++) {
+    const int m0 = ob_anchor_m0(&f->frame, i);
+    const int lo = (int)floorf((m0 - f->margin) * f->scale) - OB_ANCH_MARGIN, hi = (int)ceilf((m0 + a - f->margin) * f->scale) - 1 + OB_ANCH_MARGIN;
+    w->elo[i] = lo < 0 ? 0 : lo; w->ehi[i] = hi > n - 1 ? n - 1 : hi;
+  }
+  double g[6][12] = {{0}};
+  for (int y = 0; y < n; y += 8) for (int x = 0; x < n; x += 8) {
+    if (in_square(w, x) && in_square(w, y)) continue;
+    double b[6];
+    hole_basis(w, x, y, b);
+    for (int r = 0; r < 6; r++) for (int c = 0; c < 6; c++) g[r][c] += b[r] * b[c];
+  }
+  for (int r = 0; r < 6; r++) g[r][6 + r] = 1;
+  for (int c = 0; c < 6; c++) {
+    int p = c;
+    for (int r = c + 1; r < 6; r++) if (fabs(g[r][c]) > fabs(g[p][c])) p = r;
+    if (fabs(g[p][c]) < 1e-12) return -1;
+    for (int k = 0; k < 12; k++) { const double t = g[c][k]; g[c][k] = g[p][k]; g[p][k] = t; }
+    const double d = g[c][c];
+    for (int k = 0; k < 12; k++) g[c][k] /= d;
+    for (int r = 0; r < 6; r++) if (r != c) { const double m = g[r][c]; for (int k = 0; k < 12; k++) g[r][k] -= m * g[c][k]; }
+  }
+  for (int r = 0; r < 6; r++) for (int c = 0; c < 6; c++) w->hole_inv[r][c] = g[r][6 + c];
   return 0;
 }
 
@@ -1543,57 +1591,36 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
   // runs. The registration still has to be let go, which is why the free below is outside the guard.
   if (ext_llr) { ob_reg_free(&reg); goto have_llr; }
   // ai: the anchors (SPEC 6.13): every sample an anchor's square touches and OB_ANCH_MARGIN round it set to the
-  // ai: picture's mean before the detrend and the transform, on every frame, however many anchors its acquisition
-  // ai: found (the margin measured: on the S26's lenses an erased sample more costs about 0.2 dB in a 1:1 crop, one
-  // ai: fewer 0.15; research/build/anchors/PLAN.md). The squares sit on a lattice, so one range of samples a lattice
-  // ai: index serves both axes (elo, ehi).
-  int elo[OB_ANCH_K], ehi[OB_ANCH_K];
-  float mv = 0;
+  // ai: picture's shading there, on every frame, however many anchors its acquisition found, before the detrend and the
+  // ai: transform (the margin measured: on the S26's lenses an erased sample more costs about 0.2 dB in a 1:1 crop, one
+  // ai: fewer 0.15; research/build/anchors/PLAN.md). The shading is the least-squares surface in 1, c(x), q(x), c(y),
+  // ai: q(y), c(x) c(y) over the samples on every eighth row and column outside the squares (its normal matrix inverted
+  // ai: once, ws_init), so a square reads 0 once the detrend has taken the surface off. At the picture's mean it held
+  // ai: the shading there instead: 49 patches on the squares' lattice, whose spectrum is the shading's low frequencies
+  // ai: copied round every point of the lattice's reciprocal, onto block 0 (2026-11-05, STATUS "The SNR inside a
+  // ai: block, the four tools, and the anchors' holes": block 0 read on 0 of 300 captures in four replays).
+  const int *elo = w->elo, *ehi = w->ehi;
+  double beta[6] = {0};
   {
-    const int a = ob_anchor_side(&f->frame);
-    for (int i = 0; i < OB_ANCH_K; i++) {
-      const int m0 = ob_anchor_m0(&f->frame, i);
-      const int lo = (int)floorf((m0 - f->margin) * f->scale) - OB_ANCH_MARGIN, hi = (int)ceilf((m0 + a - f->margin) * f->scale) - 1 + OB_ANCH_MARGIN;
-      elo[i] = lo < 0 ? 0 : lo; ehi[i] = hi > n - 1 ? n - 1 : hi;
-    }
-    // ai: the mean of a caller's grid over every sample; of one sampled here, over every eighth sample each way (a
-    // ai: whole grid sampled for its mean alone was 9.4 MB at 1536, faulted in every frame), its c rows of c taken in
-    // ai: one call into the strip's buffer (n / 8 squared, within its n by LIZARD_STRIP), summed in the same order (on
-    // ai: arm64 in four double pairs, samples k mod 8, added at the end: other roundings of the same double sum, where
-    // ai: one chain of c^2 dependent adds waited on each other; the same float mean on all 16 runs)
-    double mean = 0;
-    if (grid) {
-      for (size_t k = 0; k < (size_t)n * n; k++) mean += grid[k];
-      mean /= (double)n * n;
-    } else {
-      const int c = n / 8;
-      ob_sample_grid_pic(&f->frame, &im, &reg, g0, g0, 8 * step, 0, c, 0, c, w->wre, c);
-      size_t k = 0;
-#ifdef OB_NEON
-      float64x2_t s0 = vdupq_n_f64(0), s1 = s0, s2 = s0, s3 = s0;
-      for (; k + 8 <= (size_t)c * c; k += 8) {
-        const float32x4_t a = vld1q_f32(w->wre + k), b = vld1q_f32(w->wre + k + 4);
-        s0 = vaddq_f64(s0, vcvt_f64_f32(vget_low_f32(a))); s1 = vaddq_f64(s1, vcvt_high_f64_f32(a));
-        s2 = vaddq_f64(s2, vcvt_f64_f32(vget_low_f32(b))); s3 = vaddq_f64(s3, vcvt_high_f64_f32(b));
+    // ai: the samples on every eighth row and column: a caller's grid read in place, or one call into the strip's
+    // ai: buffer (n / 8 squared, within its n by LIZARD_STRIP), sample (8 kx, 8 ky) at wre[ky c + kx]
+    const int c = n / 8;
+    if (!grid) ob_sample_grid_pic(&f->frame, &im, &reg, g0, g0, 8 * step, 0, c, 0, c, w->wre, c);
+    double rhs[6] = {0};
+    for (int ky = 0; ky < c; ky++) {
+      const int y = 8 * ky, iy = in_square(w, y);
+      for (int kx = 0; kx < c; kx++) {
+        const int x = 8 * kx;
+        if (iy && in_square(w, x)) continue;
+        const double v = grid ? grid[(size_t)(x / sw) * n * sw + (size_t)y * sw + x % sw] : w->wre[(size_t)ky * c + kx];
+        double b[6];
+        hole_basis(w, x, y, b);
+        for (int r = 0; r < 6; r++) rhs[r] += b[r] * v;
       }
-      mean = vaddvq_f64(vaddq_f64(vaddq_f64(s0, s1), vaddq_f64(s2, s3)));
-#elif defined(OB_X86)
-      // ai: x86-64: arm64's four double pairs, the same sums in the same order
-      __m128d s0 = _mm_setzero_pd(), s1 = s0, s2 = s0, s3 = s0;
-      for (; k + 8 <= (size_t)c * c; k += 8) {
-        const __m128 a = _mm_loadu_ps(w->wre + k), b = _mm_loadu_ps(w->wre + k + 4);
-        s0 = _mm_add_pd(s0, _mm_cvtps_pd(a)); s1 = _mm_add_pd(s1, _mm_cvtps_pd(_mm_movehl_ps(a, a)));
-        s2 = _mm_add_pd(s2, _mm_cvtps_pd(b)); s3 = _mm_add_pd(s3, _mm_cvtps_pd(_mm_movehl_ps(b, b)));
-      }
-      const __m128d sm = _mm_add_pd(_mm_add_pd(s0, s1), _mm_add_pd(s2, s3));
-      mean = _mm_cvtsd_f64(sm) + _mm_cvtsd_f64(_mm_unpackhi_pd(sm, sm));
-#endif
-      for (; k < (size_t)c * c; k++) mean += w->wre[k];
-      mean /= (double)c * c;
     }
-    mv = (float)mean;
+    for (int r = 0; r < 6; r++) for (int k = 0; k < 6; k++) beta[r] += w->hole_inv[r][k] * rhs[k];
     if (grid) for (int j = 0; j < OB_ANCH_K; j++) for (int i = 0; i < OB_ANCH_K; i++)
-      for (int y = elo[j]; y <= ehi[j]; y++) for (int x = elo[i]; x <= ehi[i]; x++) grid[(size_t)(x / sw) * n * sw + (size_t)y * sw + x % sw] = mv;
+      for (int y = elo[j]; y <= ehi[j]; y++) for (int x = elo[i]; x <= ehi[i]; x++) grid[(size_t)(x / sw) * n * sw + (size_t)y * sw + x % sw] = hole_value(w, beta, x, y);
   }
   for (int x0 = 0; x0 < n; x0 += sw) {
     double ta = ob_now_ms();
@@ -1605,7 +1632,7 @@ int lizard_finish_ext(const lizard_t *f, float *grid, const int8_t *ext_llr, con
       for (int i = 0; i < OB_ANCH_K; i++) {
         const int xl = elo[i] > x0 ? elo[i] : x0, xh = ehi[i] < x0 + sw - 1 ? ehi[i] : x0 + sw - 1;
         if (xl > xh) continue;
-        for (int j = 0; j < OB_ANCH_K; j++) for (int y = elo[j]; y <= ehi[j]; y++) for (int x = xl; x <= xh; x++) z[(size_t)y * sw + x - x0] = mv;
+        for (int j = 0; j < OB_ANCH_K; j++) for (int y = elo[j]; y <= ehi[j]; y++) for (int x = xl; x <= xh; x++) z[(size_t)y * sw + x - x0] = hole_value(w, beta, x, y);
       }
     }
     double tb = ob_now_ms(); ob_prof_ms[PROF_F_SAMPLE] += tb - ta;

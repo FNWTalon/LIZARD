@@ -1060,10 +1060,16 @@ geometry inside the border.
 - **Painting.** After the picture is resampled into the drive (6.8), every square overwrites the drive pixels it
   covers. No slot, block, coefficient or word bit changes for it.
 - **Erasing (a receiver MUST).** Before the detrend (6.10) and the transform, on every frame, whether or not it found
-  the anchors, a receiver sets every picture sample a square touches and 2 samples beyond it on each side to the
-  picture's mean: on either axis the samples from floor((m0(i) - 15) scale) - 2 to ceil((m0(i) + a - 15) scale) - 1 + 2,
-  clamped to [0, n - 1], for each i, the 49 products of the 7 ranges on the two axes (`lizard_phy.c:lizard_finish_ext`). The
-  mean need not be exact (the reference takes it over every eighth sample each way).
+  the anchors, a receiver sets every picture sample a square touches and 2 samples beyond it on each side to a value
+  that carries none of the picture's signal: on either axis the samples from floor((m0(i) - 15) scale) - 2 to
+  ceil((m0(i) + a - 15) scale) - 1 + 2, clamped to [0, n - 1], for each i, the 49 products of the 7 ranges on the two
+  axes (`lizard_phy.c:lizard_finish_ext`).
+- **The reference's fill** is the picture's shading at the sample: the least-squares surface in 1, c(x), q(x), c(y),
+  q(y) and c(x) c(y) (6.10's basis) over the samples (x, y) with x and y multiples of 8 that lie outside the 49
+  products (its normal matrix depends on the format alone, `ws_init`). A square then reads 0 once the detrend has
+  taken the surface off. A constant fill, the picture's mean, leaves the shading at the 49 places instead: a lattice
+  whose spectrum is the shading's lowest frequencies around every point of the squares' reciprocal lattice, where the
+  innermost blocks sit.
 - **Reading them** is the receiver's (10.1, 10.2).
 
 ## 7. Blocks, the bit mapping and the transfer
