@@ -617,8 +617,13 @@ bool systemSleep(int64_t t) {
 // ai: sleepUntil and the system's sleep, 200 targets each 0.5 to 20 ms ahead, taken in turn so both meet the same
 // ai: machine: sleepUntil never early, and at the median no later than the system's own sleep and 20 us (the clocks'
 // ai: reading): it sleeps to 0.3 ms before t and spins the rest, so it is later than its system's sleep only where it
-// ai: went wrong, while a machine's coarse timers make both late alike.
+// ai: went wrong, while a machine's coarse timers make both late alike. LIZ_CHECK_TIMING=0 holds it to never early
+// ai: alone, said so: on a machine not held to real time the two medians are a draw between two spreads of tens of ms
+// ai: (GitHub's macOS runner, 2026-11-03 to 05: both 19 to 33 ms late at the median, p99 130 to 160 ms; held, it passed
+// ai: three runs and failed two)
 void clockSleep(Report& r) {
+  const char* tv = std::getenv("LIZ_CHECK_TIMING");
+  const bool timing = !(tv && std::string(tv) == "0");
   std::mt19937 rng(17);
   std::uniform_int_distribution<int64_t> ahead(500'000, 20'000'000);
   std::vector<double> late, sys;
@@ -638,12 +643,14 @@ void clockSleep(Report& r) {
   }
   const double p50 = pct(late, 0.5), p99 = pct(late, 0.99), mx = pct(late, 1.0);
   const double s50 = hasSys ? pct(sys, 0.5) : 0, s99 = hasSys ? pct(sys, 0.99) : 0;
-  r.say(early == 0 && (!hasSys || p50 <= s50 + 20), "clock sleepUntil",
+  r.say(early == 0 && (!timing || !hasSys || p50 <= s50 + 20), "clock sleepUntil",
         fmt("200 targets 0.5 to 20 ms ahead: late p50 %.2f us, p99 %.2f us, max %.2f us%s; the system's own sleep to the "
             "same targets %s",
             p50, p99, mx, early ? fmt(", %d EARLY", early).c_str() : ", none early",
-            hasSys ? fmt("late p50 %.2f us, p99 %.2f us (the median it is held to, and 20 us)", s50, s99).c_str()
-                   : "not here (no high-resolution timer): held to never early alone"));
+            !hasSys  ? "not here (no high-resolution timer): held to never early alone"
+            : timing ? fmt("late p50 %.2f us, p99 %.2f us (the median it is held to, and 20 us)", s50, s99).c_str()
+                     : fmt("late p50 %.2f us, p99 %.2f us (LIZ_CHECK_TIMING=0: a machine not held to real time, held "
+                           "to never early alone)", s50, s99).c_str()));
 }
 
 }  // namespace
