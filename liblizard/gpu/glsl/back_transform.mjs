@@ -12,7 +12,7 @@
 import { VERSION, SAMPLERLESS, F16, STORAGE16, DIMS, CONVERT, LUMH, lumhHead, MAP } from "./common.mjs";
 import { COONS } from "./sample.mjs";
 import { SLOTS } from "../plan/common.mjs";
-import { ARGS_WORDS, CPW, LATTICE_MAX, ANCH_SIDE, ANCH_REC, ANCH_ERASE, listsHead, listsRows, listsRing, argsLdpc } from "../plan/back_transform.mjs";
+import { ARGS_WORDS, CPW, LATTICE_MAX, ANCH_SIDE, ANCH_REC, ANCH_SURF, ANCH_ERASE, listsHead, listsRows, listsRing, argsLdpc } from "../plan/back_transform.mjs";
 import { NC } from "../plan/back_tiers.mjs";
 import { stagesOf } from "../back/disc.mjs";
 import { RING_COUNT } from "../plan/finder.mjs";
@@ -252,7 +252,8 @@ vec2 anchMesh(AnchHerm h, uint col) {
   return h.w.x * anE[o] + h.w.y * anE[o + 1u] + h.w.z * anE[o + 2u] + h.w.w * anE[o + 3u];
 }
 `;
-const anchHead = () => `  uint ab = f * ${ANCH_REC}u;\n  vec4 ahd = arec[ab];\n  bool aon = ahd.x > 0.5;\n  float amean = ahd.y;\n`;
+// ai: the squares' fill (ANCH_FIT's surface, plan/back_transform.mjs ANCH_SURF): u = m sk + so of a module coordinate m
+const anchHead = () => `  uint ab = f * ${ANCH_REC}u;\n  vec4 ahd = arec[ab];\n  bool aon = ahd.x > 0.5;\n  vec4 sfa = arec[ab + ${ANCH_SURF}u];\n  vec2 sfb = arec[ab + ${ANCH_SURF + 1}u].xy;\n  vec4 sgeo = arec[ab + 3u];\n  float sk = 2.0 / sgeo.z;\n  float so = -2.0 * sgeo.w / sgeo.z - 1.0;\n`;
 const anchErase = (n, picture) => `      if (tid < ${ANCH_SIDE}u) {
         vec4 ag = arec[ab + 3u];
         int ia = f2i(ag.y);
@@ -277,6 +278,8 @@ export function pass1Source({ n, prec, B, picture = n }) {
   for (let q = 0; q < quads; q++) {
     body += `  {\n    uint xq = x0 + ${4 * q}u;\n`;
     for (let k = 0; k < 4; k++) body += `    float mx${k} = g0 + float(xq + ${k}u) * gstep;\n    float u${k} = coonsT(mx${k}, first, nn);\n    vec2 tp${k} = curve(f, 0u, mx${k}, first, nn);\n    vec2 bt${k} = curve(f, 2u, mx${k}, first, nn);\n`;
+    // ai: the fill along this quad's columns: fa its terms in u alone, fb the coefficient of w (b4 w^2 apart)
+    body += `    vec4 sux = vec4(mx0, mx1, mx2, mx3) * sk + so;\n    vec4 fa = sfa.x + sux * (sfa.y + sux * sfa.z);\n    vec4 fb = sfa.w + sfb.y * sux;\n`;
     body += `    bvec4 aix = bvec4(false);\n    if (aon) {\n`;
     body += `      if (tid < ${ANCH_SIDE + 2}u) { anK[tid] = aknot(ab, tid); }\n` + anchErase(n, picture) + `      barrier();\n      if (tid < 4u) { anCol[tid] = anchIn(int(xq + tid)) ? 1u : 0u; }\n`;
     body += `      for (uint ai = tid; ai < ${4 * ANCH_ROWS}u; ai += T) {\n        uint arow = ai % ${ANCH_ROWS}u;\n        vec2 aev = vec2(0.0);\n`;
@@ -291,9 +294,9 @@ export function pass1Source({ n, prec, B, picture = n }) {
     for (let r = 0; r < 8; r++) {
       body += `    {\n      uint y = tid + ${r * T}u;\n`;
       body += `      vec4 nA = nodeP[y / 8u];\n      vec4 nB = nodeP[y / 8u + 1u];\n      float fy = float(y % 8u) * 0.125;\n      vec2 pL = mix(nA.xy, nB.xy, fy);\n      vec2 pR = mix(nA.zw, nB.zw, fy);\n`;
-      body += `      vec4 zz = vec4(amean);\n      if (aon) {\n`;
+      body += `      vec4 zz = vec4(0.0);\n      if (aon) {\n`;
       body += `        zz = vec4(bilinH(f, pL, hhi, hinv), bilinH(f, mix(pL, pR, 1.0 / 3.0), hhi, hinv), bilinH(f, mix(pL, pR, 2.0 / 3.0), hhi, hinv), bilinH(f, pR, hhi, hinv));\n`;
-      body += `        bool ay = anchIn(int(y));\n        zz = mix(zz, vec4(amean), bvec4(aix.x && ay, aix.y && ay, aix.z && ay, aix.w && ay));\n      }\n`;
+      body += `        bool ay = anchIn(int(y));\n        float suy = (g0 + float(y) * gstep) * sk + so;\n        zz = mix(zz, fa + suy * (fb + suy * sfb.x), bvec4(aix.x && ay, aix.y && ay, aix.z && ay, aix.w && ay));\n      }\n`;
       body += `      z[${r}] = zz;\n`;
       body += `      float c = float(2 * int(y) + 1 - int(N)) / float(N);\n      s1 += zz;\n      sc += zz * c;\n      sq += zz * (c * c - P.m2);\n    }\n`;
     }

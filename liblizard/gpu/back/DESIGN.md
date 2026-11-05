@@ -426,5 +426,6 @@ Pass 1 samples each picture itself: no grid is written or read.
 - The anchors (SPEC 6.13): pass 1 reads the front half's record a frame (binding 10, written by F7a's ANCH_FIT),
   adds the knots' tensor cubic Hermite mesh (the C's `anch_herm4`) to every sample's position before its bilinear
   read, and sets every sample within the square's half side plus 2.5 of the picture's samples of an anchor's centre,
-  on both axes, to the picture's mean before z and the detrend's sums, the erased ranges decided in integers on pass
-  1's own grid (no device's rounding decides a sample).
+  on both axes, to the picture's shading there (the surface ANCH_FIT fits in the detrend's functions over the picture
+  outside the squares, six coefficients in the record) before z and the detrend's sums, the erased ranges decided in
+  integers on pass 1's own grid (no device's rounding decides a sample).

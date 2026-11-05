@@ -365,7 +365,7 @@ export class FrontHalf {
   // ai: The anchors' stages (glsl/anchors.mjs), once, from build(): ANCH_FIND, ANCH_PREDICT, the border's second search
   // ai: (nodesC: glsl/register.mjs nodesSource centred, on NODES' layout, with its own round, anchRound), ANCH_REFIT (ANCH_PREDICT
   // ai: on its layout, so its group serves both), ANCH_FIT, their uniform (anchUni: each ring's knots, a, span and
-  // ai: margin).
+  // ai: margin, then each ring's inverse of the squares' fill's normal matrix).
   async buildAnchors() {
     if (this.anchFind) return;
     const P = (code, entries) => this.pipeline(code, entries);

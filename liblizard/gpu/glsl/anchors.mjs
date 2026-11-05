@@ -1,6 +1,6 @@
 // The anchors in GLSL: the WGSL anchors.mjs (archived) statement for statement (its comments say what each stage does, SPEC 6.13):
 // ANCH_FIND (a workgroup of 128 an (anchor, frame): the squares found by normalised correlation from integral images,
-// coarse then fine), ANCH_FIT (the knots, the fill, the picture's mean, the record), and anchRefitSource: ANCH_REFIT
+// coarse then fine), ANCH_FIT (the knots, the fill, the squares' shading, the record), and anchRefitSource: ANCH_REFIT
 // (the lens about the axis over the border and the anchors, robust over the border, the sides' curves) and
 // ANCH_PREDICT (the fit over the anchors alone, the border's places for its second search).
 // ai: Bindings, workgroup sizes and layouts are the WGSL's. Workgroup memory is not zeroed but where the WGSL reads it
@@ -9,10 +9,10 @@
 // ai: variable).
 import { VERSION, SAMPLERLESS, NULL_INIT, DIMS, CONVERT, MAP, LUM0, lit, zeros, uniformLoad, STORAGE_BARRIER } from "./common.mjs";
 import { COONS } from "./sample.mjs";
-import { LATTICE_MAX, ANCH_SIDE, ANCH_K, ANCH_REC } from "../plan/back_transform.mjs";
+import { LATTICE_MAX, ANCH_SIDE, ANCH_K, ANCH_REC, ANCH_SURF } from "../plan/back_transform.mjs";
 import { RING_COUNT } from "../plan/finder.mjs";
 import { NODES_MAX, RESID, WMIN, LENS_P } from "../plan/register.mjs";
-import { ANCH_TS, ANCH_PEAK, ANCH_MIN, ANCH_ROUNDS } from "../plan/anchors.mjs";
+import { ANCH_TS, ANCH_PEAK, ANCH_MIN, ANCH_ROUNDS, ANCH_FILL, ANCH_BAND2 } from "../plan/anchors.mjs";
 import { lensNode, lensAccumulate, lensModel, lensNormalSolve, SIDE_FITS, SIDE_DECL } from "./register.mjs";
 
 const RR = ANCH_TS, TC = ANCH_TS / 2, RC = RR / 2, WC = TC + 2 * RC, W1C = WC + 1, OC = 2 * RC + 1;
@@ -34,7 +34,7 @@ layout(set = 0, binding = 2, std430) readonly buffer Maps { float maps[][16]; };
 layout(set = 0, binding = 3, std430) readonly buffer Sel { uvec4 sel[]; };
 layout(set = 0, binding = 4, std430) readonly buffer Resid { vec4 resid[]; };
 layout(set = 0, binding = 5, std140) uniform Lattice { uvec4 at[${RING_COUNT}]; vec4 lat[${(RING_COUNT * LATTICE_MAX) / 4}]; } LT;
-layout(set = 0, binding = 6, std140) uniform Anchors { vec4 k[${3 * RING_COUNT}]; } A;
+layout(set = 0, binding = 6, std140) uniform Anchors { vec4 k[${3 * RING_COUNT}]; vec4 g[${9 * RING_COUNT}]; } A;
 float latAt(uint i) { return LT.lat[i >> 2u][i & 3u]; }
 float knot(uint r, uint i) { return A.k[3u * r + (i >> 2u)][i & 3u]; }
 ` + COONS + LUM0 + /* glsl */ `
@@ -204,7 +204,7 @@ const uint SIDE = ${ANCH_SIDE}u;
 shared vec2 kv[${ANCH_K}];
 shared uint kn[${ANCH_K}];
 shared uint kn2[${ANCH_K}];
-shared float red[64];
+shared float red[${6 * 64}];
 shared uint wfound;
 vec3 around(uint q) {
   uint i = q % SIDE;
@@ -216,6 +216,16 @@ vec3 around(uint q) {
   if (j > 0u && kn[q - SIDE] == 1u) { s += kv[q - SIDE]; c += 1.0; }
   if (j + 1u < SIDE && kn[q + SIDE] == 1u) { s += kv[q + SIDE]; c += 1.0; }
   return vec3(s, c);
+}
+// ai: the fill's points (plan/anchors.mjs ANCH_FILL): whether point p of an axis lies within the band of an anchor's
+// ai: centre, in integers of 2 ANCH_FILL times a module (an anchor's centre, the margin, the span and a are whole)
+bool fillBand(uint r, int p, int sp, int mg, int aa) {
+  bool hit = false;
+  for (uint i = 1u; i <= SIDE; i++) {
+    int d = ${2 * ANCH_FILL} * (f2i(knot(r, i)) - mg) - sp * (2 * p + 1);
+    hit = hit || abs(d) <= ${ANCH_BAND2 * ANCH_FILL} * aa;
+  }
+  return hit;
 }
 void main() {
   uvec3 wg = gl_WorkGroupID;
@@ -263,22 +273,60 @@ void main() {
   float M[16] = maps[f];
   Lens lz = lensOf(f);
   uvec4 at = LT.at[rgi];
-  float sum = 0.0;
-  for (uint p = li; p < 256u; p += 64u) {
-    vec2 m = vec2(margin + span * (float(p % 16u) + 0.5) / 16.0, margin + span * (float(p / 16u) + 0.5) / 16.0);
-    sum += bilin0(f, mapAt(f, M, lz, at.x, at.y, m), int(F.w), int(F.h));
+  // ai: the squares' fill (SPEC 6.13; plan/anchors.mjs ANCH_FILL): the shading's least-squares surface over the
+  // ai: picture's points in no square, its normal matrix's inverse the ring's (A.g, the C's hole_inv)
+  int sp = f2i(span);
+  int mg = f2i(margin);
+  int aa = f2i(geo.y);
+  float s0 = 0.0;
+  float s1 = 0.0;
+  float s2 = 0.0;
+  float s3 = 0.0;
+  float s4 = 0.0;
+  float s5 = 0.0;
+  for (uint p = li; p < ${ANCH_FILL * ANCH_FILL}u; p += 64u) {
+    int px = int(p % ${ANCH_FILL}u);
+    int py = int(p / ${ANCH_FILL}u);
+    if (fillBand(rgi, px, sp, mg, aa) && fillBand(rgi, py, sp, mg, aa)) { continue; }
+    float ux = float(2 * px + 1 - ${ANCH_FILL}) / ${lit(ANCH_FILL)};
+    float uy = float(2 * py + 1 - ${ANCH_FILL}) / ${lit(ANCH_FILL)};
+    vec2 m = vec2(margin + 0.5 * span * (ux + 1.0), margin + 0.5 * span * (uy + 1.0));
+    float v = bilin0(f, mapAt(f, M, lz, at.x, at.y, m), int(F.w), int(F.h));
+    s0 += v;
+    s1 += ux * v;
+    s2 += ux * ux * v;
+    s3 += uy * v;
+    s4 += uy * uy * v;
+    s5 += ux * uy * v;
   }
-  red[li] = sum;
+  red[li] = s0;
+  red[64u + li] = s1;
+  red[128u + li] = s2;
+  red[192u + li] = s3;
+  red[256u + li] = s4;
+  red[320u + li] = s5;
+  barrier();
+  if (li < 6u) {
+    float s = 0.0;
+    for (uint q = 0u; q < 64u; q++) { s += red[64u * li + q]; }
+    red[64u * li] = s;
+  }
   barrier();
   if (li == 0u) {
-    float s = 0.0;
-    for (uint q = 0u; q < 64u; q++) { s += red[q]; }
-    arec[ab] = vec4(1.0, s / 256.0, 0.0, float(found));
+    float b0 = A.g[9u * rgi + 0u][0] * red[0] + A.g[9u * rgi + 0u][1] * red[64] + A.g[9u * rgi + 0u][2] * red[128] + A.g[9u * rgi + 0u][3] * red[192] + A.g[9u * rgi + 1u][0] * red[256] + A.g[9u * rgi + 1u][1] * red[320];
+    float b1 = A.g[9u * rgi + 1u][2] * red[0] + A.g[9u * rgi + 1u][3] * red[64] + A.g[9u * rgi + 2u][0] * red[128] + A.g[9u * rgi + 2u][1] * red[192] + A.g[9u * rgi + 2u][2] * red[256] + A.g[9u * rgi + 2u][3] * red[320];
+    float b2 = A.g[9u * rgi + 3u][0] * red[0] + A.g[9u * rgi + 3u][1] * red[64] + A.g[9u * rgi + 3u][2] * red[128] + A.g[9u * rgi + 3u][3] * red[192] + A.g[9u * rgi + 4u][0] * red[256] + A.g[9u * rgi + 4u][1] * red[320];
+    float b3 = A.g[9u * rgi + 4u][2] * red[0] + A.g[9u * rgi + 4u][3] * red[64] + A.g[9u * rgi + 5u][0] * red[128] + A.g[9u * rgi + 5u][1] * red[192] + A.g[9u * rgi + 5u][2] * red[256] + A.g[9u * rgi + 5u][3] * red[320];
+    float b4 = A.g[9u * rgi + 6u][0] * red[0] + A.g[9u * rgi + 6u][1] * red[64] + A.g[9u * rgi + 6u][2] * red[128] + A.g[9u * rgi + 6u][3] * red[192] + A.g[9u * rgi + 7u][0] * red[256] + A.g[9u * rgi + 7u][1] * red[320];
+    float b5 = A.g[9u * rgi + 7u][2] * red[0] + A.g[9u * rgi + 7u][3] * red[64] + A.g[9u * rgi + 8u][0] * red[128] + A.g[9u * rgi + 8u][1] * red[192] + A.g[9u * rgi + 8u][2] * red[256] + A.g[9u * rgi + 8u][3] * red[320];
+    arec[ab] = vec4(1.0, 0.0, 0.0, float(found));
     arec[ab + 1u] = A.k[3u * rgi];
     arec[ab + 2u] = A.k[3u * rgi + 1u];
     arec[ab + 3u] = geo;
+    arec[ab + ${ANCH_SURF}u] = vec4(b0, b1, b2, b3);
+    arec[ab + ${ANCH_SURF + 1}u] = vec4(b4, b5, 0.0, 0.0);
   }
-  if (li < ${ANCH_REC - 4}u) {
+  if (li < ${ANCH_SURF - 4}u) {
     uint q = 2u * li;
     vec2 kq = kv[min(q + 1u, NK - 1u)];
     arec[ab + 4u + li] = vec4(kv[q], q + 1u < NK ? kq : vec2(0.0));
