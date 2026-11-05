@@ -54,6 +54,12 @@ int main(void) {
 #if defined(OB_NEON) || defined(OB_X86)
   long nbits = 0, nmodel = 0;
 #endif
+#ifdef OB_V3_ON
+  // ai: x86-64-v3's sampler (sample_grid_lin_v3) against the v2 form, bit for bit, where the processor has the level
+  float *c = malloc((size_t)1536 * LIZARD_STRIP * sizeof(float));
+  long v3diff = 0, v3pts = 0;
+  const int v3 = ob_v3();
+#endif
   for (int t = 0; t < 24; t++) {
     // ai: random bytes over a slow ramp (the steepest gradients there are), or blocks of 4 x 4
     for (int y = 0; y < ih; y++) for (int x = 0; x < iw; x++) {
@@ -82,6 +88,19 @@ int main(void) {
       const float st = mean ? 8 * step : step;
       ob_sample_grid_pic(&L, &im, &reg, g0, g0, st, xs, sw, 0, rows, a, sw);
       ob_sample_grid(&L, &im, &reg, g0, g0, st, xs, sw, 0, rows, b, sw);
+#ifdef OB_V3_ON
+      if (v3 && im.lin) {
+        for (int q = 0; q < 2; q++) {   // ai: q 0 the v2 form into c, q 1 the v3 form into a again
+          float *dst = q ? a : c;
+          for (int cc = 0; cc < sw; cc += GRID_LIN) {
+            const int m = sw - cc < GRID_LIN ? sw - cc : GRID_LIN;
+            if (q) sample_grid_lin_v3(&L, &im, &reg, g0, g0, st, xs + cc, m, 0, rows, dst + cc, sw);
+            else sample_grid_lin(&L, &im, &reg, g0, g0, st, xs + cc, m, 0, rows, dst + cc, sw);
+          }
+        }
+        for (int i = 0; i < rows * sw; i++) { v3diff += memcmp(&a[i], &c[i], sizeof(float)) != 0; v3pts++; }
+      }
+#endif
       for (int y = 0; y < rows; y++) for (int x = 0; x < sw; x++) {
         float u, v;
         ob_map_point(&L, &reg, g0 + (float)(xs + x) * st, g0 + (float)y * st, &u, &v);
@@ -119,6 +138,12 @@ int main(void) {
 #if defined(OB_NEON) || defined(OB_X86)
   printf("integer read against its statement: %ld of %ld points differ\n", nbits, nmodel);
   fail |= nbits != 0;
+#endif
+#ifdef OB_V3_ON
+  if (v3) printf("x86-64-v3 sampler against the v2 form: %ld of %ld points differ\n", v3diff, v3pts);
+  else printf("x86-64-v3 sampler: this processor has no v3, not checked\n");
+  fail |= v3diff != 0;
+  free(c);
 #endif
   if (fail) printf("a bound or a bit missed\n");
   return fail;

@@ -125,13 +125,14 @@ add_library(lizard_codec STATIC cpu/codec.c ${CODEC}/lizard_phy.c ${CODEC}/acqui
   ${CODEC}/ldpc.c ${CODEC}/fft.c ${CODEC}/any.c)
 target_include_directories(lizard_codec PUBLIC cpu PRIVATE ${CODEC})
 target_compile_options(lizard_codec PRIVATE ${LIZ_FAST})
-# ai: x86-64: SSE4.1, which every x86-64 processor since about 2008 has and Windows 11 asks for, so the vector paths take
-# ai: src/simd.h's x86 form; without it the scalar twins
+# ai: x86-64: the x86-64-v2 level (SSE4.2, POPCNT and below), the floor every native build is compiled for (2026-11-05;
+# ai: Windows 11 24H2 asks the same), so the vector paths take src/simd.h's x86 form; a site's x86-64-v3 form (AVX2) is
+# ai: chosen at run time (simd.h ob_v3); the scalar twins only under LIZ_SCALAR
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
   if(MSVC)
-    target_compile_options(lizard_codec PRIVATE /clang:-msse4.1)
+    target_compile_options(lizard_codec PRIVATE /clang:-march=x86-64-v2)
   else()
-    target_compile_options(lizard_codec PRIVATE -msse4.1)
+    target_compile_options(lizard_codec PRIVATE -march=x86-64-v2)
   endif()
 endif()
 target_compile_definitions(lizard_codec PRIVATE NDEBUG)

@@ -1,11 +1,11 @@
-// ai: Do x86-64's wider LDPC layer kernels (src/ldpc.c: AVX2, AVX-512) decide as the scalar twin does? Two checks:
-// ai:   1. every layer kernel the build and the processor have (the 128-bit one, AVX2, AVX-512) against the scalar
+// ai: Do x86-64's wider LDPC layer kernels (src/ldpc.c: AVX2) decide as the scalar twin does? Two checks:
+// ai:   1. every layer kernel the build and the processor have (the 128-bit one, AVX2) against the scalar
 // ai:      loop on random layers: 3 to 32 slots, posteriors over the decoder's whole range and its ends, messages over
 // ai:      +-127, both outputs (the posteriors and the messages) byte for byte;
 // ai:   2. whole decodes of every code of the profile, random codewords through BI-AWGN at the decoder's int8 scale
 // ai:      from below its threshold to clean, decoded with each kernel forced: the iterations and every output bit
 // ai:      alike.
-// ai: From liblizard/: gcc -O3 -ffp-contract=off -msse4.1 -Isrc -o build/ldpc_wide test/ldpc_wide.c src/fmt.c -lm
+// ai: From liblizard/: gcc -O3 -ffp-contract=off -msse4.1 -Isrc -o build/ldpc_wide test/ldpc_wide.c -lm
 // ai: && build/ldpc_wide [layers] [codewords]. Exit 1 on any difference; it prints which kernels the processor ran.
 #include "../src/ldpc.c"
 #include <math.h>
@@ -52,34 +52,32 @@ static int16_t pick16(void) {
 int main(int argc, char **argv) {
   const int layers = argc > 1 ? atoi(argv[1]) : 20000, words = argc > 2 ? atoi(argv[2]) : 2000, zp = 128;
   int fails = 0;
-  int have[3] = { 1, 0, 0 };
+  int have[2] = { 1, 0 };
 #ifdef OB_LDPC_WIDE
   __builtin_cpu_init();
-  have[1] = __builtin_cpu_supports("avx2");
-  have[2] = __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512f");
+  have[1] = ob_v3();
 #endif
-  printf("kernels: 128-bit%s%s%s\n",
+  printf("kernels: 128-bit%s%s\n",
 #ifdef OB_SIMD
          " (vector)",
 #else
          " (the scalar twin)",
 #endif
-         have[1] ? ", AVX2" : "", have[2] ? ", AVX-512" : "");
+         have[1] ? ", AVX2" : "");
   enum { NS_MAX = 32 };
   static int16_t q0[NS_MAX * 128], qa[NS_MAX * 128], qb[NS_MAX * 128];
   static int8_t r0[NS_MAX * 128], ra[NS_MAX * 128], rb[NS_MAX * 128];
-  long checked[3] = { 0, 0, 0 };
+  long checked[2] = { 0, 0 };
   for (int t = 0; t < layers; t++) {
     const int ns = 3 + (int)(next() % (NS_MAX - 2)), norm = t % 5 == 0 ? 16 : 13;
     for (int k = 0; k < ns * zp; k++) { q0[k] = pick16(); r0[k] = (int8_t)((int)(next() % 255) - 127); }
     memcpy(qa, q0, sizeof q0); memcpy(ra, r0, sizeof r0);
     kernel_scalar(qa, ra, ns, zp, norm);
-    for (int w = 0; w < 3; w++) {
+    for (int w = 0; w < 2; w++) {
       if (!have[w]) continue;
       memcpy(qb, q0, sizeof q0); memcpy(rb, r0, sizeof r0);
 #ifdef OB_LDPC_WIDE
-      if (w == 2) layer_kernel_avx512(qb, rb, ns, zp, norm);
-      else if (w == 1) layer_kernel_avx2(qb, rb, ns, zp, norm);
+      if (w == 1) layer_kernel_avx2(qb, rb, ns, zp, norm);
       else
 #endif
         layer_kernel(qb, rb, ns, zp, norm);
@@ -90,7 +88,7 @@ int main(int argc, char **argv) {
       }
     }
   }
-  printf("layers: %ld, %ld, %ld against the scalar loop (128-bit, AVX2, AVX-512), %d apart\n", checked[0], checked[1], checked[2], fails);
+  printf("layers: %ld, %ld against the scalar loop (128-bit, AVX2), %d apart\n", checked[0], checked[1], fails);
 
   static const int RATES[4] = { 6, 4, 3, 2 };
   static const double DB[4][3] = { { 5.4, 5.9, 7.0 }, { 3.8, 4.3, 5.5 }, { 2.7, 3.2, 4.5 }, { 0.8, 1.3, 2.5 } };
@@ -118,7 +116,7 @@ int main(int argc, char **argv) {
       }
       for (int v = 3840; v < c.k; v++) llr[v] = 127;
       int its0 = 0;
-      for (int w = 0; w < 3; w++) {
+      for (int w = 0; w < 2; w++) {
         if (!have[w]) continue;
         c.wide = w;
         const int its = ldpc_decode_stall(&c, llr, w ? out : ref, 30, 9, 0.95f);

@@ -572,160 +572,31 @@ static inline __attribute__((always_inline)) void rows12u(float *re, float *im, 
   if (x < cols) tail_dec(re, im, st, x, cols, 12, 0, 1, 0);
 }
 #elif defined(OB_X86)
-// ai: x86-64: arm64's kernels above, the same butterflies, data layout and plans, in SSE4.1's instructions: a multiply
-// ai: then an add where NEON fuses the two (no FMA in the baseline), a twiddle or constant as a splat where NEON takes a
-// ai: lane, so their own floats again (test/fft_dec.c holds them to the definition)
-// ai: a twiddle: (qr, qi) times the splats (wr, wi)
-#define TWS(qr, qi, wr, wi) { const __m128 pr_ = qr, pi_ = qi; qr = _mm_sub_ps(_mm_mul_ps(pr_, wr), _mm_mul_ps(pi_, wi)); qi = _mm_add_ps(_mm_mul_ps(pr_, wi), _mm_mul_ps(pi_, wr)); }
-// ai: the 3-point DFT in place, as arm64's: K3 the splat of sqrt 3 / 2, KH of 1 / 2
-#define DFT3F(ar, ai, br, bi, cr, ci, K3, KH) { \
-  const __m128 t1r = _mm_add_ps(br, cr), t1i = _mm_add_ps(bi, ci), t2r = _mm_sub_ps(br, cr), t2i = _mm_sub_ps(bi, ci); \
-  const __m128 hr = _mm_sub_ps(ar, _mm_mul_ps(t1r, KH)), hi = _mm_sub_ps(ai, _mm_mul_ps(t1i, KH)), sr = _mm_mul_ps(t2i, K3), si = _mm_mul_ps(t2r, K3); \
-  ar = _mm_add_ps(ar, t1r); ai = _mm_add_ps(ai, t1i); \
-  br = _mm_add_ps(hr, sr); bi = _mm_sub_ps(hi, si); cr = _mm_sub_ps(hr, sr); ci = _mm_add_ps(hi, si); }
-// ai: the 4-point DFT in place, as arm64's
-#define DFT4F(ar, ai, br, bi, cr, ci, dr, di) { \
-  const __m128 t0r = _mm_add_ps(ar, cr), t0i = _mm_add_ps(ai, ci), t1r = _mm_sub_ps(ar, cr), t1i = _mm_sub_ps(ai, ci); \
-  const __m128 t2r = _mm_add_ps(br, dr), t2i = _mm_add_ps(bi, di), t3r = _mm_sub_ps(br, dr), t3i = _mm_sub_ps(bi, di); \
-  ar = _mm_add_ps(t0r, t2r); ai = _mm_add_ps(t0i, t2i); cr = _mm_sub_ps(t0r, t2r); ci = _mm_sub_ps(t0i, t2i); \
-  br = _mm_add_ps(t1r, t3i); bi = _mm_sub_ps(t1i, t3r); dr = _mm_sub_ps(t1r, t3i); di = _mm_add_ps(t1i, t3r); }
-#define LD(p) _mm_loadu_ps(p)
-#define ST(p, v) _mm_storeu_ps(p, v)
-static inline __attribute__((always_inline)) void rows2f(float *re, float *im, size_t st, int cols, const float *w, int unit, int dif) {
-  const __m128 wr = _mm_set1_ps(w[0]), wi = _mm_set1_ps(w[1]);
-  int x = 0;
-  for (; x + 4 <= cols; x += 4) {
-    __m128 ar = LD(re + x), ai = LD(im + x), br = LD(re + st + x), bi = LD(im + st + x);
-    if (!unit && !dif) TWS(br, bi, wr, wi)
-    __m128 yr = _mm_sub_ps(ar, br), yi = _mm_sub_ps(ai, bi);
-    if (!unit && dif) TWS(yr, yi, wr, wi)
-    ST(re + x, _mm_add_ps(ar, br)); ST(im + x, _mm_add_ps(ai, bi)); ST(re + st + x, yr); ST(im + st + x, yi);
-  }
-  if (x < cols) tail_dec(re, im, st, x, cols, 2, w, unit, dif);
-}
-static inline __attribute__((always_inline)) void rows3f(float *re, float *im, size_t st, int cols, const float *w, int unit, int dif) {
-  const __m128 K3 = _mm_set1_ps(0.86602540378443864676f), KH = _mm_set1_ps(0.5f);
-  const __m128 w1r = _mm_set1_ps(w[0]), w1i = _mm_set1_ps(w[1]), w2r = _mm_set1_ps(w[2]), w2i = _mm_set1_ps(w[3]);
-  int x = 0;
-  for (; x + 4 <= cols; x += 4) {
-    __m128 ar = LD(re + x), ai = LD(im + x), br = LD(re + st + x), bi = LD(im + st + x), cr = LD(re + 2 * st + x), ci = LD(im + 2 * st + x);
-    if (!unit && !dif) { TWS(br, bi, w1r, w1i) TWS(cr, ci, w2r, w2i) }
-    DFT3F(ar, ai, br, bi, cr, ci, K3, KH)
-    if (!unit && dif) { TWS(br, bi, w1r, w1i) TWS(cr, ci, w2r, w2i) }
-    ST(re + x, ar); ST(im + x, ai); ST(re + st + x, br); ST(im + st + x, bi); ST(re + 2 * st + x, cr); ST(im + 2 * st + x, ci);
-  }
-  if (x < cols) tail_dec(re, im, st, x, cols, 3, w, unit, dif);
-}
-static inline __attribute__((always_inline)) void rows4f(float *re, float *im, size_t st, int cols, const float *w, int unit, int dif) {
-  const __m128 w1r = _mm_set1_ps(w[0]), w1i = _mm_set1_ps(w[1]), w2r = _mm_set1_ps(w[2]), w2i = _mm_set1_ps(w[3]), w3r = _mm_set1_ps(w[4]), w3i = _mm_set1_ps(w[5]);
-  int x = 0;
-  for (; x + 4 <= cols; x += 4) {
-    __m128 ar = LD(re + x), ai = LD(im + x), br = LD(re + st + x), bi = LD(im + st + x);
-    __m128 cr = LD(re + 2 * st + x), ci = LD(im + 2 * st + x), dr = LD(re + 3 * st + x), di = LD(im + 3 * st + x);
-    if (!unit && !dif) { TWS(br, bi, w1r, w1i) TWS(cr, ci, w2r, w2i) TWS(dr, di, w3r, w3i) }
-    DFT4F(ar, ai, br, bi, cr, ci, dr, di)
-    if (!unit && dif) { TWS(br, bi, w1r, w1i) TWS(cr, ci, w2r, w2i) TWS(dr, di, w3r, w3i) }
-    ST(re + x, ar); ST(im + x, ai); ST(re + 2 * st + x, cr); ST(im + 2 * st + x, ci);
-    ST(re + st + x, br); ST(im + st + x, bi); ST(re + 3 * st + x, dr); ST(im + 3 * st + x, di);
-  }
-  if (x < cols) tail_dec(re, im, st, x, cols, 4, w, unit, dif);
-}
-// ai: rows4f in time writing only the outputs in need (bit j: output j), as arm64's rows4k
-static inline __attribute__((always_inline)) void rows4k(float *re, float *im, size_t st, int cols, const float *w, int need) {
-  const __m128 w1r = _mm_set1_ps(w[0]), w1i = _mm_set1_ps(w[1]), w2r = _mm_set1_ps(w[2]), w2i = _mm_set1_ps(w[3]), w3r = _mm_set1_ps(w[4]), w3i = _mm_set1_ps(w[5]);
-  int x = 0;
-  for (; x + 4 <= cols; x += 4) {
-    __m128 ar = LD(re + x), ai = LD(im + x), br = LD(re + st + x), bi = LD(im + st + x);
-    __m128 cr = LD(re + 2 * st + x), ci = LD(im + 2 * st + x), dr = LD(re + 3 * st + x), di = LD(im + 3 * st + x);
-    TWS(br, bi, w1r, w1i) TWS(cr, ci, w2r, w2i) TWS(dr, di, w3r, w3i)
-    if (need & 5) {
-      const __m128 t0r = _mm_add_ps(ar, cr), t0i = _mm_add_ps(ai, ci), t2r = _mm_add_ps(br, dr), t2i = _mm_add_ps(bi, di);
-      if (need & 1) { ST(re + x, _mm_add_ps(t0r, t2r)); ST(im + x, _mm_add_ps(t0i, t2i)); }
-      if (need & 4) { ST(re + 2 * st + x, _mm_sub_ps(t0r, t2r)); ST(im + 2 * st + x, _mm_sub_ps(t0i, t2i)); }
-    }
-    if (need & 10) {
-      const __m128 t1r = _mm_sub_ps(ar, cr), t1i = _mm_sub_ps(ai, ci), t3r = _mm_sub_ps(br, dr), t3i = _mm_sub_ps(bi, di);
-      if (need & 2) { ST(re + st + x, _mm_add_ps(t1r, t3i)); ST(im + st + x, _mm_sub_ps(t1i, t3r)); }
-      if (need & 8) { ST(re + 3 * st + x, _mm_sub_ps(t1r, t3i)); ST(im + 3 * st + x, _mm_add_ps(t1i, t3r)); }
-    }
-  }
-  if (x < cols) tail_dec(re, im, st, x, cols, 4, w, 0, 0);
-}
-// ai: radix 5, arm64's rows5f: m1 = (a + c1 t1) + c2 t2, m2 = (a + c2 t1) + c1 t2, n1 = s1 t3 + s2 t4, n2 = s2 t3 - s1 t4
-static inline __attribute__((always_inline)) void rows5f(float *re, float *im, size_t st, int cols, const float *w, int unit, int dif) {
-  const __m128 c1 = _mm_set1_ps(0.30901699437494742410f), c2 = _mm_set1_ps(-0.80901699437494742410f), s1 = _mm_set1_ps(0.95105651629515357212f), s2 = _mm_set1_ps(0.58778525229247312917f);
-  __m128 wr[4], wi[4];
-  for (int j = 0; j < 4; j++) { wr[j] = _mm_set1_ps(w[2 * j]); wi[j] = _mm_set1_ps(w[2 * j + 1]); }
-  int x = 0;
-  for (; x + 4 <= cols; x += 4) {
-    __m128 qr[4], qi[4];
-    for (int j = 0; j < 4; j++) { qr[j] = LD(re + (j + 1) * st + x); qi[j] = LD(im + (j + 1) * st + x); }
-    if (!unit && !dif) for (int j = 0; j < 4; j++) TWS(qr[j], qi[j], wr[j], wi[j])
-    const __m128 ar = LD(re + x), ai = LD(im + x);
-    const __m128 t1r = _mm_add_ps(qr[0], qr[3]), t1i = _mm_add_ps(qi[0], qi[3]), t2r = _mm_add_ps(qr[1], qr[2]), t2i = _mm_add_ps(qi[1], qi[2]);
-    const __m128 t3r = _mm_sub_ps(qr[0], qr[3]), t3i = _mm_sub_ps(qi[0], qi[3]), t4r = _mm_sub_ps(qr[1], qr[2]), t4i = _mm_sub_ps(qi[1], qi[2]);
-    const __m128 m1r = _mm_add_ps(_mm_add_ps(ar, _mm_mul_ps(t1r, c1)), _mm_mul_ps(t2r, c2)), m1i = _mm_add_ps(_mm_add_ps(ai, _mm_mul_ps(t1i, c1)), _mm_mul_ps(t2i, c2));
-    const __m128 m2r = _mm_add_ps(_mm_add_ps(ar, _mm_mul_ps(t1r, c2)), _mm_mul_ps(t2r, c1)), m2i = _mm_add_ps(_mm_add_ps(ai, _mm_mul_ps(t1i, c2)), _mm_mul_ps(t2i, c1));
-    const __m128 n1r = _mm_add_ps(_mm_mul_ps(t3r, s1), _mm_mul_ps(t4r, s2)), n1i = _mm_add_ps(_mm_mul_ps(t3i, s1), _mm_mul_ps(t4i, s2));
-    const __m128 n2r = _mm_sub_ps(_mm_mul_ps(t3r, s2), _mm_mul_ps(t4r, s1)), n2i = _mm_sub_ps(_mm_mul_ps(t3i, s2), _mm_mul_ps(t4i, s1));
-    __m128 y1r = _mm_add_ps(m1r, n1i), y1i = _mm_sub_ps(m1i, n1r), y4r = _mm_sub_ps(m1r, n1i), y4i = _mm_add_ps(m1i, n1r);
-    __m128 y2r = _mm_add_ps(m2r, n2i), y2i = _mm_sub_ps(m2i, n2r), y3r = _mm_sub_ps(m2r, n2i), y3i = _mm_add_ps(m2i, n2r);
-    if (!unit && dif) { TWS(y1r, y1i, wr[0], wi[0]) TWS(y2r, y2i, wr[1], wi[1]) TWS(y3r, y3i, wr[2], wi[2]) TWS(y4r, y4i, wr[3], wi[3]) }
-    ST(re + x, _mm_add_ps(_mm_add_ps(ar, t1r), t2r)); ST(im + x, _mm_add_ps(_mm_add_ps(ai, t1i), t2i));
-    ST(re + st + x, y1r); ST(im + st + x, y1i); ST(re + 4 * st + x, y4r); ST(im + 4 * st + x, y4i);
-    ST(re + 2 * st + x, y2r); ST(im + 2 * st + x, y2i); ST(re + 3 * st + x, y3r); ST(im + 3 * st + x, y3i);
-  }
-  if (x < cols) tail_dec(re, im, st, x, cols, 5, w, unit, dif);
-}
-// ai: radix 6 by Good-Thomas over 2 x 3, arm64's rows6f
-static inline __attribute__((always_inline)) void rows6f(float *re, float *im, size_t st, int cols, const float *w, int unit, int dif) {
-  const __m128 K3 = _mm_set1_ps(0.86602540378443864676f), KH = _mm_set1_ps(0.5f);
-  __m128 wr[5], wi[5];
-  for (int j = 0; j < 5; j++) { wr[j] = _mm_set1_ps(w[2 * j]); wi[j] = _mm_set1_ps(w[2 * j + 1]); }
-  int x = 0;
-  for (; x + 4 <= cols; x += 4) {
-    __m128 x0r = LD(re + x), x0i = LD(im + x), x1r = LD(re + st + x), x1i = LD(im + st + x);
-    __m128 x2r = LD(re + 2 * st + x), x2i = LD(im + 2 * st + x), x3r = LD(re + 3 * st + x), x3i = LD(im + 3 * st + x);
-    __m128 x4r = LD(re + 4 * st + x), x4i = LD(im + 4 * st + x), x5r = LD(re + 5 * st + x), x5i = LD(im + 5 * st + x);
-    if (!unit && !dif) { TWS(x1r, x1i, wr[0], wi[0]) TWS(x2r, x2i, wr[1], wi[1]) TWS(x3r, x3i, wr[2], wi[2]) TWS(x4r, x4i, wr[3], wi[3]) TWS(x5r, x5i, wr[4], wi[4]) }
-    __m128 u0r = _mm_add_ps(x0r, x3r), u0i = _mm_add_ps(x0i, x3i), v0r = _mm_sub_ps(x0r, x3r), v0i = _mm_sub_ps(x0i, x3i);
-    __m128 u1r = _mm_add_ps(x2r, x5r), u1i = _mm_add_ps(x2i, x5i), v1r = _mm_sub_ps(x2r, x5r), v1i = _mm_sub_ps(x2i, x5i);
-    __m128 u2r = _mm_add_ps(x4r, x1r), u2i = _mm_add_ps(x4i, x1i), v2r = _mm_sub_ps(x4r, x1r), v2i = _mm_sub_ps(x4i, x1i);
-    DFT3F(u0r, u0i, u1r, u1i, u2r, u2i, K3, KH)   // ai: X0, X4, X2
-    DFT3F(v0r, v0i, v1r, v1i, v2r, v2i, K3, KH)   // ai: X3, X1, X5
-    if (!unit && dif) { TWS(v1r, v1i, wr[0], wi[0]) TWS(u2r, u2i, wr[1], wi[1]) TWS(v0r, v0i, wr[2], wi[2]) TWS(u1r, u1i, wr[3], wi[3]) TWS(v2r, v2i, wr[4], wi[4]) }
-    ST(re + x, u0r); ST(im + x, u0i); ST(re + 4 * st + x, u1r); ST(im + 4 * st + x, u1i); ST(re + 2 * st + x, u2r); ST(im + 2 * st + x, u2i);
-    ST(re + 3 * st + x, v0r); ST(im + 3 * st + x, v0i); ST(re + st + x, v1r); ST(im + st + x, v1i); ST(re + 5 * st + x, v2r); ST(im + 5 * st + x, v2i);
-  }
-  if (x < cols) tail_dec(re, im, st, x, cols, 6, w, unit, dif);
-}
-// ai: radix 12 without twiddles by Good-Thomas over 4 x 3, arm64's rows12u
-static inline __attribute__((always_inline)) void rows12u(float *re, float *im, size_t st, int cols) {
-  const __m128 K3 = _mm_set1_ps(0.86602540378443864676f), KH = _mm_set1_ps(0.5f);
-  int x = 0;
-  for (; x + 4 <= cols; x += 4) {
-    __m128 a0r = LD(re + x), a0i = LD(im + x), a1r = LD(re + 3 * st + x), a1i = LD(im + 3 * st + x);
-    __m128 a2r = LD(re + 6 * st + x), a2i = LD(im + 6 * st + x), a3r = LD(re + 9 * st + x), a3i = LD(im + 9 * st + x);
-    DFT4F(a0r, a0i, a1r, a1i, a2r, a2i, a3r, a3i)
-    __m128 b0r = LD(re + 4 * st + x), b0i = LD(im + 4 * st + x), b1r = LD(re + 7 * st + x), b1i = LD(im + 7 * st + x);
-    __m128 b2r = LD(re + 10 * st + x), b2i = LD(im + 10 * st + x), b3r = LD(re + st + x), b3i = LD(im + st + x);
-    DFT4F(b0r, b0i, b1r, b1i, b2r, b2i, b3r, b3i)
-    __m128 c0r = LD(re + 8 * st + x), c0i = LD(im + 8 * st + x), c1r = LD(re + 11 * st + x), c1i = LD(im + 11 * st + x);
-    __m128 c2r = LD(re + 2 * st + x), c2i = LD(im + 2 * st + x), c3r = LD(re + 5 * st + x), c3i = LD(im + 5 * st + x);
-    DFT4F(c0r, c0i, c1r, c1i, c2r, c2i, c3r, c3i)
-    DFT3F(a0r, a0i, b0r, b0i, c0r, c0i, K3, KH)   // ai: X0, X4, X8
-    ST(re + x, a0r); ST(im + x, a0i); ST(re + 4 * st + x, b0r); ST(im + 4 * st + x, b0i); ST(re + 8 * st + x, c0r); ST(im + 8 * st + x, c0i);
-    DFT3F(a1r, a1i, b1r, b1i, c1r, c1i, K3, KH)   // ai: X9, X1, X5
-    ST(re + 9 * st + x, a1r); ST(im + 9 * st + x, a1i); ST(re + st + x, b1r); ST(im + st + x, b1i); ST(re + 5 * st + x, c1r); ST(im + 5 * st + x, c1i);
-    DFT3F(a2r, a2i, b2r, b2i, c2r, c2i, K3, KH)   // ai: X6, X10, X2
-    ST(re + 6 * st + x, a2r); ST(im + 6 * st + x, a2i); ST(re + 10 * st + x, b2r); ST(im + 10 * st + x, b2i); ST(re + 2 * st + x, c2r); ST(im + 2 * st + x, c2i);
-    DFT3F(a3r, a3i, b3r, b3i, c3r, c3i, K3, KH)   // ai: X3, X7, X11
-    ST(re + 3 * st + x, a3r); ST(im + 3 * st + x, a3i); ST(re + 7 * st + x, b3r); ST(im + 7 * st + x, b3i); ST(re + 11 * st + x, c3r); ST(im + 11 * st + x, c3i);
-  }
-  if (x < cols) tail_dec(re, im, st, x, cols, 12, 0, 1, 0);
-}
-#undef LD
-#undef ST
+// ai: x86-64: arm64's kernels above in SSE4.1 (x86-64-v2), from fft_x86.h; its eight-lane twin for x86-64-v3 below
+// ai: the stages (rows2f_v3 and on, stage_run_v3)
+#define FX_V __m128
+#define FX_W 4
+#define FX_ADD _mm_add_ps
+#define FX_SUB _mm_sub_ps
+#define FX_MUL _mm_mul_ps
+#define FX_SET1 _mm_set1_ps
+#define FX_LD(p) _mm_loadu_ps(p)
+#define FX_ST(p, v) _mm_storeu_ps(p, v)
+#define FX_FN static inline __attribute__((always_inline))
+#define FX_N(n) n
+#define FX_TAIL(v2tail, v3tail) v2tail
+#include "fft_x86.h"
+#undef FX_V
+#undef FX_W
+#undef FX_ADD
+#undef FX_SUB
+#undef FX_MUL
+#undef FX_SET1
+#undef FX_LD
+#undef FX_ST
+#undef FX_FN
+#undef FX_N
+#undef FX_TAIL
 #endif
 #if defined(OB_NEON) || defined(OB_X86)
 
@@ -794,6 +665,65 @@ static int dec_groups(const plan_t *p, int cols, int *gsz) {
   return ngrp;
 }
 #endif
+#ifdef OB_V3_ON
+// ai: x86-64-v3: fft_x86.h at eight lanes (AVX), the kernels and the stages compiled for the level, taken where ob_v3()
+// ai: finds it; bit for bit the v2 transform (test/fft_dec.c)
+#define FX_V __m256
+#define FX_W 8
+#define FX_ADD _mm256_add_ps
+#define FX_SUB _mm256_sub_ps
+#define FX_MUL _mm256_mul_ps
+#define FX_SET1 _mm256_set1_ps
+#define FX_LD(p) _mm256_loadu_ps(p)
+#define FX_ST(p, v) _mm256_storeu_ps(p, v)
+#define FX_FN static inline __attribute__((always_inline, target("arch=x86-64-v3")))
+#define FX_N(n) n##_v3
+#define FX_TAIL(v2tail, v3tail) v3tail
+#include "fft_x86.h"
+#undef FX_V
+#undef FX_W
+#undef FX_ADD
+#undef FX_SUB
+#undef FX_MUL
+#undef FX_SET1
+#undef FX_LD
+#undef FX_ST
+#undef FX_N
+#undef FX_TAIL
+// ai: stage_run, stage_dit_keep at eight lanes
+FX_FN void stage_run_v3(const plan_t *p, const float *tw, float *re, float *im, int cols, int pitch, int s, int from, int span, int dif) {
+  const int r = p->st[s], len = p->len[s], h = len / r;
+  const size_t st = (size_t)h * pitch;
+  for (int i0 = from; i0 < from + span; i0 += len) {
+    float *br = re + (size_t)i0 * pitch, *bi = im + (size_t)i0 * pitch;
+    const float *w = tw;
+    switch (r) {
+      case 4: for (int k = 0; k < h; k++, w += 6, br += pitch, bi += pitch) { if (k) rows4f_v3(br, bi, st, cols, w, 0, dif); else rows4f_v3(br, bi, st, cols, w, 1, dif); } break;
+      case 6: for (int k = 0; k < h; k++, w += 10, br += pitch, bi += pitch) { if (k) rows6f_v3(br, bi, st, cols, w, 0, dif); else rows6f_v3(br, bi, st, cols, w, 1, dif); } break;
+      case 3: for (int k = 0; k < h; k++, w += 4, br += pitch, bi += pitch) { if (k) rows3f_v3(br, bi, st, cols, w, 0, dif); else rows3f_v3(br, bi, st, cols, w, 1, dif); } break;
+      case 5: for (int k = 0; k < h; k++, w += 8, br += pitch, bi += pitch) { if (k) rows5f_v3(br, bi, st, cols, w, 0, dif); else rows5f_v3(br, bi, st, cols, w, 1, dif); } break;
+      case 2: for (int k = 0; k < h; k++, w += 2, br += pitch, bi += pitch) { if (k) rows2f_v3(br, bi, st, cols, w, 0, dif); else rows2f_v3(br, bi, st, cols, w, 1, dif); } break;
+      default: rows12u_v3(br, bi, st, cols); break;
+    }
+  }
+}
+OB_V3 static void stage_dit_v3(const plan_t *p, const float *tw, float *re, float *im, int cols, int pitch, int s, int from, int span) { stage_run_v3(p, tw, re, im, cols, pitch, s, from, span, 0); }
+OB_V3 static void stage_dif_v3(const plan_t *p, const float *tw, float *re, float *im, int cols, int pitch, int s, int from, int span) { stage_run_v3(p, tw, re, im, cols, pitch, s, from, span, 1); }
+OB_V3 static void stage_dit_keep_v3(const plan_t *p, const float *tw, float *re, float *im, int cols, int pitch, int s, int keep) {
+  const int rows = p->rows, h = rows / 4;
+  const size_t st = (size_t)h * pitch;
+  float *br = re, *bi = im;
+  const float *w = tw;
+  for (int k = 0; k < h; k++, w += 6, br += pitch, bi += pitch) {
+    int need = 0;
+    for (int j = 0; j < 4; j++) { const int i = k + j * h; need |= (i <= keep || i >= rows - keep) << j; }
+    if (need == 15) { if (k) rows4f_v3(br, bi, st, cols, w, 0, 0); else rows4f_v3(br, bi, st, cols, w, 1, 0); }
+    else if (need) rows4k_v3(br, bi, st, cols, w, need);
+  }
+  (void)s;
+}
+#undef FX_FN
+#endif
 void fft_dec_dif(float *re, float *im, int rows, int cols, int pitch) {
 #if defined(OB_NEON) || defined(OB_X86)
   const plan_t *p = plan_kind(rows, 1);
@@ -801,6 +731,13 @@ void fft_dec_dif(float *re, float *im, int rows, int cols, int pitch) {
   if (!t) return;
   int gsz;
   const int ngrp = dec_groups(p, cols, &gsz);
+#ifdef OB_V3_ON
+  if (ob_v3()) {
+    for (int s = p->nst - 1; s >= ngrp; s--) stage_dif_v3(p, t->tw[s], re, im, cols, pitch, s, 0, rows);
+    if (ngrp) for (int g0 = 0; g0 < rows; g0 += gsz) for (int s = ngrp - 1; s >= 0; s--) stage_dif_v3(p, t->tw[s], re, im, cols, pitch, s, g0, gsz);
+    return;
+  }
+#endif
   for (int s = p->nst - 1; s >= ngrp; s--) stage_dif(p, t->tw[s], re, im, cols, pitch, s, 0, rows);
   if (ngrp) for (int g0 = 0; g0 < rows; g0 += gsz) for (int s = ngrp - 1; s >= 0; s--) stage_dif(p, t->tw[s], re, im, cols, pitch, s, g0, gsz);
 #else
@@ -814,6 +751,16 @@ void fft_dec_dit(float *re, float *im, int rows, int cols, int pitch, int keep) 
   if (!t) return;
   int gsz;
   const int ngrp = dec_groups(p, cols, &gsz);
+#ifdef OB_V3_ON
+  if (ob_v3()) {
+    if (ngrp) for (int g0 = 0; g0 < rows; g0 += gsz) for (int s = 0; s < ngrp; s++) stage_dit_v3(p, t->tw[s], re, im, cols, pitch, s, g0, gsz);
+    for (int s = ngrp; s < p->nst; s++) {
+      if (s == p->nst - 1 && p->st[s] == 4 && 2 * keep < rows) stage_dit_keep_v3(p, t->tw[s], re, im, cols, pitch, s, keep);
+      else stage_dit_v3(p, t->tw[s], re, im, cols, pitch, s, 0, rows);
+    }
+    return;
+  }
+#endif
   if (ngrp) for (int g0 = 0; g0 < rows; g0 += gsz) for (int s = 0; s < ngrp; s++) stage_dit(p, t->tw[s], re, im, cols, pitch, s, g0, gsz);
   for (int s = ngrp; s < p->nst; s++) {
     if (s == p->nst - 1 && p->st[s] == 4 && 2 * keep < rows) stage_dit_keep(p, t->tw[s], re, im, cols, pitch, s, keep);

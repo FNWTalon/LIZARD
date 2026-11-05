@@ -776,6 +776,48 @@ static inline __attribute__((always_inline)) void lin_read(const uint8_t *r0, co
   const lin_f8_t g = lin_get(r0, r1, k, p);
   _mm_storeu_ps(o, g.val[0]); _mm_storeu_ps(o + 4, g.val[1]);
 }
+#ifdef OB_V3_ON
+// ai: x86-64-v3's read, sixteen points a call (2026-11-05): lin_pts and lin_grey's arithmetic on sixteen lanes, the pixel
+// ai: pairs by gathers (VPGATHERDD: a pair's word read as the dword it starts, row y + 1's from two bytes before, lin_grey's
+// ai: r1, its top half kept: in bounds through the clamps, as there), so from the same coordinates the same values as
+// ai: the v2 read's. The decode's sampler and the registration mesh take it.
+typedef struct { __m256i i0, i1, fx, fy; } lin16_pts_t;   // ai: offsets of points {0-3, 8-11} and {4-7, 12-15}; fx, fy in point order
+typedef struct { __m256i wm, hm, kw; } lin16_k_t;
+#define OB_V3_IN static inline __attribute__((always_inline, target("arch=x86-64-v3")))
+OB_V3_IN __m256i lin16_q16(__m256 v) {
+  return _mm256_cvttps_epi32(_mm256_mul_ps(_mm256_min_ps(_mm256_max_ps(v, _mm256_setzero_ps()), _mm256_set1_ps(32767.0f)), _mm256_set1_ps(65536.0f)));
+}
+// ai: two eight-lane vectors' 32-bit lanes to sixteen 16-bit lanes in point order (PACKUSDW works a 128-bit half at a time)
+OB_V3_IN __m256i lin16_pack(__m256i a, __m256i b) { return _mm256_permute4x64_epi64(_mm256_packus_epi32(a, b), 0xD8); }
+OB_V3_IN lin16_pts_t lin16_pts(const lin16_k_t *k, __m256 x0, __m256 y0, __m256 x1, __m256 y1) {
+  const __m256i xq0 = lin16_q16(x0), xq1 = lin16_q16(x1), yq0 = lin16_q16(y0), yq1 = lin16_q16(y1), z = _mm256_setzero_si256();
+  const __m256i xi = _mm256_min_epu16(lin16_pack(_mm256_srli_epi32(xq0, 16), _mm256_srli_epi32(xq1, 16)), k->wm);
+  const __m256i yi = _mm256_min_epu16(lin16_pack(_mm256_srli_epi32(yq0, 16), _mm256_srli_epi32(yq1, 16)), k->hm);
+  const __m256i ml = _mm256_mullo_epi16(yi, k->kw), mh = _mm256_mulhi_epu16(yi, k->kw), b8 = _mm256_set1_epi32(0xff), f16 = _mm256_set1_epi32(0xffff);
+  return (lin16_pts_t){ _mm256_add_epi32(_mm256_unpacklo_epi16(ml, mh), _mm256_unpacklo_epi16(xi, z)), _mm256_add_epi32(_mm256_unpackhi_epi16(ml, mh), _mm256_unpackhi_epi16(xi, z)),
+                        lin16_pack(_mm256_and_si256(_mm256_srli_epi32(xq0, 8), b8), _mm256_and_si256(_mm256_srli_epi32(xq1, 8), b8)),
+                        _mm256_srli_epi16(lin16_pack(_mm256_and_si256(yq0, f16), _mm256_and_si256(yq1, f16)), 1) };
+}
+// ai: sixteen points' grey, lin_grey's arithmetic on sixteen lanes (r1 the frame less two bytes a row on)
+OB_V3_IN __m256i lin16_grey(const uint8_t *r0, const uint8_t *r1, lin16_pts_t p) {
+  const __m256i m16 = _mm256_set1_epi32(0xffff), m8 = _mm256_set1_epi16(0xff);
+  const __m256i g0 = _mm256_i32gather_epi32((const int *)(const void *)r0, p.i0, 1), g1 = _mm256_i32gather_epi32((const int *)(const void *)r0, p.i1, 1);
+  const __m256i h0 = _mm256_i32gather_epi32((const int *)(const void *)r1, p.i0, 1), h1 = _mm256_i32gather_epi32((const int *)(const void *)r1, p.i1, 1);
+  const __m256i ab = _mm256_packus_epi32(_mm256_and_si256(g0, m16), _mm256_and_si256(g1, m16));
+  const __m256i cd = _mm256_packus_epi32(_mm256_srli_epi32(h0, 16), _mm256_srli_epi32(h1, 16));
+  const __m256i a = _mm256_and_si256(ab, m8), c = _mm256_and_si256(cd, m8);
+  const __m256i top = _mm256_add_epi16(_mm256_slli_epi16(ab, 8), _mm256_mullo_epi16(_mm256_sub_epi16(_mm256_srli_epi16(ab, 8), a), p.fx));
+  const __m256i bot = _mm256_add_epi16(_mm256_slli_epi16(cd, 8), _mm256_mullo_epi16(_mm256_sub_epi16(_mm256_srli_epi16(cd, 8), c), p.fx));
+  const __m256i hd = _mm256_xor_si256(_mm256_avg_epu16(bot, _mm256_xor_si256(top, _mm256_set1_epi16(-1))), _mm256_set1_epi16((short)0x8000));
+  return _mm256_add_epi16(_mm256_mulhrs_epi16(hd, p.fy), _mm256_srli_epi16(top, 1));
+}
+OB_V3_IN void lin16_read(const uint8_t *r0, const uint8_t *r1, lin16_pts_t p, float *o) {
+  const __m256i r = lin16_grey(r0, r1, p);
+  const __m256 sc = _mm256_set1_ps(257.0f / 8388608.0f);
+  _mm256_storeu_ps(o, _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_castsi256_si128(r))), sc));
+  _mm256_storeu_ps(o + 8, _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_extracti128_si256(r, 1))), sc));
+}
+#endif
 #endif
 
 // ---------------------------------------------------------------- registration mesh
@@ -1030,7 +1072,116 @@ static inline __attribute__((always_inline)) void msh_ncc_g(const image_t *im, c
     _mm_storeu_ps(out + 4 * g, r);
   }
 }
+#ifdef OB_V3_ON
+// ai: x86-64-v3 (2026-11-05): msh_ncc_g at gamma 1 on eight lanes, two cells a sixteen-point read (lin16), each lane's
+// ai: sums in the v2 form's order: at G 2 a lane an offset and a cell a step, at G 1 the v2 form's even and odd cells'
+// ai: sums as the two halves (an odd last cell into the first half alone), added at the end; so bit for bit the v2
+// ai: form's (test/mesh_neon.c's x86 hash)
+typedef struct { __m256 lo, hi; } lin16_f_t;
+OB_V3_IN lin16_f_t lin16_get(const uint8_t *r0, const uint8_t *r1, lin16_pts_t p) {
+  const __m256i r = lin16_grey(r0, r1, p);
+  const __m256 sc = _mm256_set1_ps(257.0f / 8388608.0f);
+  return (lin16_f_t){ _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_castsi256_si128(r))), sc),
+                      _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_extracti128_si256(r, 1))), sc) };
+}
+OB_V3_IN void msh_ncc_v3g(const image_t *im, const homo_t *H, int cells, const float *cu, const float *cv, const float *cw, const float *tv, float st, float vt, float qx, float qy, const float *ox, const float *oy, float *out, const int G, const int edge, int nmin) {
+  const float *h = H->h;
+  const lin16_k_t K = { _mm256_set1_epi16((short)(im->w - 2)), _mm256_set1_epi16((short)(im->h - 2)), _mm256_set1_epi16((short)im->w) };
+  const __m256 xm = _mm256_set1_ps((float)(im->w - 2) + 0.998f), ym = _mm256_set1_ps((float)(im->h - 2) + 0.9999f);
+  const __m256 xl = _mm256_set1_ps(0.5f - MSH_OX), xh = _mm256_set1_ps(im->w - 0.5f - MSH_OX), yh = _mm256_set1_ps(im->h - 0.5f - MSH_OY);
+  const __m256 px = _mm256_set1_ps(qx), py = _mm256_set1_ps(qy), z = _mm256_setzero_ps(), one = _mm256_set1_ps(1);
+  const uint8_t *r0 = im->px, *r1 = im->px + im->w - 2;
+#define V3_MA(a, b, c) _mm256_add_ps((a), _mm256_mul_ps((b), (c)))
+  __m256 a8, b8;
+  if (G == 2) { a8 = _mm256_loadu_ps(ox); b8 = _mm256_loadu_ps(oy); }
+  else { const __m128 a = _mm_loadu_ps(ox), b = _mm_loadu_ps(oy); a8 = _mm256_set_m128(a, a); b8 = _mm256_set_m128(b, b); }
+  const __m256 du = V3_MA(_mm256_mul_ps(a8, _mm256_set1_ps(h[0])), b8, _mm256_set1_ps(h[1])), dv = V3_MA(_mm256_mul_ps(a8, _mm256_set1_ps(h[3])), b8, _mm256_set1_ps(h[4]));
+  const __m256 dw = V3_MA(_mm256_mul_ps(a8, _mm256_set1_ps(h[6])), b8, _mm256_set1_ps(h[7]));
+  // ai: a vector's points: G 2 one cell's eight offsets; G 1 cells K0 (lanes 0-3) and K1 (4-7), four offsets each
+#define V3_CELL(K0, K1, X, Y) do { \
+    const __m256 cu_ = _mm256_set_m128(_mm_set1_ps(cu[K1]), _mm_set1_ps(cu[K0])), cv_ = _mm256_set_m128(_mm_set1_ps(cv[K1]), _mm_set1_ps(cv[K0])), cw_ = _mm256_set_m128(_mm_set1_ps(cw[K1]), _mm_set1_ps(cw[K0])); \
+    const __m256 r_ = _mm256_div_ps(one, _mm256_add_ps(cw_, dw)); \
+    X = V3_MA(px, _mm256_add_ps(cu_, du), r_); Y = V3_MA(py, _mm256_add_ps(cv_, dv), r_); } while (0)
+#define V3_TK(K0, K1) _mm256_set_m128(_mm_set1_ps(tv[K1]), _mm_set1_ps(tv[K0]))
+#define V3_IN(X, Y) _mm256_and_ps(_mm256_and_ps(_mm256_and_ps(_mm256_cmp_ps(xl, X, _CMP_LE_OQ), _mm256_cmp_ps(X, xh, _CMP_LE_OQ)), \
+                      _mm256_and_ps(_mm256_cmp_ps(Y, z, _CMP_GE_OQ), _mm256_cmp_ps(Y, yh, _CMP_LE_OQ))), one)
+#define V3_SUMS(SV, TK) do { s = _mm256_add_ps(s, SV); q = V3_MA(q, SV, SV); t = V3_MA(t, TK, SV); } while (0)
+#define V3_READ(XA, YA, XB, YB) lin16_get(r0, r1, lin16_pts(&K, _mm256_min_ps(xm, XA), _mm256_min_ps(ym, YA), _mm256_min_ps(xm, XB), _mm256_min_ps(ym, YB)))
+  __m256 s = z, q = z, t = z, nn = z, xa, ya, xb, yb;
+  int k = 0;
+  if (G == 2) {
+    for (; k + 1 < cells; k += 2) {
+      V3_CELL(k, k, xa, ya); V3_CELL(k + 1, k + 1, xb, yb);
+      const lin16_f_t v = V3_READ(xa, ya, xb, yb);
+      if (edge) { nn = _mm256_add_ps(nn, V3_IN(xa, ya)); nn = _mm256_add_ps(nn, V3_IN(xb, yb)); }
+      V3_SUMS(v.lo, V3_TK(k, k)); V3_SUMS(v.hi, V3_TK(k + 1, k + 1));
+    }
+    if (k < cells) {
+      V3_CELL(k, k, xa, ya);
+      const lin16_f_t v = V3_READ(xa, ya, xa, ya);
+      if (edge) nn = _mm256_add_ps(nn, V3_IN(xa, ya));
+      V3_SUMS(v.lo, V3_TK(k, k));
+    }
+  } else {
+    for (; k + 3 < cells; k += 4) {
+      V3_CELL(k, k + 1, xa, ya); V3_CELL(k + 2, k + 3, xb, yb);
+      const lin16_f_t v = V3_READ(xa, ya, xb, yb);
+      if (edge) { nn = _mm256_add_ps(nn, V3_IN(xa, ya)); nn = _mm256_add_ps(nn, V3_IN(xb, yb)); }
+      V3_SUMS(v.lo, V3_TK(k, k + 1)); V3_SUMS(v.hi, V3_TK(k + 2, k + 3));
+    }
+    if (k + 1 < cells) {
+      V3_CELL(k, k + 1, xa, ya);
+      const lin16_f_t v = V3_READ(xa, ya, xa, ya);
+      if (edge) nn = _mm256_add_ps(nn, V3_IN(xa, ya));
+      V3_SUMS(v.lo, V3_TK(k, k + 1));
+      k += 2;
+    }
+    if (k < cells) {   // ai: the odd last cell into the first half alone, the second kept exactly
+      V3_CELL(k, k, xa, ya);
+      const lin16_f_t v = V3_READ(xa, ya, xa, ya);
+      const __m256 tk = V3_TK(k, k);
+      const __m256 s1 = _mm256_add_ps(s, v.lo), q1 = V3_MA(q, v.lo, v.lo), t1 = V3_MA(t, tk, v.lo);
+      s = _mm256_blend_ps(s, s1, 0x0f); q = _mm256_blend_ps(q, q1, 0x0f); t = _mm256_blend_ps(t, t1, 0x0f);
+      if (edge) nn = _mm256_blend_ps(nn, _mm256_add_ps(nn, V3_IN(xa, ya)), 0x0f);
+    }
+  }
+#undef V3_CELL
+#undef V3_TK
+#undef V3_IN
+#undef V3_SUMS
+#undef V3_READ
+#undef V3_MA
+  if (G == 2) {
+    const __m256 n = _mm256_set1_ps((float)cells), vst = _mm256_set1_ps(st), vvt = _mm256_set1_ps(vt);
+    const __m256 vs = _mm256_sub_ps(q, _mm256_div_ps(_mm256_mul_ps(s, s), n));
+    const __m256 c = _mm256_div_ps(_mm256_sub_ps(t, _mm256_div_ps(_mm256_mul_ps(vst, s), n)), _mm256_sqrt_ps(_mm256_mul_ps(vvt, vs)));
+    __m256 r = vt <= 0 ? z : _mm256_andnot_ps(_mm256_cmp_ps(vs, _mm256_set1_ps(1e-9f), _CMP_LE_OQ), c);
+    if (edge) r = _mm256_blendv_ps(r, _mm256_set1_ps(NODE_NONE), _mm256_cmp_ps(nn, _mm256_set1_ps((float)nmin), _CMP_LT_OQ));
+    _mm256_storeu_ps(out, r);
+    return;
+  }
+  // ai: G 1: the halves added (the v2 form's s[0] + s[1]), then its four lanes' arithmetic
+  const __m128 s4 = _mm_add_ps(_mm256_castps256_ps128(s), _mm256_extractf128_ps(s, 1)), q4 = _mm_add_ps(_mm256_castps256_ps128(q), _mm256_extractf128_ps(q, 1));
+  const __m128 t4 = _mm_add_ps(_mm256_castps256_ps128(t), _mm256_extractf128_ps(t, 1)), n4 = _mm_add_ps(_mm256_castps256_ps128(nn), _mm256_extractf128_ps(nn, 1));
+  const __m128 n = _mm_set1_ps((float)cells), vst = _mm_set1_ps(st), vvt = _mm_set1_ps(vt), z4 = _mm_setzero_ps();
+  const __m128 vs = _mm_sub_ps(q4, _mm_div_ps(_mm_mul_ps(s4, s4), n));
+  const __m128 c = _mm_div_ps(_mm_sub_ps(t4, _mm_div_ps(_mm_mul_ps(vst, s4), n)), _mm_sqrt_ps(_mm_mul_ps(vvt, vs)));
+  __m128 r = vt <= 0 ? z4 : _mm_andnot_ps(_mm_cmple_ps(vs, _mm_set1_ps(1e-9f)), c);
+  if (edge) r = _mm_blendv_ps(r, _mm_set1_ps(NODE_NONE), _mm_cmplt_ps(n4, _mm_set1_ps((float)nmin)));
+  _mm_storeu_ps(out, r);
+}
+OB_V3 static void msh_ncc_v3(const image_t *im, const homo_t *H, int cells, const float *cu, const float *cv, const float *cw, const float *tv, float st, float vt, float qx, float qy, const float *ox, const float *oy, float *out, int lanes, int edge, int nmin) {
+  if (edge) {
+    if (lanes > 4) msh_ncc_v3g(im, H, cells, cu, cv, cw, tv, st, vt, qx, qy, ox, oy, out, 2, 1, nmin);
+    else msh_ncc_v3g(im, H, cells, cu, cv, cw, tv, st, vt, qx, qy, ox, oy, out, 1, 1, nmin);
+  } else if (lanes > 4) msh_ncc_v3g(im, H, cells, cu, cv, cw, tv, st, vt, qx, qy, ox, oy, out, 2, 0, nmin);
+  else msh_ncc_v3g(im, H, cells, cu, cv, cw, tv, st, vt, qx, qy, ox, oy, out, 1, 0, nmin);
+}
+#endif
 static void msh_ncc(const image_t *im, const homo_t *H, int cells, const float *cu, const float *cv, const float *cw, const float *tv, float st, float vt, float qx, float qy, const float *ox, const float *oy, float *out, int lanes, int edge, int nmin) {
+#ifdef OB_V3_ON
+  if (im->lin && ob_v3()) { msh_ncc_v3(im, H, cells, cu, cv, cw, tv, st, vt, qx, qy, ox, oy, out, lanes, edge, nmin); return; }
+#endif
   if (edge) {
     if (lanes > 4) msh_ncc_g(im, H, cells, cu, cv, cw, tv, st, vt, qx, qy, ox, oy, out, 2, 1, nmin);
     else msh_ncc_g(im, H, cells, cu, cv, cw, tv, st, vt, qx, qy, ox, oy, out, 1, 1, nmin);
@@ -5207,10 +5358,100 @@ static void sample_grid_lin(const ob_layout_t *L, const image_t *pim, const ob_r
   }
 #undef LIN_MA
 }
+#ifdef OB_V3_ON
+// ai: x86-64-v3 (2026-11-05): the walk above, eight columns a vector, its read sixteen points a call (lin16_*, beside
+// ai: the v2 read), every value as the v2 form's: the same operations in the same order (no fused multiply-adds; an
+// ai: eight-lane vector holds two of the v2 form's four-column groups, so the lines step by two of its adds), so the
+// ai: output is the v2 form's bit for bit (test/sample_grid.c).
+OB_V3 static void sample_grid_lin_v3(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
+  const int w = pim->w, nn = L->nx;
+  const float *h = reg->H.h;
+  int run_i[OB_MAX_NODES + 1], run_end[OB_MAX_NODES + 1];
+  const int runs = grid_runs(L, mx0, step, x0, nx, run_i, run_end);
+  // ai: the table eight columns a group ([dx 8, ex 8, dy 8, ey 8] at 4 k), zeros past the end for the steps past the row
+  enum { TW = GRID_LIN + 32 };
+  float tu[TW], T[4 * TW];
+  for (int r = 0, k = 0; r < runs; r++) {
+    const int i = run_i[r];
+    const float inv = 1.0f / (L->node_x[i + 1] - L->node_x[i]);
+    for (; k < run_end[r]; k++) tu[k] = (mx0 + (float)(x0 + k) * step - L->node_x[i]) * inv;
+  }
+  for (int k = nx; k < nx + 8; k++) tu[k] = 0;
+  for (int i = 4 * ((nx + 7) & ~7); i < 4 * (nx + 32); i++) T[i] = 0;
+  const float m0 = mx0 + (float)x0 * step;
+  const __m128 lane4 = _mm_setr_ps(0, 1, 2, 3);
+  const __m256 lane8 = _mm256_setr_ps(0, 1, 2, 3, 4, 5, 6, 7), one = _mm256_set1_ps(1);
+  const __m128 BwL = _mm_mul_ps(lane4, _mm_set1_ps(h[6] * step)), BuL = _mm_mul_ps(lane4, _mm_set1_ps(h[0] * step)), BvL = _mm_mul_ps(lane4, _mm_set1_ps(h[3] * step));
+  // ai: the v2 form's step over its four columns; two of them an eight-column step
+  const __m128 Cw4 = _mm_set1_ps(4 * (h[6] * step)), Cu4 = _mm_set1_ps(4 * (h[0] * step)), Cv4 = _mm_set1_ps(4 * (h[3] * step));
+  const __m256 Cw = _mm256_set1_ps(4 * (h[6] * step)), Cu = _mm256_set1_ps(4 * (h[0] * step)), Cv = _mm256_set1_ps(4 * (h[3] * step));
+  const lin16_k_t K = { _mm256_set1_epi16((short)(w - 2)), _mm256_set1_epi16((short)(pim->h - 2)), _mm256_set1_epi16((short)w) };
+  const uint8_t *r0 = pim->px, *r1 = pim->px + w - 2;
+  int j = 0, built = -1;
+#define LIN8_MA(a, b, c) _mm256_add_ps((a), _mm256_mul_ps((b), (c)))
+  for (int yy = 0; yy < ny; yy++) {
+    const float my = my0 + (float)(y0 + yy) * step;
+    while (j < L->ny - 2 && my >= L->node_y[j + 1]) j++;
+    if (j != built) {
+      const node_t *n0 = reg->nodes + j * nn, *n1 = n0 + nn;
+      for (int r = 0, s = 0; r < runs; s = run_end[r++]) {
+        const node_t *a = n0 + run_i[r], *b = n1 + run_i[r];
+        const __m256 c0x = _mm256_set1_ps(a[0].dx - (0.5f - 1.0f / 512)), c1x = _mm256_set1_ps(a[1].dx - a[0].dx), e0x = _mm256_set1_ps(b[0].dx - a[0].dx), e1x = _mm256_set1_ps((b[1].dx - b[0].dx) - (a[1].dx - a[0].dx));
+        const __m256 c0y = _mm256_set1_ps(a[0].dy - 0.5f), c1y = _mm256_set1_ps(a[1].dy - a[0].dy), e0y = _mm256_set1_ps(b[0].dy - a[0].dy), e1y = _mm256_set1_ps((b[1].dy - b[0].dy) - (a[1].dy - a[0].dy));
+        for (int k = s & ~7; k < run_end[r]; k += 8) {
+          const __m256 U = _mm256_loadu_ps(tu + k);
+          __m256 dx = LIN8_MA(c0x, c1x, U), ex = LIN8_MA(e0x, e1x, U), dy = LIN8_MA(c0y, c1y, U), ey = LIN8_MA(e0y, e1y, U);
+          if (k < s) {
+            const __m256 keep = _mm256_cmp_ps(_mm256_add_ps(_mm256_set1_ps((float)k), lane8), _mm256_set1_ps((float)s), _CMP_LT_OQ);
+            dx = _mm256_blendv_ps(dx, _mm256_loadu_ps(T + 4 * k), keep); ex = _mm256_blendv_ps(ex, _mm256_loadu_ps(T + 4 * k + 8), keep);
+            dy = _mm256_blendv_ps(dy, _mm256_loadu_ps(T + 4 * k + 16), keep); ey = _mm256_blendv_ps(ey, _mm256_loadu_ps(T + 4 * k + 24), keep);
+          }
+          _mm256_storeu_ps(T + 4 * k, dx); _mm256_storeu_ps(T + 4 * k + 8, ex); _mm256_storeu_ps(T + 4 * k + 16, dy); _mm256_storeu_ps(T + 4 * k + 24, ey);
+        }
+      }
+      built = j;
+    }
+    const __m256 vv = _mm256_set1_ps((my - L->node_y[j]) / (L->node_y[j + 1] - L->node_y[j]));
+    const __m128 w0 = _mm_add_ps(BwL, _mm_set1_ps(h[6] * m0 + (h[7] * my + 1))), u0 = _mm_add_ps(BuL, _mm_set1_ps(h[0] * m0 + (h[1] * my + h[2]))), v0 = _mm_add_ps(BvL, _mm_set1_ps(h[3] * m0 + (h[4] * my + h[5])));
+    __m256 nw = _mm256_set_m128(_mm_add_ps(w0, Cw4), w0), nu = _mm256_set_m128(_mm_add_ps(u0, Cu4), u0), nv = _mm256_set_m128(_mm_add_ps(v0, Cv4), v0);
+#define LIN8_XY(K_, X, Y) do { \
+      const float *tk = T + 4 * (K_); \
+      const __m256 rw_ = _mm256_div_ps(one, nw); \
+      X = LIN8_MA(LIN8_MA(_mm256_loadu_ps(tk), _mm256_loadu_ps(tk + 8), vv), nu, rw_); \
+      Y = LIN8_MA(LIN8_MA(_mm256_loadu_ps(tk + 16), _mm256_loadu_ps(tk + 24), vv), nv, rw_); \
+      nw = _mm256_add_ps(_mm256_add_ps(nw, Cw), Cw); nu = _mm256_add_ps(_mm256_add_ps(nu, Cu), Cu); nv = _mm256_add_ps(_mm256_add_ps(nv, Cv), Cv); \
+    } while (0)
+    float *o = out + (size_t)yy * pitch;
+    __m256 xa, ya, xb, yb;
+    LIN8_XY(0, xa, ya); LIN8_XY(8, xb, yb);
+    lin16_pts_t p = lin16_pts(&K, xa, ya, xb, yb);
+    int k = 0;
+    for (; k + 16 < nx; k += 16) {
+      LIN8_XY(k + 16, xa, ya); LIN8_XY(k + 24, xb, yb);
+      const lin16_pts_t np = lin16_pts(&K, xa, ya, xb, yb);
+      lin16_read(r0, r1, p, o + k);
+      p = np;
+    }
+#undef LIN8_XY
+    if (k + 16 <= nx) { lin16_read(r0, r1, p, o + k); continue; }
+    float t[16];   // the row's last points, past its end: those are dropped
+    lin16_read(r0, r1, p, t);
+    for (int l = 0; k + l < nx; l++) o[k + l] = t[l];
+  }
+#undef LIN8_MA
+}
+#undef OB_V3_IN
+#endif
 #endif
 void ob_sample_grid_pic(const ob_layout_t *L, const image_t *pim, const ob_reg_t *reg, float mx0, float my0, float step, int x0, int nx, int y0, int ny, float *out, int pitch) {
 #if defined(OB_NEON) || defined(OB_X86)
   if (pim->lin) {
+#ifdef OB_V3_ON
+    if (ob_v3()) {
+      for (int c = 0; c < nx; c += GRID_LIN) sample_grid_lin_v3(L, pim, reg, mx0, my0, step, x0 + c, nx - c < GRID_LIN ? nx - c : GRID_LIN, y0, ny, out + c, pitch);
+      return;
+    }
+#endif
     for (int c = 0; c < nx; c += GRID_LIN) sample_grid_lin(L, pim, reg, mx0, my0, step, x0 + c, nx - c < GRID_LIN ? nx - c : GRID_LIN, y0, ny, out + c, pitch);
     return;
   }

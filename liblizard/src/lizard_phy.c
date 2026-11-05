@@ -3,6 +3,15 @@
 #include "fft.h"
 #include <stdlib.h>
 #include <string.h>
+#ifdef OB_V3_ON
+#include <stdio.h>
+// ai: Every native x86-64 build is compiled for x86-64-v2 (simd.h): a processor below the level is told so before any
+// ai: of that code runs, not left to an illegal instruction; the check alone is compiled for plain x86-64.
+__attribute__((constructor(101), target("arch=x86-64"))) static void ob_need_v2(void) {
+  __builtin_cpu_init();
+  if (!__builtin_cpu_supports("x86-64-v2")) { fputs("LIZARD needs an x86-64-v2 processor (SSE4.2 and POPCNT)\n", stderr); abort(); }
+}
+#endif
 
 // Everything a call writes, allocated once: a frame costs no malloc. Behind a pointer so a const lizard_t can use it.
 struct lizard_ws {

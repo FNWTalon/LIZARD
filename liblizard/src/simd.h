@@ -161,6 +161,21 @@ OB_VFN uint32_t wasm_i8x16_bitmask(v128_t a) {
 // ai: OB_NEON kernels, ported); a wider form only inside a function compiled for its own instruction set and chosen at
 // ai: run time from the processor
 #define OB_X86 1
+// ai: x86-64's levels (2026-11-05): v2 (SSE4.2, POPCNT and below) the floor, every native build compiled for it, a hard
+// ai: requirement (core/CMakeLists.txt -march=x86-64-v2; the tests' -msse4.1 lines are a subset); v3 (AVX2, FMA, BMI2
+// ai: and the rest of the level) above it: a site's v3 form is a function compiled for the level (OB_V3) and taken where
+// ai: ob_v3() finds it at run time, never a build switch; OB_X86_MAX 2 (a lab build's define) holds every site at v2,
+// ai: for an A/B. v1, plain x86-64, is the scalar twins' (the library's checks and the wasm; no native app runs it). No
+// ai: AVX-512.
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(_MSC_VER)
+#define OB_V3_ON 1
+#ifndef OB_X86_MAX
+#define OB_X86_MAX 3
+#endif
+#include <immintrin.h>
+#define OB_V3 __attribute__((target("arch=x86-64-v3")))
+static inline int ob_v3(void) { return OB_X86_MAX >= 3 && __builtin_cpu_supports("x86-64-v3"); }
+#endif
 
 // ai: x86-64 with SSE4.1 (and the SSSE3 and SSE2 it implies): the same wrappers over SSE's instructions. One type
 // ai: for every lane view, as on NEON; the float operations reinterpret it.

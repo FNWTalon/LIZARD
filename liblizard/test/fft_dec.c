@@ -41,6 +41,7 @@ int main(int argc, char **argv) {
   static const int NS[7] = { 384, 512, 768, 1024, 1152, 1280, 1536 }, CW[3] = { 30, 32, 64 };
   uint32_t z = 11;
   int bad = 0;
+  uint64_t dig = 1469598103934665603ull;   // ai: an FNV-1a of every dif, dit and dit-keep output: two builds' transforms compared (x86-64-v2 against v3)
   for (int ni = 0; ni < 7; ni++) for (int ci = 0; ci < 3; ci++) {
     const int n = NS[ni], cols = CW[ci], pitch = 64, keep = n / 3; const size_t sz = (size_t)n * pitch * 4;
     float *r0 = malloc(sz), *i0 = malloc(sz), *ra = malloc(sz), *ia = malloc(sz), *rb = malloc(sz), *ib = malloc(sz), *rc = malloc(sz), *ic = malloc(sz);
@@ -61,10 +62,22 @@ int main(int argc, char **argv) {
     fft_dec_dit(rc, ic, n, cols, pitch, keep);
     const double ek = err_of(rc, ic, r0, i0, n, cols, pitch, place, 0, keep);
     const int fail = eb > 2 * ea || ec > 2 * ea || ek > 2 * ea;
+    for (size_t i = 0; i < (size_t)n * pitch; i++) {
+      const float v[3] = { rb[i], ib[i], rc[i] };
+      const uint8_t *b = (const uint8_t *)v;
+      for (int q = 0; q < 12; q++) dig = (dig ^ b[q]) * 1099511628211ull;
+    }
     printf("n %4d cols %2d  format %6.1f us  dif %6.1f (%.2fx)  dit %6.1f (%.2fx)   worst error / rms: format %.2e, dif %.2e, dit %.2e, dit keep %d %.2e%s\n",
       n, cols, ta, tb, ta / tb, tc, ta / tc, ea, eb, ec, keep, ek, fail ? "  FAIL" : "");
     bad += fail;
     free(r0); free(i0); free(ra); free(ia); free(rb); free(ib); free(rc); free(ic);
   }
+  printf("outputs digest %016llx (%s)\n", (unsigned long long)dig,
+#ifdef OB_V3_ON
+         ob_v3() ? "x86-64-v3" : "x86-64-v2"
+#else
+         "no x86 level"
+#endif
+  );
   return bad != 0;
 }

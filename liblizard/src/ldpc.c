@@ -104,9 +104,8 @@ int ldpc_init(ldpc_t *c, int rate) {
     c->w4 = malloc((size_t)c->kb * 4 * c->z * sizeof(int16_t) + ((size_t)c->slots_total + c->lay_ptr[mb]) * sizeof(int16_t *) + (size_t)mb * sizeof(int));
     if (!c->w4 || views_neon(c)) { ldpc_free(c); return -1; }
 #ifdef OB_LDPC_WIDE
-    // ai: x86-64: wide is then the four-times kernel's form: 0 SSE4.1, 1 AVX2 (where wide_for took AVX2 or AVX-512;
-    // ai: the kernel has no wider form)
-    if (c->wide) c->wide = __builtin_cpu_supports("avx2") ? 1 : 0;
+    // ai: x86-64: wide is then the four-times kernel's form: 0 SSE4.1, 1 AVX2 (where wide_for took AVX2)
+    if (c->wide) c->wide = ob_v3() ? 1 : 0;
 #endif
   }
 #endif
@@ -434,7 +433,7 @@ static void layer_kernel_four_sse41(int8_t *R, int ns, int zp, int norm, int16_t
 // ai: order of checks 0-7, 16-23, 8-15, 24-31, which the accumulators, the extrinsics' bytes and the scaled minima
 // ai: keep (byte for byte, lane for lane); the messages alone are put back in order (VPERMQ), for their store and to
 // ai: be widened onto the posteriors.
-#define OB_AVX2 static inline __attribute__((always_inline, target("avx2")))
+#define OB_AVX2 static inline __attribute__((always_inline, target("arch=x86-64-v3")))
 typedef struct { __m256i a1, a2, s; } p1_acc_avx2;
 typedef struct { __m256i a1, n, m; } p2_msg_avx2;
 typedef struct { __m256i v[2]; } q32_avx2;
@@ -525,23 +524,20 @@ OB_AVX2 void layer_avx2(int8_t *R, int ns, int zp, int norm, int16_t *const *vie
   for (int k = 0; k < nc; k++) st32_avx2(cp[k] - z, ld32_avx2(cp[k]));
 }
 
-__attribute__((target("avx2"))) static void layer_kernel_four_avx2(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, int16_t *const *cp, int nc, int first) {
+OB_V3 static void layer_kernel_four_avx2(int8_t *R, int ns, int zp, int norm, int16_t *const *view, int nd, int z, const int *sh, int16_t *const *cp, int nc, int first) {
   if (first) layer_avx2(R, ns, zp, norm, view, nd, z, sh, cp, nc, 1);
   else layer_avx2(R, ns, zp, norm, view, nd, z, sh, cp, nc, 0);
 }
 #endif
 #endif
 
-// x86-64: the same layer, 16 and 32 checks a vector (AVX2, AVX-512 with its byte and word lanes), each compiled for
+// x86-64: the same layer, 16 checks a vector (AVX2), compiled for
 // its own instruction set and taken by ldpc_init where the processor has it; lane for lane the 128-bit kernel's
 // operations, so every form decides alike (test/ldpc_wide.c holds them to the scalar twin).
 // ai: A code ldpc_init gives w4 runs on the four-times columns (x86-64's port above); these run a code it gives none.
 #ifdef OB_LDPC_WIDE
 #include <immintrin.h>
-#ifndef OB_LDPC_WIDE_MAX
-#define OB_LDPC_WIDE_MAX 2   // ai: a lab build caps it (1: AVX2 at most, 0: the 128-bit kernel or the four-times SSE4.1 form), for an A/B
-#endif
-__attribute__((target("avx2"))) static void layer_kernel_avx2(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
+OB_V3 static void layer_kernel_avx2(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
   const __m256i big = _mm256_set1_epi16(32767), cap = _mm256_set1_epi16(2047), top = _mm256_set1_epi16(127), vn = _mm256_set1_epi16((int16_t)norm);
   const __m256i lo = _mm256_set1_epi16(-8191), hi = _mm256_set1_epi16(8191);
   for (int i = 0; i < zp; i += 16) {
@@ -572,47 +568,16 @@ __attribute__((target("avx2"))) static void layer_kernel_avx2(int16_t *Q, int8_t
     }
   }
 }
-__attribute__((target("avx512f,avx512bw"))) static void layer_kernel_avx512(int16_t *Q, int8_t *R, int ns, int zp, int norm) {
-  const __m512i big = _mm512_set1_epi16(32767), cap = _mm512_set1_epi16(2047), top = _mm512_set1_epi16(127), vn = _mm512_set1_epi16((int16_t)norm);
-  const __m512i lo = _mm512_set1_epi16(-8191), hi = _mm512_set1_epi16(8191);
-  for (int i = 0; i < zp; i += 32) {
-    __m512i min1 = big, min2 = big, arg = _mm512_set1_epi16(-1), sgn = _mm512_setzero_si512();
-    for (int e = 0; e < ns; e++) {
-      int16_t *q = Q + e * zp + i;
-      __m512i v = _mm512_sub_epi16(_mm512_loadu_si512((const void *)q), _mm512_cvtepi8_epi16(_mm256_loadu_si256((const __m256i *)(R + e * zp + i))));
-      _mm512_storeu_si512((void *)q, v);
-      __m512i a = _mm512_abs_epi16(v);
-      __mmask32 lt = _mm512_cmplt_epi16_mask(a, min1);
-      sgn = _mm512_xor_si512(sgn, v);
-      min2 = _mm512_min_epi16(min2, _mm512_max_epi16(min1, a));
-      arg = _mm512_mask_mov_epi16(arg, lt, _mm512_set1_epi16((int16_t)e));
-      min1 = _mm512_min_epi16(min1, a);
-    }
-    __m512i m1 = _mm512_min_epi16(_mm512_srai_epi16(_mm512_mullo_epi16(_mm512_min_epi16(min1, cap), vn), 4), top);
-    __m512i m2 = _mm512_min_epi16(_mm512_srai_epi16(_mm512_mullo_epi16(_mm512_min_epi16(min2, cap), vn), 4), top);
-    for (int e = 0; e < ns; e++) {
-      int16_t *q = Q + e * zp + i;
-      __m512i v = _mm512_loadu_si512((const void *)q);
-      __m512i mag = _mm512_mask_mov_epi16(m1, _mm512_cmpeq_epi16_mask(arg, _mm512_set1_epi16((int16_t)e)), m2);
-      __m512i neg = _mm512_srai_epi16(_mm512_xor_si512(sgn, v), 15);
-      __m512i r = _mm512_sub_epi16(_mm512_xor_si512(mag, neg), neg);
-      _mm256_storeu_si256((__m256i *)(R + e * zp + i), _mm512_cvtsepi16_epi8(r));
-      _mm512_storeu_si512((void *)q, _mm512_max_epi16(_mm512_min_epi16(_mm512_add_epi16(v, r), hi), lo));
-    }
-  }
-}
 // ai: The widest kernel the processor has (and the build allows), its z a whole number of the kernel's vectors.
 static int wide_for(int zp) {
   __builtin_cpu_init();
-  if (OB_LDPC_WIDE_MAX >= 2 && zp % 32 == 0 && __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512f")) return 2;
-  if (OB_LDPC_WIDE_MAX >= 1 && zp % 16 == 0 && __builtin_cpu_supports("avx2")) return 1;
+  if (zp % 16 == 0 && ob_v3()) return 1;   // ai: OB_X86_MAX 2 (simd.h) holds it at the 128-bit kernel
   return 0;
 }
 #endif
 
 static void layer_kernel_for(const ldpc_t *c, int16_t *Q, int8_t *R, int ns) {
 #ifdef OB_LDPC_WIDE
-  if (c->wide == 2) { layer_kernel_avx512(Q, R, ns, c->zp, c->norm); return; }
   if (c->wide == 1) { layer_kernel_avx2(Q, R, ns, c->zp, c->norm); return; }
 #endif
   layer_kernel(Q, R, ns, c->zp, c->norm);
@@ -973,7 +938,7 @@ OB_AVX2 __m256i parity_groups_avx2(int16_t *const *view, int nd, const int16_t *
   return acc;
 }
 
-__attribute__((target("avx2"))) static int layers_parity_avx2(const ldpc_t *c, int16_t *const *vw, int count, int rev) {
+OB_V3 static int layers_parity_avx2(const ldpc_t *c, int16_t *const *vw, int count, int rev) {
   const int z = c->z, mb = c->mb;
   const int16_t *Lp = c->wl + c->k;
   int bad = 0;
