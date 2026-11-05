@@ -1,4 +1,4 @@
-// The LDPC's learned stop for a code and the CRC-32 split's powers, shared by the rate profile's stage (tiers.mjs,
+// The LDPC's learned stop for a code and the CRC-32C split's powers, shared by the rate profile's stage (tiers.mjs,
 // glsl/back_tiers.mjs) and the sender's paint (../encoder.mjs, wgsl/send.mjs).
 import { loadStop, ruleUrlFor } from "./stop/rule.mjs";
 
@@ -13,13 +13,13 @@ export async function stopFor(m) {
   if (net.m !== m) throw new Error(`stop rule: the file for ${m} checks was trained on a code of ${net.m}`);
   return net;
 }
-// ---- the CRC-32 split (DESIGN section 7) ----
+// ---- the CRC-32C split (DESIGN section 7) ----
 //
 // The reflected bitwise step is multiplication by x in GF(2)[x] / P with x^0 at bit 31. Both halves of the
 // algorithm are linear in the message, so the CRC of 476 bytes is the XOR over 4-byte chunks of (chunk from a
 // zero state) times x^(8 * bytes after the chunk), plus the initial state pushed through the whole message, then
 // the final inversion. The shader gives each lane one chunk, one table entry and a 32-step multiply.
-const P = 0xedb88320;
+const P = 0x82f63b78;   // ai: CRC-32C (Castagnoli), reflected (SPEC 7.1, src/layout.c ob_crc32c)
 const mulx = (c) => ((c >>> 1) ^ (P & -(c & 1))) >>> 0;
 function xpow(e) { let c = 0x80000000; for (let i = 0; i < e; i++) c = mulx(c); return c >>> 0; }
 // c times the polynomial p (both in the reflected representation).

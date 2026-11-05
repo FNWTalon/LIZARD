@@ -35,10 +35,10 @@ export function inverse(p) {
   return inv;
 }
 
-// CRC-32, reflected 0xEDB88320, init and final xor 0xffffffff (src/layout.c ob_crc32).
-export function crc32(bytes, len = bytes.length) {
+// CRC-32C (Castagnoli), reflected 0x82F63B78, init and final xor 0xffffffff (src/layout.c ob_crc32c).
+export function crc32c(bytes, len = bytes.length) {
   let c = 0xffffffff;
-  for (let i = 0; i < len; i++) { c ^= bytes[i]; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); }
+  for (let i = 0; i < len; i++) { c ^= bytes[i]; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0x82f63b78 & -(c & 1)); }
   return (c ^ 0xffffffff) >>> 0;
 }
 
@@ -61,11 +61,11 @@ export function encodeCodeword(code, data) {
   return cw;
 }
 
-// A block's 476 payload bytes (id first) to its k data bits: bytes MSB first, then the CRC-32 MSB first.
+// A block's 476 payload bytes (id first) to its k data bits: bytes MSB first, then the CRC-32C MSB first.
 export function dataBits(payload, k) {
   const bits = new Uint8Array(k), B = payload.length;
   for (let i = 0; i < B * 8; i++) bits[i] = (payload[i >> 3] >> (7 - (i & 7))) & 1;
-  const c = crc32(payload);
+  const c = crc32c(payload);
   for (let i = 0; i < 32; i++) bits[B * 8 + i] = (c >>> (31 - i)) & 1;
   return bits;
 }

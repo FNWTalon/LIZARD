@@ -1,23 +1,23 @@
-// The sender's paint uniform layout (send.mjs) and the split CRC-32, shared by the rate profile's LDPC kernel
+// The sender's paint uniform layout (send.mjs) and the split CRC-32C, shared by the rate profile's LDPC kernel
 // (back_tiers.mjs) and the sender's paint.
 // ai: The one-rate LDPC kernel these came with (ldpcSource: layered min-sum on the 3/4 code, the stall rule and the
 // ai: learned stop) went 2026-10-22; the profile's kernel is back_tiers.mjs tldpcSource.
-// The CRC-32 is split over lanes (ref_ldpc.mjs crcPowers): lane w runs the reflected bitwise CRC over its 4-byte
+// The CRC-32C is split over lanes (ref_ldpc.mjs crcPowers): lane w runs the reflected bitwise CRC over its 4-byte
 // chunk from a zero state, multiplies by x^(8 * bytes after it) mod P from a table, and XORs into one word; lane 0
 // adds the initial state's term with the final inversion folded in. 119 lanes, 32 steps each, no table in
 // workgroup memory.
 import { SLOTS } from "../plan/common.mjs";
 import { PAYLOAD } from "../back/ref_ldpc.mjs";
-// ai: the payload is whole words (476 B, 119), its CRC-32 the word after it
+// ai: the payload is whole words (476 B, 119), its CRC-32C the word after it
 if (PAYLOAD % 4) throw new Error(`the block's ${PAYLOAD} B are no whole words`);
 export const CRC_CHUNKS = PAYLOAD / 4;
 
 // ai: The sender's paint uniform P in u32 words (wgsl/send.mjs paintSource): sizes, a vec4u a picture slot; dims; pw,
-// ai: 30 vec4u (the CRC-32 powers, crcPowers(PAYLOAD)). PARAMS_STRUCT is its WGSL.
+// ai: 30 vec4u (the CRC-32C powers, crcPowers(PAYLOAD)). PARAMS_STRUCT is its WGSL.
 export const PARAMS_AT = { sizes: 0, dims: 4 * SLOTS, pw: 4 * SLOTS + 4, words: 4 * SLOTS + 124 };
 export const PARAMS_STRUCT = `struct Params { sizes: array<vec4<u32>, ${SLOTS}>, dims: vec4<u32>, pw: array<vec4<u32>, 30> }`;
 
-// ai: The split CRC-32 as WGSL, shared with the sender's paint (wgsl/send.mjs): crcOf(i) is called by
+// ai: The split CRC-32C as WGSL, shared with the sender's paint (wgsl/send.mjs): crcOf(i) is called by
 // ai: every lane of the workgroup with its lane index (it holds two barriers) once the 476 payload bytes sit in the
 // ai: workgroup array `packw` (120 u32, four bytes a word in memory order, words 0 to 118; word 119 the CRC's) and returns
 // ai: the CRC to every lane. `crcw` names the workgroup atomic it folds into, `crcStep` the name the step function
@@ -26,7 +26,7 @@ export const PARAMS_STRUCT = `struct Params { sizes: array<vec4<u32>, ${SLOTS}>,
 export function CRC_SPLIT({ packw = "packw", crcw = "crcw", crcStep = "crcStep", pw = "P.pw" } = {}) {
   return /* wgsl */ `
 const CRC_CHUNKS: u32 = ${CRC_CHUNKS}u;
-const CRC_POLY: u32 = 0xedb88320u;
+const CRC_POLY: u32 = 0x82f63b78u;
 fn ${crcStep}(c: u32) -> u32 { return (c >> 1u) ^ (CRC_POLY & (0u - (c & 1u))); }
 fn crcOf(i: u32) -> u32 {
   if (i == 0u) { atomicStore(&${crcw}, 0u); }

@@ -53,7 +53,7 @@ struct G { a: vec4u, b: vec4u, c: vec4u, d: vec4u, e: vec4u }
 `;
 
 // ai: PAINT, a workgroup a (block, symbol), 128 threads (src/lizard_phy.c lizard_encode and map_out, the C's arithmetic
-// ai: exactly): the block's 476 payload bytes from BLOCKS, their CRC-32 (the LDPC's split CRC), its code's systematic
+// ai: exactly): the block's 476 payload bytes from BLOCKS, their CRC-32C (the LDPC's split CRC), its code's systematic
 // ai: codeword (the data bits, zeros past the 480 B where the code holds more (the 7/8 code's last 128), then the m parity bits: the IRA
 // ai: accumulator, a prefix XOR over the checks in check order, a lane ceil(m / 128) of them), its slots (slot i the
 // ai: codeword bit its code's bit map names, a slot past the codeword a bit of its frame's count: the pilots; each
@@ -127,7 +127,7 @@ fn main(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_index) i: u3
   let slot0: u32 = tt.y + (b - tt.x) * slots;
   // ai: this block's bit of its symbol's frame's count: the pilots' flip
   let pq: u32 = ((((P.dims.w & 3u) + r / max(P.dims.w >> 2u, 1u)) & 3u) >> (b & 1u)) & 1u;
-  // ai: The payload from BLOCKS: bytes 0 to 475 in words 0 to 118; its CRC-32 big-endian in word 119 (bytes 476 to 479).
+  // ai: The payload from BLOCKS: bytes 0 to 475 in words 0 to 118; its CRC-32C big-endian in word 119 (bytes 476 to 479).
   let base: u32 = (r * P.sizes[0].x + b) * 120u;
   if (i < CRC_CHUNKS) { packw[i] = BLOCKS[base + i]; }
   if (i == CRC_CHUNKS) { packw[CRC_CHUNKS] = 0u; }

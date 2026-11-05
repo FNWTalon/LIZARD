@@ -4,7 +4,7 @@
 // the upper half-plane, taken in order of increasing frequency, 320 to a sub-channel. The
 // lower half-plane is the conjugate reflection, the inverse FFT is real, and it is clipped to
 // tame the peak-to-average ratio and shown as grey levels. Per-coefficient LLRs go into the QC-IRA LDPC, a block its
-// code's sent bits and pilots by its rate, each block with a CRC-32 (the paper's RS(80, 64) fragments with hard QPSK lost
+// code's sent bits and pilots by its rate, each block with a CRC-32C (the paper's RS(80, 64) fragments with hard QPSK lost
 // to it on 2026-09-20, research/08, and left the code on 2026-10-25).
 // What the paper leaves open and this file chooses: image size n (the paper says "e.g. 512"),
 // the clipping ratio, equal magnitude on every used coefficient, and a checksum per block. The paper's 16 circle

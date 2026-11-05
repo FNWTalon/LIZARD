@@ -5,7 +5,7 @@
 // ai:
 // ai: The kernels, one compute pass an encode of up to `sub` frames, a symbol a workgroup z (frames x codes, the codes
 // ai: of a frame side by side):
-// ai:   paint: a block a workgroup (wgsl/send.mjs paintSource, 2026-10-07): CRC-32, its code's systematic codeword
+// ai:   paint: a block a workgroup (wgsl/send.mjs paintSource, 2026-10-07): CRC-32C, its code's systematic codeword
 // ai:     (every code of the format's rate profile, src/lizard_phy.h lizard_tiers_for; the codes' tables in TAB, sendTab,
 // ai:     from the wasm's codec), the bit map and whitening, the pilots, QPSK onto the disc;
 // ai:   irows, ipic: the decoder's own butterflies as the inverse transforms (wgsl/inverse.mjs): the inverse along x,

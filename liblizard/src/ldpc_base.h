@@ -3,7 +3,7 @@
 // rows by 31 data columns, the last never sent (np = 1: the 128 zeros past the block, codeword bits 3840 to 3967, known to
 // a decoder; a block's 4480 slots carry bits 0 to 3839 and 3968 to 4607, the first data column sent since 2026-11-01, where
 // it was never sent before; ldpc.h np, nt), 3/4 10 by 30, 2/3 15 by 30, 1/2 30 by 30. Each holds the
-// block's 476 B and its CRC-32 (3840 bits) in its k (3840, and 3968 at 7/8, whose last 128 data bits are zeros a
+// block's 476 B and its CRC-32C (3840 bits) in its k (3840, and 3968 at 7/8, whose last 128 data bits are zeros a
 // decoder is told). Each entry is a circulant's shift, -1 where the base graph has no edge; the staircase is not in it, being
 // the same for every code (ldpc.c). These ARE the format's codes (ldpc_init builds the rate's from here).
 // Made on 2026-10-31 by scripts/exp/ldpc_opt.py generate(z, mb, kb, degrees(kb, heavy), seed, np), which regenerates

@@ -53,10 +53,3 @@ export class Decoder {
   }
   free() { M._lizard_wh_free(this.h); M._free(this.buf); }
 }
-
-// Whole-file check for the rig: a length match alone would pass a wrong recovery.
-export function crc32(bytes) {
-  let c = 0xffffffff;
-  for (let i = 0; i < bytes.length; i++) { c ^= bytes[i]; for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1)); }
-  return ~c >>> 0;
-}

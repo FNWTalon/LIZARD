@@ -341,10 +341,10 @@ void main() {
 
 // ai: A code's uniform T (the WGSL's tierUniformStruct, std140: vec4 arrays at the WGSL's offsets).
 const tierUniform = (sh) => `layout(set = 0, binding = 8, std140) uniform TierCode { uvec4 dims; uvec4 rows[${sh.rowv}]; uvec4 pairs[${sh.pairv}]; uvec4 pw[30]; } T;`;
-// ai: The split CRC-32 (../wgsl/back_ldpc.mjs CRC_SPLIT's arithmetic) over packw, folded into crcw.
+// ai: The split CRC-32C (../wgsl/back_ldpc.mjs CRC_SPLIT's arithmetic) over packw, folded into crcw.
 const CRC = /* glsl */ `
 const uint CRC_CHUNKS = ${CRC_CHUNKS}u;
-const uint CRC_POLY = 0xedb88320u;
+const uint CRC_POLY = 0x82f63b78u;
 uint crcStep(uint c) { return (c >> 1u) ^ (CRC_POLY & (0u - (c & 1u))); }
 uint crcOf(uint i) {
   if (i == 0u) { ${wgStore("crcw", "0u")}; }
@@ -696,7 +696,7 @@ void main() {
   }
   uint crc = crcOf(i);
   if (i == 0u) {
-    // ai: the CRC-32 the block carries, big-endian in the word after its payload's (bytes 476 to 479)
+    // ai: the CRC-32C the block carries, big-endian in the word after its payload's (bytes 476 to 479)
     uint wc = packw[CRC_CHUNKS];
     uint expect = ((wc & 0xffu) << 24u) | (((wc >> 8u) & 0xffu) << 16u) | (((wc >> 16u) & 0xffu) << 8u) | (wc >> 24u);
     uint sl = 0u;

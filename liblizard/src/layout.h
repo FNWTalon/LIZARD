@@ -147,6 +147,6 @@ void ob_layout_free(ob_layout_t *L);
 // moves, so a sender may change it between the frames of a running transfer.
 void ob_layout_set_fmt(ob_layout_t *L, const uint8_t *cw);
 
-uint32_t ob_crc32(const uint8_t *p, int n);
+uint32_t ob_crc32c(const uint8_t *p, int n);
 
 #endif

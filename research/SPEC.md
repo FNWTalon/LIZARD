@@ -34,7 +34,7 @@ of the upper half-plane, in order of rising spatial frequency, inside a black an
 border is one of three rings, whose band holds 64, 128 or 256 cells a side; any ring may carry any picture. The ring
 registers the symbol and carries the format word, one Reed-Solomon codeword that states the sub-channel count (so the
 picture size and the blocks) and the display rate. The payload travels in blocks of 476 bytes (a 32-bit block id and
-472 payload bytes) with a CRC-32, each coded by a QC-LDPC code onto consecutive sub-channels of 320 coefficients at a
+472 payload bytes) with a CRC-32C, each coded by a QC-LDPC code onto consecutive sub-channels of 320 coefficients at a
 rate that follows the frequency: 7/8, 3/4, 2/3 and 1/2 from the inside out (the rate profile, 3.1). Every symbol also
 carries pilots in its blocks' tails (7.3) and 49 anchors painted over its picture (6.13). Blocks from any frame feed a
 Wirehair fountain per chunk of the file, described by header and manifest blocks and verified against the file's
@@ -293,7 +293,7 @@ room (3.5, 9.5).
 - A block's slots are its code's nt sent bits and then its tail, the slots that carry the pilots (7.3): 16 at 7/8 and
   32 at 3/4; a 2/3 or 1/2 block has none. Every code is lifted by z = 128 (section 8); the 7/8 code's last data
   column, the 128 zero information bits past the CRC, is never sent (np = 128, 8.6).
-- The information word is the 476 block bytes and their CRC-32, 3840 bits, the k of the 3/4, 2/3 and 1/2 codes; the
+- The information word is the 476 block bytes and their CRC-32C, 3840 bits, the k of the 3/4, 2/3 and 1/2 codes; the
   7/8 code's k holds 128 zero bits past them (7.1). A block is 476 bytes whatever its rate (`lizard_phy.h:LIZARD_BLOCK`, `lizard_phy.c:init`, `block_bytes`).
 - The first 4 of the 476 bytes are the block id (7.5), which leaves 472 useful bytes (3776 bits).
 
@@ -1003,35 +1003,35 @@ Decoded, the entries equal 6.3's sort at every coefficient of LIZARD-64, -144, -
 enlarged by 4/3 through the taps of 6.8.
 
 - slot bits, one byte (0 or 1) a slot, 40,960 bytes: P3's (the slots do not depend on the ring), SHA-256
-  `04e27f794b080a1ebc30d409405851e011e18ac904c713fa75f9bb6917799353`
+  `8f2adac0fa137c0fa12c53cf2812dc8e71703a5058465119b3023b951632391f`
 - the same packed 8 to a byte, first slot in the most significant bit, first 16 bytes:
-  `00043e000efd03e0f0ffffcc000c0c03`
+  `04043e000efd03e0f8ffffcc020c0c03`
 - sigma = 202.385773, L = 404.771545
 - drive 572 x 572 (S = 286, pxm = 2; scale = 1.5, so the picture is upscaled by 4/3 through the taps of 6.8). Drive
-  values at row 30, columns 30 to 33 (the picture's first pixel row and column): 0.4950773, 0.4724883, 0.6975312, 0.9888784
-- grey bytes at row 30, columns 30 to 45: `126 120 178 252 255 209 139 131 188 242 231 160 91 65 89 129`
-- grey bytes at row 345, columns 345 to 360: `113 94 95 99 110 140 183 217 207 151 75 18 5 35 118 211`
+  values at row 30, columns 30 to 33 (the picture's first pixel row and column): 0.4596732, 0.4953838, 0.7447616, 1.0000000
+- grey bytes at row 30, columns 30 to 45: `117 126 190 255 255 190 96 86 177 250 246 170 76 54 104 156`
+- grey bytes at row 345, columns 345 to 360: `201 177 144 124 141 192 243 245 183 96 34 18 29 54 103 180`
 - the anchors (6.13): a = 4 modules, 8 pixels, from modules 31, 68, 104, 141, 178, 214, 251 on either axis. Grey bytes at
   row 64 (anchor (0, 0)'s third pixel row), columns 60 to 71, the square at columns 62 to 69:
-  `62 111 255 255 0 0 0 0 255 255 106 114`
+  `74 148 255 255 0 0 0 0 255 255 98 94`
 - grey bytes of the resampled square, pixels [24, 548) on both axes (modules [12, 274)), row by row, 274,576 bytes:
-  SHA-256 `8aeda0414b3b27d7711a5acd994531a16c14acffb8f0a4f025cb65a59d4de4e3`; 4897 of them are 0 and 6900 are 255
+  SHA-256 `1c871c67613d37558d22c2198134e30005b2645f31e272514d13823151639ef6`; 4959 of them are 0 and 6964 are 255
 - grey bytes of the whole drive, border included, 327,184 bytes: SHA-256
-  `27c1a4bdd0794e7b955a94a7336f78a51e1186b0a38b17e772ec05d8b12ddb77`
+  `2664b748d54f7318b341c85c34f40d67c1e374b8226c0cf90bcc4d346f1485d7`
 
 **P3, LIZARD-64 (n = 384, 7 blocks) in the 64 ring, every payload byte zero.** pxm = 3, scale 3: a copy. Its slot bits
 are P2's.
 
-- slot bits, one byte a slot, 40,960 bytes: SHA-256 `04e27f794b080a1ebc30d409405851e011e18ac904c713fa75f9bb6917799353`
+- slot bits, one byte a slot, 40,960 bytes: SHA-256 `8f2adac0fa137c0fa12c53cf2812dc8e71703a5058465119b3023b951632391f`
 - drive 474 x 474 (S = 158, pxm = 3; scale = 3, so the picture is copied one pixel a sample); the picture starts at
   pixel 45
-- grey bytes at row 45, columns 45 to 60: `136 154 247 255 163 126 206 249 176 91 81 119 148 139 109 122`
+- grey bytes at row 45, columns 45 to 60: `128 163 255 255 139 81 199 255 184 67 76 141 153 135 144 175`
 - the anchors (6.13): a = 2 modules, 6 pixels, from modules 23, 41, 60, 78, 96, 115, 133 on either axis. Grey bytes at
-  row 71 (anchor (0, 0)'s third pixel row), columns 66 to 77, the square at columns 69 to 74: `62 96 126 255 0 255 255 0 255 86 96 91`
+  row 71 (anchor (0, 0)'s third pixel row), columns 66 to 77, the square at columns 69 to 74: `32 48 101 255 0 255 255 0 255 65 89 115`
 - grey bytes of the resampled square, pixels [36, 438) (modules [12, 146)), 161,604 bytes: SHA-256
-  `35967d2409d3eff8c40d94b1e449bd6a70c1bbf432d532c6074c6600f7209f3b`
+  `da77280e156a17d3ecfb499e3cb9c45a93fc0ef79f1ec38a82d99f4f4a22fffc`
 - grey bytes of the whole drive, 474 x 474, 224,676 bytes: SHA-256
-  `db6422590e50b169cfee2561e925bec21be730286e32b3e68f11168aecf7a1a6`. The border holds the RS(16, 3) word (5.2)
+  `e1ee594820057537017186dd177012dea8b08b57dcb27a3bffab03a91fbc89ab`. The border holds the RS(16, 3) word (5.2)
 
 **Digests over the ladder.** `node test/vectors.mjs [ob.mjs]`, run from `liblizard/`, checks 5.2, P2, P3, 7.4 and 9.3
 against a build and prints three digests to diff two builds, each over LIZARD-64 to -1024 in steps of 16 in the 64
@@ -1075,10 +1075,10 @@ geometry inside the border.
 ## 7. Blocks, the bit mapping and the transfer
 
 Normative except where marked. Sources: `lizard_phy.c` (`init`, `lizard_encode`, `whiten_fill`, `perm_fill`, `map_out`,
-`map_in`, `lizard_finish_ext`), `lizard_phy.h`, `layout.c:ob_crc32`; for the transfer (7.5 to 7.10) `xfer.h`, `xfer.c` and
+`map_in`, `lizard_finish_ext`), `lizard_phy.h`, `layout.c:ob_crc32c`; for the transfer (7.5 to 7.10) `xfer.h`, `xfer.c` and
 their wasm exports in `wasm.c`.
 
-A frame of version V carries B(V) blocks, each one LDPC codeword with its own CRC-32, independent of the others. In
+A frame of version V carries B(V) blocks, each one LDPC codeword with its own CRC-32C, independent of the others. In
 this section and section 8, n, k and m are the block code's length, information length and parity count, not the
 picture size.
 
@@ -1096,14 +1096,15 @@ The picture codec treats the 476 bytes as opaque. A frame's payload is 472 B(V) 
 | bits | content |
 |---|---|
 | 0 to 3807 | block bytes 0 to 475, bit i the bit 7 - (i mod 8) of byte floor(i / 8): most significant bit first |
-| 3808 to 3839 | CRC-32 of bytes 0 to 475, bit 3808 + i the bit 31 - i of the CRC: most significant bit first |
+| 3808 to 3839 | CRC-32C of bytes 0 to 475, bit 3808 + i the bit 31 - i of the CRC: most significant bit first |
 | 3840 to k - 1 | at 7/8 alone, 128 zeros. A decoder knows them (the reference feeds them as certain zeros); the 3/4, 2/3 and 1/2 codes' k is 3840 |
 
-**CRC-32** (`layout.c:ob_crc32`) is that of IEEE 802.3 and zlib: polynomial 0x04C11DB7 reflected (0xEDB88320),
-register initialised to 0xFFFFFFFF, result complemented; the CRC-32 of ASCII `123456789` is 0xCBF43926. It covers the
-id and the payload. The id is little-endian; the CRC, read as bytes 476 to 479 of the 480-byte word, is big-endian.
+**CRC-32C** (`layout.c:ob_crc32c`) is Castagnoli's (RFC 3720's, iSCSI's): polynomial 0x1EDC6F41 reflected
+(0x82F63B78), register initialised to 0xFFFFFFFF, result complemented; the CRC-32C of ASCII `123456789` is 0xE3069283.
+x86-64's SSE4.2 `crc32` and ARMv8's `CRC32C` instructions compute it eight bytes at a time. It covers the id and the
+payload. The id is little-endian; the CRC, read as bytes 476 to 479 of the 480-byte word, is big-endian.
 
-**Acceptance.** A receiver MUST hand a block on only when the CRC-32 it computes over the 476 decoded bytes equals the
+**Acceptance.** A receiver MUST hand a block on only when the CRC-32C it computes over the 476 decoded bytes equals the
 32 decoded CRC bits; LDPC convergence alone is not acceptance. The reference requires a zero syndrome and then the CRC.
 
 ### 7.2 Where a block lies in the frame
@@ -1197,12 +1198,12 @@ Bit strings are hex, four bits a digit, the first bit the most significant. The 
 | | block 0 (7/8) | block 1 (7/8) | block 2 (7/8) | block 3 (7/8) |
 |---|---|---|---|---|
 | first frame slot | 0 | 4,496 | 8,992 | 13,488 |
-| CRC-32 of bytes 0 to 475 | 0x4AB56DA5 | 0x84A6ED54 | 0x0DE36A06 | 0xC3F0EAF7 |
-| codeword bits 3800 to 3839 (last payload byte, CRC) | `d74ab56da5` | `d784a6ed54` | `d70de36a06` | `d7c3f0eaf7` |
+| CRC-32C of bytes 0 to 475 | 0x5DAC3EBB | 0xD5FBDE46 | 0x48EF89B0 | 0xC0B8694D |
+| codeword bits 3800 to 3839 (last payload byte, CRC) | `d75dac3ebb` | `d7d5fbde46` | `d748ef89b0` | `d7c0b8694d` |
 | codeword bits 3840 to k - 1 | 128 zeros | 128 zeros | 128 zeros | 128 zeros |
 | codeword bits k to k + 127 (parity p_0 to p_127) | `e9266e19f9d8d7cc96857e9f8fc572c9` | `e6d991e606272833697a8160703a8d36` | `e9266e19f9d8d7cc96857e9f8fc57236` | `e6d991e606272833697a8160703a8dc9` |
 | whitening under its slots 0 to 127 (frame slots S_b to S_b + 127) | `00003e000ffc03e0f8ffffce000c1c03` | `602e8acbffa7681694d5881cc9170bd7` | `ab494584c3ea397d5a2dac3f3057b275` | `4531d3c6175609fb2e6d3dc7950a6a68` |
-| slots 0 to 127 | `75327e236757d37a0084f2c064a9db97` | `1518eac8960db08464eec512ada2cc43` | `de7f05a7aa40e9efa256a13154f265e1` | `3003b3c57ffdd161de5670c9f1bfbdfc` |
+| slots 0 to 127 | `75327e234757d37a0084f28264a9cb87` | `111ceac8970cb08c6ceec510afa2dc43` | `da7b05a78b41e9efaa56a17156f265f1` | `3003b3c57ffdd169de5670c9f1bfbdfc` |
 | the tail (the pilots), c = 0 | slots 4480 to 4495 `5a69` | slots 4480 to 4495 `6e57` | slots 4480 to 4495 `80c1` | slots 4480 to 4495 `bc79` |
 | the tail, c = 1 | `a596` | `6e57` | `7f3e` | `bc79` |
 | the tail, c = 2 | `5a69` | `91a8` | `80c1` | `4386` |
@@ -1213,12 +1214,12 @@ The 3/4, 2/3 and 1/2 blocks:
 | | block 4 (3/4) | block 5 (2/3) | block 6 (1/2) |
 |---|---|---|---|
 | first frame slot | 17,984 | 23,136 | 28,896 |
-| CRC-32 of bytes 0 to 475 | 0xC41962E3 | 0x0A0AE212 | 0x834F6540 |
-| codeword bits 3800 to 3839 (last payload byte, CRC) | `d7c41962e3` | `d70a0ae212` | `d7834f6540` |
+| CRC-32C of bytes 0 to 475 | 0x772B50AD | 0xFF7CB050 | 0x6268E7A6 |
+| codeword bits 3800 to 3839 (last payload byte, CRC) | `d7772b50ad` | `d7ff7cb050` | `d76268e7a6` |
 | codeword bits 3840 to k - 1 | none | none | none |
 | codeword bits k to k + 127 (parity p_0 to p_127) | `8e1fee07a8f1080cfcaec24e3654b527` | `f19ae6dd86677815a1b9c7f83863c1ef` | `f284e220c7972b3c6a97444d895fdcc7` |
 | whitening under its slots 0 to 127 (frame slots S_b to S_b + 127) | `3866bc6962628a5c6783a12fef09a41c` | `a60df6cf665e475b2d587d0cafb932b1` | `3d4ee329250c1b091ef45580fdcb3e89` |
-| slots 0 to 127 | `0603a4229de65af270a8f2db1111d193` | `a90b8ae3e08dd639660698828a536799` | `060e92c7b025451292c7ec2e384e367b` |
+| slots 0 to 127 | `2603840294ee52b278eab0c901015113` | `ad2f8bcbc984de716604c8901ac3f399` | `2b03baef986c0f08c897bc7aaeda824f` |
 | the tail (the pilots), c = 0 | slots 5120 to 5151 `c22fe70f` | none | none |
 | the tail, c = 1 | `3dd018f0` | none | none |
 | the tail, c = 2 | `c22fe70f` | none | none |
@@ -1229,7 +1230,7 @@ The padding's first 128 slots, frame slots 36,576 to 36,703, are the whitening t
 
 SHA-256 of each whole codeword, packed most significant bit first (a 7/8 codeword's 4608 bits include the 128 never
 sent): block 0 (4608 bits) `a62fac54602b23b03e30eb47aaa7f8e983f7d19bc8c7e13713eba2640a23c088`, block 1 (4608 bits) `152ae7463835c31782ca4980d5c592c817b1b66a3a7b976c47fd0f5f436a6700`, block 2 (4608 bits) `602e5bbe31440df25be5562e371c15eb771046800dd05375348c84bf7b182e07`, block 3 (4608 bits) `3fda58ac7bd787b16da65e3da29ea12528f98a3a8bf41020f8fffd30517d95d4`, block 4 (5120 bits) `3be83a78fef345f13645e840469519501a7b01da4576f78d8a5b5713d7fd7035`, block 5 (5760 bits) `958111ce99624a166d811a1f75c056f3a09127a58238d7d84c3b4abe28886671`, block 6 (7680 bits) `2925aaea9a62cbe2c1b4b6c546071eaf2e96a5cd70b9edcb5e4de979155609b8`. SHA-256 of the frame's 40,960 slots
-packed the same way (5120 bytes), c = 0: `994f4750a6596def85a66fdbcacb9866edbbc827c1c408ad6ba5e010793b46cb`. At c = 1, 2 and 3 (`f.setParity(c)` before the encode below;
+packed the same way (5120 bytes), c = 0: `8cd51a40531864b685d052b1879df24dcb7bb9700e9379e33b937ee45a4ed947`. At c = 1, 2 and 3 (`f.setParity(c)` before the encode below;
 only the pilot slots of the blocks whose bit is 1 differ):
 `e5bbfe8c31afa6ba38bfa27dbd3c621f1d51f8982f6be2db08dda65231b117b5`,
 `26d07dc9a5636e452679c3429d31b7ea3b7f0a11064dc5831dd5571552232ebe`,
@@ -1247,7 +1248,7 @@ f.measure(true); f.encode(blocks);
 const slot = Array.from(f.sent(), (s) => (s < 0 ? 1 : 0));   // 40960 slot bits, frame order
 ```
 
-The CRC is the wasm's `ob_test_crc_hash` and agrees with node's `zlib.crc32`; the codewords, parity and whitening rows
+The CRC is the wasm's `ob_test_crc_hash` and agrees with a separate bitwise CRC-32C; the codewords, parity and whitening rows
 were made by a separate JavaScript implementation of this section and section 8 (`liblizard/gpu/back/bitmap.mjs`
 `encodeCodeword`, `perm`, `whiten`), whose slots equal the wasm's on every slot of the seven blocks.
 
@@ -1833,7 +1834,7 @@ frame (`lizard_phy.c:lizard_decode`, `lizard_acquire` then `lizard_finish`):
 8. **Transform** along y a strip of 64 columns at a time, along x only the rows v < n / 2.
 9. **Pilot alignment, soft values, decline gate and LDPC** (8.5): the grid's shift fitted from the pilots' known
    symbols and turned back where its chi-square passes 13.8 (`lizard_phy.c:pilot_align`).
-10. **CRC-32** (7.1).
+10. **CRC-32C** (7.1).
 
 `lizard_acquire_quad`, `lizard_finish` and `lizard_finish_ext` take a quad, a sampled grid or soft values made elsewhere,
 so another front or back half is held to the C's acceptance rules.
@@ -1847,7 +1848,7 @@ and ring with and without that bend, the border nodes are refitted,
 the anchors are found and steer the map, the word is read (F8, by ordered statistics over the ring's code with a
 side-aware gate held to the C's false-word rate), and a back half does the sampling, transform, detrend, pilot
 alignment, soft values, decline gate, LDPC (its stop a small learned net a code, a z = 128 code a 128-lane workgroup)
-and CRC-32 for every tier of the profile. It is judged on CRC-verified blocks, throughput and a negative control, never on parity with the C.
+and CRC-32C for every tier of the profile. It is judged on CRC-verified blocks, throughput and a negative control, never on parity with the C.
 `liblizard/gpu/README.md` has its stages.
 
 ## 11. Measured facts (non-normative)
@@ -1866,7 +1867,7 @@ one phone, 2:1, the 256 ring).
 | Soft LDPC for the payload, Reed-Solomon only for the word | LDPC uses the grey values; RS suits a small fixed field read with erasures |
 | The rate profile, not one rate | a capture's signal-to-noise ratio falls with the frequency |
 | The profile's targets 39 / 15 / 20% of the slots at 7/8, 2/3 and 1/2 | the split the profile had over the sub-channels, as shares of the slots. Live, on one phone's 2:1 captures of LIZARD-656 in the 256 ring, it read above 4.3 MB/s, where the split searched for these codes on re-modulated recorded captures (27.8 / 16.5 / 32.9%) read at most 4.03 MB/s and 89.8% of its blocks (the codes before at their split: 4.26 MB/s, 95.1%) |
-| Every code at z = 128, each its own base graph; the block 476 bytes | a z that fills 64-lane waves and 128-lane workgroups: on recorded captures re-modulated under the codes (the integrated GPU, the learned stops on) 6 to 7% more blocks per GPU millisecond than the codes before (z 93, 106, 120, 160) at the same split, 9 to 10% on the same captures 1 dB worse; block lengths from half to twice 473 bytes moved that by a few percent at most. 476 bytes and the CRC-32 fill the 3/4, 2/3 and 1/2 codes' k: no information bit there is a known zero |
+| Every code at z = 128, each its own base graph; the block 476 bytes | a z that fills 64-lane waves and 128-lane workgroups: on recorded captures re-modulated under the codes (the integrated GPU, the learned stops on) 6 to 7% more blocks per GPU millisecond than the codes before (z 93, 106, 120, 160) at the same split, 9 to 10% on the same captures 1 dB worse; block lengths from half to twice 473 bytes moved that by a few percent at most. 476 bytes and the CRC-32C fill the 3/4, 2/3 and 1/2 codes' k: no information bit there is a known zero |
 | Blocks packed by slots, the remainder padded | whole sub-channels a block would fix each code's length to a multiple of 640 slots; the padding is under 2% of a frame from LIZARD-320 up |
 | H a printed table, not a construction | a construction would let a change of seed or score move the format silently |
 | No 5G NR tables, no polar codes | patents |
@@ -1887,6 +1888,7 @@ one phone, 2:1, the 256 ring).
 | No straddle cancellation, no shift pass, no bursts | patches; the pilots' phase lock and grid fit do their work at the source |
 | No dithered black and white picture | it ruins range and pixel scaling |
 | Clip ratio c = 2 | measured against 1.6 live (section 11) |
+| CRC-32C for the block, not IEEE 802.3's CRC-32 | one instruction on the processors LIZARD is for: x86-64's SSE4.2 (the x86-64-v2 floor) and ARMv8's CRC32 extension; at 3840 bits it detects every error of five bits or fewer (Hamming distance 6), where IEEE's detects three |
 
 ## 13. Open questions
 

@@ -555,7 +555,7 @@ static int init(lizard_t *f, int n, int subch, const lizard_tier_t *tier, int ti
   f->px = side * f->pxm;
   if (ob_layout_init(&f->frame, side)) { lizard_free(f); return -1; }
   fmt_paint(f);
-  // One payload for every block, LIZARD_BLOCK bytes and its CRC-32: 3840 bits, every code's k at 3/4, 2/3 and 1/2
+  // One payload for every block, LIZARD_BLOCK bytes and its CRC-32C: 3840 bits, every code's k at 3/4, 2/3 and 1/2
   // exactly; the 7/8 code's k of 3968 carries zeros past it, which its decoder is told.
   f->tiers = tiers;
   for (int t = 0; t < tiers; t++) {
@@ -636,7 +636,7 @@ int lizard_init(lizard_t *f, int n, int subch, float clip, int span, float tilt)
   lizard_tier_t tier[LIZARD_TIERS];
   const int tiers = lizard_tiers_for(subch, tier);
   if (!tiers) { memset(f, 0, sizeof *f); return -1; }
-  // ai: a block is the transfer's 476 B (xfer.h XFER_BLOCK) at every rate: with its CRC-32 the k of the 3/4, 2/3 and
+  // ai: a block is the transfer's 476 B (xfer.h XFER_BLOCK) at every rate: with its CRC-32C the k of the 3/4, 2/3 and
   // ai: 1/2 codes, and the 7/8 code carries zeros past it, known to the decoder
   return init(f, n, subch, tier, tiers, clip, span, tilt);
 }
@@ -1105,7 +1105,7 @@ void lizard_encode(const lizard_t *f, const uint8_t *blocks, float *drive) {
     memset(bits, 0, (size_t)nb);
     const ldpc_t *code = &f->code[f->block_tier[b]];
     int B = f->block_bytes;
-    uint32_t crc = ob_crc32(src, B);
+    uint32_t crc = ob_crc32c(src, B);
     memset(data, 0, (size_t)code->k);         // past the payload and its CRC a roomier code carries zeros
     int i0 = 0;
 #if defined(OB_NEON) || defined(OB_X86)
@@ -1871,7 +1871,7 @@ have_llr:
       }
       uint32_t crc = 0;
       for (int i = 0; i < 32; i++) crc = (crc << 1) | bits[B * 8 + i];
-      if (crc != ob_crc32(dst, B)) continue;
+      if (crc != ob_crc32c(dst, B)) continue;
     }
     ok[b] = 1; good++;
   }
@@ -1924,7 +1924,7 @@ void lizard_tables(const lizard_t *f, float *out) {
   out[6 * n] = (float)w->sx2; out[6 * n + 1] = (float)w->sq2;
 }
 // The block CRC alone, held to SPEC's vectors (test/vectors.mjs).
-uint32_t ob_test_crc_hash(const uint8_t *p, int n) { return ob_crc32(p, n); }
+uint32_t ob_test_crc_hash(const uint8_t *p, int n) { return ob_crc32c(p, n); }
 
 // The decline gate's arithmetic on the external path: est is one estimate a sub-channel (what the GPU's a2 and
 // nv give), and a block's is the mean over its slots of their sub-channels' (lizard_finish_ext), held to LIZARD_DECLINE

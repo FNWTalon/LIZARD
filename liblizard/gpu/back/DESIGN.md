@@ -3,8 +3,8 @@
 Input: each frame of a batch (B frames, any picture size each), sampled through the front half's map by the fused
 pass 1 (section 10). Output: CRC-verified blocks with their ids, read back once a batch, with a verdict and an
 iteration count a block, each block's pilot reading and each frame's grid shift. The reference for every rule is
-`src/lizard_phy.c` `lizard_finish_ext`, `src/ldpc.c`, `src/layout.c` `ob_crc32`. The decoder is judged on blocks that pass
-their CRC-32 against the truth stream, on ms a frame at batch B (the iGPU's; the 4090 counts blocks), and on a
+`src/lizard_phy.c` `lizard_finish_ext`, `src/ldpc.c`, `src/layout.c` `ob_crc32c`. The decoder is judged on blocks that pass
+their CRC-32C against the truth stream, on ms a frame at batch B (the iGPU's; the 4090 counts blocks), and on a
 negative control; never on parity with the C. The tables named below come from the wasm codec (`init()` from
 `sim/ob.mjs`, section 8).
 
@@ -69,8 +69,9 @@ every constant of the detrend is divided the same way at the store.
   in integers. The C gives up on a failing codeword by its stall rule (violated checks after iteration 9 above 0.95
   of the count after iteration 1); the GPU by each code's learned stop (section 6), which gives up by a small net's
   reading and verifies the same codewords but for its budget of 1 in 1,000.
-- **C CRC-32 and compaction**: the 476 payload bytes are systematic bits 0..3807, MSB first in each byte; the CRC
-  is bits 3808..3839 MSB first; `ob_crc32` is the reflected polynomial 0xEDB88320, init and final xor 0xFFFFFFFF.
+- **C CRC-32C and compaction**: the 476 payload bytes are systematic bits 0..3807, MSB first in each byte; the CRC
+  is bits 3808..3839 MSB first; `ob_crc32c` is CRC-32C, the reflected polynomial 0x82F63B78, init and final xor
+  0xFFFFFFFF.
   Equal means verified; a verified block claims a record slot and is written; nothing else leaves the device.
 
 Drift is acceptable everywhere before the int8 quantisation and in the quantisation itself: a slot within f32
@@ -289,10 +290,10 @@ The arithmetic. Float32 in one order everywhere (the kernel, `stop/rule.mjs` `sc
 against float64, nor under a compiler that fuses each multiply-add; the flips sit within float32 rounding of T.
 `scripts/gpu/back/stop/check_rule.mjs` holds `rule.mjs` to `fit.py`'s words and scores bit for bit.
 
-## 7. CRC-32, compaction, the result record
+## 7. CRC-32C, compaction, the result record
 
 On a clear syndrome the workgroup packs the systematic bits (a posterior < 0 is a 1) MSB first into the 120 words of
-`packw`. The CRC-32 is split over 119 lanes (`glsl/back_tiers.mjs`, as the sender's paint's `wgsl/back_ldpc.mjs` `CRC_SPLIT`; `back/ref_ldpc.mjs` `crcPowers`):
+`packw`. The CRC-32C is split over 119 lanes (`glsl/back_tiers.mjs`, as the sender's paint's `wgsl/back_ldpc.mjs` `CRC_SPLIT`; `back/ref_ldpc.mjs` `crcPowers`):
 lane w runs the reflected CRC over its 4-byte chunk from a zero state, multiplies by x^(8 * bytes after it) mod P (a
 32-step carry-less multiply against a 120-word table in the code's uniform) and XORs into one workgroup atomic; the
 initial state's term and the final inversion are one folded constant. It is compared with bytes 476..479 (word 119) read as a
@@ -327,7 +328,7 @@ time.
 | a version's profile | `M._lizard_tiers_for(subch, pTiers)` | up to 4 tiers of (rate, blocks, slots a block) |
 | perm, inv, white | not exported; regenerated in JS from section 1 (`bitmap.mjs`) and held to what the C paints by `scripts/gpu/back/check_tiers.mjs` | perm nt; white a bit a slot |
 | g0, step | `M._lizard_grid_out(p)` | 2 f32 |
-| CRC-32 | `M._ob_test_crc_hash(p, len)` | |
+| CRC-32C | `M._ob_test_crc_hash(p, len)` | |
 | decline bar, verdicts | `M._ob_test_crc_gate_out(est, blkEst, bar, declined)` | blocks each |
 | truth stream | `streamBlock(id, len)` (sim/ob.mjs, `_stream_fill`); `sourceFor(spec.stream)` (sim/phy.mjs) | |
 | the C's spectrum | `Lizard.measure(true)` then `read()`: 2 * 320 * subch f32, the detrended coefficients in pos order | |
