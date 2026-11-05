@@ -70,7 +70,7 @@ dead at one resolution.
 | slot | one transmitted bit: the sign of a coefficient's real or imaginary part |
 | sub-channel | 320 consecutive coefficients of the frequency order (6.3) |
 | subch | the number of sub-channels in a frame; LIZARD-512 has subch = 512 |
-| version | V = subch / 16, 2 to 64, the word's second byte. A frame of it carries B(V) blocks (3.1) |
+| version | V = subch / 16, 4 to 64, the word's second byte. A frame of it carries B(V) blocks (3.1) |
 | block | 476 bytes, one LDPC codeword and its pilots on 4496, 5152, 5760 or 7680 consecutive slots by its rate (3.1) |
 | rate profile | the blocks' code rates by frequency, inner first, a function of subch alone (3.1) |
 | padding | the frame's slots past its last block, which carry the whitening alone (6.5) |
@@ -115,11 +115,11 @@ by painting a symbol that decodes: the border (sections 4 and 5, the margin incl
 the coded bits exactly as 6.3 to 6.5 and sections 7 and 8 define them, and the real arithmetic of the picture (6.6 to
 6.8) to the formula, not to the reference's last bits. A receiver never checks conformance.
 
-**Not the format.** `lizard_init` takes two sender parameters that no receiver needs and the word cannot state: the
-clipping ratio c (6.7) and a power tilt t across the sub-channels (6.5). Every sender paints c = 2 and t = 0, and
-whether a conforming sender may use others is open (13, item 8). `lizard_phy.c:lizard_init_tiers` builds rate tiers other
-than the profile's for experiments; a frame painted with them is not LIZARD and a receiver told nothing reads it
-wrongly.
+**Not the format.** `lizard_init` takes a sender parameter that no receiver needs and the word cannot state: the
+clipping ratio c (6.7). Every sender paints c = 2, and whether a conforming sender may use another is open (13, item
+8). Its tilt argument is a lab setting, not the format: every sub-channel is painted at one amplitude (6.5, 12), the
+tilt t = 0. `lizard_phy.c:lizard_init_tiers` builds rate tiers other than the profile's for experiments; a frame
+painted with them is not LIZARD and a receiver told nothing reads it wrongly.
 
 **Implementation rules** for the project's decoders, not the symbol: no SharedArrayBuffer (so no wasm threads; one
 heap a worker); a decoder that falls short on the format is fixed, and the format is not bent for it; a measured
@@ -587,12 +587,12 @@ side and bytes = W / 2 (16, 32, 64). A receiver has B from the ring it registere
 | byte | field | value |
 |---|---|---|
 | `cw[0]` | magic | `0x4C` (ASCII `L`) |
-| `cw[1]` | version | sub-channels / 16, 2 to 64; 0, 1 and 65 to 255 are no version. The picture is n = `lizard_n_for(16 * version)` (3.2), the blocks and their rates the profile's (3.1) |
+| `cw[1]` | version | sub-channels / 16, 4 to 64; 0 to 3 and 65 to 255 are no version. The picture is n = `lizard_n_for(16 * version)` (3.2), the blocks and their rates the profile's (3.1) |
 | `cw[2]` | fps | whole frames a second the sender means to paint at, 1 to 255; 0 means not stated |
 | `cw[3]` to `cw[bytes - 1]` | parity | Reed-Solomon, 5.2 |
 
 - An encoder MUST write version = subch / 16.
-- A decoder MUST accept every version from 2 to 64 in every ring, and MUST NOT reject a word for the ring it was read
+- A decoder MUST accept every version from 4 to 64 in every ring, and MUST NOT reject a word for the ring it was read
   in.
 - fps is the rate the sender intends, not the rate it achieves; no decode decision depends on it. A sender MAY change
   it between frames, which repaints only the word's cells (`lizard_phy.c:lizard_fmt_fps`).
@@ -629,7 +629,7 @@ side and bytes = W / 2 (16, 32, 64). A receiver has B from the ring it registere
 - Each code is RS(255, 255 - nroots) shortened to `bytes`, distance nroots + 1.
 - **Acceptance.** A decoder MUST NOT take a correction past `2e + f <= nroots` for e errors and f erasures (`rs.c`
   `solve` refuses one, and a locator whose degree is not its length), and MUST reject a corrected word whose `cw[0]` is
-  not `0x4C` or whose version is outside 2 to 64.
+  not `0x4C` or whose version is outside 4 to 64.
 
 **Test vectors**, `cw[0]` to `cw[bytes - 1]` in hex, read back out of the painted cells by `liblizard/test/vectors.mjs`
 (`_lizard_setup(n, subch, 2, 2B, 0)`, `_lizard_fmt_fps_set(fps)`) and held by `liblizard/test/fmt_test.c`; the word does
@@ -712,7 +712,7 @@ decoding errors and erasures within `2e + f <= nroots` at each step. Each result
 acceptance; the first that passes is the word.
 
 A read of garbage (soft values uniform in -0.5 to 0.5) is accepted at 9.3e-5 (the steps) x 1/256 (the magic) x
-64/256 (the version) = 9.1e-8 a read in every ring (`liblizard/test/fmt_test.c` `p_pass`, exact; 0 of 20,000 measured
+61/256 (the version) = 8.7e-8 a read in every ring (`liblizard/test/fmt_test.c` `p_pass`, exact; 0 of 20,000 measured
 a ring). The word reads with any two sides faded in every ring and with three in the 128 and 256 rings. In the 64 ring
 a read whose side 0 is clean and the other three garbage keeps the real magic, and is accepted wrongly at 2.3e-5.
 
@@ -799,17 +799,11 @@ block b's slot k is frame slot S_b + k. With x the frame's slot bits (7.3: a blo
 x_i = w[i], the whitening alone), coefficient s carries
 
 ```
-H(C_s) = (a_j / sqrt 2) * ( (1 - 2 x_(2s)) + i (1 - 2 x_(2s+1)) ),      j = floor(s / 320),  i = sqrt(-1)
+H(C_s) = (1 / sqrt 2) * ( (1 - 2 x_(2s)) + i (1 - 2 x_(2s+1)) ),      i = sqrt(-1)
 ```
 
 that is, bit 0 gives + and bit 1 gives -, on each axis independently (`lizard_encode`; the magnitude
-`0.70710678f * a_j` in float32). a_j is sub-channel j's amplitude:
-
-```
-a_j = 10^( -t * j / (20 * (subch - 1)) )        t = tilt in dB; t = 0 gives a_j = 1 for every j
-```
-
-(`lizard_phy.c:ws_init`). Every sender uses t = 0 (section 2, Not the format).
+`0.70710678f` in float32). Every sub-channel carries the same amplitude: there is no power tilt (12).
 
 ### 6.6 The transform
 
@@ -845,12 +839,12 @@ c1 = cos(2 pi / 5), c2 = cos(4 pi / 5), s1 = s sin(2 pi / 5), s2 = s sin(4 pi / 
 (0.30901699, -0.80901699, 0.95105652, 0.58778525),  s = +1 forward, -1 inverse
 ```
 
-**Normalisation.** P = sum over s of |H(C_s)|^2 = 320 sum over j of a_j^2: every coefficient of the frame is sent, the
+**Normalisation.** P = sum over s of |H(C_s)|^2 = 320 subch (each |H(C_s)|^2 is 1): every coefficient of the frame is sent, the
 padding's too (6.5). By Parseval the mean of p^2 is 2P, so the
 picture's rms is
 
 ```
-sigma = sqrt(2 P)          at t = 0:  sigma = sqrt(640 subch)
+sigma = sqrt(2 P) = sqrt(640 subch)
 ```
 
 The reference uses this value and never measures the rms. At LIZARD-64, sigma = sqrt(40960) = 202.39.
@@ -863,7 +857,7 @@ g(x, y) = 1/2 + clamp(p(x, y), -L, L) / (2 L)
 ```
 
 g is in [0, 1], 0 black and 1 white. The reference computes the level in float32 as `lim = 2 * c * sqrtf(0.5 * 320
-subch)` at t = 0, or `2 * c * sqrt(0.5 * P)` with P summed in double when t > 0, and g as `0.5f + clamp(p) * (0.5f /
+subch)`, and g as `0.5f + clamp(p) * (0.5f /
 lim)` (`lizard_encode`, `clip_row`). Every sender uses c = 2; a receiver does not depend on it.
 
 ### 6.8 Resampling onto the painted grid
@@ -947,7 +941,7 @@ Y(u, v) = sum over x, y of s(x, y) exp( -2 pi i (u x + v y) / n )
 
 For an unclipped picture Y(C_s) = n^2 H(C_s) / (2L); clipping and the channel scale it, to first order, by a positive
 gain a sub-channel and add noise. So a receiver MUST read Re Y(C_s) > 0 as bit 0 of frame slot 2s and Re Y(C_s) < 0 as
-bit 1, and Im Y(C_s) the same way for slot 2s + 1. Neither the clip level, the tilt nor the capture's gain is
+bit 1, and Im Y(C_s) the same way for slot 2s + 1. Neither the clip level nor the capture's gain is
 signalled: a receiver estimates each sub-channel's amplitude and noise itself (8.5).
 
 ### 6.10 What the receiver removes before reading (non-normative)
@@ -1870,7 +1864,7 @@ one phone, 2:1, the 256 ring).
 | Every code at z = 128, each its own base graph; the block 476 bytes | a z that fills 64-lane waves and 128-lane workgroups: on recorded captures re-modulated under the codes (the integrated GPU, the learned stops on) 6 to 7% more blocks per GPU millisecond than the codes before (z 93, 106, 120, 160) at the same split, 9 to 10% on the same captures 1 dB worse; block lengths from half to twice 473 bytes moved that by a few percent at most. 476 bytes and the CRC-32C fill the 3/4, 2/3 and 1/2 codes' k: no information bit there is a known zero |
 | Blocks packed by slots, the remainder padded | whole sub-channels a block would fix each code's length to a multiple of 640 slots; the padding is under 2% of a frame from LIZARD-320 up |
 | H a printed table, not a construction | a construction would let a change of seed or score move the format silently |
-| No 5G NR tables, no polar codes | patents |
+| No 5G NR tables, no polar codes | measured against 38.212's base graphs at the block's size (simulator, 2026-10-08, the tables before z = 128): at 3/4, 2/3 and 1/2 within 0.07 dB of LIZARD's; at 7/8 BG1 0.46 dB better on a clean channel but under 1% more blocks on recorded captures, for a parity that is not a staircase, punctured bits and fillers in every encoder and decoder, and 14% more edges. No polar code was built |
 | Three rings, any ring for any picture, version decoupled from size | the ring is the sync layer chosen for the room, the word says what is inside |
 | No retry at the other rings when a word fails | a frame whose word fails has failed throughout |
 | Picture sizes 256, 384, 512, 768, 1024, 1152, 1280, 1536 | no step more than 1.5 times the samples; 1152 and 1280 cut the samples a sender paints and the C reads by 0.56 and 0.69 for the formats between 1024 and 1536; radix 2 with radix-3 and radix-5 stages |
@@ -1888,14 +1882,15 @@ one phone, 2:1, the 256 ring).
 | No straddle cancellation, no shift pass, no bursts | patches; the pilots' phase lock and grid fit do their work at the source |
 | No dithered black and white picture | it ruins range and pixel scaling |
 | Clip ratio c = 2 | measured against 1.6 live (section 11) |
+| No power tilt: every sub-channel at one amplitude | a tilt with the rate split, searched on recorded captures (2026-11-05): held out, about a point over the split alone on good captures and a quarter of a poor capture's blocks lost; a sender cannot see the capture, and a tilted picture has nothing to fall back to where the outer sub-channels fail |
 | CRC-32C for the block, not IEEE 802.3's CRC-32 | one instruction on the processors LIZARD is for: x86-64's SSE4.2 (the x86-64-v2 floor) and ARMv8's CRC32 extension; at 3840 bits it detects every error of five bits or fewer (Hamming distance 6), where IEEE's detects three |
 
 ## 13. Open questions
 
 Numbers are kept so references hold; closed items are gone.
 
-- **Item 8. Clip ratio and tilt.** Every sender paints c = 2 and t = 0; whether they are format constants or free for a
-  sender is not decided. The tilt waits on a replay's SNR by sub-channel (`scripts/exp/capture_snr.mjs`).
+- **Item 8. Clip ratio.** Every sender paints c = 2; whether it is a format constant or free for a sender is not
+  decided. (The tilt this item also held is settled: none, 12.)
 - **Item 10. Two brand colours.** Allowed by the palette rule (section 2, item 1); the mapping from grey to the two colours
   (linear in 8-bit values or in light) is not defined, and no sender paints them.
 - **Item 11. The palette rule's 60% floor** is not measured on a phone; narrower luma ranges and a brand pair are to be read
