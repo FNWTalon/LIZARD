@@ -4606,12 +4606,33 @@ static uint8_t *shrink2(const uint8_t *src, int w, int h, ob_fbufs_t *fb, int sl
 // ring (2026-10-04: the 32 ring's 64 cells held at 0.212 until it left the format on 2026-10-25).
 static inline int rotation_holds(float best, int orient) { return best >= 0.15f && orient < 4; }
 
+// ai: The scales (1, 2, 4: the capture, its 2 x 2 means, their 2 x 2 means) the corner marks are searched at, coarse to
+// ai: fine, in order into lv; how many. The first is s0, the coarsest scale at which a symbol of the largest layout
+// ai: searched (wmax modules a side) filling the capture's shorter side keeps 1.5 pixels a module there, the
+// ai: resolution the search holds a quad at on a scale coarser than the capture (measured on clean simulated 3840 x 2160
+// ai: captures, the three rings, scales 2 and 4: nearly every capture from 1.35 px a module at the scale, half of them
+// ai: at 1.2, few at 1.1); then the coarser scales (a nearer symbol, whose marks outgrow binarize's window at the finer
+// ai: ones), then the finer (a symbol smaller than that). Under 3 wmax pixels (1626 for the 256 ring) s0 is 1: the
+// ai: capture, then its halves and quarters. A symbol finer than s0 resolves (the 256 ring at 2 px a module in a 3840 x
+// ai: 2160 capture) pays for the coarse searches before the capture's, and the coarse scale may hold a wrong quad there.
+static int mark_levels(const ob_layout_t *const *Ls, int nL, int w, int h, int *lv) {
+  int wmax = 0, s0 = 1, k = 0;
+  for (int i = 0; i < nL; i++) if (Ls[i]->w > wmax) wmax = Ls[i]->w;
+  const int side = w < h ? w : h;
+  while (s0 < 4 && 2 * side >= 3 * (2 * s0) * wmax) s0 *= 2;   // ai: side / (2 s0 wmax) >= 1.5
+  for (int s = s0; s <= 4; s *= 2) lv[k++] = s;
+  for (int s = s0 / 2; s >= 1; s /= 2) lv[k++] = s;
+  return k;
+}
+
 // Ls: the layouts the symbol may be, which differ only in how many modules a side (lizard_phy.h LIZARD_RING); *which
 // comes back as the one that registered. The mark path scores every one before a hold settles it; the line path tries
 // the first (the 64 ring) first and the others only when it does not register.
-// ai: cb: the capture's column bits on arm64 and x86-64, made with bin (binarize); NULL elsewhere. fb: frame_buf's
-static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, const uint8_t *bin, uint32_t *cb, ob_fbufs_t *fb, float *quad, int *orient, float *score_out, int *which) {
-  int w = im->w, h = im->h, big = w > h ? w : h, n[4], nl[4];
+// ai: bin (and cb, the column bits on arm64 and x86-64; NULL elsewhere): buffers for the capture binarized, which the
+// ai: search at scale 1, or the line path, makes there (made); a symbol found at a coarser scale never pays for it. fb:
+// ai: frame_buf's
+static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, uint8_t *bin, uint32_t *cb, ob_fbufs_t *fb, float *quad, int *orient, float *score_out, int *which) {
+  int w = im->w, h = im->h, big = w > h ? w : h, n[4], nl[4], made = 0;
   fpt_t *pts[4] = { 0 };            // allocated only if the scan runs, which a settled mark quad skips
   fline_t line[4][SIDE_LINES];
   float best = -1, src[8], dst[8];
@@ -4640,19 +4661,26 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
   float msrc[8];
   cand_t *mcand = malloc((size_t)MAX_CAND * sizeof(cand_t) + CAND_XY);
   mquad_t mq[MARK_QUADS];
-  uint8_t *grey2 = NULL, *lbin = NULL;
-  const uint8_t *grey = im->px;
+  // ai: the capture halved (half) and quartered (quarter), each made where a search first needs it
+  uint8_t *half = NULL, *quarter = NULL, *lbin = NULL;
   const uint32_t *scb = cb;   // the column bits of the scale's image (arm64, x86-64)
+  int lv[3];
+  const int nlv = mark_levels(Ls, nL, w, h, lv);
   *which = 0;
   for (int k = 0; k < 8; k++) ob_finder_info[k] = k == 5 || k == 7 ? 0 : -1;
-  for (int scale = 1; mcand && scale <= 4 && !rotation_holds(best, *orient); scale *= 2) {
+  for (int il = 0; mcand && il < nlv && !rotation_holds(best, *orient); il++) {
+    const int scale = lv[il];
     const uint8_t *sbin = bin;
     const int sw = w / scale, sh = h / scale;
-    if (scale > 1) {
-      if (sw < 64 || sh < 64) break;
-      uint8_t *next = shrink2(grey, w / (scale / 2), h / (scale / 2), fb, scale == 2 ? OB_FB_HALF : OB_FB_QUARTER);
-      if (!next) break;
-      frame_buf_done(fb, grey2); grey2 = next; grey = next;
+    if (scale == 1) {
+      if (!made) { PROF(PROF_BINARIZE, binarize(im->px, w, h, bin, cb, fb)); made = 1; }
+      scb = cb;
+    } else {
+      // ai: a scale under 64 px a side is left out; a finer one may follow
+      if (sw < 64 || sh < 64) continue;
+      if (!half && !(half = shrink2(im->px, w, h, fb, OB_FB_HALF))) break;
+      if (scale == 4 && !quarter && !(quarter = shrink2(half, w / 2, h / 2, fb, OB_FB_QUARTER))) break;
+      const uint8_t *grey = scale == 2 ? half : quarter;
       frame_buf_done(fb, lbin);
       if (!(lbin = frame_buf(fb, OB_FB_LBIN, (size_t)sw * sh))) break;
 #if defined(OB_NEON) || defined(OB_X86)
@@ -4710,7 +4738,7 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
     }
     }
   }
-  free(mcand); frame_buf_done(fb, grey2); frame_buf_done(fb, lbin);
+  free(mcand); frame_buf_done(fb, half); frame_buf_done(fb, quarter); frame_buf_done(fb, lbin);
   ob_finder_info[5] = rotation_holds(best, *orient); ob_finder_info[6] = best;
   if (rotation_holds(best, *orient)) ok = 0;
   ob_prof_ms[PROF_FF_SCORE] += ob_now_ms() - tp; tp = ob_now_ms();
@@ -4720,6 +4748,8 @@ static int find_frame(const ob_layout_t *const *Ls, int nL, const image_t *im, c
   // between the two writes thin_edge_depth, and mark_rect reads `bin` and its own candidate array, never
   // `pts`), so this is the same finder with the wasted half of it skipped when it is wasted.
   if (ok) {
+  // ai: the line path reads the capture binarized at full resolution (made already unless no mark search reached scale 1)
+  if (!made) { PROF(PROF_BINARIZE, binarize(im->px, w, h, bin, cb, fb)); made = 1; tp = ob_now_ms(); }
   // Sides in layout order top, right, bottom, left. Rows give left (near) and right (far); the transposed image gives top and bottom.
   // Contrast floor: a quarter of the picture's own range (5th to 95th percentile of a coarse grid).
   int hist[256] = { 0 }, cnt = 0, p5 = 0, p95 = 255, acc = 0;
@@ -4959,7 +4989,7 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
   float thin_quad[8], thin_sc = 0;
   if (in_quad) { memcpy(thin_quad, in_quad, sizeof thin_quad); thin_orient = in_orient; thin_sc = in_score; got = 1; }
   else {
-    PROF(PROF_BINARIZE, binarize(img, iw, ih, bin, cb, fb));
+    // ai: the finder binarizes the capture into bin where its search reaches scale 1 (find_frame)
     PROF(PROF_FINDERS, got = find_frame(Ls, nL, &im, bin, cb, fb, thin_quad, &thin_orient, &thin_sc, which));
     L = Ls[*which];
   }
