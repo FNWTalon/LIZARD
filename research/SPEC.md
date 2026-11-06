@@ -92,7 +92,9 @@ dead at one resolution.
    - the three channel swings (light minus dark in R, in G and in B) are within about 15% of each other, so a module
      boundary carries no chroma edge.
 
-   No code defines the mapping of a grey level to a colour between the two ends (13, items 10 and 11).
+   The mapping of the grey levels between the two ends is the sender's: to a receiver it is one more curve of the
+   channel (6.11), and nothing in a frame depends on it. The 60% is a margin, not a cliff (11). A narrow range placed
+   toward the light end of the grey scale reads better than the same range at the dark end.
 2. **Generic screen, generic camera.** A sender MUST NOT rely on, and a receiver MUST NOT require, a property of one
    display or one camera.
 3. **The border grows outwards only.** Every mark, band and margin lies outside the picture's span = 2B modules. Inside
@@ -970,7 +972,8 @@ DC carries nothing and X1(0) = X2(0) = 0, so DC is untouched.
 - The reference paints 256 levels; nothing in the format needs a fine grey scale.
 - A sender writes the levels as they are, with no gamma pre-compensation; the panel's and the camera's curves are part
   of the channel. The reference receiver reads a grey picture at gamma 1.
-- The data stays in luminance; two brand colours, where used, only move where that luminance sits (section 2, item 1).
+- The data stays in luminance; two brand colours, where used, only move where that luminance sits (section 2, item 1),
+  through a mapping of the sender's choosing.
 
 ### 6.12 Test vectors
 
@@ -1847,7 +1850,10 @@ and CRC-32C for every tier of the profile. It is judged on CRC-verified blocks, 
 
 Measurements, with their conditions, are kept in the project's log, not here. The one figure behind a constant: the
 clip ratio c = 2 (6.7) read more blocks a clean capture than c = 1.6 in every live session (76.4 against 74.9 of 81,
-one phone, 2:1, the 256 ring).
+one phone, 2:1, the 256 ring). The palette rule's 60% (2, item 1), simulated on neutral ranges narrowed about mid-grey
+(LIZARD-256 and -336 in the 128 ring, two camera models): a clean capture keeps every block down to about 20% of the
+range; under a noisy camera the blocks fall smoothly from full range (about a third fewer at 60%); the frame is lost at
+about 10% (25 levels), where the reference finder's fixed grey-level thresholds stop holding.
 
 ## 12. Settled and rejected (non-normative)
 
@@ -1887,10 +1893,6 @@ one phone, 2:1, the 256 ring).
 
 Numbers are kept so references hold; closed items are gone.
 
-- **Item 10. Two brand colours.** Allowed by the palette rule (section 2, item 1); the mapping from grey to the two colours
-  (linear in 8-bit values or in light) is not defined, and no sender paints them.
-- **Item 11. The palette rule's 60% floor** is not measured on a phone; narrower luma ranges and a brand pair are to be read
-  live.
 - **Item 15. The display's second resample** is a sender's matter (9.5); the desktop sender's bilinear shrink is to be
   measured against a single resample.
 - **Item 18. Test vectors.** A set for every code of the profile (a four-rate format in the 128 ring and one in the 256 ring,
