@@ -1,6 +1,6 @@
 // ai: The SPEC.md conformance vectors (5.2 through the painted cells, 6.12 P2 and P3, 7.4, 9.3) against one build,
 // ai: plus digests over the ladder (layout cells at five rates, the drive, the coefficient order) to diff between two
-// ai: builds of today's interface (lizard_setup's five arguments since 2026-10-25).
+// ai: builds of today's interface (lizard_setup's three arguments, n, subch and span, since 2026-11-06).
 //   node test/vectors.mjs [path/to/ob.mjs]      from liblizard/, about 20 s; default build/ob.mjs, the codec's module
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
@@ -16,7 +16,7 @@ const want = (name, got, exp) => { const ok = got === exp; if (!ok) fails++; con
 
 // ai: span 2B names ring B, 0 the default ring (the 128 since 2026-10-01). SPEC 6.12's vectors and the ladder's digests
 // ai: are the 64 ring's, so it is named: span 128.
-const setup = (n, subch, span = 128) => M._lizard_setup(n, subch, 2, span, 0);
+const setup = (n, subch, span = 128) => M._lizard_setup(n, subch, span);
 // ai: The tree's ladder (2^k and 3 x 2^k since 2026-09-27, 1152 and 1280 since 2026-10-29): a build from before it
 // ai: cannot build the sizes added since.
 const { N_FOR: nFor, VERSIONS } = await import(resolve("sim/lizard_pick.mjs"));

@@ -3,8 +3,8 @@
 
 import { PICTURE_SIZES, VERSIONS, N_FOR } from "../../sim/lizard_pick.mjs";
 
-// ai: The picture sizes a format has (sim/lizard_pick.mjs PICTURE_SIZES, those N_FOR gives a version of the ladder: 384
-// ai: to 1536 since LIZARD-32 left 256 with none; gpu/tables.mjs PICTURES), a frame's picture slot its
+// ai: The picture sizes a format has (sim/lizard_pick.mjs PICTURE_SIZES, those N_FOR gives a version of the ladder: all
+// ai: seven, 384 to 1536; gpu/tables.mjs PICTURES), a frame's picture slot its
 // ai: index here (sel.z, from F8's version), and SLOTS of them. Every per-slot table on the device (F8's tops, F9's
 // ai: sizes, the back half's gate, LISTS, ARGS, the LDPC's and the paint's uniforms, gate2's) is SLOTS long, so a
 // ai: ladder change edits no stage. Here, not in back_transform.mjs, because sample.mjs needs it and back_transform.mjs

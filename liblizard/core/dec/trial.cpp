@@ -167,7 +167,7 @@ TrialFrames paintTrial(const json& pictures, double noise) {
     if (lizard_pxm_for(n, 2 * LIZARD_RING[ri]) < MIN_PXM) throw wg::Error("trial: no ring paints a " + std::to_string(n) + " picture at " + std::to_string(MIN_PXM) + " pixels a module");
     fr.ring = LIZARD_RING[ri];
     lizard_t f{};
-    if (lizard_init(&f, n, fr.subch, 2.0f, 2 * fr.ring, 0.f)) { throw wg::Error("trial: no codec for LIZARD-" + std::to_string(fr.subch)); }
+    if (lizard_init(&f, n, fr.subch, 2 * fr.ring)) { throw wg::Error("trial: no codec for LIZARD-" + std::to_string(fr.subch)); }
     if (f.block_bytes != XFER_BLOCK) { lizard_free(&f); throw wg::Error("trial: blocks of " + std::to_string(f.block_bytes) + " bytes"); }
     lizard_fmt_fps(&f, 60);
     lizard_parity(&f, (int)(i & 3));

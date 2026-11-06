@@ -22,7 +22,7 @@ int main(int argc, char **argv) {
   uint64_t hs = 1469598103934665603ull;
   for (int r = 0; r < LIZARD_RINGS; r++) for (int subch = 64; subch <= 1024; subch += LIZARD_STEP) {
     lizard_t f;
-    if (lizard_init(&f, lizard_n_for(subch), subch, 2, 2 * LIZARD_RING[r], 0)) { fprintf(stderr, "lizard_init LIZARD-%d in ring %d failed\n", subch, LIZARD_RING[r]); return 1; }
+    if (lizard_init(&f, lizard_n_for(subch), subch, 2 * LIZARD_RING[r])) { fprintf(stderr, "lizard_init LIZARD-%d in ring %d failed\n", subch, LIZARD_RING[r]); return 1; }
     const int side = f.px, C = f.pxm, q = LIZARD_QUIET * C, W = side + 2 * q;
     uint8_t *blocks = malloc((size_t)f.blocks * f.block_bytes), *mine = malloc((size_t)W * W), *ref = malloc((size_t)W * W);
     float *drive = malloc((size_t)side * side * sizeof(float));

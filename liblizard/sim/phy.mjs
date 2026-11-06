@@ -128,15 +128,15 @@ async function makeBlind(spec) {
 // variants: [{ name, gamma, mesh }]. Each block starts with its 4-byte fountain id.
 async function makeLizard(spec) {
   await initOb();
-  const { n = 512, subch = 32, mode = 1, clip = 2, span = 0, tilt = 0, tiers = null, bitmap, fps = 0, variants = [{ name: "ldpc" }] } = spec;
-  const fc = new Lizard(n, subch, mode, { clip, span, tilt, tiers, bitmap }), B = fc.blockBytes, T = fc.blocks, seen = variants.map(() => new Set()), buf = new Uint8Array(T * B), want = new Uint8Array(B - 4);
+  const { n = 512, subch = 32, mode = 1, span = 0, tiers = null, bitmap, fps = 0, variants = [{ name: "ldpc" }] } = spec;
+  const fc = new Lizard(n, subch, mode, { span, tiers, bitmap }), B = fc.blockBytes, T = fc.blocks, seen = variants.map(() => new Set()), buf = new Uint8Array(T * B), want = new Uint8Array(B - 4);
   const quiet = marginSamples(spec, fc);
   // The page's pixels come from the codec's own paint, which has only its margin: an experiment's override has no way there.
   const noRGBA = spec.quiet !== undefined && spec.quiet !== fc.quiet ? `spec.quiet ${spec.quiet} is the simulator's override; the codec paints ${fc.quiet}` : null;
   if (fps) fc.setFps(fps);   // the display rate goes in the band (src/fmt.h); 0 states none, which is the default
   let source = sourceFor(spec.stream);
   return {
-    label: `lizard ${n} ${tiers ? tiers.map(([r, b]) => `${b}x${RATE[r]}`).join("+") : `${subch}sub`}${span ? " span" + span : ""}${tilt ? " tilt " + tilt + " dB" : ""}`, family: "lizard", variants: variants.map((v) => v.name), usefulBytes: B - 4, blocksPerFrame: T, modules: fc.side, bitmap: fc.bitmap,
+    label: `lizard ${n} ${tiers ? tiers.map(([r, b]) => `${b}x${RATE[r]}`).join("+") : `${subch}sub`}${span ? " span" + span : ""}`, family: "lizard", variants: variants.map((v) => v.name), usefulBytes: B - 4, blocksPerFrame: T, modules: fc.side, bitmap: fc.bitmap,
     // ai: the paint's samples a module and the codec's margin in modules (src/lizard_phy.h LIZARD_QUIET), for a painter
     // ai: that places symbols in modules (lizard-web/send-worker.mjs: two codes a gap apart, 2026-09-30)
     cell: fc.cell, quiet: fc.quiet,

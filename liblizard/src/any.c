@@ -18,7 +18,7 @@ int lizard_any_init(lizard_any_t *a, int nmax) {
   lizard_any_free(a);
   if (nmax < ring_n() || nmax > 2048) return -1;
   for (int r = 0; r < LIZARD_RINGS; r++) {
-    if (lizard_init(&a->ring[r], ring_n(), top_subch(ring_n()), 2, 2 * LIZARD_RING[r], 0)) { for (int q = 0; q < r; q++) lizard_free(&a->ring[q]); return -1; }
+    if (lizard_init(&a->ring[r], ring_n(), top_subch(ring_n()), 2 * LIZARD_RING[r])) { for (int q = 0; q < r; q++) lizard_free(&a->ring[q]); return -1; }
   }
   a->nmax = nmax; a->ready = 1;
   return a->ring[0].block_bytes;
@@ -34,7 +34,7 @@ static lizard_t *pic_for(lizard_any_t *a, int r, int n, int subch) {
     if (!a->pic_n[i] && slot < 0) slot = i;
   }
   if (slot < 0) { slot = oldest; lizard_free(&a->pic[slot]); a->pic_n[slot] = 0; }
-  if (lizard_init(&a->pic[slot], n, subch, 2, 2 * LIZARD_RING[r], 0)) return 0;
+  if (lizard_init(&a->pic[slot], n, subch, 2 * LIZARD_RING[r])) return 0;
   a->pic_n[slot] = n; a->pic_subch[slot] = subch; a->pic_ring[slot] = r; a->pic_used[slot] = ++a->pic_clock; a->builds++;
   return &a->pic[slot];
 }

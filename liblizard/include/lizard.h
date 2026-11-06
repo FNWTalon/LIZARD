@@ -123,7 +123,7 @@ LIZ_API int liz_encoder_geometry(const liz_encoder *e, liz_geometry *out);
 LIZ_API int liz_encoder_paint(liz_encoder *e, const uint8_t *blocks, uint32_t picture, uint8_t *out, int stride, liz_pixfmt fmt);
 
 typedef struct liz_decoder liz_decoder;
-/* ai: nmax: the largest picture to decode, 256 to 1536 (0: 1536, every format); smaller saves memory. */
+/* ai: nmax: the largest picture to decode, 384 to 1536 (0: 1536, every format); smaller saves memory. */
 LIZ_API liz_decoder *liz_decoder_new(int nmax);
 LIZ_API void liz_decoder_free(liz_decoder *d);
 /* ai: the most blocks a frame can verify: the decode's buffer is this many x LIZ_BLOCK bytes */

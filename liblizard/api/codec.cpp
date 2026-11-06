@@ -50,7 +50,7 @@ LIZ_API liz_encoder* liz_encoder_new(const liz_format* format) {
     auto e = std::make_unique<liz_encoder>();
     e->fmt = *format;
     e->g = geometryOf(*format);
-    if (lizard_init(&e->f, e->g.n, LIZARD_STEP * format->blocks, 2.0f, e->g.span, 0.f))
+    if (lizard_init(&e->f, e->g.n, LIZARD_STEP * format->blocks, e->g.span))
       throw Error(LIZ_E_FORMAT, "the codec refused LIZARD-" + std::to_string(LIZARD_STEP * format->blocks));
     e->made = true;
     if (lizard_fmt_fps(&e->f, format->fps)) throw Error(LIZ_E_FORMAT, "the codec refused " + std::to_string(format->fps) + " a second");
@@ -101,7 +101,7 @@ LIZ_API int liz_encoder_paint(liz_encoder* e, const uint8_t* blocks, uint32_t pi
 LIZ_API liz_decoder* liz_decoder_new(int nmax) {
   return guardNew<liz_decoder>([&] {
     if (!nmax) nmax = 1536;
-    need(nmax >= 256 && nmax <= 1536, "nmax is 256 to 1536 (or 0)");
+    need(nmax >= 384 && nmax <= 1536, "nmax is 384 to 1536 (or 0)");
     auto d = std::make_unique<liz_decoder>();
     d->d = cpu_dec_new(nmax);
     if (!d->d) throw Error(LIZ_E_NOMEM, "the decoder could not be made");

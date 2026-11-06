@@ -10,8 +10,8 @@
 // ai:   host: the picture read as periodic, so the q pixels cover the picture and its guard interval, which is the
 // ai:   picture's own wrap.
 // ai: RSH, across and out: a thread one u32 of a frame row, four bytes, the codes symbols side by side (FW = codes W
-// ai:   pixels a row, W rows, each row padded to RW words: W need not be a multiple of four, pxm 1 in the 128 ring at
-// ai:   n = 256): inside a symbol's square (q pixels from sq) the same six taps along the row of TMP, clamped to 0..1,
+// ai:   pixels a row, W rows, each row padded to RW words: W need not be a multiple of four, as with pxm 1 in the 256
+// ai:   ring, 546 pixels): inside a symbol's square (q pixels from sq) the same six taps along the row of TMP, clamped to 0..1,
 // ai:   then (drive 255 + 0.5) truncated and held to 255 as lizard_paint_rgba does; anywhere else the border's byte
 // ai:   (BORDER, one symbol W x W, the C's own paint: ring, marks, band, word, quiet margin), so the border is the C's
 // ai:   to the byte and nothing border-shaped is drawn here. No integer division: a row a workgroup y, the symbol by
@@ -57,8 +57,8 @@ struct G { a: vec4u, b: vec4u, c: vec4u, d: vec4u, e: vec4u }
 // ai: codeword (the data bits, zeros past the 480 B where the code holds more (the 7/8 code's last 128), then the m parity bits: the IRA
 // ai: accumulator, a prefix XOR over the checks in check order, a lane ceil(m / 128) of them), its slots (slot i the
 // ai: codeword bit its code's bit map names, a slot past the codeword a bit of its frame's count: the pilots; each
-// ai: XOR the whitening at its slot of the frame) and the QPSK coefficients (+-a a bit, a = 0.70710678, amp 1 at
-// ai: tilt 0) into the symbol's disc in S at the UV entries. A block's code and first slot come from its tier
+// ai: XOR the whitening at its slot of the frame) and the QPSK coefficients (+-a a bit, a = 0.70710678, every
+// ai: sub-channel at one amplitude) into the symbol's disc in S at the UV entries. A block's code and first slot come from its tier
 // ai: (src/lizard_phy.h lizard_tiers_for: 7/8 blocks of 4496 slots, 3/4 of 5152, 2/3 of 5760, 1/2 of 7680, packed from the
 // ai: frame's first slot, the lowest frequencies, out), the codes' shapes and tables from TAB, so the shader holds no code
 // ai: of its own. The frame's last block's workgroup also paints the padding past the last block, the whitening alone

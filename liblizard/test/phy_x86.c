@@ -31,7 +31,7 @@ int main(void) {
   for (size_t si = 0; si < sizeof SUBCH / sizeof *SUBCH; si++) {
     const int subch = SUBCH[si], n = lizard_n_for(subch);
     lizard_t f;
-    if (lizard_init(&f, n, subch, 2, 2 * LIZARD_RING[LIZARD_RING_DEFAULT], 0)) { printf("lizard_init %d failed\n", subch); return 1; }
+    if (lizard_init(&f, n, subch, 2 * LIZARD_RING[LIZARD_RING_DEFAULT])) { printf("lizard_init %d failed\n", subch); return 1; }
     struct lizard_ws *w = f.ws;
     // ai: map_in, every block
     const int mn = max_n(&f), mb = max_bits(&f);

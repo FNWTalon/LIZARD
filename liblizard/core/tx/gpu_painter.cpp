@@ -90,9 +90,9 @@ std::string GpuPainter::pipes(int n) {
 
 std::string GpuPainter::configure(int subch, int span, int fps, int frames, int codes, int gap, int aheadFrames, uint64_t aheadBytes, int margin, bool ringOnly) {
   if (fReady_) { lizard_free(&f_); fReady_ = false; }
-  // ai: the format's picture (src/lizard_phy.h lizard_n_for) and clip ratio, 2 (SPEC 6.7)
+  // ai: the format's picture (src/lizard_phy.h lizard_n_for)
   const int n = lizard_n_for(subch);
-  if (lizard_init(&f_, n, subch, 2.0f, span, 0.f)) return "the codec refused LIZARD-" + std::to_string(subch);
+  if (lizard_init(&f_, n, subch, span)) return "the codec refused LIZARD-" + std::to_string(subch);
   fReady_ = true;
   lizard_fmt_fps(&f_, fps);
   fps_ = fps;

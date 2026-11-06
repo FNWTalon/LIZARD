@@ -26,8 +26,6 @@ struct lizard_ws {
   // ai: (hole_basis over every eighth sample each way outside the squares): fixed by the format, made once (ws_init)
   int elo[OB_ANCH_K], ehi[OB_ANCH_K];
   double hole_inv[6][6];
-  float *amp;                       // per sub-channel, the magnitude its coefficients are sent at (lizard_phy.h, tilt)
-  double power;                     // the sum of their squares over every coefficient
   uint8_t *bits, *data;
   // ai: The last decode's soft values for every slot of the frame (subch x 640, pos order), each sub-channel's
   // ai: information estimate, and its rms axis value sqrt(m2 / 2) (0 where it read nothing): a block reads its
@@ -366,7 +364,6 @@ static int ws_init(lizard_t *f) {
   w->bits = malloc(nc); w->data = malloc((size_t)max_k(f) + 8);
   w->slot = malloc(nc); w->llr2 = malloc(nc); w->white = malloc((size_t)f->subch * LIZARD_SUB * 2);
   w->llrf = malloc((size_t)f->subch * LIZARD_SUB * 2); w->sub_est = malloc((size_t)f->subch * sizeof(double)); w->sub_rms = malloc((size_t)f->subch * sizeof(float));
-  w->amp = malloc((size_t)f->subch * sizeof(float));
   w->blk_its = calloc((size_t)f->blocks, 1); w->blk_est = calloc((size_t)f->blocks, sizeof(float)); w->blk_pilot = calloc((size_t)f->blocks, sizeof(float));
   w->rot = malloc((size_t)2 * ALIGN_TURNS * sizeof(float));
   if (w->rot) for (int i = 0; i < ALIGN_TURNS; i++) { const double th = 2.0 * 3.14159265358979323846 * i / ALIGN_TURNS; w->rot[2 * i] = (float)cos(th); w->rot[2 * i + 1] = (float)sin(th); }
@@ -375,7 +372,7 @@ static int ws_init(lizard_t *f) {
   w->fmt_bytes = ob_fmt_bytes(side_mod, f->frame.reserve);
   w->fmt_q = w->fmt_cells ? malloc((size_t)4 * w->fmt_cells * sizeof(float)) : 0;
   double *e = malloc((size_t)2 * n * sizeof(double));
-  if (!w->tre || !w->tim || !w->wre || !w->wim || !tab || !w->bits || !w->data || !e || !w->amp || !w->blk_its || !w->blk_est || !w->blk_pilot || (w->fmt_cells && !w->fmt_q) || !w->slot || !w->llr2 || !w->white || !w->llrf || !w->sub_est || !w->sub_rms) { free(tab); free(e); return -1; }
+  if (!w->tre || !w->tim || !w->wre || !w->wim || !tab || !w->bits || !w->data || !e || !w->blk_its || !w->blk_est || !w->blk_pilot || (w->fmt_cells && !w->fmt_q) || !w->slot || !w->llr2 || !w->white || !w->llrf || !w->sub_est || !w->sub_rms) { free(tab); free(e); return -1; }
   whiten_fill(w->white, f->subch * LIZARD_SUB * 2);
 #if defined(OB_NEON) || defined(OB_X86)
   w->dkeep = calloc((size_t)2 * f->vblocks, sizeof(int));
@@ -388,7 +385,6 @@ static int ws_init(lizard_t *f) {
   }
   for (int b = 0; b < f->vblocks; b++) w->dcols[b] = (w->dcols[b] + 3) / 4 * 4 < f->bw ? (w->dcols[b] + 3) / 4 * 4 : f->bw;
 #endif
-  for (int j = 0; j < f->subch; j++) { w->amp[j] = f->tilt > 0 && f->subch > 1 ? (float)pow(10.0, -f->tilt * j / (20.0 * (f->subch - 1))) : 1.0f; w->power += (double)LIZARD_SUB * w->amp[j] * w->amp[j]; }
   w->cx = tab; w->qx = tab + n; w->x1r = tab + 2 * n; w->x1i = tab + 3 * n; w->x2r = tab + 4 * n; w->x2i = tab + 5 * n;
   double m2 = 0;
   for (int i = 0; i < n; i++) { double c = (2.0 * i + 1 - n) / n; m2 += c * c; e[i] = cos(-2 * 3.14159265358979323846 * i / n); e[n + i] = sin(-2 * 3.14159265358979323846 * i / n); }
@@ -486,7 +482,7 @@ int lizard_fmt_fps(lizard_t *f, int fps) {
   return 0;
 }
 
-static int init(lizard_t *f, int n, int subch, const lizard_tier_t *tier, int tiers, float clip, int span, float tilt) {
+static int init(lizard_t *f, int n, int subch, const lizard_tier_t *tier, int tiers, int span) {
   memset(f, 0, sizeof *f);
   // ai: n is a picture size of the ladder (LIZARD_PICTURES): 2^k, 3 x 2^k, 9 x 2^7 (1152) or 5 x 2^8 (1280), the
   // ai: transform's sizes (fft.h), each with n / 2 whole 64-column strips (turn_pack writes rows v and n - v for v below
@@ -500,8 +496,8 @@ static int init(lizard_t *f, int n, int subch, const lizard_tier_t *tier, int ti
   if (subch > LIZARD_STEP * OB_FMT_VERSION_MAX) return -1;
   // span: frame modules across the image, which names the ring (lizard_phy.h LIZARD_RING: span = 2 B), 0 the sender's
   // ai: default ring (LIZARD_RING_DEFAULT, the same for every picture); a ring's span puts this picture in that ring at
-  // ai: any n (the 256 ring's span, 512, is wider than a 256 or 384 picture, which is then resampled up into it at one
-  // ai: pixel a module, 2026-10-10). Any other span is no ring, and refused.
+  // ai: any n (the 256 ring's span, 512, is wider than a 384 picture, which is then resampled up into it at one pixel a
+  // ai: module, 2026-10-10). Any other span is no ring, and refused.
   if (!span) span = 2 * LIZARD_RING[LIZARD_RING_DEFAULT];
   int ring_span = 0;
   for (int r = 0; r < LIZARD_RINGS; r++) ring_span |= span == 2 * LIZARD_RING[r];
@@ -536,8 +532,7 @@ static int init(lizard_t *f, int n, int subch, const lizard_tier_t *tier, int ti
   int bw = h < LIZARD_STRIP ? h : LIZARD_STRIP, vmax = 0;
   for (int i = 0; i < need; i++) { f->pos[i] = (c[i].v / bw) * n * bw + ((c[i].u + n) % n) * bw + c[i].v % bw; if (c[i].v > vmax) vmax = c[i].v; }
   free(c);
-  f->n = n; f->subch = subch; f->clip = clip > 0 ? clip : 2.0f; f->bw = bw; f->vblocks = vmax / bw + 1;
-  f->tilt = tilt > 0 ? tilt : 0;   // also turns a NaN (an argument a JS caller left out) into none
+  f->n = n; f->subch = subch; f->bw = bw; f->vblocks = vmax / bw + 1;
   f->scale = (float)n / span;
   f->pxm = lizard_pxm_for(n, span);
 
@@ -632,16 +627,16 @@ int lizard_blocks_for(int subch) {
   return b;
 }
 
-int lizard_init(lizard_t *f, int n, int subch, float clip, int span, float tilt) {
+int lizard_init(lizard_t *f, int n, int subch, int span) {
   lizard_tier_t tier[LIZARD_TIERS];
   const int tiers = lizard_tiers_for(subch, tier);
   if (!tiers) { memset(f, 0, sizeof *f); return -1; }
   // ai: a block is the transfer's 476 B (xfer.h XFER_BLOCK) at every rate: with its CRC-32C the k of the 3/4, 2/3 and
   // ai: 1/2 codes, and the 7/8 code carries zeros past it, known to the decoder
-  return init(f, n, subch, tier, tiers, clip, span, tilt);
+  return init(f, n, subch, tier, tiers, span);
 }
 
-int lizard_init_tiers(lizard_t *f, int n, const lizard_tier_t *tier, int tiers, float clip, int span, float tilt) {
+int lizard_init_tiers(lizard_t *f, int n, const lizard_tier_t *tier, int tiers, int span) {
   long long used = 0;
   if (tiers < 1 || tiers > LIZARD_TIERS) { memset(f, 0, sizeof *f); return -1; }
   for (int t = 0; t < tiers; t++) {
@@ -652,7 +647,7 @@ int lizard_init_tiers(lizard_t *f, int n, const lizard_tier_t *tier, int tiers, 
   // ai: the fewest sub-channels that hold the blocks (the last one's remainder padded)
   const long long per = LIZARD_SUB * 2, subch = (used + per - 1) / per;
   if (subch > LIZARD_STEP * OB_FMT_VERSION_MAX) { memset(f, 0, sizeof *f); return -1; }
-  return init(f, n, (int)subch, tier, tiers, clip, span, tilt);
+  return init(f, n, (int)subch, tier, tiers, span);
 }
 
 void lizard_block_stats(const lizard_t *f, const int8_t **its, const float **est) { *its = f->ws ? f->ws->blk_its : 0; *est = f->ws ? f->ws->blk_est : 0; }
@@ -729,7 +724,7 @@ int lizard_anchor_geom(const lizard_t *f, int out[8]) {
 
 void lizard_free(lizard_t *f) {
   struct lizard_ws *w = f->ws;
-  if (w) { ob_fbufs_free(&w->fbufs); free(w->tre); free(w->wre); free(w->wim); free(w->cx); free(w->bits); free(w->data); free(w->amp); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->llrf); free(w->sub_est); free(w->sub_rms); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < LIZARD_TIERS; t++) free(w->perm[t]);
+  if (w) { ob_fbufs_free(&w->fbufs); free(w->tre); free(w->wre); free(w->wim); free(w->cx); free(w->bits); free(w->data); free(w->fmt_q); free(w->blk_its); free(w->blk_est); free(w->blk_pilot); free(w->rot); free(w->dbg_sym); free(w->dbg_coef); free(w->white); free(w->slot); free(w->llr2); free(w->llrf); free(w->sub_est); free(w->sub_rms); free(w->rs_i0); free(w->rs_w); free(w->rs_hb); free(w->rs_hw); free(w->rs_pic); free(w->rs_tmp); for (int t = 0; t < LIZARD_TIERS; t++) free(w->perm[t]);
 #if defined(OB_NEON) || defined(OB_X86)
     free(w->dkeep);
 #endif
@@ -776,7 +771,7 @@ static void turn_pack(const lizard_t *f, int x0) {
 }
 #endif
 
-// One row of the picture out of the inverse: clip at the ratio the power was set for, and map to 0..1.
+// One row of the picture out of the inverse: clip at lim (LIZARD_CLIP times the picture's rms), and map to 0..1.
 static void clip_row(const float *src, float *dst, int cols, float lim, float sc) {
   int x = 0;
 #ifdef OB_SIMD
@@ -1140,7 +1135,7 @@ void lizard_encode(const lizard_t *f, const uint8_t *blocks, float *drive) {
     // and the factor of two goes the way of every other scale, into the clipping level.
     for (int s = 0; s < nb / 2; s++) {
       int p = f->pos[first + s];
-      const float a = 0.70710678f * w->amp[(first + s) / LIZARD_SUB];
+      const float a = 0.70710678f;
       w->tre[p] = bits[2 * s] ? -a : a; w->tim[p] = bits[2 * s + 1] ? -a : a;
     }
     if (w->dbg_sym) for (int i = 0; i < nb; i++) w->dbg_sym[2 * (size_t)first + i] = bits[i] ? -1 : 1;
@@ -1149,7 +1144,7 @@ void lizard_encode(const lizard_t *f, const uint8_t *blocks, float *drive) {
   // ai: at its magnitude, as the clipping level below assumes
   for (int s = f->used / 2; s < f->subch * LIZARD_SUB; s++) {
     const int p = f->pos[s];
-    const float a = 0.70710678f * w->amp[s / LIZARD_SUB];
+    const float a = 0.70710678f;
     w->tre[p] = w->white[2 * s] ? -a : a; w->tim[p] = w->white[2 * s + 1] ? -a : a;
     if (w->dbg_sym) { w->dbg_sym[2 * (size_t)s] = w->white[2 * s] ? -1 : 1; w->dbg_sym[2 * (size_t)s + 1] = w->white[2 * s + 1] ? -1 : 1; }
   }
@@ -1185,7 +1180,7 @@ void lizard_encode(const lizard_t *f, const uint8_t *blocks, float *drive) {
   // A Hermitian inverse hands back the whole real picture, where taking the real part of the half-plane's inverse
   // gave half of it, so the clipping level is twice what it was and the scale half. Everything here is relative to
   // the picture's own rms, so the factor of two is bookkeeping and not a change to what is displayed.
-  const float lim = 2.0f * f->clip * (f->tilt > 0 ? (float)sqrt(0.5 * w->power) : sqrtf(0.5f * (float)(f->subch * LIZARD_SUB))), sc = 0.5f / lim;
+  const float lim = 2.0f * LIZARD_CLIP * sqrtf(0.5f * (float)(f->subch * LIZARD_SUB)), sc = 0.5f / lim;
   for (int x0 = 0; x0 < n; x0 += sw) {
     te = ob_now_ms();
     turn_pack(f, x0);
@@ -1490,8 +1485,9 @@ int lizard_acquire_quad(const lizard_t *f, const uint8_t *img, int iw, int ih, f
 // ai: step is more than 1.5 times the last and n / 2R stays between 1.5 and 2.24; the powers of two alone put
 // ai: LIZARD-144 at 1024 (2.99). 1152 and 1280 (since 2026-10-29) split the step from 1024 to 1536: LIZARD-576 to -720
 // ai: and -736 to -880 paint and read 0.56 and 0.69 of 1536's samples, the CPU painter and the C's sampler and transform
-// ai: the cheaper by that. A receiver reads n off the word's version through this.
-const int LIZARD_PICTURES[LIZARD_NPICTURES] = { 256, 384, 512, 768, 1024, 1152, 1280, 1536 };
+// ai: the cheaper by that. 384 is the smallest: 256 held only versions 1 and 2, which are no formats, and left the list
+// ai: (2026-11-06). A receiver reads n off the word's version through this.
+const int LIZARD_PICTURES[LIZARD_NPICTURES] = { 384, 512, 768, 1024, 1152, 1280, 1536 };
 int lizard_n_for(int subch) {
   const double r = sqrt(2.0 * LIZARD_SUB * subch / 3.14159265358979323846);
   for (int i = 0; i < LIZARD_NPICTURES; i++) if (LIZARD_PICTURES[i] >= 3 * r) return LIZARD_PICTURES[i];
@@ -1501,7 +1497,7 @@ int lizard_n_for(int subch) {
 int lizard_pxm_for(int n, int span) {
   int pxm = (int)ceilf((float)n / span - 1e-4f);   // whole pixels a module, never fewer than the picture's samples
   // ai: and never fewer than an anchor's pattern needs (SPEC 6.13: a square of span / 64 modules OB_ANCH_PX_MIN pixels
-  // ai: a side, so 3 in the 64 ring and 2 in the 128; it lifts the 256 picture there, 2 and 1 by its samples alone)
+  // ai: a side, so 3 in the 64 ring and 2 in the 128, which every picture of LIZARD_PICTURES reaches by its samples)
   const int pxa = (OB_ANCH_PX_MIN * 64 + span - 1) / span;
   return pxm < pxa ? pxa : pxm;
 }

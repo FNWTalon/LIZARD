@@ -2,7 +2,7 @@
 // ai: GPU decoder's rule stage (tiers.mjs) and the sender's GPU paint (../encoder.mjs sendTab, ../../gen/sender.mjs)
 // ai: build their tables from, read from the wasm so the GPU never holds a code of its own.
 import { init, Lizard } from "../../sim/ob.mjs";
-import { subchOf } from "../../sim/lizard_pick.mjs";
+import { subchOf, PICTURE_SIZES } from "../../sim/lizard_pick.mjs";
 import { VERSIONS, CODES } from "../plan/back_tiers.mjs";
 import { VERSION_MIN } from "../wordcode.mjs";
 
@@ -31,7 +31,8 @@ export async function ruleTables() {
     profiles.push(tiers);
   }
   M._free(pT);
-  const fc = new Lizard(256, 0, 1, { tiers: CODES.map(({ rate }) => [rate, 1]) });
+  // ai: a block of each code at the smallest picture (the tables do not depend on n)
+  const fc = new Lizard(PICTURE_SIZES[0], 0, 1, { tiers: CODES.map(({ rate }) => [rate, 1]) });
   try {
     const pD = M._malloc(64);
     const codes = CODES.map((_, t) => {

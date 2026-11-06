@@ -83,9 +83,9 @@ std::string sendTables(const lizard_t& f, const SendConsts& k, int frames, SendT
   // ai: the twiddles as the web computes them, in double, kept as f32
   t.tw.resize(2 * n);
   for (int m = 0; m < n; m++) { const double th = -2 * M_PI * m / n; t.tw[2 * m] = static_cast<float>(std::cos(th)); t.tw[2 * m + 1] = static_cast<float>(std::sin(th)); }
-  // ai: gpu/back/paint.mjs clipLimit at the codec's clip (src/lizard_phy.c's level at tilt 0): fround(fround(2 clip) x
-  // ai: fround(sqrt(fround(0.5 subch 320)))); its reciprocal halved in double
-  const float lim = 2.0f * f.clip * std::sqrt(static_cast<float>(0.5 * f.subch * 320));
+  // ai: gpu/back/paint.mjs clipLimit, src/lizard_phy.c's level at the format's clip ratio (LIZARD_CLIP, SPEC 6.7):
+  // ai: fround(fround(2 c) x fround(sqrt(fround(0.5 subch 320)))); its reciprocal halved in double
+  const float lim = 2.0f * LIZARD_CLIP * std::sqrt(static_cast<float>(0.5 * f.subch * 320));
   t.su = {static_cast<uint32_t>(n), static_cast<uint32_t>(t.Vr), static_cast<uint32_t>(t.Vr * n), static_cast<uint32_t>(t.npos),
           static_cast<uint32_t>(n * n / 4), 0, 0, 0, bitsOf(lim), bitsOf(static_cast<float>(0.5 / lim)), 0, 0};
   // ai: the resampler (the C's taps): q pixels from the square's first, six taps each from i0, wrapped mod n

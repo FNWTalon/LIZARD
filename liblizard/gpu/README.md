@@ -6,7 +6,7 @@ negative control. It has no parity with the C at any stage, not even on decision
 
 What exists: the whole decode. The front half finds the symbol, orients it, identifies its ring (one of three: 158,
 286 or 542 modules a side), registers it, reads the anchors over the picture and reads its format word, which names
-the picture (256 to 1536 samples, `../sim/lizard_pick.mjs` PICTURE_SIZES; any ring may carry any picture). The back
+the picture (384 to 1536 samples, `../sim/lizard_pick.mjs` PICTURE_SIZES; any ring may carry any picture). The back
 half (`back/`, `back/DESIGN.md`) runs behind it in the batch's one command encoder: the transform, whose first pass
 samples the n x n picture through the front half's map itself, with the detrend, the soft values and the decline
 gate, the LDPC with the CRC-32. No grid is made (`back/DESIGN.md` 10); a batch reads back the verified blocks, a

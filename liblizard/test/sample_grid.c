@@ -1,6 +1,6 @@
 // ai: The decode's picture sampler (src/acquire.c ob_sample_grid_pic) against the exact walk (ob_sample_grid) on
 // ai: synthetic registrations: a random frame, a code's homography with a little perspective and a mesh of random
-// ai: node displacements (up to 2 px), pictures of 256 to 1536 samples a side taken a strip of LIZARD_STRIP columns at a
+// ai: node displacements (up to 2 px), pictures of every size (LIZARD_PICTURES) taken a strip of LIZARD_STRIP columns at a
 // ai: time, as lizard_phy.c takes them, and the mean's grid of every eighth sample in one call. On arm64 and x86-64 at
 // ai: gamma 1 ob_sample_grid_pic is sample_grid_lin, its read in integers (the x fraction a rounded 256th of a pixel)
 // ai: and its lines stepped along a row (up to 48 adds, a few thousandths of a pixel at the mean grid's far columns),
@@ -46,7 +46,7 @@ static float lin_model(const uint8_t *px, int w, int h, float x, float y) {
 #endif
 
 int main(void) {
-  const int iw = 1280, ih = 960, sides[3] = { 158, 286, 542 }, sizes[8] = { 256, 384, 512, 768, 1024, 1152, 1280, 1536 };
+  const int iw = 1280, ih = 960, sides[3] = { 158, 286, 542 };
   uint8_t *px = malloc((size_t)iw * ih);
   float *a = malloc((size_t)1536 * LIZARD_STRIP * sizeof(float)), *b = malloc((size_t)1536 * LIZARD_STRIP * sizeof(float));
   double dmax[2] = { 0, 0 }, dsum = 0;   // ai: the strips', the mean grid's
@@ -80,7 +80,7 @@ int main(void) {
     homography(src, quad, &reg.H);
     reg.nodes = calloc((size_t)L.nx * L.ny, sizeof(node_t));
     for (int k = 0; k < L.nx * L.ny; k++) { reg.nodes[k].dx = (frand() - 0.5f) * 4; reg.nodes[k].dy = (frand() - 0.5f) * 4; reg.nodes[k].done = 1; }
-    const int n = sizes[t % 8];
+    const int n = LIZARD_PICTURES[t % LIZARD_NPICTURES];
     const float step = (float)(L.w - 2 * OB_MARGIN) / n, g0 = OB_MARGIN + 0.5f * step;
     // ai: the strips, then the mean's grid (n / 8 a side, every eighth sample) in one call
     for (int x0 = 0; x0 <= n; x0 += LIZARD_STRIP) {

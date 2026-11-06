@@ -60,11 +60,10 @@ std::string Sender::configure(const TxFormat& f) {
   if (f.codes < 1 || f.codes > 2) return "codes are 1 or 2, not " + std::to_string(f.codes);
   if (f.gap < 0 || f.gap > 64) return "the gap is 0 to 64 modules, not " + std::to_string(f.gap);
   // ai: one codec made here to say what the format is (and that it is one); each painter makes its own
-  // ai: the format's picture (src/lizard_phy.h lizard_n_for: a receiver takes it from the word's version) and clip ratio, 2
-  // ai: (SPEC 6.7)
+  // ai: the format's picture (src/lizard_phy.h lizard_n_for: a receiver takes it from the word's version)
   lizard_t probe{};
   const int n = lizard_n_for(f.subch);
-  if (lizard_init(&probe, n, f.subch, 2.0f, f.span, 0.f)) return "the codec refused LIZARD-" + std::to_string(f.subch);
+  if (lizard_init(&probe, n, f.subch, f.span)) return "the codec refused LIZARD-" + std::to_string(f.subch);
   // ai: The device and the painter are made here where no prepare did: the frame ring lives in the painter whatever
   // ai: paints (2026-10-07), so a sender needs a Vulkan device. The GPU paints where asked (or auto); auto keeps it only
   // ai: where two frames of the test stream's blocks come out as the C paints them (gpu/encoder.mjs checkNow's rule), so
@@ -196,7 +195,7 @@ void Sender::paint(int) {
     rowBytes = 4ull * gpu_->rowWords();
     bytes = 4ull * gpu_->frameWords();
   }
-  if (lizard_init(&f, n, fm.subch, 2.0f, fm.span, 0.f)) {
+  if (lizard_init(&f, n, fm.subch, fm.span)) {
     std::lock_guard<std::mutex> l(mu_);
     error_ = "a painter's codec failed";
     return;

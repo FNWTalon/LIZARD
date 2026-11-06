@@ -84,7 +84,7 @@ let photoCaps = {}, levels = null;   // what the camera says it can be told, and
 // The last format word read out of a symbol (src/fmt.h): the version, and the rate the sender means to paint at.
 // ai: LIZARD's decoders read everything from the light; this is what the light last said of the format, as shown
 // ai: and recorded. It moves only when two results in a row that read a word agree on the new one (bandSeen is the
-// ai: last word read), so a stray wrong word (a random frame passes the word check at about 3e-7 at n = 256) is never
+// ai: last word read), so a stray wrong word (a random frame passes the word check at 8.7e-8 a read, SPEC 5.4) is never
 // ai: shown and a real change shows two frames later. Decoding is untouched: every frame decodes by its own word.
 let band = null, bandSeen = null;
 // ai: What the light says: LIZARD's word.

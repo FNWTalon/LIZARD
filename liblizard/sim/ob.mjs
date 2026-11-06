@@ -120,7 +120,6 @@ export class LizardAny {
 
 // The picture's codec (src/lizard_phy.c). mode: 1 (src/lizard_phy.h LIZARD_LDPC), the only code there is.
 export class Lizard {
-  // tilt: dB by which the last sub-channel is sent below the first (src/lizard_phy.h). A sender's choice: a receiver need not be told.
   // tiers: [[rate, blocks], ...] from the lowest frequencies outwards, in place of subch and rate: runs of blocks at
   // different code rates, every block with the same payload, so one at a lower rate takes more slots (src/lizard_phy.h
   // lizard_block_slots), in the fewest sub-channels that hold them.
@@ -128,15 +127,15 @@ export class Lizard {
   // span is refused).
   // bitmap: how a block's bits lie on its coefficients, src/lizard_phy.h LIZARD_BITMAP (the only map): left out, or that
   // number, which a spec may name; any other is refused. The border is always LIZARD's (ring, marks, band).
-  constructor(n, subch, mode, { clip = 2, span = 0, tilt = 0, tiers = null, bitmap } = {}) {
+  constructor(n, subch, mode, { span = 0, tiers = null, bitmap } = {}) {
     if (mode !== 1) throw new Error(`lizard: mode ${mode}: 1 (soft LDPC) is the only code`);
     if (tiers) {
-      // ai: four tiers a setup (src/lizard_phy.h LIZARD_TIERS), two numbers each (rate, blocks), after n, clip, span and tilt
+      // ai: four tiers a setup (src/lizard_phy.h LIZARD_TIERS), two numbers each (rate, blocks), after n and span
       if (tiers.length > 4) throw new Error(`lizard: ${tiers.length} tiers, a setup takes 4`);
       const a = [...tiers, ...Array(4).fill([0, 0])].slice(0, 4).flatMap(([r, b]) => [r, b]);
-      this.blockBytes = M._lizard_setup_tiers(n, clip, span, tilt, ...a);
+      this.blockBytes = M._lizard_setup_tiers(n, span, ...a);
     }
-    else this.blockBytes = M._lizard_setup(n, subch, clip, span, tilt);
+    else this.blockBytes = M._lizard_setup(n, subch, span);
     if (this.blockBytes < 0) throw new Error(`lizard ${n}/${tiers ? JSON.stringify(tiers) : subch}/${mode} rejected`);
     this.bitmap = M._lizard_bitmap_get();
     if (bitmap !== undefined && bitmap !== this.bitmap) throw new Error(`bit map ${bitmap} rejected: the codec's is ${this.bitmap}`);

@@ -565,7 +565,7 @@ static int synth_pairs(void) {
   for (int r = 0; r < LIZARD_RINGS; r++) for (size_t s = 0; s < sizeof SUBCH / sizeof *SUBCH; s++) {
     const int subch = SUBCH[s], n = lizard_n_for(subch);
     lizard_t f;
-    if (lizard_init(&f, n, subch, 2, 2 * LIZARD_RING[r], 0)) { printf("lizard_init %d in ring %d failed\n", subch, LIZARD_RING[r]); fails++; continue; }
+    if (lizard_init(&f, n, subch, 2 * LIZARD_RING[r])) { printf("lizard_init %d in ring %d failed\n", subch, LIZARD_RING[r]); fails++; continue; }
     uint8_t *blocks = malloc((size_t)f.blocks * f.block_bytes);
     for (int i = 0; i < f.blocks * f.block_bytes; i++) blocks[i] = (uint8_t)((uint32_t)((uint64_t)i * 2654435761ULL + (uint64_t)(r * 97 + subch)) >> 13);   // ai: scripts/exp/ring_pairs.mjs's payload
     dig_t enc = DIG0;
@@ -590,18 +590,18 @@ static int synth_pairs(void) {
   return fails;
 }
 
-// ai: The lab shapes scripts/exp/simd_check.mjs holds on wasm, told: pictures off their format's own size, a power
-// ai: tilt, tiers at three code rates, and the resampled ring and picture pairs.
+// ai: The lab shapes scripts/exp/simd_check.mjs holds on wasm, told: pictures off their format's own size, tiers at
+// ai: three code rates, and the resampled ring and picture pairs.
 static int synth_lab(void) {
-  static const struct { int n, subch, span; float tilt; int tiers; } LAB[] = {
-    { 256, 64, 256, 0, 0 }, { 1024, 192, 256, 0, 0 }, { 512, 320, 256, 9, 0 }, { 512, 0, 256, 9, 1 }, { 384, 64, 256, 0, 0 },
-    { 768, 144, 512, 0, 0 }, { 384, 64, 512, 0, 0 }, { 768, 320, 128, 0, 0 } };
+  static const struct { int n, subch, span, tiers; } LAB[] = {
+    { 1024, 192, 256, 0 }, { 512, 320, 256, 0 }, { 512, 0, 256, 1 }, { 384, 64, 256, 0 },
+    { 768, 144, 512, 0 }, { 384, 64, 512, 0 }, { 768, 320, 128, 0 } };
   static const lizard_tier_t TIERS[3] = { { 6, 8, 0 }, { 4, 12, 0 }, { 2, 12, 0 } };   // ai: rate, blocks (a block's slots its rate's)
   int fails = 0;
   for (size_t k = 0; k < sizeof LAB / sizeof *LAB; k++) {
     lizard_t f;
-    const int bad = LAB[k].tiers ? lizard_init_tiers(&f, LAB[k].n, TIERS, 3, 2, LAB[k].span, LAB[k].tilt)
-                                 : lizard_init(&f, LAB[k].n, LAB[k].subch, 2, LAB[k].span, LAB[k].tilt);
+    const int bad = LAB[k].tiers ? lizard_init_tiers(&f, LAB[k].n, TIERS, 3, LAB[k].span)
+                                 : lizard_init(&f, LAB[k].n, LAB[k].subch, LAB[k].span);
     if (bad) { printf("synth lab %zu: init failed\n", k); fails++; continue; }
     uint8_t *blocks = malloc((size_t)f.blocks * f.block_bytes), *got = calloc((size_t)f.blocks * f.block_bytes, 1), *ok = calloc((size_t)f.blocks, 1);
     rnd_seed(900 + k);
@@ -621,7 +621,7 @@ static int synth_lab(void) {
     d = dig(d, its, (size_t)f.blocks); d = dig(d, est, (size_t)f.blocks * sizeof(float));
     const int back = n == f.blocks && !memcmp(got, blocks, (size_t)f.blocks * f.block_bytes);
     if (!back) fails++;
-    printf("synth lab n %4d subch %3d span %3d tilt %g%s: %016llx, %d of %d blocks%s\n", LAB[k].n, f.subch, LAB[k].span, (double)LAB[k].tilt, LAB[k].tiers ? " tiers" : "", (unsigned long long)d, n, f.blocks, back ? "" : "  FAILED");
+    printf("synth lab n %4d subch %3d span %3d%s: %016llx, %d of %d blocks%s\n", LAB[k].n, f.subch, LAB[k].span, LAB[k].tiers ? " tiers" : "", (unsigned long long)d, n, f.blocks, back ? "" : "  FAILED");
     free(img); free(blocks); free(got); free(ok); lizard_free(&f);
   }
   return fails;

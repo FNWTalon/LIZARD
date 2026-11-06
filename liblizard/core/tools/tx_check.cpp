@@ -227,7 +227,7 @@ int main(int argc, char** argv) {
       const int subch = e["subch"], ring = e["ring"], n = e["n"];
       const std::string name = e["name"];
       lizard_t f{};
-      if (ring < 0 || ring >= LIZARD_RINGS || lizard_init(&f, n, subch, 2.0f, 2 * LIZARD_RING[ring], 0.f)) { printf("FAIL %s: the codec refused it\n", name.c_str()); bad++; continue; }
+      if (ring < 0 || ring >= LIZARD_RINGS || lizard_init(&f, n, subch, 2 * LIZARD_RING[ring])) { printf("FAIL %s: the codec refused it\n", name.c_str()); bad++; continue; }
       lizard_fmt_fps(&f, 60);
       SendTables t;
       const std::string te = sendTables(f, k, 4, t, e.value("codes", 1));

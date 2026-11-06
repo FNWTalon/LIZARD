@@ -31,21 +31,21 @@ void ob_prof_reset(void) { for (int i = 0; i < PROF_N; i++) ob_prof_ms[i] = 0; }
 
 static lizard_t F;
 static int fready;
-// ai: The format at n and subch in the ring span names (lizard_phy.h lizard_init), clip and tilt the sender's.
-int lizard_setup(int n, int subch, float clip, int span, float tilt) {
+// ai: The format at n and subch in the ring span names (lizard_phy.h lizard_init).
+int lizard_setup(int n, int subch, int span) {
   if (fready) { lizard_free(&F); fready = 0; }
-  if (lizard_init(&F, n, subch, clip, span, tilt)) return -1;
+  if (lizard_init(&F, n, subch, span)) return -1;
   fready = 1;
   return F.block_bytes;
 }
 // Up to four runs (LIZARD_TIERS) of blocks at different code rates (lizard_phy.h): rate index and blocks (a block's slots are
 // its rate's, lizard_block_slots); a run of 0 blocks ends the list.
-int lizard_setup_tiers(int n, float clip, int span, float tilt, int r0, int b0, int r1, int b1, int r2, int b2, int r3, int b3) {
+int lizard_setup_tiers(int n, int span, int r0, int b0, int r1, int b1, int r2, int b2, int r3, int b3) {
   const lizard_tier_t all[LIZARD_TIERS] = { { r0, b0, 0 }, { r1, b1, 0 }, { r2, b2, 0 }, { r3, b3, 0 } };
   int tiers = 0;
   while (tiers < LIZARD_TIERS && all[tiers].blocks > 0) tiers++;
   if (fready) { lizard_free(&F); fready = 0; }
-  if (lizard_init_tiers(&F, n, all, tiers, clip, span, tilt)) return -1;
+  if (lizard_init_tiers(&F, n, all, tiers, span)) return -1;
   fready = 1;
   return F.block_bytes;
 }

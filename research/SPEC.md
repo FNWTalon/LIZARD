@@ -115,11 +115,10 @@ by painting a symbol that decodes: the border (sections 4 and 5, the margin incl
 the coded bits exactly as 6.3 to 6.5 and sections 7 and 8 define them, and the real arithmetic of the picture (6.6 to
 6.8) to the formula, not to the reference's last bits. A receiver never checks conformance.
 
-**Not the format.** `lizard_init` takes a sender parameter that no receiver needs and the word cannot state: the
-clipping ratio c (6.7). Every sender paints c = 2, and whether a conforming sender may use another is open (13, item
-8). Its tilt argument is a lab setting, not the format: every sub-channel is painted at one amplitude (6.5, 12), the
-tilt t = 0. `lizard_phy.c:lizard_init_tiers` builds rate tiers other than the profile's for experiments; a frame
-painted with them is not LIZARD and a receiver told nothing reads it wrongly.
+**Not the format.** `lizard_phy.c:lizard_init_tiers` builds rate tiers other than the profile's for experiments; a
+frame painted with them is not LIZARD and a receiver told nothing reads it wrongly. Nothing else in the picture is a
+sender's choice: the clipping ratio is the format's constant c = 2 (6.7), and every sub-channel is painted at one
+amplitude (6.5).
 
 **Implementation rules** for the project's decoders, not the symbol: no SharedArrayBuffer (so no wasm threads; one
 heap a worker); a decoder that falls short on the format is fixed, and the format is not bent for it; a measured
@@ -192,15 +191,14 @@ The top ring radius, in cycles across the picture, is the radius of the half-dis
 R = sqrt(2 * 320 * subch / pi) = sqrt(10240 * V / pi)
 ```
 
-n MUST be the first of 256, 384, 512, 768, 1024, 1152, 1280 and 1536 with n >= 3R, computed in double precision, or 1536 where
+n MUST be the first of 384, 512, 768, 1024, 1152, 1280 and 1536 with n >= 3R, computed in double precision, or 1536 where
 none holds (`lizard_phy.c:lizard_n_for` over `LIZARD_PICTURES`; `liblizard/sim/lizard_pick.mjs:N_FOR`). The fallback never
-binds on the ladder (LIZARD-1024 has 3R = 1370.2). Since n >= 3R is V <= pi n^2 / 92160 (the 256 picture holds
-versions 1 and 2, which are no formats, 3.1; no format's picture is 256):
+binds on the ladder (LIZARD-1024 has 3R = 1370.2). Since n >= 3R is V <= pi n^2 / 92160 (the size below 384 in the
+same steps, 256, would hold versions 1 and 2 alone, which are no formats, 3.1):
 
 | n | versions | formats | count | blocks a frame | useful bytes a frame (3.4) |
 |---|---|---|---|---|---|
 | n | versions | formats | count | blocks a frame | useful bytes a frame (3.4) |
-| 256 | none | | 0 | | |
 | 384 | 4 to 5 | LIZARD-64 to -80 | 2 | 7 to 9 | 3304 to 4248 |
 | 512 | 6 to 8 | LIZARD-96 to -128 | 3 | 11 to 15 | 5192 to 7080 |
 | 768 | 9 to 20 | LIZARD-144 to -320 | 12 | 17 to 39 | 8024 to 18408 |
@@ -218,7 +216,7 @@ are the same at every n that can hold it, and within one n each format's coeffic
 top format's: block b of any version sits on the same coefficients, with the same bit map and whitening, as block b of
 the top version of that n wherever their tiers agree (`wasm.c:lizard_any_setup`, `pic_for`).
 
-`lizard_phy.c:init` checks only that n is one of the eight sizes (each with n / 2 a whole number of the transform's 64-column strips)
+`lizard_phy.c:init` checks only that n is one of the seven sizes (each with n / 2 a whole number of the transform's 64-column strips)
 and that the half-plane holds 320 subch coefficients ((n / 2)(n - 2) at most).
 
 ### 3.3 The rings (normative)
@@ -244,15 +242,15 @@ scale = n / span                                              samples a module
 ```
 
 pxm is the painted pixels a module, a whole number, so no module is split across pixels. The second term is the
-anchors' floor (6.13): a square of span / 64 modules is then at least 6 pixels. The picture keeps its n samples and is
+anchors' floor (6.13): a square of span / 64 modules is then at least 6 pixels; on the seven sizes the first term
+is never under it. The picture keeps its n samples and is
 resampled to fill its span modules, upscaled by pxm / scale, never shrunk (6.8); where pxm = scale the resampling is an
-exact copy. Nine pairs resample: n = 256 in the 64 ring; 256, 384 and 1152 in the 128 ring; 256, 384, 768, 1152 and
-1280 in the 256 ring.
+exact copy. Six pairs resample: n = 384 and 1152 in the 128 ring; 384, 768, 1152 and 1280 in the 256 ring. Every
+picture in the 64 ring is a copy.
 The resampled square is (span + 6) pxm pixels a side from pixel 12 pxm on both axes (the picture and its guard, 6.8).
 
 | ring B | span | S | n | scale | pxm | upscale | symbol, px | painted, px | resampled square, from |
 |---|---|---|---|---|---|---|---|---|---|
-| 64 | 128 | 158 | 256 | 2 | 3 | 3/2 | 474 | 486 | 402, 36 |
 | 64 | 128 | 158 | 384 | 3 | 3 | copy | 474 | 486 | 402, 36 |
 | 64 | 128 | 158 | 512 | 4 | 4 | copy | 632 | 648 | 536, 48 |
 | 64 | 128 | 158 | 768 | 6 | 6 | copy | 948 | 972 | 804, 72 |
@@ -260,7 +258,6 @@ The resampled square is (span + 6) pxm pixels a side from pixel 12 pxm on both a
 | 64 | 128 | 158 | 1152 | 9 | 9 | copy | 1422 | 1458 | 1206, 108 |
 | 64 | 128 | 158 | 1280 | 10 | 10 | copy | 1580 | 1620 | 1340, 120 |
 | 64 | 128 | 158 | 1536 | 12 | 12 | copy | 1896 | 1944 | 1608, 144 |
-| 128 | 256 | 286 | 256 | 1 | 2 | 2 | 572 | 580 | 524, 24 |
 | 128 | 256 | 286 | 384 | 3/2 | 2 | 4/3 | 572 | 580 | 524, 24 |
 | 128 | 256 | 286 | 512 | 2 | 2 | copy | 572 | 580 | 524, 24 |
 | 128 | 256 | 286 | 768 | 3 | 3 | copy | 858 | 870 | 786, 36 |
@@ -268,7 +265,6 @@ The resampled square is (span + 6) pxm pixels a side from pixel 12 pxm on both a
 | 128 | 256 | 286 | 1152 | 9/2 | 5 | 10/9 | 1430 | 1450 | 1310, 60 |
 | 128 | 256 | 286 | 1280 | 5 | 5 | copy | 1430 | 1450 | 1310, 60 |
 | 128 | 256 | 286 | 1536 | 6 | 6 | copy | 1716 | 1740 | 1572, 72 |
-| 256 | 512 | 542 | 256 | 1/2 | 1 | 2 | 542 | 546 | 518, 12 |
 | 256 | 512 | 542 | 384 | 3/4 | 1 | 4/3 | 542 | 546 | 518, 12 |
 | 256 | 512 | 542 | 512 | 1 | 1 | copy | 542 | 546 | 518, 12 |
 | 256 | 512 | 542 | 768 | 3/2 | 2 | 4/3 | 1084 | 1092 | 1036, 24 |
@@ -299,7 +295,7 @@ room (3.5, 9.5).
 
 A frame of version V has 5120 V coefficients, 10240 V slots, B(V) blocks, the padding past them (3.1) and 472 B(V)
 useful bytes in any ring (3.2's table by n, 3.6 by format). Its ceiling in bytes a second is 472 B(V) times the display
-rate. To reproduce a row: `M._lizard_setup(n, subch, 2, 2B, 0)` (n, subch, clip, span, tilt) returns 476, then
+rate. To reproduce a row: `M._lizard_setup(n, subch, 2B)` (n, subch, span) returns 476, then
 `M._lizard_blocks()`, `M._lizard_side()`, `M._lizard_cell()` and `M._lizard_quiet()` give B(V), S pxm, pxm and 2;
 `M._lizard_tiers_for(subch, p)` writes the tiers as (rate index, blocks, slots a block) triplets.
 
@@ -632,7 +628,7 @@ side and bytes = W / 2 (16, 32, 64). A receiver has B from the ring it registere
   not `0x4C` or whose version is outside 4 to 64.
 
 **Test vectors**, `cw[0]` to `cw[bytes - 1]` in hex, read back out of the painted cells by `liblizard/test/vectors.mjs`
-(`_lizard_setup(n, subch, 2, 2B, 0)`, `_lizard_fmt_fps_set(fps)`) and held by `liblizard/test/fmt_test.c`; the word does
+(`_lizard_setup(n, subch, 2B)`, `_lizard_fmt_fps_set(fps)`) and held by `liblizard/test/fmt_test.c`; the word does
 not depend on n:
 
 ```
@@ -858,7 +854,8 @@ g(x, y) = 1/2 + clamp(p(x, y), -L, L) / (2 L)
 
 g is in [0, 1], 0 black and 1 white. The reference computes the level in float32 as `lim = 2 * c * sqrtf(0.5 * 320
 subch)`, and g as `0.5f + clamp(p) * (0.5f /
-lim)` (`lizard_encode`, `clip_row`). Every sender uses c = 2; a receiver does not depend on it.
+lim)` (`lizard_encode`, `clip_row`). An encoder MUST use c = 2, a constant of the format (`lizard_phy.h:LIZARD_CLIP`); a
+receiver does not depend on it.
 
 ### 6.8 Resampling onto the painted grid
 
@@ -877,8 +874,8 @@ w(t) = (t + 0.5) * sc / pxm - 3 * sc - 0.5,        sc = n / span,   evaluated in
 ```
 
 that is w = ((X + 0.5) / pxm - 15) sc - 0.5, which places **sample x at module coordinate 15 + (x + 0.5) / sc** on
-both axes. Where pxm = sc every pixel lands on a sample and the resampler copies. In the nine pairs where pxm > sc
-(3.3: n = 256 in the 64 ring, 256, 384 and 1152 in the 128 ring, 256, 384, 768, 1152 and 1280 in the 256 ring) the
+both axes. Where pxm = sc every pixel lands on a sample and the resampler copies. In the six pairs where pxm > sc
+(3.3: n = 384 and 1152 in the 128 ring, 384, 768, 1152 and 1280 in the 256 ring) the
 picture is enlarged through the taps below.
 
 **The kernel.** Lanczos-3:
@@ -977,11 +974,12 @@ DC carries nothing and X1(0) = X2(0) = 0, so DC is untouched.
 
 ### 6.12 Test vectors
 
-Computed with the codec's wasm through `liblizard/sim/ob.mjs`: `_lizard_setup(n, subch, 2, 128, 0)` (clip 2, span 128:
-the 64 ring; no tilt), `_lizard_dbg(1)`, `_lizard_tx` on a payload of blocks x 476 zero bytes, then the drive (float32,
-S pxm pixels square, row-major), the slot bits from `_lizard_dbg_sym` (int8 a slot, +1 for bit 0, -1 for bit 1, frame
-slot order) and the coefficient positions from `_lizard_pos_ptr`. Grey bytes are G of 6.8. The word states fps 0 and
-the count is 0 (`_lizard_parity_set` not called). The slot bits do not depend on the ring or on n.
+Computed with the codec's wasm through `liblizard/sim/ob.mjs`: `_lizard_setup(n, subch, 2B)` (the span names the
+ring: 256 for P2, 128 for P3 and the ladder's digests), `_lizard_dbg(1)`, `_lizard_tx` on a payload of blocks x 476
+zero bytes, then the drive (float32, S pxm pixels square, row-major), the slot bits from `_lizard_dbg_sym` (int8 a
+slot, +1 for bit 0, -1 for bit 1, frame slot order) and the coefficient positions from `_lizard_pos_ptr`. Grey bytes
+are G of 6.8. The word states fps 0 and the count is 0 (`_lizard_parity_set` not called). The slot bits do not depend
+on the ring or on n.
 
 **P1, the order.** `_lizard_pos_ptr` holds 320 subch int32, entry i for C_i, an offset into the reference's strip
 layout. With `bw = min(n / 2, 64)`:
@@ -1867,7 +1865,7 @@ one phone, 2:1, the 256 ring).
 | No 5G NR tables, no polar codes | measured against 38.212's base graphs at the block's size (simulator, 2026-10-08, the tables before z = 128): at 3/4, 2/3 and 1/2 within 0.07 dB of LIZARD's; at 7/8 BG1 0.46 dB better on a clean channel but under 1% more blocks on recorded captures, for a parity that is not a staircase, punctured bits and fillers in every encoder and decoder, and 14% more edges. No polar code was built |
 | Three rings, any ring for any picture, version decoupled from size | the ring is the sync layer chosen for the room, the word says what is inside |
 | No retry at the other rings when a word fails | a frame whose word fails has failed throughout |
-| Picture sizes 256, 384, 512, 768, 1024, 1152, 1280, 1536 | no step more than 1.5 times the samples; 1152 and 1280 cut the samples a sender paints and the C reads by 0.56 and 0.69 for the formats between 1024 and 1536; radix 2 with radix-3 and radix-5 stages |
+| Picture sizes 384, 512, 768, 1024, 1152, 1280, 1536 | no step more than 1.5 times the samples; 1152 and 1280 cut the samples a sender paints and the C reads by 0.56 and 0.69 for the formats between 1024 and 1536; radix 2 with radix-3 and radix-5 stages; no 256: it would hold versions 1 and 2 alone, which are no formats (3.1) |
 | Whole pixels a module, the picture resampled to fill its span | no dead light between border and picture; a copy where pxm = scale |
 | Four corner marks, gapped; no QR finders, centre or edge marks, filled marks | four measured corners carry perspective; the others lost on the finder or cut into the picture |
 | 2 x 2 band cells | a coarser band did not help the mesh |
@@ -1881,7 +1879,7 @@ one phone, 2:1, the 256 ring).
 | zstd a chunk at a time | a ratio near the best at a speed a phone keeps ahead of the channel with |
 | No straddle cancellation, no shift pass, no bursts | patches; the pilots' phase lock and grid fit do their work at the source |
 | No dithered black and white picture | it ruins range and pixel scaling |
-| Clip ratio c = 2 | measured against 1.6 live (section 11) |
+| Clip ratio c = 2, a constant of the format | the clipping's in-band distortion at c = 2 is 22.6 to 24.3 dB below the signal (LIZARD-752, n = 1280, from the lowest to the highest eighth of the sub-channels), against a captured signal-to-noise ratio of 2.7 to 8.4 dB, so the capture's noise and not the clip bounds a block; c = 1.6 read 2.0% fewer blocks than c = 2 live (section 11: one phone, 2:1, the 256 ring); above 2 the camera simulator gains at most 0.2% (at c = 2.4), and its 2:1 half reads best at 2 |
 | No power tilt: every sub-channel at one amplitude | a tilt with the rate split, searched on recorded captures (2026-11-05): held out, about a point over the split alone on good captures and a quarter of a poor capture's blocks lost; a sender cannot see the capture, and a tilted picture has nothing to fall back to where the outer sub-channels fail |
 | CRC-32C for the block, not IEEE 802.3's CRC-32 | one instruction on the processors LIZARD is for: x86-64's SSE4.2 (the x86-64-v2 floor) and ARMv8's CRC32 extension; at 3840 bits it detects every error of five bits or fewer (Hamming distance 6), where IEEE's detects three |
 
@@ -1889,8 +1887,6 @@ one phone, 2:1, the 256 ring).
 
 Numbers are kept so references hold; closed items are gone.
 
-- **Item 8. Clip ratio.** Every sender paints c = 2; whether it is a format constant or free for a sender is not
-  decided. (The tilt this item also held is settled: none, 12.)
 - **Item 10. Two brand colours.** Allowed by the palette rule (section 2, item 1); the mapping from grey to the two colours
   (linear in 8-bit values or in light) is not defined, and no sender paints them.
 - **Item 11. The palette rule's 60% floor** is not measured on a phone; narrower luma ranges and a brand pair are to be read
@@ -1910,8 +1906,7 @@ Numbers are kept so references hold; closed items are gone.
   carried to the slots, read live at LIZARD-656 in the 256 ring on one phone and one monitor, and need paired live runs.
 - **Item 28.** The pilots' readings: LIZARD-64's r2 rests on two 7/8 blocks' 16 coefficients and passes the
   reference's check (`scripts/exp/pilot_check.mjs`, `liblizard/test/pilot_wasm.mjs`); LIZARD-288's r2 read by the GPU
-  decoder on clean captures of one paint, 0.83 to 0.86, is under the check's 0.9 where the C's is not. Whether the
-  256 picture, which no format has since LIZARD-32 left, stays in the ladder of picture sizes (3.2).
+  decoder on clean captures of one paint, 0.83 to 0.86, is under the check's 0.9 where the C's is not.
 - **Item 29. The transfer's header version 4, the condition for leaving beta.**
   - Compression: every receiver MUST decode zstd frames (RFC 8878); a sender MAY compress any chunk with any compressor.
     The pinned compressor of 7.6 goes; the manifest carries each chunk's bytes as sent by a hash, so that a receiver

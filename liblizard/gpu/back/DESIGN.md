@@ -179,8 +179,8 @@ As built (`back/transform.mjs`, `back/disc.mjs`; the kernels `glsl/back_transfor
   Workgroup memory, at the size pass 1 runs (next bullet): two exchange buffers plus 16 B a thread of partials and
   the anchors' 460 B (`pass1WorkgroupBytes`): for the 1536 picture, run at 1024, 10,700 B in f16 and 18,892 B in f32,
   so a 32 KB device builds every picture in either.
-- Pass 1 reads a picture at the ladder size below its own (`disc.mjs` `TRANSFORM_DOWN`): n is the first ladder
-  size of at least 3 R, so the one below holds 2 R and every coefficient the picture carries. 1152 and 1280 read at
+- Pass 1 reads a picture at the ladder size below its own (`disc.mjs` `TRANSFORM_DOWN`; 256 below 384): n is the
+  first ladder size of at least 3 R, so the one below holds 2 R and every coefficient the picture carries. 1152 and 1280 read at
   1024, as 1536 does: 1024 holds 2 R for both sizes' tops, and 1152 would take pass 1 a third wave of 64 lanes.
 ## 4. Soft values
 

@@ -41,10 +41,9 @@ enum { LIZARD_RATE = 4, LIZARD_TIER_IN = 390, LIZARD_TIER_23 = 150, LIZARD_TIER_
 // modules (lizard_encode, Lanczos-3), never shrunk. The decoder reads the picture on its own n-sample grid in module
 // coordinates, a step of 1 / scale modules, and never sees the painter's pixels.
 // ai: A span that divides n has scale == pxm and the resampling is an exact copy (which ones, below).
-// ai: The 64 ring's span (128) divides every picture size, so its pictures are exact copies but 256's (the anchors'
-// ai: floor, pxm 3); the 128 ring's (256) divides all but 384 and 1152; the 256 ring's (512) divides 512, 1024 and 1536
-// ai: and resamples 256, 384, 768, 1152 and 1280 (scale under 1 at 256 and 384: one pixel a module, the picture
-// ai: resampled up).
+// ai: The 64 ring's span (128) divides every picture size, so its pictures are exact copies; the 128 ring's (256)
+// ai: divides all but 384 and 1152; the 256 ring's (512) divides 512, 1024 and 1536 and resamples 384, 768, 1152 and
+// ai: 1280 (scale under 1 at 384: one pixel a module, the picture resampled up).
 enum { LIZARD_RINGS = 3, LIZARD_RING_DEFAULT = 1 };
 extern const int LIZARD_RING[LIZARD_RINGS];
 
@@ -91,12 +90,6 @@ typedef struct lizard_s {
   float scale;            // picture samples a frame module, n / span (span = 2 LIZARD_RING[ring])
   int pxm, px;            // the painter's whole pixels a module, and the drive's side in them
   int margin;             // border modules between the symbol's edge and the picture: the mark and its guard, 15
-  float clip;
-  // The picture's power is fixed (the display's range over the clipping ratio) and shared by every coefficient sent.
-  // tilt, in dB, slopes the share from the first sub-channel down to the last, linearly in dB: the low frequencies
-  // are what a blurred or distant capture still reads, and a sharp one has SNR to spare at the high ones. Only the
-  // sender needs to know: the receiver scales each sub-channel by what it measures there. 0 is the paper's equal share.
-  float tilt;
   // The transform never holds the whole plane. The picture goes through a strip of LIZARD_STRIP columns at a time
   // (transformed along y), and only the rows v < n / 2 are kept, since the lower half-plane is the upper's mirror.
   // They are kept as blocks of bw columns v, each n rows u, which is the shape the second pass (along x) wants:
@@ -149,15 +142,17 @@ int lizard_pilot(const lizard_t *f, int blocks, float r[2], float sd[2]);
 // ai: pilot_align): samples along u and v, 0, 0 where the pilots did not tell one from none (or soft values made
 // ai: elsewhere). A decoder's own doing, not the format's: the pilots are known symbols at every radius.
 void lizard_align(const lizard_t *f, float d[2]);
-// The format at subch sub-channels (a multiple of 16 from 32 to 1024): the rate profile lizard_tiers_for gives, in a
+// The clipping ratio c (SPEC 6.7), a format constant: the picture is clipped at c times its rms (L = c sigma, the rms
+// known from the coefficients sent, every one at the same magnitude) and that range mapped onto black to white.
+#define LIZARD_CLIP 2.0f
+// The format at subch sub-channels (a multiple of 16 from 64 to 1024): the rate profile lizard_tiers_for gives, in a
 // picture of n (LIZARD_PICTURES, lizard_n_for(subch) for the format's own), in the ring whose span (2 LIZARD_RING[r]) span
-// names, 0 the default. clip: the clipping ratio (2 the format's), tilt: dB the last sub-channel is sent below the first
-// (0 the format's). 0, or -1 for a configuration that is no format's.
-int lizard_init(lizard_t *f, int n, int subch, float clip, int span, float tilt);
+// names, 0 the default. 0, or -1 for a configuration that is no format's.
+int lizard_init(lizard_t *f, int n, int subch, int span);
 // The same with up to LIZARD_TIERS runs of blocks at any rates in place of the profile (an experiment's: the format's
 // profile is lizard_tiers_for's): each run's rate and blocks (its slots are the rate's, lizard_block_slots), in a frame of
 // the fewest sub-channels that hold them.
-int lizard_init_tiers(lizard_t *f, int n, const lizard_tier_t *tier, int tiers, float clip, int span, float tilt);
+int lizard_init_tiers(lizard_t *f, int n, const lizard_tier_t *tier, int tiers, int span);
 // The format's rate profile for subch sub-channels (a multiple of LIZARD_STEP, 64 to 1024), over its S = subch x 640
 // slots: a 7/8 blocks, m 3/4 blocks, t 2/3 blocks and c 1/2 blocks, inner first, of s7, s3, s2 and s1 slots
 // (lizard_block_slots), with a s7 + t s2 + c s1 + s3 <= S, m = floor((S - a s7 - t s2 - c s1) / s3) >= 1 (the 3/4 tier
@@ -214,8 +209,8 @@ int lizard_hand_over(const lizard_t *from, const lizard_t *to);
 // ai: A held registration let go of unfinished (a frame whose picture is not known).
 void lizard_release(const lizard_t *f);
 // The picture size a format takes (sim/lizard_pick.mjs N_FOR).
-// ai: LIZARD_PICTURES: the sizes the ladder takes, smallest first (sim/lizard_pick.mjs PICTURE_SIZES).
-enum { LIZARD_NPICTURES = 8 };
+// ai: LIZARD_PICTURES: the sizes the ladder takes, smallest first (sim/lizard_pick.mjs PICTURE_SIZES): 384 to 1536.
+enum { LIZARD_NPICTURES = 7 };
 extern const int LIZARD_PICTURES[LIZARD_NPICTURES];
 int lizard_n_for(int subch);
 // The painter's whole pixels a module for picture n in a ring of span modules: ceil(n / span), so no module is split

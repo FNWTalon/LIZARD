@@ -129,7 +129,7 @@ export const SPAN = (n, ring = RING_DEFAULT) => 2 * RINGS[ring];
 export const MODULES = (n, ring = RING_DEFAULT) => SPAN(n, ring) + 2 * OB_MARGIN;
 // Whole pixels a module in the painted symbol (src/lizard_phy.c pxm): the fewest that do not shrink the picture.
 // ai: and no fewer than an anchor's pattern needs, 6 px across a square of span / 64 modules (src/internal.h
-// ai: OB_ANCH_PX_MIN; SPEC 6.13): 3 in the 64 ring and 2 in the 128, which lifts their 256 picture.
+// ai: OB_ANCH_PX_MIN; SPEC 6.13): 3 in the 64 ring and 2 in the 128, which every picture size reaches by its samples.
 export const CELL_OF = (n, ring = RING_DEFAULT) => Math.max(Math.ceil(n / SPAN(n, ring) - 1e-4), Math.ceil((6 * 64) / SPAN(n, ring)));
 // Pixels across the painted symbol, margin not included.
 export const SAMPLES = (n, ring = RING_DEFAULT) => MODULES(n, ring) * CELL_OF(n, ring);
@@ -164,7 +164,7 @@ export const SUBCH_CAP = (n) => Math.floor(Math.PI * n * n / (8 * 320));
 //   version 32 (R 228) at n = 512, ratio 1.12:  8348 B against 8591    -2.9%   (60 frames)
 //   versions 12 and 16 at ratio 1.8 and 1.6:    already the best there is; n = 1024 is 2 to 4% WORSE
 //
-// ai: So n >= 3R, and n is the first of PICTURE_SIZES that holds it: 2^k and 3 x 2^k from 256 to 1536 (2026-09-27;
+// ai: So n >= 3R, and n is the first of PICTURE_SIZES that holds it: 2^k and 3 x 2^k from 384 to 1536 (2026-09-27;
 // ai: STATUS "Picture sizes between the powers of two"). No step is more than 1.5 times the last, so n / 2R stays
 // ai: between 1.5 and 2.24, where the powers of two alone put LIZARD-144 at 1024 (2.99) and LIZARD-576 at 2048: four
 // ai: times the samples for one more block. scripts/exp/lizard_nfit.mjs on the rings (simulator, told): 0.85% fewer
@@ -174,8 +174,9 @@ export const SUBCH_CAP = (n) => Math.floor(Math.PI * n * n / (8 * 320));
 // ai: src/lizard_phy.c LIZARD_PICTURES is the same list.
 // ai: 1152 (9 x 2^7) and 1280 (5 x 2^8) since 2026-10-29: LIZARD-576 to -720 and -728 to -888 (n / 2R 1.50 to 1.68)
 // ai: paint and read 0.56 and 0.69 of 1536's samples; the GPU decoder reads both at 1024 as it did their 1536
-// ai: (gpu/back/transform.mjs TRANSFORM_DOWN).
-export const PICTURE_SIZES = [256, 384, 512, 768, 1024, 1152, 1280, 1536];
+// ai: (gpu/back/transform.mjs TRANSFORM_DOWN). 256 left the list (2026-11-06): it held versions 1 and 2 alone, which
+// ai: are no formats.
+export const PICTURE_SIZES = [384, 512, 768, 1024, 1152, 1280, 1536];
 export const N_FOR = (subch) => PICTURE_SIZES.find((n) => n >= 3 * R_RING(subch)) ?? PICTURE_SIZES.at(-1);
 // Camera px a cycle the top ring must still get, fitted by lizard_sweep.mjs (SUBCH set; archive/focus-capacity/), 2026-09-20. It was
 // 2.5, and two things were wrong with that: the border was counted in the application and not in the fit, and the

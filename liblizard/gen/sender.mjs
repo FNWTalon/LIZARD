@@ -19,7 +19,6 @@ export async function senderSetup() {
   const { PARAMS_AT } = await imp("gpu/wgsl/back_ldpc.mjs");
   const { CODES } = await imp("gpu/plan/back_tiers.mjs");
   const { crcPowers, PAYLOAD } = await imp("gpu/back/ref_ldpc.mjs");
-  const { CLIP } = await imp("gpu/back/paint.mjs");
   const { ruleTables } = await imp("gpu/back/codes.mjs");
   const { GAP_MODULES, sendTab } = await imp("gpu/encoder.mjs");
   const modules = { paint: paintSource(), tpose: tposeSource(), rsv: rsvSource(), rsh: rshSource(), rshCopy: rshSource({ copy: true }) };
@@ -35,7 +34,7 @@ export async function senderSetup() {
   const tabHash = createHash("sha256").update(tabBytes).digest("hex").slice(0, 16);
   const manifest = {
     modules: Object.keys(modules).map((k) => `send_${k}`), sizes: SIZES, slots: SLOTS, paramsAt: PARAMS_AT,
-    tposeTile: TPOSE_TILE, rsvThreads: RSV_THREADS, rshThreads: RSH_THREADS, blockBytes: 480, payload: PAYLOAD, clip: CLIP, gapModules: GAP_MODULES,
+    tposeTile: TPOSE_TILE, rsvThreads: RSV_THREADS, rshThreads: RSH_THREADS, blockBytes: 480, payload: PAYLOAD, gapModules: GAP_MODULES,
     codes: CODES.map(({ rate, slots }) => ({ rate, slots })), pw: Array.from(crcPowers(PAYLOAD)), tab: { blob: `blobs/${tabHash}.bin`, words: tab.length },
     gWords: GA_BYTES / 4,
   };

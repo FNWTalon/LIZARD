@@ -82,15 +82,15 @@ export function rowsByCount({ n, bw, blocks, npos }, pos) {
 // ai: The disc rows a frame of version v takes at a size's tables (transformTables): the gate's rows table by version.
 export const rowsOfVersion = (tb, v) => tb.rowsBy[Math.min(CHUNKS * v, tb.blocks)];
 
-// ai: The transform size a picture of n samples is read at by the fused pass 1: the ladder size below n, 192 below
-// ai: 256 (2026-10-21). n is the first ladder size of at least 3 R, so the one below it holds 2 R and every coefficient
+// ai: The transform size a picture of n samples is read at by the fused pass 1: the ladder size below n, 256 below
+// ai: 384 (2026-10-21). n is the first ladder size of at least 3 R, so the one below it holds 2 R and every coefficient
 // ai: the picture carries; sampled on the picture's own square from its first sample, at n / nt of its step, a picture
 // ai: band-limited to R gives the same coefficients at nt (each pass divides by its own size).
 // ai: 1152 and 1280 (2026-10-29) at 1024, not at the ladder size below: their formats (LIZARD-576 to -880) were read at
 // ai: 1024 from 1536 and keep that size and cost. 1024 holds 2R for both tops (LIZARD-720, R 383; -880, R 423), and
 // ai: 1152 would be pass 1's third 64-lane wave (nt / 8 threads): measured on the iGPU, about 10% of the frame for 1.9
 // ai: to 3.6% more blocks.
-export const TRANSFORM_DOWN = { 256: 192, 384: 256, 512: 384, 768: 512, 1024: 768, 1152: 1024, 1280: 1024, 1536: 1024 };
+export const TRANSFORM_DOWN = { 384: 256, 512: 384, 768: 512, 1024: 768, 1152: 1024, 1280: 1024, 1536: 1024 };
 
 // ai: The detrend's basis and its transforms at m points, as src/lizard_phy.c init defines them (in double, then f32):
 // ai: cx, qx, then x12 (x1r, x1i, x2r, x2i a u), sx2 and sq2.

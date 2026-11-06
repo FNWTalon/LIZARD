@@ -124,7 +124,7 @@ const store = (prec) => ({
   st: (name, i, x) => (prec === "f16" ? `${name}[${i}] = f16vec2(${x});` : `${name}[${i}] = ${x};`),
 });
 
-// ai: The stages after the first (the WGSL's laterStages, lanes the same): the decoder's sizes, 192 to 1024 (TRANSFORM_DOWN),
+// ai: The stages after the first (the WGSL's laterStages, lanes the same): the decoder's sizes, 256 to 1024 (TRANSFORM_DOWN),
 // ai: are 8 x 2^k or 8 x 3 x 2^k, so an odd stage is a 3 and the last (radix3Stage); the sender's 5s and earlier 3s
 // ai: (oddStage, oddLastStage) stay the sender's WGSL.
 function laterStages(n, prec, lanes = [["v", "buf"]]) {
