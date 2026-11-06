@@ -27,7 +27,7 @@ import { PoolPolicy } from "./pool.mjs";
 import { logPost } from "./devlog.mjs";
 import { R_RING, SPAN, MODULES, N_FOR, NAME, PICTURE_SIZES, subchOf } from "../liblizard/sim/lizard_pick.mjs";
 import { isControlId, PAYLOAD, fractionDone } from "../liblizard/sim/xfer.mjs";
-import { remember, persist, restoreSaved, say, meter, bytes, rate, left, about, registerApp, collapser, sideResizer, sayName } from "./ui.mjs";
+import { remember, persist, restoreSaved, say, meter, bytes, rate, left, about, registerApp, collapser, sideResizer, sayName, slider } from "./ui.mjs";
 import { open as openKept, list as listKept, watch as watchLibrary } from "./library.mjs";
 const $ = (id) => document.getElementById(id), video = $("v"), shot = $("shot"), sctx = shot.getContext("2d", { willReadFrequently: true });
 // ai: Settings and Developer Tools (the Developer panel until 2026-10-01) open as they were left, a phone session
@@ -36,17 +36,18 @@ const $ = (id) => document.getElementById(id), video = $("v"), shot = $("shot"),
 remember($("dev"), "recv:dev");
 remember($("logs"), "recv:logs");
 collapser($("collapse"), "recv:collapsed");   // ai: the sidebar collapser (ui.mjs); the camera box takes the width
-// ai: The column's floor (ui.mjs sideResizer, 2026-10-06): what the actions need in their two-column form (recv.html
-// ai: #top) with no word broken: Open over Save beside Share over Start, each label in the buttons' font plus
-// ai: their padding, the gap between the columns, and the column's own padding. Every label counts whether or not a
-// ai: file is in, so the column does not move when one arrives; the labels are measured on a canvas, so a hidden
-// ai: button measures too ("Start" stands for #go's two, the longer).
+// ai: The column's floor (ui.mjs sideResizer; 2026-11-06, the apps' RowFloor): the widest row of buttons with no word
+// ai: broken, the received file's row (Open, Save and Share, each its label in the buttons' font plus its own padding, the
+// ai: gaps between) or Start or Stop alone, plus the column's own padding. Every label counts whether or not a file is
+// ai: in, so the column does not move when one arrives; the labels are measured on a canvas, so a hidden button
+// ai: measures too.
 function actionsFloor() {
-  const b = getComputedStyle($("go")), side = getComputedStyle($("side")), top = getComputedStyle($("top"));
+  const b = getComputedStyle($("go")), side = getComputedStyle($("side")), gap = parseFloat(getComputedStyle($("deliver")).columnGap) || 0;
   const c = (actionsFloor.ctx ??= document.createElement("canvas").getContext("2d"));
   c.font = `${b.fontStyle} ${b.fontWeight} ${b.fontSize} ${b.fontFamily}`;
-  const w = (label) => c.measureText(label).width + parseFloat(b.paddingLeft) + parseFloat(b.paddingRight);
-  return Math.ceil(Math.max(w("Open"), w("Save")) + parseFloat(top.columnGap) + Math.max(w("Share"), w("Start")) + parseFloat(side.paddingLeft) + parseFloat(side.paddingRight));
+  const w = (label, id) => { const p = getComputedStyle($(id)); return c.measureText(label).width + parseFloat(p.paddingLeft) + parseFloat(p.paddingRight); };
+  const row = w("Open", "open") + w("Save", "save") + w("Share", "share") + 2 * gap;
+  return Math.ceil(Math.max(row, w("Start", "go"), w("Stop", "go")) + parseFloat(side.paddingLeft) + parseFloat(side.paddingRight));
 }
 sideResizer("recv:side", actionsFloor, "recv:collapsed");   // ai: the column's edge dragged to resize it (2026-10-05), no narrower than the actions need
 // ai: The app's shell (2026-10-01): the bar's Settings, the first-run tip, About and the installed app's worker.
@@ -99,6 +100,7 @@ function showCfg() {
 // ai: Developer Tools: the numbers line's until 2026-10-01); why: its hints in plain words.
 // ai: fileAt: when a frame last brought blocks that were not the test stream's (2026-10-05: the test stream owns the
 // ai: display only while it is the newer of the two)
+const held = { running: false, kept: false, state: "", nums: "", why: "", meter: false, whyText: "", whyAt: 0 };   // ai: showState's run: the lines' room
 const ui = { err: "", starting: false, received: null, testAt: -Infinity, fileAt: -Infinity, bandAt: -Infinity, stoppedAt: 0, lab: "", why: "" };
 const LIVE_MS = 3000;   // ai: the test stream, or a code's word, is still "being read" this long after its last frame
 const recent = (at) => performance.now() - at < LIVE_MS;
@@ -134,9 +136,9 @@ function showState() {
   // ai: the test stream first while the camera reads it, the newer of it and a file's frames (2026-10-05): it takes over
   // ai: from a file received or in progress, whose line, buttons and rail squares come back once the camera is on its frames
   const testing = on && recent(ui.testAt) && ui.testAt >= ui.fileAt;
-  if (ui.err) { line = ui.err; tone = "bad"; }
-  else if (ui.starting) line = "Starting the camera";
-  else if (loading) line = "Getting ready";
+  // ai: no line while the camera starts or no decoder has answered (the preview's cover says "Getting ready"), and an error
+  // ai: is the preview's to say (2026-11-06, the apps' Receive.kt: errorOf, Readout.line)
+  if (ui.err || ui.starting || loading) line = "";
   else if (testing) line = "Reading the test stream";   // ai: its rate the rail's and Developer Tools' (#lab) since 2026-10-05
   else if (on && h && !offered) {
     frac = fractionDone(xferNow);
@@ -158,28 +160,53 @@ function showState() {
     const after = `, ${nb(bytes(r.n))} in ${nb(`${r.secs.toFixed(1)} s`)}${speed}${r.sent && r.sent < r.n ? `, ${nb(bytes(r.sent))} sent` : ""}`;
     line = `Received ${r.name}${after}`; named = ["Received ", r.name, after]; tone = "good"; frac = 1;
   } else if (!on) line = "";   // ai: idle says nothing (2026-10-02: an instruction that obvious only takes space)
-  else line = "Looking for a code";   // ai: a word read with no file yet says this too (2026-10-05; "Found the code, waiting for the file" before)
-  // ai: rewritten only when it changes: #state is a live region, and a screen reader reads out every rewrite
-  if (`${tone} ${line}` !== stateShown) { stateShown = `${tone} ${line}`; if (named) sayName($("state"), ...named, tone); else say($("state"), line, tone); }
-  meter($("meter"), frac);
-  $("nums").textContent = nums;
+  else line = "";   // ai: nothing while looking (2026-11-06, the apps' Readout.line since 2026-10-05; "Looking for a code" here until then)
+  // ai: Within a run (Start until it stops) a line once shown keeps its room until the run ends, drawn clear when it
+  // ai: falls silent (the apps' Receive.kt, 2026-11-02: lines coming and going moved the folds under them); none is held
+  // ai: before it has had words, so a camera starting shows no gap. The run's file in ends it at once; a run started
+  // ai: over a file already received holds on.
+  const running = on || ui.starting;
+  if (running !== held.running) Object.assign(held, { running, kept: !!ui.received, state: "", nums: "", why: "", meter: false });
+  // ai: the hint held still as the apps' (Parts.kt steady, on 0): shown at once, kept until it has been gone 2 s
+  const whyNow = on && !ui.err && !loading ? ui.why : "", t = performance.now();
+  if (whyNow) { held.whyText = whyNow; held.whyAt = t; }
+  const why = whyNow || (on && held.whyText && t - held.whyAt < 2000 ? held.whyText : "");
+  const run = running && (!ui.received || held.kept);
+  if (run && line) held.state = line;
+  if (run && nums) held.nums = nums;
+  if (run && why) held.why = why;
+  if (run && frac != null) held.meter = true;
+  const ghost = !line && run && !!held.state;
+  // ai: rewritten only when it changes: #state is a live region, and a screen reader reads out every rewrite (a line
+  // ai: falling silent in a run keeps its last words, drawn clear)
+  if (!ghost && `${tone} ${line}` !== stateShown) { stateShown = `${tone} ${line}`; if (named) sayName($("state"), ...named, tone); else say($("state"), line, tone); }
+  $("state").classList.toggle("ghost", ghost);
+  meter($("meter"), frac ?? (run && held.meter ? 0 : null));
+  $("meter").classList.toggle("ghost", frac == null && run && held.meter);
+  $("nums").textContent = nums || (run ? held.nums : "");
+  $("nums").classList.toggle("ghost", !nums && run && !!held.nums);
   $("lab").textContent = on ? ui.lab : "";
-  $("why").textContent = on && !ui.err && !loading ? ui.why : "";
+  $("why").textContent = why || (run ? held.why : "");
+  $("why").classList.toggle("ghost", !why && run && !!held.why);
   $("deliver").hidden = !ui.received || testing;
-  $("idle").hidden = on;
-  $("loading").hidden = !loading;
+  // ai: The preview's cover (the apps' PreviewBox): what went wrong (the red triangle over its words), else "Camera off"
+  // ai: while no camera runs, else "Getting ready" with the spinner while the camera starts and until a decoder answers
+  const idle = !!ui.err || (!on && !ui.starting);
+  $("idle").hidden = !idle;
+  $("idle").classList.toggle("err", !!ui.err);
+  $("idleText").textContent = ui.err || "Camera off";
+  $("loading").hidden = idle || !(ui.starting || loading);
   // ai: one solid button on the page at a time: Start while nothing waits, else Open
   go.textContent = on ? "Stop" : "Start";
   go.classList.toggle("primary", !on && !ui.received);
   go.disabled = ui.starting;
-  // ai: a file's actions first, the camera's button after them, in the order a keyboard tabs as well
-  const top = $("top"), last = !$("deliver").hidden;
-  if (last ? top.lastElementChild !== go : top.firstElementChild !== go) last ? top.append(go) : top.prepend(go);
   // ai: the collapsed rail (recv.html #rail): the camera's pause or play, the last second's rate while a file or the
   // ai: test stream is read (its figure over its unit), under it the share of a file in while one comes (its percent over
   // ai: "%", 2026-10-09), and once the file is in a green check in the rate's square (a
   // ai: mark, no action), then Open (Feather's external-link) and Save (its download), the deliver row's own actions, in
   // ai: black (2026-10-05; the green tick opened the file until then)
+  // ai: the red triangle first while something went wrong, its words its name (the apps' AlertSquare)
+  $("railAlert").hidden = !ui.err; $("railAlert").title = ui.err; $("railAlert").setAttribute("aria-label", ui.err || "Error");
   const cam = $("railCam");
   cam.classList.toggle("off", !on); cam.title = on ? "Stop" : "Start"; cam.disabled = ui.starting;
   const now = (on && h && !offered) || testing ? recentKBs() : null, [v, u] = now != null ? rate(now).split(/\s/) : ["", ""];   // ai: \s takes rate()'s no-break space
@@ -341,7 +368,6 @@ let camLabel = "", camRate = 0;
 function showCamera() {
   const a = $("cam").querySelector('option[value="auto"]');
   if (a) a.textContent = camLabel || "Camera";
-  $("camRow").hidden = $("cam").value === "auto" && !camLabel;
   $("fps").querySelector('option[value="auto"]').textContent = String(camRate || 60);
 }
 // ai: The camera's frame as a VideoFrame (lizard-web/vframes.mjs), with the crop the grab would have read back, in place of the
@@ -1013,7 +1039,9 @@ async function startCamera() {
   // The rear camera is required with it, or a phone whose front camera alone does 60 hands that one over. A machine
   // with no rear camera fails on facingMode and gets the second try; a rear camera that cannot do 60 skips it.
   // A camera picked by hand says which one and nothing else, so the facingMode tries drop out and only the rate is relaxed.
-  const size = { width: { ideal: w }, height: { ideal: h } }, fast = { min: 50, ideal: 60 }, id = $("cam").value;
+  // ai: zoom: true asks for the camera's zoom where the browser has pan, tilt and zoom (Chromium exposes a camera's zoom
+  // ai: only to a page that asked; its prompt then names moving the camera); another browser is asked nothing new
+  const size = { width: { ideal: w }, height: { ideal: h }, ...(navigator.mediaDevices.getSupportedConstraints?.().pan ? { zoom: true } : {}) }, fast = { min: 50, ideal: 60 }, id = $("cam").value;
   const at = (rate) => id === "auto" ? [{ ...size, facingMode: { exact: "environment" }, frameRate: rate }, { ...size, frameRate: rate }] : [{ ...size, deviceId: { exact: id }, frameRate: rate }];
   const ask = $("fps").value, key = `${id}|${$("res").value}|${ask}`;
   let stream = null;
@@ -1045,6 +1073,7 @@ async function startCamera() {
   } catch { photoCaps = {}; }
   video.srcObject = stream; await video.play();
   await squareOrBack(track);
+  showZoom(true);
   try { wake = await navigator.wakeLock?.request("screen"); } catch {}
   camLabel = track.label || "Camera"; camRate = Math.round(track.getSettings().frameRate || 0);
   listCameras();   // labels are blank until a camera has been granted, so the menu is worth filling only now
@@ -1069,6 +1098,7 @@ async function cropAtSource(track) {
   // A lens hunting between frames is the worst thing for a dense code; ask for continuous focus where the device offers it.
   const focus = track.getCapabilities?.().focusMode?.includes("continuous") ? [{ focusMode: "continuous" }] : [];
   const first = firstConstraints = track.getConstraints(), was = track.getSettings(), s = Math.min(was.width, was.height), fr = was.frameRate;
+  held_.basic = basicOf(first); held_.focus = focus;
   const plain = async (why) => { try { if (focus.length) await track.applyConstraints({ ...first, advanced: focus }); } catch {} return why; };
   if (CROP !== "square") return plain("off: crop=full");
   if (LAB("srccrop") === "full") return plain("off: srccrop=full");
@@ -1076,9 +1106,10 @@ async function cropAtSource(track) {
   if (!(s > 0) || was.width === was.height) return plain(`none needed: ${was.width}x${was.height}`);
   let why;
   try {
-    await track.applyConstraints({ width: { exact: s }, height: { exact: s }, resizeMode: "crop-and-scale", ...(fr ? { frameRate: { min: Math.floor(0.9 * fr), ideal: fr } } : {}), advanced: focus });
+    const square = { width: { exact: s }, height: { exact: s }, resizeMode: "crop-and-scale", ...(fr ? { frameRate: { min: Math.floor(0.9 * fr), ideal: fr } } : {}) };
+    await track.applyConstraints({ ...square, advanced: focus });
     const now = track.getSettings();
-    if (now.width === s && now.height === s && !(fr && now.frameRate < 0.9 * fr)) return `square ${s} of ${was.width}x${was.height}`;
+    if (now.width === s && now.height === s && !(fr && now.frameRate < 0.9 * fr)) { held_.basic = square; return `square ${s} of ${was.width}x${was.height}`; }
     why = `answered ${now.width}x${now.height}${now.frameRate ? " @" + Math.round(now.frameRate) : ""}`;
   } catch (e) { why = `refused: ${e.name}${e.constraint ? " " + e.constraint : ""}`; }
   return putBack(track, why);
@@ -1086,6 +1117,7 @@ async function cropAtSource(track) {
 // ai: The track's first constraints again, with continuous focus where it was asked for: the camera as it was opened.
 async function putBack(track, why) {
   const focus = track.getCapabilities?.().focusMode?.includes("continuous") ? [{ focusMode: "continuous" }] : [];
+  held_.basic = basicOf(firstConstraints); held_.focus = focus;
   try { await track.applyConstraints({ ...firstConstraints, advanced: focus }); } catch (e) { why += `; put back failed: ${e.name}`; }
   return `off: ${why}`;
 }
@@ -1099,6 +1131,49 @@ async function squareOrBack(track) {
 }
 let firstConstraints = {};
 let srcCrop = "";
+// ai: The constraint set in force (cropAtSource, putBack): its basic part and the focus asked, so zoom is applied with
+// ai: them and the square is not dropped (a later applyConstraints replaces the whole set).
+const held_ = { basic: {}, focus: [] };
+const basicOf = (c) => { const { advanced, ...rest } = c ?? {}; return rest; };
+// ai: Zoom (2026-11-06, the apps' Zoom): the camera's own, where the track exposes it (getCapabilities' zoom), a slider in
+// ai: Settings with its value as a ratio of its least ("1.3x"; the number where the least is 0); set live as it is
+// ai: dragged, one applyConstraints at a time (the newest value waiting), and kept per camera (recv:zoom@<deviceId>),
+// ai: set again at each start. Hidden for a camera that exposes none; kept shown with the camera off once one did.
+let zoomCaps = null, zoomBusy = false, zoomWant = null;
+const zoomKey = () => `recv:zoom@${track?.getSettings().deviceId ?? ""}`;
+const zoomLabel = (z) => (zoomCaps.min > 0 ? `${(z / zoomCaps.min).toFixed(1)}x` : `${Math.round(z)}`);
+function showZoom(started = false) {
+  if (started) {
+    const c = track?.getCapabilities?.().zoom;
+    zoomCaps = c && Number.isFinite(c.min) && Number.isFinite(c.max) && c.max > c.min ? c : null;
+    if (zoomCaps) {
+      const z = $("zoom");
+      z.min = zoomCaps.min; z.max = zoomCaps.max; z.step = zoomCaps.step > 0 ? zoomCaps.step : "any";
+      let kept = NaN;
+      try { kept = parseFloat(localStorage.getItem(zoomKey())); } catch {}
+      const now = track.getSettings().zoom ?? zoomCaps.min;
+      z.value = Number.isFinite(kept) ? Math.min(zoomCaps.max, Math.max(zoomCaps.min, kept)) : now;
+      if (Number.isFinite(kept) && +z.value !== now) zoomTo(+z.value);
+    }
+  }
+  $("zoomRow").hidden = !zoomCaps;
+  if (zoomCaps) $("zoomOut").textContent = zoomLabel(+$("zoom").value);
+}
+async function zoomTo(v) {
+  zoomWant = v;
+  if (zoomBusy) return;
+  zoomBusy = true;
+  try {
+    while (zoomWant != null && track) {
+      const z = zoomWant; zoomWant = null;
+      await track.applyConstraints({ ...held_.basic, advanced: [...held_.focus, { zoom: z }] });
+    }
+  } catch (e) { console.warn("zoom refused:", e); }
+  finally { zoomBusy = false; zoomWant = null; }
+}
+slider($("zoom"));
+$("zoom").addEventListener("input", () => { showZoom(); if (track && !ui.starting) zoomTo(+$("zoom").value); });
+$("zoom").addEventListener("change", () => { if (track) try { localStorage.setItem(zoomKey(), $("zoom").value); } catch {} });
 // The last try is the fallback. A first try refused on anything but facingMode goes straight to it, since the one
 // between only relaxes facingMode and would hand over a front camera that does what the rear one cannot. A null
 // last try means there is no fallback, and the answer is null.
@@ -1163,7 +1238,10 @@ document.addEventListener("visibilitychange", async () => { if (track && documen
 // Controls can be preset from the URL: recv.html?workers=4&res=1280x720&auto
 // ai: Settings' menus as the user last left them (localStorage, since 2026-09-29);
 // ai: the URL's presets after, so a scripted run still gets what it names. The camera's menu fills later (listCameras).
-for (const el of $("dev").querySelectorAll("select")) persist(el, `recv:${el.id}`);
+for (const el of document.querySelectorAll("#dev select, #logs select")) persist(el, `recv:${el.id}`);
+// ai: Show statistics (Developer Tools, the apps'): on, the green line once a file is in and the lab line and readouts
+$("stats").addEventListener("change", () => document.body.classList.toggle("stats", $("stats").value === "1"));
+document.body.classList.toggle("stats", $("stats").value === "1");
 listCameras();
 for (const [k, v] of new URLSearchParams(location.search)) if ($(k) && "value" in $(k) && [...($(k).options ?? [])].some((o) => o.value === v)) $(k).value = v;
 // ai: LIZARD's decoder from the start, told nothing.

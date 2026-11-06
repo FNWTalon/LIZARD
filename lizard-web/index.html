@@ -8,6 +8,8 @@
   .go .btn{flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:104px;padding:16px;
     border-radius:16px;text-align:center;font-size:18px}
   .go .btn svg{margin-bottom:10px}
+  /* ai: About a fold among the Settings rows (2026-11-06, the apps' AboutFold): the rows' hairline under it, none over it */
+  .settings details.dev{border-top:0;margin-top:0;border-bottom:1px solid var(--line)}
 </style>
 <main>
   <header class="bar"><span class="brand"><img src="icon.svg" alt="" width="28" height="28"><span>LIZARD</span></span><span class="grow"></span></header>
@@ -22,7 +24,7 @@
   <section class="settings" aria-labelledby="settings-h">
     <h2 id="settings-h" tabindex="-1">Settings</h2>
     <div class="item"><span class="body"><span class="t">Received files</span><span id="usage" class="s"></span></span><button id="clearAll" class="text danger" type="button" hidden>Delete all</button></div>
-    <div class="item"><span class="body"><span class="t">About</span><span id="about" class="s"></span></span></div>
+    <details class="dev" id="aboutFold"><summary>About</summary><div id="about" class="about-text"></div></details>
     <a id="source" class="item" href="https://github.com/FNWTalon/LIZARD" target="_blank" rel="noopener"><span class="body"><span class="t">Source code</span></span></a>
   </section>
 </main>

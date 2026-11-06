@@ -378,7 +378,8 @@ const SIZES = [
   s.close();
 }
 
-// ai: 2. Start errors, in red.
+// ai: 2. Start errors, over the camera's box (2026-11-06, the apps' PreviewBox): the red triangle over the sentence, the
+// ai: column's line empty, the collapsed rail's red triangle named by it.
 {
   const s = await chrome("errors");
   await size(s, SIZES[0]);
@@ -391,13 +392,53 @@ const SIZES = [
     await navigate(s, `${BASE}?seen`);
     await evaluate(s, `document.getElementById("go").click()`);
     await sleep(600);
-    const r = await evaluate(s, `(() => { const e = document.getElementById("state"); return { text: e.textContent, bad: e.classList.contains("bad"), color: getComputedStyle(e).color, go: document.getElementById("go").disabled }; })()`);
+    const r = await evaluate(s, `(() => { const $ = (id) => document.getElementById(id), a = $("idle").querySelector(".alert"); return { text: $("idleText").textContent, shown: !$("idle").hidden && $("idle").classList.contains("err"), color: getComputedStyle(a).color, alert: getComputedStyle(a).display !== "none", state: $("state").textContent, rail: !$("railAlert").hidden && $("railAlert").title === $("idleText").textContent, go: $("go").disabled }; })()`);
     await screenshot(s, `${OUT}/recv-error-${name}.png`);
-    check(want.test(r.text) && r.bad && r.color === "rgb(176, 0, 32)" && !r.go, `${name}: "${r.text}" in ${r.color}, #go ${r.go ? "disabled" : "enabled"}`);
+    check(want.test(r.text) && r.shown && r.alert && r.color === "rgb(176, 0, 32)" && r.state === "" && r.rail && !r.go, `${name}: "${r.text}" over the box, its triangle in ${r.color}, the column's line "${r.state}", the rail's triangle ${r.rail ? "named by it" : "missing"}, #go ${r.go ? "disabled" : "enabled"}`);
     await s.send("Page.removeScriptToEvaluateOnNewDocument", { identifier });
   }
   const other = s.errors.filter((e) => !/camera did not start/.test(e));
   check(!other.length && s.errors.length === 2, `the start errors' only console errors are their own two (${s.errors.length})${other.length ? `: ${other.join("; ")}` : ""}`);
+  s.close();
+}
+
+// ai: 2b. Zoom where the camera exposes it (2026-11-06, the apps' Zoom): Chrome's fake camera exposes none, so a zoom is
+// ai: given to every track (getCapabilities) and applyConstraints recorded: the row shown at "1.0x", a drag applied live
+// ai: with the square's constraints kept in the same set, its value kept for the camera and set again at the next start;
+// ai: without the capability the row stays hidden.
+{
+  const s = await chrome("zoom");
+  await size(s, SIZES[2]);
+  const { identifier } = await s.send("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+    const caps = MediaStreamTrack.prototype.getCapabilities, apply = MediaStreamTrack.prototype.applyConstraints;
+    window.applied = [];
+    MediaStreamTrack.prototype.getCapabilities = function () { return { ...caps.call(this), zoom: { min: 1, max: 5, step: 0.1 } }; };
+    MediaStreamTrack.prototype.applyConstraints = function (c) { window.applied.push(JSON.parse(JSON.stringify(c ?? {}))); return apply.call(this, c); };
+  })();` });
+  await evaluate(s, `localStorage.clear()`).catch(() => {});
+  await navigate(s, `${BASE}?seen&auto`);
+  await until(s, `!document.getElementById("zoomRow").hidden`, 20000, "the zoom row");
+  const a = await evaluate(s, `document.getElementById("zoomOut").textContent`);
+  check(a === "1.0x", `zoom: the row shown where the track has a zoom, at "${a}"`);
+  await evaluate(s, `(() => { const z = document.getElementById("zoom"); z.value = "2"; z.dispatchEvent(new Event("input")); z.dispatchEvent(new Event("change")); })()`);
+  await until(s, `window.applied.some((c) => (c.advanced ?? []).some((x) => x.zoom === 2))`, 5000, "zoom 2 applied");
+  // ai: the set in force kept: the zoom's set is the one applied before it (the square, or the first constraints where
+  // ai: the square was put back, as on Chrome's fake camera) with the zoom added to its advanced
+  const b = await evaluate(s, `(() => { const A = window.applied, i = A.findLastIndex((c) => (c.advanced ?? []).some((x) => x.zoom === 2)), c = A[i], before = A.slice(0, i).findLast((c) => !(c.advanced ?? []).some((x) => "zoom" in x));
+    const strip = (c) => { const { advanced, ...rest } = c; return JSON.stringify(rest); };
+    return { label: document.getElementById("zoomOut").textContent, same: !!before && strip(before) === strip(c) && JSON.stringify(c.advanced.filter((x) => !("zoom" in x))) === JSON.stringify(before.advanced ?? []),
+      kept: Object.keys(localStorage).filter((k) => k.startsWith("recv:zoom@")).map((k) => localStorage.getItem(k)).join() }; })()`);
+  check(b.label === "2.0x" && b.same && b.kept === "2", `zoom: a drag to 2 applied live as "${b.label}" with the constraints in force kept (${b.same}), kept as ${b.kept}`);
+  await screenshot(s, `${OUT}/recv-laptop-zoom.png`);
+  await navigate(s, `${BASE}?seen&auto`);
+  await until(s, `window.applied.some((c) => (c.advanced ?? []).some((x) => x.zoom === 2))`, 20000, "the kept zoom set again at the start");
+  check(true, "zoom: the kept 2 set again at the next start");
+  await s.send("Page.removeScriptToEvaluateOnNewDocument", { identifier });
+  await navigate(s, `${BASE}?seen&auto`);
+  await until(s, `document.getElementById("go").textContent === "Stop" && !document.getElementById("go").disabled`, 20000, "the camera without a zoom");
+  await sleep(500);
+  check(await evaluate(s, `document.getElementById("zoomRow").hidden`), "zoom: no row for a camera that exposes none");
+  check(!s.errors.length, `zoom: no console errors${s.errors.length ? `: ${s.errors.join("; ")}` : ""}`);
   s.close();
 }
 
@@ -466,12 +507,13 @@ const SIZES = [
     const fw = await evaluate(f, `document.getElementById("why").textContent`);
     check(/(^|\n)30 pictures a second is too fast for a browser/.test(fw) && /LIZARD app/.test(fw) && /send at 24/.test(fw), `a sender at 30 fps is sent to the LIZARD app: "${fw}"`);
   }
-  // ai: The light gone (the video paused, as a camera turned to a wall): the state falls back to looking, the code's
-  // ai: name leaves the lab line (until 2026-09-26 the band, once read, stayed on both for good).
+  // ai: The light gone (the video paused, as a camera turned to a wall): the state falls back to looking, which says
+  // ai: nothing (2026-11-06, as the apps'; its words drawn clear while the run holds the line's room), the code's name
+  // ai: leaves the lab line (until 2026-09-26 the band, once read, stayed on both for good).
   await evaluate(t, `document.getElementById("v").pause()`);
-  await until(t, `document.getElementById("state").textContent === "Looking for a code"`, 8000, "Looking for a code once the light is gone");
+  await until(t, `!/LIZARD/.test(document.getElementById("lab").textContent) && document.getElementById("state").classList.contains("ghost")`, 8000, "the line silent once the light is gone");
   const gone = await evaluate(t, `[document.getElementById("nums").textContent, document.getElementById("lab").textContent].join(" / ")`);
-  check(!/LIZARD/.test(gone), `the light gone: "Looking for a code" / "${gone}"`);
+  check(!/LIZARD/.test(gone), `the light gone: the line silent, its room held / "${gone}"`);
   check(!t.errors.length, `no console errors over the test stream${t.errors.length ? `: ${t.errors.join("; ")}` : ""}`);
   t.close();
 
@@ -518,23 +560,25 @@ const SIZES = [
   await sleep(300);
   await screenshot(s, `${OUT}/recv-laptop-received-stopped.png`);
   check(!s.errors.length, `no console errors over the transfer${s.errors.length ? `: ${s.errors.join("; ")}` : ""}`);
-  // ai: The actions' two forms (recv.html #top, 2026-10-06), through a saved column width: at 500 px the column holds
-  // ai: one row of all four; at 180 px the floor (recv.mjs actionsFloor) lifts it to what the two columns need, Open
-  // ai: over Save beside Share over Start. Every button shown for the measure (a reload offers no file), none
-  // ai: wider than its box, so no label broke onto a second line or spilled past its button.
+  // ai: The actions in the apps' order (recv.html #top, 2026-11-06), through a saved column width: Open, Save and Share
+  // ai: on one row, Start under them at its left, each button its label's width under a mouse; at 500 px the column as
+  // ai: asked, at 180 px lifted by the floor (recv.mjs actionsFloor) to the row's width. Every button shown for the
+  // ai: measure (a reload offers no file), none wider than its box, so no label broke onto a second line or spilled
+  // ai: past its button, and the row inside the column.
   const ACTS = `(() => { const $ = (id) => document.getElementById(id); $("deliver").hidden = false; $("share").hidden = false;
-    const r = (id) => $(id).getBoundingClientRect(), o = r("open"), sh = r("share"), sa = r("save"), g = r("go"), near = (a, b) => Math.abs(a - b) < 1;
+    const r = (id) => $(id).getBoundingClientRect(), o = r("open"), sh = r("share"), sa = r("save"), g = r("go"), side = r("side"), near = (a, b) => Math.abs(a - b) < 1;
+    const pad = parseFloat(getComputedStyle($("side")).paddingRight);
     return { spilled: ["open", "share", "save", "go"].filter((id) => $(id).scrollWidth > $(id).clientWidth + 1).join(),
-      row: near(o.top, sh.top) && near(sh.top, sa.top) && near(sa.top, g.top) && o.left < sa.left && sa.left < sh.left,
-      grid: near(o.top, sh.top) && near(sa.top, g.top) && o.bottom <= sa.top && o.left < sh.left && near(o.left, sa.left) && near(sh.left, g.left),
+      row: near(o.top, sa.top) && near(sa.top, sh.top) && o.left < sa.left && sa.left < sh.left && g.top >= o.bottom && near(g.left, o.left)
+        && g.width < 120 && o.width < 120 && sh.right <= side.right - pad + 1,
       side: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--side")), go: $("go").textContent }; })()`;
-  for (const [w, form] of [[500, "row"], [180, "grid"]]) {
+  for (const w of [500, 180]) {
     await evaluate(s, `localStorage.setItem("recv:side", "${w}")`);
     await navigate(s, BASE);
     await until(s, `document.documentElement.style.getPropertyValue("--side") !== "" && document.getElementById("go").textContent === "Start"`, 10000, "the column's width restored");
     const m = await evaluate(s, ACTS);
-    await screenshot(s, `${OUT}/recv-laptop-actions-${form}.png`);
-    check(m[form] && !m.spilled && (w === 180 ? m.side > 180 : m.side === 500), `the actions at a ${w} px column: ${form === "row" ? "one row" : "two columns, Open over Save beside Share over Start"}, the column ${m.side} px${m.spilled ? `, spilled: ${m.spilled}` : ""}`);
+    await screenshot(s, `${OUT}/recv-laptop-actions-${w}.png`);
+    check(m.row && !m.spilled && (w === 180 ? m.side > 180 : m.side === 500), `the actions at a ${w} px column: Open, Save and Share on a row, Start under them, each its label's width, the column ${m.side} px${m.spilled ? `, spilled: ${m.spilled}` : ""}`);
   }
   await evaluate(s, `localStorage.removeItem("recv:side")`);
   // ai: The column's edge as a sash under a mouse (2026-11-01, ui.mjs sideResizer): pulled under half its floor it closes to

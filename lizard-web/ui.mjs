@@ -175,10 +175,34 @@ export function confirmTap(btn, ask, act) {
 // ai: null on the rig's source pages, which are not the app and register no worker.
 export function buildInfo() { return document.querySelector('meta[name="lizard-build"]')?.content ?? null; }
 // ai: about(el): the About line, the build this page is.
+// ai: About's text (2026-11-06, the apps' AboutFold, lizard-ui About.kt): the build line (the build's time alone, none on
+// ai: the rig's pages, 2026-10-02), LIZARD's license, the design it is based on, then a line a license of what the web
+// ai: app carries (its LICENSES.txt: BLAKE3, Wirehair and Zstandard in the codec's wasm, the two fonts), in the order the
+// ai: apps' CREDITS first name them. el: the fold's .about-text.
+const CREDITS = [["BLAKE3", "Apache 2.0 / CC0 1.0"], ["Wirehair", "BSD 3-Clause"], ["Zstandard", "BSD 3-Clause"], ["Inter", "SIL OFL 1.1"], ["JetBrains Mono", "SIL OFL 1.1"]];
 export function about(el, failed = false) {
-  const b = buildInfo();
-  // ai: the build's time alone, and nothing on the rig's pages (2026-10-02)
-  el.textContent = b ? `Build: ${b.split(" ")[0].replace("T", " ").replace(/:\d\d(\.\d+)?Z$/, " UTC")}${failed ? ". Update failed" : ""}` : "";
+  const b = buildInfo(), groups = new Map();
+  for (const [name, license] of CREDITS) groups.set(license, [...(groups.get(license) ?? []), name]);
+  const p = (text, cls) => Object.assign(document.createElement("p"), { textContent: text, className: cls ?? "" });
+  el.replaceChildren(...[
+    b ? p(`Build: ${b.split(" ")[0].replace("T", " ").replace(/:\d\d(\.\d+)?Z$/, " UTC")}${failed ? ". Update failed" : ""}`, "build") : null,
+    p("LIZARD is licensed under the Mozilla Public License 2.0 (MPL 2.0)."),
+    p("The design is based on FOCUS: Robust Visual Codes for Everyone (Hermans et al., MobiSys 2016). The implementation is independent."),
+    p("Third-party software and licenses:"),
+    ...[...groups].map(([license, names]) => p(`${license}: ${names.join(", ")}`)),
+  ].filter(Boolean));
+}
+
+// ai: slider(el): a range input's fill (ui.css input[type=range], the apps' Bar) kept at its value: --f, the value's
+// ai: fraction of its range, set at each input and at each assignment of value by a page (an own-property setter over
+// ai: the prototype's), so a value a page sets fills as one dragged does.
+export function slider(el) {
+  const d = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+  const fill = () => { const lo = +el.min || 0, hi = el.max === "" ? 100 : +el.max, v = +d.get.call(el); el.style.setProperty("--f", String(hi > lo ? Math.max(0, Math.min(1, (v - lo) / (hi - lo))) : 0)); };
+  Object.defineProperty(el, "value", { configurable: true, get() { return d.get.call(this); }, set(v) { d.set.call(this, v); fill(); } });
+  el.addEventListener("input", fill);
+  el.slide = fill;   // ai: for a page that moves min or max
+  fill();
 }
 
 // ai: registerApp(onFail): the installable app's worker (lizard-web/pwa/service-worker.js, a ported scheme), only on a built

@@ -39,17 +39,25 @@ button:disabled,button:disabled:hover{background:var(--soft);color:rgba(17,17,17
 @media (pointer:fine){button,.btn{min-height:40px}.icon{width:40px;min-width:40px}}
 :focus-visible{outline:2px solid var(--fg);outline-offset:2px}
 
-/* ai: Fields on the soft fill, 8 px corners; a select's own arrow replaced by a chevron. 16 px text: iOS zooms the page
-   in on focus of anything smaller. */
-select,input{font:inherit;font-size:16px;color:var(--fg);background-color:var(--soft);border:1px solid transparent;
+/* ai: Fields on the soft fill, 8 px corners; a select's own arrow replaced by the apps' chevron (lizard-ui Parts.kt
+   Select: 18 px, 12 px from its end). 16 px text: iOS zooms the page in on focus of anything smaller. */
+select,input{font:inherit;font-size:16px;font-weight:400;color:var(--fg);background-color:var(--soft);border:1px solid transparent;
   border-radius:8px;min-height:48px;padding:0 12px;min-width:0;max-width:100%}
-select{appearance:none;-webkit-appearance:none;padding-right:40px;background-repeat:no-repeat;background-position:right 14px center;
-  background-size:14px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")}
+select{appearance:none;-webkit-appearance:none;padding-right:42px;background-repeat:no-repeat;background-position:right 12px center;
+  background-size:18px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")}
 select:focus-visible,input:focus-visible{outline:none;border-color:var(--fg)}
-/* ai: sliders the full width of their box (2026-10-02): none of the fields' padding, fill or 48 px height */
-input[type=range]{width:100%;min-height:24px;padding:0;margin:0;background:transparent;border:0;accent-color:var(--fg)}
+/* ai: Sliders as the apps draw them (lizard-ui Parts.kt Bar, 2026-11-06): a 6 px track with round ends on the hairline's
+   grey, filled in the foreground's colour up to a 20 px round thumb, the fill ending at the thumb's centre (ui.mjs
+   slider sets --f, the value's fraction); the full width of their box, 48 px tall, none of the fields' padding or fill */
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:48px;min-height:0;padding:0;margin:0;background:transparent;border:0;--f:0}
+input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px;background:linear-gradient(to right,var(--fg) calc(10px + (100% - 20px) * var(--f)),var(--line) 0)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;margin-top:-7px;border:0;border-radius:50%;background:var(--fg)}
+input[type=range]::-moz-range-track{height:6px;border-radius:3px;background:var(--line)}
+input[type=range]::-moz-range-progress{height:6px;border-radius:3px;background:var(--fg)}
+input[type=range]::-moz-range-thumb{width:20px;height:20px;border:0;border-radius:50%;background:var(--fg)}
+input[type=range]:disabled{opacity:.38}
 select:disabled,input:disabled{color:rgba(17,17,17,.38)}
-@media (pointer:fine){select,input{min-height:40px}}
+@media (pointer:fine){select,input:not([type=range]){min-height:40px}}
 .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 
 /* ai: Status: .status is the state line, .nums the user's figures under it (progress, size, speed, time left: their
@@ -96,6 +104,7 @@ pre.readout{font-size:12px;color:var(--fg)}
   /* ai: the tool pages' way Home is the rail's last square in landscape, not the bar (2026-10-05): expanding the column
      put the bar's back arrow where the expand button had been, and a second tap left the page */
   .bar .back{display:none}
+  .bar .back+h1{margin-left:0}
   body.collapsed{--side:56px}
   body.collapsed .bar{padding:0;justify-content:center}
   body.collapsed .bar>:not(.collapse){display:none}
@@ -189,28 +198,35 @@ a.item{text-decoration:none}
 details.dev{border-top:1px solid var(--line);margin-top:8px}
 details.dev>summary{list-style:none;display:flex;align-items:center;min-height:56px;cursor:pointer;font-weight:500;user-select:none}
 details.dev>summary::-webkit-details-marker{display:none}
-details.dev>summary::after{content:"";margin:0 6px 0 auto;width:8px;height:8px;border-right:2px solid var(--muted);
-  border-bottom:2px solid var(--muted);transform:translateY(-2px) rotate(45deg);transition:transform .15s}
-details.dev[open]>summary::after{transform:translateY(2px) rotate(225deg)}
+/* ai: the apps' chevron (lizard-ui Parts.kt Fold): Feather's, 24 px, muted, turned over while open */
+details.dev>summary::after{content:"";flex:none;margin-left:auto;width:24px;height:24px;
+  background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23666' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E") center/24px no-repeat;transition:transform .15s}
+details.dev[open]>summary::after{transform:rotate(180deg)}
 /* ai: a fold's first line straight under its row (2026-10-02) */
 details.dev>summary+*,details.dev>summary+.grid>label:first-child{margin-top:0}
 /* ai: Settings' fields, one rhythm (2026-10-02): a label 4 px over its control,
    16 px between fields whatever the control (a menu, a slider), a group's header 16 px above it and 8 px
    over its first field */
 details.dev .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,14rem),1fr));gap:16px;margin:4px 0 16px}
-details.dev label{display:grid;gap:4px;font-size:14px;color:var(--muted);margin:0}
+/* ai: a field's title as the apps' (lizard-ui Parts.kt Field, 2026-11-06): 14 px semibold, muted, in a 36 px row, 4 px
+   over its control */
+details.dev label{display:grid;grid-template-rows:minmax(36px,auto) auto;align-items:center;gap:4px;font-size:14px;font-weight:600;color:var(--muted);margin:0}
 /* ai: the sender's blocks a frame (2026-10-01): a slider (its first step auto since 2026-10-05, an auto box beside it
    before), the count and what it holds above */
-.blocks{display:flex;flex-direction:column;gap:4px;margin:0}.blocks .row{display:flex;align-items:center;gap:12px;justify-content:space-between}
-/* ai: a slider's title and value in the fields' label style (2026-10-02) */
-.blocks .row>span{font-size:14px;color:var(--muted)}
+.blocks{display:flex;flex-direction:column;gap:4px;margin:0}.blocks .row{display:flex;align-items:center;gap:12px;justify-content:space-between;min-height:36px}
+/* ai: a slider's title and value in the fields' style (2026-10-02): the title semibold, its value regular (the apps' Field) */
+.blocks .row>span{font-size:14px;color:var(--muted)}.blocks .row>span:first-child{font-weight:600}
 /* ai: the Code group's first field right under its heading */
 #f-focus>.grid{margin-top:0}#f-focus>.grid>.blocks:first-child{margin-top:0}
 .item .s:empty{display:none}
 #blocksOut,#fpsOut{color:var(--muted);font-variant-numeric:tabular-nums}
 details.dev fieldset{border:0;margin:16px 0 0;padding:0;min-width:0}
-/* ai: About, a tool page's last row, under Developer Tools (2026-10-02) */
-.settings .about{border-top:1px solid var(--line);margin-top:8px}
+/* ai: About, a fold (2026-11-06, the apps' AboutFold): closed until opened and not kept, its text in paragraphs 10 px
+   apart (ui.mjs about): the build line muted, the license, the design it is based on, the credits a line a license */
+.about-text{display:flex;flex-direction:column;gap:10px;margin:0 0 16px;font-size:14px;line-height:20px}
+.about-text>p{margin:0}.about-text>.build{color:var(--muted)}
+/* ai: Source code after About on a tool page, a hairline over it (the apps' SourceRow) */
+details.dev+a.item{border-top:1px solid var(--line)}
 details.dev legend{font-size:14px;font-weight:600;color:var(--fg);padding:0;margin-bottom:8px}
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);
   white-space:nowrap;border:0}

@@ -10,7 +10,9 @@ import { DEFAULT_LOG2, PAYLOAD } from "../liblizard/sim/xfer.mjs";
 import { VERSIONS, NAME, SAMPLES, SPAN, N_FOR, RINGS, RING_DEFAULT, LIZARD_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor, STEP } from "../liblizard/sim/lizard_pick.mjs";
 import { GAP_MODULES } from "../liblizard/gpu/encoder.mjs";
 import { bundle } from "./tar.mjs";
-import { remember, persist, say, bytes, rate, about, registerApp, collapser, sideResizer, icon, sayName, nameParts } from "./ui.mjs";
+import { remember, persist, say, bytes, rate, about, registerApp, collapser, sideResizer, icon, sayName, nameParts, slider } from "./ui.mjs";
+// ai: the sliders filled to their values as the apps draw them (ui.mjs slider), before the codec's load
+for (const el of document.querySelectorAll('input[type="range"]')) slider(el);
 
 // The room a format needs holds the codec's margin (src/lizard_phy.h LIZARD_QUIET), and only the codec knows it.
 await initOb();

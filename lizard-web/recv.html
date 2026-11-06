@@ -18,32 +18,45 @@
   #view.vf canvas{visibility:hidden}
   /* contain: a bitmap of another shape than the box (the instant after the crop is switched) is letterboxed, never stretched. The background still covers the video. */
   #view canvas{background:var(--soft);object-fit:contain}
-  /* ai: over the canvas */
-  #idle{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;margin:0}
+  /* ai: over the canvas: "Camera off" with its icon, or what went wrong, the red triangle over its words (2026-11-06, the
+     apps' PreviewBox: an error is the preview's to say, never the column's; recv.mjs showState) */
+  #idle{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;margin:0;padding:0 24px;text-align:center;background:var(--soft)}
+  #idle .alert{color:var(--bad)}
+  #idle.err .off,#idle:not(.err) .alert{display:none}
   /* ai: over the camera until a decoder answers its first frame (recv.mjs showState): opaque, so the camera is not shown
      while nothing reads it; the video keeps playing beneath (the frame loop needs it composited) */
   #loading{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;gap:.75rem;align-items:center;justify-content:center;margin:0;background:var(--soft);color:var(--muted)}
   #loading .spin{width:28px;height:28px;border:3px solid var(--line);border-top-color:var(--fg);border-radius:50%;animation:spin .8s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion:reduce){#loading .spin{animation:none}}
-  #side{max-width:40rem;margin:0 auto;padding-top:8px}
-  /* ai: The actions under the state, as the app's (2026-10-01): Start or Stop, and once a file is in, Open (the
-     solid one), Save and Share (#deliver's buttons flow in beside it; Receive again went 2026-10-05). Two forms, by the
-     column's width (2026-10-06; a dragged column, or a phone in portrait): two columns, Open over Save on the left and
-     Share over Start on the right (Start alone, or under Open and Save where the browser shares no file,
-     spans both); or one row of all four where the column holds it, 26rem and up. A word never breaks onto a second
-     line: the row never wraps, and a dragged column stops at what the two columns need (recv.mjs actionsFloor). */
-  #side{container-type:inline-size}
-  #top{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0 4px}
+  #side{max-width:40rem;margin:0 auto;padding-top:12px}
+  /* ai: The transfer in the apps' order and gaps (2026-11-06, lizard-ui Receive.kt TransferPanel): 12 px under the bar
+     the actions (once a file is in, Open the solid one, Save and Share where the browser shares files, on one row;
+     Start or Stop alone under them), then 12 px under them the state line, the meter, the figures, 4 px apart the
+     hint, 16 px before the folds. Under a mouse every button its label's width (the desktop's); under a finger they
+     fill the column, Open filling its row and the others their own width (the phone's). A word never breaks onto a
+     second line: a dragged column stops at the widest row (recv.mjs actionsFloor). */
+  #top{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin:0}
   #top button,#top .btn{white-space:nowrap}
-  #deliver{display:contents}
-  #open{order:1}#share{order:2}#save{order:3}#go{order:4}
-  #top:has(#deliver[hidden]) #go,#top:has(#share[hidden]) #go{grid-column:1/-1}
-  @container (min-width:26rem){#top{display:flex;flex-wrap:nowrap}#go,#deliver>*{order:0}#go{flex:1 1 12rem}}
-  /* ai: the verdict and each flag on a line of its own (recv.mjs joins them with newlines) */
-  #why{white-space:pre-line}
+  #deliver{display:flex;gap:8px}
+  #save,#share{padding:0 16px}
+  @media (pointer:coarse){#top{align-items:stretch}#open{flex:1 1 auto}}
+  /* ai: the state line and the figures one line each, cut with an ellipsis (the apps': every line is one line) */
+  #state{margin:12px 0 2px}
+  #state,#nums{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #nums{margin:0}
+  /* ai: the hint (the verdict, each flag on a line of its own: recv.mjs joins them with newlines), muted as the apps' */
+  #why{white-space:pre-line;font-weight:400;font-size:14px;color:var(--muted);margin:4px 0 0}
   #why:empty,#nums:empty{margin:0}
   #state:empty{display:none}
+  /* ai: Within a run (Start until it stops) a line once shown keeps its room, drawn clear when it falls silent
+     (recv.mjs held; the apps' Receive.kt, 2026-11-02): nothing under it moves as lines come and go */
+  .ghost{color:transparent !important}.meter.ghost{visibility:hidden}
+  /* ai: Show statistics (Developer Tools, recv:stats; the apps'): off, no green line once a file is in, and the lab line
+     and readouts not drawn (still written: the checks read them) */
+  body:not(.stats) #state.good,body:not(.stats) #logs .lab,body:not(.stats) #logs pre.readout{display:none}
+  .settings{margin-top:8px}
+  .rail .alert{color:var(--bad)}
   /* ai: one menu a row: an option's text is its menu's label, and two to a row cut it off */
   details.dev .grid{grid-template-columns:1fr}
   details.dev select{width:100%}
@@ -53,8 +66,8 @@
      bar does not push the square off the bottom. */
   @media (orientation:landscape){
     body{display:grid;grid-template-columns:var(--side) minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);height:100vh;height:100dvh;overflow:hidden;padding:0}
-    .bar{grid-column:1;grid-row:1;margin:0;padding:0 16px;border-right:1px solid var(--line)}
-    #side{grid-column:1;grid-row:2;overflow-y:auto;min-height:0;max-width:none;margin:0;padding:8px 16px 16px;border-right:1px solid var(--line)}
+    .bar{grid-column:1;grid-row:1;margin:0;padding:0 12px;border-right:1px solid var(--line)}
+    #side{grid-column:1;grid-row:2;overflow-y:auto;min-height:0;max-width:none;margin:0;padding:12px 12px 16px;border-right:1px solid var(--line)}
     #view{grid-column:2;grid-row:1 / span 2;align-self:center;justify-self:center;margin:16px;
       width:min(calc((100vh - 32px) * var(--ratio,1)),calc(100vw - var(--side) - 32px));width:min(calc((100dvh - 32px) * var(--ratio,1)),calc(100vw - var(--side) - 32px))}
     body.collapsed #side{display:none}
@@ -63,15 +76,16 @@
   }
 </style>
 <header class="bar"><a class="btn icon back" href="index.html" title="Home"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg><span class="sr-only">Home</span></a><h1>Receive</h1><span class="grow"></span><a id="swap" class="btn text" href="send.html" title="Switch to the sender page"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3 4 7l4 4M4 7h16M16 21l4-4-4-4M20 17H4"/></svg>Sender</a><button id="collapse" class="btn icon collapse" type="button" title="Hide sidebar" aria-expanded="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M11 17l-5-5 5-5M18 17l-5-5 5-5"/></svg><span class="sr-only">Sidebar</span></button></header>
-<div id="view"><video id="v" playsinline muted></video><canvas id="shot" width="0" height="0"></canvas><p id="idle" class="hint"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M1 1l22 22M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34m-7.72-2.06a4 4 0 1 1-5.56-5.56"/></svg>Camera off</p><div id="loading" class="hint" aria-hidden="true" hidden><span class="spin"></span><span>Getting ready</span></div></div>
-<div id="rail" class="rail"><button id="railCam" class="btn icon" type="button" title="Start"><svg class="i pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg><svg class="i play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3l14 9-14 9z"/></svg></button><span id="railRate" class="rate" aria-live="off"></span><span id="railPct" class="rate" aria-live="off" hidden></span><span id="railDone" class="done" role="img" aria-label="Received" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14M22 4 12 14.01l-3-3"/></svg></span><button id="railOpen" class="btn icon" type="button" title="Open" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14 21 3"/></svg></button><button id="railSave" class="btn icon" type="button" title="Save" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button><a id="railHome" class="btn icon home" href="index.html" title="Home"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg><span class="sr-only">Home</span></a></div>
+<div id="view"><video id="v" playsinline muted></video><canvas id="shot" width="0" height="0"></canvas><p id="idle" class="hint"><svg class="i alert" viewBox="0 0 24 24" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg><svg class="i off" viewBox="0 0 24 24" aria-hidden="true"><path d="M1 1l22 22M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3m3-3h6l2 3h4a2 2 0 0 1 2 2v9.34m-7.72-2.06a4 4 0 1 1-5.56-5.56"/></svg><span id="idleText">Camera off</span></p><div id="loading" class="hint" aria-hidden="true" hidden><span class="spin"></span><span>Getting ready</span></div></div>
+<div id="rail" class="rail"><span id="railAlert" class="alert" role="img" hidden><svg class="i alert" viewBox="0 0 24 24" aria-hidden="true"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01"/></svg></span><button id="railCam" class="btn icon" type="button" title="Start"><svg class="i pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg><svg class="i play" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3l14 9-14 9z"/></svg></button><span id="railRate" class="rate" aria-live="off"></span><span id="railPct" class="rate" aria-live="off" hidden></span><span id="railDone" class="done" role="img" aria-label="Received" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14M22 4 12 14.01l-3-3"/></svg></span><button id="railOpen" class="btn icon" type="button" title="Open" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14 21 3"/></svg></button><button id="railSave" class="btn icon" type="button" title="Save" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg></button><a id="railHome" class="btn icon home" href="index.html" title="Home"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg><span class="sr-only">Home</span></a></div>
 <div id="side">
+  <!-- ai: the received file's actions (2026-10-01): Open the one solid button, Save, and Share where the browser shares
+       files; the file stays in the received files. Start or Stop under them (2026-11-06, the apps' order) -->
+  <div id="top"><div id="deliver" hidden><button id="open" class="primary">Open</button><a id="save" class="btn" download>Save</a><button id="share" hidden>Share</button></div><button id="go" class="primary">Start</button></div>
   <p id="state" class="status" role="status" aria-live="polite"></p>
   <div id="meter" class="meter" role="progressbar" aria-label="File received" aria-valuemin="0" aria-valuemax="100" hidden><span></span></div>
   <p id="nums" class="nums"></p>
   <p id="why" class="why"></p>
-  <!-- ai: Start or Stop, and the received file (2026-10-01): Open the one solid button, Save, and Share where the browser shares files; the file stays in the received files. Receive again (Clear until 2026-10-01) went 2026-10-05: a second Start -->
-  <div id="top"><button id="go" class="primary">Start</button><div id="deliver" hidden><button id="open" class="primary">Open</button><a id="save" class="btn" download>Save</a><button id="share" hidden>Share</button></div></div>
   <!-- ai: the browser's limit, before the first camera start on this browser (recv.mjs go, 2026-10-09): a browser's
        camera and timing hold it far under the Android app, and with no control of the camera's timing it reads a
        sender painting at most half the camera's rate, where no capture straddles two pictures -->
@@ -83,20 +97,23 @@
     <!-- ai: every control a labelled field, its options bare (2026-10-02) -->
     <div class="grid">
       <!-- ai: no Auto entries (2026-10-05): the cameras, the rates 30 and 60; with none chosen the page's default runs,
-           held by a hidden option named after what it runs (recv.mjs showCamera). The camera's field shows once a camera
-           has opened, or one was chosen here before. -->
-      <label id="camRow" hidden>Camera <select id="cam"><option value="auto" selected hidden disabled>Camera</option></select></label>
+           held by a hidden option named after what it runs (recv.mjs showCamera). The camera's field always shown, "Camera"
+           until one has opened and the browser names them (2026-11-06, as the apps'). -->
+      <label id="camRow">Camera <select id="cam"><option value="auto" selected hidden disabled>Camera</option></select></label>
       <label>Resolution <select id="res"><option value="1280x720">1280 x 720</option><option value="1920x1080" selected>1920 x 1080</option><option value="2560x1440">2560 x 1440</option><option value="3840x2160">3840 x 2160</option></select></label>
       <label>Frame rate <select id="fps"><option value="auto" selected hidden disabled>60</option><option value="30">30</option><option value="60">60</option></select></label>
+      <!-- ai: the camera's own zoom, where the browser exposes it (2026-11-06; the apps' Zoom: the value a ratio of its least) -->
+      <div id="zoomRow" class="blocks" hidden><span class="row"><span>Zoom</span><span id="zoomOut"></span></span><input id="zoom" type="range" aria-label="Zoom"></div>
     </div>
   </details>
   <!-- ai: Developer Tools ("Advanced" until 2026-10-03): the lab line and the readouts (no replay recording since
        2026-10-09: the Android app's Save replays records) -->
   <details class="dev" id="logs"><summary>Developer Tools</summary>
+    <div class="grid"><label>Show statistics <select id="stats"><option value="0" selected>Off</option><option value="1">On</option></select></label></div>
     <p id="lab" class="lab"></p>
     <pre id="cfg" class="readout">light: no format word read yet</pre><pre id="out" class="readout"></pre><pre id="file" class="readout"></pre>
   </details>
-    <div class="item about"><span class="body"><span class="t">About</span><span id="about" class="s"></span></span></div>
+    <details class="dev" id="aboutFold"><summary>About</summary><div id="about" class="about-text"></div></details>
     <a id="source" class="item" href="https://github.com/FNWTalon/LIZARD" target="_blank" rel="noopener"><span class="body"><span class="t">Source code</span></span></a>
   </section>
   <script>
@@ -107,7 +124,8 @@
     const ls = localStorage, $ = (id) => document.getElementById(id);
     for (const id of ["dev", "logs"]) { const v = ls.getItem("recv:" + id); if (v !== null) $(id).open = v === "1"; }
     if (ls.getItem("recv:collapsed") === "1") document.body.classList.add("collapsed"); { const w = +ls.getItem("recv:side"); if (w > 0) document.documentElement.style.setProperty("--side", Math.max(180, Math.min(w, innerWidth * 0.6)) + "px"); }
-    for (const el of $("dev").querySelectorAll("select")) { const v = ls.getItem("recv:" + el.id); if (v !== null && [...el.options].some((o) => o.value === v)) el.value = v; }
+    for (const el of document.querySelectorAll("#dev select, #logs select")) { const v = ls.getItem("recv:" + el.id); if (v !== null && [...el.options].some((o) => o.value === v)) el.value = v; }
+    document.body.classList.toggle("stats", $("stats").value === "1");
   } catch {} })();
   </script>
 </div>
