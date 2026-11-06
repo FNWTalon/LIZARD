@@ -1,0 +1,3 @@
+- Once a file is in, Open, Share and Save show where the camera was; Receive's column holds Start alone.
+- The GPU decoder finds codes in about 7% less time a frame.
+- Reads and sends 0.8.4's codes: the format is unchanged.
