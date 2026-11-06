@@ -34,6 +34,7 @@ object Icons {
     val open = stroked("open", "M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6", "M15 3h6v6", "M10 14L21 3")
     val save = stroked("save", "M21,15v4a2,2 0 0,1 -2,2H5a2,2 0 0,1 -2,-2v-4", "M7,10l5,5 5,-5", "M12,15V3")
     val share = stroked("share", circle(18f, 5f, 3f), circle(6f, 12f, 3f), circle(18f, 19f, 3f), "M8.59 13.51l6.83 3.98M15.41 6.51l-6.82 3.98")
+    val inbox = stroked("inbox", "M22 12h-6l-2 3h-4l-2-3H2", "M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z")
     val more = stroked("more", circle(12f, 5f, 1f), circle(12f, 12f, 1f), circle(12f, 19f, 1f))
     val alert = stroked("alert", "M10.29,3.86L1.82,18a2,2 0,0 0,1.71 3h16.94a2,2 0,0 0,1.71 -3L13.71,3.86a2,2 0,0 0,-3.42 0z", "M12,9L12,13", "M12,17L12.01,17")
     val back = stroked("back", "M19 12H5M12 19l-7-7 7-7")

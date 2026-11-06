@@ -12,6 +12,9 @@ registerApp(() => { about($("about"), true); about($("aboutPc"), true); });
 $("aboutTop").onclick = () => $("aboutDlg").showModal();
 $("aboutClose").onclick = () => $("aboutDlg").close();
 $(matchMedia("(pointer: coarse)").matches ? "recv" : "send").classList.add("primary");
+// ai: the PC's layout (index.html's media query): its received files' section stays with no files, an empty box in it
+const PC = matchMedia("(min-width: 900px) and (pointer: fine), (min-width: 900px) and (pointer: none)");
+PC.addEventListener("change", () => show());
 
 // ai: Each row's file is a File over its OPFS bytes (nothing read until used), linked by an object URL kept while its
 // ai: entry stands: a drawing (every change heard, every return to the page) reuses it and lets go only the URLs of
@@ -120,7 +123,9 @@ async function show() {
     for (const [key, { url }] of links) if (!next.has(key)) URL.revokeObjectURL(url);
     links = next;
     // ai: the section where there are files, or where this browser keeps none: then its warning alone
-    $("files").hidden = !entries.length && kept;
+    $("files").hidden = !entries.length && kept && !PC.matches;
+    $("files").classList.toggle("none", !entries.length);
+    $("emptyPc").hidden = entries.length > 0 || !kept;
     $("empty").hidden = entries.length > 0 || kept;
     const total = entries.reduce((s, e) => s + (e.size || 0), 0);
     $("usage").textContent = entries.length ? `${entries.length} file${entries.length > 1 ? "s" : ""} kept, ${bytes(total)}` : "No files kept.";

@@ -6,7 +6,7 @@
   main,.top{max-width:34rem;margin:0 auto;padding:0 16px 2rem}
   .top{padding-bottom:0}
   /* ai: the PC's parts, hidden on a phone: the bar's About and Source code, the files' columns and their cells */
-  .top .pc,.cols,.files .c-size,.files .c-when,.files .c-open,#clearAllTop{display:none}
+  .top .pc,.cols,.files .c-size,.files .c-when,.files .c-open,#clearAllTop,.emptybox{display:none}
   .files .c-act{display:flex;flex:none;align-items:center}
   .shead{display:flex;align-items:center}.shead h2{flex:1 1 auto;font-size:14px;font-weight:600;color:var(--muted);margin:24px 0 4px}
   .go{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0 8px}
@@ -46,6 +46,12 @@
     .files .c-act .menu>summary{width:36px;min-width:36px;min-height:36px;margin-right:-6px}
     .meter.mini{width:64px;margin:0;flex:none}
     #empty{padding:24px 0}
+    /* ai: no received files: the section stays, its columns gone, a box with a dashed outline in their place, the inbox
+       icon over "No received files" (2026-11-06) */
+    #files.none .cols{display:none}
+    #emptyPc:not([hidden]){display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;height:200px;
+      border:2px dashed #bbb;border-radius:16px;color:var(--muted);font-size:15px;font-weight:500}
+    #emptyPc svg.i{width:36px;height:36px;stroke-width:1.5}
   }
 </style>
 <div class="top"><header class="bar"><span class="brand"><img src="icon.svg" alt="" width="28" height="28"><span>LIZARD</span></span><span class="grow"></span><button id="aboutTop" class="btn text pc" type="button">About</button><a class="btn text pc" href="https://github.com/FNWTalon/LIZARD" target="_blank" rel="noopener">Source code</a></header></div>
@@ -60,6 +66,7 @@
   <section id="files" aria-labelledby="files-h"><div class="shead"><h2 id="files-h">Received files</h2><button id="clearAllTop" class="text danger" type="button" hidden>Delete all</button></div>
     <div id="empty" class="empty"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span>This browser keeps no files: a received file stays until its page closes.</span></div>
     <div class="cols" aria-hidden="true"><span>Name</span><span>Size</span><span>Received</span><span></span></div>
+    <div id="emptyPc" class="emptybox" hidden><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg><span>No received files</span></div>
     <ul id="list" class="list files"></ul>
   </section>
   <section class="settings" aria-labelledby="settings-h">

@@ -1,5 +1,12 @@
 package dev.lizard.ui
 
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -253,10 +260,14 @@ private fun HomeWide(h: HomeHost) {
                         for (p in partials) key(p.id) { PartialLine(h, p) }
                         Spacer(Modifier.height(48.dp))
                     }
+                    // ai: the section stays with no files (2026-11-06): its empty box in place of the columns
                     if (files.isNotEmpty()) {
                         Heading("Received files") { Btn("Delete all", Kind.Danger, modifier = Modifier.offset(x = 12.dp)) { asking = true } }
                         Columns("Size", "Received")
                         for (e in files) key(e.key) { FileLine(e) }
+                    } else {
+                        Heading("Received files")
+                        EmptyBox("No received files")
                     }
                     h.note.let { if (it.isNotEmpty()) Text(it, style = MaterialTheme.typography.bodyMedium, color = if (it.startsWith("Saved")) Muted else Bad, modifier = Modifier.padding(top = 12.dp)) }
                     Spacer(Modifier.height(48.dp))
@@ -267,6 +278,21 @@ private fun HomeWide(h: HomeHost) {
     }
     if (about) AboutDialog(h.about) { about = false }
     if (asking) AskDialog("Delete ${countOf(files.size)}?", "Delete all", { asking = false }) { h.deleteAll() }
+}
+
+// ai: an empty list's box (the web's #emptyPc): 200 dp tall, a 2 dp dashed outline in a mid grey, 16 dp corners, the inbox
+// ai: icon over the words, muted
+@Composable
+private fun EmptyBox(text: String) {
+    val dash = Color(0xFFBBBBBB)
+    Column(Modifier.fillMaxWidth().height(200.dp).drawBehind {
+        val w = 2.dp.toPx()
+        drawRoundRect(dash, topLeft = Offset(w / 2, w / 2), size = Size(size.width - w, size.height - w), cornerRadius = CornerRadius(16.dp.toPx()),
+            style = Stroke(width = w, pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 4.dp.toPx()))))
+    }, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically)) {
+        Icon(Icons.inbox, contentDescription = null, Modifier.size(36.dp), tint = Muted)
+        Text(text, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium, color = Muted)
+    }
 }
 
 // ai: the bar's quiet text buttons (About, Source code): muted, medium

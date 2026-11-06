@@ -688,9 +688,18 @@ const SIZES = [
   await sleep(200);
   const asked = await evaluate(s, `[...document.querySelectorAll("#list li .acts button")].map((x) => x.textContent).join(",")`);
   await evaluate(s, `[...document.querySelectorAll("#list li .acts button")].find((x) => x.textContent === "Delete it?").click()`);
-  await until(s, `document.querySelectorAll("#list li").length === 0 && document.getElementById("files").hidden`, 5000, "the list empty after Delete");
+  await until(s, `document.querySelectorAll("#list li").length === 0`, 5000, "the list empty after Delete");
   const left = await evaluate(s, opfsFiles("lizard-files"));
   check(/Delete it\?/.test(asked) && left === 0, `home: Delete asks on itself ("${asked}") and then empties the received files (${left} left)`);
+  // ai: at the desktop size (the PC's layout), the section stays with its empty box and no Delete all (2026-11-06);
+  // ai: on a phone's size the section goes, as before
+  const em = await evaluate(s, `(() => { const $ = (id) => document.getElementById(id); return { files: !$("files").hidden, box: $("emptyPc").checkVisibility(), text: $("emptyPc").textContent, clear: $("clearAllTop").checkVisibility(), cols: document.querySelector("#files .cols").checkVisibility() }; })()`);
+  await screenshot(s, `${OUT}/home-desktop-empty.png`);
+  check(em.files && em.box && em.text === "No received files" && !em.clear && !em.cols, `home desktop, no files: the section kept, "${em.text}" in its box, no Delete all or columns`);
+  await size(s, SIZES[0]);
+  await sleep(300);
+  check(await evaluate(s, `document.getElementById("files").hidden && !document.getElementById("emptyPc").checkVisibility()`), `home phone-portrait, no files: the section gone`);
+  await size(s, SIZES[3]);
   // ai: An unfinished transfer (2026-10-22, library.mjs unfinished): a folder under lizard-xfer as the fountain worker
   // ai: leaves one (its header and meta.json), listed under Unfinished with its share and size, Continue and Delete;
   // ai: Delete asks on itself, then removes the folder.
