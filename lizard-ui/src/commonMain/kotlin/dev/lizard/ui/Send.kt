@@ -278,9 +278,10 @@ const val TILE = 104
 
 // ai: a Tile is a button TILE dp tall, an icon over one word; as wide as its row gives it
 @Composable
-fun Tile(icon: ImageVector, label: String, width: Dp, enabled: Boolean = true, onClick: () -> Unit) {
-    val tint = if (enabled) Fg else Fg.copy(alpha = .38f)
-    Column(Modifier.width(width).height(TILE.dp).clip(RoundedCornerShape(12.dp)).background(Soft).clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+fun Tile(icon: ImageVector, label: String, width: Dp, enabled: Boolean = true, solid: Boolean = false, onClick: () -> Unit) {
+    // ai: solid: the screen's one solid button as a tile (Receive's Open, 2026-11-06), the foreground's fill
+    val tint = if (!enabled) Fg.copy(alpha = .38f) else if (solid) Bg else Fg
+    Column(Modifier.width(width).height(TILE.dp).clip(RoundedCornerShape(12.dp)).background(if (solid) Fg else Soft).clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         verticalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
         Icon(icon, contentDescription = null, Modifier.size(32.dp), tint = tint)
         Text(label, style = MaterialTheme.typography.labelLarge, color = tint)
@@ -290,7 +291,7 @@ fun Tile(icon: ImageVector, label: String, width: Dp, enabled: Boolean = true, o
 // ai: an ItemTile is one item on the selection's card: its icon, its name in medium with the stem cut and the ending
 // ai: kept (Readout.nameParts), the line under it regular, and an x at its corner that removes it
 @Composable
-fun ItemTile(name: String, sub: String, icon: ImageVector, width: Dp, enabled: Boolean = true, onRemove: () -> Unit) {
+fun ItemTile(name: String, sub: String, icon: ImageVector, width: Dp, enabled: Boolean = true, onRemove: (() -> Unit)?) {
     val (stem, end) = Readout.nameParts(name)
     val name13 = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium)
     Box(Modifier.width(width).height(TILE.dp).clip(RoundedCornerShape(12.dp)).background(Bg)) {
@@ -302,7 +303,8 @@ fun ItemTile(name: String, sub: String, icon: ImageVector, width: Dp, enabled: B
             }
             Text(sub, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Normal), color = Muted, maxLines = 1)
         }
-        Box(Modifier.align(Alignment.TopEnd).padding(2.dp).size(28.dp).clip(CircleShape).clickable(enabled = enabled, role = Role.Button, onClick = onRemove)
+        // ai: no x where nothing removes it (Receive's received file, 2026-11-06)
+        if (onRemove != null) Box(Modifier.align(Alignment.TopEnd).padding(2.dp).size(28.dp).clip(CircleShape).clickable(enabled = enabled, role = Role.Button, onClick = onRemove)
             .semantics { contentDescription = "Remove $name" }, contentAlignment = Alignment.Center) {
             Icon(Icons.x, contentDescription = null, Modifier.size(16.dp), tint = if (enabled) Fg else Fg.copy(alpha = .38f))
         }

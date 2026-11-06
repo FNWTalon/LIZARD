@@ -53,9 +53,10 @@ object Readout {
 
     // ai: line: the state; nums: the figures under it ("" for none); frac: the meter (null hides it)
     // ai: text: the line whole; a line that names a file also says so in three parts, the name between (before, name,
-    // ai: after), for Parts.kt NameLine to hold its head on one line (2026-10-23)
+    // ai: after), for Parts.kt NameLine to hold its head on one line (2026-10-23); size: a received file's own (its size,
+    // ai: or a bundle's count of files), for Receive.kt's card (2026-11-06)
     data class Line(val text: String, val tone: Tone = Tone.Plain, val nums: String = "", val frac: Double? = null,
-                    val before: String = "", val name: String? = null, val after: String = "")
+                    val before: String = "", val name: String? = null, val after: String = "", val size: String = "")
 
     // ai: What the native receiver says (its stats JSON: liblizard/core/rx/receiver.h stats) that the screen reads.
     data class Rx(
@@ -107,7 +108,8 @@ object Readout {
         rx.hasFile && rx.verified -> {
             val after = ", ${if (files > 0) "$files ${if (files == 1) "file" else "files"}, " else ""}${bytes(rx.size)} in ${String.format(Locale.ROOT, "%.1f", rx.secs)}${NB}s${received(rx)}" +
                 (if (rx.sent in 1 until rx.size) ", ${bytes(rx.sent)} sent" else "")
-            Line("Received ${rx.name}$after", Tone.Good, frac = 1.0, before = "Received ", name = rx.name, after = after)
+            Line("Received ${rx.name}$after", Tone.Good, frac = 1.0, before = "Received ", name = rx.name, after = after,
+                size = if (files > 0) "$files ${if (files == 1) "file" else "files"}" else bytes(rx.size))
         }
         // ai: nothing while the camera is off (2026-10-02); the screen draws no empty line
         !on -> Line("")

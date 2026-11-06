@@ -87,9 +87,8 @@ class DesktopReceive(private val app: App) : ReceiveHost {
     // ai: the file's actions from the moment the receiver holds it, acting on its entry once filed (2026-11-02: the row
     // ai: came a frame or more after the camera stopped, Start solid in between)
     override val kept get() = if (!r.holds) null else listOf(Act("Open", icon = Icons.open) { r.kept?.let { Received.open(it.file) } },
-        Act("Show in folder") { r.kept?.let { Received.show(it.file) } })
+        Act("Show in folder", icon = Icons.folder) { r.kept?.let { Received.show(it.file) } })
     override val keptName get() = r.kept?.name ?: r.rx.name
-    override val keptLabels = listOf("Open", "Show in folder")
     // ai: the rate only while the figures are this stream's (ReceiveState.live), none with the camera off
     private val reading get() = r.on && ((r.rx.hasFile && !r.rx.verified) || r.testing)
     override val railRate get() = if (reading && r.live) r.rx.goodputKBs else null

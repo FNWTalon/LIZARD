@@ -1,5 +1,6 @@
 package dev.lizard.ui
 
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -30,6 +31,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.style.TextOverflow
 import dev.lizard.readout.Readout
 
@@ -62,9 +66,9 @@ interface ReceiveHost {
     val starting: Boolean              // ai: Start inert while the camera opens
     fun toggleCamera()
     val access: Access?
-    val kept: List<Act>?               // ai: the received file's actions, the first the solid Open; null while none is in
+    val kept: List<Act>?               // ai: the received file's actions, the first the solid Open (each with its icon: a tile's
+                                       // ai: and the rail's); null while none is in
     val keptName: String
-    val keptLabels: List<String>       // ai: the labels of a kept file's row, Open's first (the column's floor)
     val railRate: Double?
     val railPct: Double?
     fun cropRatio(portrait: Boolean): Float   // ai: the preview's box: the crop's width over its height
@@ -92,20 +96,53 @@ fun ReceiveScreen(h: ReceiveHost) = BoxWithConstraints {
     // ai: would end the first one's surface, and the camera with it)
     val preview = remember(h) { movableContentOf<Modifier, Boolean> { m, p -> PreviewBox(h, m, p) } }
     val swap: @Composable () -> Unit = { SwapBtn("Sender") { h.goSend() } }
+    // ai: the received file in the camera's place once it is in and the camera is off (2026-11-06, the web's #done)
+    val got = h.kept != null && !h.running && !h.starting && errorOf(h) == null
     if (portrait) {
         // ai: the camera the column's width, up to 55% of the screen's height
         val tall = maxHeight * 0.55f
         ToolPortrait("Receive", { h.goHome() }, { swap() }) {
-            preview(Modifier.fillMaxWidth().heightIn(max = tall), true)
+            if (got) ReceivedPanel(h, Modifier.fillMaxWidth(), column = null) else preview(Modifier.fillMaxWidth().heightIn(max = tall), true)
             Side(h)
         }
     } else {
-        val floor = maxOf(RowFloor(h.keptLabels.mapIndexed { i, l -> listOf(l) to (if (i == 0) 20.dp else 16.dp) }),
-            RowFloor(listOf(listOf("Start", "Stop") to 20.dp)))
+        // ai: the column's floor: Start or Stop, its one button (the received file's actions are the camera's area's)
+        val floor = RowFloor(listOf(listOf("Start", "Stop") to 20.dp))
         ToolLandscape("Receive", h.folds.open(FoldKey.RecvCollapsed), { h.folds.toggle(FoldKey.RecvCollapsed) }, { h.goHome() },
             if (h.swapInColumn) swap else null, h.width, floor, rail = { RailSquares(h) }, side = { Side(h) }) {
-            val w = minOf(maxHeight * ratio, maxWidth)
-            preview(Modifier.width(w).height(w / ratio), false)
+            if (got) ReceivedPanel(h, Modifier.fillMaxSize(), column = 576.dp)
+            else {
+                val w = minOf(maxHeight * ratio, maxWidth)
+                preview(Modifier.width(w).height(w / ratio), false)
+            }
+        }
+    }
+}
+
+// ai: The received file (2026-11-06; the web's recv.html #done), in the camera's place once the camera is off, in the
+// ai: sender's upload geometry (Send.kt Upload): its actions as tiles in one row in equal
+// ai: cells, Open the solid one, then a card, "Received" and how it went, the file as an item tile. `column`: in
+// ai: landscape a column at most that wide centred in the camera's area (the sender's 576 dp); null, the column's width
+// ai: at the top (portrait, a phone's: the tiles across it).
+@Composable
+private fun ReceivedPanel(h: ReceiveHost, modifier: Modifier, column: Dp?) {
+    val acts = h.kept ?: return
+    val ln = h.line
+    BoxWithConstraints(modifier) {
+        val w = if (column != null) minOf(maxWidth - 32.dp, column) else maxWidth
+        Column(if (column != null) Modifier.fillMaxSize() else Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = if (column != null) Arrangement.spacedBy(16.dp, Alignment.CenterVertically) else Arrangement.spacedBy(16.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                acts.forEachIndexed { i, a -> Tile(a.icon ?: Icons.file, a.label, (w - 12.dp * (acts.size - 1)) / acts.size, solid = i == 0, onClick = a.run) }
+            }
+            Column(Modifier.width(w).clip(RoundedCornerShape(12.dp)).background(Card).padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 12.dp)) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Received", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = Fg, modifier = Modifier.weight(1f))
+                    if (ln.tone == Readout.Tone.Good) Text(ln.after.removePrefix(", "), style = MaterialTheme.typography.bodyMedium, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                ItemTile(h.keptName, if (ln.tone == Readout.Tone.Good) ln.size else "", Icons.file, TILE.dp, onRemove = null)
+            }
         }
     }
 }
@@ -158,19 +195,16 @@ private fun TransferPanel(h: ReceiveHost) {
         val wide = if (LocalButtonsFill.current) Modifier.fillMaxWidth() else Modifier
         if (access != null) Btn(access.act.label, Kind.Primary, modifier = wide) { access.act.run() }
         else {
-            if (kept != null) Row(wide, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                kept.forEachIndexed { i, a ->
-                    if (i == 0) Btn(a.label, Kind.Primary, modifier = if (LocalButtonsFill.current) Modifier.weight(1f) else Modifier) { a.run() } else Btn(a.label, pad = 16.dp) { a.run() }
-                }
-            }
-            // ai: one solid button at a time: Start while nothing waits, else Open
+            // ai: one solid button at a time: Start while nothing waits, else Open (the camera's area's, ReceivedPanel)
             Btn(if (h.running) "Stop" else "Start", if (!h.running && kept == null) Kind.Primary else Kind.Tonal,
                 enabled = !h.starting, modifier = wide) { h.toggleCamera() }
         }
     }
     val ln = h.line
     // ai: an error is the preview's to say (errorOf), not the column's
-    val shown = ln.text.isNotEmpty() && !(ln.tone == Readout.Tone.Good && !h.showStats) && ln.tone != Readout.Tone.Bad
+    // ai: the received line is the card's to say (ReceivedPanel, 2026-11-06), never the column's; Show statistics off hid
+    // ai: it before
+    val shown = ln.text.isNotEmpty() && ln.tone != Readout.Tone.Good && ln.tone != Readout.Tone.Bad
     val named = ln.name
     // ai: Within a run (Start until it stops) a line once shown keeps its room until the run ends, drawn clear
     // ai: when it falls silent (2026-11-02: Receiving, its meter and figures, and the hint each moved the folds under them
@@ -188,7 +222,7 @@ private fun TransferPanel(h: ReceiveHost) {
     if (shown && named != null) NameLine(ln.before, named, ln.after, MaterialTheme.typography.titleMedium, toneColour(ln.tone), Modifier.padding(top = 12.dp, bottom = 2.dp))
     else if (lineNow.isNotEmpty() || (run && last[0].isNotEmpty())) Text(lineNow.ifEmpty { last[0] }, style = MaterialTheme.typography.titleMedium,
         color = if (lineNow.isEmpty()) Color.Transparent else toneColour(ln.tone), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 12.dp, bottom = 2.dp))
-    Meter(ln.frac, hold = run && meterSeen[0])
+    Meter(ln.frac.takeIf { ln.tone != Readout.Tone.Good }, hold = run && meterSeen[0])
     val numsNow = said(1, ln.nums)
     if (numsNow.isNotEmpty() || (run && last[1].isNotEmpty())) Text(numsNow.ifEmpty { last[1] }, style = MaterialTheme.typography.bodyMedium,
         color = if (numsNow.isEmpty()) Color.Transparent else Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)

@@ -90,10 +90,9 @@ internal class AndroidReceive(private val a: MainActivity) : ReceiveHost {
     private val testing get() = on && a.rx.state == "test"
     private val keptEntry get() = if (a.rx.verified && !testing) a.files.firstOrNull { it.root == a.root } else null
     override val kept get() = keptEntry?.let { e ->
-        listOf(Act("Open", icon = Icons.open) { a.open(e) }, Act("Share") { a.share(e) }, Act("Save", icon = Icons.save) { a.saveCopy(e) })
+        listOf(Act("Open", icon = Icons.open) { a.open(e) }, Act("Share", icon = Icons.share) { a.share(e) }, Act("Save", icon = Icons.save) { a.saveCopy(e) })
     }
     override val keptName get() = keptEntry?.name.orEmpty()
-    override val keptLabels = listOf("Open", "Share", "Save")
     private val reading get() = on && ((a.rx.hasFile && !a.rx.verified) || testing)
     override val railRate get() = if (reading) a.rx.goodputKBs else null
     override val railPct get() = if (reading && !testing) Readout.fraction(a.rx) else null

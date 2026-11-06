@@ -1,5 +1,17 @@
 package dev.lizard.ui
 
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -96,8 +108,14 @@ interface HomeHost {
 // ai: the received files (shown where there are any), and Settings (the received files with Delete all, About). No
 // ai: tips (2026-11-03).
 @Composable
-fun HomeScreen(h: HomeHost) {
+fun HomeScreen(h: HomeHost) = BoxWithConstraints {
     LaunchedEffect(Unit) { h.refresh() }
+    // ai: a PC's window (a mouse's target, 900 dp wide or more): the spacious layout (HomeWide, 2026-11-06)
+    if (maxWidth >= 900.dp && LocalTarget.current < 48.dp) HomeWide(h) else HomeColumn(h)
+}
+
+@Composable
+private fun HomeColumn(h: HomeHost) {
     Page(null, null) {
         Row(Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             HomeTile(Icons.monitor, "Send", solid = h.sendSolid, modifier = Modifier.weight(1f)) { h.goSend() }
@@ -188,4 +206,153 @@ fun BundleScreen(name: String, files: Int, size: Long, acts: List<Act>, items: L
             ListRow(it.path, Readout.bytes(it.size), lead = Icons.file, divider = i != items.lastIndex, onClick = it.open) { MoreMenu("More for ${it.path}", it.acts) }
         } }
     }
+}
+
+
+// ai: Home on a PC (2026-11-06; the web's index.html the same), spacious, the one place a PC's buttons stretch: the bar
+// ai: across the window (the mark and LIZARD; About, the credits in a dialog, and Source code on its right), the content
+// ai: at most 1120 dp wide with 48 dp margins; Send and Receive two cards stretched across it, 200 dp tall; Unfinished
+// ai: and Received files as lists with columns (Name, Progress or Size, Started or Received), each row's Continue or
+// ai: Open beside its menu, Delete all on the files' heading; no Settings section.
+private val WIDE = 1120.dp
+private val PAD = 48.dp
+
+@Composable
+private fun HomeWide(h: HomeHost) {
+    var about by remember { mutableStateOf(false) }
+    var asking by remember { mutableStateOf(false) }
+    val browse = LocalBrowse.current
+    val files = h.files
+    val partials = h.partials
+    Column(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+            Row(Modifier.widthIn(max = WIDE).fillMaxWidth().height(64.dp).padding(horizontal = PAD), verticalAlignment = Alignment.CenterVertically) {
+                Image(Icons.mark, contentDescription = null, Modifier.size(28.dp))
+                Spacer(Modifier.size(10.dp))
+                Text("LIZARD", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = Fg, modifier = Modifier.weight(1f))
+                Row(Modifier.offset(x = 12.dp)) {
+                    QuietBtn("About") { about = true }
+                    QuietBtn("Source code") { browse(SOURCE_URL) }
+                }
+            }
+        }
+        HorizontalDivider(color = Line)
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            val scroll = rememberScrollState()
+            Box(Modifier.fillMaxSize().verticalScroll(scroll), contentAlignment = Alignment.TopCenter) {
+                Column(Modifier.widthIn(max = WIDE).fillMaxWidth().padding(horizontal = PAD)) {
+                    Spacer(Modifier.height(48.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                        BigTile(Icons.monitor, "Send", solid = h.sendSolid, modifier = Modifier.weight(1f)) { h.goSend() }
+                        BigTile(Icons.camera, "Receive", solid = !h.sendSolid, modifier = Modifier.weight(1f)) { h.goReceive() }
+                    }
+                    Spacer(Modifier.height(56.dp))
+                    if (partials.isNotEmpty()) {
+                        Heading("Unfinished")
+                        Columns("Progress", "Started")
+                        for (p in partials) key(p.id) { PartialLine(h, p) }
+                        Spacer(Modifier.height(48.dp))
+                    }
+                    if (files.isNotEmpty()) {
+                        Heading("Received files") { Btn("Delete all", Kind.Danger, modifier = Modifier.offset(x = 12.dp)) { asking = true } }
+                        Columns("Size", "Received")
+                        for (e in files) key(e.key) { FileLine(e) }
+                    }
+                    h.note.let { if (it.isNotEmpty()) Text(it, style = MaterialTheme.typography.bodyMedium, color = if (it.startsWith("Saved")) Muted else Bad, modifier = Modifier.padding(top = 12.dp)) }
+                    Spacer(Modifier.height(48.dp))
+                }
+            }
+            LocalScrollbar.current(scroll, Modifier.align(Alignment.CenterEnd).fillMaxHeight())
+        }
+    }
+    if (about) AboutDialog(h.about) { about = false }
+    if (asking) AskDialog("Delete ${countOf(files.size)}?", "Delete all", { asking = false }) { h.deleteAll() }
+}
+
+// ai: the bar's quiet text buttons (About, Source code): muted, medium
+@Composable
+private fun QuietBtn(text: String, onClick: () -> Unit) =
+    TextButton(onClick, Modifier.heightIn(min = LocalTarget.current), shape = CircleShape, colors = ButtonDefaults.textButtonColors(contentColor = Muted),
+        contentPadding = PaddingValues(horizontal = 12.dp)) { Text(text, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium) }
+
+// ai: Send or Receive on a PC: a card 200 dp tall, its 48 dp icon over its title (22 sp)
+@Composable
+private fun BigTile(icon: ImageVector, title: String, solid: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val fg = if (solid) Bg else Fg
+    Column(modifier.height(200.dp).clip(RoundedCornerShape(16.dp)).background(if (solid) Fg else Soft).clickable(role = Role.Button, onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically)) {
+        Icon(icon, contentDescription = null, Modifier.size(48.dp), tint = fg)
+        Text(title, style = MaterialTheme.typography.headlineSmall, color = fg)
+    }
+}
+
+@Composable
+private fun Heading(title: String, trailing: @Composable () -> Unit = {}) =
+    Row(Modifier.fillMaxWidth().heightIn(min = 40.dp).padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, style = MaterialTheme.typography.titleLarge, color = Fg, modifier = Modifier.weight(1f))
+        trailing()
+    }
+
+// ai: a list's columns: Name over the icon and the name, then the two figures' titles; the actions' column untitled
+private val C2 = 200.dp
+private val C3 = 220.dp
+private val C4 = 160.dp
+
+@Composable
+private fun Columns(second: String, third: String) {
+    val st = MaterialTheme.typography.labelSmall.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text("Name", style = st, color = Muted, modifier = Modifier.weight(1f))
+        Text(second, style = st, color = Muted, modifier = Modifier.width(C2))
+        Text(third, style = st, color = Muted, modifier = Modifier.width(C3))
+        Spacer(Modifier.width(C4))
+    }
+    HorizontalDivider(color = Line)
+}
+
+@Composable
+private fun ListLine(lead: ImageVector, name: String, onOpen: (() -> Unit)?, second: @Composable () -> Unit, third: String, actions: @Composable () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 60.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            Box(Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(Soft), contentAlignment = Alignment.Center) {
+                Icon(lead, contentDescription = null, Modifier.size(22.dp), tint = Muted)
+            }
+            Text(name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = Fg, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = if (onOpen != null) Modifier.clickable(onClick = onOpen) else Modifier)
+        }
+        Box(Modifier.width(C2)) { second() }
+        Text(third, style = MaterialTheme.typography.bodyMedium, color = Muted, maxLines = 1, modifier = Modifier.width(C3))
+        Row(Modifier.width(C4).offset(x = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End), verticalAlignment = Alignment.CenterVertically) { actions() }
+    }
+    HorizontalDivider(color = Line)
+}
+
+@Composable
+private fun PartialLine(h: HomeHost, p: Partial) {
+    var asking by remember { mutableStateOf(false) }
+    val frac = (h.liveFraction(p) ?: p.fraction).coerceIn(0.0, 1.0)
+    val name = p.name.ifEmpty { "a file" }
+    ListLine(Icons.file, name, { h.goReceive() }, {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Box(Modifier.width(64.dp).height(6.dp).clip(RoundedCornerShape(3.dp)).background(Soft)) {
+                if (frac > 0) Box(Modifier.fillMaxWidth(frac.toFloat()).fillMaxHeight().clip(RoundedCornerShape(3.dp)).background(Fg))
+            }
+            Text("${floor(100 * frac).toInt()}% of ${Readout.bytes(p.length)}", style = MaterialTheme.typography.bodyMedium, color = Muted, maxLines = 1)
+        }
+    }, whenOf(p.at)) {
+        Btn("Continue") { h.goReceive() }
+        MoreMenu("More for $name", listOf(Act("Delete", danger = true) { asking = true }))
+    }
+    if (asking) AskDialog("Delete $name?", "Delete", { asking = false }) { h.deletePartial(p) }
+}
+
+@Composable
+private fun FileLine(e: FileItem) {
+    var asking by remember { mutableStateOf(false) }
+    val size = listOf(if (e.bundle) countOf(e.files) else "", Readout.bytes(e.size)).filter { it.isNotEmpty() }.joinToString(", ")
+    ListLine(if (e.bundle) Icons.folder else Icons.file, e.name, e.open, { Text(size, style = MaterialTheme.typography.bodyMedium, color = Muted, maxLines = 1) }, whenOf(e.at)) {
+        Btn("Open") { e.open() }
+        MoreMenu("More for ${e.name}", e.acts + Act("Delete", danger = true) { asking = true })
+    }
+    if (asking) AskDialog("Delete ${e.name}?", "Delete", { asking = false }) { e.delete() }
 }

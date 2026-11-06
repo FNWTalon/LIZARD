@@ -14,6 +14,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 
 // ai: A work LIZARD carries and its license, as the repository's NOTICE lists them (each package's license text holds
 // ai: them in full), both named as About lists them
@@ -64,15 +66,26 @@ fun creditLines(cs: List<Credit>): List<String> {
 @Composable
 fun AboutFold(about: String) {
     var open by remember { mutableStateOf(false) }
-    Fold("About", open, { open = !open }) {
-        val body = MaterialTheme.typography.bodyMedium
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (about.isNotEmpty()) Text(about, style = body, color = Muted)
-            Text("LIZARD is licensed under the Mozilla Public License 2.0 (MPL 2.0).", style = body, color = Fg)
-            Text("The design is based on FOCUS: Robust Visual Codes for Everyone (Hermans et al., MobiSys 2016). The " +
-                "implementation is independent.", style = body, color = Fg)
-            Text("Third-party software and licenses:", style = body, color = Fg)
-            for (line in creditLines(CREDITS + LocalCredits.current)) Text(line, style = body, color = Fg)
-        }
+    Fold("About", open, { open = !open }) { AboutText(about) }
+}
+
+// ai: About's paragraphs, the fold's and the PC Home's dialog's (2026-11-06)
+@Composable
+fun AboutText(about: String) {
+    val body = MaterialTheme.typography.bodyMedium
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        if (about.isNotEmpty()) Text(about, style = body, color = Muted)
+        Text("LIZARD is licensed under the Mozilla Public License 2.0 (MPL 2.0).", style = body, color = Fg)
+        Text("The design is based on FOCUS: Robust Visual Codes for Everyone (Hermans et al., MobiSys 2016). The " +
+            "implementation is independent.", style = body, color = Fg)
+        Text("Third-party software and licenses:", style = body, color = Fg)
+        for (line in creditLines(CREDITS + LocalCredits.current)) Text(line, style = body, color = Fg)
     }
 }
+
+// ai: About as a dialog (the PC Home's bar, 2026-11-06; the web's #aboutDlg): the paragraphs and Close, on white, 12 dp corners
+@Composable
+fun AboutDialog(about: String, onDismiss: () -> Unit) =
+    AlertDialog(onDismissRequest = onDismiss, confirmButton = { Btn("Close", onClick = onDismiss) },
+        title = { Text("About", style = MaterialTheme.typography.titleMedium, color = Fg) }, text = { AboutText(about) },
+        shape = RoundedCornerShape(12.dp), containerColor = Bg)
