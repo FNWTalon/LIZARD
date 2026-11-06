@@ -1495,11 +1495,9 @@ int lizard_n_for(int subch) {
 }
 
 int lizard_pxm_for(int n, int span) {
-  int pxm = (int)ceilf((float)n / span - 1e-4f);   // whole pixels a module, never fewer than the picture's samples
-  // ai: and never fewer than an anchor's pattern needs (SPEC 6.13: a square of span / 64 modules OB_ANCH_PX_MIN pixels
-  // ai: a side, so 3 in the 64 ring and 2 in the 128, which every picture of LIZARD_PICTURES reaches by its samples)
-  const int pxa = (OB_ANCH_PX_MIN * 64 + span - 1) / span;
-  return pxm < pxa ? pxa : pxm;
+  // ai: whole pixels a module, never fewer than the picture's samples; every size of LIZARD_PICTURES paints an anchor's
+  // ai: square (span / 64 modules) at least 6 pixels a side by this alone (384 in the 64 ring: 3 a module, 2 modules)
+  return (int)ceilf((float)n / span - 1e-4f);
 }
 
 // A registration held and not finished, let go of.

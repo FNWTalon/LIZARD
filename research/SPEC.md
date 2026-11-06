@@ -237,13 +237,13 @@ nothing else.
 In ring B carrying a picture of n samples:
 
 ```
-pxm = max( ceil(n / span - 0.0001), ceil(384 / span) )        the first term in single precision (lizard_phy.c:init)
+pxm = ceil(n / span - 0.0001)                                 in single precision (lizard_phy.c:lizard_pxm_for)
 scale = n / span                                              samples a module
 ```
 
-pxm is the painted pixels a module, a whole number, so no module is split across pixels. The second term is the
-anchors' floor (6.13): a square of span / 64 modules is then at least 6 pixels; on the seven sizes the first term
-is never under it. The picture keeps its n samples and is
+pxm is the painted pixels a module, a whole number, so no module is split across pixels. On the seven sizes an
+anchor's square (6.13, span / 64 modules) is at least 6 pixels a side: the smallest, n = 384, paints 3 pixels a module in
+the 64 ring (squares of 2 modules), 2 in the 128 (4 modules) and 1 in the 256 (8 modules). The picture keeps its n samples and is
 resampled to fill its span modules, upscaled by pxm / scale, never shrunk (6.8); where pxm = scale the resampling is an
 exact copy. Six pairs resample: n = 384 and 1152 in the 128 ring; 384, 768, 1152 and 1280 in the 256 ring. Every
 picture in the 64 ring is a copy.
@@ -1028,7 +1028,7 @@ are P2's.
 **Digests over the ladder.** `node test/vectors.mjs [ob.mjs]`, run from `liblizard/`, checks 5.2, P2, P3, 7.4 and 9.3
 against a build and prints three digests to diff two builds, each over LIZARD-64 to -1024 in steps of 16 in the 64
 ring: every format's cell map at five rates (with its layout dimensions), its drive on a fixed payload, and the P1
-offsets: cells `7e4f838d46272fd7`, drives `6d6a18a74b53b038`, order `830c1e79ca55f85b`.
+offsets: cells `7e4f838d46272fd7`, drives `1970af181753f5fc`, order `830c1e79ca55f85b`.
 
 ### 6.13 Anchors (normative)
 

@@ -175,15 +175,15 @@ void ob_reg_free(ob_reg_t *reg);
 // Module coordinates to image px through the homography and the mesh.
 void ob_map_point(const ob_layout_t *L, const ob_reg_t *reg, float mx, float my, float *u, float *v);
 // ai: The anchors (acquire.c, SPEC 6.13): a 7 x 7 grid's square side in modules (B / 32), and anchor i's first module
-// ai: along either axis; OB_ANCH_TS template points across one. OB_ANCH_PX_MIN: the drive pixels a square needs a side
-// ai: for its light middle (a quarter of the half-side) to land on a pixel, which sets a floor under pxm (lizard_phy.c init):
-// ai: at 4 (a 256 picture in the 64 and 128 rings at ceil(n / span), before 256 left the sizes) a square paints as a
-// ai: dark dot; every size of LIZARD_PICTURES gets at least 6 from its samples alone.
+// ai: along either axis; OB_ANCH_TS template points across one. A square needs about 6 drive pixels a side for its light
+// ai: middle (a quarter of the half-side) to land on a pixel: at 4 (a 256 picture in the 64 and 128 rings, before 256
+// ai: left the sizes) it painted as a dark dot; every size of LIZARD_PICTURES gets at least 6 from its samples alone,
+// ai: so pxm has no floor of its own (2026-11-06).
 // ai: OB_ANCH_MIN: the anchors found that the geometry takes, at least the lens model's most terms (acquire.c LENS_P,
 // ai: 11): their 2n readings then leave as many as the model takes, so its robust rule can judge one. Fewer, a false reading (a
 // ai: blurred square's neighbourhood at 0.6) is fitted exactly and bends the map (the bench's 64 ring at 2.7 camera px
 // ai: a module, 8 found, one 2.3 modules off: 0 blocks of 23, 16 without the anchors).
-enum { OB_ANCH_K = 7, OB_ANCH_TS = 16, OB_ANCH_PX_MIN = 6, OB_ANCH_MIN = 12 };
+enum { OB_ANCH_K = 7, OB_ANCH_TS = 16, OB_ANCH_MIN = 12 };
 enum { OB_ANCH_MARGIN = 2 };   // ai: the samples erased round an anchor's square
 extern OB_TLS int ob_anch_found;   // ai: the anchors the last acquisition counted, -1 where no mesh was made (acquire.c)
 int ob_anchor_side(const ob_layout_t *L);

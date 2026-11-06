@@ -214,8 +214,8 @@ enum { LIZARD_NPICTURES = 7 };
 extern const int LIZARD_PICTURES[LIZARD_NPICTURES];
 int lizard_n_for(int subch);
 // The painter's whole pixels a module for picture n in a ring of span modules: ceil(n / span), so no module is split
-// and the picture is never shrunk, and never fewer than an anchor's pattern needs (SPEC 6.13: OB_ANCH_PX_MIN pixels a
-// side of span / 64 modules). lizard_init's pxm; the library's geometry takes it from here.
+// and the picture is never shrunk (every size gives an anchor's square, span / 64 modules, at least 6 pixels a side;
+// SPEC 3.3, 6.13). lizard_init's pxm; the library's geometry takes it from here.
 int lizard_pxm_for(int n, int span);
 // The margin: modules of white round the frame, part of the symbol (2026-09-23) and painted by the codec, not
 // asked of the page. With the frame's own outermost module, which is light, the ring the decoder reads has three

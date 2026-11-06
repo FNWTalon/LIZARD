@@ -127,10 +127,9 @@ export const RING_DEFAULT = RINGS.indexOf(128);
 export const SPAN = (n, ring = RING_DEFAULT) => 2 * RINGS[ring];
 // Modules along a side, which is what a receiver finds before it knows anything else: it identifies the ring.
 export const MODULES = (n, ring = RING_DEFAULT) => SPAN(n, ring) + 2 * OB_MARGIN;
-// Whole pixels a module in the painted symbol (src/lizard_phy.c pxm): the fewest that do not shrink the picture.
-// ai: and no fewer than an anchor's pattern needs, 6 px across a square of span / 64 modules (src/internal.h
-// ai: OB_ANCH_PX_MIN; SPEC 6.13): 3 in the 64 ring and 2 in the 128, which every picture size reaches by its samples.
-export const CELL_OF = (n, ring = RING_DEFAULT) => Math.max(Math.ceil(n / SPAN(n, ring) - 1e-4), Math.ceil((6 * 64) / SPAN(n, ring)));
+// Whole pixels a module in the painted symbol (src/lizard_phy.c lizard_pxm_for): the fewest that do not shrink the
+// ai: picture; every size gives an anchor's square (span / 64 modules) at least 6 px a side by this alone (SPEC 6.13).
+export const CELL_OF = (n, ring = RING_DEFAULT) => Math.ceil(n / SPAN(n, ring) - 1e-4);
 // Pixels across the painted symbol, margin not included.
 export const SAMPLES = (n, ring = RING_DEFAULT) => MODULES(n, ring) * CELL_OF(n, ring);
 // How a block's bits lie on its coefficients, src/lizard_phy.h LIZARD_BITMAP (the only map): the sender writes it into its
