@@ -110,6 +110,7 @@ async function remembered(s, page, id, value, other, tag) {
   await evaluate(s, `(() => { const el = document.getElementById("${id}"); el.value = el.options[[...el.options].findIndex((o) => o.defaultSelected)]?.value ?? el.options[0].value; el.dispatchEvent(new Event("change")); })()`);
 }
 
+let sendTiles = null;   // ai: the sender's tiles' rectangle at the desktop size (its pick list), the receiver's card held to it
 const SIZES = [
   { name: "phone-portrait", w: 412, h: 915, dpr: 2.625, mobile: true, phone: true },
   { name: "phone-landscape", w: 915, h: 412, dpr: 2.625, mobile: true, phone: true },
@@ -273,6 +274,8 @@ const SIZES = [
     await evaluate(s, `document.querySelector('#pickList button[title="Remove b.bin"]').click()`);
     await step("one removed", folder ? ["a.txt", "album"] : ["a.txt"], folder ? "a.txt and 1 more.tar, 3 files, " : "a.txt, ");
     await screenshot(s, `${OUT}/send-pick-list.png`);
+    // ai: the tiles' rectangle at the desktop size, for the receiver's card to match (2026-11-06)
+    sendTiles = await evaluate(s, `(() => { const r = document.querySelector("#pick .tiles").getBoundingClientRect(), m = document.querySelector("main").getBoundingClientRect(); return { w: r.width, h: r.height, x: r.left - m.left, y: r.top - m.top, mw: m.width, mh: m.height }; })()`);
     // ai: a drop on <main>: the protocol's drag events carry the files as paths
     const drop = async (files) => {
       const at = await evaluate(s, `(() => { const b = document.querySelector("main").getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + 20 }; })()`);
@@ -575,6 +578,14 @@ const SIZES = [
   const dn = await evaluate(s, DONE);
   check(dn.shown && dn.n >= 2 && dn.row && dn.w <= 576.5 && dn.centred && dn.card && dn.solid && dn.go < 120 && !dn.spilled,
     `received at a laptop's size: ${dn.n} tiles on a row in equal cells, Open solid, the column ${dn.w} px wide centred in the area, the card under them, Start ${Math.round(dn.go)} px`);
+  // ai: the same rectangle as the sender's tiles at the desktop size (2026-11-06; the buttons' rectangle the same on Send
+  // ai: and Receive): width and height, and its place in the area beside the column
+  await size(s, SIZES[3]);
+  await sleep(300);
+  await screenshot(s, `${OUT}/recv-desktop-received-stopped.png`);
+  const rt = await evaluate(s, `(() => { const r = document.querySelector("#done .tiles").getBoundingClientRect(), side = document.getElementById("side").getBoundingClientRect(); return { w: r.width, h: r.height, x: r.left - side.right, mw: innerWidth - side.right }; })()`);
+  const same = sendTiles && Math.abs(rt.w - sendTiles.w) < 1 && Math.abs(rt.h - sendTiles.h) < 1 && Math.abs(rt.x - sendTiles.x) < 2 && Math.abs(rt.mw - sendTiles.mw) < 2;
+  check(same, `received at the desktop size: the tiles ${rt.w} x ${rt.h} px at ${Math.round(rt.x)} px into the area, the sender's ${sendTiles ? `${sendTiles.w} x ${sendTiles.h} at ${Math.round(sendTiles.x)}` : "not measured"}`);
   check(!s.errors.length, `no console errors over the transfer${s.errors.length ? `: ${s.errors.join("; ")}` : ""}`);
   // ai: The column's floor (recv.mjs actionsFloor): Start or Stop with no word broken; a column saved at 180 px is lifted
   // ai: to it, at 500 px kept; Start its label's width either way, under a mouse.
