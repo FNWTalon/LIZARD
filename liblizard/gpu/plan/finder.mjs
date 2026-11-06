@@ -26,8 +26,11 @@ export const SMIN = 0.35;
 // ai: on one lane, so at a launch of a frame or two the stage took the longest such chain over the frame's 4 workgroups.
 export const VOTE_READS = 16;
 // A vote ray runs from RAY_LO to RAY_HI times the reach the corner's own module size implies (perspective moves
-// the centre within that), in a band RAY_SPREAD of the reach wide (an angle error of about 5 degrees).
-export const RAY_LO = 0.45, RAY_HI = 2.2, RAY_SPREAD = 0.09;
+// the centre within that), in a band RAY_SPREAD of the reach wide (about 17 degrees either side of the corner's
+// diagonal; VOTE's band is clamped at 6 cells, GATHER's cone is not). Wide enough that a frame's four corners gather
+// in the first round where perspective, a lens's bend or the classifier's angle turn a diagonal off the centre, so
+// the second round (REDO) runs on fewer frames.
+export const RAY_LO = 0.45, RAY_HI = 2.2, RAY_SPREAD = 0.3;
 // F6 reads the track only this many modules from a corner: the four corners' homography is exact there, while lens
 // distortion bows the middle of a side by modules (k1 = 0.06). Orientation and module count need no more.
 export const NEAR = 40;
