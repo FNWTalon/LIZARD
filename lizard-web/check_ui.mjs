@@ -643,7 +643,7 @@ const SIZES = [
   for (const ev of ["Target.targetCreated", "Target.targetInfoChanged"]) s.on(ev, ({ targetInfo: i }) => { if (i.type === "page") opened.push(i.url); });
   const HOMEM = `(() => { const $ = (id) => document.getElementById(id), rows = [...document.querySelectorAll("#list li")];
     return { iw: innerWidth, sw: document.documentElement.scrollWidth, rows: rows.map((r) => r.querySelector(".name").textContent), acts: rows[0] ? [...rows[0].querySelectorAll(".acts > *")].map((a) => a.textContent).join(",") : "",
-      href: rows[0]?.querySelector("a[download]")?.href ?? "", download: rows[0]?.querySelector("a[download]")?.download ?? "", tips: !!$("tips") || !!$("tipsAgain"), empty: !$("empty").hidden, usage: $("usage").textContent, solid: [...document.querySelectorAll(".primary")].map((b) => b.id).join(), bar: [...document.querySelectorAll(".bar .brand, .bar > button")].map((b) => b.textContent).join(",") }; })()`;
+      href: rows[0]?.querySelector("a[download]")?.href ?? "", download: rows[0]?.querySelector("a[download]")?.download ?? "", tips: !!$("tips") || !!$("tipsAgain"), empty: !$("empty").hidden, usage: $("usage").textContent, solid: [...document.querySelectorAll(".primary")].map((b) => b.id).join(), bar: [...document.querySelectorAll(".bar .brand, .bar > button, .bar > a.btn")].filter((b) => b.checkVisibility()).map((b) => b.textContent).join(",") }; })()`;
   for (const [k, z] of SIZES.entries()) {
     await size(s, z);
     await navigate(s, HOME);
@@ -653,7 +653,21 @@ const SIZES = [
     console.log(`     home ${z.name}: ${h.rows.join(" | ")}; ${h.acts}; "${h.usage}"; solid ${h.solid}`);
     check(h.sw <= h.iw, `home ${z.name}: no horizontal scroll (${h.sw} of ${h.iw})`);
     check(h.rows.length === 1 && h.rows[0].startsWith(NAME) && /300\sKB/.test(h.rows[0]) && /^Open,Save,(Share,)?Delete$/.test(h.acts) && h.download === NAME && !h.empty, `home ${z.name}: "${h.rows[0]}" listed with ${h.acts}`);
-    check(h.bar === "LIZARD" && h.solid === (z.mobile ? "recv" : "send"), `home ${z.name}: the bar "${h.bar}", the solid one ${h.solid}`);
+    // ai: a PC's Home (2026-11-06, a window 900 px wide or more without a touch screen): About and Source code in the bar
+    const pc = !z.mobile && z.w >= 900;
+    check(h.bar === (pc ? "LIZARD,About,Source code" : "LIZARD") && h.solid === (z.mobile ? "recv" : "send"), `home ${z.name}: the bar "${h.bar}", the solid one ${h.solid}`);
+    if (pc) {
+      // ai: Send and Receive two cards across the content, 200 px tall; the file's row in columns with Open beside its
+      // ai: menu; Delete all on the heading; no Settings section
+      const p = await evaluate(s, `(() => { const $ = (id) => document.getElementById(id), r = (el) => el.getBoundingClientRect(), a = r($("send")), b = r($("recv")), m = r(document.querySelector("main")), row = document.querySelector("#list li"), vis = (el) => !!el && el.checkVisibility();
+        const pad = parseFloat(getComputedStyle(document.querySelector("main")).paddingLeft);
+        return { cards: Math.round(a.height) === 200 && Math.round(b.height) === 200 && Math.abs(a.width - b.width) < 1 && Math.abs(a.left - (m.left + pad)) < 1 && Math.abs(b.right - (m.right - pad)) < 1,
+          size: row.querySelector(".c-size").textContent, when: vis(row.querySelector(".c-when")) && row.querySelector(".c-when").textContent !== "", open: vis(row.querySelector(".c-open")), meta: vis(row.querySelector(".meta")),
+          clear: vis($("clearAllTop")), settings: vis(document.querySelector(".settings")), cols: vis(document.querySelector("#files .cols")) }; })()`);
+      check(p.cards && /^300\sKB$/.test(p.size) && p.when && p.open && !p.meta && p.clear && !p.settings && p.cols, `home ${z.name}: the PC's layout (cards ${p.cards}, size "${p.size}", date ${p.when}, Open ${p.open}, Delete all on the heading ${p.clear}, Settings ${p.settings ? "shown" : "gone"})`);
+      const ab = await evaluate(s, `(() => { document.getElementById("aboutTop").click(); const d = document.getElementById("aboutDlg"), open = d.open, text = d.textContent; document.getElementById("aboutClose").click(); return { open, mpl: /Mozilla Public License 2\.0/.test(text), credits: /BSD 3-Clause: Wirehair, Zstandard/.test(text), shut: !d.open }; })()`);
+      check(ab.open && ab.mpl && ab.credits && ab.shut, `home ${z.name}: the bar's About opens the credits in a dialog and Close shuts it`);
+    }
     if (k === 0) {
       const bytesOk = await evaluate(s, `fetch(${JSON.stringify(h.href)}).then((r) => r.arrayBuffer()).then((x) => { const u = new Uint8Array(x); let v = 7, same = u.length === ${LEN}; for (let i = 0; same && i < u.length; i++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; same = u[i] === ((v >>> 16) & 255); } return same; })`);
       check(bytesOk, `home: the listed file's Save holds the ${LEN} bytes sent`);

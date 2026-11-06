@@ -3,22 +3,63 @@
 <style>
   /* ai: Home (2026-10-01): Send and Receive, the received
      files (lizard-web/library.mjs) and Settings. One column, the same at every size. */
-  main{max-width:34rem;margin:0 auto;padding:0 16px 2rem}
+  main,.top{max-width:34rem;margin:0 auto;padding:0 16px 2rem}
+  .top{padding-bottom:0}
+  /* ai: the PC's parts, hidden on a phone: the bar's About and Source code, the files' columns and their cells */
+  .top .pc,.cols,.files .c-size,.files .c-when,.files .c-open,#clearAllTop{display:none}
+  .files .c-act{display:flex;flex:none;align-items:center}
+  .shead{display:flex;align-items:center}.shead h2{flex:1 1 auto;font-size:14px;font-weight:600;color:var(--muted);margin:24px 0 4px}
   .go{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:16px 0 8px}
   .go .btn{flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:104px;padding:16px;
     border-radius:16px;text-align:center;font-size:18px}
   .go .btn svg{margin-bottom:10px}
   /* ai: About a fold among the Settings rows (2026-11-06, the apps' AboutFold): the rows' hairline under it, none over it */
   .settings details.dev{border-top:0;margin-top:0;border-bottom:1px solid var(--line)}
+  /* ai: Home on a PC (2026-11-06; a window 900 px wide or more, under a mouse or no pointer): spacious, the bar across
+     the window (the mark and LIZARD; About, opening the credits in a dialog, and Source code on its right), the
+     content at most 1120 px wide with 48 px margins; Send and Receive two cards stretched across it, 200 px tall (the
+     one place a PC's buttons stretch); Unfinished and Received files as lists with columns (Name, Progress or Size,
+     Started or Received), each row's Continue or Open and its more menu on the right, Delete all on the files'
+     heading. No Settings section: what it held is the bar's and the heading's. A phone keeps the column above. */
+  @media (min-width:900px) and (pointer:fine),(min-width:900px) and (pointer:none){
+    .top{max-width:none;padding:0;border-bottom:1px solid var(--line)}
+    .top>.bar{max-width:1120px;margin:0 auto;padding:0 48px;border:0;min-height:64px}
+    .top .pc{display:inline-flex}.top .pc.text{font-weight:500;color:var(--muted)}.top .pc:last-child{margin-right:-12px}
+    main{max-width:1120px;padding:0 48px 3rem}
+    .go{gap:24px;margin:48px 0 56px}
+    .go .btn{height:200px;min-height:200px;gap:16px;border-radius:16px;font-size:22px;font-weight:600}
+    .go .btn svg.i{width:48px;height:48px;stroke-width:1.75;margin:0}
+    main>section{margin:0 0 48px}
+    .shead{min-height:40px;margin:0 0 8px}
+    .shead h2,section>h2{margin:0;font-size:20px;font-weight:600;color:var(--fg)}
+    #clearAllTop:not([hidden]){display:inline-flex;margin-right:-12px}
+    .settings{display:none}
+    .cols,.files .item{display:grid;grid-template-columns:40px minmax(0,1fr) 200px 220px 160px;align-items:center;column-gap:16px}
+    .cols{font-size:13px;font-weight:600;color:var(--muted);padding:0 0 8px;border-bottom:1px solid var(--line)}
+    .cols>:first-child{grid-column:1 / span 2}
+    .files .item{min-height:60px;padding:0;border-bottom:1px solid var(--line)}
+    .files .item:last-child{border-bottom:1px solid var(--line)}
+    .files .meta{display:none}
+    .files .c-size,.files .c-when{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+    .files .c-act{justify-content:flex-end;gap:4px}
+    .files .c-open{display:inline-flex;min-height:36px;padding:0 16px;font-size:14px}
+    .files .c-act .menu>summary{width:36px;min-width:36px;min-height:36px;margin-right:-6px}
+    .meter.mini{width:64px;margin:0;flex:none}
+    #empty{padding:24px 0}
+  }
 </style>
+<div class="top"><header class="bar"><span class="brand"><img src="icon.svg" alt="" width="28" height="28"><span>LIZARD</span></span><span class="grow"></span><button id="aboutTop" class="btn text pc" type="button">About</button><a class="btn text pc" href="https://github.com/FNWTalon/LIZARD" target="_blank" rel="noopener">Source code</a></header></div>
+<!-- ai: About's credits on a PC, opened from the bar (the phone's fold below holds the same) -->
+<dialog id="aboutDlg" class="dialog"><div id="aboutPc" class="about-text"></div><div class="row end"><button id="aboutClose" type="button">Close</button></div></dialog>
 <main>
-  <header class="bar"><span class="brand"><img src="icon.svg" alt="" width="28" height="28"><span>LIZARD</span></span><span class="grow"></span></header>
   <div class="go"><a id="send" class="btn" href="send.html"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>Send</a><a id="recv" class="btn" href="recv.html?auto"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>Receive</a></div>
-  <section id="partial" aria-labelledby="partial-h" hidden><h2 id="partial-h">Unfinished</h2>
+  <section id="partial" aria-labelledby="partial-h" hidden><div class="shead"><h2 id="partial-h">Unfinished</h2></div>
+    <div class="cols" aria-hidden="true"><span>Name</span><span>Progress</span><span>Started</span><span></span></div>
     <ul id="partialList" class="list files"></ul>
   </section>
-  <section id="files" aria-labelledby="files-h"><h2 id="files-h">Received files</h2>
+  <section id="files" aria-labelledby="files-h"><div class="shead"><h2 id="files-h">Received files</h2><button id="clearAllTop" class="text danger" type="button" hidden>Delete all</button></div>
     <div id="empty" class="empty"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg><span>This browser keeps no files: a received file stays until its page closes.</span></div>
+    <div class="cols" aria-hidden="true"><span>Name</span><span>Size</span><span>Received</span><span></span></div>
     <ul id="list" class="list files"></ul>
   </section>
   <section class="settings" aria-labelledby="settings-h">

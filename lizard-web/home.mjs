@@ -6,8 +6,11 @@ import { bytes, about, registerApp, confirmTap, icon } from "./ui.mjs";
 import { list, open, remove, removeAll, watch, keeps, unfinished, forgetUnfinished } from "./library.mjs";
 
 const $ = (id) => document.getElementById(id);
-about($("about"));
-registerApp(() => about($("about"), true));
+about($("about")); about($("aboutPc"));
+registerApp(() => { about($("about"), true); about($("aboutPc"), true); });
+// ai: About on a PC: the bar's button opens the credits in a dialog (the phone's fold holds the same)
+$("aboutTop").onclick = () => $("aboutDlg").showModal();
+$("aboutClose").onclick = () => $("aboutDlg").close();
 $(matchMedia("(pointer: coarse)").matches ? "recv" : "send").classList.add("primary");
 
 // ai: Each row's file is a File over its OPFS bytes (nothing read until used), linked by an object URL kept while its
@@ -23,6 +26,7 @@ function button(text, onclick) {
   return b;
 }
 // ai: A row: the file's icon, its name and "size · date" (a link that opens it, as a tap on a row opens it in an app),
+// ai: on a PC the size and the date in columns of their own and Open beside the more menu (index.html, 2026-11-06),
 // ai: and the more menu (a details element, so it opens with no script; one open at a time, an action or a tap elsewhere
 // ai: closes it; Delete asks on itself first, and stays open for the answer).
 async function row(e, next) {
@@ -60,9 +64,14 @@ async function row(e, next) {
     if (!menu.open) return disarm();
     for (const m of document.querySelectorAll("#list details.menu[open]")) if (m !== menu) m.open = false;
   });
-  li.append(lead, name, menu);
+  const size = cell("c-size", bytes(e.size ?? f?.size ?? 0)), at = cell("c-when", when(e.at)), act = cell("c-act");
+  if (f) { const o = button("Open", () => window.open(link.url, "_blank")); o.className = "c-open"; act.append(o); }
+  act.append(menu);
+  li.append(lead, name, size, at, act);
   return li;
 }
+// ai: a PC column's cell (index.html .c-size, .c-when, .c-act; hidden on a phone)
+function cell(cls, text = "") { const c = document.createElement("span"); c.className = cls; c.textContent = text; return c; }
 // ai: An unfinished transfer's row (2026-10-22, library.mjs unfinished): its name and "37% of 3.1 MB · date", the more
 // ai: menu Continue (Receive, which resumes it once the file is in the light) and Delete (asked on itself first).
 function partialRow(e) {
@@ -87,7 +96,14 @@ function partialRow(e) {
     if (!menu.open) return disarm();
     for (const m of document.querySelectorAll("details.menu[open]")) if (m !== menu) m.open = false;
   });
-  li.append(lead, name, menu);
+  // ai: on a PC: the progress as a small meter and its words, the date, and Continue beside the more menu
+  const frac = Math.max(0, Math.min(1, e.fraction ?? 0)), prog = cell("c-size"), bar = document.createElement("span"), fill = document.createElement("span");
+  bar.className = "meter mini"; fill.style.width = `${Math.floor(100 * frac)}%`; bar.append(fill);
+  prog.append(bar, `${Math.floor(100 * frac)}% of ${bytes(e.length ?? 0)}`);
+  const cont = document.createElement("a"), act = cell("c-act");
+  cont.className = "btn c-open"; cont.href = "recv.html?auto"; cont.textContent = "Continue";
+  act.append(cont, menu);
+  li.append(lead, name, prog, cell("c-when", when(e.at)), act);
   return li;
 }
 document.addEventListener("click", (ev) => { for (const m of document.querySelectorAll("details.menu[open]")) if (!m.contains(ev.target)) m.open = false; });
@@ -108,11 +124,12 @@ async function show() {
     $("empty").hidden = entries.length > 0 || kept;
     const total = entries.reduce((s, e) => s + (e.size || 0), 0);
     $("usage").textContent = entries.length ? `${entries.length} file${entries.length > 1 ? "s" : ""} kept, ${bytes(total)}` : "No files kept.";
-    $("clearAll").hidden = !entries.length;
+    $("clearAll").hidden = $("clearAllTop").hidden = !entries.length;
   })();
   try { await drawing; } finally { drawing = null; }
   if (again) { again = false; await show(); }
 }
-confirmTap($("clearAll"), () => { const n = $("list").children.length; return `Delete ${n} file${n > 1 ? "s" : ""}?`; }, () => removeAll().then(show));
+// ai: Delete all, the phone's in Settings and the PC's on the files' heading, each asking on itself first
+for (const id of ["clearAll", "clearAllTop"]) confirmTap($(id), () => { const n = $("list").children.length; return `Delete ${n} file${n > 1 ? "s" : ""}?`; }, () => removeAll().then(show));
 watch(show);
 show();
