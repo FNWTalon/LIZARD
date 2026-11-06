@@ -9,7 +9,8 @@ export const NODES_MAX = 136;
 // ai: Room for every ring's nodes in a round's light counts (Round.light, a node at its ring's base index).
 export const LIGHT_MAX = 4 * NODES_MAX;
 // ai: resid's record a frame: the nodes' residuals, then LENS_SLOTS vec4f of the lens about the camera's axis that
-// ai: REFIT fitted to them (COONS's Lens; 2026-10-17), which every sampler adds back.
+// ai: ANCH_REFIT fits over the border and the anchors (COONS's Lens; 2026-10-17), which every sampler adds back; REFIT_POST
+// ai: writes it none.
 export const LENS_SLOTS = 5, RESID = NODES_MAX + LENS_SLOTS;
 
 // ai: F7's round ([steps, stride, step], the host's Round): +-3 modules at half a module, one template sample a module

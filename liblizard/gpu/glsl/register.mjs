@@ -1,6 +1,6 @@
 // F7, registration, in GLSL: the WGSL register.mjs (archived) statement for statement (its comments say what each stage does and
 // why): NODES (nodesSource, the border nodes measured by normalised cross-correlation), REFIT (the homography by
-// Gauss-Newton), REFIT_POST (the nodes' residuals, the lens about the camera's axis, each side's curve), and the pieces
+// Gauss-Newton), REFIT_POST (the nodes' residuals, each side's curve), and the pieces
 // the anchors' stages share (LENS, the lens fit's rows, SIDE_FITS, SIDE_DECL, RING; LENS and RING sample.mjs's COONS too).
 // ai: Bindings, workgroup sizes, dispatches and every buffer's layout are the WGSL's (the host's bind group layouts are
 // ai: unchanged): storage arrays std430, uniforms std140. Every solve is straight-line with literal indices, generated
@@ -10,7 +10,7 @@
 // ai: it is read. WGSL's storageBarrier() is common.mjs STORAGE_BARRIER.
 import { VERSION, SAMPLERLESS, DIMS, CONVERT, MAP, LEVEL_BINDINGS, zeros, uniformLoad, STORAGE_BARRIER } from "./common.mjs";
 import {
-  WINDOW, SUB, NODES_MAX, LIGHT_MAX, RESID, ROUND, latticeSide, WMIN, DELTA, ITERS, SIDE_MAX, SIDE_NODES, LENS_P, lensIdx,
+  WINDOW, SUB, NODES_MAX, LIGHT_MAX, LENS_SLOTS, RESID, ROUND, latticeSide, WMIN, DELTA, ITERS, SIDE_MAX, SIDE_NODES, LENS_P, lensIdx,
 } from "../plan/register.mjs";
 
 const TMPL_MAX = WINDOW * WINDOW * SUB * SUB;
@@ -384,132 +384,6 @@ const lensNormalSolveTo = (kTop) => /* glsl */ `      float Ns[${LENS_P}][${LENS
       ${lensSolveTo(kTop)}
 `;
 export const lensNormalSolve = lensNormalSolveTo(3);
-// ai: the WGSL register.mjs (archived) lensFit, REFIT_POST's lens at K 0.
-const lensFit = /* glsl */ `
-  {
-    uint aw = F.size;
-    vec2 LA = vec2(0.5 * float(F.w), 0.5 * float(F.h));
-    if (aw != 0u) { LA = vec2(0.5 * float(aw & 0xffffu) - 16384.0, 0.5 * float(aw >> 16u) - 16384.0); }
-    vec2 fwh = vec2(float(F.w), float(F.h));
-    float lR = max(max(length(LA), length(vec2(fwh.x, 0.0) - LA)), max(length(vec2(0.0, fwh.y) - LA), length(fwh - LA)));
-    float lir = 1.0 / max(lR, 1.0);
-    {
-      vec2 lo = vec2(3.0e38);
-      vec2 hi = vec2(-3.0e38);
-      float smin = 3.0e38;
-      float smax = 0.0;
-      uint nw = 0u;
-      for (uint n = li; n < count; n += 64u) {
-        if (!(resid[f * ${RESID}u + n].z > 0.0)) { continue; }
-        vec2 p = pn[n];
-        lo = min(lo, p);
-        hi = max(hi, p);
-        vec2 q = (p - LA) * lir;
-        float s = dot(q, q);
-        smin = min(smin, s);
-        smax = max(smax, s);
-        nw += 1u;
-      }
-      LR[li] = vec4(lo, hi);
-      LQ[li] = vec4(smin, smax, float(nw), 0.0);
-    }
-    barrier();
-    if (li == 0u) {
-      vec2 lo = LR[0].xy;
-      vec2 hi = LR[0].zw;
-      float smin = LQ[0].x;
-      float smax = LQ[0].y;
-      uint nw = f2u(LQ[0].z);
-      for (uint s = 1u; s < 64u; s++) {
-        lo = min(lo, LR[s].xy);
-        hi = max(hi, LR[s].zw);
-        smin = min(smin, LQ[s].x);
-        smax = max(smax, LQ[s].y);
-        nw += f2u(LQ[s].z);
-      }
-      LF = LensFrame(0.5 * (lo + hi), 2.0 / max(max(hi.x - lo.x, hi.y - lo.y), 1.0), 0.5 * (smin + smax),
-        2.0 / max(smax - smin, 1e-6), 0u, nw, nw > 0u ? 1u : 0u);
-      for (uint k = 0u; k < 4u; k++) { LK[k] = 0u; }
-    }
-    barrier();
-    if (li < 16u && LF.on != 0u) {
-      float acc[77] = ${zeros(77)};
-      for (uint n = li; n < count; n += 16u) {
-        vec4 r = resid[f * ${RESID}u + n];
-        float w = r.z;
-        if (!(w > 0.0)) { continue; }
-        vec2 p = pn[n];
-        ${lensNode}
-        ${lensAccumulate}
-      }
-      LS[li] = acc;
-    }
-    barrier();
-    if (LF.on != 0u) {
-      for (uint e = li; e < 77u; e += 64u) {
-        float a = 0.0;
-        for (uint s = 0u; s < 16u; s++) { a += LS[s][e]; }
-        LP[e] = a;
-      }
-    }
-    barrier();
-    if (li == 0u && LF.on != 0u) {
-${lensNormalSolveTo(0)}    }
-    barrier();
-    {
-      vec4 rs = vec4(0.0);
-      if (LF.on != 0u) {
-        for (uint n = li; n < count; n += 64u) {
-          vec4 r = resid[f * ${RESID}u + n];
-          float w = r.z;
-          if (!(w > 0.0)) { continue; }
-          vec2 p = pn[n];
-          ${lensNode}
-          if (LK[0] != 0u) { vec2 e = r.xy - ${lensModel(0)}; rs[0] += w * dot(e, e); }
-        }
-      }
-      LR[li] = rs;
-    }
-    barrier();
-    if (li == 0u) {
-      vec4 rss = vec4(0.0);
-      for (uint s = 0u; s < 64u; s++) { rss += LR[s]; }
-      uint kb = 4u;
-      float best = 3.0e38;
-      float nobs = 2.0 * float(LF.nw);
-      for (uint k = 0u; k < 1u; k++) {
-        float pk = 8.0 + float(k);
-        if (LK[k] == 0u || nobs - pk - 1.0 <= 0.0) { continue; }
-        float score = nobs * log(max(rss[k], 1e-30) / nobs) + 2.0 * pk + 2.0 * pk * (pk + 1.0) / (nobs - pk - 1.0);
-        if (score < best) { best = score; kb = k; }
-      }
-      float tk[${LENS_P}] = ${zeros(LENS_P)};
-      if (kb == 0u) { ${Array.from({ length: LENS_P }, (_, a) => `tk[${a}] = LT[0][${a}];`).join(" ")} }
-      bool on = kb < 4u;
-      vec4 zc = vec4(LF.ctr, LF.sig, LF.smid);
-      vec4 za = vec4(LA, lir, LF.ish);
-      LZ = Lens(on ? zc : vec4(0.0), on ? za : vec4(0.0),
-        vec4(tk[0], tk[1], tk[2], tk[3]), vec4(tk[4], tk[5], tk[6], tk[7]), vec4(tk[8], tk[9], tk[10], 0.0));
-      uint b = f * ${RESID}u + ${NODES_MAX}u;
-      resid[b] = LZ.c;
-      resid[b + 1u] = LZ.a;
-      resid[b + 2u] = LZ.t0;
-      resid[b + 3u] = LZ.t1;
-      resid[b + 4u] = LZ.t2;
-    }
-    barrier();
-    Lens lz = LZ;
-    for (uint n = li; n < count; n += 64u) {
-      vec4 r = resid[f * ${RESID}u + n];
-      vec4 v = vec4(r.xy - lensAt(lz, pn[n]), r.zw);
-      resid[f * ${RESID}u + n] = v;
-      rw[n] = v;
-    }
-    ${STORAGE_BARRIER}
-    barrier();
-  }
-`;
-
 // ai: REFIT (the WGSL register.mjs (archived) REFIT): a workgroup of 64 a frame.
 export const REFIT = VERSION + DIMS + CONVERT + MAP + /* glsl */ `
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
@@ -698,7 +572,11 @@ export const SIDE_FITS = /* glsl */ `
   }
 `;
 
-// ai: REFIT_POST (the WGSL register.mjs (archived) REFIT_POST): a workgroup of 64 a frame, REFIT's bindings.
+// ai: REFIT_POST (the WGSL register.mjs (archived) REFIT_POST, less its lens fit at K 0): a workgroup of 64 a frame,
+// ai: REFIT's bindings. The residuals of REFIT's homography go straight to the sides' curves, the lens record none
+// ai: (ANCH_REFIT's where the anchors are found). The fit at K 0, a first-order change of the homography fitted to the
+// ai: same residuals without REFIT's weights, went 2026-11-06: 4090 blocks +0.008% over the eleven replays and the
+// ai: lens set's places, the refit pass 1.0% less on the iGPU.
 export const REFIT_POST = VERSION + DIMS + CONVERT + MAP + /* glsl */ `
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) readonly buffer Frames { Frame frames[]; };
@@ -708,17 +586,6 @@ layout(set = 0, binding = 3, std430) readonly buffer Meas { vec4 meas[]; };
 layout(set = 0, binding = 4, std430) buffer Maps { float maps[][16]; };
 layout(set = 0, binding = 5, std430) buffer Resid { vec4 resid[]; };
 layout(set = 0, binding = 6, std140) uniform Fit { uvec4 count; uvec4 base; vec4 modules; } P;
-` + LENS + /* glsl */ `
-struct LensFrame { vec2 ctr; float sig; float smid; float ish; uint kmax; uint nw; uint on; };
-shared vec2 pn[${NODES_MAX}];
-shared LensFrame LF;
-shared float LS[16][77];
-shared float LT[4][${LENS_P}];
-shared uint LK[4];
-shared vec4 LR[64];
-shared Lens LZ;
-shared vec4 LQ[64];
-shared float LP[77];
 shared vec4 rw[${NODES_MAX}];
 ${SIDE_DECL}void main() {
   uvec3 wg = gl_WorkGroupID;
@@ -726,7 +593,6 @@ ${SIDE_DECL}void main() {
   uint f = wg.x;
   uvec4 pick = sel[f];
   if (frames[f].valid == 0u || pick.y == 0u) { return; }
-  Frame F = frames[f];
   uint count = P.count[pick.x];
   uint base = P.base[pick.x];
   float mf[16] = maps[f];
@@ -734,14 +600,17 @@ ${SIDE_DECL}void main() {
     vec4 e = meas[f * ${NODES_MAX}u + n];
     bool ok = e.w != 0.0 && e.z >= ${WMIN};
     vec2 p = toImage(mf, nodes[base + n].xy);
-    pn[n] = p;
     vec2 rd = e.xy - p;
     vec2 r = ok ? rd : vec2(0.0);
-    resid[f * ${RESID}u + n] = vec4(r, ok ? e.z : 0.0, 0.0);
+    vec4 v = vec4(r, ok ? e.z : 0.0, 0.0);
+    resid[f * ${RESID}u + n] = v;
+    rw[n] = v;
   }
+  // ai: the lens record (LENS_SLOTS past the nodes) none: the map is REFIT's homography and the sides' curves
+  if (li < ${LENS_SLOTS}u) { resid[f * ${RESID}u + ${NODES_MAX}u + li] = vec4(0.0); }
   ${STORAGE_BARRIER}
   barrier();
-` + lensFit + SIDE_FITS + /* glsl */ `}
+` + SIDE_FITS + /* glsl */ `}
 `;
 
 // ai: the WGSL register.mjs (archived) RING: where lattice node (i, j) of an nx x ny border ring sits in ring order.
