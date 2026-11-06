@@ -188,10 +188,11 @@ for (const c of [{ subch: 96 }, { subch: 64 }, { subch: 496 }, { subch: 96, file
     // ai: The file picked as a user picks one: into the file input, then the start button.
     const doc = await s.send("DOM.getDocument"), { nodeId } = await s.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: bun?.input ?? "#file" });
     await s.send("DOM.setFileInputFiles", { nodeId, files: bun?.paths ?? [filePath] });
-    // ai: the pick's ready line, a bundle's naming its files (a folder's change event comes once Chrome has listed it)
+    // ai: the pick's ready line under the upload's card (#choice, 2026-11-06; the column's #state before), a bundle's
+    // ai: naming its files (a folder's change event comes once Chrome has listed it)
     const wantReady = bun ? `${bun.made.name}, ${bun.made.files} files, ` : "check-send.bin, ";
     let ready = "";
-    for (let t = 0; t < 50 && !ready.startsWith(wantReady); t++) { ready = await evaluate(s, `document.getElementById("state").textContent`); if (!ready.startsWith(wantReady)) await new Promise((ok) => setTimeout(ok, 100)); }
+    for (let t = 0; t < 50 && !ready.startsWith(wantReady); t++) { ready = await evaluate(s, `document.getElementById("choice").textContent`); if (!ready.startsWith(wantReady)) await new Promise((ok) => setTimeout(ok, 100)); }
     if (!ready.startsWith(wantReady)) faults.push(`${name}: the ready line says "${ready}"`);
     await evaluate(s, `document.getElementById("go").click()`);
     // ai: Start sends at once (no first-send question since 2026-11-03)

@@ -75,6 +75,8 @@ pre.readout{font-size:12px;color:var(--fg)}
 /* ai: a file's name in a line (ui.mjs sayName, 2026-10-23): on one line, its stem cut with an ellipsis, its ending whole */
 .fname{display:inline-flex;max-width:100%;white-space:nowrap;vertical-align:bottom}
 .fname>.stem{overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* ai: the kept ending whole, its leading space too (a bundle's " and N more.tar": a flex item drops it otherwise) */
+.fname>:last-child{white-space:pre}
 .hint{color:var(--muted);font-size:14px}
 .meter{height:6px;background:var(--soft);border-radius:3px;overflow:hidden;margin:8px 0}
 .meter>span{display:block;height:100%;width:0;background:var(--fg);border-radius:3px}

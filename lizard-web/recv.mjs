@@ -27,7 +27,7 @@ import { PoolPolicy } from "./pool.mjs";
 import { logPost } from "./devlog.mjs";
 import { R_RING, SPAN, MODULES, N_FOR, NAME, PICTURE_SIZES, subchOf } from "../liblizard/sim/lizard_pick.mjs";
 import { isControlId, PAYLOAD, fractionDone } from "../liblizard/sim/xfer.mjs";
-import { remember, persist, restoreSaved, say, meter, bytes, rate, left, about, registerApp, collapser, sideResizer, sayName, slider } from "./ui.mjs";
+import { remember, persist, restoreSaved, say, meter, bytes, rate, left, about, registerApp, collapser, sideResizer, sayName, slider, nameParts } from "./ui.mjs";
 import { open as openKept, list as listKept, watch as watchLibrary } from "./library.mjs";
 const $ = (id) => document.getElementById(id), video = $("v"), shot = $("shot"), sctx = shot.getContext("2d", { willReadFrequently: true });
 // ai: Settings and Developer Tools (the Developer panel until 2026-10-01) open as they were left, a phone session
@@ -36,18 +36,15 @@ const $ = (id) => document.getElementById(id), video = $("v"), shot = $("shot"),
 remember($("dev"), "recv:dev");
 remember($("logs"), "recv:logs");
 collapser($("collapse"), "recv:collapsed");   // ai: the sidebar collapser (ui.mjs); the camera box takes the width
-// ai: The column's floor (ui.mjs sideResizer; 2026-11-06, the apps' RowFloor): the widest row of buttons with no word
-// ai: broken, the received file's row (Open, Save and Share, each its label in the buttons' font plus its own padding, the
-// ai: gaps between) or Start or Stop alone, plus the column's own padding. Every label counts whether or not a file is
-// ai: in, so the column does not move when one arrives; the labels are measured on a canvas, so a hidden button
-// ai: measures too.
+// ai: The column's floor (ui.mjs sideResizer; the apps' RowFloor): Start or Stop with no word broken, the longer label
+// ai: in the button's font plus its padding, and the column's own padding (2026-11-06: the column's one button; the
+// ai: received file's row was measured too while it stood here). Measured on a canvas, so the label not shown counts.
 function actionsFloor() {
-  const b = getComputedStyle($("go")), side = getComputedStyle($("side")), gap = parseFloat(getComputedStyle($("deliver")).columnGap) || 0;
+  const b = getComputedStyle($("go")), side = getComputedStyle($("side"));
   const c = (actionsFloor.ctx ??= document.createElement("canvas").getContext("2d"));
   c.font = `${b.fontStyle} ${b.fontWeight} ${b.fontSize} ${b.fontFamily}`;
-  const w = (label, id) => { const p = getComputedStyle($(id)); return c.measureText(label).width + parseFloat(p.paddingLeft) + parseFloat(p.paddingRight); };
-  const row = w("Open", "open") + w("Save", "save") + w("Share", "share") + 2 * gap;
-  return Math.ceil(Math.max(row, w("Start", "go"), w("Stop", "go")) + parseFloat(side.paddingLeft) + parseFloat(side.paddingRight));
+  const w = (label) => c.measureText(label).width + parseFloat(b.paddingLeft) + parseFloat(b.paddingRight);
+  return Math.ceil(Math.max(w("Start"), w("Stop")) + parseFloat(side.paddingLeft) + parseFloat(side.paddingRight));
 }
 sideResizer("recv:side", actionsFloor, "recv:collapsed");   // ai: the column's edge dragged to resize it (2026-10-05), no narrower than the actions need
 // ai: The app's shell (2026-10-01): the bar's Settings, the first-run tip, About and the installed app's worker.
@@ -131,7 +128,7 @@ function plainVerdict(text) {
 }
 function showState() {
   const on = !!track, h = xferNow?.header, go = $("go"), offered = !!h && xferNow.done && h.root === ui.received?.root;
-  let line, tone = null, frac = null, nums = "", named = null;   // ai: named: a line that names a file, for sayName
+  let line, tone = null, frac = null, nums = "", named = null, doneSum = "";   // ai: named: a line that names a file, for sayName
   const loading = on && !ui.err && !ui.starting && !answered;
   // ai: the test stream first while the camera reads it, the newer of it and a file's frames (2026-10-05): it takes over
   // ai: from a file received or in progress, whose line, buttons and rail squares come back once the camera is on its frames
@@ -158,7 +155,10 @@ function showState() {
     // ai: its time, none where the time reads 0.0 s
     const speed = r.secs >= 0.05 ? `, ${nb(rate((r.sent || r.n) / r.secs / 1000))}` : "";
     const after = `, ${nb(bytes(r.n))} in ${nb(`${r.secs.toFixed(1)} s`)}${speed}${r.sent && r.sent < r.n ? `, ${nb(bytes(r.sent))} sent` : ""}`;
-    line = `Received ${r.name}${after}`; named = ["Received ", r.name, after]; tone = "good"; frac = 1;
+    // ai: said in the camera's area's card (#done, 2026-11-06), not the column: the line stays for the checks and a
+    // ai: screen reader, drawn only with Show statistics on, as before
+    line = `Received ${r.name}${after}`; named = ["Received ", r.name, after]; tone = "good";
+    doneSum = `${nb(bytes(r.n))} in ${nb(`${r.secs.toFixed(1)} s`)}${speed}${r.sent && r.sent < r.n ? `, ${nb(bytes(r.sent))} sent` : ""}`;
   } else if (!on) line = "";   // ai: idle says nothing (2026-10-02: an instruction that obvious only takes space)
   else line = "";   // ai: nothing while looking (2026-11-06, the apps' Readout.line since 2026-10-05; "Looking for a code" here until then)
   // ai: Within a run (Start until it stops) a line once shown keeps its room until the run ends, drawn clear when it
@@ -188,7 +188,16 @@ function showState() {
   $("lab").textContent = on ? ui.lab : "";
   $("why").textContent = why || (run ? held.why : "");
   $("why").classList.toggle("ghost", !why && run && !!held.why);
-  $("deliver").hidden = !ui.received || testing;
+  // ai: the received file in the camera's place once it is in and the camera is off (#done); Start brings the camera back
+  const got = !!ui.received && !on && !ui.starting && !ui.err;
+  document.body.classList.toggle("got", got);
+  $("done").hidden = !got;
+  if (got && $("doneName").dataset.name !== ui.received.name) {
+    const [a, b] = nameParts(ui.received.name), t = $("doneName");
+    t.dataset.name = t.title = ui.received.name; t.firstElementChild.textContent = a; t.lastElementChild.textContent = b;
+    $("doneSize").textContent = bytes(ui.received.n);
+  }
+  if (got) $("doneSum").textContent = doneSum;
   // ai: The preview's cover (the apps' PreviewBox): what went wrong (the red triangle over its words), else "Camera off"
   // ai: while no camera runs, else "Getting ready" with the spinner while the camera starts and until a decoder answers
   const idle = !!ui.err || (!on && !ui.starting);
@@ -450,7 +459,7 @@ function showFile(name, data, how = "checksum ok", type = "", sent = 0) {
   if (fileUrl) URL.revokeObjectURL(fileUrl);
   fileOut = new File([blob], name, { type: type || blob.type });
   const save = $("save");
-  save.href = fileUrl = URL.createObjectURL(fileOut); save.download = name; save.textContent = "Save";
+  save.href = fileUrl = URL.createObjectURL(fileOut); save.download = name;
   let shares = false;
   try { shares = !!navigator.canShare?.({ files: [fileOut] }); } catch {}
   $("share").hidden = !shares;

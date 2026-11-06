@@ -251,9 +251,9 @@ const SIZES = [
       await s.send("DOM.setFileInputFiles", { objectId: result.objectId, files });
     };
     const LIST = `(() => ({ rows: [...document.querySelectorAll("#pickList .t")].map((t) => t.textContent), subs: [...document.querySelectorAll("#pickList .s")].map((t) => t.textContent),
-      state: document.getElementById("state").textContent, hint: !document.getElementById("pick").hidden && document.getElementById("sel").hidden, pick: !document.getElementById("sel").hidden, go: document.getElementById("go").disabled }))()`;
+      state: document.getElementById("choice").hidden ? "" : document.getElementById("choice").textContent, hint: !document.getElementById("pick").hidden && document.getElementById("sel").hidden, pick: !document.getElementById("sel").hidden, go: document.getElementById("go").disabled }))()`;
     const step = async (what, rows, state) => {
-      await until(s, `(${LIST}).rows.join("|") === ${JSON.stringify(rows.join("|"))} && /^${state.replace(/[.()]/g, "\\$&")}/.test(document.getElementById("state").textContent)`, 8000, what).catch(() => {});
+      await until(s, `(${LIST}).rows.join("|") === ${JSON.stringify(rows.join("|"))} && /^${state.replace(/[.()]/g, "\\$&")}/.test(document.getElementById("choice").textContent)`, 8000, what).catch(() => {});
       const m = await evaluate(s, LIST);
       check(m.rows.join("|") === rows.join("|") && m.state.startsWith(state) && (rows.length ? m.pick && !m.hint && !m.go : m.hint && !m.pick && m.go),
         `send: ${what}: rows ${m.rows.join(", ") || "none"} (${m.subs.join("; ")}), "${m.state}"`);
@@ -286,26 +286,27 @@ const SIZES = [
     await setFiles("file", [join(src, "c.txt")]);
     await step("one file alone, sent as itself", ["c.txt"], "c.txt, ");
     // ai: the size alone until a Start makes the transfer (2026-11-01: nothing compressed at the pick)
-    await until(s, `/, 30\\sB$/.test(document.getElementById("state").textContent)`, 10000, "the file's size");   // ai: no-break spaces in the figures
-    check(/, 30\sB$/.test(await evaluate(s, `document.getElementById("state").textContent`)), `send: the picked file's line, its size alone "${await evaluate(s, `document.getElementById("state").textContent`)}"`);
-    // ai: long names (2026-10-23): the state line's head, up to the name and its comma, on one line, the stem cut with an
-    // ai: ellipsis and its ending whole (".txt," for a file, " and 1 more.tar," for a bundle); the row cut to its width
+    await until(s, `/, 30\\sB$/.test(document.getElementById("choice").textContent)`, 10000, "the file's size");   // ai: no-break spaces in the figures
+    check(/, 30\sB$/.test(await evaluate(s, `document.getElementById("choice").textContent`)), `send: the picked file's line under the card, its size alone "${await evaluate(s, `document.getElementById("choice").textContent`)}"`);
+    // ai: long names (2026-10-23): the choice line (under the card since 2026-11-06), on one line, the name's stem cut with
+    // ai: an ellipsis and its ending whole (".txt" for a file, " and 1 more.tar" for a bundle, its space kept), the rest
+    // ai: after it; the row cut to its width
     const long = join(src, "a very long file name for the ellipsis check, longer than any row is wide.txt");
     const long2 = join(src, "another file with a long name, so the bundle's name is long too.txt");
     put(long, "long"); put(long2, "long too");
-    const HEAD = `(() => { const f = document.querySelector("#state .fname"); if (!f) return null; const st = f.firstElementChild, lh = parseFloat(getComputedStyle(document.getElementById("state")).lineHeight);
-      return { end: f.lastElementChild.textContent, cut: st.scrollWidth > st.clientWidth, over: getComputedStyle(st).textOverflow, oneLine: f.getBoundingClientRect().height < 1.5 * lh, state: document.getElementById("state").textContent }; })()`;
+    const HEAD = `(() => { const f = document.querySelector("#choice .fname"); if (!f) return null; const st = f.firstElementChild, c = document.getElementById("choice"), lh = parseFloat(getComputedStyle(c).lineHeight), e = f.lastElementChild;
+      return { end: e.textContent, cut: st.scrollWidth > st.clientWidth, over: getComputedStyle(st).textOverflow, oneLine: c.getBoundingClientRect().height < 1.5 * lh, ws: getComputedStyle(e).whiteSpace, state: c.textContent }; })()`;
     await evaluate(s, `document.getElementById("clearPick").click()`);
     await setFiles("file", [long]);
-    await until(s, `(${HEAD})?.end === ".txt,"`, 8000, "the long name's line").catch(() => {});
+    await until(s, `(${HEAD})?.end === ".txt"`, 8000, "the long name's line").catch(() => {});
     const one = await evaluate(s, HEAD);
     const row = await evaluate(s, `(() => { const t = document.querySelector("#pickList .t"), st = t.querySelector(".stem"); return { cut: st.scrollWidth > st.clientWidth, over: getComputedStyle(st).textOverflow, end: st.nextElementSibling.textContent, title: t.title }; })()`);
-    check(one?.end === ".txt," && one.cut && one.over === "ellipsis" && one.oneLine && row.cut && row.end === ".txt" && row.title.endsWith("is wide.txt"),
-      `send: a long name's head on one line, its stem cut and ".txt," whole (${JSON.stringify(one)}), its tile's stem cut and ".txt" kept (${row.over})`);
+    check(one?.end === ".txt" && one.cut && one.over === "ellipsis" && one.oneLine && row.cut && row.end === ".txt" && row.title.endsWith("is wide.txt"),
+      `send: a long name's head on one line, its stem cut and ".txt" whole (${JSON.stringify(one)}), its tile's stem cut and ".txt" kept (${row.over})`);
     await setFiles("file", [long2]);
-    await until(s, `(${HEAD})?.end === " and 1 more.tar,"`, 8000, "the bundle's line").catch(() => {});
+    await until(s, `(${HEAD})?.end === " and 1 more.tar"`, 8000, "the bundle's line").catch(() => {});
     const two = await evaluate(s, HEAD);
-    check(two?.end === " and 1 more.tar," && two.cut && two.oneLine, `send: a long bundle name's head on one line, " and 1 more.tar," whole (${JSON.stringify(two)})`);
+    check(two?.end === " and 1 more.tar" && two.cut && two.oneLine && two.ws === "pre" && / and 1 more\.tar, 2/.test(two.state), `send: a long bundle name on one line, " and 1 more.tar" whole with its space (${JSON.stringify(two)})`);
     await screenshot(s, `${OUT}/send-long-name.png`);
   }
   // ai: Files from outside (2026-10-23): a file the system's Open with hands over (launchQueue, stubbed here) and one
@@ -520,7 +521,7 @@ const SIZES = [
   const s = await chrome("file", [`--use-file-for-fake-video-capture=${path}`]);
   await size(s, SIZES[0]);
   await navigate(s, `${BASE}?auto&seen`);
-  const STATE = `(() => { const $ = (id) => document.getElementById(id), m = $("meter"); return { state: $("state").textContent, good: $("state").classList.contains("good"), nums: $("nums").textContent, why: $("why").textContent, meter: m.hidden ? null : m.firstElementChild?.style.width, deliver: !$("deliver").hidden, clear: !!$("clear"), open: !$("open").hidden && $("open").classList.contains("primary"), go: $("go").textContent, goSolid: $("go").classList.contains("primary"), save: $("save").textContent, href: $("save").href, download: $("save").download,  railRate: $("railRate").textContent, railPct: $("railPct").hidden ? null : $("railPct").textContent, railDone: !$("railDone").hidden && !$("railOpen").hidden && !$("railSave").hidden, railOff: $("railCam").classList.contains("off") }; })()`;
+  const STATE = `(() => { const $ = (id) => document.getElementById(id), m = $("meter"); return { state: $("state").textContent, good: $("state").classList.contains("good"), nums: $("nums").textContent, why: $("why").textContent, meter: m.hidden ? null : m.firstElementChild?.style.width, deliver: !$("done").hidden, doneName: $("doneName").textContent, doneSum: $("doneSum").textContent, clear: !!$("clear"), open: !$("open").hidden && $("open").classList.contains("primary"), go: $("go").textContent, goSolid: $("go").classList.contains("primary"), save: $("save").textContent, href: $("save").href, download: $("save").download,  railRate: $("railRate").textContent, railPct: $("railPct").hidden ? null : $("railPct").textContent, railDone: !$("railDone").hidden && !$("railOpen").hidden && !$("railSave").hidden, railOff: $("railCam").classList.contains("off") }; })()`;
   await until(s, `/^Receiving/.test(document.getElementById("state").textContent) && parseFloat(document.getElementById("meter").firstElementChild?.style.width) > 40`, 60000, "Receiving, two fifths of the way");
   const a = await evaluate(s, STATE);
   await screenshot(s, `${OUT}/recv-phone-portrait-receiving.png`);
@@ -538,7 +539,10 @@ const SIZES = [
   await screenshot(s, `${OUT}/recv-phone-portrait-received.png`);
   const got = await evaluate(s, `fetch(document.getElementById("save").href).then((r) => r.arrayBuffer()).then((x) => { const u = new Uint8Array(x); let v = 7, same = u.length === ${LEN}; for (let i = 0; same && i < u.length; i++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; same = u[i] === ((v >>> 16) & 255); } return { n: u.length, same }; })`);
   console.log(`     received: "${b.state}" / "${b.nums}", meter ${b.meter}, "${b.save}" ${b.href.slice(0, 5)}... as ${b.download}`);
-  check(new RegExp(`^Received ${NAME.replace(".", "\\.")}, 300\\sKB in [\\d.]+\\ss(, [\\d.]+\\s[KM]B/s)?$`).test(b.state) && b.good && b.meter === "100%" && b.deliver && b.download === NAME && b.href.startsWith("blob:"), `received: green, the meter full, Save offered as ${b.download}`);
+  // ai: the received file in the camera's place (#done, 2026-11-06): its name and how it went in the card, the column's
+  // ai: line written (green, not drawn) and no meter there
+  check(new RegExp(`^Received ${NAME.replace(".", "\\.")}, 300\\sKB in [\\d.]+\\ss(, [\\d.]+\\s[KM]B/s)?$`).test(b.state) && b.good && b.meter === null && b.deliver && b.doneName === NAME
+    && /^300\sKB in [\d.]+\ss(, [\d.]+\s[KM]B\/s)?$/.test(b.doneSum) && b.download === NAME && b.href.startsWith("blob:"), `received: the card in the camera's place ("${b.doneName}", "${b.doneSum}"), Save offered as ${b.download}`);
   check(b.open && !b.goSolid && !b.clear, `received: Open the one solid button, "${b.go}" outlined, no Receive again`);
   // ai: the camera off by itself once the file is in (2026-10-01, to save heat)
   check(b.go === "Start" && b.nums === "" && b.why === "", `received: the camera stopped by itself ("${b.go}")`);
@@ -546,31 +550,35 @@ const SIZES = [
   await sleep(500);
   const c = await evaluate(s, STATE);
   await screenshot(s, `${OUT}/recv-phone-portrait-received-stopped.png`);
-  check(c.state === b.state && c.deliver && c.go === "Start" && c.nums === "" && c.why === "", `stopped: "${c.state}", Save kept, "${c.go}"`);
-  // ai: started again on the same clip: the finished file named again by the light, Save still there, and the camera left
-  // ai: running (it stops itself once a file, not each time the light names one)
+  check(c.state === b.state && c.deliver && c.go === "Start" && c.nums === "" && c.why === "", `stopped: "${c.state}", the card and Save kept, "${c.go}"`);
+  // ai: started again on the same clip: the camera's view back in the card's place, the finished file named again by the
+  // ai: light, Save's file the same, and the camera left running (it stops itself once a file, not each time the light
+  // ai: names one)
   await evaluate(s, `document.getElementById("go").click()`);
   await until(s, `document.getElementById("go").textContent === "Stop" && /^Received/.test(document.getElementById("state").textContent)`, 30000, "Received again after a restart");
   const d = await evaluate(s, STATE);
   await sleep(1500);
   const d2 = await evaluate(s, STATE);
-  check(d.state === b.state && d.deliver && d.href === b.href && d2.go === "Stop", `started again: "${d.state}", the same Save, the camera still on 1.5 s later ("${d2.go}")`);
+  check(d.state === b.state && !d.deliver && d.href === b.href && d2.go === "Stop", `started again: "${d.state}", the camera's view in the card's place, the same Save, the camera still on 1.5 s later ("${d2.go}")`);
   await evaluate(s, `document.getElementById("go").click()`);
   await size(s, SIZES[2]);
   await sleep(300);
   await screenshot(s, `${OUT}/recv-laptop-received-stopped.png`);
+  // ai: The received file's card at a laptop's size, a mouse's (2026-11-06): Open, Save (and Share where the browser
+  // ai: shares files) as tiles on one row in equal cells, Open solid, in a column at most 36rem wide centred in the area
+  // ai: beside the column, the card under them; the column's one button Start, its label's width.
+  const DONE = `(() => { const $ = (id) => document.getElementById(id), r = (el) => el.getBoundingClientRect(), d = r($("done")), side = r($("side"));
+    const tiles = [...document.querySelectorAll("#done .tile")].filter((t) => !t.hidden).map(r), near = (a, b) => Math.abs(a - b) < 1;
+    return { shown: !$("done").hidden, n: tiles.length, row: tiles.every((t) => near(t.top, tiles[0].top) && near(t.width, tiles[0].width)), w: d.width,
+      centred: near(d.left - side.right, innerWidth - d.right) || Math.abs((d.left + d.right) / 2 - (side.right + innerWidth) / 2) < 2, card: r(document.querySelector("#done .sel")).top >= tiles[0].bottom,
+      solid: $("open").classList.contains("primary"), go: r($("go")).width, spilled: [...document.querySelectorAll("#done .tile")].filter((t) => t.scrollWidth > t.clientWidth + 1).length }; })()`;
+  const dn = await evaluate(s, DONE);
+  check(dn.shown && dn.n >= 2 && dn.row && dn.w <= 576.5 && dn.centred && dn.card && dn.solid && dn.go < 120 && !dn.spilled,
+    `received at a laptop's size: ${dn.n} tiles on a row in equal cells, Open solid, the column ${dn.w} px wide centred in the area, the card under them, Start ${Math.round(dn.go)} px`);
   check(!s.errors.length, `no console errors over the transfer${s.errors.length ? `: ${s.errors.join("; ")}` : ""}`);
-  // ai: The actions in the apps' order (recv.html #top, 2026-11-06), through a saved column width: Open, Save and Share
-  // ai: on one row, Start under them at its left, each button its label's width under a mouse; at 500 px the column as
-  // ai: asked, at 180 px lifted by the floor (recv.mjs actionsFloor) to the row's width. Every button shown for the
-  // ai: measure (a reload offers no file), none wider than its box, so no label broke onto a second line or spilled
-  // ai: past its button, and the row inside the column.
-  const ACTS = `(() => { const $ = (id) => document.getElementById(id); $("deliver").hidden = false; $("share").hidden = false;
-    const r = (id) => $(id).getBoundingClientRect(), o = r("open"), sh = r("share"), sa = r("save"), g = r("go"), side = r("side"), near = (a, b) => Math.abs(a - b) < 1;
-    const pad = parseFloat(getComputedStyle($("side")).paddingRight);
-    return { spilled: ["open", "share", "save", "go"].filter((id) => $(id).scrollWidth > $(id).clientWidth + 1).join(),
-      row: near(o.top, sa.top) && near(sa.top, sh.top) && o.left < sa.left && sa.left < sh.left && g.top >= o.bottom && near(g.left, o.left)
-        && g.width < 120 && o.width < 120 && sh.right <= side.right - pad + 1,
+  // ai: The column's floor (recv.mjs actionsFloor): Start or Stop with no word broken; a column saved at 180 px is lifted
+  // ai: to it, at 500 px kept; Start its label's width either way, under a mouse.
+  const ACTS = `(() => { const $ = (id) => document.getElementById(id); return { spilled: $("go").scrollWidth > $("go").clientWidth + 1, w: $("go").getBoundingClientRect().width,
       side: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--side")), go: $("go").textContent }; })()`;
   for (const w of [500, 180]) {
     await evaluate(s, `localStorage.setItem("recv:side", "${w}")`);
@@ -578,7 +586,7 @@ const SIZES = [
     await until(s, `document.documentElement.style.getPropertyValue("--side") !== "" && document.getElementById("go").textContent === "Start"`, 10000, "the column's width restored");
     const m = await evaluate(s, ACTS);
     await screenshot(s, `${OUT}/recv-laptop-actions-${w}.png`);
-    check(m.row && !m.spilled && (w === 180 ? m.side > 180 : m.side === 500), `the actions at a ${w} px column: Open, Save and Share on a row, Start under them, each its label's width, the column ${m.side} px${m.spilled ? `, spilled: ${m.spilled}` : ""}`);
+    check(!m.spilled && m.w < 120 && (w === 180 ? m.side >= 180 : m.side === 500), `the column at ${w} px: Start its label's width (${Math.round(m.w)} px), the column ${m.side} px`);
   }
   await evaluate(s, `localStorage.removeItem("recv:side")`);
   // ai: The column's edge as a sash under a mouse (2026-11-01, ui.mjs sideResizer): pulled under half its floor it closes to

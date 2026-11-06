@@ -385,8 +385,10 @@ function showReady() {
   const f = chosen;
   $("go").hidden = false; $("go").disabled = !isTest() && !f; $("stop").hidden = true;
   showChoice(false); $("nums").textContent = "";
-  if (f && !isTest()) sayName($("state"), "", f.name, `, ${f.bundled ? `${f.files} ${f.files === 1 ? "file" : "files"}, ` : ""}${sizeText(f.sent, f.size)}`);
-  else say($("state"), "");
+  // ai: what goes is said under the upload's card (#choice, 2026-11-06, the PC sender's ChoiceLine), not the column
+  say($("state"), "");
+  $("choice").hidden = !f || isTest();
+  if (f && !isTest()) { sayName($("choiceName"), "", f.name); $("choiceMore").textContent = `, ${f.bundled ? `${f.files} ${f.files === 1 ? "file" : "files"}, ` : ""}${sizeText(f.sent, f.size)}`; }
   showRail();
 }
 // ai: Pause and resume (the rail's button, and Resume beside Stop while paused, so the open column has it too).

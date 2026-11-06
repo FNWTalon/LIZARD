@@ -13,6 +13,9 @@
   .bar{padding:0 16px}
   #side{flex:none;padding:12px 16px 8px;border-bottom:1px solid var(--line)}
   #side .row>button,#side .row>.btn{flex:1 1 0}
+  /* ai: no button stretches to fit on a PC (2026-11-06): under a mouse, or no pointer, each its label's width, as the
+     receiver's Start; under a finger they share the row */
+  @media (pointer:fine),(pointer:none){#side .row>button,#side .row>.btn{flex:0 0 auto}}
   /* ai: One line each, so a long name or a figure never grows the controls and shrinks <main> under a painted symbol. */
   /* ai: An error wraps: nothing is painted then. */
   #state,#nums{margin:.5rem 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -34,6 +37,11 @@
   #pick>.tiles{flex:none}
   #sel{display:flex;flex-direction:column;min-height:0}
   #pickList{min-height:0;overflow-y:auto}
+  /* ai: what goes, under the card (2026-11-06, the PC sender's ChoiceLine): the name semibold, its stem cut and its
+     ending kept, then ", N files, " for a bundle and the size, regular and muted; centred, one line, 12 px under */
+  #choice{display:flex;justify-content:center;margin:-4px 0 0;font-size:15px;font-weight:600;line-height:20px;white-space:nowrap;min-width:0}
+  #choiceName{display:flex;min-width:0}#choiceName>.fname{min-width:0}
+  #choiceMore{flex:none;font-weight:400;color:var(--muted)}
   /* ai: a file dragged over the page: the whole of <main> takes the drop, and the outline says so */
   main.drop{outline:3px dashed var(--fg);outline-offset:-12px}
   /* ai: Landscape and desktop: a 20rem column beside <main>, the bar fixed at its top and the controls over Settings in */
@@ -45,7 +53,9 @@
     body.collapsed #pane{display:none}
     #col{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line)}
     #pane{display:block;flex:1 1 0;min-height:0;overflow-y:auto}
-    #side{padding:16px 16px 0;border-bottom:0}
+    .bar{padding:0 12px}
+    #side{padding:12px 12px 0;border-bottom:0}
+    #settings{padding:0 12px 1rem}
     #state,#nums{white-space:normal}
     #nums{min-height:0}
     #state:empty,#nums:empty{display:none}
@@ -153,6 +163,6 @@
     </script>
     </div>
   </div>
-  <main><canvas id="bgc"></canvas><canvas id="c"></canvas><canvas id="cg" hidden></canvas><div id="pick" class="pick" hidden><div class="tiles"><button id="addFiles" class="tile" type="button"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>File</button><button id="addFolder" class="tile" type="button"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>Folder</button></div><div id="sel" class="sel" hidden><div class="head"><span id="selSum"></span><button id="clearPick" class="text" type="button">Clear</button></div><ul id="pickList" class="items"></ul></div></div><input id="file" type="file" multiple class="sr-only" aria-label="Choose files"><input id="folder" type="file" webkitdirectory class="sr-only" aria-label="Choose a folder"></main>
+  <main><canvas id="bgc"></canvas><canvas id="c"></canvas><canvas id="cg" hidden></canvas><div id="pick" class="pick" hidden><div class="tiles"><button id="addFiles" class="tile" type="button"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>File</button><button id="addFolder" class="tile" type="button"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>Folder</button></div><div id="sel" class="sel" hidden><div class="head"><span id="selSum"></span><button id="clearPick" class="text" type="button">Clear</button></div><ul id="pickList" class="items"></ul></div><p id="choice" hidden><span id="choiceName"></span><span id="choiceMore"></span></p></div><input id="file" type="file" multiple class="sr-only" aria-label="Choose files"><input id="folder" type="file" webkitdirectory class="sr-only" aria-label="Choose a folder"></main>
 </div>
 <script type="module" src="send.mjs"></script>
