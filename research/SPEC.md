@@ -311,10 +311,13 @@ take (the room), and makes no camera assumption.
   (`PAINTED_MARGIN()`, the codec's `LIZARD_QUIET`), and 2.7 device px a cycle at the top ring (`T_DISPLAY_CYCLE`). In one
   ring the room is a constant times R, so it rises with the version.
 - **The pick** is the largest ladder format whose room fits, or LIZARD-64 where none does (flagged `tight`); the ring
-  is the default unless named. The library does not cap; an app is advised to stop at LIZARD-560 unless it is a fixed
-  rig (13, item 21).
+  is the default unless named. The library does not cap: every picture registers where the others do, and across a
+  picture-size step the larger picture reads as much as the format below it.
 - **What a format asks of the camera**, not an input: `CAMERA_PX_FOR(subch, ring) = MODULES / SPAN * 2.12 * R(subch)`,
-  camera px across the symbol, margin excluded.
+  camera px across the symbol, margin excluded. The camera, not the picture, bounds a format: with about 1.2 times its
+  `CAMERA_PX_FOR` across the symbol and in focus it reads nearly whole, about 1.5 times with a pixel of defocus; below
+  that it degrades, and a smaller format reads more. A sender that knows its receivers capture fewer pixels than that,
+  or out of focus, MAY name a lower top.
 - A sender MAY change format mid-transfer (on a resize, say): every block carries the same 472 useful bytes (9.1).
 
 ### 3.6 Every format
@@ -1899,7 +1902,6 @@ Numbers are kept so references hold; closed items are gone.
   a resampled picture) is to be added to `liblizard/test/vectors.mjs`, with the computations behind 4.7, 4.9, 5.3 and
   7.10.
 - **Item 20.** A 1:1 capture in the 64 or 256 ring, and a file transfer in either, recorded in today's format.
-- **Item 21.** The largest pictures (n = 1536) under blur; the advice to cap apps at LIZARD-560 (3.5) rests on an older border.
 - **Item 22.** Frame-change capture and phase holding on more than one phone.
 - **Item 23.** The GPU decoder on other phones' GPUs.
 - **Item 24.** A recording with a noisy surround.

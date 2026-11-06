@@ -244,11 +244,11 @@ export function pickVersion(roomPx, top = VERSIONS.at(-1), ring = null) {
   // ai: That was the n / 8 + 60 border, and the rings while the default ring followed n (48 to 64 at LIZARD-144). With
   // ai: one ring for every picture the room rises with the format, so every format is reachable.
   // This is the library, so it picks over the whole ladder, and since 2026-09-29 so does the reference sender (once
-  // ai: every receiver read the whole ladder; its auto stopped at LIZARD-560, APP_TOP, from 2026-09-26). The advice of
-  // ai: 2026-09-23 that an app stop at LIZARD-560 came from this: the largest
-  // ai: picture (576 and up; 1536 since 2026-09-27, 2048 before) registers nothing in simulation at 594 camera px
-  // with 1.5 px of defocus, where LIZARD-560 still reads 3752 B a frame (STATUS.md, 2026-09-23). `top` caps the pick
-  // ai: for an app that wants that.
+  // ai: every receiver read the whole ladder; its auto stopped at LIZARD-560, APP_TOP, from 2026-09-26). An older
+  // ai: advice to stop at LIZARD-560 came from the 2048 picture under the n / 8 + 60 border, which registered nothing
+  // ai: at 594 camera px with 1.5 px of defocus. Today's pictures register alike and read as the format below them
+  // ai: across a size step; the camera bounds a format (SPEC 3.5: about 1.2 x CAMERA_PX_FOR in focus to read nearly
+  // ai: whole). `top` caps the pick for a sender that knows its receivers capture less.
   let subch = VERSIONS[0];
   const r = ring ?? RING_DEFAULT;
   for (const v of VERSIONS) if (v <= top && ROOM_FOR(v, r) <= roomPx && v > subch) subch = v;
