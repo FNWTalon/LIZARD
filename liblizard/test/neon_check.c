@@ -16,7 +16,7 @@
 // ai:                                      ring with every picture size painted, read blind and compared byte for
 // ai:                                      byte. No input files.
 // ai:   neon_check frames <list> [passes]  every frame of the list through lizard_any_frame (one lizard_any_t, nmax
-// ai:                                      1536, gamma 1, mesh 2, as the receivers call it): a line a frame of
+// ai:                                      1536, gamma 1, as the receivers call it): a line a frame of
 // ai:                                      digests, a stage each, and a total. passes > 0 then times that many
 // ai:                                      passes over the list, one thread, ms a frame, with the core and clock
 // ai:                                      each pass ended on.
@@ -363,7 +363,7 @@ static void decode_one(rx_t *rx, const uint8_t *px, int w, int h, int held, int 
   memset(rx->blocks, 0, (size_t)rx->top * rx->B); memset(rx->ok, 0, (size_t)rx->top);
   ob_debug_hash = arm ? 1 : 0;
   for (int k = 0; k < 8; k++) ob_finder_info[k] = -2;
-  o->got = lizard_any_frame(a, px, w, h, 1.0f, 2, rx->blocks, rx->ok, held, &res);
+  o->got = lizard_any_frame(a, px, w, h, 1.0f, rx->blocks, rx->ok, held, &res);
   o->spec = arm && ob_debug_hash != 1 ? ob_debug_hash : 0;   // ai: still 1: the frame never reached the transform
   ob_debug_hash = 0;
   const ob_fmt_t *fm = lizard_any_word(a);
@@ -612,7 +612,7 @@ static int synth_lab(void) {
     if (!img) { printf("out of memory\n"); return 1; }
     ob_result_t res;
     ob_debug_hash = 1;
-    const int n = lizard_decode(&f, img, S, S, 1.0f, 2, got, ok, &res);
+    const int n = lizard_decode(&f, img, S, S, 1.0f, got, ok, &res);
     const uint32_t spec = ob_debug_hash; ob_debug_hash = 0;
     const int8_t *its; const float *est;
     lizard_block_stats(&f, &its, &est);

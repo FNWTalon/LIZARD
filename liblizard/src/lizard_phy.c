@@ -1459,23 +1459,23 @@ static void soft4(const lizard_t *f, struct lizard_ws *w, int j, const float *d)
 //
 // What lizard_acquire leaves behind is the registration and the image POINTER. The caller's pixels have to
 // outlive the matching lizard_finish; in the rig a worker owns the frame for the whole decode, so they do.
-int lizard_acquire(const lizard_t *f, const uint8_t *img, int iw, int ih, float gamma, int mesh, ob_result_t *res) {
-  return lizard_acquire_quad(f, img, iw, ih, gamma, mesh, res, 0, 0, 0);
+int lizard_acquire(const lizard_t *f, const uint8_t *img, int iw, int ih, float gamma, ob_result_t *res) {
+  return lizard_acquire_quad(f, img, iw, ih, gamma, res, 0, 0, 0);
 }
 
 static int acquire_hold(const lizard_t *f, const image_t *pim, ob_reg_t *reg, int got);
 
 // The same with the quad found elsewhere. quad is eight floats in image pixels, or 0 to
 // run the finder here.
-int lizard_acquire_quad(const lizard_t *f, const uint8_t *img, int iw, int ih, float gamma, int mesh, ob_result_t *res,
+int lizard_acquire_quad(const lizard_t *f, const uint8_t *img, int iw, int ih, float gamma, ob_result_t *res,
                        const float *quad, int orient, float score) {
   memset(res, 0, sizeof *res);
   double t0 = ob_now_ms();
   image_t im;
   ob_image_init(&im, img, iw, ih, gamma);
   ob_reg_t reg;
-  int got = quad ? ob_acquire_quad(&f->frame, &im, mesh, &reg, res, quad, orient, score, &f->ws->fbufs)
-                 : ob_acquire(&f->frame, &im, mesh, &reg, res, &f->ws->fbufs);
+  int got = quad ? ob_acquire_quad(&f->frame, &im, &reg, res, quad, orient, score, &f->ws->fbufs)
+                 : ob_acquire(&f->frame, &im, &reg, res, &f->ws->fbufs);
   res->ms_detect = (float)(ob_now_ms() - t0);
   return acquire_hold(f, &im, &reg, got);
 }
@@ -1511,7 +1511,7 @@ static void drop_hold(const lizard_t *f) {
 // ai: carry any picture (since 2026-09-27). Until then a codec held each picture size
 // ai: at its own side count, a registration the word did not confirm was tried again at the other counts, and one
 // ai: with no word stood at the count's picture; a receiver now holds the last word itself (wasm.c lizard_any_rx).
-int lizard_acquire_ring(const lizard_t *const *rings, int k, const uint8_t *img, int iw, int ih, float gamma, int mesh, ob_result_t *res, int *which) {
+int lizard_acquire_ring(const lizard_t *const *rings, int k, const uint8_t *img, int iw, int ih, float gamma, ob_result_t *res, int *which) {
   const ob_layout_t *Ls[LIZARD_RINGS];
   *which = -1;
   memset(res, 0, sizeof *res);
@@ -1522,7 +1522,7 @@ int lizard_acquire_ring(const lizard_t *const *rings, int k, const uint8_t *img,
   ob_image_init(&im, img, iw, ih, gamma);
   ob_reg_t reg;
   int wi = 0;
-  const int got = ob_acquire_any(Ls, k, &im, mesh, &reg, res, &wi, &rings[0]->ws->fbufs);   // ai: the first ring's workspace
+  const int got = ob_acquire_any(Ls, k, &im, &reg, res, &wi, &rings[0]->ws->fbufs);   // ai: the first ring's workspace
   res->ms_detect = (float)(ob_now_ms() - t0);
   if (!got) { ob_reg_free(&reg); return 0; }
   acquire_hold(rings[wi], &im, &reg, 1);
@@ -1903,8 +1903,8 @@ int lizard_finish(const lizard_t *f, float *grid, uint8_t *blocks, uint8_t *ok, 
   return lizard_finish_ext(f, grid, 0, 0, blocks, ok, res);
 }
 
-int lizard_decode(const lizard_t *f, const uint8_t *img, int iw, int ih, float gamma, int mesh, uint8_t *blocks, uint8_t *ok, ob_result_t *res) {
-  if (!lizard_acquire(f, img, iw, ih, gamma, mesh, res)) { memset(ok, 0, (size_t)f->blocks); return 0; }
+int lizard_decode(const lizard_t *f, const uint8_t *img, int iw, int ih, float gamma, uint8_t *blocks, uint8_t *ok, ob_result_t *res) {
+  if (!lizard_acquire(f, img, iw, ih, gamma, res)) { memset(ok, 0, (size_t)f->blocks); return 0; }
   return lizard_finish(f, 0, blocks, ok, res);
 }
 

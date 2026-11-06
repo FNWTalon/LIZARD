@@ -333,7 +333,7 @@ time.
 | truth stream | `streamBlock(id, len)` (sim/ob.mjs, `_stream_fill`); `sourceFor(spec.stream)` (sim/phy.mjs) | |
 | the C's spectrum | `Lizard.measure(true)` then `read()`: 2 * 320 * subch f32, the detrended coefficients in pos order | |
 | the C's verdicts | `Lizard.rxFinish().ok`; `Lizard.blockStats()` its (-2 declined, -3 stall, -1 cap, > 0 iterations) and est | blocks |
-| a grid from the C's registration | `M._ob_test_sample(img, iw, ih, 1, 2, dims, state, grid)` | n x n f32 row major, pitch n |
+| a grid from the C's registration | `M._ob_test_sample(img, iw, ih, 1, dims, state, grid)` | n x n f32 row major, pitch n |
 | finish from soft values, verdicts | `Lizard.llrView()` + `rxLdpc(est)` | |
 | the exact symbols sent | `Lizard.measure(true)`, `encode(blocks)`, `sent()` | 640 subch int8, +1 / -1 |
 

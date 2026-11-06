@@ -57,8 +57,8 @@ int lizard_any_setup(int nmax) { return lizard_any_init(&ANY, nmax); }
 // ai: blocks and ok hold lizard_any_max_blocks() blocks. held: the version (sub-channels / 16) of the last word the
 // ai: caller read, 0 for none. Returns the blocks decoded; lizard_any_which says which ring registered
 // ai: (-1 none), lizard_any_n the picture finished (0 none), lizard_any_held whether the held configuration stood in.
-int lizard_any_rx(const uint8_t *img, int iw, int ih, float gamma, int mesh, uint8_t *blocks, uint8_t *ok, int held) {
-  return lizard_any_frame(&ANY, img, iw, ih, gamma, mesh, blocks, ok, held, &R);
+int lizard_any_rx(const uint8_t *img, int iw, int ih, float gamma, uint8_t *blocks, uint8_t *ok, int held) {
+  return lizard_any_frame(&ANY, img, iw, ih, gamma, blocks, ok, held, &R);
 }
 int lizard_any_which(void) { return ANY.which; }
 int lizard_any_n(void) { return ANY.n; }
@@ -106,7 +106,7 @@ int lizard_rs_geom(int *out) {
   out[4] = (int)(intptr_t)i0; out[5] = (int)(intptr_t)w;
   return 0;
 }
-int lizard_rx(const uint8_t *img, int iw, int ih, float gamma, int mesh, uint8_t *blocks, uint8_t *ok) { return lizard_decode(&F, img, iw, ih, gamma, mesh, blocks, ok, &R); }
+int lizard_rx(const uint8_t *img, int iw, int ih, float gamma, uint8_t *blocks, uint8_t *ok) { return lizard_decode(&F, img, iw, ih, gamma, blocks, ok, &R); }
 static const int8_t *dbg_sym; static const float *dbg_coef;
 int lizard_dbg(int on) { dbg_sym = 0; dbg_coef = 0; return fready ? lizard_debug(&F, on, &dbg_sym, &dbg_coef) : -1; }
 const int8_t *lizard_dbg_sym(void) { return dbg_sym; }
@@ -138,14 +138,14 @@ static void state_dump(const image_t *im, const ob_reg_t *reg, int32_t *dims, fl
   for (int i = 0; i < 256; i++) *s++ = im->lut[i];
 }
 
-int ob_test_sample(const uint8_t *img, int iw, int ih, float gamma, int mesh, int32_t *dims, float *state, float *grid) {
+int ob_test_sample(const uint8_t *img, int iw, int ih, float gamma, int32_t *dims, float *state, float *grid) {
   if (!fready) return 0;
   const int n = F.n;
   dims[0] = F.frame.nx; dims[1] = F.frame.ny; dims[2] = n; dims[3] = 0;
   image_t im;
   ob_image_init(&im, img, iw, ih, gamma);
   ob_reg_t reg;
-  if (!ob_acquire(&F.frame, &im, mesh, &reg, &R, NULL)) return 0;
+  if (!ob_acquire(&F.frame, &im, &reg, &R, NULL)) return 0;
   state_dump(&im, &reg, dims, state);
   const float g0 = F.margin + 0.5f / F.scale, step = 1.0f / F.scale;
   const double t0 = ob_now_ms();
@@ -159,19 +159,19 @@ int ob_test_sample(const uint8_t *img, int iw, int ih, float gamma, int mesh, in
 // writes out what the sampler needs, in state_dump's layout above minus the trailing ms; lizard_rx_finish takes
 // the grid back. A caller that passes grid = 0 gets the sampler the decoder has always had, which is how the
 // two arms are compared on one build.
-int lizard_rx_acquire(const uint8_t *img, int iw, int ih, float gamma, int mesh, int32_t *dims, float *state) {
+int lizard_rx_acquire(const uint8_t *img, int iw, int ih, float gamma, int32_t *dims, float *state) {
   if (!fready) return 0;
   dims[0] = F.frame.nx; dims[1] = F.frame.ny; dims[2] = F.n; dims[3] = 0;
-  if (!lizard_acquire(&F, img, iw, ih, gamma, mesh, &R)) return 0;
+  if (!lizard_acquire(&F, img, iw, ih, gamma, &R)) return 0;
   state_dump(lizard_held_image(&F), lizard_held_reg(&F), dims, state);
   return 1;
 }
 // Acquisition from a quad found elsewhere, so a GPU finder can be held to the decode it produces. Writes the
 // same state lizard_rx_acquire does.
-int lizard_rx_acquire_quad(const uint8_t *img, int iw, int ih, float gamma, int mesh, const float *quad, int orient, float score, int32_t *dims, float *state) {
+int lizard_rx_acquire_quad(const uint8_t *img, int iw, int ih, float gamma, const float *quad, int orient, float score, int32_t *dims, float *state) {
   if (!fready) return 0;
   dims[0] = F.frame.nx; dims[1] = F.frame.ny; dims[2] = F.n; dims[3] = 0;
-  if (!lizard_acquire_quad(&F, img, iw, ih, gamma, mesh, &R, quad, orient, score)) return 0;
+  if (!lizard_acquire_quad(&F, img, iw, ih, gamma, &R, quad, orient, score)) return 0;
   state_dump(lizard_held_image(&F), lizard_held_reg(&F), dims, state);
   return 1;
 }

@@ -33,7 +33,7 @@ void lizard_any_free(lizard_any_t *a);
 // ai: caller read (its version field), 0 for none; a held version no format has (outside OB_FMT_VERSION_MIN ..
 // ai: OB_FMT_VERSION_MAX) decodes nothing and is not reported as held. Returns the blocks decoded; a->which, a->n and
 // ai: a->held say what happened, res what the registration found.
-int lizard_any_frame(lizard_any_t *a, const uint8_t *img, int iw, int ih, float gamma, int mesh, uint8_t *blocks, uint8_t *ok, int held, ob_result_t *res);
+int lizard_any_frame(lizard_any_t *a, const uint8_t *img, int iw, int ih, float gamma, uint8_t *blocks, uint8_t *ok, int held, ob_result_t *res);
 // ai: The most blocks a frame this receiver finishes can hold: the most any sub-channel count whose picture fits nmax
 // ai: carries under the format's rate profile (lizard_phy.h lizard_blocks_for).
 int lizard_any_top(const lizard_any_t *a);

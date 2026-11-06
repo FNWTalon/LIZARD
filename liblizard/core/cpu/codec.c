@@ -1,5 +1,5 @@
-// ai: codec.h over liblizard/src/any.h. The web decodes blind with gamma 1 and mesh 2 (sim/ob.mjs LizardAny.decode), and
-// ai: so does this.
+// ai: codec.h over liblizard/src/any.h. The web decodes blind with gamma 1 (sim/ob.mjs LizardAny.decode), and so does
+// ai: this.
 #include "codec.h"
 #include "any.h"
 #include "internal.h"
@@ -27,7 +27,7 @@ int cpu_dec_block_bytes(const cpu_dec_t *d) { return d->block_bytes; }
 
 int cpu_dec_frame(cpu_dec_t *d, const uint8_t *img, int iw, int ih, int held, uint8_t *blocks, uint8_t *ok, cpu_frame_t *out) {
   memset(&d->res, 0, sizeof d->res);
-  const int got = lizard_any_frame(&d->any, img, iw, ih, 1.0f, 2, blocks, ok, held, &d->res);
+  const int got = lizard_any_frame(&d->any, img, iw, ih, 1.0f, blocks, ok, held, &d->res);
   if (out) {
     const ob_fmt_t *fm = lizard_any_word(&d->any);
     out->found = d->res.found; out->ring = d->any.which; out->n = d->any.n; out->held = d->any.held;

@@ -171,7 +171,7 @@ static void writeFile(const std::string& path, const void* p, size_t n) {
 // ai: decoder as the self-test page ran them (scripts/pages/gpu_selftest.mjs runOnce): batches of the batcher's size,
 // ai: one at a time, the last word read held into the next batch. After each batch, before another runs on its lane,
 // ai: the lane buffers its stages left (liblizard/gpu/probe.mjs's parts, less SCORE's rerun: levels, counts, peaks,
-// ai: readings, acc, cand, quads, score, result, maps, meas, resid, refit, anch, arec; and the back half's V, ITS and
+// ai: readings, acc, cand, quads, score, result, maps, meas, resid, anch, arec; and the back half's V, ITS and
 // ai: BCOUNTS) are written whole, B frame strides each, to <dir>/batch<k>/<name>.bin, each frame as the ring held it to
 // ai: input-<i>.gray, and <dir>/probe.json: the device, the variant and its nets, each batch's lane shape (B, W, H, gx,
 // ai: gy, the levels, cap; the back half's B and blocksMax; RESULT, COUNTERS, COUNTS) and frames (index, tag, w, h,
@@ -209,7 +209,7 @@ static int probe(Ctx& c, const std::string& v, const std::string& jobPath, const
     std::filesystem::create_directories(bd);
     std::vector<std::pair<std::string, BufP>> bufs = {{"counts", ln.countsBuf}, {"peaks", ln.peaksBuf}, {"readings", ln.readingsBuf}, {"acc", ln.accBuf},
       {"cand", ln.candBuf}, {"quads", ln.quadsBuf}, {"score", ln.scoreBuf}, {"result", ln.resultBuf}, {"maps", ln.mapsBuf}, {"meas", ln.measBuf},
-      {"resid", ln.residBuf}, {"refit", ln.refitDbg}, {"anch", ln.anchBuf}, {"arec", ln.arecBuf}, {"V", ln.back->V}, {"ITS", ln.back->ITS}, {"BCOUNTS", ln.back->counts}};
+      {"resid", ln.residBuf}, {"anch", ln.anchBuf}, {"arec", ln.arecBuf}, {"V", ln.back->V}, {"ITS", ln.back->ITS}, {"BCOUNTS", ln.back->counts}};
     json levels = json::array();
     for (size_t i = 0; i < ln.level.size(); i++) { bufs.push_back({"level" + std::to_string(i + 1), ln.level[i].buf}); levels.push_back({{"w", ln.level[i].w}, {"h", ln.level[i].h}}); }
     json written = json::array();

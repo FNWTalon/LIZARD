@@ -1802,7 +1802,7 @@ two pilot readings (7.3), and the Android app holds its camera's phase against t
 
 The reference, built to wasm for the web receiver (a worker pool, one thread a worker) and natively for the apps
 (NEON on arm64, SSE4.1 on x86-64, `liblizard/core/cpu/`). `wasm.c:lizard_any_setup(nmax)` builds a codec a ring;
-`lizard_any_rx(img, iw, ih, gamma, mesh, blocks, ok, held)` registers the frame against the three rings' layouts, reads
+`lizard_any_rx(img, iw, ih, gamma, blocks, ok, held)` registers the frame against the three rings' layouts, reads
 the word in the ring that registered, builds (and caches, `LIZARD_ANY_PICS` = 2) the codec for that ring and version,
 and finishes the frame there, or at the held version `held` (0 for none) when the word does not read. The steps of one
 frame (`lizard_phy.c:lizard_decode`, `lizard_acquire` then `lizard_finish`):

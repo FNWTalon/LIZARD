@@ -26,9 +26,6 @@ export const latticeSide = ([steps, stride, step]) => {
 // ai: the 4090, the S26's frame): 2 read 0.012% fewer blocks than 5 for 0.9 to 1.4% of the S26's frame (REFIT 0.031 to
 // ai: 0.014 ms at two a launch), 3 0.002% more for 0.6 to 0.9%.
 export const WMIN = 0.3, DELTA = 0.4, ITERS = 2;
-// ai: REFIT's debug words a frame (dbg, read by gpu/probe.mjs): the first refit's first iteration, th (0-7), the
-// ai: normal matrix A (8-43) and the gradient g (44-51).
-export const REFIT_DBG = 52;
 
 // ai: A side's residual curve takes 1 to SIDE_MAX coefficients (a constant to a quintic in the position along it),
 // ai: the count chosen per side and frame by AICc on the side's own nodes (2026-09-29: each frame decided from its own

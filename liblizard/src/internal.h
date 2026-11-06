@@ -153,16 +153,16 @@ void ob_image_init(image_t *im, const uint8_t *px, int w, int h, float gamma);
 enum { OB_FB_BIN, OB_FB_CB, OB_FB_HALF, OB_FB_QUARTER, OB_FB_LBIN, OB_FB_LCB, OB_FB_MEAN, OB_FB_EDGE, OB_FB_SLOTS };
 typedef struct { void *p[OB_FB_SLOTS]; size_t cap[OB_FB_SLOTS]; } ob_fbufs_t;
 void ob_fbufs_free(ob_fbufs_t *fb);
-// Finders, orientation, homography, then the mark mesh. mesh = 0 leaves every mark at zero
-// displacement, which is what a single global homography gives. Returns 1 when registered.
+// Finders, orientation, homography, then the mark mesh (the anchors, the border's nodes, the interior from both).
+// Returns 1 when registered.
 // ai: fb: the workspace's buffers (above), or NULL to allocate them for this call alone
-int ob_acquire(const ob_layout_t *L, const image_t *im, int mesh, ob_reg_t *reg, ob_result_t *res, ob_fbufs_t *fb);
+int ob_acquire(const ob_layout_t *L, const image_t *im, ob_reg_t *reg, ob_result_t *res, ob_fbufs_t *fb);
 // The same when the symbol may be any of several layouts, which differ only in modules a side: the marks are
 // scanned once and each layout's spacing and track tried on them, the first first. *which is the one that registered.
-int ob_acquire_any(const ob_layout_t *const *Ls, int nL, const image_t *im, int mesh, ob_reg_t *reg, ob_result_t *res, int *which, ob_fbufs_t *fb);
+int ob_acquire_any(const ob_layout_t *const *Ls, int nL, const image_t *im, ob_reg_t *reg, ob_result_t *res, int *which, ob_fbufs_t *fb);
 // The same with the quad already found: the scan, the fit and the track scoring are skipped and the rest is
 // shared. quad is eight floats, image pixels, in the order find_frame reports.
-int ob_acquire_quad(const ob_layout_t *L, const image_t *im, int mesh, ob_reg_t *reg, ob_result_t *res,
+int ob_acquire_quad(const ob_layout_t *L, const image_t *im, ob_reg_t *reg, ob_result_t *res,
                     const float *quad, int orient, float score, ob_fbufs_t *fb);
 int ob_test_mesh_tables(const ob_layout_t *L, int32_t *dims, float *nodeX, float *nodeY, uint8_t *kind, int32_t *mark);
 int ob_thin_fmt_plan(const ob_layout_t *L, int cells, float *pts, int32_t *meta, int32_t *widx);
@@ -185,7 +185,7 @@ void ob_map_point(const ob_layout_t *L, const ob_reg_t *reg, float mx, float my,
 // ai: a module, 8 found, one 2.3 modules off: 0 blocks of 23, 16 without the anchors).
 enum { OB_ANCH_K = 7, OB_ANCH_TS = 16, OB_ANCH_MIN = 12 };
 enum { OB_ANCH_MARGIN = 2 };   // ai: the samples erased round an anchor's square
-extern OB_TLS int ob_anch_found;   // ai: the anchors the last acquisition counted, -1 where no mesh was made (acquire.c)
+extern OB_TLS int ob_anch_found;   // ai: the anchors the last acquisition counted, -1 before the thread's first registration (acquire.c)
 int ob_anchor_side(const ob_layout_t *L);
 int ob_anchor_m0(const ob_layout_t *L, int i);
 // The thin frame's format word as soft values, q[side * cells + i] in -0.5 .. 0.5, positive for

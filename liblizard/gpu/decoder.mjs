@@ -110,9 +110,8 @@ export class FrontHalf {
   // ai: classifier file (arch.quant, the contract in cnn/q8c.mjs) runs on the classifier's int8 form; everything
   // ai: else, the back half, the proposer and a float classifier file, runs in fh.floatPrecision: f16 where the
   // ai: adapter has shader-f16, else f32 ("f32" asked keeps f32 everywhere). A q8 classifier file at f16 or f32 is
-  // ai: refused (no float path runs codes). fh.precision is the precision asked; fh.nets = { bank, small, large } what
-  // ai: each net runs in ("int8", "f16", "f32", or null for none; small is always null, the field kept for the
-  // ai: readers of the setup), logged once.
+  // ai: refused (no float path runs codes). fh.precision is the precision asked; fh.nets = { bank, large } what each
+  // ai: net runs in ("int8", "f16", "f32", or null for none), logged once.
   // ai: The proposer (bank_fcn2.mjs, version 2) makes the peaks; a device whose workgroup memory holds none of its forms
   // ai: throws its FitError: no GPU decoder there, the C decodes. The classifier runs on every kept peak.
   // ai: B: frames a lane holds, or "auto" (the native host's batcher): the back half is built for B, B_CEIL under auto.
@@ -172,8 +171,8 @@ export class FrontHalf {
     // ai: "packed" is f32 arithmetic with halves stored). A net whose twin waits to be measured runs its float form
     // ai: until then, and the line says so.
     const store = /^(int8|f16|f32|packed)\b/.exec(fh.bankStore ?? "")?.[1] ?? null;
-    fh.nets = { bank: store === "packed" ? "f32" : store, small: null, large: fh.weights?.precision ?? null };
-    log(`nets: bank ${fh.nets.bank}, small ${fh.nets.small}, large ${fh.nets.large}${fh.twinForms ? " (its int8 twin measured on the first batch)" : ""}`);
+    fh.nets = { bank: store === "packed" ? "f32" : store, large: fh.weights?.precision ?? null };
+    log(`nets: bank ${fh.nets.bank}, large ${fh.nets.large}${fh.twinForms ? " (its int8 twin measured on the first batch)" : ""}`);
     // Its tables come from the wasm, which holds no other Lizard here (formatTables frees its own).
     // ai: Every picture at its top, so a frame decodes the version its word (or the held one) names out of it.
     const sizes = tables.pictures.map(({ n, subch }) => (n <= backN ? { n, subch } : null));
@@ -255,9 +254,9 @@ export class FrontHalf {
       // ai: The second round's frame records and its frames' resets: frames, sel, frames2, acc, readings, cand, quads.
       P(REDO, ["ro", "ro", "rw", "rw", "rw", "rw", "rw", "uniform", "rw", "uniform"]),
       P(NODES, [...LV, "ro", "ro", "ro", "ro", "rw", "uniform"]),
-      P(REFIT, ["ro", "ro", "ro", "ro", "rw", "rw", "uniform", "rw"]),
+      P(REFIT, ["ro", "ro", "ro", "ro", "rw", "rw", "uniform"]),
       // ai: F7's last step after the last round's REFIT (glsl/register.mjs REFIT_POST), on REFIT's bindings
-      P(REFIT_POST, ["ro", "ro", "ro", "ro", "rw", "rw", "uniform", "rw"]),
+      P(REFIT_POST, ["ro", "ro", "ro", "ro", "rw", "rw", "uniform"]),
       // ai: F8 (glsl/word.mjs): the levels, then maps, sel (read-write: sel.y = 1 + the version the frame decodes at, sel.z
       // ai: its picture), resid, the word plan's points, the finder's results, the word code, the lattice and the lane's
       // ai: held version.

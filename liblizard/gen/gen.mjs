@@ -50,7 +50,8 @@ const MAIN = (() => { try { return fileURLToPath(import.meta.url) === realpathSy
 // ai: `lanes`; 3 REDO's R2 args; 2 PEAKS; 1 from 2026-10-29. 6 since 2026-10-31: a pipeline's `needs` (the device
 // ai: features its module asks beyond the variant's: "int16", the LDPC's "reg+i16" forms). 7 since 2026-11-02: the
 // ai: front's `trace` (TRACE, each quad's bend, in both rounds' grids) and HYP doubled (SCORE's bend bit).
-export const TREE_VERSION = 7;
+// ai: 8 since 2026-11-06: REFIT's and REFIT_POST's layouts seven bindings (the eighth, REFIT's debug words, gone).
+export const TREE_VERSION = 8;
 
 const NDK = process.env.ANDROID_NDK_HOME || `${process.env.ANDROID_HOME || `${homedir()}/Android/Sdk`}/ndk/27.1.12297006`;
 // ai: SPIRV-Tools' spirv-val and shaderc's glslc: the Android NDK's shader-tools where there is an NDK, else the
@@ -100,7 +101,7 @@ const { FrontHalf, CAP_MS, B_CEIL, LEVELS, COUNTERS, TAU, EPS, INSTALLED, receiv
 const { formatTables, PICTURES } = await imp("gpu/tables.mjs");
 const { loadNet } = await imp("gpu/cnn/netfile.mjs");
 const { K, CELL, HYP, RING_COUNT, VOTE_READS, PEAK_LIST, R2_N } = await imp("gpu/plan/finder.mjs");
-const { NODES_MAX, RESID, REFIT_DBG } = await imp("gpu/plan/register.mjs");
+const { NODES_MAX, RESID } = await imp("gpu/plan/register.mjs");
 const { ANCH_K, ANCH_REC } = await imp("gpu/plan/anchors.mjs");
 const { PYRAMID_BLOCK } = await imp("gpu/plan/pyramid.mjs");
 const { TILE } = await imp("gpu/plan/bank_fcn2.mjs");
@@ -205,7 +206,7 @@ function exportTree(fh, v) {
   const f = fh.fcn2Form;
   return {
     treeVersion: TREE_VERSION, variant: v.name, precision: fh.precision, floatPrecision: fh.floatPrecision, subgroups: v.subgroups, features: fh.features, nets: fh.nets,
-    consts: { LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, RING_SLACK, K, CELL, HYP, RING_COUNT, VOTE_READS, PEAK_LIST, R2_N, NODES_MAX, RESID, REFIT_DBG, PYRAMID_BLOCK, TAU, EPS,
+    consts: { LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, RING_SLACK, K, CELL, HYP, RING_COUNT, VOTE_READS, PEAK_LIST, R2_N, NODES_MAX, RESID, PYRAMID_BLOCK, TAU, EPS,
       TILE, B_CEIL, CAP_MS, TWIN_FRAMES, TWIN_ROUNDS, VERSION_MIN, VERSION_MAX, SLOTS, ARGS_WORDS, ARGS_SLOT, argsWords, COUNTS, REC_BYTES, PAYLOAD, ANCH_K, ANCH_REC },
     cap: fh.cap, nodesMax: fh.nodesMax, modules: Array.from(fh.modules), bankKeep: fh.bank.KEEP,
     weightsPrecision: fh.weights.precision,

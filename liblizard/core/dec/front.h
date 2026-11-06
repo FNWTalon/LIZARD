@@ -27,7 +27,7 @@ namespace lizard {
 
 // ai: The constants the web host states (gen.mjs exports them with the setup).
 struct Consts {
-  uint32_t VOTE_READS, PEAK_LIST, R2_N, LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, RING_SLACK, K, CELL, HYP, RING_COUNT, NODES_MAX, RESID, REFIT_DBG, PYRAMID_BLOCK;
+  uint32_t VOTE_READS, PEAK_LIST, R2_N, LEVELS, COUNTERS, RESULT, SEL_WORDS, TS_MAX, TS_PLAIN, RING_SLACK, K, CELL, HYP, RING_COUNT, NODES_MAX, RESID, PYRAMID_BLOCK;
   float TAU, EPS;
   uint32_t TILE, B_CEIL;
   double CAP_MS;
@@ -60,7 +60,7 @@ struct Lane {
   BufP dumpBuf;   // ai: LIZ_DUMP_S's copy of the back half's spectrum, made on the first batch that dumps
   bool busy = false, watched = false;
   uint32_t W = 0, H = 0;
-  BufP peaksBuf, selUni, selUni2, framesBuf, mapsBuf, countsBuf, readingsBuf, candBuf, quadsBuf, scoreBuf, selBuf, resultBuf, heldUni, p5Uni, ldUni, measBuf, residBuf, refitDbg;
+  BufP peaksBuf, selUni, selUni2, framesBuf, mapsBuf, countsBuf, readingsBuf, candBuf, quadsBuf, scoreBuf, selBuf, resultBuf, heldUni, p5Uni, ldUni, measBuf, residBuf;
   GroupP refitGroup, refitPostGroup, pickGroup;   // ai: refitPostGroup: the tree's front.refitPost
   // ai: the anchors (SPEC 6.13): ANCH_FIND's records (a vec4f an anchor) and ANCH_FIT's (ANCH_REC vec4f a frame,
   // ai: which pass 1 reads), no clear (every one a batch reads is written in it); their groups bind the texture

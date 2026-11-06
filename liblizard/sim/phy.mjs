@@ -114,7 +114,7 @@ async function makeBlind(spec) {
   return {
     label: `lizard blind to ${nmax}`, family: "lizard", variants: ["blind"], usefulBytes: fa.blockBytes - 4, nmax,
     decode(img, iw, ih, truth, rgba = false) {
-      const t = performance.now(), r = fa.decode(img, iw, ih, { mesh: 2, held, rgba }), total = performance.now() - t;
+      const t = performance.now(), r = fa.decode(img, iw, ih, { held, rgba }), total = performance.now() - t;
       if (r.fmt) held = r.fmt.version;
       // ai: built: this frame built a picture's codec (its first sight of that ring and picture; src/wasm.c pic_for).
       const built = r.builds > builds;
@@ -125,7 +125,7 @@ async function makeBlind(spec) {
     prof, free() { fa.free(); },
   };
 }
-// variants: [{ name, gamma, mesh }]. Each block starts with its 4-byte fountain id.
+// variants: [{ name, gamma }]. Each block starts with its 4-byte fountain id.
 async function makeLizard(spec) {
   await initOb();
   const { n = 512, subch = 32, mode = 1, span = 0, tiers = null, bitmap, fps = 0, variants = [{ name: "ldpc" }] } = spec;

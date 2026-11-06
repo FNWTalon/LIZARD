@@ -3,8 +3,7 @@
 // ./register.mjs (where the WGSL sample.mjs (archived) takes them from the WGSL register.mjs (archived)). Pass 1, the anchors and F8 read the
 // final map through these.
 // ai: A shader including COONS binds `resid` (vec4 a node, RESID a frame), defines latAt(i), lattice coordinate i,
-// ai: before it, as the WGSL's do, and includes CONVERT first. F9's own kernel (SAMPLE) is built only for the wasm back
-// ai: half, which the native tree does not build, so it has no GLSL twin.
+// ai: before it, as the WGSL's do, and includes CONVERT first.
 import { RESID } from "../plan/register.mjs";
 import { RING, LENS } from "./register.mjs";
 

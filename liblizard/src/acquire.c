@@ -36,7 +36,7 @@ void lizard_set_axis(float x, float y) { ob_axis[0] = x; ob_axis[1] = y; }
 // ai: the samples erased round an anchor's square (lizard_phy.c): two, measured on the published lenses' captures (one left
 // ai: the blurred rim in where the map sits a few tenths of a sample off: 26 of 192 frames lost blocks; three read as two)
 // ai: the anchors the last acquisition counted (anchor_register's, read out by the wasm's lizard_anchors_found for the
-// ai: lab's checks), -1 where no mesh was made
+// ai: lab's checks), -1 before the thread's first registration
 OB_TLS int ob_anch_found = -1;
 int ob_anchor_side(const ob_layout_t *L) { return (L->w - 2 * OB_MARGIN) / 64; }
 int ob_anchor_m0(const ob_layout_t *L, int i) {
@@ -1460,7 +1460,7 @@ static void refine_node(const ob_layout_t *L, const image_t *im, const homo_t *H
   nd->dy = pdy + box * jxy + boy * jyy;
 }
 
-// The mesh (any mesh but 0): the interior of a code that carries marks on its border only, computed from the border. Averaging
+// The mesh: the interior of a code that carries marks on its border only, computed from the border. Averaging
 // neighbours inward is wrong for the two errors that matter: a lens's radial distortion, once the corners are pinned,
 // is largest along the edges and zero in the middle, which no average of edge values reproduces, and rolling-shutter
 // jello is a sideways shift that depends on the image row alone. So the border's residuals are fitted with a model of
@@ -2212,17 +2212,17 @@ static void anch_herm4(const double *t, int n, double x, int *b, double w[4]) {
 // ai: anchors found (robust: border nodes the anchors outvote, further than half a module or three robust spreads, are
 // ai: dropped and take the model's displacement), the model at every node and the Coons patch of what it leaves on the
 // ai: border, then a cubic mesh of what the anchors still see (0 at the lattice's ends, the anchors' shrunk readings at
-// ai: their centres). Without four anchors, border_fill_axis as before.
+// ai: their centres). It runs only where anchor_register found OB_ANCH_MIN anchors (none is cleared after), and the
+// ai: fit's first round sums the normal equations anchor_model solved (the corners and the anchors about the same H)
+// ai: plus the border's trusted nodes, so it solves where that one did; lm starts as the zero model (H alone) for a
+// ai: solve rounding alone could fail.
 static void border_fill_anchors(const ob_layout_t *L, const homo_t *H, int iw, int ih, node_t *nodes, const anchor_t *A, float mpx) {
   enum { NA = OB_ANCH_K * OB_ANCH_K };
   const int nx = L->nx, ny = L->ny, nn = nx * ny, cap = 2 * (nx + ny) + NA;
-  int na = 0;
-  for (int k = 0; k < NA; k++) na += A[k].ok;
-  if (na < 4) { border_fill_axis(L, H, iw, ih, nodes); return; }
   double *qx = malloc((size_t)cap * sizeof(double)), *qy = malloc((size_t)cap * sizeof(double)), *dx = malloc((size_t)cap * sizeof(double)), *dy = malloc((size_t)cap * sizeof(double));
   unsigned char *isb = calloc((size_t)cap, 1), *drop = calloc((size_t)cap, 1);
   int *at = malloc((size_t)cap * sizeof(int)), np = 0;
-  lensm_t lm;
+  lensm_t lm = { 0 };
   lensm_axis(iw, ih, &lm);
   for (int j = 0; j < ny; j++) for (int i = 0; i < nx; i++) {
     if (i && j && i < nx - 1 && j < ny - 1) continue;
@@ -2238,10 +2238,7 @@ static void border_fill_anchors(const ob_layout_t *L, const homo_t *H, int iw, i
     project(H, A[k].X, A[k].Y, &u, &v);
     qx[np] = (u - lm.ax) / lm.R; qy[np] = (v - lm.ay) / lm.R; dx[np] = A[k].dx; dy[np] = A[k].dy; at[np] = -1 - k; np++;
   }
-  if (!lensm_fit(np, qx, qy, dx, dy, isb, drop, 0.5 * mpx, &lm)) {
-    free(qx); free(qy); free(dx); free(dy); free(isb); free(drop); free(at);
-    border_fill_axis(L, H, iw, ih, nodes); return;
-  }
+  lensm_fit(np, qx, qy, dx, dy, isb, drop, 0.5 * mpx, &lm);
   float *mx = malloc((size_t)nn * sizeof(float)), *my = malloc((size_t)nn * sizeof(float));
   for (int j = 0; j < ny; j++) for (int i = 0; i < nx; i++) {
     float u, v;
@@ -4970,7 +4967,7 @@ void ob_reg_free(ob_reg_t *reg) { free(reg->nodes); reg->nodes = NULL; }
 // a quad found on a GPU becomes a registration on exactly the terms one found here does.
 // Ls: the layouts the symbol may be (find_frame); the one that registered comes back in *which and is the one the
 // registration is built on. An external quad is the first layout's.
-static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim, int mesh, ob_reg_t *reg, ob_result_t *res,
+static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim, ob_reg_t *reg, ob_result_t *res,
                         const float *in_quad, int in_orient, float in_score, int *which, ob_fbufs_t *fb) {
   const ob_layout_t *L = Ls[0];
   *which = 0;
@@ -5042,58 +5039,50 @@ static int acquire_core(const ob_layout_t *const *Ls, int nL, const image_t *pim
   // ai: below starts from
   anchor_t anchors[OB_ANCH_K * OB_ANCH_K];
   lensm_t alm;
-  int have_alm = 0;
-  ob_anch_found = -1;
-  if (mesh) {
-    have_alm = anchor_register(L, &im, &rim, &H, iw, ih, mpx, res->quad, nodes, anchors, &alm);
-    ob_anch_found = 0;
-    for (int k = 0; k < OB_ANCH_K * OB_ANCH_K; k++) ob_anch_found += anchors[k].ok;
-  }
+  const int have_alm = anchor_register(L, &im, &rim, &H, iw, ih, mpx, res->quad, nodes, anchors, &alm);
+  ob_anch_found = 0;
+  for (int k = 0; k < OB_ANCH_K * OB_ANCH_K; k++) ob_anch_found += anchors[k].ok;
   // Rings outward from the corners, so each mark starts from measured neighbours.
   // ai: the marked nodes (the border's) in that order, ring by ring and in rows within one, by a counting sort on
   // ai: the ring: a pass over the lattice, not one a ring
-  if (mesh) {
-    const int nx = L->nx, ny = L->ny;
-    int start[OB_MAX_NODES + 2] = { 0 }, order[4 * OB_MAX_NODES], no = 0;
+  const int nx = L->nx, ny = L->ny;
+  int start[OB_MAX_NODES + 2] = { 0 }, order[4 * OB_MAX_NODES], no = 0;
 #define RING(i, j) (((i) < nx - 1 - (i) ? (i) : nx - 1 - (i)) + ((j) < ny - 1 - (j) ? (j) : ny - 1 - (j)))
-    for (int j = 0; j < ny; j++) for (int i = 0; i < nx; i++) if (L->node_mark[j * nx + i]) start[RING(i, j) + 1]++;
-    for (int k = 1; k < OB_MAX_NODES + 2; k++) start[k] += start[k - 1];
-    for (int j = 0; j < ny; j++) for (int i = 0; i < nx; i++) if (L->node_mark[j * nx + i]) { order[start[RING(i, j)]++] = j * nx + i; no++; }
+  for (int j = 0; j < ny; j++) for (int i = 0; i < nx; i++) if (L->node_mark[j * nx + i]) start[RING(i, j) + 1]++;
+  for (int k = 1; k < OB_MAX_NODES + 2; k++) start[k] += start[k - 1];
+  for (int j = 0; j < ny; j++) for (int i = 0; i < nx; i++) if (L->node_mark[j * nx + i]) { order[start[RING(i, j)]++] = j * nx + i; no++; }
 #undef RING
-    for (int k = 0; k < no; k++) {
-      if (nodes[order[k]].done) continue;
-      refine_node(L, &rim, &H, order[k] % L->nx, order[k] / L->nx, nodes, have_alm ? &alm : 0);
-    }
+  for (int k = 0; k < no; k++) {
+    if (nodes[order[k]].done) continue;
+    refine_node(L, &rim, &H, order[k] % L->nx, order[k] / L->nx, nodes, have_alm ? &alm : 0);
   }
   // ai: a blur made in bin is bin's, given back with it; one made fresh (no spare) freed here
   if (blurred != bin) free(blurred);
   frame_buf_done(fb, bin);
   // the border is all there is to hang the mesh on
-  if (mesh) {
-    if (have_alm) border_fill_anchors(L, &H, iw, ih, nodes, anchors, mpx);
-    else border_fill_axis(L, &H, iw, ih, nodes);
-  }
+  if (have_alm) border_fill_anchors(L, &H, iw, ih, nodes, anchors, mpx);
+  else border_fill_axis(L, &H, iw, ih, nodes);
   float msum = 0;
   int mcount = 0;
   for (int k = 0; k < nn; k++) if (nodes[k].done) { msum += nodes[k].score; mcount++; }
-  res->mark_score = mesh ? msum / (mcount ? mcount : 1) : 0;
+  res->mark_score = msum / (mcount ? mcount : 1);
   res->found = 1;
   reg->H = H; reg->nodes = nodes;
   ob_prof_ms[PROF_MESH] += ob_now_ms() - tm;
   return 1;
 }
 
-int ob_acquire(const ob_layout_t *L, const image_t *pim, int mesh, ob_reg_t *reg, ob_result_t *res, ob_fbufs_t *fb) {
+int ob_acquire(const ob_layout_t *L, const image_t *pim, ob_reg_t *reg, ob_result_t *res, ob_fbufs_t *fb) {
   int which;
-  return acquire_core(&L, 1, pim, mesh, reg, res, NULL, 0, 0, &which, fb);
+  return acquire_core(&L, 1, pim, reg, res, NULL, 0, 0, &which, fb);
 }
-int ob_acquire_any(const ob_layout_t *const *Ls, int nL, const image_t *pim, int mesh, ob_reg_t *reg, ob_result_t *res, int *which, ob_fbufs_t *fb) {
-  return acquire_core(Ls, nL, pim, mesh, reg, res, NULL, 0, 0, which, fb);
+int ob_acquire_any(const ob_layout_t *const *Ls, int nL, const image_t *pim, ob_reg_t *reg, ob_result_t *res, int *which, ob_fbufs_t *fb) {
+  return acquire_core(Ls, nL, pim, reg, res, NULL, 0, 0, which, fb);
 }
-int ob_acquire_quad(const ob_layout_t *L, const image_t *pim, int mesh, ob_reg_t *reg, ob_result_t *res,
+int ob_acquire_quad(const ob_layout_t *L, const image_t *pim, ob_reg_t *reg, ob_result_t *res,
                     const float *quad, int orient, float score, ob_fbufs_t *fb) {
   int which;
-  return acquire_core(&L, 1, pim, mesh, reg, res, quad, orient, score, &which, fb);
+  return acquire_core(&L, 1, pim, reg, res, quad, orient, score, &which, fb);
 }
 
 // ai: the mesh cell m falls in along one axis (node ascending, nn of them): the last k of 0 to nn - 2 with k = 0 or

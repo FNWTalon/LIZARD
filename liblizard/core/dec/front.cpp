@@ -46,13 +46,14 @@ static constexpr double MiB = 1 << 20;
 // ai: `lanes`; 3 REDO's R2 args; 2 PEAKS; 1 from 2026-10-29. 6 since 2026-10-31: a pipeline's `needs` (the device
 // ai: features its module asks beyond the variant's: "int16", the LDPC's "reg+i16" forms). 7 since 2026-11-02: the
 // ai: front's `trace` (TRACE, each quad's bend, in both rounds' grids) and HYP doubled (SCORE's bend bit).
-static constexpr int TREE_VERSION = 7;
+// ai: 8 since 2026-11-06: REFIT's and REFIT_POST's layouts seven bindings (the eighth, REFIT's debug words, gone).
+static constexpr int TREE_VERSION = 8;
 
 Consts Consts::of(const json& c) {
   Consts k;
   k.LEVELS = c["LEVELS"]; k.COUNTERS = c["COUNTERS"]; k.RESULT = c["RESULT"]; k.SEL_WORDS = c["SEL_WORDS"]; k.TS_MAX = c["TS_MAX"]; k.TS_PLAIN = c["TS_PLAIN"];
   k.VOTE_READS = c["VOTE_READS"]; k.PEAK_LIST = c["PEAK_LIST"]; k.R2_N = c["R2_N"]; k.RING_SLACK = c["RING_SLACK"]; k.K = c["K"]; k.CELL = c["CELL"]; k.HYP = c["HYP"]; k.RING_COUNT = c["RING_COUNT"];
-  k.NODES_MAX = c["NODES_MAX"]; k.RESID = c["RESID"]; k.REFIT_DBG = c["REFIT_DBG"]; k.PYRAMID_BLOCK = c["PYRAMID_BLOCK"];
+  k.NODES_MAX = c["NODES_MAX"]; k.RESID = c["RESID"]; k.PYRAMID_BLOCK = c["PYRAMID_BLOCK"];
   k.TAU = c["TAU"]; k.EPS = c["EPS"];
   k.TILE = c["TILE"]; k.B_CEIL = c["B_CEIL"]; k.CAP_MS = c["CAP_MS"];
   k.TWIN_FRAMES = c["TWIN_FRAMES"]; k.TWIN_ROUNDS = c["TWIN_ROUNDS"]; k.VERSION_MIN = c["VERSION_MIN"]; k.VERSION_MAX = c["VERSION_MAX"]; k.SLOTS = c["SLOTS"];
@@ -220,12 +221,11 @@ std::unique_ptr<Lane> FrontHalf::lane(int Bl) {
   // ai: decoder.mjs lane: the anchors' records, ANCH_FIND's and ANCH_FIT's
   ln->anchBuf = mk(16ull * C.ANCH_K * B, STORAGE | COPY_SRC);
   ln->arecBuf = mk(16ull * C.ANCH_REC * B, STORAGE | COPY_SRC);
-  ln->refitDbg = mk(4ull * C.REFIT_DBG * B, STORAGE | COPY_SRC | COPY_DST);
   auto refit = P("refit"), pick = P("pick");
-  ln->refitGroup = dev.createBindGroup(refit.bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni"), ln->refitDbg});
+  ln->refitGroup = dev.createBindGroup(refit.bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni")});
   // ai: decoder.mjs lane: F7's last step on REFIT's bindings
-  ln->refitPostGroup = dev.createBindGroup(P("refitPost").bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni"), ln->refitDbg});
-  // ai: decoder.mjs lane: the anchors' refit (gpu/glsl/anchors.mjs ANCH_REFIT) on REFIT_POST's bindings but its debug, the
+  ln->refitPostGroup = dev.createBindGroup(P("refitPost").bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni")});
+  // ai: decoder.mjs lane: the anchors' refit (gpu/glsl/anchors.mjs ANCH_REFIT) on REFIT_POST's bindings, then the
   // ai: anchors' records, F8's lattice and the anchors' uniform (no texture, so made with the lane)
   ln->anchRefitGroup = dev.createBindGroup(anchRefit.bgl, {ln->framesBuf, FBP("nodesBuf"), ln->selBuf, ln->measBuf, ln->mapsBuf, ln->residBuf, FBP("fitUni"), ln->anchBuf, FBP("wordLatUni"), anchUni});
   ln->pickGroup = dev.createBindGroup(pick.bgl, {ln->framesBuf, ln->quadsBuf, ln->scoreBuf, ln->mapsBuf, ln->selBuf, ln->resultBuf, FBP("pickUni")});
@@ -490,7 +490,7 @@ void FrontHalf::plan(uint32_t w, uint32_t h) {
     const double perFrame = (double)probe->laneBytes - backBytes + backBytes / Bb;
     // ai: The largest buffer a frame (the back lane's at a share of bh.B, the readback's back half share likewise).
     double largest = 0;
-    auto front1 = {probe->peaksBuf, probe->framesBuf, probe->mapsBuf, probe->countsBuf, probe->readingsBuf, probe->candBuf, probe->quadsBuf, probe->scoreBuf, probe->selBuf, probe->resultBuf, probe->measBuf, probe->residBuf, probe->refitDbg, probe->rawBuf, probe->accBuf, probe->anchBuf, probe->arecBuf};
+    auto front1 = {probe->peaksBuf, probe->framesBuf, probe->mapsBuf, probe->countsBuf, probe->readingsBuf, probe->candBuf, probe->quadsBuf, probe->scoreBuf, probe->selBuf, probe->resultBuf, probe->measBuf, probe->residBuf, probe->rawBuf, probe->accBuf, probe->anchBuf, probe->arecBuf};
     for (auto& b : front1) if (b) largest = std::max(largest, (double)b->size);
     for (auto& l : probe->level) largest = std::max(largest, (double)l.buf->size);
     for (auto& l : probe->fcn2Levels) if (l.plane) largest = std::max(largest, (double)l.plane->size);

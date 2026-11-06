@@ -189,20 +189,20 @@ int lizard_debug(lizard_t *f, int on, const int8_t **sym, const float **coef);
 // the information per coded bit its sub-channels were estimated to hold before decoding.
 void lizard_block_stats(const lizard_t *f, const int8_t **its, const float **est);
 // ok[b] = 1 where block b passed its checksum. Returns the count.
-int lizard_decode(const lizard_t *f, const uint8_t *img, int iw, int ih, float gamma, int mesh, uint8_t *blocks, uint8_t *ok, ob_result_t *res);
+int lizard_decode(const lizard_t *f, const uint8_t *img, int iw, int ih, float gamma, uint8_t *blocks, uint8_t *ok, ob_result_t *res);
 // The same decode in two halves, so the sampler can run somewhere the caller cannot wait on inline: a GPU fence
 // costs more than the stage does unless several frames are outstanding, and one blocking call can have one.
 // lizard_acquire registers the symbol and holds the result; lizard_finish takes it up again, sampling the held
 // image itself when grid is NULL or reading the caller's grid when it is not. lizard_decode is the two in a row.
 // The image the caller passed must outlive the matching lizard_finish, and a supplied grid is scratch: the
 // transform runs in place over it. grid layout: strip s of LIZARD_STRIP columns at s * n * LIZARD_STRIP, n rows.
-int lizard_acquire(const lizard_t *f, const uint8_t *img, int iw, int ih, float gamma, int mesh, ob_result_t *res);
+int lizard_acquire(const lizard_t *f, const uint8_t *img, int iw, int ih, float gamma, ob_result_t *res);
 // ai: A receiver told nothing (2026-09-27). rings: a
 // ai: codec a ring (LIZARD_RING), whose layouts the finder registers against, a bounded search over the side counts
 // ai: like the eight orientations; the one that registered comes back in *which, holding the registration, with the
 // ai: format word read (lizard_fmt_rx). The word names the sub-channels, so the picture; the caller hands the
 // ai: registration to the codec for that picture in that ring (lizard_hand_over) and finishes there.
-int lizard_acquire_ring(const lizard_t *const *rings, int k, const uint8_t *img, int iw, int ih, float gamma, int mesh, ob_result_t *res, int *which);
+int lizard_acquire_ring(const lizard_t *const *rings, int k, const uint8_t *img, int iw, int ih, float gamma, ob_result_t *res, int *which);
 // ai: The registration `from` holds, moved to `to`, a codec of the same ring (the same layout) at the picture the word
 // ai: named; `to` reads the word again and finishes the frame. 0 when from holds nothing or the rings differ.
 int lizard_hand_over(const lizard_t *from, const lizard_t *to);
@@ -230,7 +230,7 @@ void lizard_paint_rgba(const lizard_t *f, const float *drive, uint8_t *rgba);
 // ai: 2026-10-07): grey holds W^2 bytes, the margin 255, every level as lizard_paint_rgba's.
 void lizard_paint_grey(const lizard_t *f, const float *drive, uint8_t *grey);
 // The same with the quad found elsewhere: eight floats in image pixels, its orientation and its track score.
-int lizard_acquire_quad(const lizard_t *f, const uint8_t *img, int iw, int ih, float gamma, int mesh, ob_result_t *res,
+int lizard_acquire_quad(const lizard_t *f, const uint8_t *img, int iw, int ih, float gamma, ob_result_t *res,
                        const float *quad, int orient, float score);
 int lizard_finish(const lizard_t *f, float *grid, uint8_t *blocks, uint8_t *ok, ob_result_t *res);
 // The same with the soft values already quantised somewhere else: ext_llr is subch runs of 2 * LIZARD_SUB int8,

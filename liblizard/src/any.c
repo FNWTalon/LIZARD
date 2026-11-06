@@ -38,12 +38,12 @@ static lizard_t *pic_for(lizard_any_t *a, int r, int n, int subch) {
   a->pic_n[slot] = n; a->pic_subch[slot] = subch; a->pic_ring[slot] = r; a->pic_used[slot] = ++a->pic_clock; a->builds++;
   return &a->pic[slot];
 }
-int lizard_any_frame(lizard_any_t *a, const uint8_t *img, int iw, int ih, float gamma, int mesh, uint8_t *blocks, uint8_t *ok, int held, ob_result_t *res) {
+int lizard_any_frame(lizard_any_t *a, const uint8_t *img, int iw, int ih, float gamma, uint8_t *blocks, uint8_t *ok, int held, ob_result_t *res) {
   const lizard_t *rs[LIZARD_RINGS];
   for (int r = 0; r < LIZARD_RINGS; r++) rs[r] = &a->ring[r];
   int wi;
   a->which = -1; a->n = 0; a->held = 0; a->last = 0;
-  if (!a->ready || !lizard_acquire_ring(rs, LIZARD_RINGS, img, iw, ih, gamma, mesh, res, &wi)) return 0;
+  if (!a->ready || !lizard_acquire_ring(rs, LIZARD_RINGS, img, iw, ih, gamma, res, &wi)) return 0;
   a->which = wi;
   const ob_fmt_t *fm = lizard_fmt_rx(&a->ring[wi]);
   const int version = fm ? fm->version : held, known = version >= OB_FMT_VERSION_MIN && version <= OB_FMT_VERSION_MAX;

@@ -102,12 +102,12 @@ export class LizardAny {
   // ai: frame read, or null), builds (pictures built since the setup), ok and blocks (as many as the finished version's own codec carries,
   // ai: its rate profile's blocks), pilot (what the pilots read: { r, sd, r2, sd2, blocks }, or null). rgba: img is a
   // ai: canvas's RGBA, made luma in wasm as Lizard.decode does.
-  decode(img, iw, ih, { gamma = 1, mesh = 2, held = 0, rgba = false, axis = null } = {}) {
+  decode(img, iw, ih, { gamma = 1, held = 0, rgba = false, axis = null } = {}) {
     setAxis(axis);
     let pLuma;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
-    const n = M._lizard_any_rx(pLuma, iw, ih, gamma, mesh, this.pBlocks, this.pOk, held), r = M._ob_last();
+    const n = M._lizard_any_rx(pLuma, iw, ih, gamma, this.pBlocks, this.pOk, held), r = M._ob_last();
     const T = M._lizard_any_blocks();
     return { n, ring: M._lizard_any_which(), pictureN: M._lizard_any_n(), held: !!M._lizard_any_held(), builds: M._lizard_any_builds?.() ?? 0, found: M.HEAP32[r >> 2],
       quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
@@ -224,14 +224,12 @@ export class Lizard {
   align() { this.pAlign ??= M._malloc(8); if (!M._lizard_align_get || !M._lizard_align_get(this.pAlign)) return [0, 0]; return Array.from(M.HEAPF32.subarray(this.pAlign >> 2, (this.pAlign >> 2) + 2)); }
   blockStats() { const pi = M._lizard_blk_its(), pe = M._lizard_blk_est() >> 2; return { its: Array.from(new Int8Array(M.HEAPU8.buffer, pi, this.blocks)), est: Array.from(M.HEAPF32.subarray(pe, pe + this.blocks)) }; }
   read() { const p = M._lizard_dbg_coef() >> 2; return M.HEAPF32.slice(p, p + 2 * 320 * this.subch); }
-  // mesh: 0 the homography alone, any other the border mesh (the lens model and a Coons patch from the border's nodes,
-  // research/06).
-  decode(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null } = {}) {
+  decode(img, iw, ih, { gamma = 1, rgba = false, axis = null } = {}) {
     setAxis(axis);
     let pLuma = 0;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
-    const n = M._lizard_rx(pLuma, iw, ih, gamma, mesh, this.pBlocks, this.pOk), r = M._ob_last();
+    const n = M._lizard_rx(pLuma, iw, ih, gamma, this.pBlocks, this.pOk), r = M._ob_last();
     // quad: the lattice corners the frame finder settled on, TL TR BR BL in image pixels (src/ob.h ob_result_t). A
     // locate pass needs it to know what to crop to.
     return { n, found: M.HEAP32[r >> 2], quad: Array.from({ length: 8 }, (_, k) => M.HEAPF32[(r + 8 + 4 * k) >> 2]),
@@ -248,14 +246,14 @@ export class Lizard {
   //
   // The image buffer must stay put until rxFinish: src/lizard_phy.c holds a pointer to it, not a copy. Since it is
   // this object's own pImg, the only way to break that is to call rxAcquire twice.
-  rxAcquire(img, iw, ih, { gamma = 1, mesh = 2, rgba = false, axis = null } = {}) {
+  rxAcquire(img, iw, ih, { gamma = 1, rgba = false, axis = null } = {}) {
     setAxis(axis);
     let pLuma = 0;
     if (rgba) pLuma = lumaOf(img, iw * ih);
     else { if (img.length > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(img.length); this.imgCap = img.length; } M.HEAPU8.set(img, this.pImg); pLuma = this.pImg; }
     this.pDims ??= M._malloc(16);
     this.pState ??= M._malloc(4 * Lizard.STATE);
-    if (!M._lizard_rx_acquire(pLuma, iw, ih, gamma, mesh, this.pDims, this.pState)) return null;
+    if (!M._lizard_rx_acquire(pLuma, iw, ih, gamma, this.pDims, this.pState)) return null;
     const d = M.HEAP32.subarray(this.pDims >> 2, (this.pDims >> 2) + 4), nx = d[0], ny = d[1], n = d[2];
     const st = M.HEAPF32.subarray(this.pState >> 2, (this.pState >> 2) + Lizard.STATE);
     let k = 0;
@@ -267,14 +265,14 @@ export class Lizard {
   // ai: holds, so the nodes and the word it reads there mean nothing. It is a placeholder for a caller that hands
   // ai: rxFinish its own grid (gridView), the one thing rxFinish then reads. The buffer is this object's, never a null,
   // ai: so those reads land in its own memory and not at address zero.
-  rxAcquireQuadNoImage(iw, ih, quad, orient = 0, score = 1, { gamma = 1, mesh = 2 } = {}) {
+  rxAcquireQuadNoImage(iw, ih, quad, orient = 0, score = 1, { gamma = 1 } = {}) {
     const n = iw * ih;
     if (n > this.imgCap) { if (this.pImg) M._free(this.pImg); this.pImg = M._malloc(n); this.imgCap = n; }
     this.pDims ??= M._malloc(16);
     this.pState ??= M._malloc(4 * Lizard.STATE);
     this.pQuad ??= M._malloc(32);
     M.HEAPF32.set(quad, this.pQuad >> 2);   // a raw export takes a pointer; an Array coerces to 0 and the C runs its own finder
-    if (!M._lizard_rx_acquire_quad(this.pImg, iw, ih, gamma, mesh, this.pQuad, orient, score, this.pDims, this.pState)) return null;
+    if (!M._lizard_rx_acquire_quad(this.pImg, iw, ih, gamma, this.pQuad, orient, score, this.pDims, this.pState)) return null;
     const d = M.HEAP32.subarray(this.pDims >> 2, (this.pDims >> 2) + 4), nx = d[0], ny = d[1], nn = d[2];
     const st = M.HEAPF32.subarray(this.pState >> 2, (this.pState >> 2) + Lizard.STATE);
     let k = 0;
@@ -285,7 +283,7 @@ export class Lizard {
   // The same registration from a quad found somewhere else.
   // The image is still needed: ob_acquire_quad reads the border for the track score, refines the corner nodes
   // and fills the mesh, so a GPU finder removes the SEARCH from the CPU and not the pixels.
-  rxAcquireQuad(img, iw, ih, quad, orient = 0, score = 1, { gamma = 1, mesh = 2, rgba = false, axis = null } = {}) {
+  rxAcquireQuad(img, iw, ih, quad, orient = 0, score = 1, { gamma = 1, rgba = false, axis = null } = {}) {
     setAxis(axis);
     let pLuma = 0;
     if (rgba) pLuma = lumaOf(img, iw * ih);
@@ -294,7 +292,7 @@ export class Lizard {
     this.pState ??= M._malloc(4 * Lizard.STATE);
     this.pQuad ??= M._malloc(32);
     M.HEAPF32.set(quad, this.pQuad >> 2);
-    if (!M._lizard_rx_acquire_quad(pLuma, iw, ih, gamma, mesh, this.pQuad, orient, score, this.pDims, this.pState)) return null;
+    if (!M._lizard_rx_acquire_quad(pLuma, iw, ih, gamma, this.pQuad, orient, score, this.pDims, this.pState)) return null;
     const d = M.HEAP32.subarray(this.pDims >> 2, (this.pDims >> 2) + 4), nx = d[0], ny = d[1], n = d[2];
     const st = M.HEAPF32.subarray(this.pState >> 2, (this.pState >> 2) + Lizard.STATE);
     let k = 0;

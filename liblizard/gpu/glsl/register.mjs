@@ -10,7 +10,7 @@
 // ai: it is read. WGSL's storageBarrier() is common.mjs STORAGE_BARRIER.
 import { VERSION, SAMPLERLESS, DIMS, CONVERT, MAP, LEVEL_BINDINGS, zeros, uniformLoad, STORAGE_BARRIER } from "./common.mjs";
 import {
-  WINDOW, SUB, NODES_MAX, LIGHT_MAX, RESID, ROUND, latticeSide, WMIN, DELTA, ITERS, REFIT_DBG, SIDE_MAX, SIDE_NODES, LENS_P, lensIdx,
+  WINDOW, SUB, NODES_MAX, LIGHT_MAX, RESID, ROUND, latticeSide, WMIN, DELTA, ITERS, SIDE_MAX, SIDE_NODES, LENS_P, lensIdx,
 } from "../plan/register.mjs";
 
 const TMPL_MAX = WINDOW * WINDOW * SUB * SUB;
@@ -520,13 +520,11 @@ layout(set = 0, binding = 3, std430) readonly buffer Meas { vec4 meas[]; };
 layout(set = 0, binding = 4, std430) buffer Maps { float maps[][16]; };
 layout(set = 0, binding = 5, std430) buffer Resid { vec4 resid[]; };
 layout(set = 0, binding = 6, std140) uniform Fit { uvec4 count; uvec4 base; vec4 modules; } P;
-layout(set = 0, binding = 7, std430) buffer Dbg { float dbg[]; };
 ` + LENS + /* glsl */ `
 shared float JJ[64][36];
 shared float Jr[64][8];
 shared float Ag[44];
 shared float th[8];
-shared float lastStep;
 const int ITERS = ${ITERS};
 vec2 fwd(float t[8], vec2 m, vec2 c, float S) {
   float w = t[6] * m.x + t[7] * m.y + 1.0;
@@ -591,16 +589,7 @@ void main() {
       ${unroll(8, (a) => `${unroll(8, (b) => `N[${a}][${b}] *= D[${a}] * D[${b}];`)}\nN[${a}][${a}] = N[${a}][${a}] * 1.001 + 1e-9; N[${a}][8] = g[${a}] * D[${a}];`)}
       bool okSolve = true;
       ${gaussJordan("N", 8, 9, "1e-20", "okSolve")}
-      bool first = it == 0 && m0[13] == 0.0;
-      if (first) {
-        ${unroll(8, (a) => `dbg[f * ${REFIT_DBG}u + ${a}u] = th[${a}]; dbg[f * ${REFIT_DBG}u + ${44 + a}u] = g[${a}];`)}
-        ${unroll(36, (q) => `dbg[f * ${REFIT_DBG}u + ${8 + q}u] = A[${q}];`)}
-      }
-      if (okSolve) {
-        float st = 0.0;
-        ${unroll(8, (a) => `{ float d = D[${a}] * N[${a}][8] / N[${a}][${a}]; th[${a}] += d; st += d * d; }`)}
-        lastStep = sqrt(st);
-      } else { lastStep = -1.0; }
+      if (okSolve) { ${unroll(8, (a) => `th[${a}] += D[${a}] * N[${a}][8] / N[${a}][${a}];`)} }
     }
     barrier();
   }
@@ -612,8 +601,6 @@ void main() {
     mo[10] = c.x;
     mo[11] = c.y;
     mo[12] = inv;
-    mo[13] = m0[13] + 1.0;
-    mo[14] = lastStep;
     maps[f] = mo;
   }
 }
@@ -721,7 +708,6 @@ layout(set = 0, binding = 3, std430) readonly buffer Meas { vec4 meas[]; };
 layout(set = 0, binding = 4, std430) buffer Maps { float maps[][16]; };
 layout(set = 0, binding = 5, std430) buffer Resid { vec4 resid[]; };
 layout(set = 0, binding = 6, std140) uniform Fit { uvec4 count; uvec4 base; vec4 modules; } P;
-layout(set = 0, binding = 7, std430) buffer Dbg { float dbg[]; };
 ` + LENS + /* glsl */ `
 struct LensFrame { vec2 ctr; float sig; float smid; float ish; uint kmax; uint nw; uint on; };
 shared vec2 pn[${NODES_MAX}];
