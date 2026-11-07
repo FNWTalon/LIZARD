@@ -116,38 +116,48 @@ class Schedule {
   }
 }
 
+// One chunk made, the sender's step for each (and a pool's worker's: lizard-web/xfer-pool.mjs): its bytes as sent, its
+// zstd frame where that is shorter (Z given) else its own; a fountain over them where they are 2 blocks or more, else
+// the one block kept (one); its chaining value where the file has two chunks or more (cv).
+export function makeChunk(plain, c, chunkLog2, cv, { M, Encoder, Z = null }) {
+  let out = plain;
+  if (Z) { const f = Z.compress(plain); if (f && f.length < plain.length) out = f; }
+  const K = blocksOf(out.length), enc = K > 1 ? new Encoder(out, PAYLOAD) : null;
+  let v = null;
+  if (cv) {
+    const W = wasm(M), p = W.put(plain), o = M._malloc(32), rc = M._xfer_chunk_cv(p, plain.length, c, chunkLog2, o);
+    v = W.take(o, 32); M._free(p); M._free(o);
+    if (rc) throw new Error(`chaining value of chunk ${c}`);
+  }
+  return { sent: out.length, K, seed: enc ? enc.seed : 0, enc, one: enc ? null : out.slice(), cv: v };
+}
+
 export class XferSender {
   // bytes: the file. M: the codec's wasm module. Encoder: sim/fountain.mjs's, its init() already awaited. Z: sim/zstd.mjs's
-  // Z, its init() awaited, or null to send every chunk as it is (codec none).
-  constructor(bytes, { name = "", type = "", chunkLog2 = DEFAULT_LOG2, M, Encoder, Z = null }) {
-    const W = wasm(M), size = 2 ** chunkLog2, length = bytes.length;
+  // Z, its init() awaited, or null to send every chunk as it is (codec none). chunks: every chunk made elsewhere
+  // (makeChunk's results, two chunks or more; bytes null and length given), their fountains held by remote: its
+  // fetch(ids) gives a Map of id to block for the ids of those chunks, its free() lets them go.
+  constructor(bytes, { name = "", type = "", chunkLog2 = DEFAULT_LOG2, M, Encoder, Z = null, chunks = null, length = bytes?.length ?? 0, remote = null }) {
+    const W = wasm(M), size = 2 ** chunkLog2;
     if (!(chunkLog2 >= W.logMin && chunkLog2 <= W.logMax)) throw new Error(`chunk size 2^${chunkLog2} is outside 2^${W.logMin} to 2^${W.logMax}`);
     const C = Math.ceil(length / size);
     if (C > MAX_CHUNKS) throw new Error(`${length} B is ${C} chunks of 2^${chunkLog2}; the id carries ${MAX_CHUNKS}`);
+    if (chunks && (C < 2 || chunks.length !== C)) throw new Error("chunks made elsewhere: two or more, one a chunk");
     this.chunks = C; this.chunkLog2 = chunkLog2; this.size = size; this.length = length; this.codec = Z ? CODEC_ZSTD : CODEC_NONE;
     this.len = Array.from({ length: C }, (_, c) => Math.min(size, length - c * size));
-    // Each chunk compressed on its own and sent as its frame where that is shorter, else as it is; a fountain over the
-    // sent bytes where they are 2 blocks or more, else the one block kept here (one).
     this.sent = new Uint32Array(C); this.seed = new Uint8Array(C); this.K = new Uint32Array(C); this.enc = []; this.one = new Map();
+    this.cvs = C >= 2 ? new Uint8Array(32 * C) : null; this.remote = remote;
     for (let c = 0; c < C; c++) {
-      const plain = bytes.subarray(c * size, c * size + this.len[c]);
-      let out = plain;
-      if (Z) { const f = Z.compress(plain); if (f && f.length < plain.length) out = f; }
-      this.sent[c] = out.length; this.K[c] = blocksOf(out.length);
-      if (this.K[c] > 1) { const e = new Encoder(out, PAYLOAD); this.enc.push(e); this.seed[c] = e.seed; } else { this.enc.push(null); this.one.set(c, out.slice()); }
+      const k = chunks ? chunks[c] : makeChunk(bytes.subarray(c * size, c * size + this.len[c]), c, chunkLog2, C >= 2, { M, Encoder, Z });
+      this.sent[c] = k.sent; this.K[c] = k.K; this.seed[c] = k.seed; this.enc.push(k.enc ?? null);
+      if (k.one) this.one.set(c, k.one);
+      if (this.cvs) this.cvs.set(k.cv, 32 * c);
     }
     this.sentBytes = this.sent.reduce((a, b) => a + b, 0);
-    // The chaining values, their root (b3sum's answer), the header and the manifest.
+    // The chunks' chaining values' root (b3sum's answer), the header and the manifest.
     let root;
     const o = M._malloc(32);
     if (C >= 2) {
-      this.cvs = new Uint8Array(32 * C);
-      for (let c = 0; c < C; c++) {
-        const p = W.put(bytes.subarray(c * size, c * size + this.len[c]));
-        if (M._xfer_chunk_cv(p, this.len[c], c, chunkLog2, o)) throw new Error(`chaining value of chunk ${c}`);
-        this.cvs.set(M.HEAPU8.subarray(o, o + 32), 32 * c);
-        M._free(p);
-      }
       const pc = W.put(this.cvs);
       if (M._xfer_root(pc, C, o)) throw new Error("root");
       root = W.take(o, 32);
@@ -202,10 +212,12 @@ export class XferSender {
     const c = id >>> SYMBOL_BITS, s = id & SYMBOL_MASK;
     if (c === CONTROL) { out.set(s === 0 ? this.header : this.manifest[s - 1]); return out; }
     if (this.enc[c]) return this.enc[c].block(s, out);
-    out.fill(0); out.set(this.one.get(c));   // a chunk of one block, zero padded
+    const one = this.one.get(c);
+    if (!one) throw new Error(`block ${id}: its chunk's fountain is remote's (fetch it)`);
+    out.fill(0); out.set(one);   // a chunk of one block, zero padded
     return out;
   }
-  free() { for (const e of this.enc) e?.free(); this.enc = []; this.one.clear(); }
+  free() { for (const e of this.enc) e?.free(); this.enc = []; this.one.clear(); this.remote?.free(); this.remote = null; }
 }
 
 // A set of symbols, as bits, grown to the highest one seen: ids are dense from 0 up, a lap at a time.

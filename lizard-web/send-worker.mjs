@@ -23,7 +23,8 @@ import { makePhy } from "../liblizard/sim/phy.mjs";
 import { init as initOb } from "../liblizard/sim/ob.mjs";
 import { init as initFountain, Encoder } from "../liblizard/sim/fountain.mjs";
 import { init as initZstd, Z } from "../liblizard/sim/zstd.mjs";
-import { XferSender, isControlId } from "../liblizard/sim/xfer.mjs";
+import { isControlId } from "../liblizard/sim/xfer.mjs";
+import { makeXfer } from "./xfer-pool.mjs";
 
 let phy = null, xs = null, fps = 0, codes = 1, chain = Promise.resolve();
 // ai: The transfer made at a pick's first Start ("prepare", sent just before "start"; at the pick from 2026-10-19 to
@@ -34,7 +35,10 @@ function dropRun() {
   if (xs) { if (xsPick !== null && !made) made = { pick: xsPick, xs }; else xs.free(); }
   xs = null; xsPick = null;
 }
-const source = () => (id, out) => xs.block(id, out);
+// ai: a frame's blocks held by the pool's workers (xfer-pool.mjs), fetched before it is painted; the rest are xs's own
+let fetched = null;
+const source = () => (id, out) => { const b = fetched?.get(id); if (b) out.set(b); else xs.block(id, out); };
+async function fetchFor(ids) { fetched = ids && xs?.remote ? await xs.remote.fetch(ids) : null; }
 // ai: the gap between two codes, in modules (the page's slider, start and respec's gap), and in the paint's pixels for
 // ai: this codec (phy.cell samples a module)
 let gapModules = 0;
@@ -46,7 +50,7 @@ async function handle(m) {
     made?.xs.free(); made = null;
     try {
       await Promise.all([initFountain(), initZstd()]);
-      const x = new XferSender(new Uint8Array(m.bytes), { ...m.xfer, M: await initOb(), Encoder, Z });
+      const x = await makeXfer(new Uint8Array(m.bytes), m.xfer, { M: await initOb(), Encoder, Z });
       made = { pick: m.pick, xs: x };
       postMessage({ type: "prepared", pick: m.pick, sent: x.sentBytes });
     } catch (e) { postMessage({ type: "prepared", pick: m.pick, error: String(e?.message ?? e) }); }
@@ -60,7 +64,7 @@ async function handle(m) {
     } else if (m.bytes) {
       await Promise.all([initFountain(), initZstd()]);
       // ai: every chunk zstd-compressed where that is shorter (sim/xfer.mjs, 2026-10-05), before the first frame
-      xs = new XferSender(new Uint8Array(m.bytes), { ...m.xfer, M: await initOb(), Encoder, Z });
+      xs = await makeXfer(new Uint8Array(m.bytes), m.xfer, { M: await initOb(), Encoder, Z });
       phy.setSource(source());
     }
     fps = m.fps; phy.setFps?.(fps); codes = m.codes ?? 1; gapModules = m.gap;
@@ -80,6 +84,7 @@ async function handle(m) {
   } else if (m.type === "frame") {
     if (!phy) return;
     const t = performance.now(), V = phy.blocksPerFrame, ids = xs ? xs.frameIds(V * codes) : null;
+    await fetchFor(ids);
     // ai: Each symbol's pixels are a view into the wasm heap, good until the next paint, so each is copied row by row
     // ai: into its place (side k of codes) before the next is painted. The page hands its last buffer back to be filled.
     // ai: Two codes sit a gap of gapModules apart (since 2026-09-30; packed to their quiet zones before), the gap the
@@ -108,8 +113,14 @@ async function handle(m) {
     if (!phy) return;
     const t = performance.now(), V = phy.blocksPerFrame, B = phy.usefulBytes + 4, per = codes * V * B, bytes = m.count * per;
     const out = m.buf && m.buf.byteLength === bytes ? new Uint8Array(m.buf) : new Uint8Array(bytes), data = [];
+    const all = xs ? Array.from({ length: m.count }, () => xs.frameIds(V * codes)) : null;
+    if (all) {
+      const flat = new Uint32Array(m.count * V * codes);
+      all.forEach((f, k) => flat.set(f, k * V * codes));
+      await fetchFor(flat);
+    }
     for (let f = 0; f < m.count; f++) {
-      const ids = xs ? xs.frameIds(V * codes) : null, base = m.baseId + f * V * codes;
+      const ids = all ? all[f] : null, base = m.baseId + f * V * codes;
       for (let k = 0; k < codes; k++) out.set(phy.frameBlocks(m.seq + f, ids ? ids.slice(k * V, (k + 1) * V) : base + k * V), f * per + k * V * B);
       data.push(ids ? ids.filter((id) => !isControlId(id)).length : V * codes);
     }

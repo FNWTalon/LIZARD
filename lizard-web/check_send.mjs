@@ -65,8 +65,9 @@ import { extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makePhy, blindSpec } from "../liblizard/sim/phy.mjs";
 import { init as initOb } from "../liblizard/sim/ob.mjs";
-import { init as initWh, Decoder } from "../liblizard/sim/fountain.mjs";
-import { XferReceiver, MemoryStore, ID_HEADER, blake3, hex } from "../liblizard/sim/xfer.mjs";
+import { init as initWh, Decoder, Encoder } from "../liblizard/sim/fountain.mjs";
+import { init as initZstd, Z } from "../liblizard/sim/zstd.mjs";
+import { XferSender, XferReceiver, MemoryStore, ID_HEADER, blake3, hex, isControlId } from "../liblizard/sim/xfer.mjs";
 import { N_FOR, NAME, SPAN, RING_DEFAULT, LIZARD_BITMAP, MODULES, OB_QUIET, pickVersion, blocksFor, subchOf, versionOf } from "../liblizard/sim/lizard_pick.mjs";
 import { tabs, open, evaluate, navigate } from "./phone.mjs";
 import { bundle } from "./tar.mjs";
@@ -96,6 +97,11 @@ const scratch = mkdtempSync(join(tmpdir(), "lizard-send-")), filePath = join(scr
 const fileBytes = new Uint8Array(FILE_BYTES);
 for (let i = 0, v = 7; i < fileBytes.length; i++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; fileBytes[i] = v >>> 16; }
 writeFileSync(filePath, fileBytes);
+// ai: a file of four chunks (the last 12,345 B), so the page's pool of workers makes its transfer (xfer-pool.mjs, 2026-11-06):
+// ai: every data block read is held to the serial sender's block of that id (sim/xfer.mjs XferSender)
+const bigPath = join(scratch, "check-big.bin"), bigBytes = new Uint8Array(3 * 2 ** 22 + 12345);
+for (let i = 0, v = 11; i < bigBytes.length; i++) { v = (Math.imul(v, 1103515245) + 12345) >>> 0; bigBytes[i] = v >>> 16; }
+writeFileSync(bigPath, bigBytes);
 // ai: the bundles' files: a second one beside it, and a folder of the file and a text one level down
 const twoPath = join(scratch, "check-two.txt"), dirPath = join(scratch, "check-folder");
 writeFileSync(twoPath, "the second file\n");
@@ -120,7 +126,7 @@ for (let t = 0; t < 50 && !s; t++) { try { const list = await tabs(DEVTOOLS); if
 if (!s) { cleanup(); throw new Error("no DevTools session on the local Chrome"); }
 
 const M = await initOb();
-await initWh();
+await Promise.all([initWh(), initZstd()]);
 const phy = await makePhy(blindSpec());
 
 // ai: The page's canvas as luma (the rig's formula, src/acquire.c), with the #tx line that says what was painted. The
@@ -177,20 +183,20 @@ const pageLine = (g) => `  page: ${g.state} | ${g.nums} | ${g.tx.split("\n").sli
 const faults = [];
 // ai: 496 (version 31, an odd version, 60 blocks under the rate profile): set as the slider sets it (488, version 61 of
 // ai: the 8-sub-channel ladder, from 2026-10-01 to 2026-10-29)
-for (const c of [{ subch: 96 }, { subch: 64 }, { subch: 496 }, { subch: 96, file: true }, { subch: 96, file: true, bundle: "files" }, { subch: 96, file: true, bundle: "folder" }, { subch: "auto" }, { subch: "auto", margin: 20 }, { subch: "auto", codes: 2 }, { subch: "auto", codes: 2, spacing: 4 }, { subch: "auto", codes: 2, spacing: 44, respacing: 8 }, { subch: "auto", midStream: true }]) {
+for (const c of [{ subch: 96 }, { subch: 64 }, { subch: 496 }, { subch: 96, file: true }, { subch: 96, file: true, big: true }, { subch: 96, file: true, bundle: "files" }, { subch: 96, file: true, bundle: "folder" }, { subch: "auto" }, { subch: "auto", margin: 20 }, { subch: "auto", codes: 2 }, { subch: "auto", codes: 2, spacing: 4 }, { subch: "auto", codes: 2, spacing: 44, respacing: 8 }, { subch: "auto", midStream: true }]) {
   const codes = c.codes ?? 1;
   const bun = c.bundle ? BUNDLES[c.bundle] : null;
-  let name = `LIZARD-${c.subch}${bun ? `, ${bun.made.name} (${bun.made.files} files, ${bun.bytes.length} B)` : c.file ? `, a ${FILE_BYTES} B file` : ", test stream"}${c.margin !== undefined ? `, margin ${c.margin}` : ""}${c.spacing !== undefined ? `, spacing ${c.spacing}` : ""}`;
+  let name = `LIZARD-${c.subch}${bun ? `, ${bun.made.name} (${bun.made.files} files, ${bun.bytes.length} B)` : c.big ? `, a ${bigBytes.length} B file of 4 chunks` : c.file ? `, a ${FILE_BYTES} B file` : ", test stream"}${c.margin !== undefined ? `, margin ${c.margin}` : ""}${c.spacing !== undefined ? `, spacing ${c.spacing}` : ""}`;
   // ai: The window's frame takes rows even headless (1920 x 937 of 1920 x 1080), so the auto case sets the page's viewport.
   if (c.subch === "auto") await s.send("Emulation.setDeviceMetricsOverride", { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false });
   await navigate(s, `http://127.0.0.1:${HTTP}/lizard-web/${process.env.APP ? "app/" : ""}send.html?${c.subch === "auto" ? `subch=auto&fps=${FPS}&payload=test&auto` : `subch=${c.subch}&fps=${FPS}${c.file ? "&payload=file" : "&payload=test&auto"}`}${codes > 1 ? `&codes=${codes}` : ""}${c.margin !== undefined ? `&margin=${c.margin}` : ""}${c.spacing !== undefined ? `&spacing=${c.spacing}` : ""}${GPU ? "&enc=gpu" : ""}`);
   if (c.file) {
     // ai: The file picked as a user picks one: into the file input, then the start button.
     const doc = await s.send("DOM.getDocument"), { nodeId } = await s.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: bun?.input ?? "#file" });
-    await s.send("DOM.setFileInputFiles", { nodeId, files: bun?.paths ?? [filePath] });
+    await s.send("DOM.setFileInputFiles", { nodeId, files: bun?.paths ?? [c.big ? bigPath : filePath] });
     // ai: the pick's ready line under the upload's card (#choice, 2026-11-06; the column's #state before), a bundle's
     // ai: naming its files (a folder's change event comes once Chrome has listed it)
-    const wantReady = bun ? `${bun.made.name}, ${bun.made.files} files, ` : "check-send.bin, ";
+    const wantReady = bun ? `${bun.made.name}, ${bun.made.files} files, ` : c.big ? "check-big.bin, " : "check-send.bin, ";
     let ready = "";
     for (let t = 0; t < 50 && !ready.startsWith(wantReady); t++) { ready = await evaluate(s, `document.getElementById("choice").textContent`); if (!ready.startsWith(wantReady)) await new Promise((ok) => setTimeout(ok, 100)); }
     if (!ready.startsWith(wantReady)) faults.push(`${name}: the ready line says "${ready}"`);
@@ -213,6 +219,7 @@ for (const c of [{ subch: 96 }, { subch: 64 }, { subch: 496 }, { subch: 96, file
   // ai: (2026-09-29: one blind grab a case failed a good run about 2% of the time). Read by neither, it is
   // ai: judged as it is and fails.
   let out = null, header = null, frames = 0, blocks = 0, missed = 0;
+  const read = [];
   for (let k = 0; k < (c.file ? GRABS : 1) + missed; k++) {
     out = await readOnce(codes); frames++;
     const miss = out.halves.findIndex((h) => !h.fmt);
@@ -220,15 +227,15 @@ for (const c of [{ subch: 96 }, { subch: 64 }, { subch: 496 }, { subch: 96, file
       const t = await readTold({ img: out.imgs[miss], W: out.W, H: out.H }, [subch]);
       if (t && t.r.bad === 0) { missed++; console.log(`  a grab missed blind${codes > 1 ? ` (half ${miss})` : ""}, read told: ${t.r.seen} blocks, 0 bad; grabbed again`); continue; }
     }
-    blocks += out.r.seen;
+    blocks += out.r.seen; read.push(...out.r.got);
     const h = out.r.got.find((b) => b.id === ID_HEADER);
     if (h) { const rx = new XferReceiver({ M, Decoder, store: new MemoryStore() }); await rx.add(ID_HEADER, h.bytes); header = rx.progress().header; break; }
   }
   const { g, r } = out, v = versionOf(subch), wordOk = r.fmt?.version === v && r.fmt?.fps === FPS, blocksOk = r.seen > 0 && r.bad === 0;
   // ai: a file's line carries its size, and what it was compressed to where zstd shrank it (2026-10-05): random bytes do not shrink
   // ai: its figures kept whole by no-break spaces (send.mjs sizeText, 2026-10-23), read as spaces here
-  const state = g.state.replace(/\u00a0/g, " "), stateOk = bun ? state.startsWith(`Sending ${bun.made.name}, `) : state === (c.file ? "Sending check-send.bin, 50 KB (50 KB raw)" : "Sending");
-  const want = bun ? { name: bun.made.name, type: "application/x-tar", bytes: bun.bytes } : { name: "check-send.bin", bytes: fileBytes };
+  const state = g.state.replace(/\u00a0/g, " "), stateOk = bun ? state.startsWith(`Sending ${bun.made.name}, `) : c.big ? state.startsWith("Sending check-big.bin, ") : state === (c.file ? "Sending check-send.bin, 50 KB (50 KB raw)" : "Sending");
+  const want = bun ? { name: bun.made.name, type: "application/x-tar", bytes: bun.bytes } : c.big ? { name: "check-big.bin", bytes: bigBytes } : { name: "check-send.bin", bytes: fileBytes };
   const root = hex(blake3(M, want.bytes)), headerOk = !c.file || (header && header.name === want.name && header.length === want.bytes.length && header.root === root && (!want.type || header.type === want.type));
   console.log(`${name}: canvas ${g.w} x ${g.h}, picture n = ${r.n} (want ${N_FOR(subch)}), word ${r.fmt ? `version ${r.fmt.version} at ${r.fmt.fps} fps` : "not read"}, ${r.seen} blocks verified, ${r.bad} bad${c.file ? `; ${frames} frames read, ${blocks} blocks, header ${header ? `${header.name}, ${header.length} B, root ${header.root.slice(0, 16)}...` : "not read"}` : ""}`);
   const enc = encoderOf(g);
@@ -238,6 +245,13 @@ for (const c of [{ subch: 96 }, { subch: 64 }, { subch: 496 }, { subch: 96, file
   if (!blocksOk) faults.push(`${name}: ${r.seen} blocks, ${r.bad} bad`);
   if (r.n !== N_FOR(subch)) faults.push(`${name}: registered at n = ${r.n}`);
   if (!stateOk) faults.push(`${name}: the state line says "${g.state}"`);
+  if (c.big) {
+    const ref = new XferSender(bigBytes, { name: "check-big.bin", M, Encoder, Z }), x = new Uint8Array(472), data = read.filter((b) => !isControlId(b.id));
+    const chunks = new Set(data.map((b) => b.id >>> 18)), differ = data.filter((b) => { ref.block(b.id, x); return b.bytes.some((v, i) => v !== x[i]); }).length;
+    ref.free();
+    console.log(`  the pool's blocks: ${data.length} data blocks of ${chunks.size} chunks held to the serial sender's, ${differ} differ`);
+    if (!data.length || chunks.size < 2 || differ) faults.push(`${name}: ${data.length} data blocks of ${chunks.size} chunks read, ${differ} not the serial sender's`);
+  }
   if (!headerOk) faults.push(`${name}: the header read is not the file's (want ${want.name}, ${want.bytes.length} B, root ${root.slice(0, 16)}...${want.type ? `, ${want.type}` : ""})`);
   // ai: Two codes: the right half read on its own as well, its word the same, its blocks verified and none of its ids
   // ai: the left's (the page gives the second symbol the frame's next blocksPerFrame ids).
