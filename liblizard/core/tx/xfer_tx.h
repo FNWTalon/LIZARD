@@ -70,7 +70,6 @@ class XferTx {
   size_t size_;
   uint32_t chunks_ = 0;
   const uint8_t* data_ = nullptr;
-  size_t length_ = 0;
   std::atomic<uint32_t> lap_{0};
   std::atomic<uint64_t> sentBytes_{0};
   std::vector<uint8_t> cvs_;     // ai: every chunk's chaining value (two chunks or more)
