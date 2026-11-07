@@ -56,7 +56,8 @@ object Readout {
     // ai: after), for Parts.kt NameLine to hold its head on one line (2026-10-23); size: a received file's own (its size,
     // ai: or a bundle's count of files), for Receive.kt's card (2026-11-06)
     data class Line(val text: String, val tone: Tone = Tone.Plain, val nums: String = "", val frac: Double? = null,
-                    val before: String = "", val name: String? = null, val after: String = "", val size: String = "")
+                    val before: String = "", val name: String? = null, val after: String = "", val size: String = "",
+                    val files: Int = 0)   // ai: files: how many a received file holds (a bundle's, else 1); 0 none in
 
     // ai: What the native receiver says (its stats JSON: liblizard/core/rx/receiver.h stats) that the screen reads.
     data class Rx(
@@ -109,7 +110,7 @@ object Readout {
             val after = ", ${if (files > 0) "$files ${if (files == 1) "file" else "files"}, " else ""}${bytes(rx.size)} in ${String.format(Locale.ROOT, "%.1f", rx.secs)}${NB}s${received(rx)}" +
                 (if (rx.sent in 1 until rx.size) ", ${bytes(rx.sent)} sent" else "")
             Line("Received ${rx.name}$after", Tone.Good, frac = 1.0, before = "Received ", name = rx.name, after = after,
-                size = if (files > 0) "$files ${if (files == 1) "file" else "files"}" else bytes(rx.size))
+                size = if (files > 0) "$files ${if (files == 1) "file" else "files"}" else bytes(rx.size), files = maxOf(files, 1))
         }
         // ai: nothing while the camera is off (2026-10-02); the screen draws no empty line
         !on -> Line("")

@@ -106,7 +106,7 @@ interface HomeHost {
     fun deletePartial(p: Partial)
     val files: List<FileItem>
     fun deleteAll()
-    val note: String                 // ai: what came of a Save or a filing; "" none
+    val note: String                 // ai: a Save's or a filing's failure, in red; "" none (a Save that works says nothing, 2026-11-06)
     val about: String
 }
 
@@ -137,7 +137,7 @@ private fun HomeColumn(h: HomeHost) {
         if (files.isNotEmpty()) SectionLabel("Received files")
         // ai: keyed by the file, so a row's menu and its question stay with it when a file is filed above it meanwhile
         files.forEachIndexed { i, e -> key(e.key) { FileRow(h, e, last = i == files.lastIndex) } }
-        h.note.let { if (it.isNotEmpty()) Text(it, style = MaterialTheme.typography.bodyMedium, color = if (it.startsWith("Saved")) Muted else Bad, modifier = Modifier.padding(top = 8.dp)) }
+        h.note.let { if (it.isNotEmpty()) Text(it, style = MaterialTheme.typography.bodyMedium, color = Bad, modifier = Modifier.padding(top = 8.dp)) }
         HomeSettings(h)
     }
 }
@@ -208,7 +208,7 @@ fun BundleScreen(name: String, files: Int, size: Long, acts: List<Act>, items: L
         Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             for (a in acts) Btn(a.label, modifier = Modifier.weight(1f)) { a.run() }
         }
-        if (note.isNotEmpty()) Text(note, style = MaterialTheme.typography.bodyMedium, color = if (note.startsWith("Saved")) Muted else Bad, modifier = Modifier.padding(bottom = 8.dp))
+        if (note.isNotEmpty()) Text(note, style = MaterialTheme.typography.bodyMedium, color = Bad, modifier = Modifier.padding(bottom = 8.dp))
         items.forEachIndexed { i, it -> key(it.path) {
             ListRow(it.path, Readout.bytes(it.size), lead = Icons.file, divider = i != items.lastIndex, onClick = it.open) { MoreMenu("More for ${it.path}", it.acts) }
         } }
@@ -269,7 +269,7 @@ private fun HomeWide(h: HomeHost) {
                         Heading("Received files")
                         EmptyBox("No received files")
                     }
-                    h.note.let { if (it.isNotEmpty()) Text(it, style = MaterialTheme.typography.bodyMedium, color = if (it.startsWith("Saved")) Muted else Bad, modifier = Modifier.padding(top = 12.dp)) }
+                    h.note.let { if (it.isNotEmpty()) Text(it, style = MaterialTheme.typography.bodyMedium, color = Bad, modifier = Modifier.padding(top = 12.dp)) }
                     Spacer(Modifier.height(48.dp))
                 }
             }

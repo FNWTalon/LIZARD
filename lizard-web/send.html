@@ -13,6 +13,9 @@
   .bar{padding:0 16px}
   #side{flex:none;padding:12px 16px 8px;border-bottom:1px solid var(--line)}
   #side .row>button,#side .row>.btn{flex:1 1 0}
+  /* ai: the sending row's buttons 16 px in from their ends, the PC's (lizard-ui Send.kt Side: pad 16 dp), so Stop,
+     Resume and Fullscreen keep one row in the default column */
+  #stop,#pause,#fs{padding:0 16px}
   /* ai: no button stretches to fit on a PC (2026-11-06): under a mouse, or no pointer, each its label's width, as the
      receiver's Start; under a finger they share the row */
   @media (pointer:fine),(pointer:none){#side .row>button,#side .row>.btn{flex:0 0 auto}}
@@ -56,11 +59,23 @@
     .bar{padding:0 12px}
     #side{padding:12px 12px 0;border-bottom:0}
     #settings{padding:0 12px 1rem}
-    #state,#nums{white-space:normal}
-    #nums{min-height:0}
-    #state:empty,#nums:empty{display:none}
     #settings{position:static}
+    /* ai: the PC's column (lizard-ui Send.kt Side, Column.kt ToolLandscape): the bar's hairline inside the column's
+       padding (the rail's across it), the state line 12 px under the row and the figures 2 px under it, one line each,
+       a long name's stem cut first and the rest last (ui.mjs sayName); from Start until Stop (body.busy) they keep a
+       line each, empty or not, so nothing under them moves; idle only what has words; 16 px before the folds. Each line
+       the font's own height (the apps' Compose text has no leading over its first line or under its last) */
+    .bar{border-bottom:0;position:relative;min-height:57px;padding-bottom:1px}
+    .bar::after{content:"";position:absolute;left:12px;right:12px;bottom:0;height:1px;background:var(--line)}
+    body.collapsed .bar::after{left:0;right:0}
+    #state{margin:12px 0 0;line-height:normal}
+    #nums{margin:2px 0 0;line-height:normal;min-height:0}
+    #state:empty,#nums:empty{display:none}
+    body.busy #state:empty,body.busy #nums:empty{display:block;min-height:1lh}
+    #dev{margin-top:16px}
   }
+  /* ai: under a mouse (or no pointer) each 40 px button in a 48 px target, as the PC's (lizard-ui LocalTarget) */
+  @media (orientation:landscape) and (pointer:fine),(orientation:landscape) and (pointer:none){#side .row>button{margin:4px 0}}
   /* ai: Fullscreen shows the code and nothing else; a tap on it or Escape brings the controls back (send.mjs). */
   body.full #col{display:none}
   body.full #stage{grid-template-columns:minmax(0,1fr)}
@@ -77,7 +92,7 @@
          receiver's notice alone since 2026-10-22 -->
     <div id="pane">
     <div id="side">
-      <div class="row"><button id="go" class="primary" disabled>Start</button><button id="stop" hidden>Stop</button><button id="fs">Fullscreen</button></div>
+      <div class="row"><button id="go" class="primary" disabled>Start</button><button id="stop" hidden>Stop</button><button id="pause" hidden>Pause</button><button id="fs">Fullscreen</button></div>
       <p id="state" class="status" role="status"></p>
       <p id="nums" class="nums"></p>
     </div>

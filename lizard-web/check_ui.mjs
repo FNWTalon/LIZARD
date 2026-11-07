@@ -210,7 +210,7 @@ const SIZES = [
     // ai: Keys as video players have them (2026-10-23, send.mjs): Space and K pause and resume, Space on a focused button
     // ai: is the hotkey and not that button's press, F full screen and back, Ctrl+O nothing while the test stream is the payload
     if (k === 0) {
-      const now = () => evaluate(s, `({ state: document.getElementById("state").textContent, resume: !document.getElementById("go").hidden && document.getElementById("go").textContent === "Resume", full: document.body.classList.contains("full") })`);
+      const now = () => evaluate(s, `({ state: document.getElementById("state").textContent, resume: !document.getElementById("pause").hidden && document.getElementById("pause").textContent === "Resume", full: document.body.classList.contains("full") })`);
       await press(s, " ", "Space", 32); await sleep(200);
       const a = await now();
       await press(s, "k", "KeyK", 75); await sleep(200);
@@ -228,9 +228,10 @@ const SIZES = [
       await press(s, "o", "KeyO", 79, 2);
       const opened = await none;
       await s.send("Page.setInterceptFileChooserDialog", { enabled: false });
-      check(a.state === "Paused" && a.resume, `send ${z.name}: Space pauses ("${a.state}")`);
-      check(b.state !== "Paused" && !b.resume, `send ${z.name}: K resumes ("${b.state}")`);
-      check(c.state === "Paused" && !c.full, `send ${z.name}: Space with Fullscreen focused pauses, not Fullscreen ("${c.state}", full ${c.full})`);
+      // ai: a pause is told by the button alone (Pause turned Resume beside Stop); the state line keeps what it said
+      check(a.resume && a.state === b.state && !/paused/i.test(a.state), `send ${z.name}: Space pauses, the state line unchanged ("${a.state}")`);
+      check(!b.resume, `send ${z.name}: K resumes ("${b.state}")`);
+      check(c.resume && !c.full, `send ${z.name}: Space with Fullscreen focused pauses, not Fullscreen ("${c.state}", full ${c.full})`);
       check(d.full && !e.full, `send ${z.name}: F enters full screen and leaves it`);
       check(!opened, `send ${z.name}: Ctrl+O opens nothing while the test stream is the payload`);
     }
@@ -524,7 +525,7 @@ const SIZES = [
   const s = await chrome("file", [`--use-file-for-fake-video-capture=${path}`]);
   await size(s, SIZES[0]);
   await navigate(s, `${BASE}?auto&seen`);
-  const STATE = `(() => { const $ = (id) => document.getElementById(id), m = $("meter"); return { state: $("state").textContent, good: $("state").classList.contains("good"), nums: $("nums").textContent, why: $("why").textContent, meter: m.hidden ? null : m.firstElementChild?.style.width, deliver: !$("done").hidden, doneName: $("doneName").textContent, doneSum: $("doneSum").textContent, clear: !!$("clear"), open: !$("open").hidden && $("open").classList.contains("primary"), go: $("go").textContent, goSolid: $("go").classList.contains("primary"), save: $("save").textContent, href: $("save").href, download: $("save").download,  railRate: $("railRate").textContent, railPct: $("railPct").hidden ? null : $("railPct").textContent, railDone: !$("railDone").hidden && !$("railOpen").hidden && !$("railSave").hidden, railOff: $("railCam").classList.contains("off") }; })()`;
+  const STATE = `(() => { const $ = (id) => document.getElementById(id), m = $("meter"); return { state: $("state").textContent, good: $("state").classList.contains("good"), nums: $("nums").textContent, why: $("why").textContent, meter: m.hidden ? null : m.firstElementChild?.style.width, deliver: !$("done").hidden, doneName: $("doneName").textContent, doneSum: $("doneSum").textContent, doneTitle: $("doneTitle").innerText, clear: !!$("clear"), open: !$("open").hidden && $("open").classList.contains("primary"), go: $("go").textContent, goSolid: $("go").classList.contains("primary"), save: $("save").textContent, href: $("save").href, download: $("save").download,  railRate: $("railRate").textContent, railPct: $("railPct").hidden ? null : $("railPct").textContent, railDone: !$("railDone").hidden && !$("railOpen").hidden && !$("railSave").hidden, railOff: $("railCam").classList.contains("off") }; })()`;
   await until(s, `/^Receiving/.test(document.getElementById("state").textContent) && parseFloat(document.getElementById("meter").firstElementChild?.style.width) > 40`, 60000, "Receiving, two fifths of the way");
   const a = await evaluate(s, STATE);
   await screenshot(s, `${OUT}/recv-phone-portrait-receiving.png`);
@@ -545,7 +546,7 @@ const SIZES = [
   // ai: the received file in the camera's place (#done, 2026-11-06): its name and how it went in the card, the column's
   // ai: line written (green, not drawn) and no meter there
   check(new RegExp(`^Received ${NAME.replace(".", "\\.")}, 300\\sKB in [\\d.]+\\ss(, [\\d.]+\\s[KM]B/s)?$`).test(b.state) && b.good && b.meter === null && b.deliver && b.doneName === NAME
-    && /^300\sKB in [\d.]+\ss(, [\d.]+\s[KM]B\/s)?$/.test(b.doneSum) && b.download === NAME && b.href.startsWith("blob:"), `received: the card in the camera's place ("${b.doneName}", "${b.doneSum}"), Save offered as ${b.download}`);
+    && /^300\sKB in [\d.]+\ss(, [\d.]+\s[KM]B\/s)?$/.test(b.doneSum) && /^Received 1\sfile$/.test(b.doneTitle) && b.download === NAME && b.href.startsWith("blob:"), `received: the card in the camera's place ("${b.doneName}", "${b.doneTitle}", the figures "${b.doneSum}" drawn only with Show statistics on), Save offered as ${b.download}`);
   check(b.open && !b.goSolid && !b.clear, `received: Open the one solid button, "${b.go}" outlined, no Receive again`);
   // ai: the camera off by itself once the file is in (2026-10-01, to save heat)
   check(b.go === "Start" && b.nums === "" && b.why === "", `received: the camera stopped by itself ("${b.go}")`);

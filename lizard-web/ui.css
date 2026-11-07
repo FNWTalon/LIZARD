@@ -36,7 +36,7 @@ button:active,.btn:active{background:var(--soft-2)}
 .icon{width:48px;min-width:48px;padding:0;border-radius:50%}
 button:disabled,button:disabled:hover{background:var(--soft);color:rgba(17,17,17,.38);cursor:default}
 .text:disabled,.icon:disabled{background:transparent}
-@media (pointer:fine){button,.btn{min-height:40px}.icon{width:40px;min-width:40px}}
+@media (pointer:fine),(pointer:none){button,.btn{min-height:40px}.icon{width:40px;min-width:40px}}
 :focus-visible{outline:2px solid var(--fg);outline-offset:2px}
 
 /* ai: Fields on the soft fill, 8 px corners; a select's own arrow replaced by the apps' chevron (lizard-ui Parts.kt
@@ -57,7 +57,7 @@ input[type=range]::-moz-range-progress{height:6px;border-radius:3px;background:v
 input[type=range]::-moz-range-thumb{width:20px;height:20px;border:0;border-radius:50%;background:var(--fg)}
 input[type=range]:disabled{opacity:.38}
 select:disabled,input:disabled{color:rgba(17,17,17,.38)}
-@media (pointer:fine){select,input:not([type=range]){min-height:40px}}
+@media (pointer:fine),(pointer:none){select,input:not([type=range]){min-height:40px}}
 .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 
 /* ai: Status: .status is the state line, .nums the user's figures under it (progress, size, speed, time left: their
@@ -72,11 +72,14 @@ pre.readout{font-size:12px;color:var(--fg)}
 .why{font-weight:600;margin:4px 0}
 .good{color:var(--good)}
 .bad{color:var(--bad)}
-/* ai: a file's name in a line (ui.mjs sayName, 2026-10-23): on one line, its stem cut with an ellipsis, its ending whole */
+/* ai: a file's name in a line (ui.mjs sayName, 2026-10-23; the PC's NameLine since 2026-11-06): on one line, the head,
+   the ending and the rest whole while the stem gives way (its shrink a hundred thousand times theirs), the stem cut with
+   an ellipsis, the rest cut with one once the stem is gone; each part's spaces kept (a flex item drops a leading or
+   trailing one otherwise: "Sending ", a bundle's " and N more.tar", " 2.0 MB") */
 .fname{display:inline-flex;max-width:100%;white-space:nowrap;vertical-align:bottom}
-.fname>.stem{overflow:hidden;text-overflow:ellipsis;min-width:0}
-/* ai: the kept ending whole, its leading space too (a bundle's " and N more.tar": a flex item drops it otherwise) */
-.fname>:last-child{white-space:pre}
+.fname>*{flex:none;white-space:pre}
+.fname>.stem{flex:0 100000 auto;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.fname>.rest{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .hint{color:var(--muted);font-size:14px}
 .meter{height:6px;background:var(--soft);border-radius:3px;overflow:hidden;margin:8px 0}
 .meter>span{display:block;height:100%;width:0;background:var(--fg);border-radius:3px}
@@ -91,7 +94,7 @@ pre.readout{font-size:12px;color:var(--fg)}
 .bar h1{margin:0 0 0 4px;font-size:20px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .bar .grow{flex:1 1 auto}
 .bar>.icon:last-child{margin-right:-12px}
-@media (pointer:fine){.bar .back{margin-left:-8px}.bar>.icon:last-child{margin-right:-8px}}
+@media (pointer:fine),(pointer:none){.bar .back{margin-left:-8px}.bar>.icon:last-child{margin-right:-8px}}
 /* ai: The tool pages' sidebar collapser (2026-10-02): an icon at the bar's end in landscape, where the controls are a
    column beside the code or the camera;
    collapsed (body.collapsed, ui.mjs collapser), the column is a 56 px rail holding it alone, its chevrons turned, and
@@ -197,7 +200,7 @@ a.item{text-decoration:none}
 
 /* ai: Settings and Developer Tools (details.dev; the Developer panel until 2026-10-01, Advanced until 2026-10-03): the
    switches and readouts, closed unless opened (ui.mjs remember keeps it); its summary a row with a chevron that turns. */
-details.dev{border-top:1px solid var(--line);margin-top:8px}
+details.dev{border-top:1px solid var(--line);margin-top:0}
 details.dev>summary{list-style:none;display:flex;align-items:center;min-height:56px;cursor:pointer;font-weight:500;user-select:none}
 details.dev>summary::-webkit-details-marker{display:none}
 /* ai: the apps' chevron (lizard-ui Parts.kt Fold): Feather's, 24 px, muted, turned over while open */

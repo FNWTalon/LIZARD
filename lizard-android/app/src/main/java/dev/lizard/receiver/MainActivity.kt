@@ -423,6 +423,7 @@ class MainActivity : ComponentActivity() {
         i.clipData = ClipData.newRawUri(e.name, uris[0]).apply { for (u in uris.drop(1)) addItem(ClipData.Item(u)) }
         try { startActivity(Intent.createChooser(i, null)) } catch (_: ActivityNotFoundException) {} catch (_: RuntimeException) { note = "Too many files to share." }
     }
+    // ai: a Save that works says nothing (no "Saved" line, 2026-11-06): the note is a failure's alone
     internal fun saveCopy(e: Received.Entry) {   // ai: the Save buttons (a copy where the user picks; a bundle's folder into a folder picked)
         note = ""
         if (e.bundle) { savingTree = e; try { saveTree.launch(null) } catch (_: ActivityNotFoundException) {} }
@@ -451,7 +452,7 @@ class MainActivity : ComponentActivity() {
                         (cr.openInputStream(received.uriOf(it.uri)) ?: throw IOException("${it.path} could not be read")).use { i -> i.copyTo(o, 1 shl 16) }
                     }
                 }
-                "Saved ${e.name}"
+                ""
             } catch (x: Exception) { "The folder could not be saved: ${x.message}" }
             runOnUiThread { note = n }
         }.start()
@@ -462,7 +463,7 @@ class MainActivity : ComponentActivity() {
                 contentResolver.openOutputStream(uri)!!.use { o ->
                     (contentResolver.openInputStream(received.uriOf(e.uri.ifEmpty { e.local })) ?: throw IOException("the file could not be read")).use { it.copyTo(o, 1 shl 16) }
                 }
-                "Saved ${e.name}"
+                ""
             } catch (x: Exception) { "The copy could not be saved: ${x.message}" }
             runOnUiThread { note = n }
         }.start()

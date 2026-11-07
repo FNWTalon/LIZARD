@@ -37,7 +37,7 @@ let timer = 0, seq = 0, nextId = 0, image = null, painted = 0, paintMs = 0, encM
 let running = false, live = false, lap = 0, dataSent = 0, dataWin = 0;
 // ai: Paused (2026-10-02): the run kept, nothing asked or
 // ai: painted, the last picture left on screen; a receiver holds what it has, and a resume paints on at once.
-let paused = false, sendingLine = () => {};   // ai: says the sending line again (after a pause)
+let paused = false;
 
 // A plain grey LIZARD symbol, the default and the one that gets expensive, is encoded and turned into pixels in a
 // worker (lizard-web/send-worker.mjs), in wasm, a few frames ahead: at LIZARD-1024 that was 45 ms a frame on this thread
@@ -383,7 +383,8 @@ const isTest = () => $("payload").value === "test";
 // ai: start or pick).
 function showReady() {
   const f = chosen;
-  $("go").hidden = false; $("go").disabled = !isTest() && !f; $("stop").hidden = true;
+  $("go").hidden = false; $("go").disabled = !isTest() && !f; $("stop").hidden = $("pause").hidden = true;
+  document.body.classList.remove("busy");
   showChoice(false); $("nums").textContent = "";
   // ai: what goes is said under the upload's card (#choice, 2026-11-06, the PC sender's ChoiceLine), not the column
   say($("state"), "");
@@ -391,13 +392,14 @@ function showReady() {
   if (f && !isTest()) { sayName($("choiceName"), "", f.name); $("choiceMore").textContent = `, ${f.bundled ? `${f.files} ${f.files === 1 ? "file" : "files"}, ` : ""}${sizeText(f.sent, f.size)}`; }
   showRail();
 }
-// ai: Pause and resume (the rail's button, and Resume beside Stop while paused, so the open column has it too).
+// ai: Pause and resume (the rail's button, and Pause or Resume beside Stop, the PC's: Resume the solid one). The
+// ai: state line keeps what it says: the button is what tells a pause (no "Paused" line, 2026-11-06); the figures
+// ai: fall silent in their kept room.
 function setPaused(p) {
   if (!running) return;
   paused = p;
-  $("go").hidden = !p; $("go").disabled = !p; $("go").textContent = p ? "Resume" : "Start";
+  $("pause").textContent = p ? "Resume" : "Pause"; $("pause").classList.toggle("primary", p);
   if (p) $("nums").textContent = "";
-  if (p) say($("state"), "Paused"); else sendingLine();
   showRail();
 }
 // ai: The collapsed rail (send.html #rail): pause while sending, play to resume or to start, and the code's capacity,
@@ -418,8 +420,12 @@ function showRail() {
   const [v, u] = kbs != null ? rate(kbs).split(/\s/) : ["", ""];   // ai: \s takes rate()'s no-break space
   $("railRate").innerHTML = v ? `${v}<small>${u}</small>` : "";
 }
+// ai: from Start until Stop: Stop, then Pause (live once the first picture paints) or Resume, then Fullscreen, in
+// ai: places that do not move; the state line and the figures keep a line each (body.busy)
 function showRunning(before, name) {
   $("go").hidden = true; $("go").disabled = true; $("stop").hidden = false;
+  $("pause").hidden = false; $("pause").disabled = !live; $("pause").textContent = "Pause"; $("pause").classList.remove("primary");
+  document.body.classList.add("busy");
   if (name) sayName($("state"), before, name); else say($("state"), before);
 }
 // ai: Every error ends here: the stream stops, the state line says what went wrong in red, the console has the rest.
@@ -559,7 +565,7 @@ async function start() {
     if (!pump()) return;
     samples = fr.w;
     // ai: the file's size and, where compression shrank it, the bytes that actually go (2026-10-05)
-    if (!live) { live = true; showChoice(true); const sz = sizeLine(); sendingLine = file ? () => sayName($("state"), "Sending ", what, sz) : () => say($("state"), "Sending"); sendingLine(); }
+    if (!live) { live = true; $("pause").disabled = false; showChoice(true); const sz = sizeLine(); file ? sayName($("state"), "Sending ", what, sz) : say($("state"), "Sending"); }
     if (now - lastReport > 1000 && painted) {
       const g = gcfg ? genc.takeGpuMs() : null;
       gpuMs = gcfg ? g ?? gpuMs : null;
@@ -590,7 +596,7 @@ async function start() {
 }
 // ai: Halts the stream and clears the canvas; the caller shows the state that follows.
 function stop() {
-  offeredKBs = 0; drawFps = 0; cancelAnimationFrame(timer); cfg = shown = null; bandFps = 0; running = live = paused = hiddenPause = false; $("go").textContent = "Start";
+  offeredKBs = 0; drawFps = 0; cancelAnimationFrame(timer); cfg = shown = null; bandFps = 0; running = live = paused = hiddenPause = false;
   showEnc();
   // The worker's frames from this run are dropped by generation; a reply still awaited is refused, not left hanging.
   sw?.postMessage({ type: "stop", gen });
@@ -666,6 +672,7 @@ const begin = () => start().catch((e) => { if (e !== STOPPED) fail("Could not st
 const go = () => (paused ? setPaused(false) : begin());
 $("go").onclick = go;
 $("stop").onclick = () => { stop(); showReady(); };
+$("pause").onclick = () => setPaused(!paused);
 // ai: play and pause as a video player's (the rail's button, Space and K): Start where nothing runs, else Pause or Resume
 const playPause = () => (running ? setPaused(!paused) : $("go").disabled ? undefined : go());
 $("railSend").onclick = playPause;
@@ -837,7 +844,16 @@ for (const ev of ["fullscreenchange", "webkitfullscreenchange"]) document.addEve
 $("fs").onclick = enterFull;
 // ai: the sidebar collapser (ui.mjs): <main> grows, and the ResizeObserver re-picks as for Fullscreen
 collapser($("collapse"), "send:collapsed");
-sideResizer("send:side", null, "send:collapsed");   // ai: the column's edge dragged to resize it (2026-10-05); <main> re-picks as for a resized window
+// ai: The column's floor (the PC's RowFloor): the sending row, Stop, Resume and Fullscreen, each its label's width, with
+// ai: no word broken
+function rowFloor() {
+  const b = getComputedStyle($("fs")), side = getComputedStyle($("side")), row = getComputedStyle($("fs").parentElement);
+  const c = (rowFloor.ctx ??= document.createElement("canvas").getContext("2d"));
+  c.font = `${b.fontStyle} ${b.fontWeight} ${b.fontSize} ${b.fontFamily}`;
+  const w = (label) => c.measureText(label).width + parseFloat(b.paddingLeft) + parseFloat(b.paddingRight);
+  return Math.ceil(w("Stop") + w("Resume") + w("Fullscreen") + 2 * (parseFloat(row.columnGap) || 0) + parseFloat(side.paddingLeft) + parseFloat(side.paddingRight));
+}
+sideResizer("send:side", rowFloor, "send:collapsed");   // ai: the column's edge dragged to resize it (2026-10-05); <main> re-picks as for a resized window
 // ai: A tap on the code in full screen does nothing (2026-10-24), except in the fallback, body.full with no browser full
 // ai: screen behind it, where a phone has no Escape and the tap is the only way back. The File tile opens the picker
 // ai: (until 2026-10-26 a tap on the middle did).

@@ -553,20 +553,20 @@ internal class AndroidSend(private val a: MainActivity) : SendHost {
     override val fullscreen = false
     override fun toggleFull() {}
     // ai: the state line: the file and its sizes ("<compressed> (<raw> raw)" once a run has made the transfer, the size
-    // ai: alone before), "Preparing", "Sending" with the bytes that go, "Paused", or what went wrong
+    // ai: alone before), "Preparing", "Sending" with the bytes that go (paused too: Resume tells a pause, no "Paused" line,
+    // ai: 2026-11-06), or what went wrong
     override val line: SendLine get() {
         val what = s.name
         val count = s.choice?.takeIf { it.single == null }?.files?.let { "$it ${if (it == 1) "file" else "files"}, " } ?: ""
         val sizeText = if (s.compressed > 0) "${Readout.bytes(s.compressed)} (${Readout.bytes(s.size)}\u00a0raw)" else Readout.bytes(s.size)
         val err = (s.phase as? SendState.Phase.Error)?.why
         val preparing = s.phase == SendState.Phase.Preparing
-        val named = !s.test && err == null && (preparing || (on && !s.paused) || (!on && !s.reading && s.choice != null))
+        val named = !s.test && err == null && (preparing || on || (!on && !s.reading && s.choice != null))
         if (named) return SendLine(when { preparing -> "Preparing "; on -> "Sending "; else -> "" }, what,
             if (preparing || s.size <= 0) "" else ", ${if (on) "" else count}$sizeText", false)
         val sized = if (s.size <= 0) what else "$what, ${if (on) "" else count}$sizeText"
         val text = when {
             err != null -> err
-            on && s.paused -> "Paused"
             s.test -> if (preparing) "Preparing" else if (on) "Sending" else ""
             preparing -> "Preparing $what"
             on -> "Sending $sized"

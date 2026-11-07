@@ -196,6 +196,7 @@ function showState() {
     const [a, b] = nameParts(ui.received.name), t = $("doneName");
     t.dataset.name = t.title = ui.received.name; t.firstElementChild.textContent = a; t.lastElementChild.textContent = b;
     $("doneSize").textContent = bytes(ui.received.n);
+    $("doneCount").textContent = " 1\u00a0file";
   }
   if (got) $("doneSum").textContent = doneSum;
   // ai: The preview's cover (the apps' PreviewBox): what went wrong (the red triangle over its words), else "Camera off"

@@ -124,17 +124,16 @@ const ICONS = {
   folder: '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
 };
-// ai: A line that names a file (2026-10-23): its head, up to the name and a comma after it, held on one line (.fname),
-// ai: the name's stem cut with an ellipsis where the line is too narrow and its ending kept whole (nameParts), the rest
-// ai: after it, on that line where it fits, else under it. A row cuts its title to its width instead (ui.css .item .t,
-// ai: .files .name). The Android app's and the desktop sender's NameLine the same.
+// ai: A line that names a file (2026-10-23; the PC's rule since 2026-11-06, lizard-ui Parts.kt NameLine): on one line
+// ai: (.fname) its head, the name's stem, its ending and a comma after it, then the rest; the head, the ending and the
+// ai: rest measured first, the stem cut with an ellipsis where the line is too narrow, the rest cut only once even the
+// ai: stem is gone (ui.css). A row cuts its title to its width instead (ui.css .item .t, .files .name).
 export function sayName(el, before, name, after = "", tone = null) {
-  const [stem, end] = nameParts(name), comma = after.startsWith(",");
-  const head = document.createElement("span"), cut = document.createElement("span"), kept = document.createElement("span");
-  head.className = "fname"; cut.className = "stem";
-  cut.textContent = `${before}${stem}`; kept.textContent = `${end}${comma ? "," : ""}`;
-  head.append(cut, kept);
-  el.replaceChildren(head, ...(after ? [document.createTextNode(comma ? after.slice(1) : after)] : []));
+  const [stem, end] = nameParts(name), comma = after.startsWith(","), rest = (comma ? after.slice(1) : after).trim();
+  const part = (cls, text) => { const p = document.createElement("span"); p.className = cls; p.textContent = text; return p; };
+  const line = part("fname", "");
+  line.append(...(before ? [part("head", before)] : []), part("stem", stem), part("end", `${end}${comma ? "," : ""}`), ...(rest ? [part("rest", ` ${rest}`)] : []));
+  el.replaceChildren(line);
   el.classList.toggle("bad", tone === "bad");
   el.classList.toggle("good", tone === "good");
 }

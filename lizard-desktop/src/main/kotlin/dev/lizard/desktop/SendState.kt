@@ -708,14 +708,15 @@ class SendState {
     // ai: "raw" kept with its figure (a no-break space, 2026-10-23: "(47 KB / raw)" broke there)
     private fun sizeText() = if (compressed > 0) "${Readout.bytes(compressed)} (${Readout.bytes(fileSize)}\u00a0raw)" else Readout.bytes(fileSize)
 
-    // ai: The state line (the web's #state): what is sent, paused, or the error (red; Main.kt colours it). A line naming
+    // ai: The state line (the web's #state): what is sent (paused too: Resume beside Stop tells a pause, no "Paused" line,
+    // ai: 2026-11-06), or the error (red; Main.kt colours it). A line naming
     // ai: the file says so in three parts, the name between (2026-10-23), for the shared NameLine to hold its head on one
     // ai: line; any other is all `before`.
     data class StateLine(val before: String, val name: String? = null, val after: String = "")
     val stateParts: StateLine get() = when (val ph = phase) {
         is Phase.Error -> StateLine(ph.why)
         Phase.Preparing -> if (runTest) StateLine("Preparing") else StateLine("Preparing ", runName)
-        Phase.On -> if (paused) StateLine("Paused") else if (runTest) StateLine("Sending") else StateLine("Sending ", runName, ", ${sizeText()}")
+        Phase.On -> if (runTest) StateLine("Sending") else StateLine("Sending ", runName, ", ${sizeText()}")
         // ai: idle, nothing but "Reading the files" or an error: the choice is named on its card (choiceLine, 2026-11-01)
         Phase.Idle -> if (loadError.isNotEmpty()) StateLine(loadError) else if (!test && reading) StateLine("Reading the files") else StateLine("")
     }

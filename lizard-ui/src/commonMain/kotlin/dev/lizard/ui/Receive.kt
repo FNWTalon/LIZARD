@@ -61,7 +61,7 @@ interface ReceiveHost {
     val showStats: Boolean
     val heat: String?                  // ai: the heat warning's line, null while nothing throttles
     val hint: String
-    val note: String                   // ai: a filing's or a Save's outcome, in red unless it starts "Saved"
+    val note: String                   // ai: a filing's or a Save's failure; "" none
     val running: Boolean
     val starting: Boolean              // ai: Start inert while the camera opens
     fun toggleCamera()
@@ -84,7 +84,7 @@ interface ReceiveHost {
 
 // ai: Receive (the web's recv.html; both apps' since 2026-10-31): the camera's crop, the transfer (the actions: Open and
 // ai: the platform's others once a file is in, Start or Stop (the camera); then the state line, meter, figures, the
-// ai: heat warning, a filing's outcome, the hint: the desktop's order), Settings, Experimental, Developer Tools, About.
+// ai: heat warning, the hint: the desktop's order; a filing's failure is the preview's to say), Settings, Experimental, Developer Tools, About.
 // ai: Landscape: the column on the left, its edge dragged, the camera on the right as big as the rest allows; the rail
 // ai: when collapsed (play or pause, the rate, the percent, the green check and the file's actions, Home at its foot).
 // ai: Portrait (a phone): the bar over one column, the camera at its top.
@@ -137,9 +137,14 @@ private fun ReceivedPanel(h: ReceiveHost, modifier: Modifier, column: Dp?) {
                 acts.forEachIndexed { i, a -> Tile(a.icon ?: Icons.file, a.label, (w - 12.dp * (acts.size - 1)) / acts.size, solid = i == 0, onClick = a.run) }
             }
             Column(Modifier.width(w).clip(RoundedCornerShape(12.dp)).background(Card).padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 12.dp)) {
-                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).padding(start = 4.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Received", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = Fg, modifier = Modifier.weight(1f))
-                    if (ln.tone == Readout.Tone.Good) Text(ln.after.removePrefix(", "), style = MaterialTheme.typography.bodyMedium, color = Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                // ai: the title alone on its line, how it went under it (2026-11-06: beside it, it took the row and
+                // ai: squeezed the title to a letter a line); the figures only with Show statistics on, else the title
+                // ai: counts what came, "Received 10 files", "Received 1 file" (the size is the tile's)
+                val good = ln.tone == Readout.Tone.Good
+                Column(Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 8.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(if (good && !h.showStats && ln.files > 0) "Received ${countOf(ln.files)}" else "Received",
+                        style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = Fg)
+                    if (good && h.showStats) Text(ln.after.removePrefix(", "), style = MaterialTheme.typography.bodyMedium, color = Muted)
                 }
                 ItemTile(h.keptName, if (ln.tone == Readout.Tone.Good) ln.size else "", Icons.file, TILE.dp, onRemove = null)
             }
@@ -185,7 +190,7 @@ private fun Side(h: ReceiveHost) {
 // ai: one row, Open the solid one filling it, the others their own width; Start or Stop alone under them,
 // ai: the full width; on the desktop every button its label's width, LocalButtonsFill; without the camera's permission
 // ai: the one button that gets it, why on the state line), 12 dp under
-// ai: them the state line, the meter, the figures, then 4 dp apart the heat warning, a filing's outcome and one hint,
+// ai: them the state line, the meter, the figures, then 4 dp apart the heat warning and one hint (a filing's failure over the preview),
 // ai: 16 dp before the folds. Show statistics off: no green line once a file is in.
 @Composable
 private fun TransferPanel(h: ReceiveHost) {
@@ -227,7 +232,6 @@ private fun TransferPanel(h: ReceiveHost) {
     if (numsNow.isNotEmpty() || (run && last[1].isNotEmpty())) Text(numsNow.ifEmpty { last[1] }, style = MaterialTheme.typography.bodyMedium,
         color = if (numsNow.isEmpty()) Color.Transparent else Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
     h.heat?.let { Warning(it, Modifier.padding(top = 4.dp)) }
-    if (h.note.isNotEmpty() && errorOf(h) != h.note) Text(h.note, style = MaterialTheme.typography.bodyMedium, color = Muted, modifier = Modifier.padding(top = 4.dp))
     // ai: the hint is the running camera's: held still while it runs (steady), its room kept as the lines' are, gone with it
     val hint = said(2, steady(h.hint, on = 0).takeIf { run }.orEmpty())
     if (hint.isNotEmpty() || (run && last[2].isNotEmpty())) Text(hint.ifEmpty { last[2] }, style = MaterialTheme.typography.bodyMedium,
@@ -267,9 +271,9 @@ private fun PreviewBox(h: ReceiveHost, modifier: Modifier, portrait: Boolean) {
 
 // ai: What went wrong (2026-11-02), said over the preview, its cover the red triangle with the words under it, never in
 // ai: the column (the collapsed rail's AlertSquare at most): the line's error (the phase's why, "Reading stopped. ...")
-// ai: or a filing's refusal (a note that is not "Saved ...")
+// ai: or a filing's refusal (the note)
 private fun errorOf(h: ReceiveHost): String? = h.line.takeIf { it.tone == Readout.Tone.Bad }?.text?.takeIf { it.isNotEmpty() }
-    ?: h.note.takeIf { it.isNotEmpty() && !it.startsWith("Saved") }
+    ?: h.note.takeIf { it.isNotEmpty() }
 
 // ai: The heat warning (the phone's): the red triangle and its line; in a rail the triangle alone, its line the
 // ai: description
