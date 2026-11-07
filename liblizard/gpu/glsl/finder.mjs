@@ -672,6 +672,8 @@ shared float prof[8][49];
 shared float nc[8][25];
 shared uint alive[8];
 shared vec2 best[66];
+shared vec4 qmS;   // ai: the quad's own slot, read once for the workgroup (main)
+shared uint anyAlive;   // ai: one lane's OR of alive, for the stations loop's end (main)
 float tmpl(uint k) { float a = -2.0 + 0.25 * float(k) + 0.125; return (a >= 0.0 && a < 2.0) ? -4.0 / 3.0 : 2.0 / 3.0; }
 float ncc(uint tr, int o) {
   float m = 0.0;
@@ -713,7 +715,12 @@ void main() {
   uint tr = li / ${TR_L}u;
   uint j = li % ${TR_L}u;
   Frame F = frames[f];
-  vec4 qm = quads[base + 4u];
+  // ai: the quad's slot read by one lane and handed on through workgroup memory, so the early return is one the whole
+  // ai: workgroup takes together by what WGSL can prove before the barriers below (the browser's kernels, gen webgpuOf,
+  // ai: 2026-11-06); the slot is this workgroup's own, so it was so before too
+  if (li == 0u) { qmS = quads[base + 4u]; }
+  barrier();
+  vec4 qm = qmS;
   if (F.valid > 1u || F.valid == 0u || !(qm.w == 4.0 || qm.w == 5.0)) { return; }
   vec3 ax = bendAxis(F);
   uint side = tr >> 1u;
@@ -787,8 +794,11 @@ void main() {
     }
     if (j == 0u) { alive[tr] = live ? 1u : 0u; }
     barrier();
-    uint alive0 = 0u;
-    for (uint t = 0u; t < 8u; t++) { alive0 |= alive[t]; }
+    // ai: one lane's OR of the tracks' words handed on through workgroup memory, so the loop's end is one the whole
+    // ai: workgroup takes by what WGSL can prove (the browser's kernels, gen webgpuOf, 2026-11-06)
+    if (li == 0u) { uint a = 0u; for (uint t = 0u; t < 8u; t++) { a |= alive[t]; } anyAlive = a; }
+    barrier();
+    uint alive0 = anyAlive;
     if (alive0 == 0u) { break; }
   }
   if (j == 0u) { tn[tr] = np; }

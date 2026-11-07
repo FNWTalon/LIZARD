@@ -20,8 +20,9 @@
 //   node liblizard/gen/gen.mjs [out]      (lizard-android/build.sh gen; out defaults to liblizard/out)
 // ai: Writes out/setup/<variant>.json, out/blobs/<hash>.bin (the buffers' bytes), out/glsl/<hash>.comp (a decoder
 // ai: module), out/wgsl/<hash>.wgsl and out/naga/<hash>.wgsl (a sender's module as written and as naga reads it) and
-// ai: out/spv/<hash>.spv, and out/gen.json (the variants, the modules, the GLSL ones among them, the gpu sources' hash
-// ai: that made them). Needs, each checked before anything runs: ../build/ob.mjs and the module it names,
+// ai: out/spv/<hash>.spv, out/webgpu/<hash>.wgsl (the plain variant's kernels as WGSL for WebGPU, webgpuOf), and
+// ai: out/gen.json (the variants, the modules, the GLSL ones among them, the WebGPU ones, the gpu sources' hash that made
+// ai: them). Needs, each checked before anything runs: ../build/ob.mjs and the module it names,
 // ai: ../bindings/wasm/dist/lizard.wasm (liblizard's ./build.sh); wgsl2spv and glslang 16.6.0 (lizard-android/build.sh
 // ai: tools; glslang at liblizard/.tools/glslang, else the PATH's); SPIRV-Tools' spirv-val and shaderc's glslc, the
 // ai: Android NDK's or else the PATH's.
@@ -79,7 +80,7 @@ const glslangTool = () => {
   for (const dir of (process.env.PATH ?? "").split(delimiter)) if (dir && existsSync(join(dir, "glslang" + EXE))) return join(dir, "glslang" + EXE);
   return lab;
 };
-export const TOOLS = { wgsl2spv: fileURLToPath(new URL(`./wgsl2spv/target/release/wgsl2spv${EXE}`, HERE)), glslang: glslangTool(), val: shaderTool("spirv-val"), glslc: shaderTool("glslc") };
+export const TOOLS = { wgsl2spv: fileURLToPath(new URL(`./wgsl2spv/target/release/wgsl2spv${EXE}`, HERE)), spv2wgsl: fileURLToPath(new URL(`./wgsl2spv/target/release/spv2wgsl${EXE}`, HERE)), glslang: glslangTool(), val: shaderTool("spirv-val"), glslc: shaderTool("glslc") };
 
 // ai: What a run needs, checked before the gpu modules load (sim/ob.mjs imports ../build/ob.mjs, which names the
 // ai: codec's module): every one missing, each with where it comes from.
@@ -120,6 +121,8 @@ const NET = INSTALLED.classifier;
 const LIMITS = { maxBufferSize: 2 ** 31, maxStorageBufferBindingSize: 2 ** 31, maxComputeWorkgroupStorageSize: 32768, maxStorageBuffersPerShaderStage: 16, maxTextureArrayLayers: 2048, maxComputeInvocationsPerWorkgroup: 256 };
 const FEATURES = ["timestamp-query", "shader-f16", "subgroups"];
 export const VARIANTS = ["int8", "f16", "f32"].flatMap((precision) => [true, false].map((subgroups) => ({ precision, subgroups, name: `${precision}${subgroups ? "-sg" : ""}` })));
+// ai: the variant whose kernels WebGPU's core takes (no 8- or 16-bit types, no subgroups), out/webgpu's (webgpuOf)
+const WEBGPU_VARIANT = "f32";
 const BACK_B = [B_CEIL, 16, 8, 4, 2, 1];
 
 // ai: The WGSL as naga 30 reads it: Tint takes three constructs naga does not, each rewritten here to the same
@@ -439,6 +442,75 @@ function compileGlsl(h, code) {
   return { bytes: statSync(spv).size, glsl: true };
 }
 
+// ai: The plain variant's kernels as WGSL for WebGPU (2026-11-06; the decoder's WGSL twins went 2026-10-31, the GLSL the
+// ai: one source): a GLSL module compiled again for WGSL's sake, then naga's SPIR-V front end and its WGSL writer
+// ai: (wgsl2spv's spv2wgsl). Two things naga 30's reader does not take, met here: a workgroup variable zeroed by its
+// ai: initializer and then used atomically (the `= {}` dropped: WGSL zeroes workgroup memory itself), and an arrayed
+// ai: image's integer coordinates where the module declares no 2-vector of that integer (ensureCoordTypes). A module it
+// ai: cannot write (a form on 16-bit integers, which WGSL lacks) is listed in gen.json, not a failure of the run.
+function webgpuOf(h, code) {
+  const [g, spv, w] = [`webgpu/${h}.comp`, `webgpu/${h}.spv`, `webgpu/${h}.wgsl`].map((p) => fileURLToPath(new URL(p, OUT)));
+  writeFileSync(g, code.replace(/^(\s*shared\s+[^;=]+?)\s*=\s*\{\s*\}\s*;/gm, "$1;"));
+  try {
+    run(TOOLS.glslang, ["-V", "--target-env", "vulkan1.1", "-S", "comp", "--quiet", "-o", spv, g]);
+    ensureCoordTypes(spv);
+    run(TOOLS.spv2wgsl, [spv, w]);
+    writeFileSync(w, uniformBuiltins(readFileSync(w, "utf8")));
+    return { bytes: statSync(w).size };
+  } finally { rmSync(g, { force: true }); rmSync(spv, { force: true }); }
+}
+
+// ai: WGSL proves a barrier's control flow uniform (Tint refuses a module it cannot: 100 of the 141 here, 2026-11-06),
+// ai: and naga's SPIR-V reader hands the entry's builtins to the body (main_1) through private variables, whose every
+// ai: read Tint counts non-uniform: a workgroup's early return on its own workgroup_id put every barrier after it out.
+// ai: The builtins uniform over a workgroup (workgroup_id, num_workgroups) are given to main_1 as parameters named as
+// ai: the private variables, which they shadow there, so the body reads them as written and the analysis follows them
+// ai: in from the entry; any other function still reads the private copy, which the entry still writes.
+const UNIFORM_BUILTINS = new Set(["workgroup_id", "num_workgroups"]);
+// ai: The GLSL's way to hand a workgroup one invocation's word (`barrier(); uint d = flag; barrier();`), which naga writes as
+// ai: a barrier and then a read of the workgroup variable: Tint counts that read non-uniform, so a branch on it puts every
+// ai: barrier under it out. A read of a workgroup variable of a plain type straight after a barrier (every invocation is
+// ai: there) is made WGSL's workgroupUniformLoad, a barrier and a read Tint counts uniform.
+function uniformReads(code) {
+  const plain = "(?:u32|i32|f32|bool|vec[234]<(?:u32|i32|f32)>)";
+  const shared = new Set([...code.matchAll(new RegExp(`^var<workgroup> (\\w+): (?:${plain}|array<${plain}, \\d+>);$`, "gm"))].map((m) => m[1]));
+  if (!shared.size) return code;
+  const lines = code.split("\n");
+  for (let i = 1; i < lines.length; i++) {
+    // ai: the variable, or one element of it at a constant index
+    const m = lines[i].match(/^(\s*)let (_e\d+) = (\w+)(\[\d+[iu]?\])?;$/);
+    if (m && shared.has(m[3]) && lines[i - 1].trim() === "workgroupBarrier();") lines[i] = `${m[1]}let ${m[2]} = workgroupUniformLoad(&${m[3]}${m[4] ?? ""});`;
+  }
+  return lines.join("\n");
+}
+function uniformBuiltins(code) {
+  const entry = code.match(/fn main\(([^\n]*)\) \{\n((?:[ \t]+\w+ = \w+;\n)*)([ \t]+)main_1\(\);\n\}/);
+  code = uniformReads(code);
+  if (!entry || !/\nfn main_1\(\) \{/.test(code)) return code;
+  const params = [...entry[1].matchAll(/@builtin\((\w+)\) (\w+): ([\w<>]+)/g)].filter((m) => UNIFORM_BUILTINS.has(m[1]));
+  const given = params.map(([, , name, type]) => ({ name, type, global: entry[2].match(new RegExp(`(\\w+) = ${name};`))?.[1] })).filter((p) => p.global);
+  if (!given.length) return code;
+  const wrapper = entry[0].replace(/main_1\(\);/, `main_1(${given.map((p) => p.name).join(", ")});`);
+  return code.replace(entry[0], wrapper).replace(/\nfn main_1\(\) \{/, `\nfn main_1(${given.map((p) => `${p.global}: ${p.type}`).join(", ")}) {`);
+}
+
+// ai: naga's SPIR-V reader takes an arrayed image's integer coordinates apart by a 2-vector of that integer it finds
+// ai: among the module's types (front/spv/image.rs, extract_image_coordinates), which glslang declares only where the
+// ai: source uses one: each 32-bit integer's 2-vector declared where it is missing (an unused type, the id bound raised).
+function ensureCoordTypes(path) {
+  const b = readFileSync(path), w = Array.from(new Uint32Array(b.buffer, b.byteOffset, b.byteLength / 4));
+  const ints = new Map(), vec2 = new Set();
+  for (let i = 5; i < w.length; i += w[i] >>> 16 || 1) {
+    const op = w[i] & 0xffff;
+    if (op === 21 && w[i + 2] === 32) ints.set(w[i + 1], i);   // ai: OpTypeInt 32 (either signedness)
+    if (op === 23 && w[i + 3] === 2) vec2.add(w[i + 2]);         // ai: OpTypeVector of 2
+  }
+  const add = [...ints].filter(([id]) => !vec2.has(id)).sort((a, b) => b[1] - a[1]);
+  if (!add.length) return;
+  for (const [id, at] of add) w.splice(at + (w[at] >>> 16), 0, (4 << 16) | 23, w[3]++, id, 2);
+  writeFileSync(path, new Uint8Array(new Uint32Array(w).buffer));
+}
+
 // ai: A SPIR-V module's capabilities (OpCapability, opcode 17).
 function capsOf(path) {
   const b = readFileSync(path), w = new Uint32Array(b.buffer, b.byteOffset, b.byteLength / 4), caps = new Set();
@@ -458,10 +530,10 @@ function sourcesHash() {
 }
 
 async function main() {
-  for (const d of ["setup", "wgsl", "naga", "glsl", "spv", "blobs"]) mkdirSync(new URL(`${d}/`, OUT), { recursive: true });
+  for (const d of ["setup", "wgsl", "naga", "glsl", "spv", "blobs", "webgpu"]) mkdirSync(new URL(`${d}/`, OUT), { recursive: true });
   const tables = await formatTables();
   const net = await loadNet(new URL(NET, LIB));
-  const modules = new Map(), summary = [], blobs = new Map();
+  const modules = new Map(), summary = [], blobs = new Map(), used = {};
   for (const v of VARIANTS) {
     const rec = new Recorder(), log = [];
     const adapter = mockAdapter(rec, { features: FEATURES, limits: LIMITS });
@@ -476,6 +548,7 @@ async function main() {
     const objects = exportObjects(rec, tree, blobs);
     tree.objects = objects;
     for (const p of Object.values(objects.pipelines)) if (!modules.has(p.module)) modules.set(p.module, rec.modules.get(p.module));
+    used[v.name] = new Set(Object.values(objects.pipelines).map((p) => p.module));
     writeFileSync(new URL(`setup/${v.name}.json`, OUT), JSON.stringify(tree));
     summary.push({ variant: v.name, pipelines: Object.keys(objects.pipelines).length, buffers: Object.keys(objects.buffers).length, nets: fh.nets });
     console.log(`${v.name}: ${Object.keys(objects.pipelines).length} pipelines, ${Object.keys(objects.buffers).length} buffers, nets ${JSON.stringify(fh.nets)}`);
@@ -487,6 +560,20 @@ async function main() {
   for (const [h, code] of modules) {
     try { compiled[h] = compile(h, code); } catch (e) { if (!e.tool) throw e; failed.push({ h, message: e.message }); }
   }
+  // ai: WebGPU's: the plain variant's GLSL kernels as WGSL (webgpuOf); the forms WGSL cannot hold listed, not failed
+  const webgpu = { variant: WEBGPU_VARIANT, modules: [], not: [] };
+  if (existsSync(TOOLS.spv2wgsl)) {
+    for (const h of used[WEBGPU_VARIANT] ?? []) {
+      const code = modules.get(h);
+      if (code?.lang !== "glsl" || !compiled[h]) continue;
+      try { webgpuOf(h, code.code); webgpu.modules.push(h); } catch (e) {
+        if (!e.tool) throw e;
+        const why = e.message.match(/: (parse|validate|write): (.*)/);
+        webgpu.not.push({ h, message: why ? `${why[1]}: ${why[2]}` : e.message.split("\n")[0] });
+      }
+    }
+    console.log(`webgpu (${WEBGPU_VARIANT}): ${webgpu.modules.length} modules as WGSL, ${webgpu.not.length} not (${[...new Set(webgpu.not.map((n) => n.message.slice(0, 70)))].join("; ")})`);
+  } else console.log(`webgpu: no ${TOOLS.spv2wgsl} (lizard-android/build.sh tools builds it): no WGSL written`);
   // ai: The sender's GPU encoder (gen/sender.mjs, 2026-10-02): its kernels as out/spv/send_<name>.spv, its manifest
   // ai: setup/send.json and its paint's TAB blobs/<hash>.bin (the codes and the whitening), for core/tx/gpu_painter.cpp.
   const send = await senderSetup();
@@ -522,8 +609,9 @@ async function main() {
   // ai: spv/ by hand (bench_dot.spv) stays.
   const kept = new Set([...VARIANTS.map((v) => `setup/${v.name}.json`), "setup/send.json", ...[...blobs.keys(), send.tab.hash].map((h) => `blobs/${h}.bin`)]);
   for (const h of [...modules.keys(), ...Object.keys(send.modules).map((k) => `send_${k}`)]) for (const f of [`wgsl/${h}.wgsl`, `naga/${h}.wgsl`, `glsl/${h}.comp`, `spv/${h}.raw.spv`, `spv/${h}.spv`]) kept.add(f);
+  for (const h of webgpu.modules) kept.add(`webgpu/${h}.wgsl`);
   for (const [dir, names] of [[ingestDir, "ingest_"], [txDir, "send_"]]) for (const f of readdirSync(dir).filter((f) => f.endsWith(".comp"))) kept.add(`spv/${names}${f.replace(/\.comp$/, "")}.spv`);
-  const ours = { setup: /\.json$/, blobs: /^[0-9a-f]{16}\.bin$/, wgsl: /\.wgsl$/, naga: /\.wgsl$/, glsl: /\.comp$/, spv: /^([0-9a-f]{16}|send_\w+|ingest_\w+)(\.raw)?\.spv$/ };
+  const ours = { setup: /\.json$/, blobs: /^[0-9a-f]{16}\.bin$/, wgsl: /\.wgsl$/, naga: /\.wgsl$/, glsl: /\.comp$/, webgpu: /\.(wgsl|comp|spv)$/, spv: /^([0-9a-f]{16}|send_\w+|ingest_\w+)(\.raw)?\.spv$/ };
   let gone = 0;
   for (const [d, re] of Object.entries(ours)) for (const f of readdirSync(new URL(`${d}/`, OUT))) if (re.test(f) && !kept.has(`${d}/${f}`)) { rmSync(new URL(`${d}/${f}`, OUT)); gone++; }
   if (gone) console.log(`${gone} files of an earlier run let go`);
@@ -531,7 +619,7 @@ async function main() {
   // ai: other SPIR-V under the same names
   const glsl = Object.keys(compiled).filter((h) => compiled[h].glsl), glslang = run(TOOLS.glslang, ["--version"]).split("\n")[0].split(":").pop().trim();
   console.log(`${glsl.length} of them GLSL (glslang ${glslang})`);
-  writeFileSync(new URL("gen.json", OUT), JSON.stringify({ sources: sourcesHash(), writer: `wgsl2spv (naga 30.0.1: zero-init native, no loop bounding, bound checks off); glslang ${glslang} (SPIR-V 1.3, no optimiser) for the GLSL modules`, variants: summary, modules: Object.keys(compiled), glsl, failed: failed.map((f) => f.h) }, null, 1));
+  writeFileSync(new URL("gen.json", OUT), JSON.stringify({ sources: sourcesHash(), writer: `wgsl2spv (naga 30.0.1: zero-init native, no loop bounding, bound checks off); glslang ${glslang} (SPIR-V 1.3, no optimiser) for the GLSL modules`, variants: summary, modules: Object.keys(compiled), glsl, failed: failed.map((f) => f.h), webgpu }, null, 1));
   if (failed.length) process.exit(1);
 }
 
