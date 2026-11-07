@@ -482,6 +482,9 @@ class SendState(private val a: MainActivity) {
                 j.optInt("blocks", 0))
             if (p?.optBoolean("gpu") == true) Log.i(TAG, "send: posted ${stats.posted}, held {${held}}, late ${stats.late}, behind ${stats.behind}, ${stats.filled} of ${stats.slots} buffers filled, ${j.optInt("ahead")} of ${j.optInt("depth")} frames painted ahead")
             if (j.optString("error").isNotEmpty()) phase = Phase.Error(j.optString("error"))
+            // ai: the bytes as they go, known once every chunk is made (the core streams: its first frames go while the
+            // ai: chunks are made, 2026-11-06), so the size line takes them from here
+            if (compressed == 0L && stats.sentBytes > 0) compressed = stats.sentBytes
         }
     }
     // ai: The vsync present refused for this send (jni.cpp txPost -1; its child surface let go): the frames go into the

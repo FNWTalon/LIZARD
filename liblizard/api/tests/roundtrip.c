@@ -166,10 +166,15 @@ static void file(liz_decoder *d, int codes, const char *dir, size_t bytes) {
   uint8_t *canvas = malloc((size_t)(g.height + g.height / 4) * 2 * (g.height + g.height / 4));
   int held = 0, frames = 0, lost = 0;
   liz_progress p = {0};
-  /* ai: at most three laps of the schedule's frames */
-  const int cap = (int)(3 * (info.lap + 64) / (uint32_t)g.frame_blocks) + 16;
+  /* ai: at most three laps of the schedule's frames once the lap is known: every chunk made, behind liz_tx_new (the
+   * ai: frames before carry the header, the manifest and the chunks made so far) */
+  int cap = 1 << 20;
   for (; frames < cap && rx && !p.done; frames++) {
-    liz_tx_next(tx, g.frame_blocks, in);
+    if (!info.lap) {
+      liz_tx_info_get(tx, &info);
+      if (info.lap) cap = frames + (int)(3 * (info.lap + 64) / (uint32_t)g.frame_blocks) + 16;
+    }
+    if (liz_tx_next(tx, g.frame_blocks, in) < 0) break;
     liz_encoder_paint(enc, in, (uint32_t)frames, frame, g.width, LIZ_GREY8);
     const int got = read_frame(d, frame, &g, codes, &held, verified, canvas);
     lost += g.frame_blocks - got;

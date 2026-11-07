@@ -96,6 +96,7 @@ int main(int argc, char** argv) {
   if (mode == "ids" && argc >= 6) {
     Mapped m(argv[2]);
     XferTx x(m.p, m.n, std::filesystem::path(argv[2]).filename().string(), "");
+    x.waitMade();   // ai: every chunk made before the first frame, so the frames are the serial JS sender's (no warm frames)
     const int frames = atoi(argv[3]), T = atoi(argv[4]);
     FILE* out = fopen(argv[5], "wb");
     std::vector<uint32_t> ids(T);

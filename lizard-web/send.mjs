@@ -52,6 +52,7 @@ function swInit() {
   sw.onmessage = ({ data: m }) => {
     // ai: a pick's transfer made (prepare): its own number, not a run's
     if (m.type === "prepared") { madeFor(m); return; }
+    if (m.type === "made") { madeAll(m); return; }
     if (m.gen !== gen) return;   // from before a stop or a restart
     if (m.type === "frame") { inflight--; ahead.set(m.seq, m); return; }
     // ai: A batch for the GPU encoder: queued, and encoded a few frames at a time as the paint loop's time allows (pump).
@@ -466,7 +467,7 @@ async function start() {
   const test = isTest(), file = test ? null : chosen;
   if (!test && !file) { showReady(); return; }
   const what = test ? "" : file.name, my = gen;
-  running = true;
+  running = true; runPick = file && !file.failed ? file.pick : null; runName = what;
   showRunning(test ? "Preparing" : "Preparing ", test ? null : what);
   holdWake();
   // ai: A browser reads a chosen file only as it was when chosen: once it has been saved again, moved or replaced
@@ -715,6 +716,16 @@ async function prepare(p) {
   if (p !== chosen) return;
   swInit();
   sw.postMessage({ type: "prepare", pick: p.pick, bytes: b.buffer, xfer: { name: p.name, type: p.type, chunkLog2: CHUNK_LOG2 } }, [b.buffer]);
+}
+// ai: A file's transfer whole in the worker (streaming, 2026-11-06: the pool makes its chunks behind the first frames):
+// ai: its bytes as they go and its lap known only now, the sending line said again with them; a failure ends the run.
+let runPick = null, runName = "";
+function madeAll(m) {
+  if (chosen?.pick === m.pick) { if (m.error) chosen.failed = new Error(m.error); else chosen.sent = m.sent; }
+  if (!running || runPick !== m.pick) { if (!running) showReady(); return; }
+  if (m.error) { fail("The file could not be prepared", new Error(m.error)); return; }
+  sentBytes = m.sent; lap = m.lap;
+  if (live && runName) sayName($("state"), "Sending ", runName, sizeLine());
 }
 function madeFor(m) {
   const p = chosen;

@@ -95,9 +95,10 @@ const typeBytes = (t) => (/^[\x20-\x7e]{0,158}$/.test(t ?? "") ? new TextEncoder
 // measured. Compressed, chunks differ in blocks by their content and each short one takes the margin, 2 / sqrt(K) of
 // its airtime at most (2.6% at 6,000 blocks), nothing where the file does not compress.
 class Schedule {
-  constructor(K) {
+  // sym: each chunk's next symbol (a streaming sender's, from the frames sent while its chunks were made), else 0
+  constructor(K, sym = new Uint32Array(K.length)) {
     const C = K.length;
-    this.K = K; this.C = C; this.sym = new Uint32Array(C); this.i = 0; this.acc = new Uint32Array(C);
+    this.K = K; this.C = C; this.sym = sym; this.i = 0; this.acc = new Uint32Array(C);
     this.max = C ? K.reduce((a, b) => Math.max(a, b), 0) : 0;
     this.w = Uint32Array.from(K, (k) => (k >= this.max ? this.max : Math.min(this.max, Math.max(64, k + Math.ceil(2 * Math.sqrt(k))))));
     this.lap = this.w.reduce((a, b) => a + b, 0);
@@ -116,6 +117,14 @@ class Schedule {
   }
 }
 
+// A chunk's chaining value from its own bytes (BLAKE3's wide hash): a streaming sender's first pass, which makes the root.
+export function chunkCv(M, plain, c, chunkLog2) {
+  const W = wasm(M), p = W.put(plain), o = M._malloc(32), rc = M._xfer_chunk_cv(p, plain.length, c, chunkLog2, o), v = W.take(o, 32);
+  M._free(p); M._free(o);
+  if (rc) throw new Error(`chaining value of chunk ${c}`);
+  return v;
+}
+
 // One chunk made, the sender's step for each (and a pool's worker's: lizard-web/xfer-pool.mjs): its bytes as sent, its
 // zstd frame where that is shorter (Z given) else its own; a fountain over them where they are 2 blocks or more, else
 // the one block kept (one); its chaining value where the file has two chunks or more (cv).
@@ -123,38 +132,40 @@ export function makeChunk(plain, c, chunkLog2, cv, { M, Encoder, Z = null }) {
   let out = plain;
   if (Z) { const f = Z.compress(plain); if (f && f.length < plain.length) out = f; }
   const K = blocksOf(out.length), enc = K > 1 ? new Encoder(out, PAYLOAD) : null;
-  let v = null;
-  if (cv) {
-    const W = wasm(M), p = W.put(plain), o = M._malloc(32), rc = M._xfer_chunk_cv(p, plain.length, c, chunkLog2, o);
-    v = W.take(o, 32); M._free(p); M._free(o);
-    if (rc) throw new Error(`chaining value of chunk ${c}`);
-  }
-  return { sent: out.length, K, seed: enc ? enc.seed : 0, enc, one: enc ? null : out.slice(), cv: v };
+  return { sent: out.length, K, seed: enc ? enc.seed : 0, enc, one: enc ? null : out.slice(), cv: cv ? chunkCv(M, plain, c, chunkLog2) : null };
 }
 
 export class XferSender {
   // bytes: the file. M: the codec's wasm module. Encoder: sim/fountain.mjs's, its init() already awaited. Z: sim/zstd.mjs's
-  // Z, its init() awaited, or null to send every chunk as it is (codec none). chunks: every chunk made elsewhere
-  // (makeChunk's results, two chunks or more; bytes null and length given), their fountains held by remote: its
-  // fetch(ids) gives a Map of id to block for the ids of those chunks, its free() lets them go.
-  constructor(bytes, { name = "", type = "", chunkLog2 = DEFAULT_LOG2, M, Encoder, Z = null, chunks = null, length = bytes?.length ?? 0, remote = null }) {
+  // Z, its init() awaited, or null to send every chunk as it is (codec none). Every chunk made here, before the
+  // constructor returns; or elsewhere (a pool's, lizard-web/xfer-pool.mjs; two chunks or more, bytes null and length
+  // given): chunks, every chunk made (makeChunk's results), or cvs, every chunk's chaining value, the chunks then coming
+  // one at a time (add) while frames go. Their fountains held by remote: its fetch(ids) gives a Map of id to block for
+  // the ids of those chunks, its free() lets them go.
+  // STREAMING (2026-11-06; the native sender's, core/tx/xfer_tx.h): with cvs the root and the header are made at once;
+  // until the last chunk is added a frame carries one control block (the header, or a manifest block once its 12 chunks
+  // are in) and the chunks added so far in turn, fresh symbols each (warm); then the schedule, the symbols going on. A
+  // receiver keeps a chunk's blocks from the header on and solves once the manifest is whole.
+  constructor(bytes, { name = "", type = "", chunkLog2 = DEFAULT_LOG2, M, Encoder, Z = null, chunks = null, cvs = null, length = bytes?.length ?? 0, remote = null }) {
     const W = wasm(M), size = 2 ** chunkLog2;
     if (!(chunkLog2 >= W.logMin && chunkLog2 <= W.logMax)) throw new Error(`chunk size 2^${chunkLog2} is outside 2^${W.logMin} to 2^${W.logMax}`);
     const C = Math.ceil(length / size);
     if (C > MAX_CHUNKS) throw new Error(`${length} B is ${C} chunks of 2^${chunkLog2}; the id carries ${MAX_CHUNKS}`);
-    if (chunks && (C < 2 || chunks.length !== C)) throw new Error("chunks made elsewhere: two or more, one a chunk");
+    if ((chunks || cvs) && C < 2) throw new Error("chunks made elsewhere: two or more");
+    if ((chunks && chunks.length !== C) || (cvs && cvs.length !== 32 * C)) throw new Error("chunks made elsewhere: one a chunk");
+    this.M = M; this.W = W;
     this.chunks = C; this.chunkLog2 = chunkLog2; this.size = size; this.length = length; this.codec = Z ? CODEC_ZSTD : CODEC_NONE;
     this.len = Array.from({ length: C }, (_, c) => Math.min(size, length - c * size));
-    this.sent = new Uint32Array(C); this.seed = new Uint8Array(C); this.K = new Uint32Array(C); this.enc = []; this.one = new Map();
-    this.cvs = C >= 2 ? new Uint8Array(32 * C) : null; this.remote = remote;
-    for (let c = 0; c < C; c++) {
-      const k = chunks ? chunks[c] : makeChunk(bytes.subarray(c * size, c * size + this.len[c]), c, chunkLog2, C >= 2, { M, Encoder, Z });
-      this.sent[c] = k.sent; this.K[c] = k.K; this.seed[c] = k.seed; this.enc.push(k.enc ?? null);
-      if (k.one) this.one.set(c, k.one);
-      if (this.cvs) this.cvs.set(k.cv, 32 * c);
+    this.sent = new Uint32Array(C); this.seed = new Uint8Array(C); this.K = new Uint32Array(C); this.enc = new Array(C).fill(null); this.one = new Map();
+    this.ready = new Uint8Array(C); this.made = 0; this.cvs = C >= 2 ? new Uint8Array(32 * C) : null; this.remote = remote;
+    let ks = null;
+    if (cvs) this.cvs.set(cvs);
+    else {
+      ks = chunks ?? Array.from({ length: C }, (_, c) => makeChunk(bytes.subarray(c * size, c * size + this.len[c]), c, chunkLog2, C >= 2, { M, Encoder, Z }));
+      if (this.cvs) ks.forEach((k, c) => this.cvs.set(k.cv, 32 * c));
     }
-    this.sentBytes = this.sent.reduce((a, b) => a + b, 0);
-    // The chunks' chaining values' root (b3sum's answer), the header and the manifest.
+    // The chunks' chaining values' root (b3sum's answer) and the header; the manifest's lists kept in the heap, a
+    // group's block written as its chunks come (add).
     let root;
     const o = M._malloc(32);
     if (C >= 2) {
@@ -166,35 +177,60 @@ export class XferSender {
     M._free(o);
     this.root = root;
     const nm = nameBytes(name), ty = typeBytes(type), pr = W.put(root), pn = W.put(nm), pt = W.put(ty), ph = M._malloc(PAYLOAD);
-    if (M._xfer_hdr_write(ph, length, chunkLog2, this.codec, C === 1 ? this.seed[0] : 0, C === 1 ? this.sent[0] : 0, pr, pn, nm.length, pt, ty.length)) throw new Error("header refused");
+    if (M._xfer_hdr_write(ph, length, chunkLog2, this.codec, C === 1 ? ks[0].seed : 0, C === 1 ? ks[0].sent : 0, pr, pn, nm.length, pt, ty.length)) throw new Error("header refused");
     this.header = W.take(ph, PAYLOAD);
-    const pc = W.put(this.cvs ?? new Uint8Array(0)), ps = W.put(new Uint8Array(this.sent.buffer)), pz = W.put(this.seed);
-    this.manifest = [];
-    for (let m = 0; m < M._xfer_manifest_blocks(C); m++) {
-      if (M._xfer_manifest_write(pc, ps, pz, C, pr, m, ph)) throw new Error(`manifest block ${m}`);
-      this.manifest.push(W.take(ph, PAYLOAD));
-    }
-    [pr, pn, pt, ph, pc, ps, pz].forEach((p) => M._free(p));
-    this.sched = new Schedule(this.K);
-    // The whole control cycle (the header every other block, the manifest between) within an eighth of a lap, so a file
-    // of many small chunks does not wait on its manifest.
-    this.every = Math.max(1, Math.min(CONTROL_EVERY, Math.floor(this.sched.lap / (8 * Math.max(1, this.manifest.length)))));
-    this.since = Infinity; this.ctl = 0; this.frame = 0;
+    [pn, pt].forEach((p) => M._free(p));
+    this.hp = { root: pr, out: ph, cvs: W.put(this.cvs ?? new Uint8Array(0)), sent: M._malloc(4 * Math.max(1, C)), seed: M._malloc(Math.max(1, C)) };
+    this.mcount = M._xfer_manifest_blocks(C); this.manifest = new Array(this.mcount).fill(null);
+    this.left = Uint32Array.from({ length: this.mcount }, (_, m) => Math.min(PER_BLOCK, C - m * PER_BLOCK));
+    this.sched = null; this.sym = new Uint32Array(C); this.since = Infinity; this.ctl = 0; this.frame = 0; this.turn = 0; this.sentBytes = 0;
+    if (ks) ks.forEach((k, c) => this.add(c, k));
+    if (!C) this.schedule();
   }
-  // sent: the file's bytes as they go, every chunk's frame or its own bytes (the file's length where nothing shrank).
-  info() { return { header: b64(this.header), chunks: this.chunks, chunkLog2: this.chunkLog2, manifest: this.manifest.length, root: hex(this.root), lap: this.sched.lap, codec: this.codec, sent: this.sentBytes }; }
+  // Chunk c made (makeChunk's result; a pool's has no enc, its fountain remote's): its slots, its manifest group's block
+  // once the group is whole, and with the last chunk the schedule.
+  add(c, k) {
+    if (!this.hp) return;   // let go (free) while a pool still made it
+    const M = this.M, C = this.chunks;
+    this.sent[c] = k.sent; this.K[c] = k.K; this.seed[c] = k.seed; this.enc[c] = k.enc ?? null;
+    if (k.one) this.one.set(c, k.one);
+    new Uint32Array(M.HEAPU8.buffer, this.hp.sent, C)[c] = k.sent; M.HEAPU8[this.hp.seed + c] = k.seed;
+    this.ready[c] = 1; this.made++;
+    if (C >= 2) {
+      const m = Math.floor(c / PER_BLOCK);
+      if (--this.left[m] === 0) {
+        if (M._xfer_manifest_write(this.hp.cvs, this.hp.sent, this.hp.seed, C, this.hp.root, m, this.hp.out)) throw new Error(`manifest block ${m}`);
+        this.manifest[m] = this.W.take(this.hp.out, PAYLOAD);
+      }
+    }
+    if (this.made === C) this.schedule();
+  }
+  // The schedule, once every chunk is in; the whole control cycle (the header every other block, the manifest between)
+  // within an eighth of a lap, so a file of many small chunks does not wait on its manifest.
+  schedule() {
+    this.sched = new Schedule(this.K, this.sym);
+    this.sentBytes = this.sent.reduce((a, b) => a + b, 0);
+    this.every = Math.max(1, Math.min(CONTROL_EVERY, Math.floor(this.sched.lap / (8 * Math.max(1, this.mcount)))));
+    this.since = Infinity;
+  }
+  // sent: the file's bytes as they go, every chunk's frame or its own bytes (the file's length where nothing shrank);
+  // lap and sent 0 until every chunk is in.
+  info() { return { header: b64(this.header), chunks: this.chunks, chunkLog2: this.chunkLog2, manifest: this.mcount, root: hex(this.root), lap: this.sched?.lap ?? 0, codec: this.codec, sent: this.sentBytes }; }
 
   // The ids of the next frame of B blocks. Advances the schedule, so a frame asked for twice is two frames.
   frameIds(B, out = new Uint32Array(B)) {
     if (!this.chunks) { out.fill(ID_HEADER); this.frame++; return out; }   // an empty file is its header
-    let first = 0;
-    if (this.since >= this.every && B > 1) {
-      const m = this.manifest.length, j = this.ctl++;
-      out[first++] = !m || !(j & 1) ? ID_HEADER : ID_HEADER + 1 + ((j >> 1) % m);
-      this.since = 0;
+    if (!this.sched) this.warm(B, out);
+    else {
+      let first = 0;
+      if (this.since >= this.every && B > 1) {
+        const m = this.mcount, j = this.ctl++;
+        out[first++] = !m || !(j & 1) ? ID_HEADER : ID_HEADER + 1 + ((j >> 1) % m);
+        this.since = 0;
+      }
+      for (let k = first; k < B; k++) out[k] = this.sched.next();
+      this.since += B - first;
     }
-    for (let k = first; k < B; k++) out[k] = this.sched.next();
-    this.since += B - first;
     // Fisher-Yates over every slot, the control block's too, from a generator seeded by the frame count (the native
     // sender's, core/tx/xfer_tx.cpp, byte for byte).
     let s = (Math.imul(this.frame + 1, 0x9e3779b1) ^ 0x5bd1e995) >>> 0;
@@ -205,6 +241,25 @@ export class XferSender {
     }
     this.frame++;
     return out;
+  }
+  // A frame before every chunk is in (the native sender's warm): a control block (where it has more than one slot, or
+  // nothing is in yet, or every other frame of one), the header every other time and the manifest blocks written so far
+  // between; the rest the chunks in so far in turn, each its next symbol (a chunk of one block its one); with none in,
+  // every slot a control block.
+  warm(B, out) {
+    const ready = [], ms = [];
+    for (let c = 0; c < this.chunks; c++) if (this.ready[c]) ready.push(c);
+    for (let m = 0; m < this.mcount; m++) if (this.manifest[m]) ms.push(m);
+    const ctl = () => { const j = this.ctl++; return !ms.length || !(j & 1) ? ID_HEADER : ID_HEADER + 1 + ms[(j >> 1) % ms.length]; };
+    let k = 0;
+    if (B > 1 || !ready.length || !(this.frame & 1)) out[k++] = ctl();
+    for (; k < B; k++) {
+      if (!ready.length) { out[k] = ctl(); continue; }
+      const c = ready[this.turn++ % ready.length];
+      if (this.K[c] === 1) { out[k] = idOf(c, 0); continue; }
+      out[k] = idOf(c, this.sym[c]);
+      this.sym[c] = (this.sym[c] + 1) & SYMBOL_MASK;
+    }
   }
 
   // What block `id` carries: 472 bytes into out.
@@ -217,7 +272,11 @@ export class XferSender {
     out.fill(0); out.set(one);   // a chunk of one block, zero padded
     return out;
   }
-  free() { for (const e of this.enc) e?.free(); this.enc = []; this.one.clear(); this.remote?.free(); this.remote = null; }
+  free() {
+    for (const e of this.enc) e?.free();
+    this.enc = []; this.one.clear(); this.remote?.free(); this.remote = null;
+    if (this.hp) { for (const p of Object.values(this.hp)) this.M._free(p); this.hp = null; }
+  }
 }
 
 // A set of symbols, as bits, grown to the highest one seen: ids are dense from 0 up, a lap at a time.

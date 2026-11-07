@@ -11,7 +11,7 @@
 import { init as initOb } from "../sim/ob.mjs";
 import { init as initWh, Encoder, Decoder } from "../sim/fountain.mjs";
 import { init as initZstd, Z } from "../sim/zstd.mjs";
-import { XferSender, XferReceiver, MemoryStore, blake3, hex, isControlId, PAYLOAD } from "../sim/xfer.mjs";
+import { XferSender, XferReceiver, MemoryStore, blake3, hex, isControlId, PAYLOAD, makeChunk, chunkCv } from "../sim/xfer.mjs";
 
 const M = await initOb();
 await initWh(); await initZstd();
@@ -22,14 +22,29 @@ const prose = (n, seed) => { const w = ["lizard ", "frame ", "block ", "ring ", 
 
 // ring: the outer share of a frame's slots never read. burst: frames lost, 48 of every 240 (2 s of 10 at 24 fps).
 // corrupt: chunk whose symbol 3 is sent with a flipped bit (in the first lap only, as symbols do not repeat).
-async function run(label, { length, log2 = 22, B = 12, loss = 0, ring = 0, burst = 0, join = 0, corrupt = -1, text = false, maxLaps = 6, wantRejected = 0 }) {
-  const file = text ? prose(length, length + 7) : rand(length, length + 7), xs = new XferSender(file, { name: "f.bin", type: "application/octet-stream", chunkLog2: log2, M, Encoder, Z });
+// stream: a streaming sender (2026-11-06): every chaining value first, then a chunk handed it every `stream` frames, in
+// a scrambled order (manifest groups whole out of turn), the frames from the first; warm counts the frames before the
+// last chunk.
+async function run(label, { length, log2 = 22, B = 12, loss = 0, ring = 0, burst = 0, join = 0, corrupt = -1, text = false, maxLaps = 6, wantRejected = 0, stream = 0 }) {
+  const file = text ? prose(length, length + 7) : rand(length, length + 7), size = 2 ** log2, C = Math.ceil(length / size);
+  const opts = { name: "f.bin", type: "application/octet-stream", chunkLog2: log2, M, Encoder, Z };
+  let xs, ks = null, order = [];
+  if (stream) {
+    const cvs = new Uint8Array(32 * C), part = (c) => file.subarray(c * size, Math.min(length, (c + 1) * size));
+    for (let c = 0; c < C; c++) cvs.set(chunkCv(M, part(c), c, log2), 32 * c);
+    ks = Array.from({ length: C }, (_, c) => makeChunk(part(c), c, log2, false, { M, Encoder, Z }));
+    order = Array.from({ length: C }, (_, c) => (c * 7 + 3) % C);
+    if (new Set(order).size !== C) order = Array.from({ length: C }, (_, c) => C - 1 - c);
+    xs = new XferSender(null, { ...opts, cvs, length });
+  } else xs = new XferSender(file, opts);
   const rx = new XferReceiver({ M, Decoder, store: new MemoryStore(), Z });
   let s = 12345;
   const rnd = () => { s = (Math.imul(s, 1103515245) + 12345) >>> 0; return (s >>> 8) / 16777216; };
-  const buf = new Uint8Array(PAYLOAD), lap = Math.max(1, xs.K.reduce((a, b) => a + b, 0)), limit = join + Math.ceil((maxLaps * lap) / B) + 50;
-  let f = 0, sent = 0;
+  const buf = new Uint8Array(PAYLOAD), lap = Math.max(1, (ks ? ks.map((k) => k.K) : xs.K).reduce((a, b) => a + b, 0)), limit = join + C * stream + Math.ceil((maxLaps * lap) / B) + 50;
+  let f = 0, sent = 0, warm = 0;
   for (; f < limit && !rx.done; f++) {
+    if (stream && order.length && f % stream === stream - 1) { const c = order.shift(); xs.add(c, ks[c]); }
+    if (!xs.sched) warm++;
     const ids = xs.frameIds(B);
     if (f < join) continue;
     if (burst && f % 240 < 48) { sent += B; continue; }
@@ -45,7 +60,7 @@ async function run(label, { length, log2 = 22, B = 12, loss = 0, ring = 0, burst
   const ok = !!r && r.bytes.length === length && r.bytes.every((v, i) => v === file[i]) && r.root === hex(blake3(M, file)) && r.root === hex(xs.root) && p.rejected === wantRejected;
   over += p.over ?? 0;
   if (!ok) fails++;
-  console.log(`${ok ? "ok  " : "FAIL"} ${label}: ${length} B, ${xs.chunks} chunk${xs.chunks === 1 ? "" : "s"} of 2^${log2}, ${xs.manifest.length} manifest; ${(sent / lap).toFixed(3)} laps, ${p.rejected ?? 0} rejected, ${p.over ?? 0} solve${p.over === 1 ? "" : "s"} past K`);
+  console.log(`${ok ? "ok  " : "FAIL"} ${label}: ${length} B, ${xs.chunks} chunk${xs.chunks === 1 ? "" : "s"} of 2^${log2}, ${xs.mcount} manifest; ${(sent / lap).toFixed(3)} laps${stream ? ` (${warm} frames before the last chunk)` : ""}, ${p.rejected ?? 0} rejected, ${p.over ?? 0} solve${p.over === 1 ? "" : "s"} past K`);
   xs.free();
 }
 await run("empty", { length: 0 });
@@ -74,6 +89,10 @@ for (let k = 0; k < 20; k++) await run(`200 KB, 20% lost, seed ${k}`, { length: 
 // Joined after the first lap, so repair blocks only: Wirehair then wants a block past K now and again, and the chunk
 // takes the rest as they come.
 await run("41 chunks of 1 KiB, repair blocks only", { length: 40 * 1024 + 100, log2: 10, join: 100 });
+await run("3 chunks, streamed, a chunk every 40 frames", { length: 3 * 2 ** 20 - 12345, log2: 20, stream: 40 });
+await run("41 chunks of 1 KiB, streamed out of turn, 30% lost", { length: 40 * 1024 + 100, log2: 10, stream: 3, loss: 0.3 });
+await run("3 chunks, prose, streamed, outer 25% of rings lost", { length: 3 * 2 ** 20 - 12345, log2: 20, stream: 40, text: true, ring: 0.25 });
+await run("10 MB, streamed, joined in the warm frames, 40% lost", { length: 10e6, stream: 60, join: 70, loss: 0.4 });
 for (let k = 0; k < 10; k++) await run(`400 KB in 16 KiB chunks, repair blocks only, seed ${k}`, { length: 400000 + 37 * k, log2: 14, join: 80 });
 
 // ai: The fountain worker's OPFS store in memory (lizard-web/fountain-worker.mjs OpfsStore): a folder a transfer by its

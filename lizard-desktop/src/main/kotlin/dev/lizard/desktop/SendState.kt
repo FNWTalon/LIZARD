@@ -698,6 +698,9 @@ class SendState {
     fun poll() {
         if (h == 0L) return
         senderRaw = Native.txStats(h); sender = parse(senderRaw)
+        // ai: the bytes as they go, known once every chunk is made (the core streams: its first frames go while the
+        // ai: chunks are made, 2026-11-06), so the state line takes them from here
+        if (compressed == 0L) sender?.num("sentBytes")?.toLong()?.takeIf { it > 0 }?.let { compressed = it }
         if (p != 0L) { presentRaw = Native.presentStats(p); present = parse(presentRaw) }
         val e = sender?.str("error").orEmpty().ifEmpty { if (p != 0L) present?.str("error").orEmpty() else "" }
         if (e.isNotEmpty()) fail(e)

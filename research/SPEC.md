@@ -1729,6 +1729,14 @@ transfer's layout in the blocks (7.5 to 7.9).
   - Each frame's slots, the control block's among them, are shuffled (Fisher-Yates, xorshift32 seeded from the frame
     count), so no chunk or control block is pinned to one block position.
   - Chunks of 4 MiB (k = 22) unless set otherwise.
+  - A sender MAY start before every chunk is made (the reference senders stream): the root comes from the chunks'
+    chaining values (7.9), which hash the file's own bytes, so the header goes from the first frame. Until the last
+    chunk is made, each frame carries one control block (the header on even turns, on odd ones the manifest blocks
+    written so far, a manifest block once its 12 chunks are made; every slot a control block while no chunk is made)
+    and the chunks made so far in turn, each its next symbol; then the schedule above, each chunk's symbols counting on
+    from there. A receiver needs nothing more: it keeps a chunk's blocks from the header on and solves no chunk before
+    the manifest is whole (7.8). A file of one chunk is made before its first frame, its header carrying its sent bytes
+    and seed (7.7).
 - **The test stream.** Block b of a frame carries id base + b, base a counter that starts at a random id under 2^30 at
   each start and advances by the frame's blocks after each frame; no id repeats.
 - **A change of format** keeps the 472-byte payload, so the fountain is unaffected; the test stream's counter keeps

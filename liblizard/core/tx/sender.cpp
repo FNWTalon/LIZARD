@@ -411,7 +411,10 @@ std::string Sender::stats() {
     o << ",\"chunks\":" << xfer_->chunks() << ",\"lap\":" << lap << ",\"pass\":" << (lap ? 1.0 + static_cast<double>(dataAll_) / lap : 1.0)
       << ",\"root\":\"" << xfer_->rootHex() << "\",\"sentBytes\":" << xfer_->sentBytes();
   }
-  o << ",\"error\":\"" << error_ << "\"}";
+  // ai: a transfer's worker that failed (xfer_tx.h fault: its chunks cannot all be made) is the error where none other is
+  std::string err = error_;
+  if (err.empty() && xfer_) { std::lock_guard<std::mutex> x(xferMu_); err = xfer_->fault(); }
+  o << ",\"error\":\"" << esc(err) << "\"}";
   return o.str();
 }
 

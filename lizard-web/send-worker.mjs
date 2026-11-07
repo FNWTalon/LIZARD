@@ -39,6 +39,13 @@ function dropRun() {
 let fetched = null;
 const source = () => (id, out) => { const b = fetched?.get(id); if (b) out.set(b); else xs.block(id, out); };
 async function fetchFor(ids) { fetched = ids && xs?.remote ? await xs.remote.fetch(ids) : null; }
+// ai: a pool's transfer made whole behind its first frames (xfer-pool.mjs, streaming): its bytes as they go and its lap
+// ai: then said to the page ("made", by pick), or the failure; nothing for one let go first
+function whenMade(x, said) {
+  x.remote?.made?.then(
+    () => postMessage({ type: "made", ...said, sent: x.sentBytes, lap: x.sched?.lap ?? 0 }),
+    (e) => { if (x.remote) postMessage({ type: "made", ...said, error: String(e?.message ?? e) }); });
+}
 // ai: the gap between two codes, in modules (the page's slider, start and respec's gap), and in the paint's pixels for
 // ai: this codec (phy.cell samples a module)
 let gapModules = 0;
@@ -53,6 +60,7 @@ async function handle(m) {
       const x = await makeXfer(new Uint8Array(m.bytes), m.xfer, { M: await initOb(), Encoder, Z });
       made = { pick: m.pick, xs: x };
       postMessage({ type: "prepared", pick: m.pick, sent: x.sentBytes });
+      whenMade(x, { pick: m.pick });
     } catch (e) { postMessage({ type: "prepared", pick: m.pick, error: String(e?.message ?? e) }); }
   } else if (m.type === "start") {
     phy?.free(); phy = null; dropRun();
@@ -65,6 +73,7 @@ async function handle(m) {
       await Promise.all([initFountain(), initZstd()]);
       // ai: every chunk zstd-compressed where that is shorter (sim/xfer.mjs, 2026-10-05), before the first frame
       xs = await makeXfer(new Uint8Array(m.bytes), m.xfer, { M: await initOb(), Encoder, Z });
+      whenMade(xs, { pick: null });
       phy.setSource(source());
     }
     fps = m.fps; phy.setFps?.(fps); codes = m.codes ?? 1; gapModules = m.gap;

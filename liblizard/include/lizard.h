@@ -168,7 +168,8 @@ LIZ_API void liz_stream_fill(uint32_t id, uint8_t payload[LIZ_PAYLOAD]);
 typedef struct liz_tx liz_tx;
 enum { LIZ_TX_COPY = 1 };  /* ai: liz_tx_new copies the bytes; without it they must outlive the liz_tx */
 /* ai: A file: its bytes, its name and media type as its header carries them (a name cut to 255 bytes, a type kept
- * ai: where it is printable ASCII of at most 158). */
+ * ai: where it is printable ASCII of at most 158). Returns once the file is hashed; its chunks are made by threads of
+ * ai: its own behind it, the first frames carrying the header, the manifest and the chunks made so far (natively). */
 LIZ_API liz_tx *liz_tx_new(const uint8_t *data, size_t length, const char *name, const char *type, int flags);
 /* ai: A file read from a path (into memory); name NULL takes the path's last part. */
 LIZ_API liz_tx *liz_tx_new_path(const char *path, const char *name, const char *type);
@@ -176,16 +177,16 @@ LIZ_API liz_tx *liz_tx_new_path(const char *path, const char *name, const char *
 LIZ_API liz_tx *liz_tx_new_test(uint32_t first_id);
 LIZ_API void liz_tx_free(liz_tx *t);
 /* ai: The next frame's n blocks (n x LIZ_BLOCK bytes): a frame asked for twice is two frames. Returns how many of
- * ai: them carry the file's data (the others its header and manifest). */
+ * ai: them carry the file's data (the others its header and manifest); LIZ_E_TOOBIG where a chunk could not be made. */
 LIZ_API int liz_tx_next(liz_tx *t, int n, uint8_t *blocks);
 
 typedef struct {
   int test;              /* ai: the test stream */
   uint64_t length;       /* ai: the file's bytes */
   uint32_t chunks;       /* ai: its 4 MiB chunks */
-  uint32_t lap;          /* ai: data blocks a lap of the schedule */
+  uint32_t lap;          /* ai: data blocks a lap of the schedule (0 until every chunk is made, behind liz_tx_new) */
   uint8_t root[32];      /* ai: BLAKE3 of the file (b3sum's) */
-  uint64_t sent;         /* ai: the file's bytes as they go: every chunk's zstd frame, or its own bytes (2026-10-05) */
+  uint64_t sent;         /* ai: the file's bytes as they go: every chunk's zstd frame, or its own bytes (2026-10-05); 0 until every chunk is made */
 } liz_tx_info;
 LIZ_API int liz_tx_info_get(const liz_tx *t, liz_tx_info *out);
 

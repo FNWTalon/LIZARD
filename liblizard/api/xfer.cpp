@@ -89,7 +89,11 @@ LIZ_API int liz_tx_next(liz_tx* t, int n, uint8_t* blocks) {
   return guard([&] {
     need(t && blocks && n >= 1, "a sender, at least a block and a place for them");
     t->ids.resize(size_t(n));
-    if (t->x) t->x->frameIds(t->ids.data(), n);
+    if (t->x) {
+      const std::string f = t->x->fault();   // ai: a worker that failed to make a chunk: the file cannot all go
+      if (!f.empty()) throw Error(LIZ_E_TOOBIG, f);
+      t->x->frameIds(t->ids.data(), n);
+    }
     else for (int i = 0; i < n; i++) t->ids[i] = t->next++;
     int data = 0;
     for (int i = 0; i < n; i++) {
