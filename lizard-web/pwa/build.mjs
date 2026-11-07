@@ -27,8 +27,9 @@ import { hashTree, verifyTree, findTokens, walk } from "./hash.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url)), WEB = resolve(HERE, ".."), ROOT = resolve(WEB, "..");
 const OUT = resolve(WEB, process.argv[2] ?? "app");
 const PAGES = ["lizard-web/index.html", "lizard-web/send.html", "lizard-web/recv.html"];
-// ai: what ships: the pages' own kinds of file, the codec's wasm and the sender's LDPC stop nets
-const SHIP = new Set([".html", ".css", ".mjs", ".js", ".svg", ".wasm", ".safetensors", ".json", ".woff2"]);
+// ai: what ships: the pages' own kinds of file, the codec's wasm, the sender's LDPC stop nets and the receiver's GPU
+// ai: decoder's tree (liblizard/gpu/webgpu.zst)
+const SHIP = new Set([".html", ".css", ".mjs", ".js", ".svg", ".wasm", ".safetensors", ".json", ".woff2", ".zst"]);
 const SCAN = new Set([".html", ".css", ".mjs", ".js", ".svg"]);
 // ai: emscripten's output (-O3): no comments, and its own string literals are the bare names it loads (lizard.wasm)
 const GLUE = new Set(["liblizard/bindings/wasm/dist/lizard.mjs"]);

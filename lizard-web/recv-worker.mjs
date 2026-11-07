@@ -14,7 +14,7 @@
 // ai:     session); { type: "error", tag, message }.
 import { makePhy } from "../liblizard/sim/phy.mjs";
 import { heapTop } from "../liblizard/sim/ob.mjs";
-import { cornerProbe, lumaOf } from "./vframes.mjs";
+import { cornerProbe, greyLevels, lumaOf } from "./vframes.mjs";
 
 let phy = null, cfg = null, chain = Promise.resolve();
 let levelTick = 0;
@@ -79,16 +79,7 @@ async function frame(m) {
   // in grey LEVELS, so what matters is not sharpness but how much of 0..255 the camera gave and whether it
   // clipped: a run at 41% of range with 13% of the picture pinned white read 17% of its blocks where one at 87%
   // read all of them. The middle half only, so the surround and the frame do not vote.
-  if ((levelTick++ & 31) === 0) {
-    const hist = new Uint32Array(256);
-    const step = isRgba ? 4 : 1, x0 = w >> 2, x1 = (3 * w) >> 2, y0 = h >> 2, y1 = (3 * h) >> 2;
-    let n = 0;
-    for (let y = y0; y < y1; y += 2) for (let x = x0; x < x1; x += 2) { hist[px[(y * w + x) * step]]++; n++; }
-    if (n) {
-      const at = (p) => { let acc = 0; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * p) return v; } return 255; };
-      out.levels = { range: at(0.95) - at(0.05), mid: at(0.5), hi: hist[255] / n, lo: hist[0] / n };
-    }
-  }
+  if ((levelTick++ & 31) === 0) { const l = greyLevels(px, w, h, isRgba ? 4 : 1); if (l) out.levels = l; }
   postMessage(out, out.bytes ? [out.bytes] : []);
 }
 

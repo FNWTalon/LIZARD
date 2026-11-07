@@ -76,6 +76,43 @@ const UA = (() => {
 // camera frame, and the pool's behaviour when it is full depends on which.
 const VFC = typeof HTMLVideoElement !== "undefined" && !!HTMLVideoElement.prototype.requestVideoFrameCallback;
 const pool = [], fountain = new Worker(new URL("./fountain-worker.mjs", import.meta.url), { type: "module" });
+// ai: The GPU decoder (Decoder GPU, or auto where WebGPU makes it: recv-gpu-worker.mjs, the WebGPU host): one worker that
+// ai: takes up to `cap` frames at once (its ring) and batches them itself. While it starts the C pool decodes; once it
+// ai: is up (`up`: ready once) it is the page's one decoder and the pool is let go; a failure (no WebGPU, the device
+// ai: lost) hands the page back to the pool, the reason kept (gpuWhy) until the setting changes.
+let gpu = null, gpuWhy = "";
+function startGpu() {
+  const w = new Worker(new URL("./recv-gpu-worker.mjs", import.meta.url), { type: "module" });
+  gpu = { gpu: true, w, ready: false, up: false, frames: true, out: 0, cap: 0, adapter: "" };
+  w.onmessage = ({ data: m }) => onGpu(m);
+  w.onerror = (e) => { e.preventDefault?.(); gpuFail(`the GPU worker: ${e.message ?? "failed to start"}`); };
+  if (config) w.postMessage({ type: "config", config });
+  showDecoder();
+}
+function stopGpu() { gpu?.w.terminate(); gpu = null; }
+function gpuFail(why) {
+  console.warn(`GPU decoder: ${why}; the C decodes`);
+  stopGpu(); gpuWhy = why;
+  resize(); showDecoder();
+}
+function onGpu(m) {
+  if (!gpu) return;
+  if (m.type === "ready") {
+    if (m.version !== config?.version) return;
+    Object.assign(gpu, { ready: true, up: true, cap: m.take, adapter: m.adapter ?? "" });
+    resize(); showDecoder();
+    return;
+  }
+  if (m.type === "error") { if (m.fatal) return gpuFail(m.message); workerErrs++; lastErr = m.message; }
+  if (m.tag !== undefined) gpu.out = Math.max(0, gpu.out - 1);
+  if (m.type !== "result") return;
+  if (m.noFrames) { poolVfOff = `off since the GPU worker could not read a VideoFrame: ${m.noFrames}`; cur.skipped++; trackTags.delete(m.tag); return; }
+  if (m.vf) vfFormat = m.vf;
+  take(m);
+}
+// ai: The Decoder menu's auto entry named after what runs (the apps': the GPU until it is known not to)
+function showDecoder() { $("dec").querySelector('option[value="auto"]').textContent = gpu || ($("dec").value !== "cpu" && !gpuWhy) ? "GPU" : "CPU"; }
+const decodersUp = () => (gpu?.up ? [gpu] : pool);
 // ai: config: what the decoders are told, always set (lizardConfig): nothing but the picture sizes to build.
 let config = null, track = null, file = "", next = 0, busySkips = 0;
 let photoCaps = {}, levels = null;   // what the camera says it can be told, and the grey range it actually delivers
@@ -365,6 +402,7 @@ function spawn() { pool.push(newWorker({ deaths: 0, wait: STUCK_WAIT })); }
 // In auto the size is the allocator's to choose, so this only holds it inside the ceiling: a menu
 // that drops the ceiling must still bring the pool down. Growing is busy()'s job and shrinking the tick's.
 function resize() {
+  if (gpu?.up) { while (pool.length) kill(pool.pop()); return; }
   const want = !FIXED ? Math.min(pool.length, limit()) : limit();
   while (pool.length > want) kill(pool.pop());   // a frame in flight there is lost, which the counters show as one not processed
   while (pool.length < want) spawn();
@@ -390,8 +428,8 @@ function showCamera() {
 // ai: TAP_EMPTY_MAX.
 let tap = null, poolVfOff = "", vfNote = "", vfFormat = "", tapNone = 0;
 function vfWhyNot(slot = null) {
-  if (!pool.some((c) => c.ready)) return "no worker ready";
-  if (slot ? !slot.frames : !pool.some((c) => c.ready && c.frames)) return "the workers take no VideoFrame";
+  if (!decodersUp().some((c) => c.ready)) return "no worker ready";
+  if (slot ? !slot.frames : !decodersUp().some((c) => c.ready && c.frames)) return "the workers take no VideoFrame";
   if (poolVfOff) return poolVfOff;
   if (typeof VideoFrame !== "function") return "no VideoFrame on this page";
   return "";
@@ -630,6 +668,7 @@ function setConfig(c, newTransfer) {
   if (newTransfer) { band = null; forgetTransfer(); }
   cur = fresh(); buckets = [];
   for (const slot of pool) { slot.ready = false; slot.busy = false; slot.w.postMessage({ type: "config", config: c }); }
+  if (gpu) { gpu.ready = false; gpu.w.postMessage({ type: "config", config: c }); }
   resize();
   showCfg();
 }
@@ -703,7 +742,7 @@ function second() {
     msDraw: perGrab(w.draw), msRead: perGrab(w.read),
     // ai: Which decoder ran: the CPU pool, always (the field the apps' rows carry too), and the run's totals with the
     // ai: page's clock in s.
-    decoder: "cpu", totals: { ...totals, sizes: { ...totals.sizes }, t: performance.now() / 1000 },
+    decoder: gpu?.up ? "gpu" : "cpu", gpuWhy, totals: { ...totals, sizes: { ...totals.sizes }, t: performance.now() / 1000 },
     // LIZARD's data is in grey LEVELS, so a squeezed or clipped range loses signal at every frequency at once.
     // 41% of full range with 13% of the picture pinned at 255 is what a badly overexposed run looked like, against
     // 64% and 87% for runs that read well, so this is worth having on screen while the phone is still in hand.
@@ -736,7 +775,7 @@ function second() {
     ? `band: ${NAME(subchOf(band.version))}${band.fps ? `, ${band.fps} fps stated` : ", no rate stated"}${slow ? `  ${slow}` : ""}`
     : "band: no format word read yet";
   const num = (v) => (typeof v === "number" ? v.toFixed(1) : "?");
-  const decLine = `workers ${stats.workersReady} ready of ${stats.workers}, at most ${stats.workersMax}, ${stats.vfSent ? `frames as VideoFrames (from the ${stats.vfSource}${stats.vfFormat ? `, ${stats.vfFormat}` : ""}, copied to luma in the worker)${stats.lumaSent ? `, ${stats.lumaSent} by the grab` : ""}` : `frames by the grab${stats.vfNote ? ` (${stats.vfNote})` : ""}`}`;
+  const decLine = gpu?.up ? `decoder: the GPU (WebGPU, ${gpu.adapter || "an adapter"}), ${gpu.out} of ${gpu.cap} frames out, ${stats.vfSent ? "frames as VideoFrames" : "frames by the grab"}` : `${gpuWhy ? `decoder: the C (the GPU: ${gpuWhy}); ` : ""}workers ${stats.workersReady} ready of ${stats.workers}, at most ${stats.workersMax}, ${stats.vfSent ? `frames as VideoFrames (from the ${stats.vfSource}${stats.vfFormat ? `, ${stats.vfFormat}` : ""}, copied to luma in the worker)${stats.lumaSent ? `, ${stats.lumaSent} by the grab` : ""}` : `frames by the grab${stats.vfNote ? ` (${stats.vfNote})` : ""}`}`;
   const cropLine = `crop drawn ${drawMode === "rect" ? "with a source rect" : "whole and clipped: this browser's source rect disagreed with the whole frame"}, checked on ${cropCheck.checked} frames, ${cropCheck.differ} differed`;
   const grabPart = stats.vfSent && !stats.lumaSent ? "grab: none (VideoFrames)" : `canvas grab ${stats.msGrab.toFixed(1)} (draw ${stats.msDraw.toFixed(1)}, read ${stats.msRead.toFixed(1)})`;
   const bestPart = best.grab < Infinity ? ` (best this run at ${pool.length} worker${pool.length > 1 ? "s" : ""}: ${best.grab.toFixed(1)} + ${bestMs < Infinity ? bestMs.toFixed(1) : "-"})` : "";
@@ -974,10 +1013,12 @@ function onFrame(now, meta) {
 
 // Round robin over the idle workers, so none goes cold and captures of one display frame spread out.
 function freeSlot() {
+  if (gpu?.up) return config && gpu.ready && gpu.out < gpu.cap ? gpu : null;
   for (let k = 0; config && k < pool.length; k++) { const c = pool[(next + k) % pool.length]; if (c.ready && !c.busy) { next = (next + k + 1) % pool.length; return c; } }
   return null;
 }
 function send(slot, msg, transfer) {
+  if (slot.gpu) { slot.out++; cur.sent++; slot.w.postMessage(msg, transfer); return; }
   slot.busy = true;
   slot.sentAt = performance.now();   // the watchdog above needs to know how long it has been out
   cur.sent++;
@@ -996,6 +1037,7 @@ const booting = () => pool.some((c) => !c.ready && performance.now() - c.bootAt 
 // A frame was lost because every worker was busy. Whether that is worth a worker is lizard-web/pool.mjs.
 function busy() {
   cur.skipped++;
+  if (gpu?.up) return;
   busySkips++;
   if (policy.lost({ allReady: !booting(), size: pool.length, ceiling: limit(), repeatShare })) spawn();
 }
@@ -1010,6 +1052,7 @@ function stopCamera() {
   wake?.release().catch(() => {}); wake = null;
   while (pool.length > 1 && !FIXED) kill(pool.pop());
   for (const slot of pool) slot.busy = false;
+  if (gpu) gpu.out = 0;
   cur = fresh(); buckets = []; policy.reset();
   shot.width = shot.height = 0; cropCheck.key = ""; trackBox = null; trackTags.clear();   // nothing of the last session left on screen, and the next one tests its source rect again
   $("out").textContent = "camera off";
@@ -1226,6 +1269,12 @@ $("railOpen").onclick = () => $("open").onclick();
 $("railSave").onclick = () => $("save").click();
 // A new resolution, rate or camera needs a new stream.
 // ai: Not in the middle of a start, which would be stopped under itself: the choice then takes effect at the next start.
+// ai: Decoder: CPU lets the GPU worker go and the pool decodes; GPU (or auto) starts it again, a failure before forgotten
+$("dec").onchange = () => {
+  if ($("dec").value === "cpu") { stopGpu(); resize(); }
+  else { gpuWhy = ""; if (!gpu) startGpu(); }
+  showDecoder();
+};
 $("res").onchange = $("cam").onchange = $("fps").onchange = () => { showRates(); if (track && !ui.starting) { stopCamera(); start(); } };
 // Which cameras this device has. A phone reports its rear lenses separately (wide, ultrawide, tele) and
 // facingMode picks one of them for you, which is often not the one that focuses closest; this menu says which.
@@ -1258,6 +1307,8 @@ for (const [k, v] of new URLSearchParams(location.search)) if ($(k) && "value" i
 setConfig(lizardConfig(), true);
 showCrop();
 showCamera();
-resize();   // ai: the pool's first worker
+if ($("dec").value !== "cpu") startGpu();
+showDecoder();
+resize();   // ai: the pool's first worker (the GPU decoder's cover while it starts)
 showState();
 if (new URLSearchParams(location.search).has("auto")) $("go").onclick();

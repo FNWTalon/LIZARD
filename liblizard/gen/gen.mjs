@@ -30,6 +30,7 @@ import { installGlobals, Recorder, mockAdapter } from "./mockgpu.mjs";
 import { senderSetup } from "./sender.mjs";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync, realpathSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { zstdCompressSync, constants as zlibConstants } from "node:zlib";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -529,6 +530,35 @@ function sourcesHash() {
   return h.digest("hex").slice(0, 16);
 }
 
+// ai: The WebGPU tree as the web loads it (gpu/host.mjs over gpu/webgpu.zst, 2026-11-06): WEBGPU_VARIANT's setup, the
+// ai: blobs it names and its pipelines' WGSL, each file under the path the host reads it by, in one container ("LZWT",
+// ai: u32 1, u32 count, then a file each: u16 name length, the name in UTF-8, u32 size, the bytes; little-endian),
+// ai: as one zstd frame at level 19 with long matching (its content size in the frame, as the codec's zstd asks). The
+// ai: web takes it by a literal name, so the installed app hashes and caches it as any asset, and it is in git: the
+// ai: site's build has no glslang or naga to make it. A pipeline whose module has no WGSL (the int16 forms) has none here.
+export const WEBGPU_TREE = new URL("../gpu/webgpu.zst", HERE);
+function packWebgpu(wgslModules) {
+  const has = new Set(wgslModules);
+  const setup = `setup/${WEBGPU_VARIANT}.json`;
+  const tree = JSON.parse(readFileSync(new URL(setup, OUT), "utf8"));
+  const files = [setup];
+  for (const b of new Set(Object.values(tree.objects.buffers).map((b) => b.blob).filter(Boolean))) files.push(`blobs/${b}.bin`);
+  for (const m of new Set(Object.values(tree.objects.pipelines).map((p) => p.module))) if (has.has(m)) files.push(`webgpu/${m}.wgsl`);
+  const parts = [];
+  const head = Buffer.alloc(12);
+  head.write("LZWT", 0, "latin1"); head.writeUInt32LE(1, 4); head.writeUInt32LE(files.length, 8);
+  parts.push(head);
+  for (const f of files) {
+    const name = Buffer.from(f, "utf8"), data = readFileSync(new URL(f, OUT)), e = Buffer.alloc(6 + name.length);
+    e.writeUInt16LE(name.length, 0); name.copy(e, 2); e.writeUInt32LE(data.length, 2 + name.length);
+    parts.push(e, data);
+  }
+  const raw = Buffer.concat(parts);
+  const z = zstdCompressSync(raw, { params: { [zlibConstants.ZSTD_c_compressionLevel]: 19, [zlibConstants.ZSTD_c_enableLongDistanceMatching]: 1, [zlibConstants.ZSTD_c_windowLog]: 27 }, pledgedSrcSize: raw.length });
+  writeFileSync(WEBGPU_TREE, z);
+  console.log(`webgpu tree: ${files.length} files, ${(raw.length / 1e6).toFixed(2)} MB, ${(z.length / 1e6).toFixed(2)} MB packed (${fileURLToPath(WEBGPU_TREE)})`);
+}
+
 async function main() {
   for (const d of ["setup", "wgsl", "naga", "glsl", "spv", "blobs", "webgpu"]) mkdirSync(new URL(`${d}/`, OUT), { recursive: true });
   const tables = await formatTables();
@@ -573,6 +603,7 @@ async function main() {
       }
     }
     console.log(`webgpu (${WEBGPU_VARIANT}): ${webgpu.modules.length} modules as WGSL, ${webgpu.not.length} not (${[...new Set(webgpu.not.map((n) => n.message.slice(0, 70)))].join("; ")})`);
+    packWebgpu(webgpu.modules);
   } else console.log(`webgpu: no ${TOOLS.spv2wgsl} (lizard-android/build.sh tools builds it): no WGSL written`);
   // ai: The sender's GPU encoder (gen/sender.mjs, 2026-10-02): its kernels as out/spv/send_<name>.spv, its manifest
   // ai: setup/send.json and its paint's TAB blobs/<hash>.bin (the codes and the whitening), for core/tx/gpu_painter.cpp.

@@ -117,6 +117,9 @@
       <!-- ai: no Auto entries (2026-10-05): the cameras, the rates 30 and 60; with none chosen the page's default runs,
            held by a hidden option named after what it runs (recv.mjs showCamera). The camera's field always shown, "Camera"
            until one has opened and the browser names them (2026-11-06, as the apps'). -->
+      <!-- ai: the apps' Decoder (2026-11-06): GPU or CPU; with neither chosen auto runs, named after what it runs
+           (recv.mjs showDecoder): the GPU where WebGPU makes the decoder, else the C -->
+      <label>Decoder <select id="dec"><option value="auto" selected hidden disabled>GPU</option><option value="gpu">GPU</option><option value="cpu">CPU</option></select></label>
       <label id="camRow">Camera <select id="cam"><option value="auto" selected hidden disabled>Camera</option></select></label>
       <label>Resolution <select id="res"><option value="1280x720">1280 x 720</option><option value="1920x1080" selected>1920 x 1080</option><option value="2560x1440">2560 x 1440</option><option value="3840x2160">3840 x 2160</option></select></label>
       <label>Frame rate <select id="fps"><option value="auto" selected hidden disabled>60</option><option value="30">30</option><option value="60">60</option></select></label>
