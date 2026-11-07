@@ -14,11 +14,24 @@ function link(w) {
   return (msg, transfer = []) => new Promise((resolve, reject) => { waiting.push({ resolve, reject }); w.postMessage(msg, transfer); });
 }
 
-// ai: The file's transfer (XferSender's options in opts), made by up to `workers` workers, one a chunk at most; a file of
-// ai: one chunk, or one worker, made here as before.
-export async function makeXfer(bytes, opts, { M, Encoder, Z, workers = navigator.hardwareConcurrency || 1 }) {
+// ai: The workers: one a core, not a hardware thread (the native sender's rule, liblizard/core/tx/xfer_tx.cpp workers()).
+// ai: A page is told only hardwareConcurrency, its hardware threads; x86 runs two a core on most of its chips (SMT), ARM
+// ai: one, so half of them on x86 (the browser's architecture, else the user agent's) and every one elsewhere. Measured
+// ai: in Chrome on a 16-core 32-thread x86 (2026-11-06): 16 workers 0.57 s for 256 MiB that 32 made in 0.58 s and 4
+// ai: in 1.2, each worker about 30 MiB. An x86 chip without SMT gets half its cores.
+export async function cores() {
+  const n = navigator.hardwareConcurrency || 1;
+  let arch = "";
+  try { arch = (await navigator.userAgentData?.getHighEntropyValues(["architecture"]))?.architecture ?? ""; } catch {}
+  if (!arch && /x86_64|x64|win64|wow64|amd64|i686/i.test(navigator.userAgent)) arch = "x86";
+  return arch === "x86" ? Math.max(1, n >> 1) : n;
+}
+
+// ai: The file's transfer (XferSender's options in opts), made by up to `workers` workers (cores() unless given), one a
+// ai: chunk at most; a file of one chunk, or one worker, made here as before.
+export async function makeXfer(bytes, opts, { M, Encoder, Z, workers = null }) {
   const chunkLog2 = opts.chunkLog2 ?? DEFAULT_LOG2, size = 2 ** chunkLog2, C = Math.ceil(bytes.length / size);
-  const P = Math.min(C, workers);
+  const P = Math.min(C, workers ?? await cores());
   if (P < 2) return new XferSender(bytes, { ...opts, M, Encoder, Z });
   const ws = Array.from({ length: P }, () => new Worker(new URL("./chunk-worker.mjs", import.meta.url), { type: "module" }));
   const calls = ws.map(link), owner = new Int32Array(C), chunks = new Array(C), free = () => ws.forEach((w) => w.terminate());
@@ -44,6 +57,7 @@ export async function makeXfer(bytes, opts, { M, Encoder, Z, workers = navigator
         return got;
       },
       free,
+      workers: P,
     };
     return new XferSender(null, { ...opts, M, Encoder, Z, chunks, length: bytes.length, remote });
   } catch (e) { free(); throw e; }
