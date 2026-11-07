@@ -17,8 +17,8 @@ android {
         applicationId = "dev.fosslabs.lizard"
         minSdk = 29
         targetSdk = 36
-        versionCode = 15
-        versionName = "0.9"
+        versionCode = 16
+        versionName = "0.9.0"
         // ai: a build beside the installed app (`./gradlew assembleDebug -Plizard.idSuffix=.s3`): its own id, data and
         // ai: launcher label, the installed one untouched; unset, the app itself
         val suffix = providers.gradleProperty("lizard.idSuffix").orNull.orEmpty()

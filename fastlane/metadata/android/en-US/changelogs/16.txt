@@ -1,0 +1,3 @@
+- Sending a large file starts at once: the first codes go while the file is still being compressed, on every core.
+- The CPU decoder finds codes faster in large camera frames.
+- Reads and sends 0.8.5's codes: the format is unchanged.
