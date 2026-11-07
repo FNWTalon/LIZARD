@@ -130,6 +130,9 @@ pre.readout{font-size:12px;color:var(--fg)}
   .side-edge{display:block;position:fixed;top:0;bottom:0;left:calc(var(--side) - 1px);width:21px;cursor:col-resize;z-index:5;touch-action:none}
   .side-edge::before{content:"";position:absolute;left:0;top:0;bottom:0;width:1px;background:var(--line);transition:width .12s,background-color .12s}
   .side-edge.lit::before,body.resizing .side-edge::before{width:4px;background:var(--pressed)}
+  /* ai: the column's scrollbar (send's #pane, recv's #side) out of sight while the edge's bar shows, lit or dragged, so
+     the two are never side by side (2026-11-06): transparent, its room kept, so nothing moves */
+  body.edge-lit :is(#pane,#side),body.resizing :is(#pane,#side){scrollbar-color:transparent transparent}
   body.full .side-edge{display:none}
   body.collapsed .bar .collapse{display:flex}
 }
