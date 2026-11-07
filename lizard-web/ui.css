@@ -9,7 +9,7 @@
 /* ai: preloads it, and block keeps the first paint off the fallback face (no swap after it). */
 @font-face{font-family:"Inter";src:url("../liblizard/vendor/fonts/inter/InterVariable.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:block}
 @font-face{font-family:"JetBrains Mono";src:url("../liblizard/vendor/fonts/jetbrains-mono/JetBrainsMono-Regular.woff2") format("woff2");font-weight:400;font-style:normal;font-display:block}
-:root{--fg:#111;--bg:#fff;--muted:#666;--line:#e4e4e4;--soft:#f1f1f1;--soft-2:#e6e6e6;--card:#f6f6f6;--bad:#b00020;
+:root{--fg:#111;--bg:#fff;--muted:#666;--line:#e4e4e4;--soft:#f1f1f1;--soft-2:#e6e6e6;--pressed:#dbdbdb;--card:#f6f6f6;--bad:#b00020;
   --good:#0a7a2f;color-scheme:light}
 *,*::before,*::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
@@ -123,8 +123,13 @@ pre.readout{font-size:12px;color:var(--fg)}
   .bar #swap{display:none}
 }
 @media (orientation:landscape) and (pointer:fine),(orientation:landscape) and (pointer:none){
-  /* ai: the column's edge, dragged (ui.mjs sideResizer, 2026-10-05): a 12 px strip over the hairline, the rail's too */
-  .side-edge{display:block;position:fixed;top:0;bottom:0;left:var(--side);width:12px;margin-left:-6px;cursor:col-resize;z-index:5;touch-action:none}
+  /* ai: the column's edge, dragged (ui.mjs sideResizer, 2026-10-05), the rail's too: since 2026-11-06 the apps' (lizard-ui
+     Column.kt SideEdge), a strip from the hairline 20 px over the main area's side; under the pointer for 300 ms (.lit,
+     ui.mjs sideResizer), and while dragged (body.resizing), the hairline grows to a line 4 px wide in a pressed button's grey (--pressed, the
+     apps' Pressed), widening into the main area's side, over 120 ms */
+  .side-edge{display:block;position:fixed;top:0;bottom:0;left:calc(var(--side) - 1px);width:21px;cursor:col-resize;z-index:5;touch-action:none}
+  .side-edge::before{content:"";position:absolute;left:0;top:0;bottom:0;width:1px;background:var(--line);transition:width .12s,background-color .12s}
+  .side-edge.lit::before,body.resizing .side-edge::before{width:4px;background:var(--pressed)}
   body.full .side-edge{display:none}
   body.collapsed .bar .collapse{display:flex}
 }

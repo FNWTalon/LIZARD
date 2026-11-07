@@ -32,6 +32,10 @@ export function sideResizer(key, floor, shutKey) {
   edge.className = "side-edge";
   edge.setAttribute("role", "separator"); edge.setAttribute("aria-orientation", "vertical"); edge.setAttribute("aria-label", "Sidebar width");
   document.body.append(edge);
+  // ai: lit after 300 ms under the pointer (the apps' SideEdge hoverLit), unlit as it leaves; a drag lights it at once (ui.css)
+  let lit = 0;
+  edge.addEventListener("pointerenter", () => { clearTimeout(lit); lit = setTimeout(() => edge.classList.add("lit"), 300); });
+  edge.addEventListener("pointerleave", () => { clearTimeout(lit); edge.classList.remove("lit"); });
   const restore = () => { try { const v = +localStorage.getItem(key); if (v > 0) root.style.setProperty("--side", `${sideClamp(v, lo())}px`); } catch {} };
   restore();
   document.fonts?.ready.then(restore);   // ai: a floor measured in the page's font: again once it is loaded (ui.css, Inter)
