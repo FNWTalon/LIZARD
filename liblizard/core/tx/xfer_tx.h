@@ -6,11 +6,12 @@
 // ai: bytes; the header every other control slot and the manifest (each chunk's chaining value, bytes as sent and seed
 // ai: attempt) between, the control cycle within an eighth of a lap; data blocks by the schedule, shuffled in a frame
 // ai: by a generator seeded by the frame count. The same ids and bytes as the JS sender for the same file
-// ai: (tools/tx_check.cpp holds it to one).
+// ai: (tools/tx_check.cpp holds it to one). The chunks are made at once, a worker a core (2026-11-06): a chunk's zstd
+// ai: frame, Wirehair encoder and chaining value depend on no other chunk, so the bytes are the serial sender's.
 #pragma once
 #include <cstddef>
 #include <cstdint>
-#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -24,9 +25,10 @@ class XferTx {
  public:
   // ai: data: the file's bytes, alive as long as this (the app maps the file); name and type as the header carries them
   // ai: (a name cut to 255 bytes at a character, a type kept only where it is printable ASCII of at most 158).
-  // ai: Throws std::runtime_error where the file cannot go (too many chunks, a chunk Wirehair seeded apart).
+  // ai: Throws std::runtime_error where the file cannot go (too many chunks, a chunk Wirehair seeded apart). Makes
+  // ai: every chunk before it returns, a thread a physical core (the caller's one of them; the caller's alone under
+  // ai: emscripten), each taking the next chunk; the others joined before it returns.
   XferTx(const uint8_t* data, size_t length, const std::string& name, const std::string& type, int chunkLog2 = 22);
-  ~XferTx();
   XferTx(const XferTx&) = delete;
   XferTx& operator=(const XferTx&) = delete;
 
@@ -51,8 +53,9 @@ class XferTx {
   std::vector<uint32_t> sent_;   // ai: its bytes as sent: its zstd frame, or its own
   std::vector<uint8_t> seed_;    // ai: its Wirehair seed attempt (0 where K is 1)
   std::vector<uint32_t> K_;      // ai: Wirehair source blocks a chunk, of the sent bytes (1: sent unfountained)
-  std::vector<void*> enc_;       // ai: a chunk's encoder, null where K is 1
-  std::map<uint32_t, std::vector<uint8_t>> one_;   // ai: the sent bytes of a chunk of one block
+  struct WhFree { void operator()(void* e) const; };
+  std::vector<std::unique_ptr<void, WhFree>> enc_;   // ai: a chunk's encoder, null where K is 1
+  std::vector<std::vector<uint8_t>> one_;            // ai: the sent bytes of a chunk of one block, else empty
   uint8_t root_[32]{}, header_[XFER_PAYLOAD]{};
   std::vector<std::vector<uint8_t>> manifest_;
   // ai: the schedule (Schedule): symbols a chunk sent, the round's place, each chunk's weight a round and accumulator

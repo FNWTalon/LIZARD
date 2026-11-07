@@ -72,24 +72,56 @@ add_executable(lizard_gpu_check tools/gpu_check.cpp)
 target_link_libraries(lizard_gpu_check PRIVATE dec lizard_rx)
 endif()
 
-# ai: The transfer (rx/xfer_rx.h): src's xfer and shake, BLAKE3 portable with the defines build.sh gives it,
-# ai: Wirehair and the web's own shim over it (wirehair/shim.cpp), zstd as one file under the project's shim
-# ai: (zstd/shim.c, the parameters pinned; 2026-10-05), compiled natively; vendor code without our warnings.
+# ai: The transfer (rx/xfer_rx.h): src's xfer and shake, BLAKE3 with its vector kernels (below), Wirehair and the
+# ai: web's own shim over it (wirehair/shim.cpp), zstd as one file under the project's shim (zstd/shim.c, the
+# ai: parameters pinned; 2026-10-05), compiled natively; vendor code without our warnings.
 # ai: LZ is liblizard/, the folder above this one.
 set(LZ ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(WH ${LZ}/vendor/wirehair)
-set(XFER_VENDOR ${LZ}/vendor/blake3/blake3.c ${LZ}/vendor/blake3/blake3_dispatch.c ${LZ}/vendor/blake3/blake3_portable.c
+# ai: BLAKE3's vector kernels (2026-11-06), upstream's own, its dispatcher choosing at run time: on x86-64 SSE4.1 (in
+# ai: the v2 floor) and AVX2 (by cpuid) as upstream's assembly (gcc 13's build of its intrinsics ran 1.5 and 3.0 GiB/s
+# ai: on the 9950X, the assembly 2.2 and 4.3; the portable 1.36), no SSE2 (below the floor, never chosen) and no
+# ai: AVX-512 (no v4); NEON on arm64; under wasm SIMD the NEON kernel through emscripten's NEON headers; the portable
+# ai: code alone for the wasm MVP, LIZ_SCALAR and MSVC (no build of the tree's).
+set(B3 ${LZ}/vendor/blake3)
+set(B3_SRC ${B3}/blake3.c ${B3}/blake3_dispatch.c ${B3}/blake3_portable.c)
+set(B3_DEFS BLAKE3_NO_SSE2 BLAKE3_NO_AVX512)
+set(B3_NEON "")
+if(LIZ_SCALAR OR LIZ_WASM_MVP OR MSVC)
+  list(APPEND B3_DEFS BLAKE3_NO_SSE41 BLAKE3_NO_AVX2 BLAKE3_USE_NEON=0)
+elseif(EMSCRIPTEN OR CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+  set(B3_NEON ${B3}/blake3_neon.c)
+  list(APPEND B3_SRC ${B3_NEON})
+  list(APPEND B3_DEFS BLAKE3_USE_NEON=1)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  enable_language(ASM)
+  if(WIN32)
+    set(B3_ABI windows_gnu)
+  else()
+    set(B3_ABI unix)
+  endif()
+  list(APPEND B3_SRC ${B3}/blake3_sse41_x86-64_${B3_ABI}.S ${B3}/blake3_avx2_x86-64_${B3_ABI}.S)
+  list(APPEND B3_DEFS BLAKE3_USE_NEON=0)
+else()
+  list(APPEND B3_DEFS BLAKE3_NO_SSE41 BLAKE3_NO_AVX2 BLAKE3_USE_NEON=0)
+endif()
+set(XFER_VENDOR ${B3_SRC}
   ${LZ}/vendor/zstd/zstd.c ${LZ}/zstd/shim.c
   ${WH}/wirehair.cpp ${WH}/gf256.cpp ${WH}/WirehairCodec.cpp ${WH}/WirehairTools.cpp ${WH}/codec/WirehairV2Codec.cpp
   ${WH}/codec/WirehairV2GF16.cpp ${WH}/codec/WirehairV2Peel.cpp ${WH}/codec/WirehairV2Plan.cpp ${WH}/codec/WirehairV2Policy.cpp
   ${WH}/codec/WirehairV2Precode.cpp ${WH}/codec/WirehairV2PrecodeDecode.cpp ${WH}/codec/WirehairV2PrecodeEncode.cpp
   ${WH}/codec/WirehairV2Profile.cpp ${WH}/codec/WirehairV2Seeds.cpp ${WH}/codec/WirehairV2Solve.cpp ${LZ}/wirehair/shim.cpp)
 # ai: lizard_xfer_core (2026-10-03): both ends of the transfer with no thread of their own (rx/xfer_rx_core.h, the
-# ai: stores, tx/xfer_tx.h), what the library and a wasm build take; lizard_xfer adds the app's threaded receiving end.
+# ai: stores, tx/xfer_tx.h; the sender's constructor alone spreads its chunks over the cores and joins them before it
+# ai: returns, one thread under emscripten), what the library and a wasm build take; lizard_xfer adds the app's
+# ai: threaded receiving end.
 add_library(lizard_xfer_core STATIC rx/xfer_rx_core.cpp rx/store.cpp tx/xfer_tx.cpp ${LZ}/src/xfer.c ${LZ}/src/shake.c ${XFER_VENDOR})
 set_source_files_properties(${XFER_VENDOR} PROPERTIES COMPILE_OPTIONS "${LIZ_NOWARN}")
+if(EMSCRIPTEN AND B3_NEON)
+  set_property(SOURCE ${B3_NEON} APPEND PROPERTY COMPILE_OPTIONS -mfpu=neon)   # ai: emscripten's arm_neon.h, on wasm SIMD
+endif()
 target_include_directories(lizard_xfer_core PUBLIC rx tx ${LZ}/src ${LZ}/zstd PRIVATE ${LZ}/vendor/blake3 ${LZ}/vendor/zstd ${WH}/include ${WH})
-target_compile_definitions(lizard_xfer_core PRIVATE BLAKE3_NO_SSE2 BLAKE3_NO_SSE41 BLAKE3_NO_AVX2 BLAKE3_NO_AVX512 BLAKE3_USE_NEON=0 WIREHAIR_BUILDING=1)
+target_compile_definitions(lizard_xfer_core PRIVATE ${B3_DEFS} WIREHAIR_BUILDING=1)
 if(NOT EMSCRIPTEN)
 find_package(Threads REQUIRED)
 target_link_libraries(lizard_xfer_core PUBLIC Threads::Threads)   # ai: std::call_once (Wirehair's init) on some C libraries

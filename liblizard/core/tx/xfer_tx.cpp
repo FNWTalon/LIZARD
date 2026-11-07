@@ -2,10 +2,30 @@
 #include "xfer_tx.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <mutex>
+#include <new>
 #include <stdexcept>
+#include <system_error>
+#include <thread>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <sys/sysctl.h>
+#elif defined(__linux__)
+#include <set>
+#include <unistd.h>
+#include <fstream>
+#endif
 
 extern "C" {
 #include "xfer.h"
@@ -29,6 +49,37 @@ std::string nameBytes(const std::string& name) {
   while (n < name.size() && n > 0 && (static_cast<uint8_t>(name[n]) & 0xc0) == 0x80) n--;
   return name.substr(0, n);
 }
+// ai: The prepare's workers: one a physical core, not a hardware thread (2026-11-06, 1 GiB on the 9950X, 16 cores of
+// ai: 2 threads: 16 workers 0.46 s random and 1.09 s compressible, 32 workers 0.62 and 1.18 s at twice the CPU time;
+// ai: two chunks' Wirehair solves on one core's caches go slower than one). The hardware threads where the system
+// ai: does not say; one under emscripten (no threads in the wasm build).
+unsigned workers() {
+  unsigned n = 0;
+#if defined(__EMSCRIPTEN__)
+  n = 1;
+#elif defined(_WIN32)
+  DWORD bytes = 0;
+  GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &bytes);
+  std::vector<uint8_t> b(bytes);
+  if (bytes && GetLogicalProcessorInformationEx(RelationProcessorCore, reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(b.data()), &bytes))
+    for (DWORD o = 0; o < bytes; o += reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(b.data() + o)->Size) n++;
+#elif defined(__APPLE__)
+  int c = 0;
+  size_t len = sizeof c;
+  if (!sysctlbyname("hw.physicalcpu", &c, &len, nullptr, 0) && c > 0) n = static_cast<unsigned>(c);
+#elif defined(__linux__)
+  // ai: the online CPUs' distinct sibling sets (an offline CPU has no topology)
+  std::set<std::string> cores;
+  const long conf = sysconf(_SC_NPROCESSORS_CONF);
+  for (long i = 0; i < conf; i++) {
+    std::ifstream f("/sys/devices/system/cpu/cpu" + std::to_string(i) + "/topology/thread_siblings_list");
+    std::string list;
+    if (f >> list) cores.insert(list);
+  }
+  n = static_cast<unsigned>(cores.size());
+#endif
+  return n ? n : std::max(1u, std::thread::hardware_concurrency());
+}
 // ai: typeBytes: printable ASCII of at most 158, else none
 std::string typeBytes(const std::string& t) {
   if (t.size() > XFER_TYPE_MAX) return "";
@@ -47,33 +98,48 @@ XferTx::XferTx(const uint8_t* data, size_t length, const std::string& name, cons
   chunks_ = C;
   h.codec = XFER_CODEC_ZSTD;
   // ai: each chunk compressed on its own (2026-10-05) and sent as its frame where that is shorter, else as it is; a
-  // ai: fountain over the sent bytes where they are 2 blocks or more, else the one block kept (one_)
-  std::vector<uint8_t> frame;
+  // ai: fountain over the sent bytes where they are 2 blocks or more, else the one block kept (one_); its chaining
+  // ai: value of its own bytes. No chunk reads another's, so the workers (2026-11-06) take the next index and write
+  // ai: only that chunk's slots; a fault is kept by its chunk and the first in chunk order thrown after the join.
+  len_.resize(C); sent_.resize(C); seed_.resize(C); K_.resize(C); enc_.resize(C); one_.resize(C);
+  std::vector<uint8_t> cvs(C >= 2 ? 32 * size_t{C} : 0);
+  enum : int { FINE = 0, CV = 1, MEMORY = 2 };   // ai: a fault: one of these, or Wirehair's code (negative)
+  std::vector<int> fault(C, FINE);
+  std::atomic<uint32_t> nextChunk{0};
+  auto work = [&] {
+    std::vector<uint8_t> frame;
+    for (uint32_t c; (c = nextChunk.fetch_add(1, std::memory_order_relaxed)) < C;) try {
+      len_[c] = std::min(size_, length - c * size_);
+      const uint8_t* plain = data + c * size_;
+      const uint8_t* out = plain;
+      uint32_t n = static_cast<uint32_t>(len_[c]);
+      frame.resize(lizard_zstd_bound(n));
+      const int32_t z = lizard_zstd_compress(plain, n, frame.data(), static_cast<uint32_t>(frame.size()));
+      if (z > 0 && static_cast<uint32_t>(z) < n) { out = frame.data(); n = static_cast<uint32_t>(z); }
+      sent_[c] = n;
+      K_[c] = xfer_blocks(n);
+      if (K_[c] > 1) {
+        void* e = nullptr;
+        const int seed = lizard_wh_encoder_create(out, n, PAYLOAD, &e);
+        if (seed < 0) { fault[c] = seed; continue; }
+        enc_[c].reset(e);
+        seed_[c] = static_cast<uint8_t>(seed);
+      } else one_[c].assign(out, out + n);
+      if (C >= 2 && xfer_chunk_cv(plain, len_[c], c, chunkLog2, cvs.data() + 32 * c)) fault[c] = CV;
+    } catch (const std::bad_alloc&) { fault[c] = MEMORY; }
+  };
+  const uint32_t W = std::min<uint32_t>(C, workers());
+  std::vector<std::thread> pool;
+  for (uint32_t w = 1; w < W; w++) try { pool.emplace_back(work); } catch (const std::system_error&) { break; }   // ai: a thread refused: fewer do the work
+  work();
+  for (auto& t : pool) t.join();
   for (uint32_t c = 0; c < C; c++) {
-    len_.push_back(std::min(size_, length - c * size_));
-    const uint8_t* plain = data + c * size_;
-    const uint8_t* out = plain;
-    uint32_t n = static_cast<uint32_t>(len_[c]);
-    frame.resize(lizard_zstd_bound(n));
-    const int32_t z = lizard_zstd_compress(plain, n, frame.data(), static_cast<uint32_t>(frame.size()));
-    if (z > 0 && static_cast<uint32_t>(z) < n) { out = frame.data(); n = static_cast<uint32_t>(z); }
-    sent_.push_back(n);
-    K_.push_back(xfer_blocks(n));
-    void* e = nullptr;
-    int seed = 0;
-    if (K_[c] > 1) {
-      seed = lizard_wh_encoder_create(out, n, PAYLOAD, &e);
-      if (seed < 0) throw std::runtime_error("wirehair encoder: " + std::to_string(seed));
-    } else one_[c].assign(out, out + n);
-    enc_.push_back(e);
-    seed_.push_back(static_cast<uint8_t>(seed));
-    sentBytes_ += n;
+    if (fault[c] == CV) throw std::runtime_error("chaining value of chunk " + std::to_string(c));
+    if (fault[c] == MEMORY) throw std::bad_alloc();
+    if (fault[c] < 0) throw std::runtime_error("wirehair encoder: " + std::to_string(fault[c]));
+    sentBytes_ += sent_[c];
   }
-  std::vector<uint8_t> cvs;
   if (C >= 2) {
-    cvs.resize(32 * size_t{C});
-    for (uint32_t c = 0; c < C; c++)
-      if (xfer_chunk_cv(data + c * size_, len_[c], c, chunkLog2, cvs.data() + 32 * c)) throw std::runtime_error("chaining value of chunk " + std::to_string(c));
     if (xfer_root(cvs.data(), C, root_)) throw std::runtime_error("root");
   } else xfer_b3_hash(data, length, root_);
   std::memcpy(h.root, root_, 32);
@@ -101,7 +167,7 @@ XferTx::XferTx(const uint8_t* data, size_t length, const std::string& name, cons
   every_ = std::max<uint32_t>(1, std::min<uint32_t>(CONTROL_EVERY, lap_ / (8 * std::max<uint32_t>(1, static_cast<uint32_t>(manifest_.size())))));
 }
 
-XferTx::~XferTx() { for (void* e : enc_) if (e) lizard_wh_free(e); }
+void XferTx::WhFree::operator()(void* e) const { lizard_wh_free(e); }
 
 uint32_t XferTx::next() {
   uint32_t c;
@@ -152,12 +218,11 @@ void XferTx::block(uint32_t id, uint8_t* out) const {
   if (c >= chunks_) return;
   if (enc_[c]) {
     uint8_t buf[PAYLOAD];
-    const int n = lizard_wh_encode(enc_[c], s, buf, PAYLOAD);
+    const int n = lizard_wh_encode(enc_[c].get(), s, buf, PAYLOAD);
     if (n > 0) std::memcpy(out, buf, static_cast<size_t>(n));
     return;
   }
-  const auto& one = one_.at(c);
-  std::memcpy(out, one.data(), one.size());   // ai: a chunk of one block, zero padded
+  std::memcpy(out, one_[c].data(), one_[c].size());   // ai: a chunk of one block, zero padded
 }
 
 std::string XferTx::rootHex() const {

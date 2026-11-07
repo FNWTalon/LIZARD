@@ -34,10 +34,10 @@ if [ "$1" = app ]; then
   exec node ../lizard-web/pwa/build.mjs "$OUTDIR"
 fi
 if [ "$1" = native ]; then
-  # BLAKE3 for the transfer's hash (src/xfer.h): the official C, portable only, which is all wasm can run of it, so the
-  # native check compiles the same paths. No threads.
-  SRC="src/ldpc.c src/layout.c src/acquire.c src/fft.c src/rs.c src/fmt.c src/lizard_phy.c src/any.c src/shake.c src/xfer.c src/wasm.c vendor/blake3/blake3.c vendor/blake3/blake3_dispatch.c vendor/blake3/blake3_portable.c"
-  B3="-Ivendor/blake3 -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512 -DBLAKE3_USE_NEON=0"
+  # BLAKE3 for the transfer's hash (src/xfer.h): the official C with its x86-64 kernels (SSE4.1, AVX2), as
+  # core/CMakeLists.txt builds it on this machine. No threads.
+  SRC="src/ldpc.c src/layout.c src/acquire.c src/fft.c src/rs.c src/fmt.c src/lizard_phy.c src/any.c src/shake.c src/xfer.c src/wasm.c vendor/blake3/blake3.c vendor/blake3/blake3_dispatch.c vendor/blake3/blake3_portable.c vendor/blake3/blake3_sse41_x86-64_unix.S vendor/blake3/blake3_avx2_x86-64_unix.S"
+  B3="-Ivendor/blake3 -DBLAKE3_NO_SSE2 -DBLAKE3_NO_AVX512 -DBLAKE3_USE_NEON=0"
   gcc -O2 -g -ffp-contract=off -Wall -Wextra -fsanitize=address,undefined $B3 -c $SRC && rm -f ./*.o
   exit 0
 fi

@@ -158,13 +158,21 @@ static void chunk(const uint8_t *in, size_t len, uint64_t counter, int root, uin
   cv_bytes(out, cv);
 }
 
+// More than one chunk: the official code's own wide hash (blake3_compress_subtree_wide, as its hasher calls it), its
+// vector kernels' lanes at once (4 chunks on SSE4.1, NEON and wasm SIMD, 8 on AVX2; blake3_dispatch.c picks), which
+// leaves at least two chaining values; they pair level by level, an odd last one carried up (its hasher's
+// compress_subtree_to_parent_node), to the two under the top node.
 static void subtree(const uint8_t *in, size_t len, uint64_t counter, int root, uint8_t out[XFER_CV]) {
   if (len <= BLAKE3_CHUNK_LEN) { chunk(in, len, counter, root, out); return; }
-  const size_t left = (size_t)round_down_to_power_of_2((len - 1) / BLAKE3_CHUNK_LEN) * BLAKE3_CHUNK_LEN;
-  uint8_t block[BLAKE3_BLOCK_LEN];
-  subtree(in, left, counter, 0, block);
-  subtree(in + left, len - left, counter + left / BLAKE3_CHUNK_LEN, 0, block + XFER_CV);
-  parent(block, root, out);
+  uint8_t cvs[MAX_SIMD_DEGREE_OR_2 * BLAKE3_OUT_LEN];
+  size_t n = blake3_compress_subtree_wide(in, len, IV, counter, 0, cvs, false);
+  while (n > 2) {
+    size_t m = 0;
+    for (size_t i = 0; i + 1 < n; i += 2) parent(cvs + i * XFER_CV, 0, cvs + m++ * XFER_CV);
+    if (n & 1) memmove(cvs + m++ * XFER_CV, cvs + (n - 1) * XFER_CV, XFER_CV);
+    n = m;
+  }
+  parent(cvs, root, out);
 }
 
 void xfer_b3_subtree(const uint8_t *in, size_t len, uint64_t counter, int root, uint8_t out[XFER_CV]) {

@@ -2,10 +2,12 @@
 // the block id, and files of 3 chunks and of 1 written as header and manifest blocks, read back and verified chunk by
 // chunk, with a corrupted chunk, a corrupted manifest and a manifest entry no chunk could have caught. The chunks'
 // bytes as sent and seed attempts are made up here (no zstd and no Wirehair in this test: the layouts carry them, the
-// wasm test exercises the codecs). From liblizard/, about 3 s (one line):
-//   gcc -O2 -g -Wall -Wextra -fsanitize=address,undefined -Isrc -Ivendor/blake3 -DBLAKE3_NO_SSE2 -DBLAKE3_NO_SSE41
-//   -DBLAKE3_NO_AVX2 -DBLAKE3_NO_AVX512 -o build/xfer_test test/xfer_test.c src/xfer.c vendor/blake3/blake3.c
-//   vendor/blake3/blake3_dispatch.c vendor/blake3/blake3_portable.c && build/xfer_test
+// wasm test exercises the codecs). From liblizard/ on x86-64, about 3 s (one line; the AVX2 kernel where the CPU has
+// it; -DBLAKE3_NO_AVX2 for the SSE4.1 one, -DBLAKE3_NO_SSE41 -DBLAKE3_NO_AVX2 for the portable code):
+//   gcc -O2 -g -Wall -Wextra -fsanitize=address,undefined -Isrc -Ivendor/blake3 -DBLAKE3_NO_SSE2 -DBLAKE3_NO_AVX512
+//   -o build/xfer_test test/xfer_test.c src/xfer.c vendor/blake3/blake3.c vendor/blake3/blake3_dispatch.c
+//   vendor/blake3/blake3_portable.c vendor/blake3/blake3_sse41_x86-64_unix.S vendor/blake3/blake3_avx2_x86-64_unix.S
+//   && build/xfer_test
 #include "xfer.h"
 #include <stdio.h>
 #include <stdlib.h>
